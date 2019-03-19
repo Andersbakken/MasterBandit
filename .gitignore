@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+/CMakeFiles/*
+/bin/mb
+/rules.ninja
+/compile_commands.json
+/cmake_install.cmake
+/build.ninja

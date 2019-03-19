@@ -1,0 +1,151 @@
+#ifndef KEYEVENT_H
+#define KEYEVENT_H
+
+#include <string>
+#include "InputEvent.h"
+
+class KeyEvent : public InputEvent
+{
+public:
+    enum Key {
+        Key_Windows = 1000,
+        Key_Command,
+        Key_Esc,
+        Key_F1,
+        Key_F2,
+        Key_F3,
+        Key_F4,
+        Key_F5,
+        Key_F6,
+        Key_F7,
+        Key_F8,
+        Key_F9,
+        Key_F10,
+        Key_F11,
+        Key_F12,
+        Key_F13,
+        Key_F14,
+        Key_F15,
+        Key_F16,
+        Key_F17,
+        Key_F18,
+        Key_F19,
+        Key_F20,
+        Key_F21,
+        Key_F22,
+        Key_F23,
+        Key_F24,
+        Key_Tab,
+        Key_CapsLock,
+        Key_LeftShift,
+        Key_RightShift,
+        Key_LeftCtrl,
+        Key_RightCtrl,
+        Key_Fn,
+        Key_LeftAlt,
+        Key_RightAlt,
+        Key_Spacebar,
+        Key_Up,
+        Key_Down,
+        Key_Left,
+        Key_Right,
+        Key_BackSpace,
+        Key_Delete,
+        Key_PrintScreen,
+        Key_ScrollLock,
+        Key_Pause,
+        Key_Break,
+        Key_Insert,
+        Key_Home,
+        Key_PageUp,
+        Key_PageDown,
+        Key_End,
+        Key_NumLock,
+
+        Key_Pound, // = '£',
+        Key_Euro, // = '€'
+        Key_Enter, // = '\n',
+        Key_Cent, // = '¢'
+        Key_Yuan, // = '¥'
+        Key_Micro, // = '§'
+        Key_Degree, // = '°'
+
+        Key_Tilde = '~',
+        Key_BackTick = '`',
+        Key_ExclamationPoint = '!',
+        Key_At = '@',
+        Key_Hash = '#',
+        Key_Dollar = '$',
+        Key_Percent = '%',
+        Key_Caret = '^',
+        Key_Amptersand = '&',
+        Key_Asterisk = '*',
+        Key_OpenParen = '(',
+        Key_CloseParen = ')',
+        Key_Minus = '-',
+        Key_Underscore = '_',
+        Key_Plus = '+',
+        Key_Equals = '=',
+        Key_OpenBrace = '{',
+        Key_CloseBrace = '}',
+        Key_OpenBracket = '[',
+        Key_CloseBracket = ']',
+        Key_Pipe = '|',
+        Key_Backslash = '\\',
+        Key_ForwardSlash = '/',
+        Key_Colon = ':',
+        Key_Semicolon = ';',
+        Key_Quote = '"',
+        Key_Apostrophe = '\'',
+        Key_LessThan = '<',
+        Key_GreaterThan = '>',
+        Key_Comma = ',',
+        Key_Period = '.',
+        Key_QuestionMark = '?',
+        Key_0 = '0',
+        Key_1 = '1',
+        Key_2 = '2',
+        Key_3 = '3',
+        Key_4 = '4',
+        Key_5 = '5',
+        Key_6 = '6',
+        Key_7 = '7',
+        Key_8 = '8',
+        Key_9 = '9',
+        Key_A = 'A',
+        Key_B = 'B',
+        Key_C = 'C',
+        Key_D = 'D',
+        Key_E = 'E',
+        Key_F = 'F',
+        Key_G = 'G',
+        Key_H = 'H',
+        Key_I = 'I',
+        Key_J = 'J',
+        Key_K = 'K',
+        Key_L = 'L',
+        Key_M = 'M',
+        Key_N = 'N',
+        Key_O = 'O',
+        Key_P = 'P',
+        Key_Q = 'Q',
+        Key_R = 'R',
+        Key_S = 'S',
+        Key_T = 'T',
+        Key_U = 'U',
+        Key_V = 'V',
+        Key_W = 'W',
+        Key_X = 'X',
+        Key_Y = 'Y',
+        Key_Z = 'Z'
+    };
+
+    std::string text;
+
+    unsigned key { 0 }; // sym vs code vs enum?
+
+    size_t count { 1 };
+    bool autoRepeat { false };
+};
+
+#endif /* KEYEVENT_H */

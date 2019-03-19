@@ -13,19 +13,26 @@ public:
 protected:
     // Terminal
     virtual void event(Event event, void *info) override;
-    virtual void render(size_t y, const std::string &line) override;
+    virtual void render(size_t x, size_t y, const char *ch, size_t len, unsigned int flags) override;
 
     // QAbstractScrollArea
     using QWidget::event;
     virtual void paintEvent(QPaintEvent *e) override;
     virtual void showEvent(QShowEvent *e) override;
     virtual void resizeEvent(QResizeEvent *e) override;
+    virtual void keyPressEvent(QKeyEvent *e) override;
+    virtual void keyReleaseEvent(QKeyEvent *e) override;
+    virtual void mousePressEvent(QMouseEvent *e) override;
+    virtual void mouseMoveEvent(QMouseEvent *e) override;
+    virtual void mouseReleaseEvent(QMouseEvent *e) override;
 private:
     void updateScrollbars();
-    QRect lineRect(int y) const;
+    QRect lineRect(size_t x, size_t y) const;
+    KeyEvent createKeyEvent(QKeyEvent *e) const;
+    MouseEvent createMouseEvent(QMouseEvent *e) const;
 private:
     QPainter mPainter;
-    int mLineSpacing { 0 };
+    size_t mLineSpacing { 0 }, mMaxCharWidth { 0 };
 };
 
 #endif /* QTWINDOW_H */

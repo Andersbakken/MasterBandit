@@ -13,11 +13,12 @@ QtWindow::QtWindow()
     f.setStyleHint(QFont::Monospace);
     w->setFont(f);
     mLineSpacing = w->fontMetrics().lineSpacing();
+    mMaxCharWidth = w->fontMetrics().maxWidth();
     // qDebug() << "mLineSpacing" << mLineSpacing;
 
     connect(verticalScrollBar(), &QScrollBar::valueChanged,
             [this](int value) {
-                qDebug() << "got scroll" << value;
+                // qDebug() << "got scroll" << value;
                 Terminal::scroll(0, value);
             });
 
@@ -43,15 +44,15 @@ void QtWindow::event(Event event, void *data)
         break;
     case LineChanged:
         assert(data);
-        update(lineRect(*reinterpret_cast<const int *>(data)));
+        update(lineRect(0, *reinterpret_cast<const int *>(data)));
         break;
     }
 }
 
-void QtWindow::render(size_t y, const std::string &line)
+void QtWindow::render(size_t x, size_t y, const char *ch, size_t len, unsigned int flags)
 {
     // qDebug() << "rendering line" << y << lineRect(y) << QString::fromStdString(line);
-    mPainter.drawText(lineRect(y), QString::fromStdString(line));
+    mPainter.drawText(lineRect(x, y), QLatin1String(ch, len));
 }
 
 void QtWindow::showEvent(QShowEvent *e)
@@ -75,16 +76,65 @@ void QtWindow::updateScrollbars()
 void QtWindow::resizeEvent(QResizeEvent *e)
 {
     QAbstractScrollArea::resizeEvent(e);
-    const QFontMetrics metrics = viewport()->fontMetrics();
-    const int lineSpacing = metrics.lineSpacing();
-    const int charWidth = metrics.maxWidth();
-    Terminal::resize(viewport()->width() / charWidth,
-                     viewport()->height() / lineSpacing);
+    Terminal::resize(viewport()->width() / mMaxCharWidth,
+                     viewport()->height() / mLineSpacing);
     updateScrollbars();
 }
 
-QRect QtWindow::lineRect(int y) const
+QRect QtWindow::lineRect(size_t x, size_t y) const
 {
-    return QRect(0, y * mLineSpacing, viewport()->width(), mLineSpacing);
+    return QRect(x * mMaxCharWidth, y * mLineSpacing, viewport()->width(), mLineSpacing);
 }
 
+void QtWindow::keyPressEvent(QKeyEvent *e)
+{
+    Terminal::keyPressEvent(createKeyEvent(e));
+}
+
+void QtWindow::keyReleaseEvent(QKeyEvent *e)
+{
+    Terminal::keyReleaseEvent(createKeyEvent(e));
+}
+
+void QtWindow::mousePressEvent(QMouseEvent *e)
+{
+    Terminal::mousePressEvent(createMouseEvent(e));
+}
+
+void QtWindow::mouseMoveEvent(QMouseEvent *e)
+{
+    Terminal::mouseMoveEvent(createMouseEvent(e));
+}
+
+void QtWindow::mouseReleaseEvent(QMouseEvent *e)
+{
+    Terminal::mouseReleaseEvent(createMouseEvent(e));
+}
+
+static unsigned int translateModifiers(const QFlags<Qt::KeyboardModifier> modifiers)
+{
+    unsigned int ret = 0;
+    if (modifiers & Qt::ControlModifier)
+        ret |= InputEvent::ControlModifier;
+    if (modifiers & Qt::ShiftModifier)
+        ret |= InputEvent::ShiftModifier;
+    if (modifiers & Qt::AltModifier)
+        ret |= InputEvent::AltModifier;
+    if (modifiers & Qt::MetaModifier)
+        ret |= InputEvent::MetaModifier;
+    return ret;
+}
+
+KeyEvent QtWindow::createKeyEvent(QKeyEvent *e) const
+{
+    KeyEvent ret;
+    ret.type = (e->type() == QEvent::KeyPress ? InputEvent::KeyPress : InputEvent::KeyRelease);
+    ret.text = e->text().toStdString();
+    ret.modifiers = translateModifiers(e->modifiers());
+    // return KeyEvent { e->type() == QEvent::KeyPress ? Key::
+    return ret;
+}
+
+MouseEvent QtWindow::createMouseEvent(QMouseEvent *e) const
+{
+}

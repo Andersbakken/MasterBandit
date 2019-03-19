@@ -36,3 +36,9 @@
 /compile_commands.json
 /cmake_install.cmake
 /build.ninja
+/bin/.gdb_brestore
+/bin/.gdb_brestore.txt
+/bin/.gdb_history
+cmake_install.cmake
+/src/qt/CMakeFiles/qtwindow_autogen.dir/
+/src/qt/qtwindow_autogen/

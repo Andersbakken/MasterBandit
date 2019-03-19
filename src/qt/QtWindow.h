@@ -10,10 +10,13 @@ class QtWindow : public QAbstractScrollArea, public Terminal
 public:
     QtWindow();
 
+    virtual bool init(const Options &options) override;
+
 protected:
     // Terminal
     virtual void event(Event event, void *info) override;
     virtual void render(size_t x, size_t y, const char *ch, size_t len, unsigned int flags) override;
+    virtual void quit() override;
 
     // QAbstractScrollArea
     using QWidget::event;

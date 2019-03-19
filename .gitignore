@@ -42,3 +42,6 @@
 cmake_install.cmake
 /src/qt/CMakeFiles/qtwindow_autogen.dir/
 /src/qt/qtwindow_autogen/
+/.ninja_deps
+/.ninja_log
+/CMakeCache.txt

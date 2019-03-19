@@ -5,5 +5,5 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 
 include_directories(${CMAKE_CURRENT_LIST_DIR})
 add_subdirectory(qt)
-add_executable(mb main.cpp Terminal.cpp)
+add_executable(mb main.cpp Terminal.cpp Log.cpp)
 target_link_libraries(mb qtwindow)

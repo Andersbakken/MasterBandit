@@ -6,6 +6,11 @@
 #include "KeyEvent.h"
 #include "MouseEvent.h"
 
+#define EINTRWRAP(ret, op) \
+    do {                   \
+        ret = (op);        \
+    } while (ret == -1 && errno == EINTR)
+
 class Window;
 class Terminal
 {
@@ -13,6 +18,12 @@ public:
     Terminal();
     ~Terminal();
 
+    struct Options {
+        std::string shell;
+        std::string user;
+    };
+
+    virtual bool init(const Options &options);
     enum Flag {
         None = 0,
         LineWrap = (1ull << 1)
@@ -41,23 +52,32 @@ public:
         Render_Selected = (1ull << 1)
     };
     virtual void render(size_t y, size_t x, const char *ch, size_t len, unsigned int flags) = 0;
+    virtual void quit() = 0;
 
-    void addText(const std::string &string);
+    void addText(const char *str, size_t len);
 
     void keyPressEvent(const KeyEvent &event);
     void keyReleaseEvent(const KeyEvent &event);
     void mousePressEvent(const MouseEvent &event);
     void mouseReleaseEvent(const MouseEvent &event);
     void mouseMoveEvent(const MouseEvent &event);
+    int masterFD() const { return mMasterFD; }
+    void readFromFD();
+    int exitCode() const { return mExitCode; }
+
+    static unsigned long long mono();
 private:
     bool isSelected(size_t y, size_t *start, size_t *length) const;
 private:
+    Options mOptions;
     size_t mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
     unsigned int mFlags { 0 };
     std::vector<std::string> mScrollback;
     bool mHasSelection { false };
     size_t mSelectionStartX { 0 }, mSelectionStartY { 0 }, mSelectionEndX { 0 }, mSelectionEndY { 0 };
     size_t mWidestLine { 0 };
+    int mMasterFD { -1 }, mSlaveFD { -1 };
+    int mExitCode { 0 };
 };
 
 #endif /* TERMINAL_H */

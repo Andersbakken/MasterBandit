@@ -1,0 +1,2 @@
+# MasterBandit
+A terminal emulator

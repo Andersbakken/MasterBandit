@@ -92,6 +92,7 @@ QRect QtWindow::lineRect(size_t x, size_t y) const
 
 void QtWindow::keyPressEvent(QKeyEvent *e)
 {
+    qDebug() << "press" << e->text() << e;
     Terminal::keyPressEvent(createKeyEvent(e));
 }
 
@@ -315,7 +316,7 @@ bool QtWindow::init(const Options &options)
 
     QSocketNotifier *notifier = new QSocketNotifier(masterFD(), QSocketNotifier::Read, this);
     connect(notifier, &QSocketNotifier::activated, [this](int) {
-        ERROR("GOT SOCKET NOTIFIER");
+        // ERROR("GOT SOCKET NOTIFIER");
         readFromFD();
     });
     return true;

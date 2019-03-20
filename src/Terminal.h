@@ -66,13 +66,25 @@ public:
     int exitCode() const { return mExitCode; }
 
     static unsigned long long mono();
+    struct Line
+    {
+        std::string data;
+        size_t pos { 0 };
+        mutable std::vector<size_t> lineBreaks;
+        enum Control {
+
+
+
+
+        };
+    };
 private:
     bool isSelected(size_t y, size_t *start, size_t *length) const;
 private:
     Options mOptions;
     size_t mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
     unsigned int mFlags { 0 };
-    std::vector<std::string> mScrollback;
+    std::vector<Line> mScrollback;
     bool mHasSelection { false };
     size_t mSelectionStartX { 0 }, mSelectionStartY { 0 }, mSelectionEndX { 0 }, mSelectionEndY { 0 };
     size_t mWidestLine { 0 };

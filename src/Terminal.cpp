@@ -113,16 +113,16 @@ void Terminal::render()
     for (size_t y = mY; y<max; ++y) {
         // printf("RENDERING %zu %s\n", y, mScrollback.at(y).c_str());
         size_t start, length;
-        const std::string &line = mScrollback[y];
+        const Line &line = mScrollback[y];
         if (isSelected(y, &start, &length)) {
-            assert(start + length <= line.size());
+            assert(start + length <= line.data.size());
             if (start > 0)
-                render(0, y - mY, line.c_str(), start, Render_None);
-            render(start, y - mY, line.c_str() + start, length, Render_Selected);
-            if (start + length < line.size())
-                render(start + length, y - mY, line.c_str() + start + length, line.size() - start - length, Render_None);
+                render(0, y - mY, line.data.c_str(), start, Render_None);
+            render(start, y - mY, line.data.c_str() + start, length, Render_Selected);
+            if (start + length < line.data.size())
+                render(start + length, y - mY, line.data.c_str() + start + length, line.data.size() - start - length, Render_None);
         } else {
-            render(0, y - mY, line.c_str(), line.size(), Render_None);
+            render(0, y - mY, line.data.c_str(), line.data.size(), Render_None);
         }
     }
 }
@@ -130,20 +130,52 @@ void Terminal::render()
 void Terminal::addText(const char *str, size_t len)
 {
     if (mScrollback.empty())
-        mScrollback.push_back(std::string());
+        mScrollback.push_back(Line());
     size_t last = 0;
+    printf("Got chars: [");
+    bool escape = false;
+    Line *cur = &mScrollback[mScrollback.size() - 1];
     for (size_t idx = 0; idx<len; ++idx) {
-        if (str[idx] == '\n') {
+        if (escape) {
+            printf("GOT ESCAPE CODE %02x (%c)\n", static_cast<unsigned char>(str[idx]), str[idx]);
+            escape = false;
+        }
+        switch (str[idx]) {
+        case '\n':
+            printf("\\n]\n");
             assert(!mScrollback.empty());
-            mScrollback[mScrollback.size() - 1].append(str + last, idx - last);
-            mScrollback.push_back(std::string());
+            cur->data.append(str + last, idx - last);
+            mScrollback.push_back(Line());
+            cur = &mScrollback[mScrollback.size() - 1];
             last = idx + 1;
+            break;
+        case '\b':
+            cur->data.append(str + last, idx - last);
+            last = idx + 1;
+            printf("[Backspace]");
+            if (cur->data.size())
+                cur->data.resize(cur->data.size() - 1);
+        // case '\r':
+        //     printf("\\r]\n");
+        //     cur->clear();
+        //     last = idx + 1;
+        //     break;
+        case 0x1b: // ESC
+            escape = true;
+            break;
+        default:
+            if (std::isprint(str[idx])) {
+                printf("%c", str[idx]);
+            } else {
+                printf("Unhandled unprintable: 0x%02x\n", str[idx]);
+            }
         }
     }
 
     if (last < len) {
+        printf("]\n");
         assert(!mScrollback.empty());
-        mScrollback[mScrollback.size() - 1].append(str + last, len - last);
+        cur->data.append(str + last, len - last);
     }
     event(Update);
     event(ScrollbackChanged);
@@ -162,16 +194,16 @@ bool Terminal::isSelected(size_t y, size_t *start, size_t *length) const
 
     if (y > minY && y < maxY) {
         *start = 0;
-        *length = mScrollback[y].length();
+        *length = mScrollback[y].data.length();
     } else if (y == minY && y == maxY) {
         *start = minX;
-        *length = mScrollback[y].length() - minX - maxX;
+        *length = mScrollback[y].data.length() - minX - maxX;
     } else if (y == minY) {
         *start = minX;
-        *length = mScrollback[y].length() - minX;
+        *length = mScrollback[y].data.length() - minX;
     } else if (y == maxY) {
         *start = 0;
-        *length = mScrollback[y].length() - maxX;
+        *length = mScrollback[y].data.length() - maxX;
     } else {
         *start = *length = 0;
         return false;
@@ -181,6 +213,13 @@ bool Terminal::isSelected(size_t y, size_t *start, size_t *length) const
 
 void Terminal::keyPressEvent(const KeyEvent &event)
 {
+    if (event.key == KeyEvent::Key_F12) {
+        for (size_t i=0; i<mScrollback.size(); ++i) {
+            printf("%zu/%zu: \"%s\"\n", i, mScrollback.size(), mScrollback[i].data.c_str());
+        }
+
+        return;
+    }
     // printf("GOT KEYPRESS [%s] %zu\n", event.text.c_str(), event.count);
     if (!event.text.empty()) {
         for (size_t i=0; i<event.count; ++i) {

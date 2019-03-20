@@ -75,6 +75,7 @@ bool Terminal::init(const Options &options)
 
         EINTRWRAP(ret, ::close(mSlaveFD));
 
+        extern char **environ;
         execle(mOptions.shell.c_str(), mOptions.shell.c_str(), NULL, environ);
         return false;
 

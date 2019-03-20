@@ -5,9 +5,6 @@
 QtWindow::QtWindow()
     : Terminal()
 {
-    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
-
     QWidget *w = viewport();
     QFont f = w->font();
     f.setFamily("monospace");

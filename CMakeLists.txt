@@ -1,3 +1,5 @@
 cmake_minimum_required(VERSION 2.8)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+include_directories(3rdparty/utfcpp/source)
+add_subdirectory(3rdparty/utfcpp)
 add_subdirectory(src)

@@ -1,8 +1,8 @@
-#include "QtWindow.h"
+#include "Window.h"
 #include "Log.h"
 #include <assert.h>
 
-QtWindow::QtWindow()
+Window::Window()
     : Terminal()
 {
     QWidget *w = viewport();
@@ -22,7 +22,7 @@ QtWindow::QtWindow()
 
 }
 
-void QtWindow::paintEvent(QPaintEvent *e)
+void Window::paintEvent(QPaintEvent *e)
 {
     mPainter.begin(viewport());
     if (mBell) {
@@ -37,9 +37,9 @@ void QtWindow::paintEvent(QPaintEvent *e)
     mPainter.end();
 }
 
-void QtWindow::event(Event event, void *data)
+void Window::event(Event event, void *data)
 {
-    VERBOSE("Got QtWindow::event(%s)", eventName(event));
+    VERBOSE("Got Window::event(%s)", eventName(event));
     switch (event) {
     case ScrollbackChanged:
         updateScrollbars();
@@ -54,7 +54,7 @@ void QtWindow::event(Event event, void *data)
     }
 }
 
-void QtWindow::render(size_t x, size_t y, const char16_t *ch, size_t len, size_t cursor, unsigned int flags)
+void Window::render(size_t x, size_t y, const char16_t *ch, size_t len, size_t cursor, unsigned int flags)
 {
     QString string = QString::fromRawData(reinterpret_cast<const QChar *>(ch), len);
     if (cursor != std::u16string::npos) {
@@ -65,14 +65,14 @@ void QtWindow::render(size_t x, size_t y, const char16_t *ch, size_t len, size_t
     mPainter.drawText(lineRect(x, y), string);
 }
 
-void QtWindow::showEvent(QShowEvent *e)
+void Window::showEvent(QShowEvent *e)
 {
     QAbstractScrollArea::showEvent(e);
     updateScrollbars();
     verticalScrollBar()->setValue(verticalScrollBar()->maximum());
 }
 
-void QtWindow::updateScrollbars()
+void Window::updateScrollbars()
 {
     // const QFontMetrics metrics = viewport()->fontMetrics();
     // int lineSpacing = metrics.lineSpacing();
@@ -86,7 +86,7 @@ void QtWindow::updateScrollbars()
     }
 }
 
-void QtWindow::resizeEvent(QResizeEvent *e)
+void Window::resizeEvent(QResizeEvent *e)
 {
     QAbstractScrollArea::resizeEvent(e);
     Terminal::resize(viewport()->width() / mCharWidth,
@@ -95,35 +95,35 @@ void QtWindow::resizeEvent(QResizeEvent *e)
     updateScrollbars();
 }
 
-QRectF QtWindow::lineRect(size_t x, size_t y, size_t chars) const
+QRectF Window::lineRect(size_t x, size_t y, size_t chars) const
 {
     return QRectF(x * mCharWidth, (y - Terminal::y()) * mLineSpacing,
                   chars == std::u16string::npos ? viewport()->width() : chars * mCharWidth,
                   mLineSpacing);
 }
 
-void QtWindow::keyPressEvent(QKeyEvent *e)
+void Window::keyPressEvent(QKeyEvent *e)
 {
     qDebug() << "press" << e->text() << e;
     Terminal::keyPressEvent(createKeyEvent(e));
 }
 
-void QtWindow::keyReleaseEvent(QKeyEvent *e)
+void Window::keyReleaseEvent(QKeyEvent *e)
 {
     Terminal::keyReleaseEvent(createKeyEvent(e));
 }
 
-void QtWindow::mousePressEvent(QMouseEvent *e)
+void Window::mousePressEvent(QMouseEvent *e)
 {
     Terminal::mousePressEvent(createMouseEvent(e));
 }
 
-void QtWindow::mouseMoveEvent(QMouseEvent *e)
+void Window::mouseMoveEvent(QMouseEvent *e)
 {
     Terminal::mouseMoveEvent(createMouseEvent(e));
 }
 
-void QtWindow::mouseReleaseEvent(QMouseEvent *e)
+void Window::mouseReleaseEvent(QMouseEvent *e)
 {
     Terminal::mouseReleaseEvent(createMouseEvent(e));
 }
@@ -142,7 +142,7 @@ static unsigned int translateModifiers(const QFlags<Qt::KeyboardModifier> modifi
     return ret;
 }
 
-KeyEvent QtWindow::createKeyEvent(QKeyEvent *e) const
+KeyEvent Window::createKeyEvent(QKeyEvent *e) const
 {
     KeyEvent ret;
     ret.type = (e->type() == QEvent::KeyPress ? InputEvent::KeyPress : InputEvent::KeyRelease);
@@ -298,7 +298,7 @@ KeyEvent QtWindow::createKeyEvent(QKeyEvent *e) const
     return ret;
 }
 
-MouseEvent QtWindow::createMouseEvent(QMouseEvent *e) const
+MouseEvent Window::createMouseEvent(QMouseEvent *e) const
 {
     MouseEvent ret;
     switch (e->type()) {
@@ -321,7 +321,7 @@ MouseEvent QtWindow::createMouseEvent(QMouseEvent *e) const
     return ret;
 }
 
-bool QtWindow::init(const Options &options)
+bool Window::init(const Options &options)
 {
     if (!Terminal::init(options))
         return false;
@@ -334,7 +334,7 @@ bool QtWindow::init(const Options &options)
     return true;
 }
 
-void QtWindow::quit()
+void Window::quit()
 {
     QApplication::quit();
 }

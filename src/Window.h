@@ -4,11 +4,11 @@
 #include <Terminal.h>
 #include <QtWidgets>
 
-class QtWindow : public QAbstractScrollArea, public Terminal
+class Window : public QAbstractScrollArea, public Terminal
 {
     Q_OBJECT
 public:
-    QtWindow();
+    Window();
 
     virtual bool init(const Options &options) override;
 

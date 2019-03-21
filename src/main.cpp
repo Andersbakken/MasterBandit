@@ -1,6 +1,6 @@
 #include <unistd.h>
 #include "Terminal.h"
-#include "qt/QtWindow.h"
+#include "Window.h"
 #include <getopt.h>
 #include <regex>
 #include "Log.h"
@@ -73,7 +73,7 @@ int main(int argc, char **argv)
     }
     Log::setLogLevel(static_cast<Log::Level>(logLevel));
 
-    QtWindow window;
+    Window window;
     if (!window.init(options))
         return 3;
     // QFile file("../LICENSE");

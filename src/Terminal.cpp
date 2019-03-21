@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <string.h>
 #include <limits>
+#include <utf8.h>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>

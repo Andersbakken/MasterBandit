@@ -3,7 +3,6 @@
 
 #include <vector>
 #include <string>
-#include <utf8.h>
 #include <stdlib.h>
 #include <string.h>
 #include "KeyEvent.h"

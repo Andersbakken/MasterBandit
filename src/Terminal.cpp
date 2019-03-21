@@ -19,13 +19,51 @@
 #include <mach/mach_time.h>
 #endif
 
+std::string toUtf8(const std::u16string &string)
+{
+    std::string ret;
+    ret.reserve(string.size());
+    utf8::utf16to8(string.begin(), string.end(), std::back_inserter(ret));
+    return ret;
+}
+
+std::string toPrintable(const char *bytes, size_t len)
+{
+    std::string ret;
+    ret.reserve(len);
+    for (size_t i=0; i<len; ++i) {
+        switch (bytes[i]) {
+        case '\0': ret += "\\0"; break;
+        case '\a': ret += "\\a"; break;
+        case '\b': ret += "\\b"; break;
+        case '\t': ret += "\\t"; break;
+        case '\n': ret += "\\n"; break;
+        case '\v': ret += "\\v"; break;
+        case '\f': ret += "\\f"; break;
+        case '\r': ret += "\\r"; break;
+        default:
+            if (std::isprint(bytes[i])) {
+                ret += bytes[i];
+            } else {
+                char buf[16];
+                const int w = snprintf(buf, sizeof(buf), "\\0%o", bytes[i]);
+                ret.append(buf, w);
+            }
+        }
+    }
+    return ret;
+}
+
 Terminal::Terminal()
 {
     mLines.push_back(Line());
+    memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+    memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
 }
 
 bool Terminal::init(const Options &options)
 {
+// #warning should look at all that st does here, set some environment variables, handle some signals, etc
     mOptions = options;
     mMasterFD = posix_openpt(O_RDWR | O_NOCTTY);
     if (mMasterFD == -1) {
@@ -112,11 +150,11 @@ void Terminal::resize(size_t width, size_t height)
 void Terminal::render()
 {
     const size_t max = std::min(mY + mHeight, mLines.size());
-    printf("RENDER %zu mHeight %zu mY %zu max %zu\n", mLines.size(), mHeight, mY, max);
+    DEBUG("RENDER %zu mHeight %zu mY %zu max %zu\n", mLines.size(), mHeight, mY, max);
     for (size_t y = mY; y<max; ++y) {
         const Line &line = mLines[y];
         const bool c = y == mCursorY;
-        printf("RENDERING %zu %s\n", y, toUtf8(line.data).c_str());
+        DEBUG("RENDERING %zu %s %d %zu\n", y, toPrintable(toUtf8(line.data)).c_str(), c, mCursorX);
         size_t start, length;
         if (isSelected(y, &start, &length)) {
             assert(start + length <= line.data.size());
@@ -135,62 +173,6 @@ void Terminal::render()
         }
     }
 }
-
-#if 0
-void Terminal::addText(const char *str, size_t len)
-{
-    if (mScrollback.empty())
-        mScrollback.push_back(Line());
-    size_t last = 0;
-    printf("Got chars: [");
-    bool escape = false;
-    Line *cur = &mScrollback[mScrollback.size() - 1];
-    for (size_t idx = 0; idx<len; ++idx) {
-        if (escape) {
-            printf("GOT ESCAPE CODE %02x (%c)\n", static_cast<unsigned char>(str[idx]), str[idx]);
-            escape = false;
-        }
-        switch (str[idx]) {
-        case '\n':
-            printf("\\n]\n");
-            assert(!mScrollback.empty());
-            cur->data.append(str + last, idx - last);
-            mScrollback.push_back(Line());
-            cur = &mScrollback[mScrollback.size() - 1];
-            last = idx + 1;
-            break;
-        case '\b':
-            cur->data.append(str + last, idx - last);
-            last = idx + 1;
-            printf("[Backspace]");
-            if (cur->data.size())
-                cur->data.resize(cur->data.size() - 1);
-        // case '\r':
-        //     printf("\\r]\n");
-        //     cur->clear();
-        //     last = idx + 1;
-        //     break;
-        case 0x1b: // ESC
-            escape = true;
-            break;
-        default:
-            if (std::isprint(str[idx])) {
-                printf("%c", str[idx]);
-            } else {
-                printf("Unhandled unprintable: 0x%02x\n", str[idx]);
-            }
-        }
-    }
-
-    if (last < len) {
-        printf("]\n");
-        assert(!mScrollback.empty());
-        cur->data.append(str + last, len - last);
-    }
-    event(Update);
-    event(ScrollbackChanged);
-}
-#endif
 
 bool Terminal::isSelected(size_t y, size_t *start, size_t *length) const
 {
@@ -235,19 +217,48 @@ void Terminal::keyPressEvent(const KeyEvent &event)
 
         return;
     }
-    // printf("GOT KEYPRESS [%s] %zu\n", event.text.c_str(), event.count);
-    if (!event.text.empty()) {
+    DEBUG("Got keypress \"%s\" %zu\n", toPrintable(event.text).c_str(), event.count);
+    if (!event.text.empty() && event.count) {
+        const char *ch = event.text.c_str();
+        size_t bytes = event.text.size();
+        size_t stringLen = 0;
+        for (size_t i=0; i<bytes; ++i) {
+            if (std::isprint(ch[i])) {
+                stringLen += event.count;
+            } else {
+                switch (ch[i]) {
+                case '\b':   /* BS */
+                    mCursorX -= event.count;
+                    break;
+                case '\r':   /* CR */
+                    mCursorX = 0;
+                    break;
+                }
+            }
+        }
+
         for (size_t i=0; i<event.count; ++i) {
             int ret;
-            DEBUG("Writing [%s] to master", event.text.c_str());
-            EINTRWRAP(ret, ::write(mMasterFD, event.text.c_str(), event.text.size()));
+            DEBUG("Writing [%s] to master", toPrintable(event.text).c_str());
+            while (bytes) {
+                EINTRWRAP(ret, ::write(mMasterFD, ch, bytes));
+                if (ret == -1) {
+                    FATAL("Failed to write to master %d %s", errno, strerror(errno));
+                    quit();
+                    return;
+                }
+                assert(ret <= bytes);
+                bytes -= ret;
+                ch += ret;
+            }
         }
+        mCursorX += stringLen;
     }
 }
 
 void Terminal::keyReleaseEvent(const KeyEvent &event)
 {
-    // printf("GOT KEYRELEASE [%s] %d %zu\n", event.text.c_str(), event.autoRepeat, event.count);
+    // DEBUG("GOT KEYRELEASE [%s] %d %zu\n", event.text.c_str(), event.autoRepeat, event.count);
 }
 
 void Terminal::mousePressEvent(const MouseEvent &event)
@@ -265,6 +276,9 @@ void Terminal::mouseMoveEvent(const MouseEvent &event)
 void Terminal::readFromFD()
 {
     char buf[1024];
+#ifndef NDEBUG
+    memset(buf, 0, sizeof(buf));
+#endif
     int ret;
     EINTRWRAP(ret, ::read(mMasterFD, buf, sizeof(buf) - 1));
     if (ret == -1) {
@@ -276,24 +290,36 @@ void Terminal::readFromFD()
         quit();
         return;
     }
-    DEBUG("readFromFD: [%s]", std::string(buf, ret).c_str());
+    DEBUG("readFromFD: \"%s\"", toPrintable(buf, ret).c_str());
     const size_t len = ret;
+    const size_t lineCount = mLines.size();
     assert(!mLines.empty());
     Line *currentLine = &mLines.back();
+    bool lineWasEmpty = currentLine->data.empty();
     for (size_t i=0; i<len; ++i) {
         switch (mState) {
         case Normal:
             switch (buf[i]) {
             case 0x1b: // escape
                 mState = InEscape;
+                assert(mEscapeIndex == 0);
                 break;
             case '\n': // newline
                 mScrollbackLength += currentLine->lineBreaks.size() + 1;
                 mLines.push_back(Line());
                 currentLine = &mLines.back();
                 break;
-            // case '\r': // handle all these here?
-                // break;
+            case '\r': // handle all these here?
+                mCursorX = 0;
+                break;
+            case '\b':
+                if (mCursorX > 0)
+                    --mCursorX;
+                break;
+            case '\v':
+            case '\t':
+            case '\a':
+                break;
             default:
                 if (buf[i] & 0x80) {
                     assert(mUtf8Index == 0);
@@ -318,6 +344,10 @@ void Terminal::readFromFD()
                     }
                 }
                 mUtf8Index = 0;
+#ifndef NDEBUG
+                memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
+#endif
+
                 mState = Normal;
             } else if (mUtf8Index == 6) {
                 ERROR("Bad utf8"); // ### write what the data is?
@@ -325,12 +355,16 @@ void Terminal::readFromFD()
                     currentLine->data.push_back(mUtf8Buffer[j]);
                 }
                 mUtf8Index = 0;
+#ifndef NDEBUG
+                memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
+#endif
                 mState = Normal;
             }
             break;
         case InEscape:
             assert(mEscapeIndex < sizeof(mEscapeBuffer));
             mEscapeBuffer[mEscapeIndex++] = buf[i];
+            DEBUG("Adding escape byte %s %zu -> %s", toPrintable(buf + i, 1).c_str(), i, toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
             switch (mEscapeBuffer[0]) {
             case SS2:
             case SS3:
@@ -343,20 +377,34 @@ void Terminal::readFromFD()
                 ERROR("Unhandled escape sequence %s", escapeSequenceName(static_cast<EscapeSequence>(mEscapeBuffer[0])));
                 mState = Normal;
                 mEscapeIndex = 0;
+#ifndef NDEBUG
+                memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
                 break;
             case CSI:
-                if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
-                    processCSI();
-                    mState = Normal;
-                    mEscapeIndex = 0;
-                } else if (mEscapeIndex == sizeof(mEscapeBuffer)) {
-                    ERROR("CSI sequence is too long %zu", sizeof(mEscapeBuffer));
-                    mState = Normal;
-                    mEscapeIndex = 0;
-                } else if (buf[i] < 0x20 || buf[i] > 0x3f) {
-                    ERROR("Invalid CSI sequence 0x%0x character", buf[i]);
-                    mState = Normal;
-                    mEscapeIndex = 0;
+                if (buf[i] != '[') {
+                    if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
+                        processCSI();
+                        mState = Normal;
+                        mEscapeIndex = 0;
+#ifndef NDEBUG
+                        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
+                    } else if (mEscapeIndex == sizeof(mEscapeBuffer)) {
+                        ERROR("CSI sequence is too long %zu", sizeof(mEscapeBuffer));
+                        mState = Normal;
+                        mEscapeIndex = 0;
+#ifndef NDEBUG
+                        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
+                    } else if (buf[i] < 0x20 || buf[i] > 0x3f) {
+                        ERROR("Invalid CSI sequence 0x%0x character", buf[i]);
+                        mState = Normal;
+                        mEscapeIndex = 0;
+#ifndef NDEBUG
+                        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
+                    }
                 }
 
                 break;
@@ -372,15 +420,23 @@ void Terminal::readFromFD()
             break;
         }
     }
+
+    if (mLines.size() != lineCount || mCursorY == std::u16string::npos || (lineWasEmpty && !currentLine->data.empty())) {
+        mCursorX = mLines.back().data.size();
+        mCursorY = mLines.size() - 1;
+        DEBUG("Got cursor %zu %zu %zu", mCursorY, mCursorX, mLines.back().data.size());
+    }
     event(Update);
     event(ScrollbackChanged);
+
 }
 
 void Terminal::processCSI()
 {
     assert(mState == InEscape);
-    assert(mEscapeIndex >= 2);
+    assert(mEscapeIndex >= 1);
 
+    DEBUG("Processing CSI \"%s\"", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
     auto readCount = [this](int def) {
         if (mEscapeIndex == 2) // no digits
             return def;
@@ -544,7 +600,13 @@ void Terminal::processCSI()
         break;
     }
 
+    if (action.type != Action::Invalid)
+        onAction(&action);
+
     mEscapeIndex = 0;
+#ifndef NDEBUG
+    memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
     mState = Normal;
 }
 
@@ -591,6 +653,31 @@ void Terminal::onAction(const Action *action)
     assert(action);
     assert(action->type != Action::Invalid);
     DEBUG("Got action %s %zu %zu %zu", Action::typeName(action->type), action->count, action->x, action->y);
+    switch (action->type) {
+    case Action::ClearLine:
+        mLines.back().data.clear(); // modify cursor pos?
+        break;
+    case Action::ClearToBeginningOfLine: {
+        Line &line = mLines.back();
+        if (mCursorX > 0) {
+            line.data.erase(line.data.begin(), line.data.begin() + mCursorX);
+        }
+        break; }
+    case Action::ClearToEndOfLine: {
+        Line &line = mLines.back();
+        if (mCursorX < line.data.size()) {
+            line.data.erase(line.data.begin() + mCursorX, line.data.end());
+        }
+        break; }
+    case Action::CursorForward:
+        mCursorX += action->count;
+        break;
+    case Action::CursorBack:
+        mCursorX = action->count > mCursorX ? 0 : mCursorX - action->count;
+        break;
+    default:
+        break;
+    }
 }
 
 const char *Terminal::Action::typeName(Type type)

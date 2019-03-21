@@ -10,9 +10,9 @@ QtWindow::QtWindow()
     f.setFamily("monospace");
     f.setStyleHint(QFont::Monospace);
     w->setFont(f);
-    mLineSpacing = w->fontMetrics().lineSpacing();
-    mMaxCharWidth = w->fontMetrics().maxWidth();
-    // qDebug() << "mLineSpacing" << mLineSpacing;
+    QFontMetricsF fm(f);
+    mLineSpacing = fm.lineSpacing();
+    mCharWidth = fm.width('M');
 
     connect(verticalScrollBar(), &QScrollBar::valueChanged,
             [this](int value) {
@@ -42,22 +42,21 @@ void QtWindow::event(Event event, void *data)
         break;
     case LineChanged:
         assert(data);
-        viewport()->update(lineRect(0, *reinterpret_cast<const int *>(data)));
+        // viewport()->update(lineRect(0, *reinterpret_cast<const int *>(data)));
+        update();
         break;
     }
 }
 
 void QtWindow::render(size_t x, size_t y, const char16_t *ch, size_t len, size_t cursor, unsigned int flags)
 {
-    qDebug() << "rendering line" << y << lineRect(x, y)
-             << QString::fromRawData(reinterpret_cast<const QChar *>(ch), len)
-             << "cursor" << cursor << "flags" << flags;
+    QString string = QString::fromRawData(reinterpret_cast<const QChar *>(ch), len);
     if (cursor != std::u16string::npos) {
-        QRect r = lineRect(cursor, y);
-        r.setWidth(mMaxCharWidth);
+        QRectF r = lineRect(cursor, y, 1);
         mPainter.fillRect(r, Qt::darkGray);
     }
-    mPainter.drawText(lineRect(x, y), QString::fromRawData(reinterpret_cast<const QChar *>(ch), len));
+
+    mPainter.drawText(lineRect(x, y), string);
 }
 
 void QtWindow::showEvent(QShowEvent *e)
@@ -84,15 +83,17 @@ void QtWindow::updateScrollbars()
 void QtWindow::resizeEvent(QResizeEvent *e)
 {
     QAbstractScrollArea::resizeEvent(e);
-    Terminal::resize(viewport()->width() / mMaxCharWidth,
+    Terminal::resize(viewport()->width() / mCharWidth,
                      viewport()->height() / mLineSpacing);
     qDebug() << "got resize" << e << Terminal::width() << Terminal::height();
     updateScrollbars();
 }
 
-QRect QtWindow::lineRect(size_t x, size_t y) const
+QRectF QtWindow::lineRect(size_t x, size_t y, size_t chars) const
 {
-    return QRect(x * mMaxCharWidth, (y - Terminal::y()) * mLineSpacing, viewport()->width(), mLineSpacing);
+    return QRectF(x * mCharWidth, (y - Terminal::y()) * mLineSpacing,
+                  chars == std::u16string::npos ? viewport()->width() : chars * mCharWidth,
+                  mLineSpacing);
 }
 
 void QtWindow::keyPressEvent(QKeyEvent *e)

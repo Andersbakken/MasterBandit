@@ -30,12 +30,13 @@ protected:
     virtual void mouseReleaseEvent(QMouseEvent *e) override;
 private:
     void updateScrollbars();
-    QRect lineRect(size_t x, size_t y) const;
+    QRectF lineRect(size_t x, size_t y, size_t chars = std::u16string::npos) const;
     KeyEvent createKeyEvent(QKeyEvent *e) const;
     MouseEvent createMouseEvent(QMouseEvent *e) const;
 private:
     QPainter mPainter;
-    size_t mLineSpacing { 0 }, mMaxCharWidth { 0 };
+    double mLineSpacing { 0 };
+    double mCharWidth { 0 };
 };
 
 #endif /* QTWINDOW_H */

@@ -9,13 +9,10 @@
 #include "KeyEvent.h"
 #include "MouseEvent.h"
 
-inline std::string toUtf8(const std::u16string &string)
-{
-    std::string ret;
-    ret.reserve(string.size());
-    utf8::utf16to8(string.begin(), string.end(), std::back_inserter(ret));
-    return ret;
-}
+std::string toUtf8(const std::u16string &string);
+std::string toPrintable(const char *chars, size_t len);
+inline std::string toPrintable(const std::string &str) { return toPrintable(str.c_str(), str.size()); }
+
 
 #define EINTRWRAP(ret, op) \
     do {                   \

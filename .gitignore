@@ -47,3 +47,7 @@ cmake_install.cmake
 /CMakeCache.txt
 3rdparty/utfcpp/CMakeFiles/*
 3rdparty/utfcpp/cmake_install.cmake
+/bin/docsample
+/bin/negative
+/bin/smoke
+/bin/utf8reader

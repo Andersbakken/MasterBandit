@@ -115,19 +115,23 @@ void Terminal::render()
     printf("RENDER %zu mHeight %zu mY %zu max %zu\n", mLines.size(), mHeight, mY, max);
     for (size_t y = mY; y<max; ++y) {
         const Line &line = mLines[y];
-        size_t cursor = y == mCursorY ? mCursorX : std::u16string::npos;
+        const bool c = y == mCursorY;
         printf("RENDERING %zu %s\n", y, toUtf8(line.data).c_str());
         size_t start, length;
         if (isSelected(y, &start, &length)) {
             assert(start + length <= line.data.size());
             if (start > 0) {
-                render(0, y, line.data.c_str(), start, 0, Render_None);
+                render(0, y, line.data.c_str(), start, c && mCursorX < start ? mCursorX : std::u16string::npos, Render_None);
             }
-            render(start, y, line.data.c_str() + start, length, 0, Render_Selected);
+            render(start, y, line.data.c_str() + start, length,
+                   c && mCursorX >= start && mCursorX < start + length ? mCursorX : std::u16string::npos,
+                   Render_Selected);
             if (start + length < line.data.size())
-                render(start + length, y, line.data.c_str() + start + length, line.data.size() - start - length, 0, Render_None);
+                render(start + length, y, line.data.c_str() + start + length, line.data.size() - start - length,
+                       c && mCursorX >= start + length ? mCursorX : std::u16string::npos,
+                       Render_None);
         } else {
-            render(0, y, line.data.c_str(), line.data.size(), 0, Render_None);
+            render(0, y, line.data.c_str(), line.data.size(), c ? mCursorX : std::u16string::npos, Render_None);
         }
     }
 }
@@ -272,29 +276,7 @@ void Terminal::readFromFD()
         quit();
         return;
     }
-    // assert((mState == Normal) == mRawBuffer.empty());
-
-    // auto processUtf8 = [this](const char *chars, size_t len) {
-    //     try {
-    //         utf8::utf8to16(chars, chars + len, std::back_inserter(mScrollback));
-    //     } catch (const std::exception &e) {
-    //         ERROR("Got exception processing utf8: %s", e.what());
-    //         return false;
-    //     }
-    //     return true;
-
-    // };
-    // size_t idx = 0;
-    // while (mState != Normal && idx < len) {
-    //     mRawBuffer.push_back(buf[idx++]);
-    //     size_t consumed;
-    //     if (mState == InUtf8) {
-    //         if (processUtf8(
-    //     } else {
-    //         assert(mState == InEscape);
-    //     }
-    // }
-
+    DEBUG("readFromFD: [%s]", std::string(buf, ret).c_str());
     const size_t len = ret;
     assert(!mLines.empty());
     Line *currentLine = &mLines.back();
@@ -390,10 +372,8 @@ void Terminal::readFromFD()
             break;
         }
     }
-    // mChunks.emplace_back(buf, ret, false);
-    // processChunks();
-    // if (!mChunks.empty())
-    //     mChunks[mChunks.size() - 1].detach();
+    event(Update);
+    event(ScrollbackChanged);
 }
 
 void Terminal::processCSI()

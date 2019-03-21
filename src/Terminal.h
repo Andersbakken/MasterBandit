@@ -119,7 +119,7 @@ private:
     void processChunks();
     Options mOptions;
     size_t mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
-    size_t mCursorX { 0 }, mCursorY { 0 };
+    size_t mCursorX { std::u16string::npos }, mCursorY { std::u16string::npos };
     unsigned int mFlags { 0 };
     bool mHasSelection { false };
     size_t mSelectionStartX { 0 }, mSelectionStartY { 0 }, mSelectionEndX { 0 }, mSelectionEndY { 0 };

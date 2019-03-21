@@ -49,9 +49,14 @@ void QtWindow::event(Event event, void *data)
 
 void QtWindow::render(size_t x, size_t y, const char16_t *ch, size_t len, size_t cursor, unsigned int flags)
 {
-    // qDebug() << "rendering line" << y << lineRect(y) << QString::fromStdString(line);
-    if (cursor != std::string::npos)
-        mPainter.fillRect(lineRect(cursor, y), Qt::darkGray);
+    qDebug() << "rendering line" << y << lineRect(x, y)
+             << QString::fromRawData(reinterpret_cast<const QChar *>(ch), len)
+             << "cursor" << cursor << "flags" << flags;
+    if (cursor != std::u16string::npos) {
+        QRect r = lineRect(cursor, y);
+        r.setWidth(mMaxCharWidth);
+        mPainter.fillRect(r, Qt::darkGray);
+    }
     mPainter.drawText(lineRect(x, y), QString::fromRawData(reinterpret_cast<const QChar *>(ch), len));
 }
 
@@ -81,12 +86,13 @@ void QtWindow::resizeEvent(QResizeEvent *e)
     QAbstractScrollArea::resizeEvent(e);
     Terminal::resize(viewport()->width() / mMaxCharWidth,
                      viewport()->height() / mLineSpacing);
+    qDebug() << "got resize" << e << Terminal::width() << Terminal::height();
     updateScrollbars();
 }
 
 QRect QtWindow::lineRect(size_t x, size_t y) const
 {
-    return QRect(x * mMaxCharWidth, y * mLineSpacing, viewport()->width(), mLineSpacing);
+    return QRect(x * mMaxCharWidth, (y - Terminal::y()) * mLineSpacing, viewport()->width(), mLineSpacing);
 }
 
 void QtWindow::keyPressEvent(QKeyEvent *e)

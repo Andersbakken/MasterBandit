@@ -226,14 +226,14 @@ void Terminal::keyPressEvent(const KeyEvent &event)
             if (std::isprint(ch[i])) {
                 stringLen += event.count;
             } else {
-                switch (ch[i]) {
-                case '\b':   /* BS */
-                    mCursorX -= event.count;
-                    break;
-                case '\r':   /* CR */
-                    mCursorX = 0;
-                    break;
-                }
+                // switch (ch[i]) {
+                // case '\b':   /* BS */
+                //     mCursorX -= event.count;
+                //     break;
+                // case '\r':   /* CR */
+                //     mCursorX = 0;
+                //     break;
+                // }
             }
         }
 

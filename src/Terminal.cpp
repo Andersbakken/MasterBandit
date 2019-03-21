@@ -21,19 +21,11 @@
 #include <mach/mach_time.h>
 #endif
 
-std::string toUtf8(const std::u16string &string)
+QString toPrintable(const char *bytes, int len)
 {
-    std::string ret;
-    ret.reserve(string.size());
-    utf8::utf16to8(string.begin(), string.end(), std::back_inserter(ret));
-    return ret;
-}
-
-std::string toPrintable(const char *bytes, size_t len)
-{
-    std::string ret;
+    QString ret;
     ret.reserve(len);
-    for (size_t i=0; i<len; ++i) {
+    for (int i=0; i<len; ++i) {
         switch (bytes[i]) {
         case '\0': ret += "\\0"; break;
         case '\a': ret += "\\a"; break;
@@ -49,11 +41,17 @@ std::string toPrintable(const char *bytes, size_t len)
             } else {
                 char buf[16];
                 const int w = snprintf(buf, sizeof(buf), "\\0%o", bytes[i]);
-                ret.append(buf, w);
+                ret.append(QLatin1String(buf, w));
             }
         }
     }
     return ret;
+}
+
+QString toPrintable(const QString &string)
+{
+    const std::string str = string.toStdString();
+    return toPrintable(str.c_str(), str.size());
 }
 
 Terminal::Terminal()
@@ -117,7 +115,7 @@ bool Terminal::init(const Options &options)
         EINTRWRAP(ret, ::close(mSlaveFD));
 
         extern char **environ;
-        execle(mOptions.shell.c_str(), mOptions.shell.c_str(), NULL, environ);
+        execle(mOptions.shell.toStdString().c_str(), mOptions.shell.toStdString().c_str(), NULL, environ);
 
         // const struct passwd *pw;
 
@@ -155,14 +153,14 @@ Terminal::~Terminal()
 {
 }
 
-void Terminal::scroll(size_t x, size_t y)
+void Terminal::scroll(int x, int y)
 {
     mX = x;
     mY = y;
     event(Update);
 }
 
-void Terminal::resize(size_t width, size_t height)
+void Terminal::resize(int width, int height)
 {
     mWidth = width;
     mHeight = height;
@@ -171,42 +169,42 @@ void Terminal::resize(size_t width, size_t height)
 
 void Terminal::render()
 {
-    const size_t max = std::min(mY + mHeight, mLines.size());
-    VERBOSE("RENDER %zu mHeight %zu mY %zu max %zu\n", mLines.size(), mHeight, mY, max);
-    for (size_t y = mY; y<max; ++y) {
+    const int max = std::min<int>(mY + mHeight, mLines.size());
+    VERBOSE("RENDER %zu mHeight %d mY %d max %d\n", mLines.size(), mHeight, mY, max);
+    for (int y = mY; y<max; ++y) {
         const Line &line = mLines[y];
         const bool c = y == mCursorY;
-        VERBOSE("RENDERING %zu %s %d %zu\n", y, toPrintable(toUtf8(line.data)).c_str(), c, mCursorX);
-        size_t start, length;
+        VERBOSE("RENDERING %d %s %d %d\n", y, qPrintable(toPrintable(line.data)), c, mCursorX);
+        int start, length;
         if (isSelected(y, &start, &length)) {
             assert(start + length <= line.data.size());
             if (start > 0) {
-                render(0, y, line.data.c_str(), start, c && mCursorX < start ? mCursorX : std::u16string::npos, Render_None);
+                render(0, y, line.data, 0, start, c && mCursorX < start ? mCursorX : -1, Render_None);
             }
-            render(start, y, line.data.c_str() + start, length,
-                   c && mCursorX >= start && mCursorX < start + length ? mCursorX : std::u16string::npos,
+            render(start, y, line.data, start, length,
+                   c && mCursorX >= start && mCursorX < start + length ? mCursorX : -1,
                    Render_Selected);
             if (start + length < line.data.size())
-                render(start + length, y, line.data.c_str() + start + length, line.data.size() - start - length,
-                       c && mCursorX >= start + length ? mCursorX : std::u16string::npos,
+                render(start + length, y, line.data, start + length, line.data.size() - start - length,
+                       c && mCursorX >= start + length ? mCursorX : -1,
                        Render_None);
         } else {
-            render(0, y, line.data.c_str(), line.data.size(), c ? mCursorX : std::u16string::npos, Render_None);
+            render(0, y, line.data, 0, line.data.size(), c ? mCursorX : -1, Render_None);
         }
     }
 }
 
-bool Terminal::isSelected(size_t y, size_t *start, size_t *length) const
+bool Terminal::isSelected(int y, int *start, int *length) const
 {
 #if 0
     if (!mHasSelection && (mSelectionStartY != mSelectionEndY || mSelectionStartX != mSelectionEndX)) {
         *start = *length = 0;
         return false;
     }
-    const size_t minY = std::min(mSelectionStartY, mSelectionEndY);
-    const size_t maxY = std::max(mSelectionStartY, mSelectionEndY);
-    const size_t minX = std::min(mSelectionStartX, mSelectionEndX);
-    const size_t maxX = std::max(mSelectionStartX, mSelectionEndX);
+    const int minY = std::min(mSelectionStartY, mSelectionEndY);
+    const int maxY = std::max(mSelectionStartY, mSelectionEndY);
+    const int minX = std::min(mSelectionStartX, mSelectionEndX);
+    const int maxX = std::max(mSelectionStartX, mSelectionEndX);
 
     if (y > minY && y < maxY) {
         *start = 0;
@@ -230,27 +228,28 @@ bool Terminal::isSelected(size_t y, size_t *start, size_t *length) const
     return false;
 }
 
-void Terminal::keyPressEvent(const KeyEvent &event)
+void Terminal::keyPressEvent(const QKeyEvent *event)
 {
-    if (event.key == KeyEvent::Key_F12) {
-        // for (size_t i=0; i<mScrollback.size(); ++i) {
-        //     printf("%zu/%zu: \"%s\"\n", i, mScrollback.size(), mScrollback[i].data.c_str());
+    if (event->key() == Qt::Key_F12) {
+        // for (int i=0; i<mScrollback.size(); ++i) {
+        //     printf("%d/%d: \"%s\"\n", i, mScrollback.size(), mScrollback[i].data.c_str());
         // }
 
         return;
     }
-    DEBUG("Got keypress \"%s\" %zu\n", toPrintable(event.text).c_str(), event.count);
-    if (!event.text.empty() && event.count) {
-        const char *ch = event.text.c_str();
-        size_t bytes = event.text.size();
-        size_t stringLen = 0;
-        for (size_t i=0; i<bytes; ++i) {
+    // DEBUG("Got keypress \"%s\" %d\n", toPrintable(event->text).c_str(), event->count);
+    if (!event->text().isEmpty() && event->count()) {
+        std::string text = event->text().toStdString();
+        const char *ch = text.c_str();
+        int bytes = event->text().size();
+        int stringLen = 0;
+        for (int i=0; i<bytes; ++i) {
             if (std::isprint(ch[i])) {
-                stringLen += event.count;
+                stringLen += event->count();
             } else {
                 // switch (ch[i]) {
                 // case '\b':   /* BS */
-                //     mCursorX -= event.count;
+                //     mCursorX -= event->count;
                 //     break;
                 // case '\r':   /* CR */
                 //     mCursorX = 0;
@@ -259,9 +258,9 @@ void Terminal::keyPressEvent(const KeyEvent &event)
             }
         }
 
-        for (size_t i=0; i<event.count; ++i) {
+        for (int i=0; i<event->count(); ++i) {
             int ret;
-            DEBUG("Writing [%s] to master", toPrintable(event.text).c_str());
+            DEBUG("Writing [%s] to master", qPrintable(toPrintable(event->text())));
             while (bytes) {
                 EINTRWRAP(ret, ::write(mMasterFD, ch, bytes));
                 if (ret == -1) {
@@ -278,33 +277,32 @@ void Terminal::keyPressEvent(const KeyEvent &event)
     }
 }
 
-void Terminal::keyReleaseEvent(const KeyEvent &event)
+void Terminal::keyReleaseEvent(const QKeyEvent *event)
 {
-    // DEBUG("GOT KEYRELEASE [%s] %d %zu\n", event.text.c_str(), event.autoRepeat, event.count);
+    // DEBUG("GOT KEYRELEASE [%s] %d %d\n", event->text.c_str(), event->autoRepeat, event->count);
 }
 
-void Terminal::mousePressEvent(const MouseEvent &event)
+void Terminal::mousePressEvent(const QMouseEvent *event)
 {
-    DEBUG("Got mouse press event button %s buttons %s %zu,%zu (%zu,%zu)",
-          MouseEvent::buttonName(event.button),
-          MouseEvent::buttonsName(event.buttons).c_str(),
-          event.x, event.y, event.windowX, event.windowY);
-
+    // DEBUG("Got mouse press event button %s buttons %s %d,%d (%d,%d)",
+    //       MouseEvent::buttonName(event->button),
+    //       MouseEvent::buttonsName(event->buttons).c_str(),
+    //       event->x, event->y, event->windowX, event->windowY);
 }
 
-void Terminal::mouseReleaseEvent(const MouseEvent &event)
+void Terminal::mouseReleaseEvent(const QMouseEvent *event)
 {
-    DEBUG("Got mouse release event button %s buttons %s %zu,%zu (%zu,%zu)",
-          MouseEvent::buttonName(event.button),
-          MouseEvent::buttonsName(event.buttons).c_str(),
-          event.x, event.y, event.windowX, event.windowY);
+    // DEBUG("Got mouse release event button %s buttons %s %d,%d (%d,%d)",
+    //       MouseEvent::buttonName(event->button),
+    //       MouseEvent::buttonsName(event->buttons).c_str(),
+    //       event->x, event->y, event->windowX, event->windowY);
 }
 
-void Terminal::mouseMoveEvent(const MouseEvent &event)
+void Terminal::mouseMoveEvent(const QMouseEvent *event)
 {
-    DEBUG("Got mouse move event buttons %s %zu,%zu (%zu,%zu)",
-          MouseEvent::buttonsName(event.buttons).c_str(),
-          event.x, event.y, event.windowX, event.windowY);
+    // DEBUG("Got mouse move event buttons %s %d,%d (%d,%d)",
+    //       MouseEvent::buttonsName(event->buttons).c_str(),
+    //       event->x, event->y, event->windowX, event->windowY);
 }
 
 void Terminal::readFromFD()
@@ -324,9 +322,9 @@ void Terminal::readFromFD()
         quit();
         return;
     }
-    DEBUG("readFromFD: \"%s\"", toPrintable(buf, ret).c_str());
-    const size_t len = ret;
-    const size_t lineCount = mLines.size();
+    DEBUG("readFromFD: \"%s\"", qPrintable(toPrintable(buf, ret)));
+    const int len = ret;
+    const int lineCount = mLines.size();
     assert(!mLines.empty());
     auto resetToNormal = [this]() {
         assert(mState == InEscape);
@@ -337,8 +335,8 @@ void Terminal::readFromFD()
 #endif
     };
     Line *currentLine = &mLines.back();
-    bool lineWasEmpty = currentLine->data.empty();
-    for (size_t i=0; i<len; ++i) {
+    bool lineWasEmpty = currentLine->data.isEmpty();
+    for (int i=0; i<len; ++i) {
         switch (mState) {
         case Normal:
             switch (buf[i]) {
@@ -381,7 +379,7 @@ void Terminal::readFromFD()
                     utf8::utf8to16(mUtf8Buffer, mUtf8Buffer + mUtf8Index, std::back_inserter(currentLine->data));
                 } catch (const std::exception &e) {
                     ERROR("Got exception processing utf8: %s", e.what());
-                    for (size_t j=0; j<mUtf8Index; ++j) {
+                    for (int j=0; j<mUtf8Index; ++j) {
                         currentLine->data.push_back(mUtf8Buffer[j]);
                     }
                 }
@@ -393,7 +391,7 @@ void Terminal::readFromFD()
                 mState = Normal;
             } else if (mUtf8Index == 6) {
                 ERROR("Bad utf8"); // ### write what the data is?
-                for (size_t j=0; j<mUtf8Index; ++j) {
+                for (int j=0; j<mUtf8Index; ++j) {
                     currentLine->data.push_back(mUtf8Buffer[j]);
                 }
                 mUtf8Index = 0;
@@ -406,7 +404,9 @@ void Terminal::readFromFD()
         case InEscape:
             assert(mEscapeIndex < sizeof(mEscapeBuffer));
             mEscapeBuffer[mEscapeIndex++] = buf[i];
-            DEBUG("Adding escape byte [%zu] %s %zu -> %s", mEscapeIndex - 1, toPrintable(buf + i, 1).c_str(), i, toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            DEBUG("Adding escape byte [%d] %s %d -> %s", mEscapeIndex - 1,
+                  qPrintable(toPrintable(buf + i, 1)),
+                  i, qPrintable(toPrintable(mEscapeBuffer, mEscapeIndex)));
             switch (mEscapeBuffer[0]) {
             case SS2:
             case SS3:
@@ -447,7 +447,7 @@ void Terminal::readFromFD()
                 resetToNormal();
                 break; }
             default:
-                ERROR("Unknown escape sequence %s\n", toPrintable(mEscapeBuffer, 1).c_str());
+                ERROR("Unknown escape sequence %s\n", qPrintable(toPrintable(mEscapeBuffer, 1)));
                 resetToNormal();
                 break;
             }
@@ -456,10 +456,10 @@ void Terminal::readFromFD()
         }
     }
 
-    if (mLines.size() != lineCount || mCursorY == std::u16string::npos || (lineWasEmpty && !currentLine->data.empty())) {
+    if (mLines.size() != lineCount || mCursorY == -1 || (lineWasEmpty && !currentLine->data.isEmpty())) {
         mCursorX = mLines.back().data.size();
         mCursorY = mLines.size() - 1;
-        DEBUG("Got cursor %zu %zu %zu", mCursorY, mCursorX, mLines.back().data.size());
+        DEBUG("Got cursor %d %d %d", mCursorY, mCursorX, mLines.back().data.size());
     }
     // ### should only update when something requires an updated
     event(Update);
@@ -472,7 +472,7 @@ void Terminal::processCSI()
     assert(mState == InEscape);
     assert(mEscapeIndex >= 1);
 
-    DEBUG("Processing CSI \"%s\"", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+    DEBUG("Processing CSI \"%s\"", qPrintable(toPrintable(mEscapeBuffer, mEscapeIndex)));
     auto readCount = [this](int def) {
         if (mEscapeIndex == 2) // no digits
             return def;
@@ -601,7 +601,7 @@ void Terminal::processCSI()
         break;
     case AUX: // AUX port
         if (mEscapeIndex != 3) {
-            ERROR("Invalid AUX CSI command (%zu)", mEscapeIndex);
+            ERROR("Invalid AUX CSI command (%d)", mEscapeIndex);
         } else if (mEscapeBuffer[1] == '4') {
             action.type = Action::AUXPortOff;
         } else if (mEscapeBuffer[1] == '5') {
@@ -612,21 +612,21 @@ void Terminal::processCSI()
         break;
     case DSR: // Device status report
         if (mEscapeIndex != 3 || mEscapeBuffer[1] != '6') {
-            ERROR("Invalid AUX DSR command (%zu)", mEscapeIndex);
+            ERROR("Invalid AUX DSR command (%d)", mEscapeIndex);
             break;
 
         }
         break;
     case SCP: // Save cursor position
         if (mEscapeIndex != 2) {
-            ERROR("Invalid AUX SCP command (%zu)", mEscapeIndex);
+            ERROR("Invalid AUX SCP command (%d)", mEscapeIndex);
         } else {
             action.type = Action::SaveCursorPosition;
         }
         break;
     case RCP: // Restore cursor position
         if (mEscapeIndex != 2) {
-            ERROR("Invalid AUX RCP command (%zu)", mEscapeIndex);
+            ERROR("Invalid AUX RCP command (%d)", mEscapeIndex);
         } else {
             action.type = Action::RestoreCursorPosition;
         }
@@ -688,7 +688,7 @@ void Terminal::onAction(const Action *action)
 {
     assert(action);
     assert(action->type != Action::Invalid);
-    DEBUG("Got action %s %zu %zu %zu", Action::typeName(action->type), action->count, action->x, action->y);
+    DEBUG("Got action %s %d %d %d", Action::typeName(action->type), action->count, action->x, action->y);
     switch (action->type) {
     case Action::ClearLine:
         mLines.back().data.clear(); // modify cursor pos?
@@ -696,13 +696,13 @@ void Terminal::onAction(const Action *action)
     case Action::ClearToBeginningOfLine: {
         Line &line = mLines.back();
         if (mCursorX > 0) {
-            line.data.erase(line.data.begin(), line.data.begin() + mCursorX);
+            line.data.remove(0, mCursorX);
         }
         break; }
     case Action::ClearToEndOfLine: {
         Line &line = mLines.back();
         if (mCursorX < line.data.size()) {
-            line.data.erase(line.data.begin() + mCursorX, line.data.end());
+            line.data.remove(mCursorX, line.data.size() - mCursorX);
         }
         break; }
     case Action::CursorForward:

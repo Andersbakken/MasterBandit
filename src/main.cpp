@@ -11,7 +11,7 @@ void usage(FILE *f)
     fflush(f);
 }
 
-static std::string defaultShell(const std::string &user)
+static QString defaultShell(const QString &user)
 {
     if (const char *shell = getenv("SHELL")) {
         return shell;
@@ -20,7 +20,7 @@ static std::string defaultShell(const std::string &user)
     if (f) {
         std::string r;
         char line[1024];
-        std::regex rx("^" + user + ":[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^: ]+) *$");
+        std::regex rx("^" + user.toStdString() + ":[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^: ]+) *$");
         while ((fgets(line, sizeof(line), f))) {
             std::smatch m;
             std::string l(line, strlen(line) - 1);
@@ -31,7 +31,7 @@ static std::string defaultShell(const std::string &user)
         }
         fclose(f);
         if (!r.empty())
-            return r;
+            return QString::fromStdString(r);
     } else {
         fprintf(stderr, "Failed to open /etc/passwd %d %s\n", errno, strerror(errno));
     }

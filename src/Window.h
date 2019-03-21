@@ -15,7 +15,7 @@ public:
 protected:
     // Terminal
     virtual void event(Event event, void *info) override;
-    virtual void render(size_t x, size_t y, const char16_t *ch, size_t len, size_t cursor, unsigned int flags) override;
+    virtual void render(int x, int y, const QString &string, int start, int len, int cursor, unsigned int flags) override;
     virtual void quit() override;
 
     // QAbstractScrollArea
@@ -30,9 +30,7 @@ protected:
     virtual void mouseReleaseEvent(QMouseEvent *e) override;
 private:
     void updateScrollbars();
-    QRectF lineRect(size_t x, size_t y, size_t chars = std::u16string::npos) const;
-    KeyEvent createKeyEvent(QKeyEvent *e) const;
-    MouseEvent createMouseEvent(QMouseEvent *e) const;
+    QRectF lineRect(int x, int y, int chars = -1) const;
 private:
     QPainter mPainter;
     double mLineSpacing { 0 };

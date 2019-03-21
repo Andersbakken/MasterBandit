@@ -5,13 +5,12 @@
 #include <string>
 #include <stdlib.h>
 #include <string.h>
-#include "KeyEvent.h"
-#include "MouseEvent.h"
+#include <QtCore/QString>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QKeyEvent>
 
-std::string toUtf8(const std::u16string &string);
-std::string toPrintable(const char *chars, size_t len);
-inline std::string toPrintable(const std::string &str) { return toPrintable(str.c_str(), str.size()); }
-
+QString toPrintable(const char *chars, int len);
+QString toPrintable(const QString &str);
 
 #define EINTRWRAP(ret, op) \
     do {                   \
@@ -26,8 +25,8 @@ public:
     ~Terminal();
 
     struct Options {
-        std::string shell;
-        std::string user;
+        QString shell;
+        QString user;
     };
 
     virtual bool init(const Options &options);
@@ -36,16 +35,16 @@ public:
         LineWrap = (1ull << 1)
     };
 
-    size_t cursorX() const { return mCursorX; }
-    size_t cursorY() const { return mCursorY; }
-    size_t x() const { return mX; }
-    size_t y() const { return mY; }
-    size_t width() const { return mWidth; }
-    size_t height() const { return mHeight; }
-    size_t scrollBackLength() const { return mScrollbackLength; }
+    int cursorX() const { return mCursorX; }
+    int cursorY() const { return mCursorY; }
+    int x() const { return mX; }
+    int y() const { return mY; }
+    int width() const { return mWidth; }
+    int height() const { return mHeight; }
+    int scrollBackLength() const { return mScrollbackLength; }
 
-    void scroll(size_t left, size_t top);
-    void resize(size_t width, size_t height);
+    void scroll(int left, int top);
+    void resize(int width, int height);
     void render();
 
     enum Event {
@@ -86,7 +85,7 @@ public:
 
         static const char *typeName(Type type);
 
-        size_t count { 0 },  x { 0 }, y { 0 };
+        int count { 0 },  x { 0 }, y { 0 };
     };
 
     void onAction(const Action *action);
@@ -96,31 +95,31 @@ public:
         Render_None = 0,
         Render_Selected = (1ull << 1)
     };
-    virtual void render(size_t y, size_t x, const char16_t *ch, size_t len, size_t cursor, unsigned int flags) = 0;
+    virtual void render(int y, int x, const QString &str, int idx, int len, int cursor, unsigned int flags) = 0;
     virtual void quit() = 0;
 
-    void addText(const char *str, size_t len);
+    void addText(const char *str, int len);
 
-    void keyPressEvent(const KeyEvent &event);
-    void keyReleaseEvent(const KeyEvent &event);
-    void mousePressEvent(const MouseEvent &event);
-    void mouseReleaseEvent(const MouseEvent &event);
-    void mouseMoveEvent(const MouseEvent &event);
+    void keyPressEvent(const QKeyEvent *event);
+    void keyReleaseEvent(const QKeyEvent *event);
+    void mousePressEvent(const QMouseEvent *event);
+    void mouseReleaseEvent(const QMouseEvent *event);
+    void mouseMoveEvent(const QMouseEvent *event);
     int masterFD() const { return mMasterFD; }
     void readFromFD();
     int exitCode() const { return mExitCode; }
 
     static unsigned long long mono();
 private:
-    bool isSelected(size_t y, size_t *start, size_t *length) const;
+    bool isSelected(int y, int *start, int *length) const;
 private:
     void processChunks();
     Options mOptions;
-    size_t mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
-    size_t mCursorX { std::u16string::npos }, mCursorY { std::u16string::npos };
+    int mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
+    int mCursorX { -1 }, mCursorY { -1 };
     unsigned int mFlags { 0 };
     bool mHasSelection { false };
-    size_t mSelectionStartX { 0 }, mSelectionStartY { 0 }, mSelectionEndX { 0 }, mSelectionEndY { 0 };
+    int mSelectionStartX { 0 }, mSelectionStartY { 0 }, mSelectionEndX { 0 }, mSelectionEndY { 0 };
     int mMasterFD { -1 }, mSlaveFD { -1 };
     int mExitCode { 0 };
 
@@ -131,25 +130,25 @@ private:
             Color
         } type { None };
         std::string data;
-        size_t idx { std::u16string::npos };
+        int idx { -1 };
     };
     struct Line {
-        std::u16string data;
-        std::vector<size_t> lineBreaks;
+        QString data;
+        std::vector<int> lineBreaks;
         std::vector<Command> commands;
     };
     std::vector<Line> mLines;
-    size_t mScrollbackLength { 0 };
+    int mScrollbackLength { 0 };
     enum State {
         Normal,
         InUtf8,
         InEscape
     } mState { Normal };
     char mUtf8Buffer[6];
-    size_t mUtf8Index { 0 };
+    int mUtf8Index { 0 };
 
     char mEscapeBuffer[128];
-    size_t mEscapeIndex { 0 };
+    int mEscapeIndex { 0 };
 
     // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {

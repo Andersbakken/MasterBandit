@@ -111,23 +111,25 @@ void Terminal::resize(size_t width, size_t height)
 
 void Terminal::render()
 {
-    // const size_t max = std::min(mY + mHeight, mScrollback.size());
-    // printf("RENDER %zu mHeight %zu mY %zu max %zu\n", mScrollback.size(), mHeight, mY, max);
-    // for (size_t y = mY; y<max; ++y) {
-        // printf("RENDERING %zu %s\n", y, mScrollback.at(y).c_str());
-        // size_t start, length;
-        // const Line &line = mScrollback[y];
-        // if (isSelected(y, &start, &length)) {
-        //     assert(start + length <= line.data.size());
-        //     if (start > 0)
-        //         render(0, y - mY, line.data.c_str(), start, Render_None);
-        //     render(start, y - mY, line.data.c_str() + start, length, Render_Selected);
-        //     if (start + length < line.data.size())
-        //         render(start + length, y - mY, line.data.c_str() + start + length, line.data.size() - start - length, Render_None);
-        // } else {
-        //     render(0, y - mY, line.data.c_str(), line.data.size(), Render_None);
-        // }
-    // }
+    const size_t max = std::min(mY + mHeight, mLines.size());
+    printf("RENDER %zu mHeight %zu mY %zu max %zu\n", mLines.size(), mHeight, mY, max);
+    for (size_t y = mY; y<max; ++y) {
+        const Line &line = mLines[y];
+        size_t cursor = y == mCursorY ? mCursorX : std::u16string::npos;
+        printf("RENDERING %zu %s\n", y, toUtf8(line.data).c_str());
+        size_t start, length;
+        if (isSelected(y, &start, &length)) {
+            assert(start + length <= line.data.size());
+            if (start > 0) {
+                render(0, y, line.data.c_str(), start, 0, Render_None);
+            }
+            render(start, y, line.data.c_str() + start, length, 0, Render_Selected);
+            if (start + length < line.data.size())
+                render(start + length, y, line.data.c_str() + start + length, line.data.size() - start - length, 0, Render_None);
+        } else {
+            render(0, y, line.data.c_str(), line.data.size(), 0, Render_None);
+        }
+    }
 }
 
 #if 0
@@ -304,6 +306,7 @@ void Terminal::readFromFD()
                 mState = InEscape;
                 break;
             case '\n': // newline
+                mScrollbackLength += currentLine->lineBreaks.size() + 1;
                 mLines.push_back(Line());
                 currentLine = &mLines.back();
                 break;

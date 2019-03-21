@@ -47,10 +47,12 @@ void QtWindow::event(Event event, void *data)
     }
 }
 
-void QtWindow::render(size_t x, size_t y, const char *ch, size_t len, unsigned int flags)
+void QtWindow::render(size_t x, size_t y, const char16_t *ch, size_t len, size_t cursor, unsigned int flags)
 {
     // qDebug() << "rendering line" << y << lineRect(y) << QString::fromStdString(line);
-    mPainter.drawText(lineRect(x, y), QLatin1String(ch, len));
+    if (cursor != std::string::npos)
+        mPainter.fillRect(lineRect(cursor, y), Qt::darkGray);
+    mPainter.drawText(lineRect(x, y), QString::fromRawData(reinterpret_cast<const QChar *>(ch), len));
 }
 
 void QtWindow::showEvent(QShowEvent *e)

@@ -9,6 +9,14 @@
 #include "KeyEvent.h"
 #include "MouseEvent.h"
 
+inline std::string toUtf8(const std::u16string &string)
+{
+    std::string ret;
+    ret.reserve(string.size());
+    utf8::utf16to8(string.begin(), string.end(), std::back_inserter(ret));
+    return ret;
+}
+
 #define EINTRWRAP(ret, op) \
     do {                   \
         ret = (op);        \
@@ -90,7 +98,7 @@ public:
         Render_None = 0,
         Render_Selected = (1ull << 1)
     };
-    virtual void render(size_t y, size_t x, const char *ch, size_t len, unsigned int flags) = 0;
+    virtual void render(size_t y, size_t x, const char16_t *ch, size_t len, size_t cursor, unsigned int flags) = 0;
     virtual void quit() = 0;
 
     void addText(const char *str, size_t len);

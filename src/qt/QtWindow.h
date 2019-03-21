@@ -15,7 +15,7 @@ public:
 protected:
     // Terminal
     virtual void event(Event event, void *info) override;
-    virtual void render(size_t x, size_t y, const char *ch, size_t len, unsigned int flags) override;
+    virtual void render(size_t x, size_t y, const char16_t *ch, size_t len, size_t cursor, unsigned int flags) override;
     virtual void quit() override;
 
     // QAbstractScrollArea

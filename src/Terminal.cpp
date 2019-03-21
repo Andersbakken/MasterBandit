@@ -21,6 +21,7 @@
 
 Terminal::Terminal()
 {
+    mLines.push_back(Line());
 }
 
 bool Terminal::init(const Options &options)
@@ -110,11 +111,11 @@ void Terminal::resize(size_t width, size_t height)
 
 void Terminal::render()
 {
-    const size_t max = std::min(mY + mHeight, mScrollback.size());
+    // const size_t max = std::min(mY + mHeight, mScrollback.size());
     // printf("RENDER %zu mHeight %zu mY %zu max %zu\n", mScrollback.size(), mHeight, mY, max);
-    for (size_t y = mY; y<max; ++y) {
+    // for (size_t y = mY; y<max; ++y) {
         // printf("RENDERING %zu %s\n", y, mScrollback.at(y).c_str());
-        size_t start, length;
+        // size_t start, length;
         // const Line &line = mScrollback[y];
         // if (isSelected(y, &start, &length)) {
         //     assert(start + length <= line.data.size());
@@ -126,7 +127,7 @@ void Terminal::render()
         // } else {
         //     render(0, y - mY, line.data.c_str(), line.data.size(), Render_None);
         // }
-    }
+    // }
 }
 
 #if 0
@@ -215,6 +216,8 @@ bool Terminal::isSelected(size_t y, size_t *start, size_t *length) const
     }
     return true;
 #endif
+    *start = *length = 0;
+    return false;
 }
 
 void Terminal::keyPressEvent(const KeyEvent &event)
@@ -267,20 +270,19 @@ void Terminal::readFromFD()
         quit();
         return;
     }
-    assert((mState == Normal) == mRawBuffer.empty());
+    // assert((mState == Normal) == mRawBuffer.empty());
 
-    auto processUtf8 = [this](const char *chars, size_t len) {
-        try {
-            utf8::utf8to16(chars, chars + len, std::back_inserter(mScrollback));
-        } catch (const std::exception &e) {
-            ERROR("Got exception processing utf8: %s", e.what());
-            return false;
-        }
-        return true;
+    // auto processUtf8 = [this](const char *chars, size_t len) {
+    //     try {
+    //         utf8::utf8to16(chars, chars + len, std::back_inserter(mScrollback));
+    //     } catch (const std::exception &e) {
+    //         ERROR("Got exception processing utf8: %s", e.what());
+    //         return false;
+    //     }
+    //     return true;
 
-    };
-    const size_t len = ret;
-    size_t idx = 0;
+    // };
+    // size_t idx = 0;
     // while (mState != Normal && idx < len) {
     //     mRawBuffer.push_back(buf[idx++]);
     //     size_t consumed;
@@ -291,16 +293,31 @@ void Terminal::readFromFD()
     //     }
     // }
 
+    const size_t len = ret;
+    assert(!mLines.empty());
+    Line *currentLine = &mLines.back();
     for (size_t i=0; i<len; ++i) {
         switch (mState) {
         case Normal:
-            if (buf[i] == 0x1b) { // escape
+            switch (buf[i]) {
+            case 0x1b: // escape
                 mState = InEscape;
                 break;
-            } else if (buf[i] & 0x80) {
-                assert(mUtf8Index == 0);
-                mUtf8Buffer[mUtf8Index++] = buf[i];
-                mState = InUtf8;
+            case '\n': // newline
+                mLines.push_back(Line());
+                currentLine = &mLines.back();
+                break;
+            // case '\r': // handle all these here?
+                // break;
+            default:
+                if (buf[i] & 0x80) {
+                    assert(mUtf8Index == 0);
+                    mUtf8Buffer[mUtf8Index++] = buf[i];
+                    mState = InUtf8;
+                } else {
+                    currentLine->data += buf[i];
+                }
+                break;
             }
             break;
         case InUtf8:
@@ -308,11 +325,11 @@ void Terminal::readFromFD()
             mUtf8Buffer[mUtf8Index++] = buf[i];
             if (!(buf[i] & 0x80)) {
                 try {
-                    utf8::utf8to16(mUtf8Buffer, mUtf8Buffer + mUtf8Index, std::back_inserter(mScrollback));
+                    utf8::utf8to16(mUtf8Buffer, mUtf8Buffer + mUtf8Index, std::back_inserter(currentLine->data));
                 } catch (const std::exception &e) {
                     ERROR("Got exception processing utf8: %s", e.what());
                     for (size_t j=0; j<mUtf8Index; ++j) {
-                        mScrollback.push_back(mUtf8Buffer[j]);
+                        currentLine->data.push_back(mUtf8Buffer[j]);
                     }
                 }
                 mUtf8Index = 0;
@@ -320,7 +337,7 @@ void Terminal::readFromFD()
             } else if (mUtf8Index == 6) {
                 ERROR("Bad utf8"); // ### write what the data is?
                 for (size_t j=0; j<mUtf8Index; ++j) {
-                    mScrollback.push_back(mUtf8Buffer[j]);
+                    currentLine->data.push_back(mUtf8Buffer[j]);
                 }
                 mUtf8Index = 0;
                 mState = Normal;
@@ -343,24 +360,27 @@ void Terminal::readFromFD()
                 mEscapeIndex = 0;
                 break;
             case CSI:
-                if (buf[i] < 0x20 || buf[i] >= 0x3f)
-                {
-                    ERROR("Invalid CSI sequence 0x%0x character", buf[i]);
+                if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
+                    processCSI();
                     mState = Normal;
                     mEscapeIndex = 0;
-                } else if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
-                    processCSI();
                 } else if (mEscapeIndex == sizeof(mEscapeBuffer)) {
                     ERROR("CSI sequence is too long %zu", sizeof(mEscapeBuffer));
                     mState = Normal;
                     mEscapeIndex = 0;
+                } else if (buf[i] < 0x20 || buf[i] > 0x3f) {
+                    ERROR("Invalid CSI sequence 0x%0x character", buf[i]);
+                    mState = Normal;
+                    mEscapeIndex = 0;
                 }
+
                 break;
             case RIS: {
+                Line *line = &mLines.back();
                 Command cmd;
                 cmd.type = Command::ResetToInitialState;
-                cmd.idx = mScrollback.size();
-                mCommands.push_back(std::move(cmd));
+                cmd.idx = line->data.size();
+                line->commands.push_back(std::move(cmd));
                 break; }
             }
 
@@ -378,7 +398,7 @@ void Terminal::processCSI()
     assert(mState == InEscape);
     assert(mEscapeIndex >= 2);
 
-    auto readCount = [this](int def = 1) {
+    auto readCount = [this](int def) {
         if (mEscapeIndex == 2) // no digits
             return def;
         char *end;
@@ -398,7 +418,7 @@ void Terminal::processCSI()
     case CNL: // Cursor next line
     case CPL: // Cursor previous line
     case CHA: { // Cursor horizontal absolute
-        const int count = readCount();
+        const int count = readCount(1);
         if (count == -1) {
             ERROR("Invalid parameters for CSI %s", csiSequenceName(static_cast<CSISequence>(mEscapeBuffer[mEscapeIndex - 1])));
             break;
@@ -413,54 +433,96 @@ void Terminal::processCSI()
         case CNL: action.type = Action::CursorNextLine; break;
         case CPL: action.type = Action::CursorPreviousLine; break;
         case CHA: action.type = Action::CursorHorizontalAbsolute; break;
-        default: abort(); break;
         }
         break; }
     case HVP: // Cursor position
     case CUP: { // Cursor position
         char *end;
-        action.row = action.column = 1;
+        action.x = action.y = 1;
         action.type = Action::CursorPosition;
-        unsigned long row = strtoul(mEscapeBuffer + 1, &end, 10);
+        const unsigned long x = strtoul(mEscapeBuffer + 1, &end, 10);
         if (end == mEscapeBuffer + mEscapeIndex - 1) { // no ; column not set, default to 1
             if (mEscapeIndex != 2) { // optional row
-                if (!row) {
+                if (!x) {
                     ERROR("Invalid CSI CUP error 1");
                     action.type = Action::Invalid;
                 } else {
-                    action.row = row;
+                    action.x = x;
                 }
             }
         } else if (*end == ';') {
             if (mEscapeBuffer[1] != ';') { // default row 1, already set
-                if (row == 0) {
+                if (x == 0) {
                     ERROR("Invalid CSI CUP error 2");
                     action.type = Action::Invalid;
                     break;
                 }
-                action.row = row;
+                action.x = x;
             }
             if (end + 1 < mEscapeBuffer + mEscapeIndex - 1) { // optional column
-                unsigned long column = strtoul(end + 1, &end, 10);
-                if (end != mEscapeBuffer + mEscapeIndex - 1 || !column) { // bad column
+                const unsigned long y = strtoul(end + 1, &end, 10);
+                if (end != mEscapeBuffer + mEscapeIndex - 1 || !y) { // bad column
                     ERROR("Invalid CSI CUP error 3");
                     action.type = Action::Invalid;
                     break;
                 } else {
-                    action.column = column;
+                    action.y = y;
                 }
             }
         }
         break; }
-    case ED: // Erase in display
+    case ED:  // Erase in display
+        switch (readCount(0)) {
+        case 0:
+            action.type = Action::ClearToEndOfScreen;
+            break;
+        case 1:
+            action.type = Action::ClearToBeginningOfScreen;
+            break;
+        case 2:
+            action.type = Action::ClearScreen;
+            break;
+        default:
+            ERROR("Invalid CSI ED %d", readCount(0));
+            break;
+        }
         break;
     case EL: // Erase in line
+        switch (readCount(0)) {
+        case 0:
+            action.type = Action::ClearToEndOfLine;
+            break;
+        case 1:
+            action.type = Action::ClearToBeginningOfLine;
+            break;
+        case 2:
+            action.type = Action::ClearLine;
+            break;
+        default:
+            ERROR("Invalid CSI EL %d", readCount(0));
+            break;
+        }
         break;
-    case SU: // Scroll up
-        break;
-    case SD: // Scroll down
-        break;
+    case SU: { // Scroll up
+        const int n = readCount(1);
+        if (n <= 0) {
+            ERROR("Invalid CSI SU %d", n);
+        } else {
+            action.type = Action::ScrollUp;
+            action.count = n;
+        }
+        break; }
+    case SD: { // Scroll down
+        const int n = readCount(1);
+        if (n <= 0) {
+            ERROR("Invalid CSI SD %d", n);
+        } else {
+            action.type = Action::ScrollDown;
+            action.count = n;
+        }
+        break; }
     case SGR: // Select graphic rendition
+        processSGR(&action);
         break;
     case AUX: // AUX port
         if (mEscapeIndex != 3) {
@@ -474,6 +536,11 @@ void Terminal::processCSI()
         }
         break;
     case DSR: // Device status report
+        if (mEscapeIndex != 3 || mEscapeBuffer[1] != '6') {
+            ERROR("Invalid AUX DSR command (%zu)", mEscapeIndex);
+            break;
+
+        }
         break;
     case SCP: // Save cursor position
         if (mEscapeIndex != 2) {
@@ -534,4 +601,91 @@ unsigned long long Terminal::mono()
         return (time.tv_sec * static_cast<uint64_t>(1000)) + (time.tv_usec / static_cast<uint64_t>(1000));
     }
     return 0;
+}
+
+void Terminal::onAction(const Action *action)
+{
+    assert(action);
+    assert(action->type != Action::Invalid);
+    DEBUG("Got action %s %zu %zu %zu", Action::typeName(action->type), action->count, action->x, action->y);
+}
+
+const char *Terminal::Action::typeName(Type type)
+{
+    switch (type) {
+    case Invalid: return "Invalid";
+    case CursorUp: return "CursorUp";
+    case CursorDown: return "CursorDown";
+    case CursorForward: return "CursorForward";
+    case CursorBack: return "CursorBack";
+    case CursorNextLine: return "CursorNextLine";
+    case CursorPreviousLine: return "CursorPreviousLine";
+    case CursorHorizontalAbsolute: return "CursorHorizontalAbsolute";
+    case CursorPosition: return "CursorPosition";
+    case ClearScreen: return "ClearScreen";
+    case ClearToBeginningOfScreen: return "ClearToBeginningOfScreen";
+    case ClearToEndOfScreen: return "ClearToEndOfScreen";
+    case ClearLine: return "ClearLine";
+    case ClearToBeginningOfLine: return "ClearToBeginningOfLine";
+    case ClearToEndOfLine: return "ClearToEndOfLine";
+    case ScrollUp: return "ScrollUp";
+    case ScrollDown: return "ScrollDown";
+    case SelectGraphicRendition: return "SelectGraphicRendition";
+    case AUXPortOn: return "AUXPortOn";
+    case AUXPortOff: return "AUXPortOff";
+    case DeviceStatusReport: return "DeviceStatusReport";
+    case SaveCursorPosition: return "SaveCursorPosition";
+    case RestoreCursorPosition: return "RestoreCursorPosition";
+    }
+    abort();
+    return nullptr;
+}
+
+const char *Terminal::escapeSequenceName(EscapeSequence seq)
+{
+    switch (seq) {
+    case SS2: return "SS2";
+    case SS3: return "SS3";
+    case DCS: return "DCS";
+    case CSI: return "CSI";
+    case ST: return "ST";
+    case OSX: return "OSX";
+    case SOS: return "SOS";
+    case PM: return "PM";
+    case APC: return "APC";
+    case RIS: return "RIS";
+    }
+    abort();
+    return nullptr;
+}
+
+const char *Terminal::csiSequenceName(CSISequence seq)
+{
+    switch (seq) {
+    case CUU: return "CUU";
+    case CUD: return "CUD";
+    case CUF: return "CUF";
+    case CUB: return "CUB";
+    case CNL: return "CNL";
+    case CPL: return "CPL";
+    case CHA: return "CHA";
+    case CUP: return "CUP";
+    case ED: return "ED";
+    case EL: return "EL";
+    case SU: return "SU";
+    case SD: return "SD";
+    case HVP: return "HVP";
+    case SGR: return "SGR";
+    case AUX: return "AUX";
+    case DSR: return "DSR";
+    case SCP: return "SCP";
+    case RCP: return "RCP";
+    }
+    return nullptr;
+}
+
+void Terminal::processSGR(Action *action)
+{
+    assert(mEscapeBuffer[0] == CSI);
+    assert(mEscapeBuffer[mEscapeIndex - 1] == 'm');
 }

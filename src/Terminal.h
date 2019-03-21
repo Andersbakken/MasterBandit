@@ -38,8 +38,7 @@ public:
     size_t y() const { return mY; }
     size_t width() const { return mWidth; }
     size_t height() const { return mHeight; }
-    size_t scrollBackLength() const { return mScrollback.size(); }
-    size_t widestLine() const { return mWidestLine; }
+    size_t scrollBackLength() const { return mScrollbackLength; }
 
     void scroll(size_t left, size_t top);
     void resize(size_t width, size_t height);
@@ -79,8 +78,12 @@ public:
             RestoreCursorPosition
         } type { Invalid };
 
-        size_t count { 0 },  row { 0 }, column { 0 };
+        static const char *typeName(Type type);
+
+        size_t count { 0 },  x { 0 }, y { 0 };
     };
+
+    void onAction(const Action *action);
 
     virtual void event(Event, void *data = nullptr) = 0;
     enum RenderFlag {
@@ -112,14 +115,9 @@ private:
     unsigned int mFlags { 0 };
     bool mHasSelection { false };
     size_t mSelectionStartX { 0 }, mSelectionStartY { 0 }, mSelectionEndX { 0 }, mSelectionEndY { 0 };
-    size_t mWidestLine { 0 };
     int mMasterFD { -1 }, mSlaveFD { -1 };
     int mExitCode { 0 };
 
-    struct LineBreak {
-        size_t idx { std::u16string::npos };
-        bool wrap { false };
-    };
     struct Command {
         enum Type {
             None,
@@ -129,10 +127,13 @@ private:
         std::string data;
         size_t idx { std::u16string::npos };
     };
-    std::vector<Command> mCommands;
-    std::vector<LineBreak> mLineBreaks;
-    std::u16string mScrollback;
-    std::string mRawBuffer;
+    struct Line {
+        std::u16string data;
+        std::vector<size_t> lineBreaks;
+        std::vector<Command> commands;
+    };
+    std::vector<Line> mLines;
+    size_t mScrollbackLength { 0 };
     enum State {
         Normal,
         InUtf8,
@@ -158,24 +159,9 @@ private:
     };
 
     void processCSI();
+    void processSGR(Action *action);
 
-    static const char *escapeSequenceName(EscapeSequence seq)
-    {
-        switch (seq) {
-        case SS2: return "SS2";
-        case SS3: return "SS3";
-        case DCS: return "DCS";
-        case CSI: return "CSI";
-        case ST: return "ST";
-        case OSX: return "OSX";
-        case SOS: return "SOS";
-        case PM: return "PM";
-        case APC: return "APC";
-        case RIS: return "RIS";
-        }
-        abort();
-        return nullptr;
-    }
+    static const char *escapeSequenceName(EscapeSequence seq);
 
     enum CSISequence {
         CUU = 'A',
@@ -195,33 +181,20 @@ private:
         AUX	= 'i', // Port On or Port Off
         DSR	= 'n',
         SCP = 's',
-        RCP	= 'u'
+        RCP	= 'u',
+
+        // private sequences
+        // DECTCEM = 'h',
+
+        // CSI ? 25 h	DECTCEM Shows the cursor, from the VT320.
+        // CSI ? 25 l	DECTCEM Hides the cursor.
+        // CSI ? 1049 h	Enable alternative screen buffer
+        // CSI ? 1049 l	Disable alternative screen buffer
+        // CSI ? 2004 h	Turn on bracketed paste mode. Text pasted into the terminal will be surrounded by ESC [200~ and ESC [201~, and characters in it should not be treated as commands (for example in Vim).[20] From Unix terminal emulators.
+        //                                                                                                                      CSI ? 2004 l	Turn off bracketed paste mode.
     };
 
-    static const char *csiSequenceName(CSISequence seq)
-    {
-        switch (seq) {
-        case CUU: return "CUU";
-        case CUD: return "CUD";
-        case CUF: return "CUF";
-        case CUB: return "CUB";
-        case CNL: return "CNL";
-        case CPL: return "CPL";
-        case CHA: return "CHA";
-        case CUP: return "CUP";
-        case ED: return "ED";
-        case EL: return "EL";
-        case SU: return "SU";
-        case SD: return "SD";
-        case HVP: return "HVP";
-        case SGR: return "SGR";
-        case AUX: return "AUX";
-        case DSR: return "DSR";
-        case SCP: return "SCP";
-        case RCP: return "RCP";
-        }
-        return nullptr;
-    };
+    static const char *csiSequenceName(CSISequence seq);
 };
 
 #endif /* TERMINAL_H */

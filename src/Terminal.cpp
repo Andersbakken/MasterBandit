@@ -263,14 +263,26 @@ void Terminal::keyReleaseEvent(const KeyEvent &event)
 
 void Terminal::mousePressEvent(const MouseEvent &event)
 {
+    DEBUG("Got mouse press event button %s buttons %s %zu,%zu (%zu,%zu)",
+          MouseEvent::buttonName(event.button),
+          MouseEvent::buttonsName(event.buttons).c_str(),
+          event.x, event.y, event.windowX, event.windowY);
+
 }
 
 void Terminal::mouseReleaseEvent(const MouseEvent &event)
 {
+    DEBUG("Got mouse release event button %s buttons %s %zu,%zu (%zu,%zu)",
+          MouseEvent::buttonName(event.button),
+          MouseEvent::buttonsName(event.buttons).c_str(),
+          event.x, event.y, event.windowX, event.windowY);
 }
 
 void Terminal::mouseMoveEvent(const MouseEvent &event)
 {
+    DEBUG("Got mouse move event buttons %s %zu,%zu (%zu,%zu)",
+          MouseEvent::buttonsName(event.buttons).c_str(),
+          event.x, event.y, event.windowX, event.windowY);
 }
 
 void Terminal::readFromFD()

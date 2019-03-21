@@ -15,6 +15,29 @@ public:
         Right = (1ull << 3)
     } button { NoButton };
 
+    static const char *buttonName(Button button)
+    {
+        switch (button) {
+        case NoButton: return "none";
+        case Left: return "left";
+        case Right: return "right";
+        case Mid: return "mid";
+        }
+    }
+
+    static std::string buttonsName(unsigned int buttons)
+    {
+        std::string ret;
+        for (Button button : { Left, Mid, Right }) {
+            if (buttons & button) {
+                if (!ret.empty())
+                    ret += " + ";
+                ret += buttonName(button);
+            }
+        }
+        return ret;
+    }
+
     unsigned int buttons { NoButton };
 };
 

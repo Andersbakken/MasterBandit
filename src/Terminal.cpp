@@ -240,23 +240,7 @@ void Terminal::keyPressEvent(const QKeyEvent *event)
     if (!event->text().isEmpty() && event->count()) {
         std::string text = event->text().toStdString();
         const char *ch = text.c_str();
-        int bytes = event->text().size();
-        int stringLen = 0;
-        for (int i=0; i<bytes; ++i) {
-            if (std::isprint(ch[i])) {
-                stringLen += event->count();
-            } else {
-                // switch (ch[i]) {
-                // case '\b':   /* BS */
-                //     mCursorX -= event->count;
-                //     break;
-                // case '\r':   /* CR */
-                //     mCursorX = 0;
-                //     break;
-                // }
-            }
-        }
-
+        int bytes = text.size();
         for (int i=0; i<event->count(); ++i) {
             int ret;
             DEBUG("Writing [%s] to master", qPrintable(toPrintable(event->text())));
@@ -272,7 +256,6 @@ void Terminal::keyPressEvent(const QKeyEvent *event)
                 ch += ret;
             }
         }
-        mCursorX += stringLen;
     }
 }
 
@@ -366,6 +349,7 @@ void Terminal::readFromFD()
                     mState = InUtf8;
                 } else {
                     currentLine->data += buf[i];
+                    ++mCursorX;
                 }
                 break;
             }
@@ -374,7 +358,9 @@ void Terminal::readFromFD()
             assert(mUtf8Index > 0 && mUtf8Index < 6);
             mUtf8Buffer[mUtf8Index++] = buf[i];
             if (!(buf[i] & 0x80)) {
-                currentLine->data += QString::fromUtf8(mUtf8Buffer, mUtf8Index);
+                const QString str = QString::fromUtf8(mUtf8Buffer, mUtf8Index);
+                currentLine->data += str;
+                mCursorX += str.size();
 #warning this should do error checking witgh QTextDecoder
                 mUtf8Index = 0;
 #ifndef NDEBUG

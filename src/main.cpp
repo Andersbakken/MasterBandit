@@ -18,6 +18,7 @@ static QString defaultShell(const QString &user)
     }
     FILE *f = fopen("/etc/passwd", "r");
     if (f) {
+#warning this should use getpw
         std::string r;
         char line[1024];
         std::regex rx("^" + user.toStdString() + ":[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^: ]+) *$");

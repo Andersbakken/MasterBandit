@@ -12,7 +12,6 @@
 #include <errno.h>
 #include <string.h>
 #include <limits>
-#include <utf8.h>
 #include <signal.h>
 
 #ifdef __APPLE__
@@ -375,14 +374,8 @@ void Terminal::readFromFD()
             assert(mUtf8Index > 0 && mUtf8Index < 6);
             mUtf8Buffer[mUtf8Index++] = buf[i];
             if (!(buf[i] & 0x80)) {
-                try {
-                    utf8::utf8to16(mUtf8Buffer, mUtf8Buffer + mUtf8Index, std::back_inserter(currentLine->data));
-                } catch (const std::exception &e) {
-                    ERROR("Got exception processing utf8: %s", e.what());
-                    for (int j=0; j<mUtf8Index; ++j) {
-                        currentLine->data.push_back(mUtf8Buffer[j]);
-                    }
-                }
+                currentLine->data += QString::fromUtf8(mUtf8Buffer, mUtf8Index);
+#warning this should do error checking witgh QTextDecoder
                 mUtf8Index = 0;
 #ifndef NDEBUG
                 memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));

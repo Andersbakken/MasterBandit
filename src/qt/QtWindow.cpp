@@ -25,14 +25,21 @@ QtWindow::QtWindow()
 void QtWindow::paintEvent(QPaintEvent *e)
 {
     mPainter.begin(viewport());
-    mPainter.fillRect(e->rect(), Qt::black);
-    mPainter.setPen(QPen(Qt::white));
-    Terminal::render();
+    if (mBell) {
+        mPainter.fillRect(viewport()->rect(), Qt::white);
+        mBell = false;
+        viewport()->update();
+    } else {
+        mPainter.fillRect(e->rect(), Qt::black);
+        mPainter.setPen(QPen(Qt::white));
+        Terminal::render();
+    }
     mPainter.end();
 }
 
 void QtWindow::event(Event event, void *data)
 {
+    VERBOSE("Got QtWindow::event(%s)", eventName(event));
     switch (event) {
     case ScrollbackChanged:
         updateScrollbars();
@@ -40,9 +47,8 @@ void QtWindow::event(Event event, void *data)
     case Update:
         viewport()->update();
         break;
-    case LineChanged:
-        assert(data);
-        // viewport()->update(lineRect(0, *reinterpret_cast<const int *>(data)));
+    case VisibleBell:
+        mBell = true;
         update();
         break;
     }

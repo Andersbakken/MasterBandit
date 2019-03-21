@@ -51,8 +51,10 @@ public:
     enum Event {
         Update,
         ScrollbackChanged,
-        LineChanged
+        VisibleBell
     };
+
+    static const char *eventName(Event event);
 
     struct Action
     {
@@ -149,6 +151,7 @@ private:
     char mEscapeBuffer[128];
     size_t mEscapeIndex { 0 };
 
+    // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {
         SS2 = 'N', // Single Shift Two
         SS3 = '0', // Single Shift Three
@@ -159,7 +162,8 @@ private:
         SOS = 'X', // Start of String
         PM = '^', // Privacy Message
         APC = '_', // Application Program Command
-        RIS = 'c' // Reset to Initial State
+        RIS = 'c', // Reset to Initial State
+        VB = 'g' // Visible bell
     };
 
     void processCSI();

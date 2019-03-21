@@ -37,6 +37,7 @@ private:
     QPainter mPainter;
     double mLineSpacing { 0 };
     double mCharWidth { 0 };
+    bool mBell { false };
 };
 
 #endif /* QTWINDOW_H */

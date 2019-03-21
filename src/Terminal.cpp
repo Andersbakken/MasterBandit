@@ -13,6 +13,7 @@
 #include <string.h>
 #include <limits>
 #include <utf8.h>
+#include <signal.h>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -117,6 +118,26 @@ bool Terminal::init(const Options &options)
 
         extern char **environ;
         execle(mOptions.shell.c_str(), mOptions.shell.c_str(), NULL, environ);
+
+        // const struct passwd *pw;
+
+        // unsetenv("COLUMNS");
+        // unsetenv("LINES");
+        // unsetenv("TERMCAP");
+        // setenv("LOGNAME", options.user.c_str(), 1);
+        // setenv("USER", options.user.c_str(), 1);
+        // setenv("SHELL", options.shell.c_str(), 1);
+        // // setenv("HOME", gete, 1);
+        // setenv("TERM", "xterm-256color", 1);
+
+        // signal(SIGCHLD, SIG_DFL);
+        // signal(SIGHUP, SIG_DFL);
+        // signal(SIGINT, SIG_DFL);
+        // signal(SIGQUIT, SIG_DFL);
+        // signal(SIGTERM, SIG_DFL);
+        // signal(SIGALRM, SIG_DFL);
+
+        // execl(mOptions.shell.c_str(), mOptions.shell.c_str(), nullptr);
         return false;
 
         break;
@@ -151,11 +172,11 @@ void Terminal::resize(size_t width, size_t height)
 void Terminal::render()
 {
     const size_t max = std::min(mY + mHeight, mLines.size());
-    DEBUG("RENDER %zu mHeight %zu mY %zu max %zu\n", mLines.size(), mHeight, mY, max);
+    VERBOSE("RENDER %zu mHeight %zu mY %zu max %zu\n", mLines.size(), mHeight, mY, max);
     for (size_t y = mY; y<max; ++y) {
         const Line &line = mLines[y];
         const bool c = y == mCursorY;
-        DEBUG("RENDERING %zu %s %d %zu\n", y, toPrintable(toUtf8(line.data)).c_str(), c, mCursorX);
+        VERBOSE("RENDERING %zu %s %d %zu\n", y, toPrintable(toUtf8(line.data)).c_str(), c, mCursorX);
         size_t start, length;
         if (isSelected(y, &start, &length)) {
             assert(start + length <= line.data.size());
@@ -307,6 +328,14 @@ void Terminal::readFromFD()
     const size_t len = ret;
     const size_t lineCount = mLines.size();
     assert(!mLines.empty());
+    auto resetToNormal = [this]() {
+        assert(mState == InEscape);
+        mState = Normal;
+        mEscapeIndex = 0;
+#ifndef NDEBUG
+        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
+    };
     Line *currentLine = &mLines.back();
     bool lineWasEmpty = currentLine->data.empty();
     for (size_t i=0; i<len; ++i) {
@@ -377,7 +406,7 @@ void Terminal::readFromFD()
         case InEscape:
             assert(mEscapeIndex < sizeof(mEscapeBuffer));
             mEscapeBuffer[mEscapeIndex++] = buf[i];
-            DEBUG("Adding escape byte %s %zu -> %s", toPrintable(buf + i, 1).c_str(), i, toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            DEBUG("Adding escape byte [%zu] %s %zu -> %s", mEscapeIndex - 1, toPrintable(buf + i, 1).c_str(), i, toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
             switch (mEscapeBuffer[0]) {
             case SS2:
             case SS3:
@@ -388,35 +417,19 @@ void Terminal::readFromFD()
             case PM:
             case APC:
                 ERROR("Unhandled escape sequence %s", escapeSequenceName(static_cast<EscapeSequence>(mEscapeBuffer[0])));
-                mState = Normal;
-                mEscapeIndex = 0;
-#ifndef NDEBUG
-                memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
+                resetToNormal();
                 break;
             case CSI:
-                if (buf[i] != '[') {
+                if (mEscapeIndex > 1) {
                     if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
                         processCSI();
-                        mState = Normal;
-                        mEscapeIndex = 0;
-#ifndef NDEBUG
-                        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
+                        assert(mState == Normal);
                     } else if (mEscapeIndex == sizeof(mEscapeBuffer)) {
                         ERROR("CSI sequence is too long %zu", sizeof(mEscapeBuffer));
-                        mState = Normal;
-                        mEscapeIndex = 0;
-#ifndef NDEBUG
-                        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
+                        resetToNormal();
                     } else if (buf[i] < 0x20 || buf[i] > 0x3f) {
                         ERROR("Invalid CSI sequence 0x%0x character", buf[i]);
-                        mState = Normal;
-                        mEscapeIndex = 0;
-#ifndef NDEBUG
-                        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
+                        resetToNormal();
                     }
                 }
 
@@ -427,7 +440,16 @@ void Terminal::readFromFD()
                 cmd.type = Command::ResetToInitialState;
                 cmd.idx = line->data.size();
                 line->commands.push_back(std::move(cmd));
+                resetToNormal();
                 break; }
+            case VB: {
+                event(VisibleBell);
+                resetToNormal();
+                break; }
+            default:
+                ERROR("Unknown escape sequence %s\n", toPrintable(mEscapeBuffer, 1).c_str());
+                resetToNormal();
+                break;
             }
 
             break;
@@ -439,6 +461,7 @@ void Terminal::readFromFD()
         mCursorY = mLines.size() - 1;
         DEBUG("Got cursor %zu %zu %zu", mCursorY, mCursorX, mLines.back().data.size());
     }
+    // ### should only update when something requires an updated
     event(Update);
     event(ScrollbackChanged);
 
@@ -771,4 +794,15 @@ void Terminal::processSGR(Action *action)
 {
     assert(mEscapeBuffer[0] == CSI);
     assert(mEscapeBuffer[mEscapeIndex - 1] == 'm');
+}
+
+const char *Terminal::eventName(Event event)
+{
+    switch (event) {
+    case Update: return "Update";
+    case ScrollbackChanged: return "ScrollbackChanged";
+    case VisibleBell: return "VisibleBell";
+    }
+    abort();
+    return nullptr;
 }

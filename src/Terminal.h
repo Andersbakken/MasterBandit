@@ -73,6 +73,7 @@ public:
             ClearLine,
             ClearToBeginningOfLine,
             ClearToEndOfLine,
+            DeleteChars,
             ScrollUp,
             ScrollDown,
             SelectGraphicRendition,
@@ -179,7 +180,7 @@ private:
         CPL = 'F',
         CHA = 'G',
         CUP = 'H',
-        ED ='J',
+        ED = 'J',
         EL = 'K',
         SU = 'S',
         SD = 'T',
@@ -189,6 +190,7 @@ private:
         DSR	= 'n',
         SCP = 's',
         RCP	= 'u',
+        DCH = 'P'
 
         // private sequences
         // DECTCEM = 'h',

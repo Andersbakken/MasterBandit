@@ -471,7 +471,8 @@ void Terminal::processCSI()
     case CUB: // Cursor back
     case CNL: // Cursor next line
     case CPL: // Cursor previous line
-    case CHA: { // Cursor horizontal absolute
+    case CHA:  // Cursor horizontal absolute
+    case DCH: { // DeleteChars
         const int count = readCount(1);
         if (count == -1) {
             ERROR("Invalid parameters for CSI %s", csiSequenceName(static_cast<CSISequence>(mEscapeBuffer[mEscapeIndex - 1])));
@@ -487,6 +488,7 @@ void Terminal::processCSI()
         case CNL: action.type = Action::CursorNextLine; break;
         case CPL: action.type = Action::CursorPreviousLine; break;
         case CHA: action.type = Action::CursorHorizontalAbsolute; break;
+        case DCH: action.type = Action::DeleteChars; break;
         }
         break; }
     case HVP: // Cursor position
@@ -690,6 +692,9 @@ void Terminal::onAction(const Action *action)
     case Action::CursorBack:
         mCursorX = action->count > mCursorX ? 0 : mCursorX - action->count;
         break;
+    case Action::DeleteChars:
+        mLines.back().data.remove(mCursorX, action->count);
+        break;
     default:
         break;
     }
@@ -713,6 +718,7 @@ const char *Terminal::Action::typeName(Type type)
     case ClearLine: return "ClearLine";
     case ClearToBeginningOfLine: return "ClearToBeginningOfLine";
     case ClearToEndOfLine: return "ClearToEndOfLine";
+    case DeleteChars: return "DeleteChars";
     case ScrollUp: return "ScrollUp";
     case ScrollDown: return "ScrollDown";
     case SelectGraphicRendition: return "SelectGraphicRendition";
@@ -739,6 +745,7 @@ const char *Terminal::escapeSequenceName(EscapeSequence seq)
     case PM: return "PM";
     case APC: return "APC";
     case RIS: return "RIS";
+    case VB: return "VB";
     }
     abort();
     return nullptr;
@@ -765,6 +772,7 @@ const char *Terminal::csiSequenceName(CSISequence seq)
     case DSR: return "DSR";
     case SCP: return "SCP";
     case RCP: return "RCP";
+    case DCH: return "DCH";
     }
     return nullptr;
 }

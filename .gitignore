@@ -45,9 +45,9 @@ cmake_install.cmake
 /.ninja_deps
 /.ninja_log
 /CMakeCache.txt
-3rdparty/utfcpp/CMakeFiles/*
-3rdparty/utfcpp/cmake_install.cmake
 /bin/docsample
 /bin/negative
 /bin/smoke
 /bin/utf8reader
+/src/CMakeFiles/*
+/src/mb_autogen/*

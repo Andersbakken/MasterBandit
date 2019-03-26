@@ -9,8 +9,12 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QKeyEvent>
 
-QString toPrintable(const char *chars, int len);
 QString toPrintable(const QString &str);
+QString toPrintable(const char *chars, int len);
+inline QString toPrintable(const std::string &string)
+{
+    return toPrintable(string.c_str(), string.size());
+}
 
 #define EINTRWRAP(ret, op) \
     do {                   \

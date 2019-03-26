@@ -237,13 +237,23 @@ void Terminal::keyPressEvent(const QKeyEvent *event)
         return;
     }
     // DEBUG("Got keypress \"%s\" %d\n", toPrintable(event->text).c_str(), event->count);
-    if (!event->text().isEmpty() && event->count()) {
-        std::string text = event->text().toStdString();
+    std::string text = event->text().toStdString();
+    if (text.empty()) {
+        switch (event->key()) {
+        case Qt::Key_Left: text = "\02"; break;
+        case Qt::Key_Right: text = "\06"; break;
+        case Qt::Key_Up: text = "\020"; break;
+        case Qt::Key_Down: text = "\016"; break;
+        default:
+            break;
+        }
+    }
+    if (!text.empty() && event->count()) {
         const char *ch = text.c_str();
         int bytes = text.size();
         for (int i=0; i<event->count(); ++i) {
             int ret;
-            DEBUG("Writing [%s] to master", qPrintable(toPrintable(event->text())));
+            DEBUG("Writing [%s] to master", qPrintable(toPrintable(text)));
             while (bytes) {
                 EINTRWRAP(ret, ::write(mMasterFD, ch, bytes));
                 if (ret == -1) {

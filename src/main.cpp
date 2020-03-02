@@ -1,6 +1,5 @@
 #include <unistd.h>
 #include "Terminal.h"
-#include "Window.h"
 #include <getopt.h>
 #include <regex>
 #include "Log.h"
@@ -11,7 +10,7 @@ void usage(FILE *f)
     fflush(f);
 }
 
-static QString defaultShell(const QString &user)
+static std::string defaultShell(const std::string &user)
 {
     if (const char *shell = getenv("SHELL")) {
         return shell;
@@ -21,7 +20,7 @@ static QString defaultShell(const QString &user)
 #warning this should use getpw
         std::string r;
         char line[1024];
-        std::regex rx("^" + user.toStdString() + ":[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^: ]+) *$");
+        std::regex rx("^" + user + ":[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^: ]+) *$");
         while ((fgets(line, sizeof(line), f))) {
             std::smatch m;
             std::string l(line, strlen(line) - 1);
@@ -32,7 +31,7 @@ static QString defaultShell(const QString &user)
         }
         fclose(f);
         if (!r.empty())
-            return QString::fromStdString(r);
+            return r;
     } else {
         fprintf(stderr, "Failed to open /etc/passwd %d %s\n", errno, strerror(errno));
     }
@@ -41,8 +40,12 @@ static QString defaultShell(const QString &user)
 
 int main(int argc, char **argv)
 {
-    QApplication app(argc, argv);
-    Terminal::Options options;
+    std::unique_ptr<Platform> platform = createPlatform(argc, argv);
+    if (!platform) {
+        fprintf(stderr, "Failed to create platform\n");
+        return 1;
+    }
+    TerminalOptions options;
     char buf[1024];
     if (!getlogin_r(buf, sizeof(buf))) {
         options.user = buf;
@@ -74,14 +77,14 @@ int main(int argc, char **argv)
     }
     Log::setLogLevel(static_cast<Log::Level>(logLevel));
 
-    Window window;
-    if (!window.init(options))
-        return 3;
+    std::unique_ptr<Terminal> terminal = platform->createTerminal(options);
+    if (!terminal) {
+        fprintf(stderr, "Failed to create terminal\n");
+    }
     // QFile file("../LICENSE");
     // file.open(QIODevice::ReadOnly);
     // const std::string str = file.readAll().toStdString();
     // file.close();
     // window.addText(str);
-    window.show();
-    return app.exec();
+    return platform->exec();
 }

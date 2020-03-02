@@ -1,53 +1,15 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-/CMakeFiles/*
+**/CMakeFiles/*
 /bin/mb
 /rules.ninja
 /compile_commands.json
-/cmake_install.cmake
+**/cmake_install.cmake
 /build.ninja
 /bin/.gdb_brestore
 /bin/.gdb_brestore.txt
 /bin/.gdb_history
-cmake_install.cmake
-/src/qt/CMakeFiles/qtwindow_autogen.dir/
-/src/qt/qtwindow_autogen/
 /.ninja_deps
 /.ninja_log
 /CMakeCache.txt
-/bin/docsample
-/bin/negative
-/bin/smoke
-/bin/utf8reader
-/src/CMakeFiles/*
-/src/mb_autogen/*
+/src/cmake_install.cmake
+/src/qt/libplatform_qt.a
+/src/qt/platform_qt_autogen/*

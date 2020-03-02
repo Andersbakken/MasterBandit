@@ -5,13 +5,12 @@
 #include <string>
 #include <stdlib.h>
 #include <string.h>
-#include <QtCore/QString>
-#include <QtGui/QMouseEvent>
-#include <QtGui/QKeyEvent>
+#include <Platform.h>
+#include <TerminalOptions.h>
 
-QString toPrintable(const QString &str);
-QString toPrintable(const char *chars, int len);
-inline QString toPrintable(const std::string &string)
+std::string toPrintable(const std::string &str);
+std::string toPrintable(const char *chars, int len);
+inline std::string toPrintable(const std::string &string)
 {
     return toPrintable(string.c_str(), string.size());
 }
@@ -21,19 +20,14 @@ inline QString toPrintable(const std::string &string)
         ret = (op);        \
     } while (ret == -1 && errno == EINTR)
 
-class Window;
+class Platform;
 class Terminal
 {
 public:
-    Terminal();
+    Terminal(Platform *platform);
     ~Terminal();
 
-    struct Options {
-        QString shell;
-        QString user;
-    };
-
-    virtual bool init(const Options &options);
+    virtual bool init(const TerminalOptions &options);
     enum Flag {
         None = 0,
         LineWrap = (1ull << 1)
@@ -100,16 +94,15 @@ public:
         Render_None = 0,
         Render_Selected = (1ull << 1)
     };
-    virtual void render(int y, int x, const QString &str, int idx, int len, int cursor, unsigned int flags) = 0;
-    virtual void quit() = 0;
+    virtual void render(int y, int x, const std::string &str, int idx, int len, int cursor, unsigned int flags) = 0;
 
     void addText(const char *str, int len);
 
-    void keyPressEvent(const QKeyEvent *event);
-    void keyReleaseEvent(const QKeyEvent *event);
-    void mousePressEvent(const QMouseEvent *event);
-    void mouseReleaseEvent(const QMouseEvent *event);
-    void mouseMoveEvent(const QMouseEvent *event);
+    void keyPressEvent(const KeyEvent *event);
+    void keyReleaseEvent(const KeyEvent *event);
+    void mousePressEvent(const MouseEvent *event);
+    void mouseReleaseEvent(const MouseEvent *event);
+    void mouseMoveEvent(const MouseEvent *event);
     int masterFD() const { return mMasterFD; }
     void readFromFD();
     int exitCode() const { return mExitCode; }
@@ -119,7 +112,9 @@ private:
     bool isSelected(int y, int *start, int *length) const;
 private:
     void processChunks();
-    Options mOptions;
+
+    Platform *mPlatform;
+    TerminalOptions mOptions;
     int mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
     int mCursorX { -1 }, mCursorY { -1 };
     unsigned int mFlags { 0 };
@@ -138,7 +133,7 @@ private:
         int idx { -1 };
     };
     struct Line {
-        QString data;
+        std::string data;
         std::vector<int> lineBreaks;
         std::vector<Command> commands;
     };

@@ -318,6 +318,7 @@ int runCLI(int argc, char** argv)
     info.user = &state;
     info.foreign_loops = reinterpret_cast<void**>(&loopPtr);
 
+    lws_set_log_level(0, nullptr);
     state.ctx = lws_create_context(&info);
     if (!state.ctx) {
         fprintf(stderr, "Failed to create WebSocket context\n");

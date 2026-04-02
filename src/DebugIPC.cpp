@@ -164,6 +164,7 @@ DebugIPC::DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb)
     info.user = this;
     info.foreign_loops = reinterpret_cast<void**>(&loop);
 
+    lws_set_log_level(0, nullptr);
     ctx_ = lws_create_context(&info);
     if (!ctx_) {
         spdlog::error("DebugIPC: failed to create lws context");

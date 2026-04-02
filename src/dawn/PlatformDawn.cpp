@@ -530,7 +530,7 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     }
 
     std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
-    textSystem_.registerFont(fontName_, fontList, 48.0f, 4.0f, false);
+    textSystem_.registerFont(fontName_, fontList, 48.0f);
 
     const FontData* font = textSystem_.getFont(fontName_);
     if (!font) {
@@ -557,7 +557,7 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
         shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
     }
     renderer_.init(device_, queue_, shaderDir, fbWidth_, fbHeight_);
-    renderer_.uploadFontAtlas(queue_, fontName_, *font, false);
+    renderer_.uploadFontAtlas(queue_, fontName_, *font);
 
     // Compute terminal dimensions in characters
     int cols = static_cast<int>(fbWidth_ / charWidth_);
@@ -702,13 +702,14 @@ void TerminalWindow::renderTerminal()
     renderSegments_.clear();
     Terminal::render(); // calls our render() override per line
 
-    // Build text quads from render segments
-    renderer_.clearTextQuads();
+    // Build glyph vertices and rects from render segments
+    renderer_.clearQueues();
 
-    const FontData* font = textSystem_.getFont(fontName_);
+    FontData* font = const_cast<FontData*>(textSystem_.getFont(fontName_));
     if (!font) return;
 
     float scale = fontSize_ / font->baseSize;
+    uint32_t tintWhite = 0xFFFFFFFF; // RGBA8 packed: white, full alpha
 
     for (const auto& seg : renderSegments_) {
         if (seg.text.empty()) continue;
@@ -716,74 +717,72 @@ void TerminalWindow::renderTerminal()
         float baseX = static_cast<float>(seg.screenX) * charWidth_;
         float baseY = static_cast<float>(seg.screenY - this->y()) * lineHeight_;
 
-        // Render background for selected text
+        // Render background for selected text using rect pipeline
         if (seg.flags & Render_Selected) {
             float selW = seg.text.size() * charWidth_;
-            ScreenQuad bgQuad;
-            bgQuad.x = baseX;
-            bgQuad.y = baseY;
-            bgQuad.w = selW;
-            bgQuad.h = lineHeight_;
-            bgQuad.u0 = font->whiteU;
-            bgQuad.v0 = font->whiteV;
-            bgQuad.u1 = font->whiteU;
-            bgQuad.v1 = font->whiteV;
-            bgQuad.tintR = 0.3f;
-            bgQuad.tintG = 0.3f;
-            bgQuad.tintB = 0.8f;
-            bgQuad.tintA = 1.0f;
-            renderer_.queueTextQuad(fontName_, bgQuad);
+            renderer_.queueRect(baseX, baseY, selW, lineHeight_, 0.3f, 0.3f, 0.8f, 1.0f);
         }
 
-        // Shape the text segment
+        // Shape the text segment (also lazily encodes new glyphs)
         const auto& shaped = textSystem_.shapeText(fontName_, seg.text, fontSize_);
 
         for (const auto& sg : shaped.glyphs) {
             auto it = font->glyphs.find(sg.glyphId);
             if (it == font->glyphs.end()) continue;
             const GlyphInfo& gi = it->second;
-            if (gi.width < 0.5f || gi.height < 0.5f) continue;
+            if (gi.is_empty) continue;
 
-            float glyphX = baseX + sg.x + (gi.bearingX - font->pxRange) * scale;
-            float glyphY = baseY + font->ascender * scale + sg.y - (gi.bearingY + font->pxRange) * scale;
-            float glyphW = gi.width * scale;
-            float glyphH = gi.height * scale;
+            float upem = static_cast<float>(gi.upem);
+            float emPerPos = upem / fontSize_;
 
-            ScreenQuad quad;
-            quad.x = glyphX;
-            quad.y = glyphY;
-            quad.w = glyphW;
-            quad.h = glyphH;
-            quad.u0 = gi.u0;
-            quad.v0 = gi.v0;
-            quad.u1 = gi.u1;
-            quad.v1 = gi.v1;
-            quad.tintR = 1.0f;
-            quad.tintG = 1.0f;
-            quad.tintB = 1.0f;
-            quad.tintA = 1.0f;
-            renderer_.queueTextQuad(fontName_, quad);
+            // Compute glyph quad corners in pixel coords from design-unit extents
+            float extMinX = gi.ext_min_x / upem * fontSize_;
+            float extMinY = gi.ext_min_y / upem * fontSize_;
+            float extMaxX = gi.ext_max_x / upem * fontSize_;
+            float extMaxY = gi.ext_max_y / upem * fontSize_;
+
+            // Position: pen position + glyph offset
+            // Font coords are y-up, screen is y-down, so flip Y
+            float penX = baseX + sg.x;
+            float penY_base = baseY + font->ascender * scale + sg.y;
+
+            float x0 = penX + extMinX;
+            float y0 = penY_base - extMaxY; // flip: max Y in font = min Y on screen
+            float x1 = penX + extMaxX;
+            float y1 = penY_base - extMinY;
+
+            // Texcoords are in design units (em-space), what hb_gpu_render expects
+            float tc_x0 = gi.ext_min_x;
+            float tc_y0 = gi.ext_min_y;
+            float tc_x1 = gi.ext_max_x;
+            float tc_y1 = gi.ext_max_y;
+
+            // 6 vertices (2 triangles)
+            // Corner mapping (cx,cy from docs):
+            //   screen top-left  (x0,y0) = cx=0,cy=1 → normal(-1,-1), tc(min_x, max_y)
+            //   screen top-right (x1,y0) = cx=1,cy=1 → normal(+1,-1), tc(max_x, max_y)
+            //   screen bot-left  (x0,y1) = cx=0,cy=0 → normal(-1,+1), tc(min_x, min_y)
+            //   screen bot-right (x1,y1) = cx=1,cy=0 → normal(+1,+1), tc(max_x, min_y)
+            SlugVertex verts[6] = {
+                {{x0, y0}, {tc_x0, tc_y1}, {-1.0f, -1.0f}, emPerPos, gi.atlas_offset, tintWhite},
+                {{x1, y0}, {tc_x1, tc_y1}, { 1.0f, -1.0f}, emPerPos, gi.atlas_offset, tintWhite},
+                {{x0, y1}, {tc_x0, tc_y0}, {-1.0f,  1.0f}, emPerPos, gi.atlas_offset, tintWhite},
+                {{x1, y0}, {tc_x1, tc_y1}, { 1.0f, -1.0f}, emPerPos, gi.atlas_offset, tintWhite},
+                {{x1, y1}, {tc_x1, tc_y0}, { 1.0f,  1.0f}, emPerPos, gi.atlas_offset, tintWhite},
+                {{x0, y1}, {tc_x0, tc_y0}, {-1.0f,  1.0f}, emPerPos, gi.atlas_offset, tintWhite},
+            };
+            renderer_.queueGlyphVertices(fontName_, verts, 6);
         }
 
-        // Render cursor
+        // Render cursor using rect pipeline
         if (seg.cursorCol >= 0) {
             float curX = static_cast<float>(seg.cursorCol) * charWidth_;
-            ScreenQuad cursorQuad;
-            cursorQuad.x = curX;
-            cursorQuad.y = baseY;
-            cursorQuad.w = charWidth_;
-            cursorQuad.h = lineHeight_;
-            cursorQuad.u0 = font->whiteU;
-            cursorQuad.v0 = font->whiteV;
-            cursorQuad.u1 = font->whiteU;
-            cursorQuad.v1 = font->whiteV;
-            cursorQuad.tintR = 0.8f;
-            cursorQuad.tintG = 0.8f;
-            cursorQuad.tintB = 0.8f;
-            cursorQuad.tintA = 0.5f;
-            renderer_.queueTextQuad(fontName_, cursorQuad);
+            renderer_.queueRect(curX, baseY, charWidth_, lineHeight_, 0.8f, 0.8f, 0.8f, 0.5f);
         }
     }
+
+    // Upload any newly encoded glyphs to GPU
+    renderer_.updateFontAtlas(queue_, fontName_, *font);
 
     // Submit GPU work
     wgpu::CommandEncoderDescriptor encDesc = {};

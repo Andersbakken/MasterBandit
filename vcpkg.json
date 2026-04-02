@@ -4,11 +4,6 @@
     "dependencies": [
         "glfw3",
         "libuv",
-        "freetype",
-        {
-            "name": "msdfgen",
-            "default-features": false
-        },
         "spdlog",
         "sheenbidi",
         "libunibreak",

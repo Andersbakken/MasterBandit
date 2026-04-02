@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 #include <filesystem>
 #include <vector>
+#include <cstring>
 
 namespace fs = std::filesystem;
 
@@ -14,31 +15,28 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     viewportW_ = width;
     viewportH_ = height;
 
-    // Load MSDF text shader
+    // ========================================
+    // Text pipeline (Slug)
+    // ========================================
     textShader_ = renderer_utils::createShaderModule(device_,
-        (fs::path(shaderDir) / "msdf_text.wgsl").string().c_str());
+        (fs::path(shaderDir) / "slug_text.wgsl").string().c_str());
     if (!textShader_) {
-        spdlog::error("Failed to load msdf_text.wgsl shader");
+        spdlog::error("Failed to load slug_text.wgsl shader");
         return;
     }
 
-    // Bind group layout: uniform (b0), texture (b1), sampler (b2)
-    wgpu::BindGroupLayoutEntry textEntries[3] = {};
+    // Bind group layout: uniform (b0), storage buffer (b1)
+    wgpu::BindGroupLayoutEntry textEntries[2] = {};
     textEntries[0].binding = 0;
     textEntries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
     textEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
 
     textEntries[1].binding = 1;
     textEntries[1].visibility = wgpu::ShaderStage::Fragment;
-    textEntries[1].texture.sampleType = wgpu::TextureSampleType::Float;
-    textEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
-
-    textEntries[2].binding = 2;
-    textEntries[2].visibility = wgpu::ShaderStage::Fragment;
-    textEntries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
+    textEntries[1].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
 
     wgpu::BindGroupLayoutDescriptor textBglDesc = {};
-    textBglDesc.entryCount = 3;
+    textBglDesc.entryCount = 2;
     textBglDesc.entries = textEntries;
     textBindGroupLayout_ = device_.CreateBindGroupLayout(&textBglDesc);
 
@@ -47,42 +45,31 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     textPlDesc.bindGroupLayouts = &textBindGroupLayout_;
     wgpu::PipelineLayout textPipelineLayout = device_.CreatePipelineLayout(&textPlDesc);
 
-    // Samplers
-    {
-        wgpu::SamplerDescriptor sampDesc = {};
-        sampDesc.minFilter = wgpu::FilterMode::Linear;
-        sampDesc.magFilter = wgpu::FilterMode::Linear;
-        sampDesc.mipmapFilter = wgpu::MipmapFilterMode::Linear;
-        sampDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
-        sampDesc.addressModeV = wgpu::AddressMode::ClampToEdge;
-        fontAtlasSampler_ = device_.CreateSampler(&sampDesc);
-    }
-    {
-        wgpu::SamplerDescriptor sampDesc = {};
-        sampDesc.minFilter = wgpu::FilterMode::Nearest;
-        sampDesc.magFilter = wgpu::FilterMode::Nearest;
-        sampDesc.mipmapFilter = wgpu::MipmapFilterMode::Nearest;
-        sampDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
-        sampDesc.addressModeV = wgpu::AddressMode::ClampToEdge;
-        fontAtlasNearestSampler_ = device_.CreateSampler(&sampDesc);
-    }
-
-    // Vertex layout: pos(2) + uv(2) + tint(4) = 8 floats
-    wgpu::VertexAttribute textVertAttrs[3] = {};
+    // Vertex layout: pos(2f) + texcoord(2f) + normal(2f) + emPerPos(f32) + atlas_offset(u32) + tint(u32)
+    wgpu::VertexAttribute textVertAttrs[6] = {};
     textVertAttrs[0].format = wgpu::VertexFormat::Float32x2;
-    textVertAttrs[0].offset = 0;
+    textVertAttrs[0].offset = offsetof(SlugVertex, pos);
     textVertAttrs[0].shaderLocation = 0;
     textVertAttrs[1].format = wgpu::VertexFormat::Float32x2;
-    textVertAttrs[1].offset = 2 * sizeof(float);
+    textVertAttrs[1].offset = offsetof(SlugVertex, texcoord);
     textVertAttrs[1].shaderLocation = 1;
-    textVertAttrs[2].format = wgpu::VertexFormat::Float32x4;
-    textVertAttrs[2].offset = 4 * sizeof(float);
+    textVertAttrs[2].format = wgpu::VertexFormat::Float32x2;
+    textVertAttrs[2].offset = offsetof(SlugVertex, normal);
     textVertAttrs[2].shaderLocation = 2;
+    textVertAttrs[3].format = wgpu::VertexFormat::Float32;
+    textVertAttrs[3].offset = offsetof(SlugVertex, emPerPos);
+    textVertAttrs[3].shaderLocation = 3;
+    textVertAttrs[4].format = wgpu::VertexFormat::Uint32;
+    textVertAttrs[4].offset = offsetof(SlugVertex, atlas_offset);
+    textVertAttrs[4].shaderLocation = 4;
+    textVertAttrs[5].format = wgpu::VertexFormat::Uint32;
+    textVertAttrs[5].offset = offsetof(SlugVertex, tint);
+    textVertAttrs[5].shaderLocation = 5;
 
     wgpu::VertexBufferLayout textVertBufLayout = {};
-    textVertBufLayout.arrayStride = 8 * sizeof(float);
+    textVertBufLayout.arrayStride = sizeof(SlugVertex);
     textVertBufLayout.stepMode = wgpu::VertexStepMode::Vertex;
-    textVertBufLayout.attributeCount = 3;
+    textVertBufLayout.attributeCount = 6;
     textVertBufLayout.attributes = textVertAttrs;
 
     // Blend state
@@ -118,73 +105,216 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     // Text vertex buffer
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = MAX_TEXT_QUADS * 6 * 8 * sizeof(float);
+        desc.size = MAX_TEXT_VERTS * sizeof(SlugVertex);
         desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
         textVertexBuffer_ = device_.CreateBuffer(&desc);
     }
-}
 
-void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
-                                const FontData& font, bool sharp)
-{
-    FontGPU gpu;
+    // ========================================
+    // Rect pipeline
+    // ========================================
+    rectShader_ = renderer_utils::createShaderModule(device_,
+        (fs::path(shaderDir) / "rect.wgsl").string().c_str());
+    if (!rectShader_) {
+        spdlog::error("Failed to load rect.wgsl shader");
+        return;
+    }
 
-    // Per-font uniform buffer (viewport + pxRange + sharp)
+    // Bind group layout: uniform (b0)
+    wgpu::BindGroupLayoutEntry rectEntries[1] = {};
+    rectEntries[0].binding = 0;
+    rectEntries[0].visibility = wgpu::ShaderStage::Vertex;
+    rectEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+
+    wgpu::BindGroupLayoutDescriptor rectBglDesc = {};
+    rectBglDesc.entryCount = 1;
+    rectBglDesc.entries = rectEntries;
+    rectBindGroupLayout_ = device_.CreateBindGroupLayout(&rectBglDesc);
+
+    wgpu::PipelineLayoutDescriptor rectPlDesc = {};
+    rectPlDesc.bindGroupLayoutCount = 1;
+    rectPlDesc.bindGroupLayouts = &rectBindGroupLayout_;
+    wgpu::PipelineLayout rectPipelineLayout = device_.CreatePipelineLayout(&rectPlDesc);
+
+    // Vertex layout: pos(2f) + color(4f)
+    wgpu::VertexAttribute rectVertAttrs[2] = {};
+    rectVertAttrs[0].format = wgpu::VertexFormat::Float32x2;
+    rectVertAttrs[0].offset = offsetof(RectVertex, pos);
+    rectVertAttrs[0].shaderLocation = 0;
+    rectVertAttrs[1].format = wgpu::VertexFormat::Float32x4;
+    rectVertAttrs[1].offset = offsetof(RectVertex, color);
+    rectVertAttrs[1].shaderLocation = 1;
+
+    wgpu::VertexBufferLayout rectVertBufLayout = {};
+    rectVertBufLayout.arrayStride = sizeof(RectVertex);
+    rectVertBufLayout.stepMode = wgpu::VertexStepMode::Vertex;
+    rectVertBufLayout.attributeCount = 2;
+    rectVertBufLayout.attributes = rectVertAttrs;
+
+    // Blend state for rects
+    wgpu::BlendState rectBlend = {};
+    rectBlend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+    rectBlend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    rectBlend.color.operation = wgpu::BlendOperation::Add;
+    rectBlend.alpha.srcFactor = wgpu::BlendFactor::One;
+    rectBlend.alpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    rectBlend.alpha.operation = wgpu::BlendOperation::Add;
+
+    wgpu::ColorTargetState rectColorTarget = {};
+    rectColorTarget.format = wgpu::TextureFormat::BGRA8Unorm;
+    rectColorTarget.blend = &rectBlend;
+
+    wgpu::FragmentState rectFragState = {};
+    rectFragState.module = rectShader_;
+    rectFragState.entryPoint = "fs_main";
+    rectFragState.targetCount = 1;
+    rectFragState.targets = &rectColorTarget;
+
+    wgpu::RenderPipelineDescriptor rectPipeDesc = {};
+    rectPipeDesc.layout = rectPipelineLayout;
+    rectPipeDesc.vertex.module = rectShader_;
+    rectPipeDesc.vertex.entryPoint = "vs_main";
+    rectPipeDesc.vertex.bufferCount = 1;
+    rectPipeDesc.vertex.buffers = &rectVertBufLayout;
+    rectPipeDesc.fragment = &rectFragState;
+    rectPipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+
+    rectPipeline_ = device_.CreateRenderPipeline(&rectPipeDesc);
+
+    // Rect vertex buffer
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = 16;
+        desc.size = MAX_RECT_VERTS * sizeof(RectVertex);
+        desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        rectVertexBuffer_ = device_.CreateBuffer(&desc);
+    }
+
+    // Rect uniform buffer (viewport)
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = 16; // vec2f viewport + padding
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-        gpu.uniformBuffer = device_.CreateBuffer(&desc);
+        rectUniformBuffer_ = device_.CreateBuffer(&desc);
 
         float uniforms[4] = {
             static_cast<float>(viewportW_),
             static_cast<float>(viewportH_),
-            font.pxRange,
-            sharp ? 1.0f : 0.0f
+            0.0f, 0.0f
         };
+        queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
+    }
+
+    // Rect bind group
+    {
+        wgpu::BindGroupEntry bindings[1] = {};
+        bindings[0].binding = 0;
+        bindings[0].buffer = rectUniformBuffer_;
+        bindings[0].size = 16;
+
+        wgpu::BindGroupDescriptor bgDesc = {};
+        bgDesc.layout = rectBindGroupLayout_;
+        bgDesc.entryCount = 1;
+        bgDesc.entries = bindings;
+        rectBindGroup_ = device_.CreateBindGroup(&bgDesc);
+    }
+}
+
+void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
+                                const FontData& font)
+{
+    FontGPU gpu;
+
+    // Storage buffer for glyph atlas (pre-allocate 4MB = 256K vec4<i32>)
+    uint32_t capacity = std::max(font.atlasUsed, 256u * 1024u);
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = static_cast<uint64_t>(capacity) * 4 * sizeof(int32_t);
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+        gpu.storageBuffer = device_.CreateBuffer(&desc);
+        gpu.storageCapacity = capacity;
+    }
+
+    // Upload current atlas data
+    if (font.atlasUsed > 0) {
+        queue.WriteBuffer(gpu.storageBuffer, 0, font.atlasData.data(),
+                          static_cast<uint64_t>(font.atlasUsed) * 4 * sizeof(int32_t));
+    }
+    gpu.uploadedSize = font.atlasUsed;
+
+    // Uniform buffer: mat4x4f mvp + vec2f viewport + f32 gamma + f32 stem_darkening
+    // = 64 + 8 + 4 + 4 = 80 bytes, round to 96 for alignment
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = 96;
+        desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        gpu.uniformBuffer = device_.CreateBuffer(&desc);
+
+        // Build orthographic MVP: maps pixel coords to NDC
+        float w = static_cast<float>(viewportW_);
+        float h = static_cast<float>(viewportH_);
+        // clang-format off
+        float uniforms[24] = {
+            // mat4x4 mvp (column-major orthographic projection)
+            2.0f/w,  0.0f,    0.0f, 0.0f,
+            0.0f,   -2.0f/h,  0.0f, 0.0f,
+            0.0f,    0.0f,    1.0f, 0.0f,
+           -1.0f,    1.0f,    0.0f, 1.0f,
+            // vec2f viewport
+            w, h,
+            // f32 gamma
+            1.0f,
+            // f32 stem_darkening
+            1.0f,
+            // padding
+            0.0f, 0.0f, 0.0f, 0.0f,
+        };
+        // clang-format on
         queue.WriteBuffer(gpu.uniformBuffer, 0, uniforms, sizeof(uniforms));
     }
 
-    // GPU texture
-    wgpu::TextureDescriptor texDesc = {};
-    texDesc.size = {font.atlasWidth, font.atlasHeight, 1};
-    texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
-    texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-    gpu.tex = device_.CreateTexture(&texDesc);
-
-    wgpu::TexelCopyBufferLayout dataLayout = {};
-    dataLayout.bytesPerRow = font.atlasWidth * 4;
-    dataLayout.rowsPerImage = font.atlasHeight;
-
-    wgpu::TexelCopyTextureInfo destInfo = {};
-    destInfo.texture = gpu.tex;
-
-    wgpu::Extent3D copySize = {font.atlasWidth, font.atlasHeight, 1};
-    queue.WriteTexture(&destInfo, font.atlasPixels.data(),
-                       font.atlasWidth * font.atlasHeight * 4,
-                       &dataLayout, &copySize);
-
-    gpu.view = gpu.tex.CreateView();
-
     // Bind group
-    wgpu::BindGroupEntry bindings[3] = {};
+    wgpu::BindGroupEntry bindings[2] = {};
     bindings[0].binding = 0;
     bindings[0].buffer = gpu.uniformBuffer;
-    bindings[0].size = 16;
+    bindings[0].size = 96;
     bindings[1].binding = 1;
-    bindings[1].textureView = gpu.view;
-    bindings[2].binding = 2;
-    bindings[2].sampler = sharp ? fontAtlasNearestSampler_ : fontAtlasSampler_;
+    bindings[1].buffer = gpu.storageBuffer;
+    bindings[1].size = static_cast<uint64_t>(capacity) * 4 * sizeof(int32_t);
 
     wgpu::BindGroupDescriptor bgDesc = {};
     bgDesc.layout = textBindGroupLayout_;
-    bgDesc.entryCount = 3;
+    bgDesc.entryCount = 2;
     bgDesc.entries = bindings;
     gpu.bindGroup = device_.CreateBindGroup(&bgDesc);
 
     fontGPU_[fontName] = std::move(gpu);
 
-    spdlog::info("Uploaded font atlas '{}' to GPU", fontName);
+    spdlog::info("Uploaded font atlas '{}' to GPU ({} texels)", fontName, font.atlasUsed);
+}
+
+void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
+                                const FontData& font)
+{
+    auto it = fontGPU_.find(fontName);
+    if (it == fontGPU_.end()) return;
+
+    FontGPU& gpu = it->second;
+
+    if (font.atlasUsed <= gpu.uploadedSize) return;
+
+    // Check if we need to grow the storage buffer
+    if (font.atlasUsed > gpu.storageCapacity) {
+        // Need to recreate with larger capacity
+        uploadFontAtlas(queue, fontName, font);
+        return;
+    }
+
+    // Incremental upload: only the new data
+    uint64_t offset = static_cast<uint64_t>(gpu.uploadedSize) * 4 * sizeof(int32_t);
+    uint64_t size = static_cast<uint64_t>(font.atlasUsed - gpu.uploadedSize) * 4 * sizeof(int32_t);
+    queue.WriteBuffer(gpu.storageBuffer, offset,
+                      font.atlasData.data() + gpu.uploadedSize * 4, size);
+    gpu.uploadedSize = font.atlasUsed;
 }
 
 void Renderer::setViewportSize(uint32_t width, uint32_t height)
@@ -192,60 +322,75 @@ void Renderer::setViewportSize(uint32_t width, uint32_t height)
     viewportW_ = width;
     viewportH_ = height;
 
-    // Update all font uniform buffers with new viewport size
-    for (auto& [fontName, gpu] : fontGPU_) {
-        // We'd need to read the old pxRange/sharp values. For simplicity,
-        // we'll just leave them — the uniform is updated on next uploadFontAtlas or
-        // we can store pxRange/sharp per font. For now just note this needs re-upload.
-    }
+    // Update rect uniform buffer
+    float uniforms[4] = {
+        static_cast<float>(width),
+        static_cast<float>(height),
+        0.0f, 0.0f
+    };
+    // Note: we need queue to write, but we don't have it here.
+    // The viewport update for text uniforms will be handled by re-uploading font atlas.
+    // For rect, we'll update in renderFrame.
 }
 
-void Renderer::queueTextQuad(const std::string& fontName, const ScreenQuad& quad)
+void Renderer::queueGlyphVertices(const std::string& fontName,
+                                   const SlugVertex* verts, uint32_t count)
 {
-    textQuadsByFont_[fontName].push_back(quad);
+    auto& vec = textVertsByFont_[fontName];
+    vec.insert(vec.end(), verts, verts + count);
 }
 
-void Renderer::clearTextQuads()
+void Renderer::queueRect(float x, float y, float w, float h,
+                          float r, float g, float b, float a)
 {
-    for (auto& [name, quads] : textQuadsByFont_) {
-        quads.clear();
+    float x0 = x, y0 = y, x1 = x + w, y1 = y + h;
+    RectVertex verts[6] = {
+        {{x0, y0}, {r, g, b, a}},
+        {{x1, y0}, {r, g, b, a}},
+        {{x0, y1}, {r, g, b, a}},
+        {{x1, y0}, {r, g, b, a}},
+        {{x1, y1}, {r, g, b, a}},
+        {{x0, y1}, {r, g, b, a}},
+    };
+    rectVerts_.insert(rectVerts_.end(), std::begin(verts), std::end(verts));
+}
+
+void Renderer::clearQueues()
+{
+    for (auto& [name, verts] : textVertsByFont_) {
+        verts.clear();
     }
+    rectVerts_.clear();
 }
 
 void Renderer::renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                             wgpu::TextureView swapchainView)
 {
-    // Build batches
-    struct FontBatch { std::string name; uint64_t byteOffset; uint32_t vertCount; };
-    std::vector<FontBatch> batches;
-    std::vector<float> allTextVerts;
+    // Update rect uniform with current viewport
+    {
+        float uniforms[4] = {
+            static_cast<float>(viewportW_),
+            static_cast<float>(viewportH_),
+            0.0f, 0.0f
+        };
+        queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
+    }
 
-    for (auto& [fontName, quads] : textQuadsByFont_) {
-        if (quads.empty()) continue;
-        if (fontGPU_.find(fontName) == fontGPU_.end()) continue;
-
-        uint32_t quadCount = static_cast<uint32_t>(quads.size());
-        if (quadCount > MAX_TEXT_QUADS) quadCount = MAX_TEXT_QUADS;
-
-        uint64_t byteOffset = allTextVerts.size() * sizeof(float);
-        uint32_t vertCount = quadCount * 6;
-
-        for (uint32_t i = 0; i < quadCount; i++) {
-            const auto& q = quads[i];
-            float x0 = q.x, y0 = q.y;
-            float x1 = q.x + q.w, y1 = q.y + q.h;
-            float verts[] = {
-                x0,y0, q.u0,q.v0, q.tintR,q.tintG,q.tintB,q.tintA,
-                x1,y0, q.u1,q.v0, q.tintR,q.tintG,q.tintB,q.tintA,
-                x0,y1, q.u0,q.v1, q.tintR,q.tintG,q.tintB,q.tintA,
-                x1,y0, q.u1,q.v0, q.tintR,q.tintG,q.tintB,q.tintA,
-                x1,y1, q.u1,q.v1, q.tintR,q.tintG,q.tintB,q.tintA,
-                x0,y1, q.u0,q.v1, q.tintR,q.tintG,q.tintB,q.tintA,
-            };
-            allTextVerts.insert(allTextVerts.end(), std::begin(verts), std::end(verts));
-        }
-
-        batches.push_back({fontName, byteOffset, vertCount});
+    // Update text uniforms with current viewport for all fonts
+    for (auto& [fontName, gpu] : fontGPU_) {
+        float w = static_cast<float>(viewportW_);
+        float h = static_cast<float>(viewportH_);
+        float uniforms[24] = {
+            2.0f/w,  0.0f,    0.0f, 0.0f,
+            0.0f,   -2.0f/h,  0.0f, 0.0f,
+            0.0f,    0.0f,    1.0f, 0.0f,
+           -1.0f,    1.0f,    0.0f, 1.0f,
+            w, h,
+            1.0f,
+            1.0f,
+            0.0f, 0.0f, 0.0f, 0.0f,
+        };
+        queue.WriteBuffer(gpu.uniformBuffer, 0, uniforms, sizeof(uniforms));
     }
 
     // Clear pass (black background)
@@ -264,27 +409,56 @@ void Renderer::renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         clearPass.End();
     }
 
-    // Text pass
-    if (!batches.empty()) {
-        queue.WriteBuffer(textVertexBuffer_, 0, allTextVerts.data(),
-                          allTextVerts.size() * sizeof(float));
+    // Rect pass (selection, cursor — rendered before text so text overlays)
+    if (!rectVerts_.empty()) {
+        uint32_t vertCount = static_cast<uint32_t>(rectVerts_.size());
+        if (vertCount > MAX_RECT_VERTS) vertCount = MAX_RECT_VERTS;
 
-        for (const auto& batch : batches) {
-            wgpu::RenderPassColorAttachment textColorAttachment = {};
-            textColorAttachment.view = swapchainView;
-            textColorAttachment.loadOp = wgpu::LoadOp::Load;
-            textColorAttachment.storeOp = wgpu::StoreOp::Store;
+        queue.WriteBuffer(rectVertexBuffer_, 0, rectVerts_.data(),
+                          vertCount * sizeof(RectVertex));
 
-            wgpu::RenderPassDescriptor textPassDesc = {};
-            textPassDesc.colorAttachmentCount = 1;
-            textPassDesc.colorAttachments = &textColorAttachment;
+        wgpu::RenderPassColorAttachment rectAttachment = {};
+        rectAttachment.view = swapchainView;
+        rectAttachment.loadOp = wgpu::LoadOp::Load;
+        rectAttachment.storeOp = wgpu::StoreOp::Store;
 
-            wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&textPassDesc);
-            pass.SetPipeline(textPipeline_);
-            pass.SetBindGroup(0, fontGPU_[batch.name].bindGroup);
-            pass.SetVertexBuffer(0, textVertexBuffer_, batch.byteOffset);
-            pass.Draw(batch.vertCount);
-            pass.End();
-        }
+        wgpu::RenderPassDescriptor rectPassDesc = {};
+        rectPassDesc.colorAttachmentCount = 1;
+        rectPassDesc.colorAttachments = &rectAttachment;
+
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rectPassDesc);
+        pass.SetPipeline(rectPipeline_);
+        pass.SetBindGroup(0, rectBindGroup_);
+        pass.SetVertexBuffer(0, rectVertexBuffer_);
+        pass.Draw(vertCount);
+        pass.End();
+    }
+
+    // Text pass (Slug)
+    for (auto& [fontName, verts] : textVertsByFont_) {
+        if (verts.empty()) continue;
+        if (fontGPU_.find(fontName) == fontGPU_.end()) continue;
+
+        uint32_t vertCount = static_cast<uint32_t>(verts.size());
+        if (vertCount > MAX_TEXT_VERTS) vertCount = MAX_TEXT_VERTS;
+
+        queue.WriteBuffer(textVertexBuffer_, 0, verts.data(),
+                          vertCount * sizeof(SlugVertex));
+
+        wgpu::RenderPassColorAttachment textAttachment = {};
+        textAttachment.view = swapchainView;
+        textAttachment.loadOp = wgpu::LoadOp::Load;
+        textAttachment.storeOp = wgpu::StoreOp::Store;
+
+        wgpu::RenderPassDescriptor textPassDesc = {};
+        textPassDesc.colorAttachmentCount = 1;
+        textPassDesc.colorAttachments = &textAttachment;
+
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&textPassDesc);
+        pass.SetPipeline(textPipeline_);
+        pass.SetBindGroup(0, fontGPU_[fontName].bindGroup);
+        pass.SetVertexBuffer(0, textVertexBuffer_);
+        pass.Draw(vertCount);
+        pass.End();
     }
 }

@@ -9,41 +9,36 @@
 struct hb_blob_t;
 struct hb_face_t;
 struct hb_font_t;
+struct hb_gpu_draw_t;
 
 struct GlyphInfo {
-    float u0, v0, u1, v1;           // atlas UV rect
-    float bearingX, bearingY;        // offset from pen to glyph top-left (pixels at baseSize)
-    float width, height;             // glyph bitmap size in atlas (pixels, includes padding)
-    float advance;                   // horizontal advance (pixels at baseSize)
-};
-
-// Charset specification for font atlas generation
-struct FontCharset {
-    std::vector<std::pair<uint32_t, uint32_t>> ranges;  // codepoint ranges (inclusive)
-    std::vector<std::string> scripts;                    // OpenType script tags (e.g. "arab", "latn")
+    uint32_t atlas_offset;               // offset into atlasData (in vec4<i32> units)
+    float ext_min_x, ext_min_y;          // glyph extents in design units
+    float ext_max_x, ext_max_y;
+    uint32_t upem;                       // units per em for this glyph's font
+    float advance;                       // horizontal advance (pixels at baseSize)
+    bool is_empty;                       // true for whitespace/no-contour glyphs
 };
 
 struct FontData {
     std::string name;
-    float baseSize;                  // px size used for MSDF generation
-    float ascender, descender;       // in px at baseSize
-    float lineHeight;                // ascender - descender + gap
-    float pxRange;                   // MSDF distance field range
+    float baseSize;                      // px size used for metric scaling
+    float ascender, descender;           // in px at baseSize
+    float lineHeight;                    // ascender - descender + gap
 
-    std::vector<uint8_t> atlasPixels;  // RGBA8
-    uint32_t atlasWidth, atlasHeight;
+    // Glyph atlas: storage buffer contents (4 ints per texel)
+    std::vector<int32_t> atlasData;
+    uint32_t atlasUsed = 0;              // number of vec4<i32> texels used
 
     // Glyph ID key = (fontIndex << 32) | glyphId
     std::unordered_map<uint64_t, GlyphInfo> glyphs;
-
-    // 1x1 white pixel in atlas (for background rects)
-    float whiteU = 0, whiteV = 0;
 
     // HarfBuzz font entries (primary + fallbacks)
     struct HBEntry {
         hb_blob_t* hbBlob = nullptr;
         hb_face_t* hbFace = nullptr;
         hb_font_t* hbFont = nullptr;
+        hb_gpu_draw_t* gpuDraw = nullptr;
     };
     std::vector<HBEntry> hbFonts;
 
@@ -62,11 +57,13 @@ public:
     ~TextSystem();
     bool registerFont(const std::string& name,
                       const std::vector<std::vector<uint8_t>>& ttfDataList,
-                      float baseSize = 48.0f, float pxRange = 4.0f, bool sharp = false,
-                      const FontCharset& charset = {});
+                      float baseSize = 48.0f);
     const ShapedText& shapeText(const std::string& fontName, const std::string& text,
-                                float fontSize, float wrapWidth = 0, int align = 0) const;
+                                float fontSize, float wrapWidth = 0, int align = 0);
     const FontData* getFont(const std::string& name) const;
+
+    // Ensure a glyph is encoded in the atlas; called during shaping
+    void ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId);
 
 private:
     std::unordered_map<std::string, FontData> fonts_;

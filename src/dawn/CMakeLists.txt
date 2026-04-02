@@ -5,7 +5,7 @@ target_link_libraries(platform_dawn PUBLIC
     $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,uv>
     harfbuzz
     harfbuzz-gpu
-    msdfgen::msdfgen-core
+
     spdlog::spdlog
     SheenBidi::SheenBidi
     libunibreak::libunibreak

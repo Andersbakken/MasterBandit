@@ -2,11 +2,10 @@
 
 #include <hb.h>
 #include <hb-ot.h>
+#include <hb-gpu.h>
 
 #include <SheenBidi/SheenBidi.h>
 #include <linebreak.h>
-
-#include <msdfgen/msdfgen.h>
 
 #include <algorithm>
 #include <spdlog/spdlog.h>
@@ -15,63 +14,6 @@
 #include <cstring>
 #include <functional>
 #include <unordered_set>
-
-// --- HarfBuzz draw callbacks to build msdfgen::Shape ---
-
-struct OutlineContext {
-    msdfgen::Shape* shape = nullptr;
-    msdfgen::Contour* contour = nullptr;
-    double scale = 1.0;
-    msdfgen::Point2 last{0, 0};
-};
-
-static void hbMoveTo(hb_draw_funcs_t*, void* data, hb_draw_state_t*,
-                      float x, float y, void*)
-{
-    auto* ctx = static_cast<OutlineContext*>(data);
-    ctx->contour = &ctx->shape->addContour();
-    ctx->last = msdfgen::Point2(x * ctx->scale, y * ctx->scale);
-}
-
-static void hbLineTo(hb_draw_funcs_t*, void* data, hb_draw_state_t*,
-                      float x, float y, void*)
-{
-    auto* ctx = static_cast<OutlineContext*>(data);
-    if (!ctx->contour) return;
-    msdfgen::Point2 to(x * ctx->scale, y * ctx->scale);
-    ctx->contour->addEdge(msdfgen::EdgeHolder(ctx->last, to));
-    ctx->last = to;
-}
-
-static void hbQuadTo(hb_draw_funcs_t*, void* data, hb_draw_state_t*,
-                      float cx, float cy, float x, float y, void*)
-{
-    auto* ctx = static_cast<OutlineContext*>(data);
-    if (!ctx->contour) return;
-    msdfgen::Point2 control(cx * ctx->scale, cy * ctx->scale);
-    msdfgen::Point2 to(x * ctx->scale, y * ctx->scale);
-    ctx->contour->addEdge(msdfgen::EdgeHolder(ctx->last, control, to));
-    ctx->last = to;
-}
-
-static void hbCubicTo(hb_draw_funcs_t*, void* data, hb_draw_state_t*,
-                       float c1x, float c1y, float c2x, float c2y,
-                       float x, float y, void*)
-{
-    auto* ctx = static_cast<OutlineContext*>(data);
-    if (!ctx->contour) return;
-    msdfgen::Point2 ctrl1(c1x * ctx->scale, c1y * ctx->scale);
-    msdfgen::Point2 ctrl2(c2x * ctx->scale, c2y * ctx->scale);
-    msdfgen::Point2 to(x * ctx->scale, y * ctx->scale);
-    ctx->contour->addEdge(msdfgen::EdgeHolder(ctx->last, ctrl1, ctrl2, to));
-    ctx->last = to;
-}
-
-static void hbClosePath(hb_draw_funcs_t*, void* data, hb_draw_state_t*, void*)
-{
-    auto* ctx = static_cast<OutlineContext*>(data);
-    ctx->contour = nullptr;
-}
 
 // --- Helper: make combined glyph key ---
 static inline uint64_t glyphKey(uint32_t fontIndex, uint32_t glyphId)
@@ -85,6 +27,7 @@ TextSystem::~TextSystem()
 {
     for (auto& [name, font] : fonts_) {
         for (auto& entry : font.hbFonts) {
+            if (entry.gpuDraw) hb_gpu_draw_destroy(entry.gpuDraw);
             if (entry.hbFont) hb_font_destroy(entry.hbFont);
             if (entry.hbFace) hb_face_destroy(entry.hbFace);
             if (entry.hbBlob) hb_blob_destroy(entry.hbBlob);
@@ -92,10 +35,92 @@ TextSystem::~TextSystem()
     }
 }
 
+void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId)
+{
+    uint64_t key = glyphKey(fontIndex, glyphId);
+    if (font.glyphs.count(key)) return;
+
+    auto& entry = font.hbFonts[fontIndex];
+    hb_gpu_draw_t* g = entry.gpuDraw;
+
+    unsigned int upem = hb_face_get_upem(entry.hbFace);
+    float pixelScale = font.baseSize / static_cast<float>(upem);
+
+    // Get advance
+    float adv = hb_font_get_glyph_h_advance(entry.hbFont, glyphId) * pixelScale;
+
+    // Reset and draw glyph
+    hb_gpu_draw_reset(g);
+    hb_gpu_draw_glyph(g, entry.hbFont, glyphId);
+
+    // Encode to blob
+    hb_blob_t* blob = hb_gpu_draw_encode(g);
+
+    // Get extents
+    hb_glyph_extents_t ext;
+    hb_gpu_draw_get_extents(g, &ext);
+
+    unsigned int blobLen = 0;
+    const char* blobData = hb_blob_get_data(blob, &blobLen);
+
+    GlyphInfo info{};
+    info.upem = upem;
+    info.advance = adv;
+
+    if (blobLen == 0) {
+        // Empty glyph (whitespace, no contours)
+        info.is_empty = true;
+        info.atlas_offset = 0;
+        info.ext_min_x = 0;
+        info.ext_min_y = 0;
+        info.ext_max_x = 0;
+        info.ext_max_y = 0;
+        font.glyphs[key] = info;
+        hb_gpu_draw_recycle_blob(g, blob);
+        return;
+    }
+
+    info.is_empty = false;
+    // ext fields are in font units; store as floats for vertex building
+    info.ext_min_x = static_cast<float>(ext.x_bearing);
+    info.ext_min_y = static_cast<float>(ext.y_bearing + ext.height); // y_bearing is top, height is negative
+    info.ext_max_x = static_cast<float>(ext.x_bearing + ext.width);
+    info.ext_max_y = static_cast<float>(ext.y_bearing);
+
+    // Append blob data to atlasData as int32 (blob contains int16 pairs packed as vec4<i16>,
+    // which we widen to vec4<i32> for the storage buffer)
+    info.atlas_offset = font.atlasUsed;
+
+    // The blob is an array of int16_t values. Each vec4<i32> in the atlas = 4 int16 values widened.
+    // Actually, the blob is raw int16 data that maps to vec4<i16> texels.
+    // We need to store as vec4<i32> for the WGSL storage buffer.
+    const int16_t* src = reinterpret_cast<const int16_t*>(blobData);
+    uint32_t numInt16 = blobLen / sizeof(int16_t);
+    // Each texel is 4 int16 values = one vec4<i32>
+    uint32_t numTexels = (numInt16 + 3) / 4;
+
+    // Ensure capacity
+    uint32_t needed = (font.atlasUsed + numTexels) * 4;
+    if (font.atlasData.size() < needed) {
+        font.atlasData.resize(needed * 2, 0);
+    }
+
+    for (uint32_t i = 0; i < numInt16; i++) {
+        font.atlasData[font.atlasUsed * 4 + i] = static_cast<int32_t>(src[i]);
+    }
+    // Zero-pad remaining
+    for (uint32_t i = numInt16; i < numTexels * 4; i++) {
+        font.atlasData[font.atlasUsed * 4 + i] = 0;
+    }
+    font.atlasUsed += numTexels;
+
+    font.glyphs[key] = info;
+    hb_gpu_draw_recycle_blob(g, blob);
+}
+
 bool TextSystem::registerFont(const std::string& name,
                                const std::vector<std::vector<uint8_t>>& ttfDataList,
-                               float baseSize, float pxRange, bool sharp,
-                               const FontCharset& charset)
+                               float baseSize)
 {
     if (ttfDataList.empty()) {
         spdlog::error("registerFont '{}': no font data provided", name);
@@ -105,9 +130,8 @@ bool TextSystem::registerFont(const std::string& name,
     FontData font;
     font.name = name;
     font.baseSize = baseSize;
-    font.pxRange = pxRange;
 
-    // 1. Load all fonts via HarfBuzz
+    // 1. Load all fonts via HarfBuzz and create GPU draw objects
     for (const auto& ttfData : ttfDataList) {
         FontData::HBEntry entry;
         entry.hbBlob = hb_blob_create(reinterpret_cast<const char*>(ttfData.data()),
@@ -115,14 +139,21 @@ bool TextSystem::registerFont(const std::string& name,
                                        HB_MEMORY_MODE_DUPLICATE, nullptr, nullptr);
         entry.hbFace = hb_face_create(entry.hbBlob, 0);
         entry.hbFont = hb_font_create(entry.hbFace);
+        entry.gpuDraw = hb_gpu_draw_create_or_fail();
+        if (!entry.gpuDraw) {
+            spdlog::error("registerFont '{}': hb_gpu_draw_create_or_fail() returned null", name);
+            hb_font_destroy(entry.hbFont);
+            hb_face_destroy(entry.hbFace);
+            hb_blob_destroy(entry.hbBlob);
+            return false;
+        }
         font.hbFonts.push_back(entry);
     }
 
     // Use primary font for metrics
     const auto& primary = font.hbFonts[0];
     unsigned int upem = hb_face_get_upem(primary.hbFace);
-    double pixelScaleD = static_cast<double>(baseSize) / static_cast<double>(upem);
-    float pixelScale = static_cast<float>(pixelScaleD);
+    float pixelScale = baseSize / static_cast<float>(upem);
 
     // Get font metrics from primary
     hb_font_extents_t extents;
@@ -136,341 +167,31 @@ bool TextSystem::registerFont(const std::string& name,
         font.lineHeight = baseSize * 1.2f;
     }
 
-    // Set up HarfBuzz draw funcs for glyph outlines
-    hb_draw_funcs_t* drawFuncs = hb_draw_funcs_create();
-    hb_draw_funcs_set_move_to_func(drawFuncs, hbMoveTo, nullptr, nullptr);
-    hb_draw_funcs_set_line_to_func(drawFuncs, hbLineTo, nullptr, nullptr);
-    hb_draw_funcs_set_quadratic_to_func(drawFuncs, hbQuadTo, nullptr, nullptr);
-    hb_draw_funcs_set_cubic_to_func(drawFuncs, hbCubicTo, nullptr, nullptr);
-    hb_draw_funcs_set_close_path_func(drawFuncs, hbClosePath, nullptr, nullptr);
+    // Pre-allocate atlas storage (will grow as needed)
+    font.atlasData.resize(1024 * 1024, 0); // 4MB initial (1M vec4<i32>)
 
-    // 2. Collect glyph IDs from charset ranges with fallback
-    struct GlyphWork {
-        uint32_t fontIndex;
-        uint32_t glyphId;
-        float bearingX, bearingY;
-        float width, height;
-        float advance;
-        std::shared_ptr<msdfgen::Shape> shape;
-        std::vector<uint8_t> msdfPixels;
-        uint32_t bmpW, bmpH;
-    };
-    std::vector<GlyphWork> glyphWork;
-
-    // Determine which codepoint ranges to use
-    std::vector<std::pair<uint32_t, uint32_t>> ranges;
-    if (charset.ranges.empty()) {
-        ranges.push_back({32, 126});
-    } else {
-        ranges = charset.ranges;
-    }
-
-    // Collect unique glyph IDs from codepoint ranges, trying fonts in order
-    std::unordered_set<uint64_t> collectedGlyphKeys;
-    for (const auto& [rangeStart, rangeEnd] : ranges) {
-        for (uint32_t cp = rangeStart; cp <= rangeEnd; cp++) {
-            for (uint32_t fi = 0; fi < font.hbFonts.size(); fi++) {
-                uint32_t gid;
-                if (hb_font_get_nominal_glyph(font.hbFonts[fi].hbFont, cp, &gid)) {
-                    font.codepointToFontIndex[cp] = fi;
-                    collectedGlyphKeys.insert(glyphKey(fi, gid));
-                    break;
-                }
-            }
-        }
-    }
-
-    // Discover contextual/ligature glyphs via GSUB closure for each requested script
-    if (!charset.scripts.empty()) {
+    // Pre-encode ASCII 32-126 using primary font
+    for (uint32_t cp = 32; cp <= 126; cp++) {
         for (uint32_t fi = 0; fi < font.hbFonts.size(); fi++) {
-            hb_face_t* face = font.hbFonts[fi].hbFace;
-
-            hb_set_t* glyphSet = hb_set_create();
-            for (uint64_t key : collectedGlyphKeys) {
-                if (static_cast<uint32_t>(key >> 32) == fi)
-                    hb_set_add(glyphSet, static_cast<uint32_t>(key & 0xFFFFFFFF));
+            uint32_t gid;
+            if (hb_font_get_nominal_glyph(font.hbFonts[fi].hbFont, cp, &gid)) {
+                font.codepointToFontIndex[cp] = fi;
+                ensureGlyphEncoded(font, fi, gid);
+                break;
             }
-
-            if (hb_set_is_empty(glyphSet)) {
-                hb_set_destroy(glyphSet);
-                continue;
-            }
-
-            std::vector<hb_tag_t> scriptTags;
-            for (const auto& s : charset.scripts) {
-                scriptTags.push_back(hb_tag_from_string(s.c_str(), static_cast<int>(s.size())));
-            }
-            scriptTags.push_back(HB_TAG_NONE);
-
-            hb_set_t* lookupSet = hb_set_create();
-            hb_ot_layout_collect_lookups(face, HB_OT_TAG_GSUB,
-                                         scriptTags.data(), nullptr, nullptr, lookupSet);
-
-            hb_ot_layout_lookups_substitute_closure(face, lookupSet, glyphSet);
-
-            hb_codepoint_t gid = HB_SET_VALUE_INVALID;
-            while (hb_set_next(glyphSet, &gid)) {
-                collectedGlyphKeys.insert(glyphKey(fi, gid));
-            }
-
-            hb_set_destroy(lookupSet);
-            hb_set_destroy(glyphSet);
         }
     }
 
-    spdlog::info("Font '{}': {} total unique glyph keys to rasterize", name, collectedGlyphKeys.size());
-
-    // --- Pass 1: Extract outlines (single-threaded) ---
-    uint32_t glyphsNoExtents = 0, glyphsWhitespace = 0, glyphsNoContours = 0, glyphsRasterized = 0;
-    for (uint64_t key : collectedGlyphKeys) {
-        uint32_t fi = static_cast<uint32_t>(key >> 32);
-        uint32_t gid = static_cast<uint32_t>(key & 0xFFFFFFFF);
-        hb_font_t* hbFont = font.hbFonts[fi].hbFont;
-
-        unsigned int fontUpem = hb_face_get_upem(font.hbFonts[fi].hbFace);
-        double fontPixelScaleD = static_cast<double>(baseSize) / static_cast<double>(fontUpem);
-        float fontPixelScale = static_cast<float>(fontPixelScaleD);
-
-        hb_glyph_extents_t ext;
-        if (!hb_font_get_glyph_extents(hbFont, gid, &ext)) {
-            glyphsNoExtents++;
-            continue;
-        }
-
-        float bX = ext.x_bearing * fontPixelScale;
-        float bY = ext.y_bearing * fontPixelScale;
-        float gW = ext.width * fontPixelScale;
-        float gH = -ext.height * fontPixelScale;
-        float adv = hb_font_get_glyph_h_advance(hbFont, gid) * fontPixelScale;
-
-        GlyphWork work;
-        work.fontIndex = fi;
-        work.glyphId = gid;
-        work.bearingX = bX;
-        work.bearingY = bY;
-        work.width = gW;
-        work.height = gH;
-        work.advance = adv;
-
-        uint32_t bmpW = static_cast<uint32_t>(std::ceil(gW + 2.0f * pxRange));
-        uint32_t bmpH = static_cast<uint32_t>(std::ceil(gH + 2.0f * pxRange));
-
-        if (bmpW < 1 || bmpH < 1 || (gW < 0.5f && gH < 0.5f)) {
-            GlyphInfo info{};
-            info.bearingX = bX;
-            info.bearingY = bY;
-            info.width = 0;
-            info.height = 0;
-            info.advance = adv;
-            font.glyphs[key] = info;
-            glyphsWhitespace++;
-            continue;
-        }
-
-        // Extract outline via HarfBuzz
-        auto shape = std::make_shared<msdfgen::Shape>();
-        OutlineContext octx;
-        octx.shape = shape.get();
-        octx.scale = fontPixelScaleD;
-        hb_font_draw_glyph(hbFont, gid, drawFuncs, &octx);
-
-        if (shape->contours.empty()) {
-            GlyphInfo info{};
-            info.bearingX = bX;
-            info.bearingY = bY;
-            info.width = 0;
-            info.height = 0;
-            info.advance = adv;
-            font.glyphs[key] = info;
-            glyphsNoContours++;
-            continue;
-        }
-
-        glyphsRasterized++;
-        work.bmpW = bmpW;
-        work.bmpH = bmpH;
-        work.shape = std::move(shape);
-        glyphWork.push_back(std::move(work));
-    }
-
-    hb_draw_funcs_destroy(drawFuncs);
-
-    spdlog::info("Font '{}': outlines={}, whitespace={}, no_contours={}, no_extents={}",
-                 name, glyphsRasterized, glyphsWhitespace, glyphsNoContours, glyphsNoExtents);
-
-    // --- Pass 2: Generate MSDF bitmaps (single-threaded for simplicity) ---
-    for (size_t i = 0; i < glyphWork.size(); i++) {
-        auto& g = glyphWork[i];
-        g.msdfPixels.resize(g.bmpW * g.bmpH * 4);
-
-        if (sharp) {
-            struct Seg { double x0, y0, x1, y1; };
-            std::vector<Seg> segs;
-            double translateX = static_cast<double>(pxRange) - static_cast<double>(g.bearingX);
-            double translateY = static_cast<double>(pxRange) - (static_cast<double>(g.bearingY) - static_cast<double>(g.height));
-            for (const auto& contour : g.shape->contours) {
-                for (const auto& edge : contour.edges) {
-                    msdfgen::Point2 p0 = edge->point(0.0);
-                    msdfgen::Point2 p1 = edge->point(1.0);
-                    segs.push_back({p0.x + translateX, p0.y + translateY,
-                                    p1.x + translateX, p1.y + translateY});
-                }
-            }
-
-            for (uint32_t bmpRow = 0; bmpRow < g.bmpH; bmpRow++) {
-                double scanY = static_cast<double>(bmpRow) + 0.5;
-                std::vector<std::pair<double, int>> crossings;
-                for (const auto& s : segs) {
-                    if ((s.y0 <= scanY && s.y1 > scanY) || (s.y1 <= scanY && s.y0 > scanY)) {
-                        double t = (scanY - s.y0) / (s.y1 - s.y0);
-                        double xInt = s.x0 + t * (s.x1 - s.x0);
-                        int wind = (s.y1 > s.y0) ? 1 : -1;
-                        crossings.push_back({xInt, wind});
-                    }
-                }
-                std::sort(crossings.begin(), crossings.end());
-
-                int winding = 0;
-                size_t ci = 0;
-                uint32_t atlasRow = g.bmpH - 1 - bmpRow;
-                for (uint32_t col = 0; col < g.bmpW; col++) {
-                    double pixCenter = static_cast<double>(col) + 0.5;
-                    while (ci < crossings.size() && crossings[ci].first <= pixCenter) {
-                        winding += crossings[ci].second;
-                        ci++;
-                    }
-                    uint8_t v = (winding != 0) ? 255 : 0;
-                    uint32_t idx = (atlasRow * g.bmpW + col) * 4;
-                    g.msdfPixels[idx + 0] = v;
-                    g.msdfPixels[idx + 1] = v;
-                    g.msdfPixels[idx + 2] = v;
-                    g.msdfPixels[idx + 3] = v;
-                }
-            }
-        } else {
-            g.shape->normalize();
-            msdfgen::edgeColoringSimple(*g.shape, 3.0);
-
-            msdfgen::Vector2 translate(-g.bearingX + pxRange, -(g.bearingY - g.height) + pxRange);
-            msdfgen::SDFTransformation transform(
-                msdfgen::Projection(1.0, translate),
-                msdfgen::Range(pxRange));
-
-            msdfgen::Bitmap<float, 3> msdfBmp(g.bmpW, g.bmpH);
-            msdfgen::generateMSDF(msdfBmp, *g.shape, transform);
-
-            for (uint32_t row = 0; row < g.bmpH; row++) {
-                uint32_t srcRow = g.bmpH - 1 - row;
-                for (uint32_t col = 0; col < g.bmpW; col++) {
-                    const float* px = msdfBmp(col, srcRow);
-                    uint32_t idx = (row * g.bmpW + col) * 4;
-                    g.msdfPixels[idx + 0] = static_cast<uint8_t>(std::clamp(px[0] * 255.0f + 0.5f, 0.0f, 255.0f));
-                    g.msdfPixels[idx + 1] = static_cast<uint8_t>(std::clamp(px[1] * 255.0f + 0.5f, 0.0f, 255.0f));
-                    g.msdfPixels[idx + 2] = static_cast<uint8_t>(std::clamp(px[2] * 255.0f + 0.5f, 0.0f, 255.0f));
-                    g.msdfPixels[idx + 3] = 255;
-                }
-            }
-        }
-
-        g.shape.reset();
-    }
-
-    // 4. Pack glyphs into atlas using shelf packing (with 2px padding between glyphs)
-    static constexpr uint32_t GLYPH_PAD = 2;
-    uint32_t atlasW = 1024, atlasH = 1024;
-
-    auto tryPack = [&](uint32_t w, uint32_t h) -> bool {
-        uint32_t shelfX = 0, shelfY = 0, shelfHeight = 0;
-        for (auto& g : glyphWork) {
-            uint32_t paddedW = g.bmpW + GLYPH_PAD;
-            uint32_t paddedH = g.bmpH + GLYPH_PAD;
-            if (shelfX + paddedW > w) {
-                shelfX = 0;
-                shelfY += shelfHeight;
-                shelfHeight = 0;
-            }
-            if (shelfY + paddedH > h) return false;
-            shelfHeight = std::max(shelfHeight, paddedH);
-            shelfX += paddedW;
-        }
-        return true;
-    };
-
-    while (!tryPack(atlasW, atlasH)) {
-        if (atlasW <= atlasH) atlasW *= 2;
-        else atlasH *= 2;
-        if (atlasW > 4096 || atlasH > 4096) {
-            spdlog::error("Font atlas too large for '{}'", name);
-            return false;
-        }
-    }
-
-    font.atlasWidth = atlasW;
-    font.atlasHeight = atlasH;
-    font.atlasPixels.resize(atlasW * atlasH * 4, 0);
-
-    // Actually pack and blit
-    uint32_t shelfX = 0, shelfY = 0, shelfHeight = 0;
-    for (auto& g : glyphWork) {
-        uint32_t paddedW = g.bmpW + GLYPH_PAD;
-        uint32_t paddedH = g.bmpH + GLYPH_PAD;
-        if (shelfX + paddedW > atlasW) {
-            shelfX = 0;
-            shelfY += shelfHeight;
-            shelfHeight = 0;
-        }
-
-        for (uint32_t row = 0; row < g.bmpH; row++) {
-            std::memcpy(&font.atlasPixels[((shelfY + row) * atlasW + shelfX) * 4],
-                        &g.msdfPixels[row * g.bmpW * 4],
-                        g.bmpW * 4);
-        }
-
-        GlyphInfo info;
-        info.u0 = static_cast<float>(shelfX) / atlasW;
-        info.v0 = static_cast<float>(shelfY) / atlasH;
-        info.u1 = static_cast<float>(shelfX + g.bmpW) / atlasW;
-        info.v1 = static_cast<float>(shelfY + g.bmpH) / atlasH;
-        info.bearingX = g.bearingX;
-        info.bearingY = g.bearingY;
-        info.width = static_cast<float>(g.bmpW);
-        info.height = static_cast<float>(g.bmpH);
-        info.advance = g.advance;
-        font.glyphs[glyphKey(g.fontIndex, g.glyphId)] = info;
-
-        shelfX += paddedW;
-        shelfHeight = std::max(shelfHeight, paddedH);
-    }
-
-    // Add a 1x1 white pixel for background rects
-    {
-        uint32_t wpX = shelfX;
-        uint32_t wpY = shelfY;
-        if (wpX + 1 > atlasW) {
-            wpX = 0;
-            wpY += shelfHeight;
-        }
-        if (wpY + 1 <= atlasH) {
-            uint32_t idx = (wpY * atlasW + wpX) * 4;
-            font.atlasPixels[idx + 0] = 255;
-            font.atlasPixels[idx + 1] = 255;
-            font.atlasPixels[idx + 2] = 255;
-            font.atlasPixels[idx + 3] = 255;
-            font.whiteU = (static_cast<float>(wpX) + 0.5f) / atlasW;
-            font.whiteV = (static_cast<float>(wpY) + 0.5f) / atlasH;
-        }
-    }
-
-    spdlog::info("Registered font '{}': {} glyphs, atlas {}x{}, baseSize={:.0f}, {} font(s)",
+    spdlog::info("Registered font '{}': {} pre-encoded glyphs, atlas {} texels, baseSize={:.0f}, {} font(s)",
                 name, static_cast<uint32_t>(font.glyphs.size()),
-                atlasW, atlasH, baseSize, font.hbFonts.size());
+                font.atlasUsed, baseSize, font.hbFonts.size());
 
     fonts_[name] = std::move(font);
     return true;
 }
 
 const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::string& text,
-                                         float fontSize, float wrapWidth, int align) const
+                                         float fontSize, float wrapWidth, int align)
 {
     // Compute cache key
     size_t h = std::hash<std::string>{}(fontName);
@@ -491,7 +212,7 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
 
     auto fontIt = fonts_.find(fontName);
     if (fontIt == fonts_.end()) return empty;
-    const FontData& font = fontIt->second;
+    FontData& font = fontIt->second;
 
     if (text.empty()) {
         cacheLru_.push_front({h, ShapedText{{}, 0, font.lineHeight * (fontSize / font.baseSize)}});
@@ -658,12 +379,17 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
                         unsigned int fbUpem = hb_face_get_upem(font.hbFonts[tryFi].hbFace);
                         float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
                         float adv = hb_font_get_glyph_h_advance(font.hbFonts[tryFi].hbFont, fallbackGid) * fbScale * scale;
+                        // Ensure fallback glyph is encoded
+                        ensureGlyphEncoded(font, glyphFi, gid);
                         allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
                             adv, 0, 0, seg.level});
                         return;
                     }
                 }
             }
+
+            // Ensure glyph is encoded in atlas
+            ensureGlyphEncoded(font, glyphFi, gid);
 
             allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
                 positions[idx].x_advance * fontPixelScale * scale,

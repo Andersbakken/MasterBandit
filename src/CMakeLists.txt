@@ -6,7 +6,7 @@ find_package(spdlog REQUIRED CONFIG)
 find_package(SheenBidi CONFIG REQUIRED)
 find_package(libunibreak CONFIG REQUIRED)
 find_package(libuv CONFIG REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
+find_package(glaze CONFIG REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 
@@ -15,7 +15,7 @@ include_directories(${CMAKE_CURRENT_LIST_DIR})
 add_subdirectory(${PLATFORM})
 
 add_executable(mb main.cpp Terminal.cpp Log.cpp text.cpp DebugIPC.cpp CLIClient.cpp)
-target_link_libraries(mb platform_${PLATFORM})
+target_link_libraries(mb platform_${PLATFORM} glaze::glaze)
 
 # Copy shaders next to the executable
 file(GLOB SHADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")

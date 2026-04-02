@@ -11,9 +11,7 @@
 
 #include <uv.h>
 #include <libwebsockets.h>
-#include <nlohmann/json.hpp>
-
-using json = nlohmann::json;
+#include <glaze/glaze.hpp>
 
 // ============================================================================
 // State shared between callback and main loop
@@ -26,7 +24,7 @@ struct CLIState {
 
     std::string socketPath;
     std::string command;        // "screenshot", "key", "logs"
-    json requestJson;           // the JSON to send on connect
+    glz::generic::object_t requestJson;  // the JSON to send on connect
     bool streaming = false;     // true for logs mode
     bool connected = false;
     bool done = false;
@@ -53,10 +51,13 @@ static void onSigint(uv_signal_t* handle, int /*signum*/)
     auto* st = static_cast<CLIState*>(handle->data);
     if (st->streaming && st->wsi) {
         // Send unsubscribe, then close
-        json unsub;
-        unsub["cmd"] = "unsubscribe";
-        unsub["channel"] = "logs";
-        st->pendingTx = unsub.dump();
+        glz::generic::object_t unsub{
+            {"cmd", "unsubscribe"},
+            {"channel", "logs"}
+        };
+        std::string buf;
+        (void)glz::write_json(unsub, buf);
+        st->pendingTx = std::move(buf);
         st->txPending = true;
         st->done = true;
         lws_callback_on_writable(st->wsi);
@@ -81,8 +82,9 @@ static int cliWsCallback(struct lws* wsi, enum lws_callback_reasons reason,
     case LWS_CALLBACK_CLIENT_ESTABLISHED: {
         st->connected = true;
         st->wsi = wsi;
-        // Queue the request for sending
-        st->pendingTx = st->requestJson.dump();
+        std::string buf;
+        (void)glz::write_json(st->requestJson, buf);
+        st->pendingTx = std::move(buf);
         st->txPending = true;
         lws_callback_on_writable(wsi);
         break;
@@ -106,7 +108,6 @@ static int cliWsCallback(struct lws* wsi, enum lws_callback_reasons reason,
     case LWS_CALLBACK_CLIENT_RECEIVE: {
         st->rxBuffer.append(static_cast<const char*>(in), len);
         if (lws_is_final_fragment(wsi)) {
-            // Print the response
             printf("%s\n", st->rxBuffer.c_str());
             fflush(stdout);
 
@@ -232,23 +233,21 @@ int runCLI(int argc, char** argv)
     }
 
     std::string command = argv[ctlIdx + 1];
-    json requestJson;
+    glz::generic::object_t reqObj;
     bool streaming = false;
 
     if (command == "screenshot") {
-        requestJson["cmd"] = "screenshot";
-        // Look for --format after the command
+        reqObj["cmd"] = "screenshot";
         for (int i = ctlIdx + 2; i < argc; i++) {
             if (strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
-                requestJson["format"] = argv[++i];
+                reqObj["format"] = std::string(argv[++i]);
             }
         }
     } else if (command == "key") {
-        requestJson["cmd"] = "key";
+        reqObj["cmd"] = "key";
         std::vector<std::string> mods;
         for (int i = ctlIdx + 2; i < argc; i++) {
             if (strcmp(argv[i], "--text") == 0 && i + 1 < argc) {
-                // Process escape sequences in the text
                 std::string raw = argv[++i];
                 std::string processed;
                 for (size_t j = 0; j < raw.size(); j++) {
@@ -263,19 +262,23 @@ int runCLI(int argc, char** argv)
                         processed += raw[j];
                     }
                 }
-                requestJson["text"] = processed;
+                reqObj["text"] = processed;
             } else if (strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
-                requestJson["key"] = argv[++i];
+                reqObj["key"] = std::string(argv[++i]);
             } else if (strcmp(argv[i], "--mod") == 0 && i + 1 < argc) {
                 mods.push_back(argv[++i]);
             }
         }
         if (!mods.empty()) {
-            requestJson["mods"] = mods;
+            glz::generic::array_t modsArr;
+            for (const auto& m : mods) {
+                modsArr.emplace_back(m);
+            }
+            reqObj["mods"] = std::move(modsArr);
         }
     } else if (command == "logs") {
-        requestJson["cmd"] = "subscribe";
-        requestJson["channel"] = "logs";
+        reqObj["cmd"] = "subscribe";
+        reqObj["channel"] = "logs";
         streaming = true;
     } else {
         fprintf(stderr, "Unknown command: %s\n", command.c_str());
@@ -293,7 +296,7 @@ int runCLI(int argc, char** argv)
     CLIState state;
     state.socketPath = socketPath;
     state.command = command;
-    state.requestJson = requestJson;
+    state.requestJson = std::move(reqObj);
     state.streaming = streaming;
     sState = &state;
 
@@ -323,9 +326,11 @@ int runCLI(int argc, char** argv)
     }
 
     // Connect to the Unix socket
+    // lws 4.x: "+" prefix on ADDRESS (not path) triggers AF_UNIX in connect2/connect3
+    std::string unixAddr = "+" + socketPath;
     struct lws_client_connect_info ccinfo = {};
     ccinfo.context = state.ctx;
-    ccinfo.address = socketPath.c_str();
+    ccinfo.address = unixAddr.c_str();
     ccinfo.port = 0;
     ccinfo.path = "/";
     ccinfo.host = "localhost";
@@ -333,9 +338,6 @@ int runCLI(int argc, char** argv)
     ccinfo.protocol = "mb-debug";
     ccinfo.local_protocol_name = "mb-debug";
     ccinfo.ssl_connection = 0;
-
-    // Use Unix socket transport
-    ccinfo.iface = socketPath.c_str();
 
     struct lws* wsi = lws_client_connect_via_info(&ccinfo);
     if (!wsi) {

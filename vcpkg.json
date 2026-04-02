@@ -17,7 +17,7 @@
         "sheenbidi",
         "libunibreak",
         "libwebsockets",
-        "nlohmann-json",
+        "glaze",
         "stb"
     ]
 }

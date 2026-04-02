@@ -5,6 +5,8 @@
 #include "Log.h"
 #include "DebugIPC.h"
 
+#include <glaze/glaze.hpp>
+
 #include <dawn/webgpu_cpp.h>
 #include <dawn/native/DawnNative.h>
 
@@ -23,7 +25,6 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/base_sink.h>
-#include <nlohmann/json.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -661,36 +662,68 @@ void TerminalWindow::render(int y, int x, const std::string& str, int idx, int l
     renderSegments_.push_back(std::move(seg));
 }
 
+// Replace invalid UTF-8 bytes with U+FFFD so glaze doesn't reject them
+static std::string sanitizeUtf8(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    const auto* p = reinterpret_cast<const unsigned char*>(in.data());
+    const auto* end = p + in.size();
+    while (p < end) {
+        if (*p < 0x80) {
+            out += static_cast<char>(*p++);
+        } else if ((*p & 0xE0) == 0xC0 && p + 1 < end && (p[1] & 0xC0) == 0x80) {
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+        } else if ((*p & 0xF0) == 0xE0 && p + 2 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+        } else if ((*p & 0xF8) == 0xF0 && p + 3 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+        } else {
+            out += "\xEF\xBF\xBD"; // U+FFFD
+            ++p;
+        }
+    }
+    return out;
+}
+
 std::string TerminalWindow::gridToJson(int id)
 {
-    using json = nlohmann::json;
-
-    // Trigger a render pass to collect segments
     renderSegments_.clear();
     Terminal::render();
 
-    json resp;
+    glz::generic::object_t resp;
     resp["type"] = "screenshot";
     resp["format"] = "grid";
-    if (id) resp["id"] = id;
-    resp["cols"] = width();
-    resp["rows"] = height();
-    resp["cursor"] = {{"x", cursorX()}, {"y", cursorY()}};
+    if (id) resp["id"] = static_cast<double>(id);
+    resp["cols"] = static_cast<double>(width());
+    resp["rows"] = static_cast<double>(height());
+    resp["cursor"] = glz::generic::object_t{
+        {"x", static_cast<double>(cursorX())},
+        {"y", static_cast<double>(cursorY())}
+    };
 
-    json lines = json::array();
+    glz::generic::array_t lines;
     for (const auto& seg : renderSegments_) {
-        json line;
-        line["y"] = seg.screenX; // screenX holds the line index (see render() call convention)
-        line["x"] = seg.screenY; // screenY holds the column offset
-        line["text"] = seg.text;
+        glz::generic::object_t line;
+        line["y"] = static_cast<double>(seg.screenX);
+        line["x"] = static_cast<double>(seg.screenY);
+        line["text"] = sanitizeUtf8(seg.text);
         if (seg.flags & Render_Selected) {
             line["selected"] = true;
         }
-        lines.push_back(std::move(line));
+        lines.emplace_back(std::move(line));
     }
     resp["lines"] = std::move(lines);
 
-    return resp.dump();
+    std::string buf;
+    (void)glz::write_json(resp, buf);
+    return buf;
 }
 
 void TerminalWindow::renderTerminal()

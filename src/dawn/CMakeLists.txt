@@ -9,7 +9,7 @@ target_link_libraries(platform_dawn PUBLIC
     SheenBidi::SheenBidi
     libunibreak::libunibreak
     websockets
-    nlohmann_json::nlohmann_json
+    glaze::glaze
 )
 target_include_directories(platform_dawn PRIVATE ${Stb_INCLUDE_DIR})
 target_include_directories(platform_dawn PRIVATE ${CMAKE_SOURCE_DIR}/src)

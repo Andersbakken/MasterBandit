@@ -2,13 +2,58 @@
 #include "Terminal.h"
 #include "Log.h"
 
-#include <nlohmann/json.hpp>
+#include <glaze/glaze.hpp>
 #include <spdlog/spdlog.h>
 
 #include <unistd.h>
 #include <sys/stat.h>
 
-using json = nlohmann::json;
+// Helpers for building JSON objects
+static std::string dumpObj(const glz::generic::object_t& obj)
+{
+    std::string buf;
+    (void)glz::write_json(obj, buf);
+    return buf;
+}
+
+static std::string dumpObj(std::initializer_list<std::pair<std::string, glz::generic>> fields)
+{
+    glz::generic::object_t obj;
+    for (auto& [k, v] : fields) {
+        obj.emplace(k, v);
+    }
+    std::string buf;
+    (void)glz::write_json(obj, buf);
+    return buf;
+}
+
+// Extract a string field from a json_t object, with default
+static std::string jsonStr(const glz::generic& j, const std::string& key, const std::string& def = "")
+{
+    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        auto it = obj->find(key);
+        if (it != obj->end()) {
+            if (auto* s = std::get_if<std::string>(&it->second.data)) {
+                return *s;
+            }
+        }
+    }
+    return def;
+}
+
+// Extract an int field from a json_t object, with default
+static int jsonInt(const glz::generic& j, const std::string& key, int def = 0)
+{
+    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        auto it = obj->find(key);
+        if (it != obj->end()) {
+            if (auto* d = std::get_if<double>(&it->second.data)) {
+                return static_cast<int>(*d);
+            }
+        }
+    }
+    return def;
+}
 
 // ============================================================================
 // Per-connection helpers
@@ -134,10 +179,7 @@ DebugIPC::DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb)
             msgs.swap(self->logQueue_);
         }
         for (const auto& msg : msgs) {
-            json j;
-            j["type"] = "log";
-            j["msg"] = msg;
-            std::string payload = j.dump();
+            std::string payload = dumpObj({{"type", "log"}, {"msg", msg}});
             for (auto& p : self->connections_) {
                 if (p.second.subscribedToLogs) {
                     p.second.txQueue.push_back(payload);
@@ -167,65 +209,56 @@ DebugIPC::~DebugIPC()
 
 void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
 {
-    json j;
-    try {
-        j = json::parse(msg);
-    } catch (const json::parse_error&) {
-        json err;
-        err["type"] = "error";
-        err["msg"] = "invalid JSON";
-        sendResponse(wsi, err.dump());
+    glz::generic j;
+    auto ec = glz::read_json(j, msg);
+    if (ec) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"msg", "invalid JSON"}}));
         return;
     }
 
-    std::string cmd = j.value("cmd", "");
-    int id = j.value("id", 0);
+    std::string cmd = jsonStr(j, "cmd");
+    int id = jsonInt(j, "id");
 
     if (cmd == "screenshot") {
-        std::string format = j.value("format", "grid");
+        std::string format = jsonStr(j, "format", "grid");
         if (format == "png") {
             cmdScreenshotPng(wsi, id);
         } else {
             cmdScreenshotGrid(wsi, id);
         }
     } else if (cmd == "key") {
-        std::string text = j.value("text", "");
-        std::string key = j.value("key", "");
+        std::string text = jsonStr(j, "text");
+        std::string key = jsonStr(j, "key");
         std::vector<std::string> mods;
-        if (j.contains("mods") && j["mods"].is_array()) {
-            for (const auto& m : j["mods"]) {
-                if (m.is_string()) mods.push_back(m.get<std::string>());
+        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+            auto it = obj->find("mods");
+            if (it != obj->end()) {
+                if (auto* arr = std::get_if<glz::generic::array_t>(&it->second.data)) {
+                    for (const auto& m : *arr) {
+                        if (auto* s = std::get_if<std::string>(&m.data)) {
+                            mods.push_back(*s);
+                        }
+                    }
+                }
             }
         }
         cmdSendKey(wsi, id, text, key, mods);
     } else if (cmd == "subscribe") {
-        std::string channel = j.value("channel", "");
+        std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
             cmdSubscribeLogs(wsi, id);
         } else {
-            json err;
-            err["type"] = "error";
-            err["id"] = id;
-            err["msg"] = "unknown channel";
-            sendResponse(wsi, err.dump());
+            sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "unknown channel"}}));
         }
     } else if (cmd == "unsubscribe") {
-        std::string channel = j.value("channel", "");
+        std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
             cmdUnsubscribeLogs(wsi, id);
         } else {
-            json err;
-            err["type"] = "error";
-            err["id"] = id;
-            err["msg"] = "unknown channel";
-            sendResponse(wsi, err.dump());
+            sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "unknown channel"}}));
         }
     } else {
-        json err;
-        err["type"] = "error";
-        err["id"] = id;
-        err["msg"] = "unknown command: " + cmd;
-        sendResponse(wsi, err.dump());
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "unknown command: " + cmd}}));
     }
 }
 
@@ -246,11 +279,7 @@ void DebugIPC::cmdScreenshotGrid(struct lws* wsi, int id)
     if (gridCb_) {
         sendResponse(wsi, gridCb_(id));
     } else {
-        json err;
-        err["type"] = "error";
-        err["id"] = id;
-        err["msg"] = "grid screenshot not available";
-        sendResponse(wsi, err.dump());
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "grid screenshot not available"}}));
     }
 }
 
@@ -261,11 +290,7 @@ void DebugIPC::cmdScreenshotGrid(struct lws* wsi, int id)
 void DebugIPC::cmdScreenshotPng(struct lws* wsi, int id)
 {
     if (pngPending_) {
-        json err;
-        err["type"] = "error";
-        err["id"] = id;
-        err["msg"] = "screenshot already pending";
-        sendResponse(wsi, err.dump());
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "screenshot already pending"}}));
         return;
     }
 
@@ -279,13 +304,13 @@ void DebugIPC::onPngReady(const std::string& base64Png)
 {
     if (!pngPending_ || !pngWsi_) return;
 
-    json resp;
+    glz::generic::object_t resp;
     resp["type"] = "screenshot";
     resp["format"] = "png";
-    if (pngId_) resp["id"] = pngId_;
+    if (pngId_) resp["id"] = static_cast<double>(pngId_);
     resp["data"] = base64Png;
 
-    sendResponse(pngWsi_, resp.dump());
+    sendResponse(pngWsi_, dumpObj(resp));
 
     pngPending_ = false;
     pngWsi_ = nullptr;
@@ -369,10 +394,10 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
         }
     }
 
-    json resp;
+    glz::generic::object_t resp;
     resp["type"] = "ok";
-    if (id) resp["id"] = id;
-    sendResponse(wsi, resp.dump());
+    if (id) resp["id"] = static_cast<double>(id);
+    sendResponse(wsi, dumpObj(resp));
 }
 
 // ============================================================================
@@ -384,10 +409,10 @@ void DebugIPC::cmdSubscribeLogs(struct lws* wsi, int id)
     auto* conn = findConnection(wsi);
     if (conn) conn->subscribedToLogs = true;
 
-    json resp;
+    glz::generic::object_t resp;
     resp["type"] = "ok";
-    if (id) resp["id"] = id;
-    sendResponse(wsi, resp.dump());
+    if (id) resp["id"] = static_cast<double>(id);
+    sendResponse(wsi, dumpObj(resp));
 }
 
 void DebugIPC::cmdUnsubscribeLogs(struct lws* wsi, int id)
@@ -395,10 +420,10 @@ void DebugIPC::cmdUnsubscribeLogs(struct lws* wsi, int id)
     auto* conn = findConnection(wsi);
     if (conn) conn->subscribedToLogs = false;
 
-    json resp;
+    glz::generic::object_t resp;
     resp["type"] = "ok";
-    if (id) resp["id"] = id;
-    sendResponse(wsi, resp.dump());
+    if (id) resp["id"] = static_cast<double>(id);
+    sendResponse(wsi, dumpObj(resp));
 }
 
 // ============================================================================

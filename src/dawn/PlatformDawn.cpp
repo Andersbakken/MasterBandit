@@ -4,6 +4,7 @@
 #include "text.h"
 #include "Log.h"
 #include "DebugIPC.h"
+#include "NativeSurface.h"
 
 #include <glaze/glaze.hpp>
 
@@ -12,14 +13,6 @@
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
-
-#ifdef __linux__
-#  define GLFW_EXPOSE_NATIVE_X11
-#endif
-#ifdef __APPLE__
-#  define GLFW_EXPOSE_NATIVE_COCOA
-#endif
-#include <GLFW/glfw3native.h>
 
 #include <uv.h>
 #include <spdlog/spdlog.h>
@@ -30,12 +23,6 @@
 #include <stb_image_write.h>
 
 #include <sys/ioctl.h>
-
-// X11 headers define Success as a macro (= 0), which conflicts with
-// wgpu::SurfaceGetCurrentTextureStatus::Success. Undefine it.
-#ifdef Success
-#  undef Success
-#endif
 
 #include <filesystem>
 #include <fstream>
@@ -388,37 +375,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
     // Create Dawn surface from GLFW window
     wgpu::Instance instance(nativeInstance_->Get());
-    wgpu::Surface surface = nullptr;
-
-#ifdef __linux__
-    // Try X11 first, then Wayland
-    if (glfwGetPlatform() == GLFW_PLATFORM_X11) {
-        Display* display = glfwGetX11Display();
-        ::Window x11Window = glfwGetX11Window(glfwWin);
-
-        wgpu::SurfaceSourceXlibWindow x11Source;
-        x11Source.display = display;
-        x11Source.window = static_cast<uint64_t>(x11Window);
-
-        wgpu::SurfaceDescriptor surfDesc;
-        surfDesc.nextInChain = &x11Source;
-        surface = instance.CreateSurface(&surfDesc);
-    }
-#endif
-
-#ifdef __APPLE__
-    {
-        id nsWindow = glfwGetCocoaWindow(glfwWin);
-        // Get or create a CAMetalLayer from the window's contentView
-        // Dawn expects a CAMetalLayer
-        wgpu::SurfaceSourceMetalLayer metalSource;
-        metalSource.layer = nullptr; // Dawn handles this via NSWindow
-        // Actually, Dawn on macOS uses the NSWindow directly via a helper
-        // We need to use glfwCreateWindowSurface or create via the raw approach
-        // For now, use the GLFW native surface creation
-    }
-#endif
-
+    wgpu::Surface surface = createNativeSurface(glfwWin, instance);
     if (!surface) {
         spdlog::error("Failed to create Dawn surface");
         glfwDestroyWindow(glfwWin);

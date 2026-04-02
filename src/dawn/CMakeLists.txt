@@ -1,4 +1,4 @@
-add_library(platform_dawn STATIC PlatformDawn.cpp Renderer.cpp)
+add_library(platform_dawn STATIC PlatformDawn.cpp Renderer.cpp NativeSurface.cpp)
 target_link_libraries(platform_dawn PUBLIC
     dawn::webgpu_dawn
     glfw

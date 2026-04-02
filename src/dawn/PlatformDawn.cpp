@@ -204,7 +204,7 @@ public:
 
     // Terminal overrides
     void event(Event ev, void* data = nullptr) override;
-    void render(int y, int x, const std::string& str, int idx, int len,
+    void render(int x, int y, const std::string& str, int idx, int len,
                 int cursor, unsigned int flags) override;
 
     // Called from GLFW callbacks
@@ -607,12 +607,12 @@ void TerminalWindow::event(Event ev, void* /*data*/)
     }
 }
 
-void TerminalWindow::render(int y, int x, const std::string& str, int idx, int len,
+void TerminalWindow::render(int x, int y, const std::string& str, int idx, int len,
                     int cursor, unsigned int flags)
 {
     RenderSegment seg;
-    seg.screenY = y;
     seg.screenX = x;
+    seg.screenY = y;
     seg.text = str.substr(idx, len);
     seg.cursorCol = cursor;
     seg.flags = flags;
@@ -668,8 +668,8 @@ std::string TerminalWindow::gridToJson(int id)
     glz::generic::array_t lines;
     for (const auto& seg : renderSegments_) {
         glz::generic::object_t line;
-        line["y"] = static_cast<double>(seg.screenX);
-        line["x"] = static_cast<double>(seg.screenY);
+        line["x"] = static_cast<double>(seg.screenX);
+        line["y"] = static_cast<double>(seg.screenY);
         line["text"] = sanitizeUtf8(seg.text);
         if (seg.flags & Render_Selected) {
             line["selected"] = true;
@@ -713,8 +713,8 @@ void TerminalWindow::renderTerminal()
     for (const auto& seg : renderSegments_) {
         if (seg.text.empty()) continue;
 
-        float baseY = (seg.screenY - this->y()) * lineHeight_;
         float baseX = static_cast<float>(seg.screenX) * charWidth_;
+        float baseY = static_cast<float>(seg.screenY - this->y()) * lineHeight_;
 
         // Render background for selected text
         if (seg.flags & Render_Selected) {

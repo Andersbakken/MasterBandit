@@ -94,7 +94,7 @@ public:
         Render_None = 0,
         Render_Selected = (1ull << 1)
     };
-    virtual void render(int y, int x, const std::string &str, int idx, int len, int cursor, unsigned int flags) = 0;
+    virtual void render(int x, int y, const std::string &str, int idx, int len, int cursor, unsigned int flags) = 0;
 
     void addText(const char *str, int len);
 

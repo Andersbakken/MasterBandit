@@ -3,7 +3,8 @@ target_link_libraries(platform_dawn PUBLIC
     dawn::webgpu_dawn
     glfw
     $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,uv>
-    harfbuzz::harfbuzz
+    harfbuzz
+    harfbuzz-gpu
     msdfgen::msdfgen-core
     spdlog::spdlog
     SheenBidi::SheenBidi

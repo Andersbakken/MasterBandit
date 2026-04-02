@@ -6,10 +6,6 @@
         "libuv",
         "freetype",
         {
-            "name": "harfbuzz",
-            "default-features": false
-        },
-        {
             "name": "msdfgen",
             "default-features": false
         },

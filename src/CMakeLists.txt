@@ -1,6 +1,6 @@
 find_package(Dawn REQUIRED)
 find_package(glfw3 REQUIRED CONFIG)
-find_package(harfbuzz CONFIG REQUIRED)
+# harfbuzz built from 3rdparty submodule (v14+)
 find_package(msdfgen CONFIG REQUIRED)
 find_package(spdlog REQUIRED CONFIG)
 find_package(SheenBidi CONFIG REQUIRED)

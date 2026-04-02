@@ -1,4 +1,5 @@
 #include "Log.h"
+#include <spdlog/spdlog.h>
 
 static Log::Level sLevel = Log::Error;
 
@@ -17,9 +18,14 @@ void Log::log(Level level, const std::string &string)
     if (level < sLevel)
         return;
 
-    fwrite(string.c_str(), 1, string.size(), stdout);
-    if (string.size() > 0 && string[string.size() - 1] != '\n')
-        fwrite("\n", 1, 1, stdout);
+    switch (level) {
+    case Verbose: spdlog::trace("{}", string); break;
+    case Debug:   spdlog::debug("{}", string); break;
+    case Warn:    spdlog::warn("{}", string); break;
+    case Error:   spdlog::error("{}", string); break;
+    case Fatal:   spdlog::critical("{}", string); break;
+    default:      spdlog::info("{}", string); break;
+    }
 }
 
 void Log::log(Level level, const char *fmt, va_list args)

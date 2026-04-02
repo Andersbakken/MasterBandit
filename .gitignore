@@ -1,15 +1,37 @@
+# Build directories
+/build/
 **/CMakeFiles/*
-/bin/mb
-/rules.ninja
-/compile_commands.json
 **/cmake_install.cmake
+/CMakeCache.txt
+
+# Ninja (in-tree builds)
 /build.ninja
-/bin/.gdb_brestore
-/bin/.gdb_brestore.txt
-/bin/.gdb_history
+/rules.ninja
 /.ninja_deps
 /.ninja_log
-/CMakeCache.txt
-/src/cmake_install.cmake
+
+# Binaries
+/bin/
+
+# Compile commands
+/compile_commands.json
+
+# GDB
+.gdb_brestore
+.gdb_brestore.txt
+.gdb_history
+
+# Qt autogen
 /src/qt/libplatform_qt.a
 /src/qt/platform_qt_autogen/*
+
+# Claude Code
+.claude/
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.user

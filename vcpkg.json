@@ -1,0 +1,23 @@
+{
+    "name": "masterbandit",
+    "version-string": "0.1.0",
+    "dependencies": [
+        "glfw3",
+        "libuv",
+        "freetype",
+        {
+            "name": "harfbuzz",
+            "default-features": false
+        },
+        {
+            "name": "msdfgen",
+            "default-features": false
+        },
+        "spdlog",
+        "sheenbidi",
+        "libunibreak",
+        "libwebsockets",
+        "nlohmann-json",
+        "stb"
+    ]
+}

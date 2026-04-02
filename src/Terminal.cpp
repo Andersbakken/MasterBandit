@@ -1,5 +1,6 @@
 #include "Terminal.h"
 #include "Log.h"
+#include <spdlog/spdlog.h>
 
 #include <assert.h>
 #include <unistd.h>
@@ -108,28 +109,22 @@ bool Terminal::init(const TerminalOptions &options)
 
         EINTRWRAP(ret, ::close(mSlaveFD));
 
-        extern char **environ;
-        execle(mOptions.shell.c_str(), mOptions.shell.c_str(), nullptr, environ);
+        unsetenv("COLUMNS");
+        unsetenv("LINES");
+        unsetenv("TERMCAP");
+        setenv("LOGNAME", mOptions.user.c_str(), 1);
+        setenv("USER", mOptions.user.c_str(), 1);
+        setenv("SHELL", mOptions.shell.c_str(), 1);
+        setenv("TERM", "xterm-256color", 1);
 
-        // const struct passwd *pw;
+        signal(SIGCHLD, SIG_DFL);
+        signal(SIGHUP, SIG_DFL);
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
+        signal(SIGALRM, SIG_DFL);
 
-        // unsetenv("COLUMNS");
-        // unsetenv("LINES");
-        // unsetenv("TERMCAP");
-        // setenv("LOGNAME", options.user.c_str(), 1);
-        // setenv("USER", options.user.c_str(), 1);
-        // setenv("SHELL", options.shell.c_str(), 1);
-        // // setenv("HOME", gete, 1);
-        // setenv("TERM", "xterm-256color", 1);
-
-        // signal(SIGCHLD, SIG_DFL);
-        // signal(SIGHUP, SIG_DFL);
-        // signal(SIGINT, SIG_DFL);
-        // signal(SIGQUIT, SIG_DFL);
-        // signal(SIGTERM, SIG_DFL);
-        // signal(SIGALRM, SIG_DFL);
-
-        // execl(mOptions.shell.c_str(), mOptions.shell.c_str(), nullptr);
+        execl(mOptions.shell.c_str(), mOptions.shell.c_str(), nullptr);
         return false;
 
         break;
@@ -224,31 +219,58 @@ bool Terminal::isSelected(int y, int *start, int *length) const
 
 void Terminal::keyPressEvent(const KeyEvent *event)
 {
-    if (event->key == Key_F12) {
-        // for (int i=0; i<mScrollback.size(); ++i) {
-        //     printf("%d/%d: \"%s\"\n", i, mScrollback.size(), mScrollback[i].data.c_str());
-        // }
+    spdlog::debug("keyPressEvent: key=0x{:x} text='{}' ({} bytes) count={}",
+                  static_cast<int>(event->key),
+                  toPrintable(event->text),
+                  event->text.size(),
+                  event->count);
 
+    if (event->key == Key_F12) {
         return;
     }
-    // DEBUG("Got keypress \"%s\" %d\n", toPrintable(event->text).c_str(), event->count);
     std::string text = event->text;
     if (text.empty()) {
         switch (event->key) {
-        case Key_Left: text = "\02"; break;
-        case Key_Right: text = "\06"; break;
-        case Key_Up: text = "\020"; break;
-        case Key_Down: text = "\016"; break;
+        case Key_Return:
+        case Key_Enter:    text = "\r"; break;
+        case Key_Backspace: text = "\x7f"; break;
+        case Key_Tab:      text = "\t"; break;
+        case Key_Escape:   text = "\x1b"; break;
+        case Key_Delete:   text = "\x1b[3~"; break;
+        case Key_Left:     text = "\x1b[D"; break;
+        case Key_Right:    text = "\x1b[C"; break;
+        case Key_Up:       text = "\x1b[A"; break;
+        case Key_Down:     text = "\x1b[B"; break;
+        case Key_Home:     text = "\x1b[H"; break;
+        case Key_End:      text = "\x1b[F"; break;
+        case Key_PageUp:   text = "\x1b[5~"; break;
+        case Key_PageDown: text = "\x1b[6~"; break;
+        case Key_Insert:   text = "\x1b[2~"; break;
+        case Key_F1:       text = "\x1bOP"; break;
+        case Key_F2:       text = "\x1bOQ"; break;
+        case Key_F3:       text = "\x1bOR"; break;
+        case Key_F4:       text = "\x1bOS"; break;
+        case Key_F5:       text = "\x1b[15~"; break;
+        case Key_F6:       text = "\x1b[17~"; break;
+        case Key_F7:       text = "\x1b[18~"; break;
+        case Key_F8:       text = "\x1b[19~"; break;
+        case Key_F9:       text = "\x1b[20~"; break;
+        case Key_F10:      text = "\x1b[21~"; break;
+        case Key_F11:      text = "\x1b[23~"; break;
+        case Key_F12:      text = "\x1b[24~"; break;
         default:
             break;
         }
     }
+    if (text.empty()) {
+        spdlog::debug("keyPressEvent: no text to send for key=0x{:x}", static_cast<int>(event->key));
+    }
     if (!text.empty() && event->count) {
         const char *ch = text.c_str();
         int bytes = text.size();
+        spdlog::debug("keyPressEvent: writing {} bytes to masterFD={}", bytes, mMasterFD);
         for (size_t i=0; i<event->count; ++i) {
             int ret;
-            DEBUG("Writing [%s] to master", toPrintable(text).c_str());
             while (bytes) {
                 EINTRWRAP(ret, ::write(mMasterFD, ch, bytes));
                 if (ret == -1) {
@@ -300,6 +322,7 @@ void Terminal::readFromFD()
 #endif
     int ret;
     EINTRWRAP(ret, ::read(mMasterFD, buf, sizeof(buf) - 1));
+    spdlog::debug("readFromFD: read {} bytes from masterFD={}", ret, mMasterFD);
     if (ret == -1) {
         ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
         mExitCode = 1;
@@ -353,7 +376,14 @@ void Terminal::readFromFD()
                     mUtf8Buffer[mUtf8Index++] = buf[i];
                     mState = InUtf8;
                 } else {
-                    currentLine->data += buf[i];
+                    if (mCursorX >= 0 && mCursorX < static_cast<int>(currentLine->data.size())) {
+                        currentLine->data[mCursorX] = buf[i];
+                    } else {
+                        // Pad with spaces if cursor is past end of line
+                        while (static_cast<int>(currentLine->data.size()) < mCursorX)
+                            currentLine->data += ' ';
+                        currentLine->data += buf[i];
+                    }
                     ++mCursorX;
                 }
                 break;
@@ -361,21 +391,10 @@ void Terminal::readFromFD()
             break;
         case InUtf8:
             assert(mUtf8Index > 0 && mUtf8Index < 6);
-            mUtf8Buffer[mUtf8Index++] = buf[i];
-            if (!(buf[i] & 0x80)) {
-                const std::string str(mUtf8Buffer, mUtf8Index);
-                currentLine->data += str;
-                mCursorX += str.size();
-#warning this should do error checking witgh QTextDecoder
-                mUtf8Index = 0;
-#ifndef NDEBUG
-                memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
-#endif
-
-                mState = Normal;
-            } else if (mUtf8Index == 6) {
-                ERROR("Bad utf8"); // ### write what the data is?
-                for (int j=0; j<mUtf8Index; ++j) {
+            if ((buf[i] & 0xC0) != 0x80) {
+                // Not a continuation byte — bad UTF-8, dump what we had and reprocess
+                ERROR("Bad utf8 sequence (non-continuation byte)");
+                for (int j = 0; j < mUtf8Index; ++j) {
                     currentLine->data.push_back(mUtf8Buffer[j]);
                 }
                 mUtf8Index = 0;
@@ -383,6 +402,48 @@ void Terminal::readFromFD()
                 memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
 #endif
                 mState = Normal;
+                --i; // reprocess current byte in Normal state
+                break;
+            }
+            mUtf8Buffer[mUtf8Index++] = buf[i];
+            {
+                // Determine expected length from lead byte
+                int expected = 0;
+                unsigned char lead = static_cast<unsigned char>(mUtf8Buffer[0]);
+                if ((lead & 0xE0) == 0xC0) expected = 2;
+                else if ((lead & 0xF0) == 0xE0) expected = 3;
+                else if ((lead & 0xF8) == 0xF0) expected = 4;
+                else expected = 1; // invalid lead, will be caught below
+
+                if (mUtf8Index == expected) {
+                    const std::string str(mUtf8Buffer, mUtf8Index);
+                    // TODO: proper multi-byte overwrite at cursor position
+                    // For now, append (UTF-8 overwrites in terminal are rare in prompts)
+                    while (static_cast<int>(currentLine->data.size()) < mCursorX)
+                        currentLine->data += ' ';
+                    if (mCursorX < static_cast<int>(currentLine->data.size())) {
+                        // Overwrite single byte at cursor (imperfect for multi-byte)
+                        currentLine->data.replace(mCursorX, 1, str);
+                    } else {
+                        currentLine->data += str;
+                    }
+                    ++mCursorX;
+                    mUtf8Index = 0;
+#ifndef NDEBUG
+                    memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
+#endif
+                    mState = Normal;
+                } else if (mUtf8Index >= 6 || mUtf8Index > expected) {
+                    ERROR("Bad utf8 (overlong sequence)");
+                    for (int j = 0; j < mUtf8Index; ++j) {
+                        currentLine->data.push_back(mUtf8Buffer[j]);
+                    }
+                    mUtf8Index = 0;
+#ifndef NDEBUG
+                    memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
+#endif
+                    mState = Normal;
+                }
             }
             break;
         case InEscape:
@@ -394,14 +455,18 @@ void Terminal::readFromFD()
             switch (mEscapeBuffer[0]) {
             case SS2:
             case SS3:
-            case DCS:
             case ST:
+                DEBUG("Ignoring escape sequence %s", escapeSequenceName(static_cast<EscapeSequence>(mEscapeBuffer[0])));
+                resetToNormal();
+                break;
+            case DCS:
             case OSX:
             case SOS:
             case PM:
             case APC:
-                ERROR("Unhandled escape sequence %s", escapeSequenceName(static_cast<EscapeSequence>(mEscapeBuffer[0])));
-                resetToNormal();
+                // These are string sequences terminated by BEL or ESC backslash.
+                // Enter string-consuming state to skip their payload.
+                mState = InStringSequence;
                 break;
             case CSI:
                 if (mEscapeIndex > 1) {
@@ -430,12 +495,39 @@ void Terminal::readFromFD()
                 event(VisibleBell);
                 resetToNormal();
                 break; }
+            case DECKPAM: // Application Keypad Mode
+            case DECKPNM: // Normal Keypad Mode
+                DEBUG("Ignoring keypad mode escape %s", escapeSequenceName(static_cast<EscapeSequence>(mEscapeBuffer[0])));
+                resetToNormal();
+                break;
             default:
                 ERROR("Unknown escape sequence %s\n", toPrintable(mEscapeBuffer, 1).c_str());
                 resetToNormal();
                 break;
             }
 
+            break;
+        case InStringSequence:
+            // Consume bytes until BEL (\x07) or ESC backslash (ST)
+            if (buf[i] == '\x07') {
+                // BEL terminates the string sequence
+                DEBUG("String sequence terminated by BEL");
+                mState = Normal;
+                mEscapeIndex = 0;
+#ifndef NDEBUG
+                memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
+            } else if (buf[i] == 0x1b) {
+                // Could be start of ESC \ (ST). Check next byte.
+                // For now, store this and let InEscape handle it if next is '\'
+                // Actually, we need to peek. Just switch to InEscape to check.
+                mState = InEscape;
+                mEscapeIndex = 0;
+#ifndef NDEBUG
+                memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
+#endif
+            }
+            // else: discard the byte (string payload)
             break;
         }
     }
@@ -617,6 +709,12 @@ void Terminal::processCSI()
             action.type = Action::RestoreCursorPosition;
         }
         break;
+    case SM: // Set Mode (CSI ? ... h)
+    case RM: // Reset Mode (CSI ? ... l)
+        DEBUG("Ignoring private mode %s: %s",
+              mEscapeBuffer[mEscapeIndex - 1] == 'h' ? "set" : "reset",
+              toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+        break;
     default:
         ERROR("Unknown CSI final byte 0x%x", mEscapeBuffer[mEscapeIndex - 1]);
         break;
@@ -751,6 +849,8 @@ const char *Terminal::escapeSequenceName(EscapeSequence seq)
     case APC: return "APC";
     case RIS: return "RIS";
     case VB: return "VB";
+    case DECKPAM: return "DECKPAM";
+    case DECKPNM: return "DECKPNM";
     }
     abort();
     return nullptr;
@@ -778,6 +878,8 @@ const char *Terminal::csiSequenceName(CSISequence seq)
     case SCP: return "SCP";
     case RCP: return "RCP";
     case DCH: return "DCH";
+    case SM: return "SM";
+    case RM: return "RM";
     }
     return nullptr;
 }

@@ -1,8 +1,10 @@
 #include <unistd.h>
 #include "Terminal.h"
 #include <getopt.h>
+#include <cstring>
 #include <regex>
 #include "Log.h"
+#include "CLIClient.h"
 
 void usage(FILE *f)
 {
@@ -17,7 +19,7 @@ static std::string defaultShell(const std::string &user)
     }
     FILE *f = fopen("/etc/passwd", "r");
     if (f) {
-#warning this should use getpw
+// TODO: should use getpw
         std::string r;
         char line[1024];
         std::regex rx("^" + user + ":[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^: ]+) *$");
@@ -40,6 +42,13 @@ static std::string defaultShell(const std::string &user)
 
 int main(int argc, char **argv)
 {
+    // Check for --ctl flag: if present, run as CLI client
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--ctl") == 0) {
+            return runCLI(argc, argv);
+        }
+    }
+
     std::unique_ptr<Platform> platform = createPlatform(argc, argv);
     if (!platform) {
         fprintf(stderr, "Failed to create platform\n");
@@ -75,7 +84,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    Log::setLogLevel(static_cast<Log::Level>(logLevel));
+    Log::setLogLevel(Log::Debug); // forced for debugging
 
     std::unique_ptr<Terminal> terminal = platform->createTerminal(options);
     if (!terminal) {

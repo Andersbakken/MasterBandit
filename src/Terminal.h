@@ -142,7 +142,8 @@ private:
     enum State {
         Normal,
         InUtf8,
-        InEscape
+        InEscape,
+        InStringSequence // consuming OSC, DCS, SOS, PM, APC until BEL or ST
     } mState { Normal };
     char mUtf8Buffer[6];
     int mUtf8Index { 0 };
@@ -162,7 +163,9 @@ private:
         PM = '^', // Privacy Message
         APC = '_', // Application Program Command
         RIS = 'c', // Reset to Initial State
-        VB = 'g' // Visible bell
+        VB = 'g', // Visible bell
+        DECKPAM = '=', // Application Keypad Mode
+        DECKPNM = '>' // Normal Keypad Mode
     };
 
     void processCSI();
@@ -189,10 +192,11 @@ private:
         DSR	= 'n',
         SCP = 's',
         RCP	= 'u',
-        DCH = 'P'
+        DCH = 'P',
+        SM = 'h', // Set Mode (private: CSI ? ... h)
+        RM = 'l' // Reset Mode (private: CSI ? ... l)
 
         // private sequences
-        // DECTCEM = 'h',
 
         // CSI ? 25 h	DECTCEM Shows the cursor, from the VT320.
         // CSI ? 25 l	DECTCEM Hides the cursor.

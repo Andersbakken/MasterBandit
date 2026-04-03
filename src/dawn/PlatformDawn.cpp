@@ -250,11 +250,9 @@ private:
     FontFallback fontFallback_;
     std::unordered_set<char32_t> fallbackAttempted_;  // codepoints we already tried fallback for
 
-    TexturePool texturePool_;
     PooledTexture* heldTexture_ = nullptr;          // last rendered pane texture
     bool dirty_ = true;                             // needs re-render this frame
     std::vector<PooledTexture*> pendingRelease_;    // textures to release after GPU submit
-    std::shared_ptr<std::atomic<bool>> poolAlive_ = std::make_shared<std::atomic<bool>>(true);
 
     DebugIPC* debugIPC_ = nullptr;
 };
@@ -274,6 +272,7 @@ public:
 
     wgpu::Device device() const { return device_; }
     wgpu::Queue queue() const { return queue_; }
+    TexturePool& texturePool() { return texturePool_; }
 
     TerminalWindow* window() const { return window_; }
     const std::string& exeDir() const { return exeDir_; }
@@ -282,6 +281,7 @@ private:
     wgpu::Device device_;
     wgpu::Queue queue_;
     std::unique_ptr<dawn::native::Instance> nativeInstance_;
+    TexturePool texturePool_;
     TerminalWindow* window_ = nullptr;
     int exitStatus_ = 0;
     bool running_ = false;
@@ -355,12 +355,14 @@ PlatformDawn::PlatformDawn(int argc, char** argv)
     }
     device_ = wgpu::Device::Acquire(rawDevice);
     queue_ = device_.GetQueue();
+    texturePool_.init(device_, wgpu::TextureFormat::BGRA8Unorm);
 }
 
 PlatformDawn::~PlatformDawn()
 {
     queue_ = {};
     device_ = {};
+    texturePool_.clear();    // after device gone — Dawn no-ops texture release, no Vulkan ops
     nativeInstance_.reset();
     glfwTerminate();
 }
@@ -597,7 +599,6 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     }
 
     textSystem_.registerFont(fontName_, fontList, 48.0f);
-    texturePool_.init(device_, wgpu::TextureFormat::BGRA8Unorm);
 
     if (!hasBoldFont) {
         textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
@@ -640,10 +641,6 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
 
 TerminalWindow::~TerminalWindow()
 {
-    // Signal any pending onSubmittedWorkDone callbacks that the pool is gone.
-    // They capture a copy of poolAlive_ and will no-op if false.
-    poolAlive_->store(false);
-
     if (glfwWindow_) {
         glfwDestroyWindow(glfwWindow_);
     }
@@ -983,7 +980,7 @@ void TerminalWindow::renderTerminal()
         params.pane_origin_y = 0.0f;
 
         // Acquire a new pane texture from the pool
-        PooledTexture* newTexture = texturePool_.acquire(fbWidth_, fbHeight_);
+        PooledTexture* newTexture = platform_->texturePool().acquire(fbWidth_, fbHeight_);
 
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
@@ -1078,14 +1075,12 @@ void TerminalWindow::renderTerminal()
         }
 
         // Release old textures once this submit completes.
-        // Guard against the pool being destroyed before the callback fires.
+        // pool lives in PlatformDawn which outlives TerminalWindow, so no guard needed.
         auto toRelease = pendingRelease_;
         pendingRelease_.clear();
-        TexturePool* pool = &texturePool_;
-        auto guard = poolAlive_;
+        TexturePool* pool = &platform_->texturePool();
         queue_.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
-            [pool, toRelease, guard](wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
-                if (!guard->load()) return;
+            [pool, toRelease](wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
                 for (auto* t : toRelease) pool->release(t);
                 pool->tick();
             });

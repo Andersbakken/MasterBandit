@@ -20,7 +20,8 @@ struct PooledTexture {
 // Tick increments the frame counter and evicts stale free entries.
 class TexturePool {
 public:
-    void init(wgpu::Device device, wgpu::TextureFormat format);
+    // device is not ref-counted — TexturePool borrows it from PlatformDawn.
+    void init(wgpu::Device& device, wgpu::TextureFormat format);
 
     // Returns the smallest free texture that fits (w, h), or allocates a new one.
     // The returned pointer is owned by the pool — caller must release it when done.
@@ -32,12 +33,15 @@ public:
     // Advance the frame counter and evict free entries unused for EVICT_FRAMES frames.
     void tick();
 
+    // Destroy all textures immediately. Call before the WebGPU device is released.
+    void clear();
+
     uint64_t currentFrame() const { return frame_; }
 
 private:
     PooledTexture* allocate(uint32_t w, uint32_t h);
 
-    wgpu::Device        device_;
+    WGPUDevice          device_ = nullptr;  // non-owning, borrowed from PlatformDawn
     wgpu::TextureFormat format_ = wgpu::TextureFormat::BGRA8Unorm;
     uint64_t            frame_  = 0;
 

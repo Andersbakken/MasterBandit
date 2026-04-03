@@ -2,9 +2,9 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
-void TexturePool::init(wgpu::Device device, wgpu::TextureFormat format)
+void TexturePool::init(wgpu::Device& device, wgpu::TextureFormat format)
 {
-    device_ = device;
+    device_ = device.Get();  // raw non-ref-counted handle
     format_ = format;
 }
 
@@ -54,19 +54,26 @@ void TexturePool::tick()
         }), free_.end());
 }
 
+void TexturePool::clear()
+{
+    free_.clear();
+    all_.clear();
+}
+
 PooledTexture* TexturePool::allocate(uint32_t w, uint32_t h)
 {
-    wgpu::TextureDescriptor desc = {};
-    desc.size            = { w, h, 1 };
-    desc.format          = format_;
-    desc.usage           = wgpu::TextureUsage::RenderAttachment |
-                           wgpu::TextureUsage::CopySrc;
-    desc.dimension       = wgpu::TextureDimension::e2D;
+    WGPUTextureDescriptor desc = {};
+    WGPUExtent3D size          = { w, h, 1 };
+    desc.size            = size;
+    desc.format          = static_cast<WGPUTextureFormat>(format_);
+    desc.usage           = WGPUTextureUsage_RenderAttachment |
+                           WGPUTextureUsage_CopySrc;
+    desc.dimension       = WGPUTextureDimension_2D;
     desc.mipLevelCount   = 1;
     desc.sampleCount     = 1;
 
     auto entry        = std::make_unique<PooledTexture>();
-    entry->texture    = device_.CreateTexture(&desc);
+    entry->texture    = wgpu::Texture::Acquire(wgpuDeviceCreateTexture(device_, &desc));
     entry->view       = entry->texture.CreateView();
     entry->width      = w;
     entry->height     = h;

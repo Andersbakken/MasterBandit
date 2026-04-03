@@ -78,9 +78,9 @@ int main(int argc, char **argv)
     }
     Log::setLogLevel(Log::Debug); // forced for debugging
 
-    std::unique_ptr<Terminal> terminal = platform->createTerminal(options);
-    if (!terminal) {
-        fprintf(stderr, "Failed to create terminal\n");
+    // Terminal is now owned by the platform's layout — createTerminal returns nullptr on success.
+    if (!platform->createTerminal(options)) {
+        // null is normal; a failed setup logs its own error and exec() will return early.
     }
     return platform->exec();
 }

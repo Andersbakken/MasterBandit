@@ -9,6 +9,8 @@
 #include "Utils.h"
 #include "FontFallback.h"
 #include "FontResolver.h"
+#include "Layout.h"
+#include "Pane.h"
 
 #include <glaze/glaze.hpp>
 
@@ -33,6 +35,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -187,75 +190,35 @@ static std::string findMonospaceFont()
     return {};
 }
 
-// ========================================================================
-// TerminalWindow class — owns GLFW window, Dawn resources, Renderer, Terminal
-// ========================================================================
-
-class PlatformDawn;
-
-class TerminalWindow : public Terminal {
-public:
-    TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
-                   wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
-                   const TerminalOptions& options);
-    ~TerminalWindow();
-
-    // Called from GLFW callbacks
-    void onKey(int key, int scancode, int action, int mods);
-    void onChar(unsigned int codepoint);
-    void onFramebufferResize(int width, int height);
-    void onMouseButton(int button, int action, int mods);
-    void onCursorPos(double x, double y);
-
-    void renderTerminal();
-    bool shouldClose() const { return glfwWindowShouldClose(glfwWindow_); }
-
-    GLFWwindow* glfwWindow() const { return glfwWindow_; }
-
-    void setDebugIPC(DebugIPC* ipc) { debugIPC_ = ipc; }
-    DebugIPC* debugIPC() const { return debugIPC_; }
-
-    std::string gridToJson(int id);
-
-private:
-    void configureSurface(uint32_t width, uint32_t height);
-    void resolveRow(int row, FontData* font, float scale);
-
-    PlatformDawn* platform_;
-    GLFWwindow* glfwWindow_;
-    wgpu::Device device_;
-    wgpu::Queue queue_;
-    wgpu::Surface surface_;
-
-    Renderer renderer_;
-    TextSystem textSystem_;
-    std::string fontName_ = "mono";
-    float fontSize_ = 16.0f; // overridden in constructor from TerminalOptions
-    float charWidth_ = 0.0f;
-    float lineHeight_ = 0.0f;
-    float contentScaleX_ = 1.0f, contentScaleY_ = 1.0f;
-    uint32_t fbWidth_ = 0, fbHeight_ = 0;
-
-    // Resolved cells for compute shader upload
-    std::vector<ResolvedCell> resolvedCells_;
-
-    bool needsRedraw_ = true;
-    bool controlPressed_ = false;
-    unsigned int lastMods_ = 0;
-
-    int lastCursorX_ = -1, lastCursorY_ = -1;
-    bool lastCursorVisible_ = true;
-
-    std::string primaryFontPath_;
-    FontFallback fontFallback_;
-    std::unordered_set<char32_t> fallbackAttempted_;  // codepoints we already tried fallback for
-
-    PooledTexture* heldTexture_ = nullptr;          // last rendered pane texture
-    bool dirty_ = true;                             // needs re-render this frame
-    std::vector<PooledTexture*> pendingRelease_;    // textures to release after GPU submit
-
-    DebugIPC* debugIPC_ = nullptr;
-};
+// Replace invalid UTF-8 bytes with U+FFFD so glaze doesn't reject them
+static std::string sanitizeUtf8(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    const auto* p = reinterpret_cast<const unsigned char*>(in.data());
+    const auto* end = p + in.size();
+    while (p < end) {
+        if (*p < 0x80) {
+            out += static_cast<char>(*p++);
+        } else if ((*p & 0xE0) == 0xC0 && p + 1 < end && (p[1] & 0xC0) == 0x80) {
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+        } else if ((*p & 0xF0) == 0xE0 && p + 2 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+        } else if ((*p & 0xF8) == 0xF0 && p + 3 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+            out += static_cast<char>(*p++);
+        } else {
+            out += "\xEF\xBF\xBD"; // U+FFFD
+            ++p;
+        }
+    }
+    return out;
+}
 
 // ========================================================================
 // PlatformDawn class
@@ -274,23 +237,74 @@ public:
     wgpu::Queue queue() const { return queue_; }
     TexturePool& texturePool() { return texturePool_; }
 
-    TerminalWindow* window() const { return window_; }
     const std::string& exeDir() const { return exeDir_; }
 
+    // Called from GLFW callbacks
+    void onKey(int key, int scancode, int action, int mods);
+    void onChar(unsigned int codepoint);
+    void onFramebufferResize(int width, int height);
+    void onMouseButton(int button, int action, int mods);
+    void onCursorPos(double x, double y);
+
+    void renderFrame();
+    bool shouldClose() { return glfwWindow_ && glfwWindowShouldClose(glfwWindow_); }
+
+    std::string gridToJson(int id);
+
 private:
+    void configureSurface(uint32_t width, uint32_t height);
+    void resolveRow(int paneId, int row, FontData* font, float scale);
+
+    void addPtyPoll(int fd, Terminal* term);
+    void removePtyPoll(int fd);
+
+    // Dawn core
     wgpu::Device device_;
     wgpu::Queue queue_;
     std::unique_ptr<dawn::native::Instance> nativeInstance_;
     TexturePool texturePool_;
-    TerminalWindow* window_ = nullptr;
     int exitStatus_ = 0;
     bool running_ = false;
     uv_loop_t* loop_ = nullptr;
-    uv_poll_t ptyPoll_ = {};
     uv_idle_t idleCb_ = {};
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
+
+    // Layout
+    std::unique_ptr<Layout> layout_;
+
+    // Shared rendering state (moved from TerminalWindow)
+    GLFWwindow* glfwWindow_ = nullptr;
+    wgpu::Surface surface_;
+    Renderer renderer_;
+    TextSystem textSystem_;
+    std::string fontName_ = "mono";
+    float fontSize_ = 16.0f;
+    float charWidth_ = 0.0f;
+    float lineHeight_ = 0.0f;
+    float contentScaleX_ = 1.0f, contentScaleY_ = 1.0f;
+    uint32_t fbWidth_ = 0, fbHeight_ = 0;
+    std::string primaryFontPath_;
+    FontFallback fontFallback_;
+    bool needsRedraw_ = true;
+    bool controlPressed_ = false;
+    unsigned int lastMods_ = 0;
+
+    // Per-pane render state
+    struct PaneRenderState {
+        std::vector<ResolvedCell> resolvedCells;
+        int lastCursorX = -1, lastCursorY = -1;
+        bool lastCursorVisible = true;
+        std::unordered_set<char32_t> fallbackAttempted;
+        PooledTexture* heldTexture = nullptr;
+        bool dirty = true;
+        std::vector<PooledTexture*> pendingRelease;
+    };
+    std::unordered_map<int, PaneRenderState> paneRenderStates_;
+
+    // Multiple PTY poll handles — keyed by master fd
+    std::unordered_map<int, uv_poll_t*> ptyPolls_;
 };
 
 // ========================================================================
@@ -360,9 +374,24 @@ PlatformDawn::PlatformDawn(int argc, char** argv)
 
 PlatformDawn::~PlatformDawn()
 {
+    // Release held textures before clearing pool
+    for (auto& [id, rs] : paneRenderStates_) {
+        if (rs.heldTexture) texturePool_.release(rs.heldTexture);
+        for (auto* t : rs.pendingRelease) texturePool_.release(t);
+    }
+    paneRenderStates_.clear();
+
+    surface_ = nullptr;
+
+    if (glfwWindow_) {
+        glfwDestroyWindow(glfwWindow_);
+        glfwWindow_ = nullptr;
+    }
+
+    renderer_.destroy();
     queue_ = {};
     device_ = {};
-    texturePool_.clear();    // after device gone — Dawn no-ops texture release, no Vulkan ops
+    texturePool_.clear();
     nativeInstance_.reset();
     glfwTerminate();
 }
@@ -371,100 +400,290 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 {
     if (!device_) return nullptr;
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* glfwWin = glfwCreateWindow(800, 600, "MasterBandit", nullptr, nullptr);
-    if (!glfwWin) {
-        spdlog::error("glfwCreateWindow failed");
-        return nullptr;
+    // Create the GLFW window only once
+    if (!glfwWindow_) {
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindow_ = glfwCreateWindow(800, 600, "MasterBandit", nullptr, nullptr);
+        if (!glfwWindow_) {
+            spdlog::error("glfwCreateWindow failed");
+            return nullptr;
+        }
+
+        wgpu::Instance instance(nativeInstance_->Get());
+        surface_ = createNativeSurface(glfwWindow_, instance);
+        if (!surface_) {
+            spdlog::error("Failed to create Dawn surface");
+            glfwDestroyWindow(glfwWindow_);
+            glfwWindow_ = nullptr;
+            return nullptr;
+        }
+
+        // Get framebuffer size and content scale
+        int w, h;
+        glfwGetFramebufferSize(glfwWindow_, &w, &h);
+        fbWidth_ = static_cast<uint32_t>(w);
+        fbHeight_ = static_cast<uint32_t>(h);
+
+        float xscale, yscale;
+        glfwGetWindowContentScale(glfwWindow_, &xscale, &yscale);
+        contentScaleX_ = xscale;
+        contentScaleY_ = yscale;
+        fontSize_ = options.fontSize * xscale;
+
+        configureSurface(fbWidth_, fbHeight_);
+
+        // Load font
+        std::string fontPath;
+        if (options.font.empty()) {
+            fontPath = findMonospaceFont();
+        } else {
+            fontPath = resolveFontFamily(options.font);
+            if (fontPath.empty()) {
+                spdlog::warn("Font family '{}' not found, falling back to system monospace", options.font);
+                fontPath = findMonospaceFont();
+            }
+        }
+        if (fontPath.empty()) {
+            spdlog::error("No monospace font found on system");
+            return nullptr;
+        }
+        spdlog::info("Using font: {}", fontPath);
+        primaryFontPath_ = fontPath;
+
+        auto fontData = loadFontFile(fontPath);
+        if (fontData.empty()) {
+            spdlog::error("Failed to load font: {}", fontPath);
+            return nullptr;
+        }
+
+        std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
+
+        // Load bold variant
+        const std::string& family = options.font.empty() ? std::string{} : options.font;
+        std::string boldPath = family.empty() ? std::string{} : resolveFontFamily(family, true);
+        bool hasBoldFont = false;
+        if (!boldPath.empty() && boldPath != fontPath) {
+            auto boldData = loadFontFile(boldPath);
+            if (!boldData.empty()) {
+                spdlog::info("Using bold font: {}", boldPath);
+                fontList.push_back(std::move(boldData));
+                hasBoldFont = true;
+            }
+        }
+
+        textSystem_.registerFont(fontName_, fontList, 48.0f);
+
+        if (!hasBoldFont) {
+            textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
+        }
+
+        const FontData* font = textSystem_.getFont(fontName_);
+        if (!font) {
+            spdlog::error("Failed to register font");
+            return nullptr;
+        }
+
+        float scale = fontSize_ / font->baseSize;
+        lineHeight_ = font->lineHeight * scale;
+
+        const auto& shaped = textSystem_.shapeText(fontName_, "M", fontSize_);
+        charWidth_ = shaped.width;
+        if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
+
+        spdlog::info("Font metrics: charWidth={:.1f}, lineHeight={:.1f}", charWidth_, lineHeight_);
+
+        std::string shaderDir = fs::weakly_canonical(
+            fs::path(exeDir_) / "shaders").string();
+        if (!fs::exists(shaderDir)) {
+            shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
+        }
+        renderer_.init(device_, queue_, shaderDir, fbWidth_, fbHeight_);
+        renderer_.uploadFontAtlas(queue_, fontName_, *font);
+
+        // Wire up GLFW callbacks
+        glfwSetWindowUserPointer(glfwWindow_, this);
+
+        glfwSetKeyCallback(glfwWindow_, [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onKey(key, scancode, action, mods);
+        });
+
+        glfwSetCharCallback(glfwWindow_, [](GLFWwindow* w, unsigned int codepoint) {
+            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onChar(codepoint);
+        });
+
+        glfwSetFramebufferSizeCallback(glfwWindow_, [](GLFWwindow* w, int width, int height) {
+            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onFramebufferResize(width, height);
+        });
+
+        glfwSetMouseButtonCallback(glfwWindow_, [](GLFWwindow* w, int button, int action, int mods) {
+            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onMouseButton(button, action, mods);
+        });
+
+        glfwSetCursorPosCallback(glfwWindow_, [](GLFWwindow* w, double x, double y) {
+            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onCursorPos(x, y);
+        });
+
+        glfwSetScrollCallback(glfwWindow_, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
+            auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
+            int lines = static_cast<int>(yoffset);
+            if (lines != 0 && self->layout_) {
+                Pane* fp = self->layout_->focusedPane();
+                if (fp && fp->activeTerm())
+                    fp->activeTerm()->scrollViewport(lines);
+            }
+        });
+
+        glfwSetWindowFocusCallback(glfwWindow_, [](GLFWwindow* w, int focused) {
+            auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
+            if (self->layout_) {
+                Pane* fp = self->layout_->focusedPane();
+                if (fp && fp->activeTerm())
+                    fp->activeTerm()->focusEvent(focused != 0);
+            }
+        });
+
+        // Create layout with initial pane
+        layout_ = std::make_unique<Layout>();
     }
 
-    wgpu::Instance instance(nativeInstance_->Get());
-    wgpu::Surface surface = createNativeSurface(glfwWin, instance);
-    if (!surface) {
-        spdlog::error("Failed to create Dawn surface");
-        glfwDestroyWindow(glfwWin);
-        return nullptr;
+    // Create a new pane (or reuse if first terminal)
+    Pane* pane = nullptr;
+    if (layout_->panes().empty()) {
+        pane = layout_->createPane();
+        layout_->setFocusedPane(pane->id());
+        // Compute initial rects
+        layout_->computeRects(fbWidth_, fbHeight_);
+    } else {
+        // For now, always add to the focused pane
+        pane = layout_->focusedPane();
+        if (!pane) {
+            pane = layout_->panes().front().get();
+        }
     }
 
-    auto window = std::make_unique<TerminalWindow>(this, glfwWin, device_, queue_, surface, options);
-    window_ = window.get();
+    int paneId = pane->id();
 
-    glfwSetWindowUserPointer(glfwWin, window_);
+    // Build TerminalCallbacks capturing paneId
+    TerminalCallbacks cbs;
+    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
+        switch (static_cast<TerminalEmulator::Event>(ev)) {
+        case TerminalEmulator::Update:
+        case TerminalEmulator::ScrollbackChanged:
+            needsRedraw_ = true;
+            {
+                auto it = paneRenderStates_.find(paneId);
+                if (it != paneRenderStates_.end()) it->second.dirty = true;
+            }
+            break;
+        case TerminalEmulator::VisibleBell:
+            break;
+        }
+    };
+    cbs.copyToClipboard = [this](const std::string& text) {
+        glfwSetClipboardString(glfwWindow_, text.c_str());
+    };
+    cbs.pasteFromClipboard = [this]() -> std::string {
+        const char* clip = glfwGetClipboardString(glfwWindow_);
+        return clip ? std::string(clip) : std::string();
+    };
+    cbs.onTitleChanged = [this](const std::string& title) {
+        glfwSetWindowTitle(glfwWindow_, title.c_str());
+    };
+    cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
+    cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
 
-    glfwSetKeyCallback(glfwWin, [](GLFWwindow* w, int key, int scancode, int action, int mods) {
-        static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->onKey(key, scancode, action, mods);
-    });
+    auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
 
-    glfwSetCharCallback(glfwWin, [](GLFWwindow* w, unsigned int codepoint) {
-        static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->onChar(codepoint);
-    });
-
-    glfwSetFramebufferSizeCallback(glfwWin, [](GLFWwindow* w, int width, int height) {
-        static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->onFramebufferResize(width, height);
-    });
-
-    glfwSetMouseButtonCallback(glfwWin, [](GLFWwindow* w, int button, int action, int mods) {
-        static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->onMouseButton(button, action, mods);
-    });
-
-    glfwSetCursorPosCallback(glfwWin, [](GLFWwindow* w, double x, double y) {
-        static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->onCursorPos(x, y);
-    });
-
-    glfwSetScrollCallback(glfwWin, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
-        auto* tw = static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w));
-        int lines = static_cast<int>(yoffset);
-        if (lines != 0) tw->scrollViewport(lines);
-    });
-
-    glfwSetWindowFocusCallback(glfwWin, [](GLFWwindow* w, int focused) {
-        static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->focusEvent(focused != 0);
-    });
-
-    if (!window->init(options)) {
+    if (!terminal->init(options)) {
         spdlog::error("Failed to init terminal");
-        window_ = nullptr;
         return nullptr;
     }
 
-    // Set pty window size now that the fd is valid (after init opens the pty)
+    // Compute cols/rows from pane rect
+    const PaneRect& pr = pane->rect();
+    int cols = (pr.w > 0 && charWidth_ > 0) ? static_cast<int>(pr.w / charWidth_) : static_cast<int>(fbWidth_ / charWidth_);
+    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>(pr.h / lineHeight_) : static_cast<int>(fbHeight_ / lineHeight_);
+    if (cols < 1) cols = 80;
+    if (rows < 1) rows = 24;
+
+    renderer_.resizeComputeBuffers(device_, cols, rows);
+
+    // Init per-pane render state
+    auto& rs = paneRenderStates_[paneId];
+    rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+
+    terminal->resize(cols, rows);
+
+    // Set pty window size
     {
-        int fw, fh;
-        glfwGetFramebufferSize(glfwWin, &fw, &fh);
         struct winsize ws = {};
-        ws.ws_col = static_cast<unsigned short>(window->grid().cols());
-        ws.ws_row = static_cast<unsigned short>(window->grid().rows());
-        ws.ws_xpixel = static_cast<unsigned short>(fw);
-        ws.ws_ypixel = static_cast<unsigned short>(fh);
-        ioctl(window->masterFD(), TIOCSWINSZ, &ws);
+        ws.ws_col = static_cast<unsigned short>(cols);
+        ws.ws_row = static_cast<unsigned short>(rows);
+        ws.ws_xpixel = static_cast<unsigned short>(fbWidth_);
+        ws.ws_ypixel = static_cast<unsigned short>(fbHeight_);
+        ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
     }
 
-    return window;
+    Terminal* termPtr = terminal.get();
+    int masterFD = terminal->masterFD();
+
+    pane->addTab(std::move(terminal));  // Pane owns the Terminal now
+
+    if (loop_) {
+        addPtyPoll(masterFD, termPtr);
+    }
+
+    // Terminal is owned by the Pane/Layout — return nullptr, not a second owner.
+    return nullptr;
+}
+
+void PlatformDawn::addPtyPoll(int fd, Terminal* term)
+{
+    auto* poll = new uv_poll_t{};
+    uv_poll_init(loop_, poll, fd);
+    poll->data = term;
+    uv_poll_start(poll, UV_READABLE, [](uv_poll_t* handle, int status, int events) {
+        if (status < 0) return;
+        if (events & UV_READABLE)
+            static_cast<Terminal*>(handle->data)->readFromFD();
+    });
+    ptyPolls_[fd] = poll;
+}
+
+void PlatformDawn::removePtyPoll(int fd)
+{
+    auto it = ptyPolls_.find(fd);
+    if (it == ptyPolls_.end()) return;
+    uv_poll_stop(it->second);
+    uv_close(reinterpret_cast<uv_handle_t*>(it->second), [](uv_handle_t* h) {
+        delete reinterpret_cast<uv_poll_t*>(h);
+    });
+    ptyPolls_.erase(it);
 }
 
 int PlatformDawn::exec()
 {
-    if (!window_) return 1;
+    if (!layout_ || layout_->panes().empty()) return 1;
 
     running_ = true;
     loop_ = uv_default_loop();
 
-    debugIPC_ = std::make_unique<DebugIPC>(loop_, window_,
-        [this](int id) { return window_->gridToJson(id); });
-    window_->setDebugIPC(debugIPC_.get());
+    debugIPC_ = std::make_unique<DebugIPC>(loop_, nullptr,
+        [this](int id) {
+            Pane* pane = layout_->focusedPane();
+            return pane ? gridToJson(pane->id()) : std::string{};
+        });
     if (debugSink_) {
         debugSink_->setIPC(debugIPC_.get());
     }
 
-    uv_poll_init(loop_, &ptyPoll_, window_->masterFD());
-    ptyPoll_.data = this;
-    uv_poll_start(&ptyPoll_, UV_READABLE, [](uv_poll_t* handle, int status, int events) {
-        if (status < 0) return;
-        auto* self = static_cast<PlatformDawn*>(handle->data);
-        if (events & UV_READABLE) {
-            self->window_->readFromFD();
+    // Add PTY polls for all terminals already created
+    for (auto& panePtr : layout_->panes()) {
+        Terminal* tab = panePtr->activeTab();
+        if (tab && tab->masterFD() >= 0) {
+            addPtyPoll(tab->masterFD(), tab);
         }
-    });
+    }
 
     uv_idle_init(loop_, &idleCb_);
     idleCb_.data = this;
@@ -472,13 +691,13 @@ int PlatformDawn::exec()
         auto* self = static_cast<PlatformDawn*>(handle->data);
         glfwPollEvents();
 
-        if (self->window_->shouldClose()) {
+        if (self->shouldClose()) {
             uv_stop(self->loop_);
             return;
         }
 
         self->device_.Tick();
-        self->window_->renderTerminal(); // GetCurrentTexture with Fifo blocks until vsync
+        self->renderFrame();
     });
 
     uv_run(loop_, UV_RUN_DEFAULT);
@@ -487,9 +706,12 @@ int PlatformDawn::exec()
         debugSink_->setIPC(nullptr);
     }
 
-    uv_poll_stop(&ptyPoll_);
+    // Stop all PTY polls
+    std::vector<int> fds;
+    for (auto& [fd, _] : ptyPolls_) fds.push_back(fd);
+    for (int fd : fds) removePtyPoll(fd);
+
     uv_idle_stop(&idleCb_);
-    uv_close(reinterpret_cast<uv_handle_t*>(&ptyPoll_), nullptr);
     uv_close(reinterpret_cast<uv_handle_t*>(&idleCb_), nullptr);
     if (debugIPC_) debugIPC_->closeHandles();
     uv_run(loop_, UV_RUN_DEFAULT);
@@ -506,147 +728,7 @@ void PlatformDawn::quit(int status)
     }
 }
 
-// ========================================================================
-// TerminalWindow implementation
-// ========================================================================
-
-TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
-               wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
-               const TerminalOptions& options)
-    : Terminal(platform, [this, glfwWindow]() -> TerminalCallbacks {
-        TerminalCallbacks cbs;
-        cbs.event = [this](TerminalEmulator*, int ev, void*) {
-            switch (static_cast<TerminalEmulator::Event>(ev)) {
-            case TerminalEmulator::Update:
-            case TerminalEmulator::ScrollbackChanged:
-                needsRedraw_ = true;
-                dirty_ = true;
-                break;
-            case TerminalEmulator::VisibleBell:
-                break;
-            }
-        };
-        cbs.copyToClipboard = [glfwWindow](const std::string& text) {
-            glfwSetClipboardString(glfwWindow, text.c_str());
-        };
-        cbs.pasteFromClipboard = [glfwWindow]() -> std::string {
-            const char* clip = glfwGetClipboardString(glfwWindow);
-            return clip ? std::string(clip) : std::string();
-        };
-        cbs.onTitleChanged = [glfwWindow](const std::string& title) {
-            glfwSetWindowTitle(glfwWindow, title.c_str());
-        };
-        cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
-        cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-        return cbs;
-    }())
-    , platform_(platform)
-    , glfwWindow_(glfwWindow)
-    , device_(device)
-    , queue_(queue)
-    , surface_(surface)
-    , fontSize_(options.fontSize)
-{
-    int w, h;
-    glfwGetFramebufferSize(glfwWindow_, &w, &h);
-    fbWidth_ = static_cast<uint32_t>(w);
-    fbHeight_ = static_cast<uint32_t>(h);
-
-    float xscale, yscale;
-    glfwGetWindowContentScale(glfwWindow_, &xscale, &yscale);
-    contentScaleX_ = xscale;
-    contentScaleY_ = yscale;
-    fontSize_ *= xscale;
-
-    configureSurface(fbWidth_, fbHeight_);
-
-    std::string fontPath;
-    if (options.font.empty()) {
-        fontPath = findMonospaceFont();
-    } else {
-        fontPath = resolveFontFamily(options.font);
-        if (fontPath.empty()) {
-            spdlog::warn("Font family '{}' not found, falling back to system monospace", options.font);
-            fontPath = findMonospaceFont();
-        }
-    }
-    if (fontPath.empty()) {
-        spdlog::error("No monospace font found on system");
-        return;
-    }
-    spdlog::info("Using font: {}", fontPath);
-    primaryFontPath_ = fontPath;
-
-    auto fontData = loadFontFile(fontPath);
-    if (fontData.empty()) {
-        spdlog::error("Failed to load font: {}", fontPath);
-        return;
-    }
-
-    std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
-
-    // Load bold variant (index 1 in the FontData)
-    const std::string& family = options.font.empty() ? std::string{} : options.font;
-    std::string boldPath = family.empty() ? std::string{} : resolveFontFamily(family, true);
-    bool hasBoldFont = false;
-    if (!boldPath.empty() && boldPath != fontPath) {
-        auto boldData = loadFontFile(boldPath);
-        if (!boldData.empty()) {
-            spdlog::info("Using bold font: {}", boldPath);
-            fontList.push_back(std::move(boldData));
-            hasBoldFont = true;
-        }
-    }
-
-    textSystem_.registerFont(fontName_, fontList, 48.0f);
-
-    if (!hasBoldFont) {
-        textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
-    }
-
-    const FontData* font = textSystem_.getFont(fontName_);
-    if (!font) {
-        spdlog::error("Failed to register font");
-        return;
-    }
-
-    float scale = fontSize_ / font->baseSize;
-    lineHeight_ = font->lineHeight * scale;
-
-    const auto& shaped = textSystem_.shapeText(fontName_, "M", fontSize_);
-    charWidth_ = shaped.width;
-    if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
-
-    spdlog::info("Font metrics: charWidth={:.1f}, lineHeight={:.1f}", charWidth_, lineHeight_);
-
-    std::string shaderDir = fs::weakly_canonical(
-        fs::path(platform_->exeDir()) / "shaders").string();
-    if (!fs::exists(shaderDir)) {
-        shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
-    }
-    renderer_.init(device_, queue_, shaderDir, fbWidth_, fbHeight_);
-    renderer_.uploadFontAtlas(queue_, fontName_, *font);
-
-    int cols = static_cast<int>(fbWidth_ / charWidth_);
-    int rows = static_cast<int>(fbHeight_ / lineHeight_);
-    if (cols < 1) cols = 80;
-    if (rows < 1) rows = 24;
-
-    // Resize compute buffers for grid
-    renderer_.resizeComputeBuffers(device_, cols, rows);
-    resolvedCells_.resize(static_cast<size_t>(cols) * rows);
-
-    resize(cols, rows);
-}
-
-TerminalWindow::~TerminalWindow()
-{
-    if (glfwWindow_) {
-        glfwDestroyWindow(glfwWindow_);
-    }
-}
-
-void TerminalWindow::configureSurface(uint32_t width, uint32_t height)
+void PlatformDawn::configureSurface(uint32_t width, uint32_t height)
 {
     wgpu::SurfaceConfiguration config = {};
     config.device = device_;
@@ -659,50 +741,25 @@ void TerminalWindow::configureSurface(uint32_t width, uint32_t height)
     surface_.Configure(&config);
 }
 
-
-// Replace invalid UTF-8 bytes with U+FFFD so glaze doesn't reject them
-static std::string sanitizeUtf8(const std::string& in)
+std::string PlatformDawn::gridToJson(int id)
 {
-    std::string out;
-    out.reserve(in.size());
-    const auto* p = reinterpret_cast<const unsigned char*>(in.data());
-    const auto* end = p + in.size();
-    while (p < end) {
-        if (*p < 0x80) {
-            out += static_cast<char>(*p++);
-        } else if ((*p & 0xE0) == 0xC0 && p + 1 < end && (p[1] & 0xC0) == 0x80) {
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-        } else if ((*p & 0xF0) == 0xE0 && p + 2 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-        } else if ((*p & 0xF8) == 0xF0 && p + 3 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-        } else {
-            out += "\xEF\xBF\xBD"; // U+FFFD
-            ++p;
-        }
-    }
-    return out;
-}
+    if (!layout_) return {};
+    Pane* pane = layout_->pane(id);
+    if (!pane) return {};
+    TerminalEmulator* term = pane->activeTerm();
+    if (!term) return {};
 
-std::string TerminalWindow::gridToJson(int id)
-{
-    const IGrid& g = grid();
+    const IGrid& g = term->grid();
 
     glz::generic::object_t resp;
     resp["type"] = "screenshot";
     resp["format"] = "grid";
     if (id) resp["id"] = static_cast<double>(id);
-    resp["cols"] = static_cast<double>(width());
-    resp["rows"] = static_cast<double>(height());
+    resp["cols"] = static_cast<double>(term->width());
+    resp["rows"] = static_cast<double>(term->height());
     resp["cursor"] = glz::generic::object_t{
-        {"x", static_cast<double>(cursorX())},
-        {"y", static_cast<double>(cursorY())}
+        {"x", static_cast<double>(term->cursorX())},
+        {"y", static_cast<double>(term->cursorY())}
     };
 
     glz::generic::array_t lines;
@@ -732,18 +789,26 @@ std::string TerminalWindow::gridToJson(int id)
     return buf;
 }
 
-void TerminalWindow::resolveRow(int row, FontData* font, float scale)
+void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
 {
-    int cols = width();
+    auto paneIt = paneRenderStates_.find(paneId);
+    if (paneIt == paneRenderStates_.end()) return;
+    PaneRenderState& rs = paneIt->second;
+
+    Pane* pane = layout_->pane(paneId);
+    if (!pane) return;
+    TerminalEmulator* term = pane->activeTerm();
+    if (!term) return;
+
+    int cols = term->width();
     int baseIdx = row * cols;
-    const Cell* rowData = viewportRow(row);
+    const Cell* rowData = term->viewportRow(row);
 
     for (int col = 0; col < cols; ++col) {
-        ResolvedCell& rc = resolvedCells_[baseIdx + col];
+        ResolvedCell& rc = rs.resolvedCells[baseIdx + col];
         const Cell& cell = rowData[col];
 
         if (cell.wc == 0 || cell.attrs.wideSpacer()) {
-            // Empty or spacer cell
             rc.atlas_offset = 0;
             rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
             rc.upem = 1;
@@ -752,12 +817,10 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
             continue;
         }
 
-        // Shape the single codepoint to get glyph info
         std::string cpStr = codepointToUtf8(cell.wc);
         auto resolveGlyph = [&](const ShapedText& shaped) -> const GlyphInfo* {
             if (shaped.glyphs.empty()) return nullptr;
             uint64_t glyphId = shaped.glyphs[0].glyphId;
-            // glyphId 0 in any font index is .notdef (missing glyph square)
             if ((glyphId & 0xFFFFFFFF) == 0) return nullptr;
             auto it = font->glyphs.find(glyphId);
             if (it == font->glyphs.end() || it->second.is_empty) return nullptr;
@@ -768,13 +831,11 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
         const ShapedText& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_, 0, 0, boldHint);
         const GlyphInfo* gi = resolveGlyph(shaped);
 
-        // Try font fallback if glyph is missing (skip whitespace — no visible glyph expected)
-        if (!gi && !unicode::isSpace(cell.wc) && fallbackAttempted_.find(cell.wc) == fallbackAttempted_.end()) {
-            fallbackAttempted_.insert(cell.wc);
+        if (!gi && !unicode::isSpace(cell.wc) && rs.fallbackAttempted.find(cell.wc) == rs.fallbackAttempted.end()) {
+            rs.fallbackAttempted.insert(cell.wc);
             auto fallbackData = fontFallback_.fontDataForCodepoint(primaryFontPath_, cell.wc);
             if (!fallbackData.empty()) {
                 textSystem_.addFallbackFont(fontName_, fallbackData);
-                // Re-fetch font pointer (addFallbackFont modifies the FontData)
                 font = const_cast<FontData*>(textSystem_.getFont(fontName_));
                 const ShapedText& retry = textSystem_.shapeText(fontName_, cpStr, fontSize_, 0, 0, boldHint);
                 gi = resolveGlyph(retry);
@@ -803,11 +864,11 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
     }
 }
 
-void TerminalWindow::renderTerminal()
+void PlatformDawn::renderFrame()
 {
     if (fbWidth_ == 0 || fbHeight_ == 0) return;
+    if (!layout_) return;
 
-    // Get swapchain texture
     wgpu::SurfaceTexture surfaceTexture;
     surface_.GetCurrentTexture(&surfaceTexture);
     if (surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
@@ -819,195 +880,201 @@ void TerminalWindow::renderTerminal()
     if (!font) return;
 
     float scale = fontSize_ / font->baseSize;
-    const IGrid& g = grid();
 
-    // Track cursor changes — cursor is baked into resolved cells so movement requires re-render.
-    // TODO: optimise cursor-only updates to reuse held texture (blink interval >> GPU frame time).
-    int curX = cursorX(), curY = cursorY();
-    int prevCursorY = lastCursorY_;
-    bool cursorMoved = (curX != lastCursorX_ || curY != lastCursorY_ || cursorVisible() != lastCursorVisible_);
-    lastCursorX_ = curX;
-    lastCursorY_ = curY;
-    lastCursorVisible_ = cursorVisible();
-
-
-    bool needsRender = dirty_ || g.anyDirty() || cursorMoved || !heldTexture_;
+    std::vector<Renderer::CompositeEntry> compositeEntries;
     bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
 
-    // Render to offscreen only when content changed
-    if (needsRender || pngNeeded) {
-        // Resolve dirty rows (and cursor rows if cursor moved)
-        if (viewportOffset() != 0) {
-            for (int row = 0; row < g.rows(); ++row) {
-                resolveRow(row, font, scale);
-            }
-        } else {
-            for (int row = 0; row < g.rows(); ++row) {
-                if (g.isRowDirty(row) || (cursorMoved && (row == curY || row == prevCursorY))) {
-                    resolveRow(row, font, scale);
-                }
-            }
-        }
-        const_cast<IGrid&>(g).clearAllDirty();
+    for (auto& panePtr : layout_->panes()) {
+        Pane* pane = panePtr.get();
+        if (pane->rect().isEmpty()) continue;
+        int paneId = pane->id();
+        TerminalEmulator* term = pane->activeTerm();
+        if (!term) continue;
 
-        // Apply selection highlight
-        bool selectionVisible = hasSelection();
-        int histSize = document().historySize();
-        if (selectionVisible) {
-            for (int row = 0; row < g.rows(); ++row) {
-                int absRow = histSize - viewportOffset() + row;
-                for (int col = 0; col < g.cols(); ++col) {
-                    if (isCellSelected(col, absRow)) {
-                        int idx = row * g.cols() + col;
-                        resolvedCells_[idx].bg_color = 0xFF664422;
-                        resolvedCells_[idx].fg_color = 0xFFFFFFFF;
-                    }
-                }
-            }
-        }
+        PaneRenderState& rs = paneRenderStates_[paneId];
+        const IGrid& g = term->grid();
 
-        // Apply cursor
-        int cursorIdx = -1;
-        ResolvedCell savedCursorCell;
-        if (viewportOffset() == 0 && cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
-            cursorY() >= 0 && cursorY() < g.rows()) {
-            cursorIdx = cursorY() * g.cols() + cursorX();
-            savedCursorCell = resolvedCells_[cursorIdx];
-            resolvedCells_[cursorIdx].bg_color = 0xFFCCCCCC;
-            resolvedCells_[cursorIdx].fg_color = 0xFF000000;
-        }
+        int curX = term->cursorX(), curY = term->cursorY();
+        int prevCursorY = rs.lastCursorY;
+        bool cursorMoved = (curX != rs.lastCursorX || curY != rs.lastCursorY ||
+                            term->cursorVisible() != rs.lastCursorVisible);
+        rs.lastCursorX = curX;
+        rs.lastCursorY = curY;
+        rs.lastCursorVisible = term->cursorVisible();
 
-        // Upload resolved cells
-        uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
-        renderer_.uploadResolvedCells(queue_, resolvedCells_.data(), totalCells);
+        bool needsRender = rs.dirty || g.anyDirty() || cursorMoved || !rs.heldTexture;
 
-        // Restore cursor cell
-        if (cursorIdx >= 0) {
-            resolvedCells_[cursorIdx] = savedCursorCell;
-        }
+        if (needsRender || pngNeeded) {
+            // Ensure resolvedCells is sized correctly
+            size_t needed = static_cast<size_t>(g.cols()) * g.rows();
+            if (rs.resolvedCells.size() != needed)
+                rs.resolvedCells.resize(needed);
 
-        // Mark selection rows dirty for next frame
-        if (selectionVisible) {
-            for (int row = 0; row < g.rows(); ++row) {
-                int absRow = histSize - viewportOffset() + row;
-                for (int col = 0; col < g.cols(); ++col) {
-                    if (isCellSelected(col, absRow)) {
-                        const_cast<IGrid&>(g).markRowDirty(row);
-                        break;
-                    }
-                }
-            }
-        }
-
-        renderer_.updateFontAtlas(queue_, fontName_, *font);
-
-        // Collect image draw commands — scan column 0 of each visible row
-        // for image extras (one extra per row at col 0 is sufficient)
-        std::vector<Renderer::ImageDrawCmd> imageCmds;
-        std::unordered_set<uint32_t> seenImages;
-        int vo = viewportOffset();
-        float vpW = static_cast<float>(fbWidth_);
-        float vpH = static_cast<float>(fbHeight_);
-
-        for (int viewRow = 0; viewRow < g.rows(); ++viewRow) {
-            int absRow = histSize - vo + viewRow;
-
-            // Get extra at column 0 from grid or scrollback
-            const CellExtra* ex = nullptr;
-            if (absRow >= histSize) {
-                int gridRow = absRow - histSize;
-                if (gridRow >= 0 && gridRow < g.rows())
-                    ex = g.getExtra(0, gridRow);
+            if (term->viewportOffset() != 0) {
+                for (int row = 0; row < g.rows(); ++row)
+                    resolveRow(paneId, row, font, scale);
             } else {
-                auto* extrasMap = document().historyExtras(absRow);
-                if (extrasMap) {
-                    auto it = extrasMap->find(0);
-                    if (it != extrasMap->end()) ex = &it->second;
+                for (int row = 0; row < g.rows(); ++row) {
+                    if (g.isRowDirty(row) || (cursorMoved && (row == curY || row == prevCursorY)))
+                        resolveRow(paneId, row, font, scale);
+                }
+            }
+            const_cast<IGrid&>(g).clearAllDirty();
+
+            // Apply selection highlight
+            bool selectionVisible = term->hasSelection();
+            int histSize = term->document().historySize();
+            if (selectionVisible) {
+                for (int row = 0; row < g.rows(); ++row) {
+                    int absRow = histSize - term->viewportOffset() + row;
+                    for (int col = 0; col < g.cols(); ++col) {
+                        if (term->isCellSelected(col, absRow)) {
+                            int idx = row * g.cols() + col;
+                            rs.resolvedCells[idx].bg_color = 0xFF664422;
+                            rs.resolvedCells[idx].fg_color = 0xFFFFFFFF;
+                        }
+                    }
                 }
             }
 
-            if (!ex || ex->imageId == 0) continue;
-            if (seenImages.count(ex->imageId)) continue;
-            seenImages.insert(ex->imageId);
+            // Apply cursor
+            int cursorIdx = -1;
+            ResolvedCell savedCursorCell;
+            if (term->viewportOffset() == 0 && term->cursorVisible() &&
+                term->cursorX() >= 0 && term->cursorX() < g.cols() &&
+                term->cursorY() >= 0 && term->cursorY() < g.rows()) {
+                cursorIdx = term->cursorY() * g.cols() + term->cursorX();
+                savedCursorCell = rs.resolvedCells[cursorIdx];
+                rs.resolvedCells[cursorIdx].bg_color = 0xFFCCCCCC;
+                rs.resolvedCells[cursorIdx].fg_color = 0xFF000000;
+            }
 
-            auto it = imageRegistry().find(ex->imageId);
-            if (it == imageRegistry().end()) continue;
-            const auto& img = it->second;
+            uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
+            renderer_.uploadResolvedCells(queue_, rs.resolvedCells.data(), totalCells);
 
-            renderer_.ensureImageGPU(queue_, ex->imageId,
-                img.rgba.data(), img.pixelWidth, img.pixelHeight);
+            // Restore cursor cell
+            if (cursorIdx >= 0) {
+                rs.resolvedCells[cursorIdx] = savedCursorCell;
+            }
 
-            // Image natural pixel size
-            float imgW = static_cast<float>(img.pixelWidth);
-            float imgH = static_cast<float>(img.pixelHeight);
+            // Mark selection rows dirty for next frame
+            if (selectionVisible) {
+                for (int row = 0; row < g.rows(); ++row) {
+                    int absRow = histSize - term->viewportOffset() + row;
+                    for (int col = 0; col < g.cols(); ++col) {
+                        if (term->isCellSelected(col, absRow)) {
+                            const_cast<IGrid&>(g).markRowDirty(row);
+                            break;
+                        }
+                    }
+                }
+            }
 
-            // Image top-left in viewport pixel coordinates
-            float imgX = 0.0f; // always starts at column 0
-            float imgY = (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
+            renderer_.updateFontAtlas(queue_, fontName_, *font);
 
-            // Clip to viewport
-            float x0 = std::max(imgX, 0.0f);
-            float y0 = std::max(imgY, 0.0f);
-            float x1 = std::min(imgX + imgW, vpW);
-            float y1 = std::min(imgY + imgH, vpH);
+            // Collect image draw commands
+            std::vector<Renderer::ImageDrawCmd> imageCmds;
+            std::unordered_set<uint32_t> seenImages;
+            int vo = term->viewportOffset();
+            float vpW = static_cast<float>(pane->rect().w);
+            float vpH = static_cast<float>(pane->rect().h);
 
-            if (x1 <= x0 || y1 <= y0) continue;
+            for (int viewRow = 0; viewRow < g.rows(); ++viewRow) {
+                int absRow = histSize - vo + viewRow;
 
-            // UV coordinates for the visible portion
-            Renderer::ImageDrawCmd cmd;
-            cmd.imageId = ex->imageId;
-            cmd.x = x0;
-            cmd.y = y0;
-            cmd.w = x1 - x0;
-            cmd.h = y1 - y0;
-            cmd.u0 = (x0 - imgX) / imgW;
-            cmd.v0 = (y0 - imgY) / imgH;
-            cmd.u1 = (x1 - imgX) / imgW;
-            cmd.v1 = (y1 - imgY) / imgH;
-            imageCmds.push_back(cmd);
+                const CellExtra* ex = nullptr;
+                if (absRow >= histSize) {
+                    int gridRow = absRow - histSize;
+                    if (gridRow >= 0 && gridRow < g.rows())
+                        ex = g.getExtra(0, gridRow);
+                } else {
+                    auto* extrasMap = term->document().historyExtras(absRow);
+                    if (extrasMap) {
+                        auto it = extrasMap->find(0);
+                        if (it != extrasMap->end()) ex = &it->second;
+                    }
+                }
+
+                if (!ex || ex->imageId == 0) continue;
+                if (seenImages.count(ex->imageId)) continue;
+                seenImages.insert(ex->imageId);
+
+                auto it = term->imageRegistry().find(ex->imageId);
+                if (it == term->imageRegistry().end()) continue;
+                const auto& img = it->second;
+
+                renderer_.ensureImageGPU(queue_, ex->imageId,
+                    img.rgba.data(), img.pixelWidth, img.pixelHeight);
+
+                float imgW = static_cast<float>(img.pixelWidth);
+                float imgH = static_cast<float>(img.pixelHeight);
+                float imgX = 0.0f;
+                float imgY = (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
+
+                float x0 = std::max(imgX, 0.0f);
+                float y0 = std::max(imgY, 0.0f);
+                float x1 = std::min(imgX + imgW, vpW);
+                float y1 = std::min(imgY + imgH, vpH);
+
+                if (x1 <= x0 || y1 <= y0) continue;
+
+                Renderer::ImageDrawCmd cmd;
+                cmd.imageId = ex->imageId;
+                cmd.x = x0;
+                cmd.y = y0;
+                cmd.w = x1 - x0;
+                cmd.h = y1 - y0;
+                cmd.u0 = (x0 - imgX) / imgW;
+                cmd.v0 = (y0 - imgY) / imgH;
+                cmd.u1 = (x1 - imgX) / imgW;
+                cmd.v1 = (y1 - imgY) / imgH;
+                imageCmds.push_back(cmd);
+            }
+
+            TerminalComputeParams params = {};
+            params.cols = static_cast<uint32_t>(g.cols());
+            params.rows = static_cast<uint32_t>(g.rows());
+            params.cell_width = charWidth_;
+            params.cell_height = lineHeight_;
+            params.viewport_w = static_cast<float>(pane->rect().w);
+            params.viewport_h = static_cast<float>(pane->rect().h);
+            params.font_ascender = font->ascender * scale;
+            params.font_size = fontSize_;
+            params.pane_origin_x = 0.0f;
+            params.pane_origin_y = 0.0f;
+
+            PooledTexture* newTexture = texturePool_.acquire(
+                static_cast<uint32_t>(pane->rect().w),
+                static_cast<uint32_t>(pane->rect().h));
+
+            wgpu::CommandEncoderDescriptor encDesc = {};
+            wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
+            renderer_.renderToPane(encoder, queue_, fontName_, params, newTexture->view, imageCmds);
+            wgpu::CommandBuffer commands = encoder.Finish();
+            queue_.Submit(1, &commands);
+
+            if (rs.heldTexture) rs.pendingRelease.push_back(rs.heldTexture);
+            rs.heldTexture = newTexture;
+            rs.dirty = false;
         }
 
-        TerminalComputeParams params = {};
-        params.cols = static_cast<uint32_t>(g.cols());
-        params.rows = static_cast<uint32_t>(g.rows());
-        params.cell_width = charWidth_;
-        params.cell_height = lineHeight_;
-        params.viewport_w = static_cast<float>(fbWidth_);
-        params.viewport_h = static_cast<float>(fbHeight_);
-        params.font_ascender = font->ascender * scale;
-        params.font_size = fontSize_;
-        params.pane_origin_x = 0.0f;
-        params.pane_origin_y = 0.0f;
-
-        // Acquire a new pane texture from the pool
-        PooledTexture* newTexture = platform_->texturePool().acquire(fbWidth_, fbHeight_);
-
-        wgpu::CommandEncoderDescriptor encDesc = {};
-        wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-        renderer_.renderToPane(encoder, queue_, fontName_, params, newTexture->view, imageCmds);
-        wgpu::CommandBuffer commands = encoder.Finish();
-        queue_.Submit(1, &commands);
-
-        // Queue the old held texture for release after this submit completes
-        if (heldTexture_) pendingRelease_.push_back(heldTexture_);
-        heldTexture_ = newTexture;
-        dirty_ = false;
+        if (rs.heldTexture) {
+            Renderer::CompositeEntry entry;
+            entry.texture = rs.heldTexture->texture;
+            entry.srcW = static_cast<uint32_t>(pane->rect().w);
+            entry.srcH = static_cast<uint32_t>(pane->rect().h);
+            entry.dstX = static_cast<uint32_t>(pane->rect().x);
+            entry.dstY = static_cast<uint32_t>(pane->rect().y);
+            compositeEntries.push_back(entry);
+        }
     }
 
-    // Composite held texture to swapchain + submit (every frame)
-    if (heldTexture_) {
-        Renderer::CompositeEntry entry;
-        entry.texture = heldTexture_->texture;
-        entry.srcW    = fbWidth_;
-        entry.srcH    = fbHeight_;
-        entry.dstX    = 0;
-        entry.dstY    = 0;
-
+    // Composite + submit
+    if (!compositeEntries.empty()) {
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-        renderer_.composite(encoder, surfaceTexture.texture, { entry });
+        renderer_.composite(encoder, surfaceTexture.texture, compositeEntries);
 
-        // PNG screenshot readback (from swapchain after composite)
         if (pngNeeded) {
             uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256;
             uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * fbHeight_;
@@ -1030,7 +1097,7 @@ void TerminalWindow::renderTerminal()
             wgpu::CommandBuffer cmds = encoder.Finish();
             queue_.Submit(1, &cmds);
 
-            DebugIPC* ipc = debugIPC_;
+            DebugIPC* ipc = debugIPC_.get();
             uint32_t w = fbWidth_, h = fbHeight_;
             debugIPC_->markReadbackInProgress();
 
@@ -1074,11 +1141,18 @@ void TerminalWindow::renderTerminal()
             queue_.Submit(1, &commands);
         }
 
-        // Release old textures once this submit completes.
-        // pool lives in PlatformDawn which outlives TerminalWindow, so no guard needed.
-        auto toRelease = pendingRelease_;
-        pendingRelease_.clear();
-        TexturePool* pool = &platform_->texturePool();
+        // Collect all pending releases from all panes
+        std::vector<PooledTexture*> toRelease;
+        for (auto& panePtr : layout_->panes()) {
+            auto it = paneRenderStates_.find(panePtr->id());
+            if (it != paneRenderStates_.end()) {
+                toRelease.insert(toRelease.end(),
+                    it->second.pendingRelease.begin(),
+                    it->second.pendingRelease.end());
+                it->second.pendingRelease.clear();
+            }
+        }
+        TexturePool* pool = &texturePool_;
         queue_.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
             [pool, toRelease](wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
                 for (auto* t : toRelease) pool->release(t);
@@ -1087,12 +1161,19 @@ void TerminalWindow::renderTerminal()
     }
 
     surface_.Present();
+    needsRedraw_ = false;
 }
 
-void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
+void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
 {
+    if (!layout_) return;
+    Pane* fp = layout_->focusedPane();
+    if (!fp) return;
+    TerminalEmulator* term = fp->activeTerm();
+    if (!term) return;
+
     spdlog::debug("onKey: key={} action={} mods={}", key, action, mods);
-    resetViewport();
+    term->resetViewport();
 
     if (action == GLFW_RELEASE) {
         controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
@@ -1106,15 +1187,15 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
     if ((mods & GLFW_MOD_SUPER) && key == GLFW_KEY_V) {
         const char* clip = glfwGetClipboardString(glfwWindow_);
         if (clip && clip[0]) {
-            pasteText(std::string(clip));
+            static_cast<Terminal*>(term)->pasteText(std::string(clip));
         }
         return;
     }
 
     // Cmd+C: copy selection
     if ((mods & GLFW_MOD_SUPER) && key == GLFW_KEY_C) {
-        if (hasSelection()) {
-            std::string text = selectedText();
+        if (term->hasSelection()) {
+            std::string text = term->selectedText();
             if (!text.empty()) {
                 glfwSetClipboardString(glfwWindow_, text.c_str());
             }
@@ -1132,7 +1213,7 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
         ev.count = 1;
         ev.autoRepeat = (action == GLFW_REPEAT);
         spdlog::debug("onKey: ctrl+letter, sending text=0x{:02x}", static_cast<unsigned char>(ev.text[0]));
-        keyPressEvent(&ev);
+        term->keyPressEvent(&ev);
         return;
     }
 
@@ -1142,16 +1223,22 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
         ev.count = 1;
         ev.autoRepeat = (action == GLFW_REPEAT);
         spdlog::debug("onKey: non-printable key=0x{:x}, dispatching", static_cast<int>(k));
-        keyPressEvent(&ev);
+        term->keyPressEvent(&ev);
     } else {
         spdlog::debug("onKey: printable key={}, deferring to onChar", key);
     }
 }
 
-void TerminalWindow::onChar(unsigned int codepoint)
+void PlatformDawn::onChar(unsigned int codepoint)
 {
+    if (!layout_) return;
+    Pane* fp = layout_->focusedPane();
+    if (!fp) return;
+    TerminalEmulator* term = fp->activeTerm();
+    if (!term) return;
+
     spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
-    resetViewport();
+    term->resetViewport();
     if (controlPressed_) return;
 
     KeyEvent ev;
@@ -1160,10 +1247,10 @@ void TerminalWindow::onChar(unsigned int codepoint)
     spdlog::debug("onChar: sending text='{}' ({} bytes)", ev.text, ev.text.size());
     ev.count = 1;
     ev.autoRepeat = false;
-    keyPressEvent(&ev);
+    term->keyPressEvent(&ev);
 }
 
-void TerminalWindow::onFramebufferResize(int width, int height)
+void PlatformDawn::onFramebufferResize(int width, int height)
 {
     if (width <= 0 || height <= 0) return;
 
@@ -1173,28 +1260,50 @@ void TerminalWindow::onFramebufferResize(int width, int height)
     configureSurface(fbWidth_, fbHeight_);
     renderer_.setViewportSize(fbWidth_, fbHeight_);
 
-    int cols = static_cast<int>(fbWidth_ / charWidth_);
-    int rows = static_cast<int>(fbHeight_ / lineHeight_);
-    if (cols < 1) cols = 1;
-    if (rows < 1) rows = 1;
+    if (!layout_) return;
 
-    renderer_.resizeComputeBuffers(device_, cols, rows);
-    resolvedCells_.resize(static_cast<size_t>(cols) * rows);
+    layout_->computeRects(fbWidth_, fbHeight_);
 
-    resize(cols, rows);
+    for (auto& panePtr : layout_->panes()) {
+        Pane* pane = panePtr.get();
+        pane->resizeToRect(charWidth_, lineHeight_);
 
-    struct winsize ws;
-    ws.ws_col = static_cast<unsigned short>(cols);
-    ws.ws_row = static_cast<unsigned short>(rows);
-    ws.ws_xpixel = static_cast<unsigned short>(fbWidth_);
-    ws.ws_ypixel = static_cast<unsigned short>(fbHeight_);
-    ioctl(masterFD(), TIOCSWINSZ, &ws);
+        TerminalEmulator* term = pane->activeTerm();
+        if (!term) continue;
+
+        int cols = term->width();
+        int rows = term->height();
+        if (cols < 1) cols = 1;
+        if (rows < 1) rows = 1;
+
+        renderer_.resizeComputeBuffers(device_, cols, rows);
+
+        auto& rs = paneRenderStates_[pane->id()];
+        rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+
+        // Update PTY window size
+        Terminal* t = dynamic_cast<Terminal*>(term);
+        if (t && t->masterFD() >= 0) {
+            struct winsize ws;
+            ws.ws_col = static_cast<unsigned short>(cols);
+            ws.ws_row = static_cast<unsigned short>(rows);
+            ws.ws_xpixel = static_cast<unsigned short>(pane->rect().w);
+            ws.ws_ypixel = static_cast<unsigned short>(pane->rect().h);
+            ioctl(t->masterFD(), TIOCSWINSZ, &ws);
+        }
+    }
 
     needsRedraw_ = true;
 }
 
-void TerminalWindow::onMouseButton(int button, int action, int mods)
+void PlatformDawn::onMouseButton(int button, int action, int mods)
 {
+    if (!layout_) return;
+    Pane* fp = layout_->focusedPane();
+    if (!fp) return;
+    TerminalEmulator* term = fp->activeTerm();
+    if (!term) return;
+
     lastMods_ = glfwModsToModifiers(mods);
 
     MouseEvent ev;
@@ -1202,8 +1311,14 @@ void TerminalWindow::onMouseButton(int button, int action, int mods)
     glfwGetCursorPos(glfwWindow_, &x, &y);
     double sx = x * contentScaleX_;
     double sy = y * contentScaleY_;
-    ev.x = static_cast<int>(sx / charWidth_);
-    ev.y = static_cast<int>(sy / lineHeight_);
+
+    // Adjust for pane origin
+    const PaneRect& pr = fp->rect();
+    double relX = sx - pr.x;
+    double relY = sy - pr.y;
+
+    ev.x = static_cast<int>(relX / charWidth_);
+    ev.y = static_cast<int>(relY / lineHeight_);
     ev.globalX = static_cast<int>(sx);
     ev.globalY = static_cast<int>(sy);
     ev.modifiers = lastMods_;
@@ -1216,17 +1331,28 @@ void TerminalWindow::onMouseButton(int button, int action, int mods)
     }
     ev.buttons = ev.button;
 
-    if (action == GLFW_PRESS) mousePressEvent(&ev);
-    else mouseReleaseEvent(&ev);
+    if (action == GLFW_PRESS) term->mousePressEvent(&ev);
+    else term->mouseReleaseEvent(&ev);
 }
 
-void TerminalWindow::onCursorPos(double x, double y)
+void PlatformDawn::onCursorPos(double x, double y)
 {
+    if (!layout_) return;
+    Pane* fp = layout_->focusedPane();
+    if (!fp) return;
+    TerminalEmulator* term = fp->activeTerm();
+    if (!term) return;
+
     double sx = x * contentScaleX_;
     double sy = y * contentScaleY_;
+
+    const PaneRect& pr = fp->rect();
+    double relX = sx - pr.x;
+    double relY = sy - pr.y;
+
     MouseEvent ev;
-    ev.x = static_cast<int>(sx / charWidth_);
-    ev.y = static_cast<int>(sy / lineHeight_);
+    ev.x = static_cast<int>(relX / charWidth_);
+    ev.y = static_cast<int>(relY / lineHeight_);
     ev.globalX = static_cast<int>(sx);
     ev.globalY = static_cast<int>(sy);
     ev.button = NoButton;
@@ -1237,7 +1363,7 @@ void TerminalWindow::onCursorPos(double x, double y)
         ev.buttons |= MidButton;
     if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
         ev.buttons |= RightButton;
-    mouseMoveEvent(&ev);
+    term->mouseMoveEvent(&ev);
 }
 
 // ========================================================================

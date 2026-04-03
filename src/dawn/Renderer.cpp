@@ -297,6 +297,38 @@ void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     gpu.uploadedSize = font.atlasUsed;
 }
 
+void Renderer::destroy()
+{
+    // Release all WebGPU resources so they don't outlive the device/glfwTerminate.
+    fontGPU_.clear();
+    imageGPU_.clear();
+    device_              = nullptr;
+    textShader_          = nullptr;
+    textPipeline_        = nullptr;
+    textBindGroupLayout_ = nullptr;
+    rectShader_          = nullptr;
+    rectPipeline_        = nullptr;
+    rectBindGroupLayout_ = nullptr;
+    rectUniformBuffer_   = nullptr;
+    rectBindGroup_       = nullptr;
+    computePipeline_     = nullptr;
+    computeBindGroupLayout_ = nullptr;
+    resolvedCellBuffer_   = nullptr;
+    computeTextVertBuffer_ = nullptr;
+    computeRectVertBuffer_ = nullptr;
+    indirectBuffer_      = nullptr;
+    computeParamsBuffer_ = nullptr;
+    computeBindGroup_    = nullptr;
+    imageShader_         = nullptr;
+    imagePipeline_       = nullptr;
+    imageBindGroupLayout_ = nullptr;
+    imageUniformBuffer_  = nullptr;
+    imageVertexBuffer_   = nullptr;
+    imageSampler_        = nullptr;
+    computeReady_        = false;
+    imagePipelineReady_  = false;
+}
+
 void Renderer::setViewportSize(uint32_t width, uint32_t height)
 {
     viewportW_ = width;

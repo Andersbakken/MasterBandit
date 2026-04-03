@@ -67,6 +67,9 @@ public:
 
     void setViewportSize(uint32_t width, uint32_t height);
 
+    // Release all WebGPU resources. Call before the device is destroyed.
+    void destroy();
+
     // Compute pipeline
     void initComputePipeline(wgpu::Device& device, const std::string& shaderDir);
     void resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows);

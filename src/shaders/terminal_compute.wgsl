@@ -9,6 +9,8 @@ struct TerminalParams {
     viewport_h: f32,
     font_ascender: f32, // ascender in pixels
     font_size: f32,     // font size in pixels
+    pane_origin_x: f32, // pixel X offset of pane within window
+    pane_origin_y: f32, // pixel Y offset of pane within window
 };
 
 struct ResolvedCellGPU {
@@ -65,8 +67,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let row = idx / params.cols;
     let cell = cells[idx];
 
-    let base_x = f32(col) * params.cell_width;
-    let base_y = f32(row) * params.cell_height;
+    let base_x = f32(col) * params.cell_width + params.pane_origin_x;
+    let base_y = f32(row) * params.cell_height + params.pane_origin_y;
 
     // Background rect
     if (cell.bg_color != 0u) {

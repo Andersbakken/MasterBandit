@@ -303,39 +303,6 @@ void Renderer::setViewportSize(uint32_t width, uint32_t height)
     viewportH_ = height;
 }
 
-bool Renderer::ensureOffscreenPool(uint32_t width, uint32_t height)
-{
-    if (width == offscreenW_ && height == offscreenH_ && !offscreenPool_.empty()) return false;
-
-    offscreenPool_.clear();
-    offscreenW_ = width;
-    offscreenH_ = height;
-    offscreenIndex_ = 0;
-    offscreenLastRendered_ = 0;
-
-    for (uint32_t i = 0; i < OFFSCREEN_POOL_SIZE; ++i) {
-        wgpu::TextureDescriptor desc = {};
-        desc.size = {width, height, 1};
-        desc.format = wgpu::TextureFormat::BGRA8Unorm;
-        desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
-        desc.dimension = wgpu::TextureDimension::e2D;
-        desc.mipLevelCount = 1;
-        desc.sampleCount = 1;
-
-        OffscreenTarget target;
-        target.texture = device_.CreateTexture(&desc);
-        target.view = target.texture.CreateView();
-        offscreenPool_.push_back(std::move(target));
-    }
-
-    spdlog::info("Offscreen pool created: {}x{} ({} textures)", width, height, OFFSCREEN_POOL_SIZE);
-    return true;
-}
-
-bool Renderer::prepareOffscreen()
-{
-    return ensureOffscreenPool(viewportW_, viewportH_);
-}
 
 // ========================================
 // Compute pipeline
@@ -697,24 +664,21 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     }
 }
 
-void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
-                                  const std::string& fontName,
-                                  const TerminalComputeParams& params,
-                                  const std::vector<ImageDrawCmd>& imageCmds)
+void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                             const std::string& fontName,
+                             const TerminalComputeParams& params,
+                             wgpu::TextureView target,
+                             const std::vector<ImageDrawCmd>& imageCmds)
 {
     if (!computeReady_) return;
 
     auto fontIt = fontGPU_.find(fontName);
     if (fontIt == fontGPU_.end()) return;
 
-    // Advance to next texture in pool
-    offscreenIndex_ = (offscreenIndex_ + 1) % OFFSCREEN_POOL_SIZE;
-    wgpu::TextureView target = offscreenPool_[offscreenIndex_].view;
-
-    // Update uniforms
+    // Update uniforms — use pane dimensions (cols*cell_width, rows*cell_height) for NDC transform
     {
-        float w = static_cast<float>(viewportW_);
-        float h = static_cast<float>(viewportH_);
+        float w = static_cast<float>(params.cols) * params.cell_width;
+        float h = static_cast<float>(params.rows) * params.cell_height;
         float uniforms[4] = { w, h, 0.0f, 0.0f };
         queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
@@ -737,7 +701,7 @@ void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& que
     uint32_t indirectInit[8] = {0, 1, 0, 0, 0, 1, 0, 0};
     queue.WriteBuffer(indirectBuffer_, 0, indirectInit, sizeof(indirectInit));
 
-    // Compute pass
+    // Compute pass — generates vertex data
     {
         wgpu::ComputePassDescriptor cpDesc = {};
         wgpu::ComputePassEncoder computePass = encoder.BeginComputePass(&cpDesc);
@@ -749,14 +713,13 @@ void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& que
         computePass.End();
     }
 
-    // Clear
+    // Clear pass
     {
         wgpu::RenderPassColorAttachment att = {};
-        att.view = target;
-        att.loadOp = wgpu::LoadOp::Clear;
-        att.storeOp = wgpu::StoreOp::Store;
+        att.view     = target;
+        att.loadOp   = wgpu::LoadOp::Clear;
+        att.storeOp  = wgpu::StoreOp::Store;
         att.clearValue = {0.0, 0.0, 0.0, 1.0};
-
         wgpu::RenderPassDescriptor rpDesc = {};
         rpDesc.colorAttachmentCount = 1;
         rpDesc.colorAttachments = &att;
@@ -766,14 +729,12 @@ void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& que
     // Rect pass
     {
         wgpu::RenderPassColorAttachment att = {};
-        att.view = target;
-        att.loadOp = wgpu::LoadOp::Load;
+        att.view    = target;
+        att.loadOp  = wgpu::LoadOp::Load;
         att.storeOp = wgpu::StoreOp::Store;
-
         wgpu::RenderPassDescriptor rpDesc = {};
         rpDesc.colorAttachmentCount = 1;
         rpDesc.colorAttachments = &att;
-
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(rectPipeline_);
         pass.SetBindGroup(0, rectBindGroup_);
@@ -783,21 +744,18 @@ void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& que
     }
 
     // Image pass
-    if (!imageCmds.empty()) {
+    if (!imageCmds.empty())
         renderImages(encoder, queue, target, imageCmds);
-    }
 
     // Text pass
     {
         wgpu::RenderPassColorAttachment att = {};
-        att.view = target;
-        att.loadOp = wgpu::LoadOp::Load;
+        att.view    = target;
+        att.loadOp  = wgpu::LoadOp::Load;
         att.storeOp = wgpu::StoreOp::Store;
-
         wgpu::RenderPassDescriptor rpDesc = {};
         rpDesc.colorAttachmentCount = 1;
         rpDesc.colorAttachments = &att;
-
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(textPipeline_);
         pass.SetBindGroup(0, fontIt->second.bindGroup);
@@ -805,20 +763,40 @@ void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& que
         pass.DrawIndirect(indirectBuffer_, 0);
         pass.End();
     }
-
-    offscreenLastRendered_ = offscreenIndex_;
 }
 
-void Renderer::blitToScreen(wgpu::CommandEncoder& encoder, wgpu::Texture swapchainTexture)
+void Renderer::composite(wgpu::CommandEncoder& encoder,
+                          wgpu::Texture swapchainTexture,
+                          const std::vector<CompositeEntry>& entries)
 {
-    if (offscreenPool_.empty()) return;
+    // Clear swapchain to black
+    {
+        wgpu::TextureViewDescriptor viewDesc = {};
+        wgpu::TextureView swapView = swapchainTexture.CreateView(&viewDesc);
+        wgpu::RenderPassColorAttachment att = {};
+        att.view       = swapView;
+        att.loadOp     = wgpu::LoadOp::Clear;
+        att.storeOp    = wgpu::StoreOp::Store;
+        att.clearValue = {0.0, 0.0, 0.0, 1.0};
+        wgpu::RenderPassDescriptor rpDesc = {};
+        rpDesc.colorAttachmentCount = 1;
+        rpDesc.colorAttachments = &att;
+        encoder.BeginRenderPass(&rpDesc).End();
+    }
 
-    wgpu::TexelCopyTextureInfo src = {};
-    src.texture = offscreenPool_[offscreenLastRendered_].texture;
+    // Copy each pane texture to its rect on the swapchain
+    for (const auto& e : entries) {
+        if (!e.texture || e.srcW == 0 || e.srcH == 0) continue;
 
-    wgpu::TexelCopyTextureInfo dst = {};
-    dst.texture = swapchainTexture;
+        wgpu::TexelCopyTextureInfo src = {};
+        src.texture = e.texture;
+        src.origin  = { 0, 0, 0 };
 
-    wgpu::Extent3D extent = {offscreenW_, offscreenH_, 1};
-    encoder.CopyTextureToTexture(&src, &dst, &extent);
+        wgpu::TexelCopyTextureInfo dst = {};
+        dst.texture = swapchainTexture;
+        dst.origin  = { e.dstX, e.dstY, 0 };
+
+        wgpu::Extent3D extent = { e.srcW, e.srcH, 1 };
+        encoder.CopyTextureToTexture(&src, &dst, &extent);
+    }
 }

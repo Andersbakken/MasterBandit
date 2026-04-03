@@ -1,6 +1,7 @@
 #include "Platform.h"
 #include "Terminal.h"
 #include "Renderer.h"
+#include "TexturePool.h"
 #include "text.h"
 #include "Log.h"
 #include "DebugIPC.h"
@@ -248,6 +249,12 @@ private:
     std::string primaryFontPath_;
     FontFallback fontFallback_;
     std::unordered_set<char32_t> fallbackAttempted_;  // codepoints we already tried fallback for
+
+    TexturePool texturePool_;
+    PooledTexture* heldTexture_ = nullptr;          // last rendered pane texture
+    bool dirty_ = true;                             // needs re-render this frame
+    std::vector<PooledTexture*> pendingRelease_;    // textures to release after GPU submit
+    std::shared_ptr<std::atomic<bool>> poolAlive_ = std::make_shared<std::atomic<bool>>(true);
 
     DebugIPC* debugIPC_ = nullptr;
 };
@@ -511,6 +518,7 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
             case TerminalEmulator::Update:
             case TerminalEmulator::ScrollbackChanged:
                 needsRedraw_ = true;
+                dirty_ = true;
                 break;
             case TerminalEmulator::VisibleBell:
                 break;
@@ -589,6 +597,7 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     }
 
     textSystem_.registerFont(fontName_, fontList, 48.0f);
+    texturePool_.init(device_, wgpu::TextureFormat::BGRA8Unorm);
 
     if (!hasBoldFont) {
         textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
@@ -631,6 +640,10 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
 
 TerminalWindow::~TerminalWindow()
 {
+    // Signal any pending onSubmittedWorkDone callbacks that the pool is gone.
+    // They capture a copy of poolAlive_ and will no-op if false.
+    poolAlive_->store(false);
+
     if (glfwWindow_) {
         glfwDestroyWindow(glfwWindow_);
     }
@@ -810,10 +823,9 @@ void TerminalWindow::renderTerminal()
 
     float scale = fontSize_ / font->baseSize;
     const IGrid& g = grid();
-    bool poolRecreated = renderer_.prepareOffscreen();
 
-    // Track cursor position changes — cursor is baked into resolved cells,
-    // so we must re-render when it moves even if no cells are dirty.
+    // Track cursor changes — cursor is baked into resolved cells so movement requires re-render.
+    // TODO: optimise cursor-only updates to reuse held texture (blink interval >> GPU frame time).
     int curX = cursorX(), curY = cursorY();
     int prevCursorY = lastCursorY_;
     bool cursorMoved = (curX != lastCursorX_ || curY != lastCursorY_ || cursorVisible() != lastCursorVisible_);
@@ -821,7 +833,8 @@ void TerminalWindow::renderTerminal()
     lastCursorY_ = curY;
     lastCursorVisible_ = cursorVisible();
 
-    bool needsRender = g.anyDirty() || poolRecreated || cursorMoved;
+
+    bool needsRender = dirty_ || g.anyDirty() || cursorMoved || !heldTexture_;
     bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
 
     // Render to offscreen only when content changed
@@ -966,21 +979,38 @@ void TerminalWindow::renderTerminal()
         params.viewport_h = static_cast<float>(fbHeight_);
         params.font_ascender = font->ascender * scale;
         params.font_size = fontSize_;
+        params.pane_origin_x = 0.0f;
+        params.pane_origin_y = 0.0f;
+
+        // Acquire a new pane texture from the pool
+        PooledTexture* newTexture = texturePool_.acquire(fbWidth_, fbHeight_);
 
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-        renderer_.renderToOffscreen(encoder, queue_, fontName_, params, imageCmds);
+        renderer_.renderToPane(encoder, queue_, fontName_, params, newTexture->view, imageCmds);
         wgpu::CommandBuffer commands = encoder.Finish();
         queue_.Submit(1, &commands);
+
+        // Queue the old held texture for release after this submit completes
+        if (heldTexture_) pendingRelease_.push_back(heldTexture_);
+        heldTexture_ = newTexture;
+        dirty_ = false;
     }
 
-    // Blit offscreen to swapchain every frame
-    {
+    // Composite held texture to swapchain + submit (every frame)
+    if (heldTexture_) {
+        Renderer::CompositeEntry entry;
+        entry.texture = heldTexture_->texture;
+        entry.srcW    = fbWidth_;
+        entry.srcH    = fbHeight_;
+        entry.dstX    = 0;
+        entry.dstY    = 0;
+
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-        renderer_.blitToScreen(encoder, surfaceTexture.texture);
+        renderer_.composite(encoder, surfaceTexture.texture, { entry });
 
-        // PNG screenshot readback (from swapchain after blit)
+        // PNG screenshot readback (from swapchain after composite)
         if (pngNeeded) {
             uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256;
             uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * fbHeight_;
@@ -1046,6 +1076,19 @@ void TerminalWindow::renderTerminal()
             wgpu::CommandBuffer commands = encoder.Finish();
             queue_.Submit(1, &commands);
         }
+
+        // Release old textures once this submit completes.
+        // Guard against the pool being destroyed before the callback fires.
+        auto toRelease = pendingRelease_;
+        pendingRelease_.clear();
+        TexturePool* pool = &texturePool_;
+        auto guard = poolAlive_;
+        queue_.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
+            [pool, toRelease, guard](wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
+                if (!guard->load()) return;
+                for (auto* t : toRelease) pool->release(t);
+                pool->tick();
+            });
     }
 
     surface_.Present();

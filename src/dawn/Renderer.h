@@ -32,7 +32,7 @@ struct ResolvedCell {
 };
 static_assert(sizeof(ResolvedCell) == 32);
 
-// Compute shader uniform params (32 bytes)
+// Compute shader uniform params (40 bytes)
 struct TerminalComputeParams {
     uint32_t cols;
     uint32_t rows;
@@ -42,8 +42,10 @@ struct TerminalComputeParams {
     float viewport_h;
     float font_ascender;
     float font_size;
+    float pane_origin_x;  // pixel X offset of pane within window
+    float pane_origin_y;  // pixel Y offset of pane within window
 };
-static_assert(sizeof(TerminalComputeParams) == 32);
+static_assert(sizeof(TerminalComputeParams) == 40);
 
 class Renderer {
 public:
@@ -70,18 +72,25 @@ public:
     void resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows);
     void uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells, uint32_t count);
 
-    // Render to current offscreen texture in the pool
-    void renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
-                           const std::string& fontName,
-                           const TerminalComputeParams& params,
-                           const std::vector<ImageDrawCmd>& imageCmds = {});
+    // Render terminal content to an externally-provided texture from the TexturePool.
+    void renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                      const std::string& fontName,
+                      const TerminalComputeParams& params,
+                      wgpu::TextureView target,
+                      const std::vector<ImageDrawCmd>& imageCmds = {});
 
-    // Copy most recently rendered offscreen texture to swapchain
-    void blitToScreen(wgpu::CommandEncoder& encoder, wgpu::Texture swapchainTexture);
+    // Composite entry: a rendered pane texture and where to place it on the swapchain.
+    struct CompositeEntry {
+        wgpu::Texture texture;
+        uint32_t srcW, srcH;         // used region of the texture (== pane pixel size)
+        uint32_t dstX, dstY;         // destination pixel offset on swapchain
+    };
 
-    bool hasOffscreen() const { return !offscreenPool_.empty(); }
-    // Call before each frame to ensure pool matches viewport. Returns true if pool was (re)created.
-    bool prepareOffscreen();
+    // Composite N pane textures onto the swapchain.
+    // Clears swapchain to black first, then copies each entry to its destination rect.
+    void composite(wgpu::CommandEncoder& encoder,
+                   wgpu::Texture swapchainTexture,
+                   const std::vector<CompositeEntry>& entries);
 
     // Image rendering
     struct ImageGPU {
@@ -144,17 +153,4 @@ private:
     wgpu::Sampler imageSampler_;
     std::unordered_map<uint32_t, ImageGPU> imageGPU_;
     bool imagePipelineReady_ = false;
-
-    // Offscreen texture pool (triple-buffered)
-    static constexpr uint32_t OFFSCREEN_POOL_SIZE = 3;
-    struct OffscreenTarget {
-        wgpu::Texture texture;
-        wgpu::TextureView view;
-    };
-    std::vector<OffscreenTarget> offscreenPool_;
-    uint32_t offscreenIndex_ = 0;       // next to render into
-    uint32_t offscreenLastRendered_ = 0; // last one rendered (for blit)
-    uint32_t offscreenW_ = 0, offscreenH_ = 0;
-
-    bool ensureOffscreenPool(uint32_t width, uint32_t height);
 };

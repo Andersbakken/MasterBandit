@@ -497,6 +497,17 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
             textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
         }
 
+        // Load bundled Symbols Nerd Font Mono as a built-in fallback for
+        // powerline glyphs (U+E0B0-E0B3) and other symbols.
+        auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
+        auto nerdFontData = loadFontFile(nerdFontPath.string());
+        if (!nerdFontData.empty()) {
+            textSystem_.addFallbackFont(fontName_, nerdFontData);
+            spdlog::info("Loaded built-in Symbols Nerd Font Mono");
+        } else {
+            spdlog::warn("Built-in Symbols Nerd Font Mono not found at {}", nerdFontPath.string());
+        }
+
         const FontData* font = textSystem_.getFont(fontName_);
         if (!font) {
             spdlog::error("Failed to register font");

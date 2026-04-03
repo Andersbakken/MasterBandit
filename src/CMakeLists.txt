@@ -23,6 +23,13 @@ foreach(SHADER ${SHADER_FILES})
     configure_file(${SHADER} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/${SHADER_NAME}" COPYONLY)
 endforeach()
 
+# Copy bundled fonts next to the executable
+file(GLOB NERD_FONT_FILES "${CMAKE_SOURCE_DIR}/assets/fonts/nerd/*.ttf")
+foreach(FONT ${NERD_FONT_FILES})
+    get_filename_component(FONT_NAME ${FONT} NAME)
+    configure_file(${FONT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/nerd/${FONT_NAME}" COPYONLY)
+endforeach()
+
 # Copy hb-gpu WGSL helper shaders from harfbuzz source
 configure_file("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
                "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-vertex.wgsl" COPYONLY)

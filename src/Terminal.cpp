@@ -270,7 +270,18 @@ void Terminal::resetViewport()
 
 void Terminal::advanceCursorToNewLine()
 {
+    // Line wrap: move to column 0 of next line, scrolling if needed
     mCursorX = 0;
+    mCursorY++;
+    if (mCursorY >= mScrollBottom) {
+        mCursorY = mScrollBottom - 1;
+        scrollUpInRegion(1);
+    }
+}
+
+void Terminal::lineFeed()
+{
+    // LF: move cursor down one line, column unchanged. Scroll if at bottom of scroll region.
     mCursorY++;
     if (mCursorY >= mScrollBottom) {
         mCursorY = mScrollBottom - 1;
@@ -372,6 +383,13 @@ void Terminal::pasteText(const std::string& text)
     writeToPTY(text.c_str(), text.size());
     if (mBracketedPaste) {
         writeToPTY("\x1b[201~", 6);
+    }
+}
+
+void Terminal::focusEvent(bool focused)
+{
+    if (mFocusReporting) {
+        writeToPTY(focused ? "\x1b[I" : "\x1b[O", 3);
     }
 }
 
@@ -637,17 +655,21 @@ void Terminal::readFromFD()
                 assert(mEscapeIndex == 0);
                 break;
             case '\n':
-                advanceCursorToNewLine();
+                mWrapPending = false;
+                lineFeed();
                 break;
             case '\r':
                 mCursorX = 0;
+                mWrapPending = false;
                 break;
             case '\b':
                 if (mCursorX > 0)
                     --mCursorX;
+                mWrapPending = false;
                 break;
             case '\t': {
                 // Tab: advance to next 8-column boundary
+                // Note: tab preserves lcf/wrapPending per xterm behavior
                 int nextTab = (mCursorX / 8 + 1) * 8;
                 mCursorX = std::min(nextTab, mWidth - 1);
                 break;
@@ -662,6 +684,10 @@ void Terminal::readFromFD()
                     mState = InUtf8;
                 } else {
                     // ASCII character — write to cell grid
+                    if (mWrapPending) {
+                        advanceCursorToNewLine();
+                        mWrapPending = false;
+                    }
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
                         g.cell(mCursorX, mCursorY) = Cell{static_cast<char32_t>(buf[i]), mCurrentAttrs};
                         g.clearExtra(mCursorX, mCursorY);
@@ -669,7 +695,8 @@ void Terminal::readFromFD()
                     }
                     mCursorX++;
                     if (mCursorX >= mWidth) {
-                        advanceCursorToNewLine();
+                        mCursorX = mWidth - 1;
+                        mWrapPending = true;
                     }
                 }
                 break;
@@ -721,6 +748,10 @@ void Terminal::readFromFD()
                     // (for now, just skip it)
                 } else if (w == 2) {
                     // Wide character: needs two cells
+                    if (mWrapPending) {
+                        advanceCursorToNewLine();
+                        mWrapPending = false;
+                    }
                     if (mCursorX + 1 >= mWidth) {
                         // Not enough room — fill current cell with space and wrap
                         if (mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
@@ -742,10 +773,15 @@ void Terminal::readFromFD()
                     }
                     mCursorX += 2;
                     if (mCursorX >= mWidth) {
-                        advanceCursorToNewLine();
+                        mCursorX = mWidth - 1;
+                        mWrapPending = true;
                     }
                 } else {
                     // Normal single-width character
+                    if (mWrapPending) {
+                        advanceCursorToNewLine();
+                        mWrapPending = false;
+                    }
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
                         g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
                         g.clearExtra(mCursorX, mCursorY);
@@ -753,7 +789,8 @@ void Terminal::readFromFD()
                     }
                     mCursorX++;
                     if (mCursorX >= mWidth) {
-                        advanceCursorToNewLine();
+                        mCursorX = mWidth - 1;
+                        mWrapPending = true;
                     }
                 }
 
@@ -815,6 +852,7 @@ void Terminal::readFromFD()
                 break;
             case RIS:
                 // Reset to initial state
+                mWrapPending = false;
                 mCurrentAttrs.reset();
                 mCursorX = 0;
                 mCursorY = 0;
@@ -840,25 +878,25 @@ void Terminal::readFromFD()
                 mSavedCursorX = mCursorX;
                 mSavedCursorY = mCursorY;
                 mSavedAttrs = mCurrentAttrs;
+                mSavedWrapPending = mWrapPending;
                 resetToNormal();
                 break;
             case DECRC:
                 mCursorX = mSavedCursorX;
                 mCursorY = mSavedCursorY;
                 mCurrentAttrs = mSavedAttrs;
+                mWrapPending = mSavedWrapPending;
                 resetToNormal();
                 break;
             case IND:
-                // Index: move cursor down one line, scroll if at bottom of scroll region
-                if (mCursorY == mScrollBottom - 1) {
-                    scrollUpInRegion(1);
-                } else if (mCursorY < mHeight - 1) {
-                    mCursorY++;
-                }
+                // Index: same as LF
+                mWrapPending = false;
+                lineFeed();
                 resetToNormal();
                 break;
             case NEL:
                 // Next Line: move to beginning of next line, scroll if needed
+                mWrapPending = false;
                 mCursorX = 0;
                 if (mCursorY == mScrollBottom - 1) {
                     scrollUpInRegion(1);
@@ -869,6 +907,7 @@ void Terminal::readFromFD()
                 break;
             case RI:
                 // Reverse Index: move cursor up one line, scroll down if at top of scroll region
+                mWrapPending = false;
                 if (mCursorY == mScrollTop) {
                     g.scrollDown(mScrollTop, mScrollBottom, 1);
                 } else if (mCursorY > 0) {
@@ -1163,14 +1202,18 @@ void Terminal::onAction(const Action *action)
     assert(action->type != Action::Invalid);
     DEBUG("Got action %s %d %d %d", Action::typeName(action->type), action->count, action->x, action->y);
 
+    // Any CSI action clears pending autowrap (save old state for SCP)
+    bool savedWrapPending = mWrapPending;
+    mWrapPending = false;
+
     IGrid& g = grid();
 
     switch (action->type) {
     case Action::CursorUp:
-        mCursorY = std::max(mScrollTop, mCursorY - action->count);
+        mCursorY = std::max(0, mCursorY - action->count);
         break;
     case Action::CursorDown:
-        mCursorY = std::min(mScrollBottom - 1, mCursorY + action->count);
+        mCursorY = std::min(mHeight - 1, mCursorY + action->count);
         break;
     case Action::CursorForward:
         mCursorX = std::min(mWidth - 1, mCursorX + action->count);
@@ -1179,11 +1222,11 @@ void Terminal::onAction(const Action *action)
         mCursorX = std::max(0, mCursorX - action->count);
         break;
     case Action::CursorNextLine:
-        mCursorY = std::min(mScrollBottom - 1, mCursorY + action->count);
+        mCursorY = std::min(mHeight - 1, mCursorY + action->count);
         mCursorX = 0;
         break;
     case Action::CursorPreviousLine:
-        mCursorY = std::max(mScrollTop, mCursorY - action->count);
+        mCursorY = std::max(0, mCursorY - action->count);
         mCursorX = 0;
         break;
     case Action::CursorHorizontalAbsolute:
@@ -1253,11 +1296,13 @@ void Terminal::onAction(const Action *action)
         mSavedCursorX = mCursorX;
         mSavedCursorY = mCursorY;
         mSavedAttrs = mCurrentAttrs;
+        mSavedWrapPending = savedWrapPending;
         break;
     case Action::RestoreCursorPosition:
         mCursorX = mSavedCursorX;
         mCursorY = mSavedCursorY;
         mCurrentAttrs = mSavedAttrs;
+        mWrapPending = mSavedWrapPending;
         break;
     case Action::SetMode:
         switch (action->count) {
@@ -1275,6 +1320,7 @@ void Terminal::onAction(const Action *action)
             mSavedCursorX = mCursorX;
             mSavedCursorY = mCursorY;
             mSavedAttrs = mCurrentAttrs;
+            mSavedWrapPending = savedWrapPending;
             mUsingAltScreen = true;
             mCursorX = 0;
             mCursorY = 0;
@@ -1284,9 +1330,9 @@ void Terminal::onAction(const Action *action)
             mScrollBottom = mHeight;
             clearSelection();
             break;
-        case 2004:
-            mBracketedPaste = true;
-            break;
+        case 1004: mFocusReporting = true; break;
+        case 2004: mBracketedPaste = true; break;
+        case 2026: mSyncOutput = true; break;
         default:
             WARN("Ignoring private mode set %d", action->count);
             break;
@@ -1309,14 +1355,15 @@ void Terminal::onAction(const Action *action)
             mCursorX = mSavedCursorX;
             mCursorY = mSavedCursorY;
             mCurrentAttrs = mSavedAttrs;
+            mWrapPending = mSavedWrapPending;
             mDocument.markAllDirty();
             mScrollTop = 0;
             mScrollBottom = mHeight;
             clearSelection();
             break;
-        case 2004:
-            mBracketedPaste = false;
-            break;
+        case 1004: mFocusReporting = false; break;
+        case 2004: mBracketedPaste = false; break;
+        case 2026: mSyncOutput = false; break;
         default:
             WARN("Ignoring private mode reset %d", action->count);
             break;

@@ -405,6 +405,10 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         if (lines != 0) tw->scrollViewport(lines);
     });
 
+    glfwSetWindowFocusCallback(glfwWin, [](GLFWwindow* w, int focused) {
+        static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->focusEvent(focused != 0);
+    });
+
     if (!window->init(options)) {
         spdlog::error("Failed to init terminal");
         window_ = nullptr;

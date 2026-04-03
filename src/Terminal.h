@@ -105,6 +105,8 @@ public:
     int masterFD() const { return mMasterFD; }
     void readFromFD();
     bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
+    bool syncOutputActive() const { return mSyncOutput; }
+    void focusEvent(bool focused);
 
     // Selection
     struct Selection {
@@ -147,6 +149,7 @@ private:
     int mWidth { 0 }, mHeight { 0 };
     int mCursorX { 0 }, mCursorY { 0 };
     bool mCursorVisible { true };
+    bool mWrapPending { false };    // deferred autowrap state
     int mMasterFD { -1 };
 
     Document mDocument;
@@ -157,6 +160,7 @@ private:
 
     CellAttrs mCurrentAttrs;       // SGR "pen"
     int mSavedCursorX { 0 }, mSavedCursorY { 0 };
+    bool mSavedWrapPending { false };
     CellAttrs mSavedAttrs;
     int mScrollTop { 0 }, mScrollBottom { 0 }; // scroll region [top, bottom)
 
@@ -246,6 +250,7 @@ private:
 
     void scrollUpInRegion(int n);
     void advanceCursorToNewLine();
+    void lineFeed();
 
     // Mouse reporting
     void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, unsigned int modifiers);
@@ -260,6 +265,8 @@ private:
     int mMouseButtonDown { -1 };
     int mLastMouseX { -1 }, mLastMouseY { -1 };
     bool mBracketedPaste { false };
+    bool mFocusReporting { false };  // Mode 1004
+    bool mSyncOutput { false };      // Mode 2026: synchronized output
 
     Selection mSelection;
 

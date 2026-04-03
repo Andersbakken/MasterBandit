@@ -8,6 +8,7 @@
 #include <Platform.h>
 #include <TerminalOptions.h>
 #include <CellGrid.h>
+#include <ScrollbackBuffer.h>
 
 std::string toPrintable(const std::string &str);
 std::string toPrintable(const char *chars, int len);
@@ -37,16 +38,20 @@ public:
     int cursorX() const { return mCursorX; }
     int cursorY() const { return mCursorY; }
     bool cursorVisible() const { return mCursorVisible; }
-    int x() const { return mX; }
-    int y() const { return mY; }
     int width() const { return mWidth; }
     int height() const { return mHeight; }
 
     const CellGrid& grid() const { return mUsingAltScreen ? mAltGrid : mGrid; }
     CellGrid& grid() { return mUsingAltScreen ? mAltGrid : mGrid; }
 
-    void scroll(int left, int top);
     void resize(int width, int height);
+
+    // Scrollback viewport
+    const Cell* viewportRow(int viewRow) const;
+    void scrollViewport(int delta);
+    void resetViewport();
+    int viewportOffset() const { return mViewportOffset; }
+    const ScrollbackBuffer& scrollback() const { return mScrollback; }
 
     enum Event {
         Update,
@@ -110,7 +115,7 @@ public:
 private:
     Platform *mPlatform;
     TerminalOptions mOptions;
-    int mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
+    int mWidth { 0 }, mHeight { 0 };
     int mCursorX { 0 }, mCursorY { 0 };
     bool mCursorVisible { true };
     unsigned int mFlags { 0 };
@@ -120,6 +125,9 @@ private:
     CellGrid mGrid;
     CellGrid mAltGrid;
     bool mUsingAltScreen { false };
+
+    ScrollbackBuffer mScrollback;
+    int mViewportOffset { 0 };
 
     CellAttrs mCurrentAttrs;       // SGR "pen"
     int mSavedCursorX { 0 }, mSavedCursorY { 0 };

@@ -21,12 +21,13 @@ cursor/selection/underlines. Rects render before text so glyphs overlay.
 
 **Render order**: clear → rect pass → text pass (per font).
 
-Current terminal data model uses string-based `Line { data, lineBreaks, commands }`
-with sparse `Command` annotations. This will be replaced by the cell grid below.
+Terminal data model uses a `cols × rows` cell grid (§2) with per-cell codepoint
+and packed attributes. A compute shader (§5) generates vertices from resolved
+cells.
 
 ---
 
-## 2. Cell Grid (to implement)
+## 2. Cell Grid (implemented)
 
 Replace the current `Line { string, commands }` model with a `cols × rows` cell
 array providing O(1) random access for cursor-addressed writes.
@@ -93,7 +94,7 @@ is set.
 
 ---
 
-## 5. GPU Pipeline (to implement)
+## 5. GPU Pipeline (implemented)
 
 Per-frame flow:
 
@@ -111,10 +112,65 @@ reuse the previous frame's vertex buffer.
 
 ---
 
-## 6. Dirty Tracking (to implement)
+## 6. Dirty Tracking (implemented)
 
 - Per-row dirty bit.
 - Only dirty rows are re-shaped (HarfBuzz) and have vertices regenerated.
 - Clean rows reuse cached shaping results and existing vertex data.
 - Grid-level "all dirty" flag for full-screen redraws: resize, alternate screen
   switch, bulk scroll.
+
+---
+
+## 7. UI Abstraction (to implement)
+
+A backend-agnostic UI layer for config panels, tab bars, status lines, and other
+chrome. The element tree is pure data with no rendering knowledge; visual
+presentation is delegated to a virtual backend.
+
+### Element types
+
+| Element | Data | Action |
+|---|---|---|
+| `Button` | label | terminal action or show panel |
+| `Checkbox` | label, bound value | toggle bound value |
+| `Label` | text | — |
+| `TabBar` | tab labels | show corresponding panel |
+| `TextInput` | placeholder, bound value | edit bound value |
+| `List` | items | on_select callback |
+| `Panel` | children, layout hints | container |
+
+Each element's action is either "navigate to another panel" or "execute a
+terminal/app action." This keeps the description declarative.
+
+### Backend interface
+
+```
+UIBackend (virtual)
+    renderButton(Button, bounds)
+    renderCheckbox(Checkbox, bounds)
+    renderLabel(Label, bounds)
+    renderTabBar(TabBar, bounds)
+    renderTextInput(TextInput, bounds)
+    renderList(List, bounds)
+    layout(Panel, available_rect)
+    handleInput(InputEvent) → bool
+```
+
+### Planned backends
+
+- **CellGridUIBackend** — draws into a CellGrid overlay using box-drawing
+  characters, highlights, and cell attributes. Mouse and keyboard input routed
+  through the terminal's existing input path.
+- **GtkUIBackend** — maps elements to GtkWidget tree.
+- **CocoaUIBackend** — maps elements to NSView hierarchy.
+
+Layout is backend-specific: the TUI backend snaps to cell boundaries, native
+backends use pixel coordinates.
+
+### Relationship to panes/tabs
+
+The pane tree (how terminals are spatially arranged) is structural. The UI layer
+is presentational (how the user interacts with config and chrome). They connect
+at the action layer: a UI button "split horizontal" dispatches a pane manager
+action.

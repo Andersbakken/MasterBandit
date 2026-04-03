@@ -101,6 +101,9 @@ Terminal::Terminal(Platform *platform)
 bool Terminal::init(const TerminalOptions &options)
 {
     mOptions = options;
+    // Re-initialize scrollback with configured capacity (resize already set cols)
+    mScrollback = ScrollbackBuffer(mScrollback.cols(), mOptions.scrollbackLines);
+
     mMasterFD = posix_openpt(O_RDWR | O_NOCTTY);
     if (mMasterFD == -1) {
         FATAL("Failed to posix_openpt -> %d %s", errno, strerror(errno));
@@ -183,21 +186,16 @@ Terminal::~Terminal()
 {
 }
 
-void Terminal::scroll(int x, int y)
-{
-    mX = x;
-    mY = y;
-    event(Update);
-}
-
 void Terminal::resize(int width, int height)
 {
     mWidth = width;
     mHeight = height;
     mGrid.resize(width, height);
     mAltGrid.resize(width, height);
+    mScrollback.resize(width);
     mScrollTop = 0;
     mScrollBottom = height;
+    mViewportOffset = std::clamp(mViewportOffset, 0, mScrollback.historySize());
     // Clamp cursor
     mCursorX = std::min(mCursorX, width - 1);
     mCursorY = std::min(mCursorY, height - 1);
@@ -207,7 +205,49 @@ void Terminal::resize(int width, int height)
 void Terminal::scrollUpInRegion(int n)
 {
     CellGrid& g = grid();
+    if (!mUsingAltScreen && mScrollTop == 0) {
+        for (int i = 0; i < n; ++i) {
+            mScrollback.pushHistory(g.row(mScrollTop + i), g.cols());
+        }
+        if (mViewportOffset > 0) {
+            mViewportOffset = std::min(mViewportOffset + n, mScrollback.historySize());
+        }
+    }
     g.scrollUp(mScrollTop, mScrollBottom, n);
+}
+
+const Cell* Terminal::viewportRow(int viewRow) const
+{
+    if (mViewportOffset == 0) {
+        return grid().row(viewRow);
+    }
+    int histSize = mScrollback.historySize();
+    int logicalRow = histSize - mViewportOffset + viewRow;
+    if (logicalRow < histSize) {
+        return mScrollback.historyRow(logicalRow);
+    } else {
+        return grid().row(logicalRow - histSize);
+    }
+}
+
+void Terminal::scrollViewport(int delta)
+{
+    int oldOffset = mViewportOffset;
+    // delta > 0 means scroll into history, delta < 0 toward live
+    mViewportOffset = std::clamp(mViewportOffset + delta, 0, mScrollback.historySize());
+    if (mViewportOffset != oldOffset) {
+        grid().markAllDirty();
+        event(ScrollbackChanged);
+    }
+}
+
+void Terminal::resetViewport()
+{
+    if (mViewportOffset != 0) {
+        mViewportOffset = 0;
+        grid().markAllDirty();
+        event(ScrollbackChanged);
+    }
 }
 
 void Terminal::advanceCursorToNewLine()
@@ -222,6 +262,8 @@ void Terminal::advanceCursorToNewLine()
 
 void Terminal::keyPressEvent(const KeyEvent *event)
 {
+    resetViewport();
+
     spdlog::debug("keyPressEvent: key=0x{:x} text='{}' ({} bytes) count={}",
                   static_cast<int>(event->key),
                   toPrintable(event->text),

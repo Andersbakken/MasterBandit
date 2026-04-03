@@ -222,7 +222,7 @@ public:
 
 private:
     void configureSurface(uint32_t width, uint32_t height);
-    void resolveRow(int row, const CellGrid& g, FontData* font, float scale);
+    void resolveRow(int row, FontData* font, float scale);
 
     PlatformDawn* platform_;
     GLFWwindow* glfwWindow_;
@@ -391,6 +391,12 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
     glfwSetCursorPosCallback(glfwWin, [](GLFWwindow* w, double x, double y) {
         static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w))->onCursorPos(x, y);
+    });
+
+    glfwSetScrollCallback(glfwWin, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
+        auto* tw = static_cast<TerminalWindow*>(glfwGetWindowUserPointer(w));
+        int lines = static_cast<int>(yoffset);
+        if (lines != 0) tw->scrollViewport(lines);
     });
 
     if (!window->init(options)) {
@@ -653,14 +659,15 @@ std::string TerminalWindow::gridToJson(int id)
     return buf;
 }
 
-void TerminalWindow::resolveRow(int row, const CellGrid& g, FontData* font, float scale)
+void TerminalWindow::resolveRow(int row, FontData* font, float scale)
 {
-    int cols = g.cols();
+    int cols = width();
     int baseIdx = row * cols;
+    const Cell* rowData = viewportRow(row);
 
     for (int col = 0; col < cols; ++col) {
         ResolvedCell& rc = resolvedCells_[baseIdx + col];
-        const Cell& cell = g.cell(col, row);
+        const Cell& cell = rowData[col];
 
         if (cell.wc == 0 || cell.attrs.wideSpacer()) {
             // Empty or spacer cell
@@ -729,10 +736,16 @@ void TerminalWindow::renderTerminal()
     float scale = fontSize_ / font->baseSize;
     const CellGrid& g = grid();
 
-    // Resolve dirty rows
-    for (int row = 0; row < g.rows(); ++row) {
-        if (g.isRowDirty(row)) {
-            resolveRow(row, g, font, scale);
+    // Resolve rows: when scrolled back, resolve all (history rows have no dirty tracking)
+    if (viewportOffset() != 0) {
+        for (int row = 0; row < g.rows(); ++row) {
+            resolveRow(row, font, scale);
+        }
+    } else {
+        for (int row = 0; row < g.rows(); ++row) {
+            if (g.isRowDirty(row)) {
+                resolveRow(row, font, scale);
+            }
         }
     }
     // Clear dirty flags (const_cast since we need to mutate dirty state)
@@ -745,9 +758,9 @@ void TerminalWindow::renderTerminal()
     // Upload any newly encoded glyphs to GPU
     renderer_.updateFontAtlas(queue_, fontName_, *font);
 
-    // Queue cursor rect (CPU-side, 1 rect)
+    // Queue cursor rect (CPU-side, 1 rect) — only when viewing live screen
     renderer_.clearQueues();
-    if (cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
+    if (viewportOffset() == 0 && cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
         cursorY() >= 0 && cursorY() < g.rows()) {
         float curX = static_cast<float>(cursorX()) * charWidth_;
         float curY = static_cast<float>(cursorY()) * lineHeight_;
@@ -856,6 +869,7 @@ void TerminalWindow::renderTerminal()
 void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
 {
     spdlog::debug("onKey: key={} action={} mods={}", key, action, mods);
+    resetViewport();
 
     if (action == GLFW_RELEASE) {
         controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
@@ -893,6 +907,7 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
 void TerminalWindow::onChar(unsigned int codepoint)
 {
     spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
+    resetViewport();
     if (controlPressed_) return;
 
     KeyEvent ev;

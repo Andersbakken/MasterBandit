@@ -6,6 +6,7 @@
 #include "DebugIPC.h"
 #include "NativeSurface.h"
 #include "Base64.h"
+#include "FontFallback.h"
 
 #include <glaze/glaze.hpp>
 
@@ -170,6 +171,7 @@ static std::string findMonospaceFont()
         "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
         "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
 #ifdef __APPLE__
+        "/System/Library/Fonts/Monaco.ttf",
         "/System/Library/Fonts/Menlo.ttc",
         "/System/Library/Fonts/SFMono-Regular.otf",
         "/Library/Fonts/Courier New.ttf",
@@ -248,6 +250,10 @@ private:
 
     int lastCursorX_ = -1, lastCursorY_ = -1;
     bool lastCursorVisible_ = true;
+
+    std::string primaryFontPath_;
+    FontFallback fontFallback_;
+    std::unordered_set<char32_t> fallbackAttempted_;  // codepoints we already tried fallback for
 
     DebugIPC* debugIPC_ = nullptr;
 };
@@ -526,6 +532,7 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
         return;
     }
     spdlog::info("Using font: {}", fontPath);
+    primaryFontPath_ = fontPath;
 
     auto fontData = loadFontFile(fontPath);
     if (fontData.empty()) {
@@ -713,9 +720,36 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
 
         // Shape the single codepoint to get glyph info
         std::string cpStr = codepointToUtf8(cell.wc);
-        const auto& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_);
+        auto resolveGlyph = [&](const ShapedText& shaped) -> const GlyphInfo* {
+            if (shaped.glyphs.empty()) return nullptr;
+            uint64_t glyphId = shaped.glyphs[0].glyphId;
+            // glyphId 0 in any font index is .notdef (missing glyph square)
+            if ((glyphId & 0xFFFFFFFF) == 0) return nullptr;
+            auto it = font->glyphs.find(glyphId);
+            if (it == font->glyphs.end() || it->second.is_empty) return nullptr;
+            return &it->second;
+        };
 
-        if (shaped.glyphs.empty()) {
+        const ShapedText& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_);
+        const GlyphInfo* gi = resolveGlyph(shaped);
+
+        // Try font fallback if glyph is missing
+        if (!gi && fallbackAttempted_.find(cell.wc) == fallbackAttempted_.end()) {
+            fallbackAttempted_.insert(cell.wc);
+            auto fallbackData = fontFallback_.fontDataForCodepoint(primaryFontPath_, cell.wc);
+            if (!fallbackData.empty()) {
+                textSystem_.addFallbackFont(fontName_, fallbackData);
+                // Re-fetch font pointer (addFallbackFont modifies the FontData)
+                font = const_cast<FontData*>(textSystem_.getFont(fontName_));
+                const ShapedText& retry = textSystem_.shapeText(fontName_, cpStr, fontSize_);
+                gi = resolveGlyph(retry);
+                if (!gi) {
+                    spdlog::warn("FontFallback: still missing after fallback for U+{:04X}", static_cast<uint32_t>(cell.wc));
+                }
+            }
+        }
+
+        if (!gi) {
             rc.atlas_offset = 0;
             rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
             rc.upem = 1;
@@ -723,25 +757,12 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
             rc.bg_color = cell.attrs.packBgAsU32();
             continue;
         }
-
-        const auto& sg = shaped.glyphs[0];
-        auto it = font->glyphs.find(sg.glyphId);
-        if (it == font->glyphs.end() || it->second.is_empty) {
-            rc.atlas_offset = 0;
-            rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
-            rc.upem = 1;
-            rc.fg_color = cell.attrs.packFgAsU32();
-            rc.bg_color = cell.attrs.packBgAsU32();
-            continue;
-        }
-
-        const GlyphInfo& gi = it->second;
-        rc.atlas_offset = gi.atlas_offset;
-        rc.ext_min_x = gi.ext_min_x;
-        rc.ext_min_y = gi.ext_min_y;
-        rc.ext_max_x = gi.ext_max_x;
-        rc.ext_max_y = gi.ext_max_y;
-        rc.upem = gi.upem;
+        rc.atlas_offset = gi->atlas_offset;
+        rc.ext_min_x = gi->ext_min_x;
+        rc.ext_min_y = gi->ext_min_y;
+        rc.ext_max_x = gi->ext_max_x;
+        rc.ext_max_y = gi->ext_max_y;
+        rc.upem = gi->upem;
         rc.fg_color = cell.attrs.packFgAsU32();
         rc.bg_color = cell.attrs.packBgAsU32();
     }
@@ -919,6 +940,7 @@ void TerminalWindow::renderTerminal()
         params.viewport_w = static_cast<float>(fbWidth_);
         params.viewport_h = static_cast<float>(fbHeight_);
         params.font_ascender = font->ascender * scale;
+        params.font_size = fontSize_;
 
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);

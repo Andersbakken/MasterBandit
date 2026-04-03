@@ -41,7 +41,7 @@ struct TerminalComputeParams {
     float viewport_w;
     float viewport_h;
     float font_ascender;
-    float _pad;
+    float font_size;
 };
 static_assert(sizeof(TerminalComputeParams) == 32);
 

@@ -61,6 +61,7 @@ public:
     const ShapedText& shapeText(const std::string& fontName, const std::string& text,
                                 float fontSize, float wrapWidth = 0, int align = 0);
     const FontData* getFont(const std::string& name) const;
+    bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
 
     // Ensure a glyph is encoded in the atlas; called during shaping
     void ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId);

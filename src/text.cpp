@@ -190,6 +190,38 @@ bool TextSystem::registerFont(const std::string& name,
     return true;
 }
 
+bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData)
+{
+    auto it = fonts_.find(name);
+    if (it == fonts_.end()) return false;
+
+    FontData& font = it->second;
+
+    FontData::HBEntry entry;
+    entry.hbBlob = hb_blob_create(reinterpret_cast<const char*>(ttfData.data()),
+                                   static_cast<unsigned int>(ttfData.size()),
+                                   HB_MEMORY_MODE_DUPLICATE, nullptr, nullptr);
+    entry.hbFace = hb_face_create(entry.hbBlob, 0);
+    entry.hbFont = hb_font_create(entry.hbFace);
+    entry.gpuDraw = hb_gpu_draw_create_or_fail();
+    if (!entry.gpuDraw) {
+        spdlog::error("addFallbackFont '{}': hb_gpu_draw_create_or_fail() returned null", name);
+        hb_font_destroy(entry.hbFont);
+        hb_face_destroy(entry.hbFace);
+        hb_blob_destroy(entry.hbBlob);
+        return false;
+    }
+
+    font.hbFonts.push_back(entry);
+
+    // Invalidate shape cache since a new fallback may resolve previously missing glyphs
+    cacheLru_.clear();
+    cacheMap_.clear();
+
+    spdlog::info("Added fallback font #{} to '{}'", font.hbFonts.size() - 1, name);
+    return true;
+}
+
 const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::string& text,
                                          float fontSize, float wrapWidth, int align)
 {

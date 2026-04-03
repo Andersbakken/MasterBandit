@@ -13,3 +13,8 @@
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
 - [ ] REP (`CSI b`) — Repeat preceding character N times.
 - [ ] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking.
+
+## Infrastructure
+
+- [ ] Split PlatformDawn.cpp — Separate platform/event loop, font loading, cell resolution, and TerminalWindow into own files. The Dawn-specific code is a minority of the ~1100 lines.
+- [ ] System font discovery — Replace hardcoded path list in `PlatformDawn.cpp:findMonospaceFont()`. Use Core Text on macOS, fontconfig on Linux. Support font selection by name, font fallback chains for CJK/emoji coverage.

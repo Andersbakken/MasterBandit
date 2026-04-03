@@ -8,7 +8,7 @@ struct TerminalParams {
     viewport_w: f32,
     viewport_h: f32,
     font_ascender: f32, // ascender in pixels
-    _pad: f32,
+    font_size: f32,     // font size in pixels
 };
 
 struct ResolvedCellGPU {
@@ -95,7 +95,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let base_idx = atomicAdd(&counters[0], 6u);
 
         let upem = f32(cell.upem);
-        let font_size = params.cell_height; // approximate: one cell = one em height
+        let font_size = params.font_size;
         let em_per_pos = upem / font_size;
 
         // Pixel-space glyph extents

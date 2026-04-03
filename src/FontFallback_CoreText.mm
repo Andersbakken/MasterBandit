@@ -1,5 +1,6 @@
 #include "FontFallback.h"
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <fstream>
 #include <vector>
 #include <string>

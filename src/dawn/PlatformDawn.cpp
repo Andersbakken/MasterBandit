@@ -5,6 +5,7 @@
 #include "Log.h"
 #include "DebugIPC.h"
 #include "NativeSurface.h"
+#include "Base64.h"
 
 #include <glaze/glaze.hpp>
 
@@ -34,26 +35,6 @@
 
 namespace fs = std::filesystem;
 
-// --- Base64 encoding for PNG screenshots ---
-
-static const char sBase64Table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static std::string base64Encode(const uint8_t* data, size_t len)
-{
-    std::string out;
-    out.reserve(((len + 2) / 3) * 4);
-    for (size_t i = 0; i < len; i += 3) {
-        uint32_t n = static_cast<uint32_t>(data[i]) << 16;
-        if (i + 1 < len) n |= static_cast<uint32_t>(data[i + 1]) << 8;
-        if (i + 2 < len) n |= static_cast<uint32_t>(data[i + 2]);
-        out += sBase64Table[(n >> 18) & 0x3F];
-        out += sBase64Table[(n >> 12) & 0x3F];
-        out += (i + 1 < len) ? sBase64Table[(n >> 6) & 0x3F] : '=';
-        out += (i + 2 < len) ? sBase64Table[n & 0x3F] : '=';
-    }
-    return out;
-}
 
 // --- Custom spdlog sink that forwards to DebugIPC ---
 
@@ -994,7 +975,7 @@ void TerminalWindow::renderTerminal()
                         &pngData, static_cast<int>(w), static_cast<int>(h), 4,
                         rgba.data(), static_cast<int>(w * 4));
 
-                    std::string b64 = base64Encode(pngData.data(), pngData.size());
+                    std::string b64 = base64::encode(pngData.data(), pngData.size());
                     ipc->onPngReady(b64);
                 });
         } else {

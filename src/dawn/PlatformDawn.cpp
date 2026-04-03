@@ -7,6 +7,7 @@
 #include "NativeSurface.h"
 #include "Utils.h"
 #include "FontFallback.h"
+#include "FontResolver.h"
 
 #include <glaze/glaze.hpp>
 
@@ -532,7 +533,16 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
 
     configureSurface(fbWidth_, fbHeight_);
 
-    std::string fontPath = options.font.empty() ? findMonospaceFont() : options.font;
+    std::string fontPath;
+    if (options.font.empty()) {
+        fontPath = findMonospaceFont();
+    } else {
+        fontPath = resolveFontFamily(options.font);
+        if (fontPath.empty()) {
+            spdlog::warn("Font family '{}' not found, falling back to system monospace", options.font);
+            fontPath = findMonospaceFont();
+        }
+    }
     if (fontPath.empty()) {
         spdlog::error("No monospace font found on system");
         return;

@@ -1,8 +1,8 @@
 set(DAWN_SOURCES PlatformDawn.cpp Renderer.cpp NativeSurface.cpp)
 if(APPLE)
-    list(APPEND DAWN_SOURCES MetalLayer.mm ../FontFallback_CoreText.mm)
+    list(APPEND DAWN_SOURCES MetalLayer.mm ../FontFallback_CoreText.mm ../FontResolver_CoreText.mm)
 else()
-    list(APPEND DAWN_SOURCES ../FontFallback_FontConfig.cpp)
+    list(APPEND DAWN_SOURCES ../FontFallback_FontConfig.cpp ../FontResolver_FontConfig.cpp)
 endif()
 add_library(platform_dawn STATIC ${DAWN_SOURCES})
 target_link_libraries(platform_dawn PUBLIC

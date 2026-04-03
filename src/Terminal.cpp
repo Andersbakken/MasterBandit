@@ -15,6 +15,7 @@
 #include <limits>
 #include <signal.h>
 #include <algorithm>
+#include <string_view>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -627,7 +628,7 @@ void Terminal::readFromFD()
     const int len = ret;
 
     auto resetToNormal = [this]() {
-        assert(mState == InEscape);
+        assert(mState == InEscape || mState == InStringSequence);
         mState = Normal;
         mEscapeIndex = 0;
 #ifndef NDEBUG
@@ -756,7 +757,11 @@ void Terminal::readFromFD()
             case SS2:
             case SS3:
             case ST:
-                DEBUG("Ignoring escape sequence %s", escapeSequenceName(static_cast<EscapeSequence>(mEscapeBuffer[0])));
+                if (mWasInStringSequence) {
+                    processStringSequence();
+                    mStringSequence.clear();
+                    mWasInStringSequence = false;
+                }
                 resetToNormal();
                 break;
             case DCS:
@@ -764,6 +769,9 @@ void Terminal::readFromFD()
             case SOS:
             case PM:
             case APC:
+                mStringSequenceType = mEscapeBuffer[0];
+                mStringSequence.clear();
+                mWasInStringSequence = false;
                 mState = InStringSequence;
                 break;
             case CSI:
@@ -808,18 +816,16 @@ void Terminal::readFromFD()
             break;
         case InStringSequence:
             if (buf[i] == '\x07') {
-                DEBUG("String sequence terminated by BEL");
-                mState = Normal;
-                mEscapeIndex = 0;
-#ifndef NDEBUG
-                memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
+                processStringSequence();
+                mStringSequence.clear();
+                resetToNormal();
             } else if (buf[i] == 0x1b) {
+                // Possible ST terminator (\x1b\\) — transition to InEscape
+                mWasInStringSequence = true;
                 mState = InEscape;
                 mEscapeIndex = 0;
-#ifndef NDEBUG
-                memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
+            } else if (mStringSequence.size() < MAX_STRING_SEQUENCE) {
+                mStringSequence += buf[i];
             }
             break;
         }
@@ -1358,6 +1364,113 @@ static inline bool gettime(timeval *time)
 #error No gettime() implementation
 #endif
     return true;
+}
+
+// --- Base64 decode ---
+static std::vector<uint8_t> base64Decode(std::string_view input)
+{
+    static const uint8_t table[256] = {
+        ['A']=0,['B']=1,['C']=2,['D']=3,['E']=4,['F']=5,['G']=6,['H']=7,
+        ['I']=8,['J']=9,['K']=10,['L']=11,['M']=12,['N']=13,['O']=14,['P']=15,
+        ['Q']=16,['R']=17,['S']=18,['T']=19,['U']=20,['V']=21,['W']=22,['X']=23,
+        ['Y']=24,['Z']=25,['a']=26,['b']=27,['c']=28,['d']=29,['e']=30,['f']=31,
+        ['g']=32,['h']=33,['i']=34,['j']=35,['k']=36,['l']=37,['m']=38,['n']=39,
+        ['o']=40,['p']=41,['q']=42,['r']=43,['s']=44,['t']=45,['u']=46,['v']=47,
+        ['w']=48,['x']=49,['y']=50,['z']=51,['0']=52,['1']=53,['2']=54,['3']=55,
+        ['4']=56,['5']=57,['6']=58,['7']=59,['8']=60,['9']=61,['+']=62,['/']=63,
+    };
+
+    std::vector<uint8_t> out;
+    out.reserve(input.size() * 3 / 4);
+    uint32_t accum = 0;
+    int bits = 0;
+    for (char c : input) {
+        if (c == '=' || c == '\n' || c == '\r') continue;
+        accum = (accum << 6) | table[static_cast<uint8_t>(c)];
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((accum >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+static std::string base64Encode(const uint8_t* data, size_t len)
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+        if (i + 1 < len) n |= static_cast<uint32_t>(data[i + 1]) << 8;
+        if (i + 2 < len) n |= static_cast<uint32_t>(data[i + 2]);
+        out += table[(n >> 18) & 0x3F];
+        out += table[(n >> 12) & 0x3F];
+        out += (i + 1 < len) ? table[(n >> 6) & 0x3F] : '=';
+        out += (i + 2 < len) ? table[n & 0x3F] : '=';
+    }
+    return out;
+}
+
+// --- OSC processing ---
+void Terminal::processStringSequence()
+{
+    if (mStringSequenceType != OSX) return; // only handle OSC for now
+
+    // mStringSequence format: "<number>;<payload>" or just "<number>"
+    size_t semi = mStringSequence.find(';');
+    if (semi == std::string::npos) return;
+
+    int oscNum = 0;
+    for (size_t i = 0; i < semi; ++i) {
+        char c = mStringSequence[i];
+        if (c < '0' || c > '9') return;
+        oscNum = oscNum * 10 + (c - '0');
+    }
+    std::string_view payload(mStringSequence.data() + semi + 1, mStringSequence.size() - semi - 1);
+
+    switch (oscNum) {
+    case 0: processOSC_Title(payload, true, true); break;
+    case 1: processOSC_Title(payload, true, false); break;
+    case 2: processOSC_Title(payload, false, true); break;
+    case 52: processOSC_Clipboard(payload); break;
+    default:
+        DEBUG("Ignoring OSC %d", oscNum);
+        break;
+    }
+}
+
+void Terminal::processOSC_Title(std::string_view text, bool setIcon, bool setTitle)
+{
+    std::string str(text);
+    if (setIcon) mIconName = str;
+    if (setTitle) {
+        mWindowTitle = str;
+        onTitleChanged(mWindowTitle);
+    }
+}
+
+void Terminal::processOSC_Clipboard(std::string_view payload)
+{
+    // Format: "c;base64data" or "c;?"
+    size_t semi = payload.find(';');
+    if (semi == std::string_view::npos) return;
+
+    std::string_view data = payload.substr(semi + 1);
+    if (data == "?") {
+        // Query clipboard
+        std::string clip = pasteFromClipboard();
+        std::string encoded = base64Encode(
+            reinterpret_cast<const uint8_t*>(clip.data()), clip.size());
+        std::string response = "\x1b]52;c;" + encoded + "\x1b\\";
+        writeToPTY(response.data(), response.size());
+    } else {
+        // Set clipboard
+        std::vector<uint8_t> decoded = base64Decode(data);
+        std::string text(decoded.begin(), decoded.end());
+        copyToClipboard(text);
+    }
 }
 
 unsigned long long Terminal::mono()

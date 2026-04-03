@@ -129,6 +129,8 @@ public:
     std::string selectedText() const;
 
     virtual void copyToClipboard(const std::string&) {}
+    virtual std::string pasteFromClipboard() { return {}; }
+    virtual void onTitleChanged(const std::string&) {}
 
     void pasteText(const std::string& text);
 
@@ -168,6 +170,19 @@ private:
 
     char mEscapeBuffer[128];
     int mEscapeIndex { 0 };
+
+    // String sequence (OSC/DCS/APC) accumulation
+    std::string mStringSequence;
+    uint8_t mStringSequenceType { 0 };
+    bool mWasInStringSequence { false };
+    static constexpr size_t MAX_STRING_SEQUENCE = 16 * 1024 * 1024; // 16 MB
+
+    void processStringSequence();
+    void processOSC_Title(std::string_view text, bool setIcon, bool setTitle);
+    void processOSC_Clipboard(std::string_view payload);
+
+    std::string mWindowTitle;
+    std::string mIconName;
 
     // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {

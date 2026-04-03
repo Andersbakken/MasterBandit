@@ -215,6 +215,8 @@ public:
     // Terminal overrides
     void event(Event ev, void* data = nullptr) override;
     void copyToClipboard(const std::string& text) override;
+    std::string pasteFromClipboard() override;
+    void onTitleChanged(const std::string& title) override;
 
     // Called from GLFW callbacks
     void onKey(int key, int scancode, int action, int mods);
@@ -611,6 +613,17 @@ void TerminalWindow::event(Event ev, void* /*data*/)
 void TerminalWindow::copyToClipboard(const std::string& text)
 {
     glfwSetClipboardString(glfwWindow_, text.c_str());
+}
+
+std::string TerminalWindow::pasteFromClipboard()
+{
+    const char* clip = glfwGetClipboardString(glfwWindow_);
+    return clip ? std::string(clip) : std::string();
+}
+
+void TerminalWindow::onTitleChanged(const std::string& title)
+{
+    glfwSetWindowTitle(glfwWindow_, title.c_str());
 }
 
 // Replace invalid UTF-8 bytes with U+FFFD so glaze doesn't reject them

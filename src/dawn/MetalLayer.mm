@@ -7,6 +7,7 @@ extern "C" void* createMetalLayer(void* nsWindow)
     NSView* contentView = [window contentView];
     [contentView setWantsLayer:YES];
     CAMetalLayer* metalLayer = [CAMetalLayer layer];
+    metalLayer.opaque = YES;
     [contentView setLayer:metalLayer];
     return metalLayer;
 }

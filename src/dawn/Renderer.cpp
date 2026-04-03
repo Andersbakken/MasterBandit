@@ -300,6 +300,40 @@ void Renderer::setViewportSize(uint32_t width, uint32_t height)
     viewportH_ = height;
 }
 
+bool Renderer::ensureOffscreenPool(uint32_t width, uint32_t height)
+{
+    if (width == offscreenW_ && height == offscreenH_ && !offscreenPool_.empty()) return false;
+
+    offscreenPool_.clear();
+    offscreenW_ = width;
+    offscreenH_ = height;
+    offscreenIndex_ = 0;
+    offscreenLastRendered_ = 0;
+
+    for (uint32_t i = 0; i < OFFSCREEN_POOL_SIZE; ++i) {
+        wgpu::TextureDescriptor desc = {};
+        desc.size = {width, height, 1};
+        desc.format = wgpu::TextureFormat::BGRA8Unorm;
+        desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
+        desc.dimension = wgpu::TextureDimension::e2D;
+        desc.mipLevelCount = 1;
+        desc.sampleCount = 1;
+
+        OffscreenTarget target;
+        target.texture = device_.CreateTexture(&desc);
+        target.view = target.texture.CreateView();
+        offscreenPool_.push_back(std::move(target));
+    }
+
+    spdlog::info("Offscreen pool created: {}x{} ({} textures)", width, height, OFFSCREEN_POOL_SIZE);
+    return true;
+}
+
+bool Renderer::prepareOffscreen()
+{
+    return ensureOffscreenPool(viewportW_, viewportH_);
+}
+
 // ========================================
 // Compute pipeline
 // ========================================
@@ -448,15 +482,18 @@ void Renderer::uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells
                       static_cast<uint64_t>(count) * sizeof(ResolvedCell));
 }
 
-void Renderer::renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
-                                   wgpu::TextureView swapchainView,
-                                   const std::string& fontName,
-                                   const TerminalComputeParams& params)
+void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                                  const std::string& fontName,
+                                  const TerminalComputeParams& params)
 {
     if (!computeReady_) return;
 
     auto fontIt = fontGPU_.find(fontName);
     if (fontIt == fontGPU_.end()) return;
+
+    // Advance to next texture in pool
+    offscreenIndex_ = (offscreenIndex_ + 1) % OFFSCREEN_POOL_SIZE;
+    wgpu::TextureView target = offscreenPool_[offscreenIndex_].view;
 
     // Update uniforms
     {
@@ -465,7 +502,6 @@ void Renderer::renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& qu
         float uniforms[4] = { w, h, 0.0f, 0.0f };
         queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
-        // Text uniforms for font
         FontGPU& gpu = fontIt->second;
         float textUniforms[24] = {
             2.0f/w,  0.0f,    0.0f, 0.0f,
@@ -480,11 +516,8 @@ void Renderer::renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& qu
         queue.WriteBuffer(gpu.uniformBuffer, 0, textUniforms, sizeof(textUniforms));
     }
 
-    // Upload compute params
     queue.WriteBuffer(computeParamsBuffer_, 0, &params, sizeof(params));
 
-    // Zero indirect buffer counters (words 0 and 4)
-    // Format: [vertexCount, instanceCount=1, firstVertex=0, firstInstance=0] x2
     uint32_t indirectInit[8] = {0, 1, 0, 0, 0, 1, 0, 0};
     queue.WriteBuffer(indirectBuffer_, 0, indirectInit, sizeof(indirectInit));
 
@@ -500,57 +533,71 @@ void Renderer::renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& qu
         computePass.End();
     }
 
-    // Clear render pass
+    // Clear
     {
-        wgpu::RenderPassColorAttachment clearAttachment = {};
-        clearAttachment.view = swapchainView;
-        clearAttachment.loadOp = wgpu::LoadOp::Clear;
-        clearAttachment.storeOp = wgpu::StoreOp::Store;
-        clearAttachment.clearValue = {0.0, 0.0, 0.0, 1.0};
+        wgpu::RenderPassColorAttachment att = {};
+        att.view = target;
+        att.loadOp = wgpu::LoadOp::Clear;
+        att.storeOp = wgpu::StoreOp::Store;
+        att.clearValue = {0.0, 0.0, 0.0, 1.0};
 
-        wgpu::RenderPassDescriptor clearPassDesc = {};
-        clearPassDesc.colorAttachmentCount = 1;
-        clearPassDesc.colorAttachments = &clearAttachment;
-
-        wgpu::RenderPassEncoder clearPass = encoder.BeginRenderPass(&clearPassDesc);
-        clearPass.End();
+        wgpu::RenderPassDescriptor rpDesc = {};
+        rpDesc.colorAttachmentCount = 1;
+        rpDesc.colorAttachments = &att;
+        encoder.BeginRenderPass(&rpDesc).End();
     }
 
-    // Rect pass: compute-generated bg rects via indirect draw
+    // Rect pass
     {
-        wgpu::RenderPassColorAttachment rectAttachment = {};
-        rectAttachment.view = swapchainView;
-        rectAttachment.loadOp = wgpu::LoadOp::Load;
-        rectAttachment.storeOp = wgpu::StoreOp::Store;
+        wgpu::RenderPassColorAttachment att = {};
+        att.view = target;
+        att.loadOp = wgpu::LoadOp::Load;
+        att.storeOp = wgpu::StoreOp::Store;
 
-        wgpu::RenderPassDescriptor rectPassDesc = {};
-        rectPassDesc.colorAttachmentCount = 1;
-        rectPassDesc.colorAttachments = &rectAttachment;
+        wgpu::RenderPassDescriptor rpDesc = {};
+        rpDesc.colorAttachmentCount = 1;
+        rpDesc.colorAttachments = &att;
 
-        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rectPassDesc);
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(rectPipeline_);
         pass.SetBindGroup(0, rectBindGroup_);
         pass.SetVertexBuffer(0, computeRectVertBuffer_);
-        pass.DrawIndirect(indirectBuffer_, 16); // offset 16 = second indirect command
+        pass.DrawIndirect(indirectBuffer_, 16);
         pass.End();
     }
 
-    // Text pass: compute-generated text verts via indirect draw
+    // Text pass
     {
-        wgpu::RenderPassColorAttachment textAttachment = {};
-        textAttachment.view = swapchainView;
-        textAttachment.loadOp = wgpu::LoadOp::Load;
-        textAttachment.storeOp = wgpu::StoreOp::Store;
+        wgpu::RenderPassColorAttachment att = {};
+        att.view = target;
+        att.loadOp = wgpu::LoadOp::Load;
+        att.storeOp = wgpu::StoreOp::Store;
 
-        wgpu::RenderPassDescriptor textPassDesc = {};
-        textPassDesc.colorAttachmentCount = 1;
-        textPassDesc.colorAttachments = &textAttachment;
+        wgpu::RenderPassDescriptor rpDesc = {};
+        rpDesc.colorAttachmentCount = 1;
+        rpDesc.colorAttachments = &att;
 
-        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&textPassDesc);
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(textPipeline_);
         pass.SetBindGroup(0, fontIt->second.bindGroup);
         pass.SetVertexBuffer(0, computeTextVertBuffer_);
-        pass.DrawIndirect(indirectBuffer_, 0); // offset 0 = first indirect command
+        pass.DrawIndirect(indirectBuffer_, 0);
         pass.End();
     }
+
+    offscreenLastRendered_ = offscreenIndex_;
+}
+
+void Renderer::blitToScreen(wgpu::CommandEncoder& encoder, wgpu::Texture swapchainTexture)
+{
+    if (offscreenPool_.empty()) return;
+
+    wgpu::TexelCopyTextureInfo src = {};
+    src.texture = offscreenPool_[offscreenLastRendered_].texture;
+
+    wgpu::TexelCopyTextureInfo dst = {};
+    dst.texture = swapchainTexture;
+
+    wgpu::Extent3D extent = {offscreenW_, offscreenH_, 1};
+    encoder.CopyTextureToTexture(&src, &dst, &extent);
 }

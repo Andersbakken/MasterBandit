@@ -290,8 +290,7 @@ private:
     bool running_ = false;
     uv_loop_t* loop_ = nullptr;
     uv_poll_t ptyPoll_ = {};
-    uv_prepare_t prepareCb_ = {};
-    uv_timer_t tickTimer_ = {};
+    uv_idle_t idleCb_ = {};
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
@@ -460,9 +459,9 @@ int PlatformDawn::exec()
         }
     });
 
-    uv_prepare_init(loop_, &prepareCb_);
-    prepareCb_.data = this;
-    uv_prepare_start(&prepareCb_, [](uv_prepare_t* handle) {
+    uv_idle_init(loop_, &idleCb_);
+    idleCb_.data = this;
+    uv_idle_start(&idleCb_, [](uv_idle_t* handle) {
         auto* self = static_cast<PlatformDawn*>(handle->data);
         glfwPollEvents();
 
@@ -472,12 +471,8 @@ int PlatformDawn::exec()
         }
 
         self->device_.Tick();
-        self->window_->renderTerminal();
+        self->window_->renderTerminal(); // GetCurrentTexture with Fifo blocks until vsync
     });
-
-    uv_timer_init(loop_, &tickTimer_);
-    tickTimer_.data = this;
-    uv_timer_start(&tickTimer_, [](uv_timer_t*) {}, 16, 16);
 
     uv_run(loop_, UV_RUN_DEFAULT);
 
@@ -485,12 +480,10 @@ int PlatformDawn::exec()
         debugSink_->setIPC(nullptr);
     }
 
-    uv_timer_stop(&tickTimer_);
     uv_poll_stop(&ptyPoll_);
-    uv_prepare_stop(&prepareCb_);
-    uv_close(reinterpret_cast<uv_handle_t*>(&tickTimer_), nullptr);
+    uv_idle_stop(&idleCb_);
     uv_close(reinterpret_cast<uv_handle_t*>(&ptyPoll_), nullptr);
-    uv_close(reinterpret_cast<uv_handle_t*>(&prepareCb_), nullptr);
+    uv_close(reinterpret_cast<uv_handle_t*>(&idleCb_), nullptr);
     if (debugIPC_) debugIPC_->closeHandles();
     uv_run(loop_, UV_RUN_DEFAULT);
     debugIPC_.reset();
@@ -599,7 +592,7 @@ void TerminalWindow::configureSurface(uint32_t width, uint32_t height)
     config.height = height;
     config.presentMode = wgpu::PresentMode::Fifo;
     config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
-    config.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
+    config.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
     surface_.Configure(&config);
 }
 
@@ -750,9 +743,7 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
 
 void TerminalWindow::renderTerminal()
 {
-    bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
-    if ((!needsRedraw_ && !pngNeeded) || fbWidth_ == 0 || fbHeight_ == 0) return;
-    needsRedraw_ = false;
+    if (fbWidth_ == 0 || fbHeight_ == 0) return;
 
     // Get swapchain texture
     wgpu::SurfaceTexture surfaceTexture;
@@ -761,177 +752,171 @@ void TerminalWindow::renderTerminal()
         surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
         return;
     }
-    wgpu::TextureView view = surfaceTexture.texture.CreateView();
 
     FontData* font = const_cast<FontData*>(textSystem_.getFont(fontName_));
     if (!font) return;
 
     float scale = fontSize_ / font->baseSize;
     const CellGrid& g = grid();
+    bool poolRecreated = renderer_.prepareOffscreen();
+    bool needsRender = g.anyDirty() || poolRecreated;
+    bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
 
-    // Resolve rows: when scrolled back, resolve all (history rows have no dirty tracking)
-    if (viewportOffset() != 0) {
-        for (int row = 0; row < g.rows(); ++row) {
-            resolveRow(row, font, scale);
-        }
-    } else {
-        for (int row = 0; row < g.rows(); ++row) {
-            if (g.isRowDirty(row)) {
+    // Render to offscreen only when content changed
+    if (needsRender || pngNeeded) {
+        // Resolve dirty rows
+        if (viewportOffset() != 0) {
+            for (int row = 0; row < g.rows(); ++row) {
                 resolveRow(row, font, scale);
             }
-        }
-    }
-    // Clear dirty flags (const_cast since we need to mutate dirty state)
-    const_cast<CellGrid&>(g).clearAllDirty();
-
-    // Apply selection highlight and cursor, then restore after upload
-    // Track which rows were modified so we can mark them dirty for next frame
-    bool selectionVisible = hasSelection();
-    int histSize = scrollback().historySize();
-
-    if (selectionVisible) {
-        for (int row = 0; row < g.rows(); ++row) {
-            int absRow = histSize - viewportOffset() + row;
-            for (int col = 0; col < g.cols(); ++col) {
-                if (isCellSelected(col, absRow)) {
-                    int idx = row * g.cols() + col;
-                    resolvedCells_[idx].bg_color = 0xFF664422; // selection blue (ABGR)
-                    resolvedCells_[idx].fg_color = 0xFFFFFFFF;
+        } else {
+            for (int row = 0; row < g.rows(); ++row) {
+                if (g.isRowDirty(row)) {
+                    resolveRow(row, font, scale);
                 }
             }
         }
-    }
+        const_cast<CellGrid&>(g).clearAllDirty();
 
-    // Apply cursor: swap fg/bg on cursor cell for block cursor inversion
-    int cursorIdx = -1;
-    ResolvedCell savedCursorCell;
-    if (viewportOffset() == 0 && cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
-        cursorY() >= 0 && cursorY() < g.rows()) {
-        cursorIdx = cursorY() * g.cols() + cursorX();
-        savedCursorCell = resolvedCells_[cursorIdx];
-        resolvedCells_[cursorIdx].bg_color = 0xFFCCCCCC;
-        resolvedCells_[cursorIdx].fg_color = 0xFF000000;
-    }
-
-    // Upload resolved cells
-    uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
-    renderer_.uploadResolvedCells(queue_, resolvedCells_.data(), totalCells);
-
-    // Restore cursor cell so cached resolved data stays clean
-    if (cursorIdx >= 0) {
-        resolvedCells_[cursorIdx] = savedCursorCell;
-    }
-
-    // Mark selection rows dirty so they re-resolve cleanly next frame
-    if (selectionVisible) {
-        for (int row = 0; row < g.rows(); ++row) {
-            int absRow = histSize - viewportOffset() + row;
-            for (int col = 0; col < g.cols(); ++col) {
-                if (isCellSelected(col, absRow)) {
-                    const_cast<CellGrid&>(g).markRowDirty(row);
-                    break;
-                }
-            }
-        }
-    }
-
-    // Upload any newly encoded glyphs to GPU
-    renderer_.updateFontAtlas(queue_, fontName_, *font);
-
-    // Build compute params
-    TerminalComputeParams params = {};
-    params.cols = static_cast<uint32_t>(g.cols());
-    params.rows = static_cast<uint32_t>(g.rows());
-    params.cell_width = charWidth_;
-    params.cell_height = lineHeight_;
-    params.viewport_w = static_cast<float>(fbWidth_);
-    params.viewport_h = static_cast<float>(fbHeight_);
-    params.font_ascender = font->ascender * scale;
-
-    // Submit GPU work
-    wgpu::CommandEncoderDescriptor encDesc = {};
-    wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-
-    renderer_.renderFrameCompute(encoder, queue_, view, fontName_, params);
-
-    // PNG screenshot readback
-    if (debugIPC_ && debugIPC_->pngScreenshotPending()) {
-        uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256;
-        uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * fbHeight_;
-
-        wgpu::BufferDescriptor bufDesc = {};
-        bufDesc.size = bufferSize;
-        bufDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
-        wgpu::Buffer readbackBuf = device_.CreateBuffer(&bufDesc);
-
-        wgpu::TexelCopyTextureInfo src = {};
-        src.texture = surfaceTexture.texture;
-        src.mipLevel = 0;
-        src.origin = {0, 0, 0};
-
-        wgpu::TexelCopyBufferInfo dst = {};
-        dst.buffer = readbackBuf;
-        dst.layout.offset = 0;
-        dst.layout.bytesPerRow = bytesPerRow;
-        dst.layout.rowsPerImage = fbHeight_;
-
-        wgpu::Extent3D extent = {fbWidth_, fbHeight_, 1};
-        encoder.CopyTextureToBuffer(&src, &dst, &extent);
-
-        wgpu::CommandBuffer cmds = encoder.Finish();
-        queue_.Submit(1, &cmds);
-
-        int pngId = debugIPC_->pngScreenshotId();
-        DebugIPC* ipc = debugIPC_;
-        uint32_t w = fbWidth_;
-        uint32_t h = fbHeight_;
-        debugIPC_->markReadbackInProgress();
-
-        readbackBuf.MapAsync(wgpu::MapMode::Read, 0, bufferSize,
-            wgpu::CallbackMode::AllowSpontaneous,
-            [readbackBuf, ipc, w, h, bytesPerRow, pngId](wgpu::MapAsyncStatus status, wgpu::StringView) mutable {
-                if (status != wgpu::MapAsyncStatus::Success) {
-                    spdlog::error("DebugIPC: MapAsync failed (status {})",
-                                  static_cast<int>(status));
-                    return;
-                }
-                const uint8_t* mapped = static_cast<const uint8_t*>(
-                    readbackBuf.GetConstMappedRange(0, static_cast<size_t>(bytesPerRow) * h));
-                if (!mapped) {
-                    readbackBuf.Unmap();
-                    return;
-                }
-
-                std::vector<uint8_t> rgba(w * h * 4);
-                for (uint32_t row = 0; row < h; ++row) {
-                    const uint8_t* src = mapped + row * bytesPerRow;
-                    uint8_t* dst = rgba.data() + row * w * 4;
-                    for (uint32_t col = 0; col < w; ++col) {
-                        dst[col * 4 + 0] = src[col * 4 + 2];
-                        dst[col * 4 + 1] = src[col * 4 + 1];
-                        dst[col * 4 + 2] = src[col * 4 + 0];
-                        dst[col * 4 + 3] = src[col * 4 + 3];
+        // Apply selection highlight
+        bool selectionVisible = hasSelection();
+        int histSize = scrollback().historySize();
+        if (selectionVisible) {
+            for (int row = 0; row < g.rows(); ++row) {
+                int absRow = histSize - viewportOffset() + row;
+                for (int col = 0; col < g.cols(); ++col) {
+                    if (isCellSelected(col, absRow)) {
+                        int idx = row * g.cols() + col;
+                        resolvedCells_[idx].bg_color = 0xFF664422;
+                        resolvedCells_[idx].fg_color = 0xFFFFFFFF;
                     }
                 }
-                readbackBuf.Unmap();
+            }
+        }
 
-                std::vector<uint8_t> pngData;
-                stbi_write_png_to_func(
-                    [](void* ctx, void* data, int size) {
-                        auto* vec = static_cast<std::vector<uint8_t>*>(ctx);
-                        vec->insert(vec->end(),
-                                    static_cast<uint8_t*>(data),
-                                    static_cast<uint8_t*>(data) + size);
-                    },
-                    &pngData, static_cast<int>(w), static_cast<int>(h), 4,
-                    rgba.data(), static_cast<int>(w * 4));
+        // Apply cursor
+        int cursorIdx = -1;
+        ResolvedCell savedCursorCell;
+        if (viewportOffset() == 0 && cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
+            cursorY() >= 0 && cursorY() < g.rows()) {
+            cursorIdx = cursorY() * g.cols() + cursorX();
+            savedCursorCell = resolvedCells_[cursorIdx];
+            resolvedCells_[cursorIdx].bg_color = 0xFFCCCCCC;
+            resolvedCells_[cursorIdx].fg_color = 0xFF000000;
+        }
 
-                std::string b64 = base64Encode(pngData.data(), pngData.size());
-                ipc->onPngReady(b64);
-            });
-    } else {
+        // Upload resolved cells
+        uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
+        renderer_.uploadResolvedCells(queue_, resolvedCells_.data(), totalCells);
+
+        // Restore cursor cell
+        if (cursorIdx >= 0) {
+            resolvedCells_[cursorIdx] = savedCursorCell;
+        }
+
+        // Mark selection rows dirty for next frame
+        if (selectionVisible) {
+            for (int row = 0; row < g.rows(); ++row) {
+                int absRow = histSize - viewportOffset() + row;
+                for (int col = 0; col < g.cols(); ++col) {
+                    if (isCellSelected(col, absRow)) {
+                        const_cast<CellGrid&>(g).markRowDirty(row);
+                        break;
+                    }
+                }
+            }
+        }
+
+        renderer_.updateFontAtlas(queue_, fontName_, *font);
+
+        TerminalComputeParams params = {};
+        params.cols = static_cast<uint32_t>(g.cols());
+        params.rows = static_cast<uint32_t>(g.rows());
+        params.cell_width = charWidth_;
+        params.cell_height = lineHeight_;
+        params.viewport_w = static_cast<float>(fbWidth_);
+        params.viewport_h = static_cast<float>(fbHeight_);
+        params.font_ascender = font->ascender * scale;
+
+        wgpu::CommandEncoderDescriptor encDesc = {};
+        wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
+        renderer_.renderToOffscreen(encoder, queue_, fontName_, params);
         wgpu::CommandBuffer commands = encoder.Finish();
         queue_.Submit(1, &commands);
+    }
+
+    // Blit offscreen to swapchain every frame
+    {
+        wgpu::CommandEncoderDescriptor encDesc = {};
+        wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
+        renderer_.blitToScreen(encoder, surfaceTexture.texture);
+
+        // PNG screenshot readback (from swapchain after blit)
+        if (pngNeeded) {
+            uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256;
+            uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * fbHeight_;
+
+            wgpu::BufferDescriptor bufDesc = {};
+            bufDesc.size = bufferSize;
+            bufDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
+            wgpu::Buffer readbackBuf = device_.CreateBuffer(&bufDesc);
+
+            wgpu::TexelCopyTextureInfo src = {};
+            src.texture = surfaceTexture.texture;
+            wgpu::TexelCopyBufferInfo dst = {};
+            dst.buffer = readbackBuf;
+            dst.layout.bytesPerRow = bytesPerRow;
+            dst.layout.rowsPerImage = fbHeight_;
+
+            wgpu::Extent3D extent = {fbWidth_, fbHeight_, 1};
+            encoder.CopyTextureToBuffer(&src, &dst, &extent);
+
+            wgpu::CommandBuffer cmds = encoder.Finish();
+            queue_.Submit(1, &cmds);
+
+            DebugIPC* ipc = debugIPC_;
+            uint32_t w = fbWidth_, h = fbHeight_;
+            debugIPC_->markReadbackInProgress();
+
+            readbackBuf.MapAsync(wgpu::MapMode::Read, 0, bufferSize,
+                wgpu::CallbackMode::AllowSpontaneous,
+                [readbackBuf, ipc, w, h, bytesPerRow](wgpu::MapAsyncStatus status, wgpu::StringView) mutable {
+                    if (status != wgpu::MapAsyncStatus::Success) return;
+                    const uint8_t* mapped = static_cast<const uint8_t*>(
+                        readbackBuf.GetConstMappedRange(0, static_cast<size_t>(bytesPerRow) * h));
+                    if (!mapped) { readbackBuf.Unmap(); return; }
+
+                    std::vector<uint8_t> rgba(w * h * 4);
+                    for (uint32_t row = 0; row < h; ++row) {
+                        const uint8_t* s = mapped + row * bytesPerRow;
+                        uint8_t* d = rgba.data() + row * w * 4;
+                        for (uint32_t col = 0; col < w; ++col) {
+                            d[col*4+0] = s[col*4+2];
+                            d[col*4+1] = s[col*4+1];
+                            d[col*4+2] = s[col*4+0];
+                            d[col*4+3] = s[col*4+3];
+                        }
+                    }
+                    readbackBuf.Unmap();
+
+                    std::vector<uint8_t> pngData;
+                    stbi_write_png_to_func(
+                        [](void* ctx, void* data, int size) {
+                            auto* vec = static_cast<std::vector<uint8_t>*>(ctx);
+                            vec->insert(vec->end(),
+                                        static_cast<uint8_t*>(data),
+                                        static_cast<uint8_t*>(data) + size);
+                        },
+                        &pngData, static_cast<int>(w), static_cast<int>(h), 4,
+                        rgba.data(), static_cast<int>(w * 4));
+
+                    std::string b64 = base64Encode(pngData.data(), pngData.size());
+                    ipc->onPngReady(b64);
+                });
+        } else {
+            wgpu::CommandBuffer commands = encoder.Finish();
+            queue_.Submit(1, &commands);
+        }
     }
 
     surface_.Present();

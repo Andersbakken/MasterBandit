@@ -64,11 +64,17 @@ public:
     void resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows);
     void uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells, uint32_t count);
 
-    // Compute-based render: compute dispatch + indirect draw
-    void renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
-                            wgpu::TextureView swapchainView,
-                            const std::string& fontName,
-                            const TerminalComputeParams& params);
+    // Render to current offscreen texture in the pool
+    void renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                           const std::string& fontName,
+                           const TerminalComputeParams& params);
+
+    // Copy most recently rendered offscreen texture to swapchain
+    void blitToScreen(wgpu::CommandEncoder& encoder, wgpu::Texture swapchainTexture);
+
+    bool hasOffscreen() const { return !offscreenPool_.empty(); }
+    // Call before each frame to ensure pool matches viewport. Returns true if pool was (re)created.
+    bool prepareOffscreen();
 
 private:
     wgpu::Device device_;
@@ -106,4 +112,17 @@ private:
     wgpu::BindGroup computeBindGroup_;
     uint32_t gridCols_ = 0, gridRows_ = 0;
     bool computeReady_ = false;
+
+    // Offscreen texture pool (triple-buffered)
+    static constexpr uint32_t OFFSCREEN_POOL_SIZE = 3;
+    struct OffscreenTarget {
+        wgpu::Texture texture;
+        wgpu::TextureView view;
+    };
+    std::vector<OffscreenTarget> offscreenPool_;
+    uint32_t offscreenIndex_ = 0;       // next to render into
+    uint32_t offscreenLastRendered_ = 0; // last one rendered (for blit)
+    uint32_t offscreenW_ = 0, offscreenH_ = 0;
+
+    bool ensureOffscreenPool(uint32_t width, uint32_t height);
 };

@@ -1,5 +1,5 @@
 #include "Terminal.h"
-#include "Base64.h"
+#include "Utils.h"
 #include "Log.h"
 #include "Utf8.h"
 #include "Wcwidth.h"

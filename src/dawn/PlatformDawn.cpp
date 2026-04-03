@@ -5,7 +5,7 @@
 #include "Log.h"
 #include "DebugIPC.h"
 #include "NativeSurface.h"
-#include "Base64.h"
+#include "Utils.h"
 #include "FontFallback.h"
 
 #include <glaze/glaze.hpp>
@@ -736,8 +736,8 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
         const ShapedText& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_);
         const GlyphInfo* gi = resolveGlyph(shaped);
 
-        // Try font fallback if glyph is missing
-        if (!gi && fallbackAttempted_.find(cell.wc) == fallbackAttempted_.end()) {
+        // Try font fallback if glyph is missing (skip whitespace — no visible glyph expected)
+        if (!gi && !unicode::isSpace(cell.wc) && fallbackAttempted_.find(cell.wc) == fallbackAttempted_.end()) {
             fallbackAttempted_.insert(cell.wc);
             auto fallbackData = fontFallback_.fontDataForCodepoint(primaryFontPath_, cell.wc);
             if (!fallbackData.empty()) {

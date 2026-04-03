@@ -47,6 +47,12 @@ static_assert(sizeof(TerminalComputeParams) == 32);
 
 class Renderer {
 public:
+    struct ImageDrawCmd {
+        uint32_t imageId;
+        float x, y, w, h;       // screen pixel rect (clipped to viewport)
+        float u0, v0, u1, v1;   // UV coords into the image texture
+    };
+
     void init(wgpu::Device& device, wgpu::Queue& queue,
               const std::string& shaderDir,
               uint32_t width, uint32_t height);
@@ -67,7 +73,8 @@ public:
     // Render to current offscreen texture in the pool
     void renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                            const std::string& fontName,
-                           const TerminalComputeParams& params);
+                           const TerminalComputeParams& params,
+                           const std::vector<ImageDrawCmd>& imageCmds = {});
 
     // Copy most recently rendered offscreen texture to swapchain
     void blitToScreen(wgpu::CommandEncoder& encoder, wgpu::Texture swapchainTexture);
@@ -75,6 +82,21 @@ public:
     bool hasOffscreen() const { return !offscreenPool_.empty(); }
     // Call before each frame to ensure pool matches viewport. Returns true if pool was (re)created.
     bool prepareOffscreen();
+
+    // Image rendering
+    struct ImageGPU {
+        wgpu::Texture texture;
+        wgpu::TextureView view;
+        wgpu::BindGroup bindGroup;
+        uint32_t width, height;
+    };
+
+    void initImagePipeline(wgpu::Device& device, const std::string& shaderDir);
+    void ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
+                        const uint8_t* rgba, uint32_t width, uint32_t height);
+    void renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                      wgpu::TextureView target,
+                      const std::vector<ImageDrawCmd>& cmds);
 
 private:
     wgpu::Device device_;
@@ -112,6 +134,16 @@ private:
     wgpu::BindGroup computeBindGroup_;
     uint32_t gridCols_ = 0, gridRows_ = 0;
     bool computeReady_ = false;
+
+    // Image pipeline
+    wgpu::ShaderModule imageShader_;
+    wgpu::RenderPipeline imagePipeline_;
+    wgpu::BindGroupLayout imageBindGroupLayout_;
+    wgpu::Buffer imageUniformBuffer_;
+    wgpu::Buffer imageVertexBuffer_;
+    wgpu::Sampler imageSampler_;
+    std::unordered_map<uint32_t, ImageGPU> imageGPU_;
+    bool imagePipelineReady_ = false;
 
     // Offscreen texture pool (triple-buffered)
     static constexpr uint32_t OFFSCREEN_POOL_SIZE = 3;

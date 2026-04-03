@@ -204,6 +204,9 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
 
     // Initialize compute pipeline
     initComputePipeline(device_, shaderDir);
+
+    // Initialize image pipeline
+    initImagePipeline(device_, shaderDir);
 }
 
 void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
@@ -482,9 +485,222 @@ void Renderer::uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells
                       static_cast<uint64_t>(count) * sizeof(ResolvedCell));
 }
 
+// ========================================
+// Image pipeline
+// ========================================
+
+struct ImageVertex {
+    float pos[2];
+    float uv[2];
+};
+
+void Renderer::initImagePipeline(wgpu::Device& device, const std::string& shaderDir)
+{
+    imageShader_ = renderer_utils::createShaderModule(device,
+        (fs::path(shaderDir) / "image_quad.wgsl").string().c_str());
+    if (!imageShader_) {
+        spdlog::error("Failed to load image_quad.wgsl shader");
+        return;
+    }
+
+    // Bind group layout: uniform, texture, sampler
+    wgpu::BindGroupLayoutEntry entries[3] = {};
+    entries[0].binding = 0;
+    entries[0].visibility = wgpu::ShaderStage::Vertex;
+    entries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+
+    entries[1].binding = 1;
+    entries[1].visibility = wgpu::ShaderStage::Fragment;
+    entries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+    entries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+
+    entries[2].binding = 2;
+    entries[2].visibility = wgpu::ShaderStage::Fragment;
+    entries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
+
+    wgpu::BindGroupLayoutDescriptor bglDesc = {};
+    bglDesc.entryCount = 3;
+    bglDesc.entries = entries;
+    imageBindGroupLayout_ = device.CreateBindGroupLayout(&bglDesc);
+
+    wgpu::PipelineLayoutDescriptor plDesc = {};
+    plDesc.bindGroupLayoutCount = 1;
+    plDesc.bindGroupLayouts = &imageBindGroupLayout_;
+    wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&plDesc);
+
+    // Vertex layout: pos(2f) + uv(2f)
+    wgpu::VertexAttribute attrs[2] = {};
+    attrs[0].format = wgpu::VertexFormat::Float32x2;
+    attrs[0].offset = 0;
+    attrs[0].shaderLocation = 0;
+    attrs[1].format = wgpu::VertexFormat::Float32x2;
+    attrs[1].offset = 8;
+    attrs[1].shaderLocation = 1;
+
+    wgpu::VertexBufferLayout vbLayout = {};
+    vbLayout.arrayStride = sizeof(ImageVertex);
+    vbLayout.stepMode = wgpu::VertexStepMode::Vertex;
+    vbLayout.attributeCount = 2;
+    vbLayout.attributes = attrs;
+
+    // Blend for alpha
+    wgpu::BlendState blend = {};
+    blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+    blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    blend.color.operation = wgpu::BlendOperation::Add;
+    blend.alpha.srcFactor = wgpu::BlendFactor::One;
+    blend.alpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    blend.alpha.operation = wgpu::BlendOperation::Add;
+
+    wgpu::ColorTargetState colorTarget = {};
+    colorTarget.format = wgpu::TextureFormat::BGRA8Unorm;
+    colorTarget.blend = &blend;
+
+    wgpu::FragmentState fragState = {};
+    fragState.module = imageShader_;
+    fragState.entryPoint = "fs_main";
+    fragState.targetCount = 1;
+    fragState.targets = &colorTarget;
+
+    wgpu::RenderPipelineDescriptor pipeDesc = {};
+    pipeDesc.layout = pipelineLayout;
+    pipeDesc.vertex.module = imageShader_;
+    pipeDesc.vertex.entryPoint = "vs_main";
+    pipeDesc.vertex.bufferCount = 1;
+    pipeDesc.vertex.buffers = &vbLayout;
+    pipeDesc.fragment = &fragState;
+    pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+
+    imagePipeline_ = device.CreateRenderPipeline(&pipeDesc);
+
+    // Uniform buffer (viewport size)
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = 16; // vec2f + padding
+        desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        imageUniformBuffer_ = device.CreateBuffer(&desc);
+    }
+
+    // Vertex buffer (dynamic, 6 verts per image)
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = 256 * 6 * sizeof(ImageVertex); // up to 256 images per frame
+        desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        imageVertexBuffer_ = device.CreateBuffer(&desc);
+    }
+
+    // Sampler
+    {
+        wgpu::SamplerDescriptor desc = {};
+        desc.magFilter = wgpu::FilterMode::Linear;
+        desc.minFilter = wgpu::FilterMode::Linear;
+        desc.addressModeU = wgpu::AddressMode::ClampToEdge;
+        desc.addressModeV = wgpu::AddressMode::ClampToEdge;
+        imageSampler_ = device.CreateSampler(&desc);
+    }
+
+    imagePipelineReady_ = true;
+    spdlog::info("Image pipeline initialized");
+}
+
+void Renderer::ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
+                               const uint8_t* rgba, uint32_t width, uint32_t height)
+{
+    if (imageGPU_.count(imageId)) return;
+
+    ImageGPU gpu;
+    gpu.width = width;
+    gpu.height = height;
+
+    // Create texture
+    wgpu::TextureDescriptor texDesc = {};
+    texDesc.size = {width, height, 1};
+    texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+    texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    texDesc.dimension = wgpu::TextureDimension::e2D;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount = 1;
+    gpu.texture = device_.CreateTexture(&texDesc);
+    gpu.view = gpu.texture.CreateView();
+
+    // Upload pixel data
+    wgpu::TexelCopyTextureInfo dst = {};
+    dst.texture = gpu.texture;
+    wgpu::TexelCopyBufferLayout layout = {};
+    layout.bytesPerRow = width * 4;
+    layout.rowsPerImage = height;
+    wgpu::Extent3D extent = {width, height, 1};
+    queue.WriteTexture(&dst, rgba, width * height * 4, &layout, &extent);
+
+    // Create bind group
+    wgpu::BindGroupEntry bindings[3] = {};
+    bindings[0].binding = 0;
+    bindings[0].buffer = imageUniformBuffer_;
+    bindings[0].size = 16;
+    bindings[1].binding = 1;
+    bindings[1].textureView = gpu.view;
+    bindings[2].binding = 2;
+    bindings[2].sampler = imageSampler_;
+
+    wgpu::BindGroupDescriptor bgDesc = {};
+    bgDesc.layout = imageBindGroupLayout_;
+    bgDesc.entryCount = 3;
+    bgDesc.entries = bindings;
+    gpu.bindGroup = device_.CreateBindGroup(&bgDesc);
+
+    imageGPU_[imageId] = std::move(gpu);
+}
+
+void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                             wgpu::TextureView target,
+                             const std::vector<ImageDrawCmd>& cmds)
+{
+    if (!imagePipelineReady_ || cmds.empty()) return;
+
+    // Update viewport uniform
+    float uniforms[4] = { static_cast<float>(viewportW_), static_cast<float>(viewportH_), 0, 0 };
+    queue.WriteBuffer(imageUniformBuffer_, 0, uniforms, sizeof(uniforms));
+
+    wgpu::RenderPassColorAttachment att = {};
+    att.view = target;
+    att.loadOp = wgpu::LoadOp::Load;
+    att.storeOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDescriptor rpDesc = {};
+    rpDesc.colorAttachmentCount = 1;
+    rpDesc.colorAttachments = &att;
+
+    // Draw each image as a separate draw call (different bind group per image)
+    for (const auto& cmd : cmds) {
+        auto it = imageGPU_.find(cmd.imageId);
+        if (it == imageGPU_.end()) continue;
+
+        float x0 = cmd.x, y0 = cmd.y;
+        float x1 = cmd.x + cmd.w, y1 = cmd.y + cmd.h;
+
+        ImageVertex verts[6] = {
+            {{x0, y0}, {cmd.u0, cmd.v0}},
+            {{x1, y0}, {cmd.u1, cmd.v0}},
+            {{x0, y1}, {cmd.u0, cmd.v1}},
+            {{x1, y0}, {cmd.u1, cmd.v0}},
+            {{x1, y1}, {cmd.u1, cmd.v1}},
+            {{x0, y1}, {cmd.u0, cmd.v1}},
+        };
+        queue.WriteBuffer(imageVertexBuffer_, 0, verts, sizeof(verts));
+
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+        pass.SetPipeline(imagePipeline_);
+        pass.SetBindGroup(0, it->second.bindGroup);
+        pass.SetVertexBuffer(0, imageVertexBuffer_);
+        pass.Draw(6);
+        pass.End();
+    }
+}
+
 void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                                   const std::string& fontName,
-                                  const TerminalComputeParams& params)
+                                  const TerminalComputeParams& params,
+                                  const std::vector<ImageDrawCmd>& imageCmds)
 {
     if (!computeReady_) return;
 
@@ -564,6 +780,11 @@ void Renderer::renderToOffscreen(wgpu::CommandEncoder& encoder, wgpu::Queue& que
         pass.SetVertexBuffer(0, computeRectVertBuffer_);
         pass.DrawIndirect(indirectBuffer_, 16);
         pass.End();
+    }
+
+    // Image pass
+    if (!imageCmds.empty()) {
+        renderImages(encoder, queue, target, imageCmds);
     }
 
     // Text pass

@@ -246,6 +246,7 @@ ScrollbackBuffer::ScrollbackBuffer(int cols, int tier1Capacity, int maxArchiveRo
 {
     if (cols_ > 0) {
         ring_.resize(static_cast<size_t>(tier1Capacity_) * cols_);
+        ringExtras_.resize(tier1Capacity_);
     }
 }
 
@@ -269,13 +270,15 @@ const Cell* ScrollbackBuffer::historyRow(int idx) const {
     }
 }
 
-void ScrollbackBuffer::pushHistory(const Cell* row, int numCols) {
+void ScrollbackBuffer::pushHistory(const Cell* row, int numCols,
+                                    std::unordered_map<int, CellExtra>&& extras) {
     if (cols_ <= 0) return;
 
     if (tier1Size_ == tier1Capacity_) {
         // Evict oldest Tier 1 row → Tier 2
         int oldest = tier1ToPhysical(0);
         archive_.push_back({serializeRow(&ring_[static_cast<size_t>(oldest) * cols_], cols_)});
+        ringExtras_[oldest].clear();
         if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
             archive_.pop_front();
         }
@@ -286,12 +289,24 @@ void ScrollbackBuffer::pushHistory(const Cell* row, int numCols) {
     Cell* dst = &ring_[static_cast<size_t>(ringHead_) * cols_];
     int copyCount = std::min(numCols, cols_);
     std::memcpy(dst, row, static_cast<size_t>(copyCount) * sizeof(Cell));
-    // Zero-fill remainder if source row is narrower
     if (copyCount < cols_) {
         std::memset(dst + copyCount, 0, static_cast<size_t>(cols_ - copyCount) * sizeof(Cell));
     }
+    ringExtras_[ringHead_] = std::move(extras);
     ringHead_ = (ringHead_ + 1) & ringMask();
     tier1Size_++;
+}
+
+const std::unordered_map<int, CellExtra>* ScrollbackBuffer::historyExtras(int idx) const {
+    int archiveSize = static_cast<int>(archive_.size());
+    if (idx < archiveSize) {
+        return nullptr; // tier 2 archived rows don't preserve extras
+    }
+    int tier1Idx = idx - archiveSize;
+    if (tier1Idx < 0 || tier1Idx >= tier1Size_) return nullptr;
+    int physical = tier1ToPhysical(tier1Idx);
+    const auto& m = ringExtras_[physical];
+    return m.empty() ? nullptr : &m;
 }
 
 void ScrollbackBuffer::resize(int newCols) {
@@ -299,6 +314,7 @@ void ScrollbackBuffer::resize(int newCols) {
     if (newCols <= 0) {
         cols_ = 0;
         ring_.clear();
+        ringExtras_.clear();
         tier1Size_ = 0;
         ringHead_ = 0;
         archive_.clear();
@@ -319,7 +335,15 @@ void ScrollbackBuffer::resize(int newCols) {
             std::memset(dst + minCols, 0, static_cast<size_t>(newCols - minCols) * sizeof(Cell));
         }
     }
+    // Rebuild extras ring preserving order
+    std::vector<std::unordered_map<int, CellExtra>> newExtras(tier1Capacity_);
+    for (int i = 0; i < tier1Size_; ++i) {
+        int oldPhys = tier1ToPhysical(i);
+        newExtras[i] = std::move(ringExtras_[oldPhys]);
+    }
+
     ring_ = std::move(newRing);
+    ringExtras_ = std::move(newExtras);
     ringHead_ = tier1Size_ & ringMask();
     cols_ = newCols;
 
@@ -332,6 +356,7 @@ void ScrollbackBuffer::clearHistory() {
     tier1Size_ = 0;
     ringHead_ = 0;
     parseBuffer_.clear();
+    for (auto& m : ringExtras_) m.clear();
 }
 
 std::string ScrollbackBuffer::serializeRow(const Cell* cells, int cols) {

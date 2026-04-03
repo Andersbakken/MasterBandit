@@ -18,6 +18,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/base_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -28,6 +29,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -217,6 +219,8 @@ public:
     void copyToClipboard(const std::string& text) override;
     std::string pasteFromClipboard() override;
     void onTitleChanged(const std::string& title) override;
+    float cellPixelWidth() const override { return charWidth_; }
+    float cellPixelHeight() const override { return lineHeight_; }
 
     // Called from GLFW callbacks
     void onKey(int key, int scancode, int action, int mods);
@@ -306,11 +310,12 @@ PlatformDawn::PlatformDawn(int argc, char** argv)
 {
     try {
         auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true);
+        auto stderrSink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
         debugSink_ = std::make_shared<DebugIPCSink>();
-        std::vector<spdlog::sink_ptr> sinks = {fileSink, debugSink_};
+        std::vector<spdlog::sink_ptr> sinks = {fileSink, stderrSink, debugSink_};
         auto logger = std::make_shared<spdlog::logger>("mb", sinks.begin(), sinks.end());
-        logger->set_level(spdlog::level::trace);
-        logger->flush_on(spdlog::level::debug);
+        logger->set_level(spdlog::level::info);
+        logger->flush_on(spdlog::level::info);
         spdlog::set_default_logger(logger);
     } catch (...) {}
 
@@ -658,7 +663,7 @@ static std::string sanitizeUtf8(const std::string& in)
 
 std::string TerminalWindow::gridToJson(int id)
 {
-    const CellGrid& g = grid();
+    const IGrid& g = grid();
 
     glz::generic::object_t resp;
     resp["type"] = "screenshot";
@@ -770,7 +775,7 @@ void TerminalWindow::renderTerminal()
     if (!font) return;
 
     float scale = fontSize_ / font->baseSize;
-    const CellGrid& g = grid();
+    const IGrid& g = grid();
     bool poolRecreated = renderer_.prepareOffscreen();
     bool needsRender = g.anyDirty() || poolRecreated;
     bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
@@ -789,11 +794,11 @@ void TerminalWindow::renderTerminal()
                 }
             }
         }
-        const_cast<CellGrid&>(g).clearAllDirty();
+        const_cast<IGrid&>(g).clearAllDirty();
 
         // Apply selection highlight
         bool selectionVisible = hasSelection();
-        int histSize = scrollback().historySize();
+        int histSize = document().historySize();
         if (selectionVisible) {
             for (int row = 0; row < g.rows(); ++row) {
                 int absRow = histSize - viewportOffset() + row;
@@ -833,7 +838,7 @@ void TerminalWindow::renderTerminal()
                 int absRow = histSize - viewportOffset() + row;
                 for (int col = 0; col < g.cols(); ++col) {
                     if (isCellSelected(col, absRow)) {
-                        const_cast<CellGrid&>(g).markRowDirty(row);
+                        const_cast<IGrid&>(g).markRowDirty(row);
                         break;
                     }
                 }
@@ -841,6 +846,72 @@ void TerminalWindow::renderTerminal()
         }
 
         renderer_.updateFontAtlas(queue_, fontName_, *font);
+
+        // Collect image draw commands — scan column 0 of each visible row
+        // for image extras (one extra per row at col 0 is sufficient)
+        std::vector<Renderer::ImageDrawCmd> imageCmds;
+        std::unordered_set<uint32_t> seenImages;
+        int vo = viewportOffset();
+        float vpW = static_cast<float>(fbWidth_);
+        float vpH = static_cast<float>(fbHeight_);
+
+        for (int viewRow = 0; viewRow < g.rows(); ++viewRow) {
+            int absRow = histSize - vo + viewRow;
+
+            // Get extra at column 0 from grid or scrollback
+            const CellExtra* ex = nullptr;
+            if (absRow >= histSize) {
+                int gridRow = absRow - histSize;
+                if (gridRow >= 0 && gridRow < g.rows())
+                    ex = g.getExtra(0, gridRow);
+            } else {
+                auto* extrasMap = document().historyExtras(absRow);
+                if (extrasMap) {
+                    auto it = extrasMap->find(0);
+                    if (it != extrasMap->end()) ex = &it->second;
+                }
+            }
+
+            if (!ex || ex->imageId == 0) continue;
+            if (seenImages.count(ex->imageId)) continue;
+            seenImages.insert(ex->imageId);
+
+            auto it = imageRegistry().find(ex->imageId);
+            if (it == imageRegistry().end()) continue;
+            const auto& img = it->second;
+
+            renderer_.ensureImageGPU(queue_, ex->imageId,
+                img.rgba.data(), img.pixelWidth, img.pixelHeight);
+
+            // Image natural pixel size
+            float imgW = static_cast<float>(img.pixelWidth);
+            float imgH = static_cast<float>(img.pixelHeight);
+
+            // Image top-left in viewport pixel coordinates
+            float imgX = 0.0f; // always starts at column 0
+            float imgY = (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
+
+            // Clip to viewport
+            float x0 = std::max(imgX, 0.0f);
+            float y0 = std::max(imgY, 0.0f);
+            float x1 = std::min(imgX + imgW, vpW);
+            float y1 = std::min(imgY + imgH, vpH);
+
+            if (x1 <= x0 || y1 <= y0) continue;
+
+            // UV coordinates for the visible portion
+            Renderer::ImageDrawCmd cmd;
+            cmd.imageId = ex->imageId;
+            cmd.x = x0;
+            cmd.y = y0;
+            cmd.w = x1 - x0;
+            cmd.h = y1 - y0;
+            cmd.u0 = (x0 - imgX) / imgW;
+            cmd.v0 = (y0 - imgY) / imgH;
+            cmd.u1 = (x1 - imgX) / imgW;
+            cmd.v1 = (y1 - imgY) / imgH;
+            imageCmds.push_back(cmd);
+        }
 
         TerminalComputeParams params = {};
         params.cols = static_cast<uint32_t>(g.cols());
@@ -853,7 +924,7 @@ void TerminalWindow::renderTerminal()
 
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-        renderer_.renderToOffscreen(encoder, queue_, fontName_, params);
+        renderer_.renderToOffscreen(encoder, queue_, fontName_, params, imageCmds);
         wgpu::CommandBuffer commands = encoder.Finish();
         queue_.Submit(1, &commands);
     }

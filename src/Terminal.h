@@ -3,12 +3,13 @@
 
 #include <vector>
 #include <string>
+#include <unordered_map>
 #include <stdlib.h>
 #include <string.h>
 #include <Platform.h>
 #include <TerminalOptions.h>
 #include <CellGrid.h>
-#include <ScrollbackBuffer.h>
+#include <Document.h>
 
 std::string toPrintable(const std::string &str);
 std::string toPrintable(const char *chars, int len);
@@ -41,8 +42,9 @@ public:
     int width() const { return mWidth; }
     int height() const { return mHeight; }
 
-    const CellGrid& grid() const { return mUsingAltScreen ? mAltGrid : mGrid; }
-    CellGrid& grid() { return mUsingAltScreen ? mAltGrid : mGrid; }
+    const IGrid& grid() const { return mUsingAltScreen ? static_cast<const IGrid&>(mAltGrid) : static_cast<const IGrid&>(mDocument); }
+    IGrid& grid() { return mUsingAltScreen ? static_cast<IGrid&>(mAltGrid) : static_cast<IGrid&>(mDocument); }
+    const Document& document() const { return mDocument; }
 
     void resize(int width, int height);
 
@@ -51,7 +53,6 @@ public:
     void scrollViewport(int delta);
     void resetViewport();
     int viewportOffset() const { return mViewportOffset; }
-    const ScrollbackBuffer& scrollback() const { return mScrollback; }
 
     enum Event {
         Update,
@@ -131,6 +132,17 @@ public:
     virtual void copyToClipboard(const std::string&) {}
     virtual std::string pasteFromClipboard() { return {}; }
     virtual void onTitleChanged(const std::string&) {}
+    virtual float cellPixelWidth() const { return 0; }
+    virtual float cellPixelHeight() const { return 0; }
+
+    // Image registry
+    struct ImageEntry {
+        uint32_t id { 0 };
+        uint32_t pixelWidth { 0 }, pixelHeight { 0 };
+        uint32_t cellWidth { 0 }, cellHeight { 0 };
+        std::vector<uint8_t> rgba;
+    };
+    const std::unordered_map<uint32_t, ImageEntry>& imageRegistry() const { return mImageRegistry; }
 
     void pasteText(const std::string& text);
 
@@ -147,11 +159,10 @@ private:
     int mMasterFD { -1 }, mSlaveFD { -1 };
     int mExitCode { 0 };
 
-    CellGrid mGrid;
+    Document mDocument;
     CellGrid mAltGrid;
     bool mUsingAltScreen { false };
 
-    ScrollbackBuffer mScrollback;
     int mViewportOffset { 0 };
 
     CellAttrs mCurrentAttrs;       // SGR "pen"
@@ -180,6 +191,8 @@ private:
     void processStringSequence();
     void processOSC_Title(std::string_view text, bool setIcon, bool setTitle);
     void processOSC_Clipboard(std::string_view payload);
+    void processOSC_iTerm(std::string_view payload);
+    void placeImageInGrid(uint32_t imageId, int cellCols, int cellRows);
 
     std::string mWindowTitle;
     std::string mIconName;
@@ -249,6 +262,10 @@ private:
     bool mBracketedPaste { false };
 
     Selection mSelection;
+
+    // Image registry
+    std::unordered_map<uint32_t, ImageEntry> mImageRegistry;
+    uint32_t mNextImageId { 1 };
 
     // 16-color palette (standard + bright) as RGB
     static const uint8_t s16ColorPalette[16][3];

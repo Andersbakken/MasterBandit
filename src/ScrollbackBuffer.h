@@ -17,9 +17,13 @@ public:
     // idx 0 = oldest, historySize()-1 = most recent
     const Cell* historyRow(int idx) const;
 
-    void pushHistory(const Cell* row, int numCols);
+    void pushHistory(const Cell* row, int numCols,
+                     std::unordered_map<int, CellExtra>&& extras = {});
     void resize(int newCols);
     void clearHistory();
+
+    // Get extras for a history row (idx 0 = oldest)
+    const std::unordered_map<int, CellExtra>* historyExtras(int idx) const;
 
 private:
     int cols_;
@@ -27,6 +31,7 @@ private:
     int tier1Size_ = 0;
     int ringHead_ = 0;             // next write slot
     std::vector<Cell> ring_;       // tier1Capacity_ * cols_
+    std::vector<std::unordered_map<int, CellExtra>> ringExtras_; // parallel to ring slots
 
     int ringMask() const { return tier1Capacity_ - 1; }
     // Convert tier1 logical index (0=oldest) to physical ring slot

@@ -16,6 +16,10 @@
 #include <signal.h>
 #include <algorithm>
 #include <string_view>
+#include <cmath>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -102,8 +106,8 @@ Terminal::Terminal(Platform *platform)
 bool Terminal::init(const TerminalOptions &options)
 {
     mOptions = options;
-    // Re-initialize scrollback with configured capacity (resize already set cols)
-    mScrollback = ScrollbackBuffer(mScrollback.cols(), mOptions.scrollbackLines);
+    // Re-initialize document with configured scrollback capacity
+    mDocument = Document(mDocument.cols(), mDocument.rows(), mOptions.scrollbackLines);
 
     mMasterFD = posix_openpt(O_RDWR | O_NOCTTY);
     if (mMasterFD == -1) {
@@ -191,31 +195,38 @@ void Terminal::resize(int width, int height)
 {
     mWidth = width;
     mHeight = height;
-    mGrid.resize(width, height);
+    int oldHistSize = mDocument.historySize();
+    mDocument.resize(width, height);
+    int histDelta = oldHistSize - mDocument.historySize();
+    if (histDelta > 0) {
+        // Rows pulled from history into screen — shift cursor down
+        mCursorY += histDelta;
+    } else if (histDelta < 0) {
+        // Rows pushed from screen to history — shift cursor up
+        mCursorY += histDelta;
+    }
     mAltGrid.resize(width, height);
-    mScrollback.resize(width);
     mScrollTop = 0;
     mScrollBottom = height;
-    mViewportOffset = std::clamp(mViewportOffset, 0, mScrollback.historySize());
-    // Clamp cursor
+    mViewportOffset = std::clamp(mViewportOffset, 0, mDocument.historySize());
     mCursorX = std::min(mCursorX, width - 1);
-    mCursorY = std::min(mCursorY, height - 1);
+    mCursorY = std::max(0, std::min(mCursorY, height - 1));
     clearSelection();
     event(Update);
 }
 
 void Terminal::scrollUpInRegion(int n)
 {
-    CellGrid& g = grid();
-    if (!mUsingAltScreen && mScrollTop == 0) {
-        for (int i = 0; i < n; ++i) {
-            mScrollback.pushHistory(g.row(mScrollTop + i), g.cols());
-        }
-        if (mViewportOffset > 0) {
-            mViewportOffset = std::min(mViewportOffset + n, mScrollback.historySize());
-        }
+    IGrid& g = grid();
+    // Document::scrollUp handles history push internally when top == 0
+    if (!mUsingAltScreen && mViewportOffset > 0 && mScrollTop == 0) {
+        // Will gain n history rows from the scroll
+        mViewportOffset += n;
     }
     g.scrollUp(mScrollTop, mScrollBottom, n);
+    if (!mUsingAltScreen && mViewportOffset > 0) {
+        mViewportOffset = std::min(mViewportOffset, mDocument.historySize());
+    }
 }
 
 const Cell* Terminal::viewportRow(int viewRow) const
@@ -223,10 +234,10 @@ const Cell* Terminal::viewportRow(int viewRow) const
     if (mViewportOffset == 0) {
         return grid().row(viewRow);
     }
-    int histSize = mScrollback.historySize();
+    int histSize = mDocument.historySize();
     int logicalRow = histSize - mViewportOffset + viewRow;
     if (logicalRow < histSize) {
-        return mScrollback.historyRow(logicalRow);
+        return mDocument.historyRow(logicalRow);
     } else {
         return grid().row(logicalRow - histSize);
     }
@@ -236,7 +247,7 @@ void Terminal::scrollViewport(int delta)
 {
     int oldOffset = mViewportOffset;
     // delta > 0 means scroll into history, delta < 0 toward live
-    mViewportOffset = std::clamp(mViewportOffset + delta, 0, mScrollback.historySize());
+    mViewportOffset = std::clamp(mViewportOffset + delta, 0, mDocument.historySize());
     if (mViewportOffset != oldOffset) {
         grid().markAllDirty();
         event(ScrollbackChanged);
@@ -422,7 +433,7 @@ void Terminal::mousePressEvent(const MouseEvent *ev)
 
     // Begin selection
     clearSelection();
-    int absRow = mScrollback.historySize() - mViewportOffset + ev->y;
+    int absRow = mDocument.historySize() - mViewportOffset + ev->y;
     startSelection(ev->x, absRow);
     event(Update);
 }
@@ -458,7 +469,7 @@ void Terminal::mouseMoveEvent(const MouseEvent *ev)
     if (mSelection.active) {
         int col = std::max(0, std::min(ev->x, mWidth - 1));
         int row = std::max(0, std::min(ev->y, mHeight - 1));
-        int absRow = mScrollback.historySize() - mViewportOffset + row;
+        int absRow = mDocument.historySize() - mViewportOffset + row;
         updateSelection(col, absRow);
         event(Update);
         return;
@@ -559,13 +570,13 @@ std::string Terminal::selectedText() const
         std::swap(c0, c1);
     }
 
-    int histSize = mScrollback.historySize();
+    int histSize = mDocument.historySize();
     std::string result;
 
     for (int absRow = r0; absRow <= r1; ++absRow) {
         const Cell* row;
         if (absRow < histSize) {
-            row = mScrollback.historyRow(absRow);
+            row = mDocument.historyRow(absRow);
         } else {
             int gridRow = absRow - histSize;
             if (gridRow < 0 || gridRow >= grid().rows()) continue;
@@ -636,7 +647,7 @@ void Terminal::readFromFD()
 #endif
     };
 
-    CellGrid& g = grid();
+    IGrid& g = grid();
 
     for (int i=0; i<len; ++i) {
         switch (mState) {
@@ -674,6 +685,7 @@ void Terminal::readFromFD()
                     // ASCII character — write to cell grid
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
                         g.cell(mCursorX, mCursorY) = Cell{static_cast<char32_t>(buf[i]), mCurrentAttrs};
+                        g.clearExtra(mCursorX, mCursorY);
                         g.markRowDirty(mCursorY);
                     }
                     mCursorX++;
@@ -725,6 +737,7 @@ void Terminal::readFromFD()
 
                 if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
                     g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
+                    g.clearExtra(mCursorX, mCursorY);
                     g.markRowDirty(mCursorY);
                 }
                 mCursorX++;
@@ -1055,7 +1068,7 @@ void Terminal::onAction(const Action *action)
     assert(action->type != Action::Invalid);
     DEBUG("Got action %s %d %d %d", Action::typeName(action->type), action->count, action->x, action->y);
 
-    CellGrid& g = grid();
+    IGrid& g = grid();
 
     switch (action->type) {
     case Action::CursorUp:
@@ -1176,7 +1189,7 @@ void Terminal::onAction(const Action *action)
             mCursorX = mSavedCursorX;
             mCursorY = mSavedCursorY;
             mCurrentAttrs = mSavedAttrs;
-            mGrid.markAllDirty();
+            mDocument.markAllDirty();
             mScrollTop = 0;
             mScrollBottom = mHeight;
             clearSelection();
@@ -1366,7 +1379,7 @@ static inline bool gettime(timeval *time)
     return true;
 }
 
-// --- Base64 decode ---
+// --- Base64 ---
 static std::vector<uint8_t> base64Decode(std::string_view input)
 {
     static const uint8_t table[256] = {
@@ -1413,6 +1426,111 @@ static std::string base64Encode(const uint8_t* data, size_t len)
     return out;
 }
 
+// --- OSC 1337 iTerm2 inline images ---
+void Terminal::processOSC_iTerm(std::string_view payload)
+{
+    // Format: "File=[params]:base64data"
+    if (payload.substr(0, 5) != "File=") return;
+
+    size_t colonPos = payload.find(':');
+    if (colonPos == std::string_view::npos) return;
+
+    std::string_view paramStr = payload.substr(5, colonPos - 5);
+    std::string_view b64data = payload.substr(colonPos + 1);
+
+    // Parse params
+    bool isInline = false;
+    std::string_view::size_type pos = 0;
+    while (pos < paramStr.size()) {
+        auto eq = paramStr.find('=', pos);
+        if (eq == std::string_view::npos) break;
+        auto semi = paramStr.find(';', eq);
+        if (semi == std::string_view::npos) semi = paramStr.size();
+
+        std::string_view key = paramStr.substr(pos, eq - pos);
+        std::string_view val = paramStr.substr(eq + 1, semi - eq - 1);
+
+        if (key == "inline" && val == "1") isInline = true;
+        pos = semi + 1;
+    }
+
+    if (!isInline) return;
+
+    // Decode base64
+    std::vector<uint8_t> imageBytes = base64Decode(b64data);
+    if (imageBytes.empty()) return;
+
+    // Decode image
+    int w, h, channels;
+    uint8_t* pixels = stbi_load_from_memory(
+        imageBytes.data(), static_cast<int>(imageBytes.size()), &w, &h, &channels, 4);
+    if (!pixels) {
+        DEBUG("OSC 1337: stbi_load_from_memory failed");
+        return;
+    }
+
+    float cw = cellPixelWidth();
+    float ch = cellPixelHeight();
+    if (cw <= 0 || ch <= 0) {
+        stbi_image_free(pixels);
+        return;
+    }
+
+    int cellCols = std::max(1, static_cast<int>(std::ceil(static_cast<float>(w) / cw)));
+    int cellRows = std::max(1, static_cast<int>(std::ceil(static_cast<float>(h) / ch)));
+
+    ImageEntry entry;
+    entry.id = mNextImageId++;
+    entry.pixelWidth = w;
+    entry.pixelHeight = h;
+    entry.cellWidth = cellCols;
+    entry.cellHeight = cellRows;
+    entry.rgba.assign(pixels, pixels + w * h * 4);
+    stbi_image_free(pixels);
+
+    uint32_t imageId = entry.id;
+    spdlog::warn("OSC 1337: image id={} {}x{} px, {}x{} cells",
+                 imageId, w, h, cellCols, cellRows);
+    mImageRegistry[imageId] = std::move(entry);
+
+    placeImageInGrid(imageId, cellCols, cellRows);
+}
+
+void Terminal::placeImageInGrid(uint32_t imageId, int cellCols, int cellRows)
+{
+    IGrid& g = grid();
+    int fillCols = std::min(cellCols, mWidth);
+
+    for (int r = 0; r < cellRows; ++r) {
+        // Scroll if cursor is at the bottom
+        if (mCursorY >= mHeight) {
+            scrollUpInRegion(1);
+            mCursorY = mHeight - 1;
+        }
+
+        // Fill cells with blanks to reserve visual space
+        for (int c = 0; c < fillCols; ++c) {
+            Cell& cell = g.cell(c, mCursorY);
+            cell.wc = 0;
+            cell.attrs.setWideSpacer(true);
+        }
+
+        // Place one extra at column 0 with image ID and row offset
+        CellExtra& ex = g.ensureExtra(0, mCursorY);
+        ex.imageId = imageId;
+        ex.imageOffsetCol = 0;
+        ex.imageOffsetRow = r;
+
+        g.markRowDirty(mCursorY);
+        mCursorY++;
+    }
+
+    if (mCursorY >= mHeight) {
+        mCursorY = mHeight - 1;
+    }
+    mCursorX = 0;
+}
+
 // --- OSC processing ---
 void Terminal::processStringSequence()
 {
@@ -1435,6 +1553,7 @@ void Terminal::processStringSequence()
     case 1: processOSC_Title(payload, true, false); break;
     case 2: processOSC_Title(payload, false, true); break;
     case 52: processOSC_Clipboard(payload); break;
+    case 1337: processOSC_iTerm(payload); break;
     default:
         DEBUG("Ignoring OSC %d", oscNum);
         break;

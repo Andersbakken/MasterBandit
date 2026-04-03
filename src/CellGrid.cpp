@@ -1,5 +1,6 @@
 #include "CellGrid.h"
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 
 CellGrid::CellGrid() = default;
@@ -9,6 +10,7 @@ CellGrid::CellGrid(int cols, int rows)
     , cells_(static_cast<size_t>(cols) * rows)
     , dirty_(rows, true)
     , allDirty_(true)
+    , extras_(rows)
 {
 }
 
@@ -27,11 +29,17 @@ void CellGrid::resize(int cols, int rows)
         }
     }
 
+    int oldRows = rows_;
     cols_ = cols;
     rows_ = rows;
     cells_ = std::move(newCells);
     dirty_.assign(rows, true);
     allDirty_ = true;
+    extras_.resize(rows);
+    // Clear only new rows; existing rows keep extras until overwritten
+    for (int r = oldRows; r < rows; ++r) {
+        extras_[r].clear();
+    }
 }
 
 void CellGrid::markRowDirty(int row)
@@ -79,6 +87,7 @@ void CellGrid::clearRow(int row)
     for (int c = 0; c < cols_; ++c) {
         r[c] = Cell{};
     }
+    extras_[row].clear();
     markRowDirty(row);
 }
 
@@ -90,6 +99,14 @@ void CellGrid::clearRow(int row, int startCol, int endCol)
     Cell* r = this->row(row);
     for (int c = startCol; c < endCol; ++c) {
         r[c] = Cell{};
+    }
+    // Clear extras for the range; if full row, clear all
+    if (startCol == 0 && endCol == cols_) {
+        extras_[row].clear();
+    } else {
+        for (int c = startCol; c < endCol; ++c) {
+            extras_[row].erase(c);
+        }
     }
     markRowDirty(row);
 }
@@ -103,11 +120,13 @@ void CellGrid::scrollUp(int top, int bottom, int n)
     // Move rows [top+n..bottom) up to [top..bottom-n)
     for (int r = top; r < bottom - n; ++r) {
         memcpy(row(r), row(r + n), cols_ * sizeof(Cell));
+        extras_[r] = std::move(extras_[r + n]);
         markRowDirty(r);
     }
     // Clear the bottom n rows
     for (int r = bottom - n; r < bottom; ++r) {
         clearRow(r);
+        extras_[r].clear();
     }
 }
 
@@ -120,11 +139,13 @@ void CellGrid::scrollDown(int top, int bottom, int n)
     // Move rows [top..bottom-n) down to [top+n..bottom)
     for (int r = bottom - 1; r >= top + n; --r) {
         memcpy(row(r), row(r - n), cols_ * sizeof(Cell));
+        extras_[r] = std::move(extras_[r - n]);
         markRowDirty(r);
     }
     // Clear the top n rows
     for (int r = top; r < top + n; ++r) {
         clearRow(r);
+        extras_[r].clear();
     }
 }
 
@@ -160,4 +181,41 @@ void CellGrid::insertChars(int row, int col, int count)
         r[c] = Cell{};
     }
     markRowDirty(row);
+}
+
+const CellExtra* CellGrid::getExtra(int col, int row) const
+{
+    if (row < 0 || row >= rows_) return nullptr;
+    auto& m = extras_[row];
+    auto it = m.find(col);
+    return (it != m.end()) ? &it->second : nullptr;
+}
+
+CellExtra& CellGrid::ensureExtra(int col, int row)
+{
+    assert(row >= 0 && row < rows_);
+    return extras_[row][col];
+}
+
+void CellGrid::clearExtra(int col, int row)
+{
+    if (row >= 0 && row < rows_) extras_[row].erase(col);
+}
+
+void CellGrid::clearRowExtras(int row)
+{
+    if (row >= 0 && row < rows_) extras_[row].clear();
+}
+
+std::unordered_map<int, CellExtra> CellGrid::takeRowExtras(int row)
+{
+    if (row < 0 || row >= rows_) return {};
+    auto result = std::move(extras_[row]);
+    extras_[row].clear();
+    return result;
+}
+
+void CellGrid::setRowExtras(int row, std::unordered_map<int, CellExtra>&& extras)
+{
+    if (row >= 0 && row < rows_) extras_[row] = std::move(extras);
 }

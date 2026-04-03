@@ -576,6 +576,7 @@ class Terminal;
 class Platform
 {
 public:
+    virtual ~Platform() = default;
     virtual int exec() = 0;
     virtual void quit(int status = 0) = 0;
     virtual std::unique_ptr<Terminal> createTerminal(const TerminalOptions &options) = 0;

@@ -27,7 +27,7 @@ class Terminal
 {
 public:
     Terminal(Platform *platform);
-    ~Terminal();
+    virtual ~Terminal();
 
     virtual bool init(const TerminalOptions &options);
     enum Flag {

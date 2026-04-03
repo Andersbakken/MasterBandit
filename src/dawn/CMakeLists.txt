@@ -16,5 +16,5 @@ target_include_directories(platform_dawn PRIVATE ${Stb_INCLUDE_DIR})
 target_include_directories(platform_dawn PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 if(APPLE)
-    target_link_libraries(platform_dawn "-framework QuartzCore" "-framework Cocoa")
+    target_link_libraries(platform_dawn PUBLIC "-framework QuartzCore" "-framework Cocoa")
 endif()

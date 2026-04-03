@@ -69,8 +69,8 @@ private:
     // Tier 2: compressed archive
     struct ArchivedRow { std::string data; };
     std::deque<ArchivedRow> archive_;
-    int maxArchiveRows_;
-    int tier1Capacity_;       // max history rows before eviction to archive
+    int maxArchiveRows_ = 0;
+    int tier1Capacity_ = 0;       // max history rows before eviction to archive
     mutable std::vector<Cell> parseBuffer_;
 
     // Internal helpers

@@ -135,6 +135,11 @@ public:
 
     void injectData(const char* data, size_t len);
 
+    void setOSCMBCallback(std::function<void(std::string_view)> cb)
+    {
+        mCallbacks.onOSCMB = std::move(cb);
+    }
+
     static unsigned long long mono();
 
     // 16-color palette (standard + bright) as RGB

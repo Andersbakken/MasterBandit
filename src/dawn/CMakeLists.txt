@@ -1,4 +1,8 @@
-add_library(platform_dawn STATIC PlatformDawn.cpp Renderer.cpp NativeSurface.cpp)
+set(DAWN_SOURCES PlatformDawn.cpp Renderer.cpp NativeSurface.cpp)
+if(APPLE)
+    list(APPEND DAWN_SOURCES MetalLayer.mm)
+endif()
+add_library(platform_dawn STATIC ${DAWN_SOURCES})
 target_link_libraries(platform_dawn PUBLIC
     dawn::webgpu_dawn
     glfw

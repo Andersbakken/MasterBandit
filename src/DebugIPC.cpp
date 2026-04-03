@@ -194,14 +194,21 @@ DebugIPC::DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb)
     spdlog::info("DebugIPC: listening on {}", socketPath_);
 }
 
+void DebugIPC::closeHandles()
+{
+    if (ctx_) {
+        lws_context_destroy(ctx_);
+        ctx_ = nullptr;
+    }
+    uv_close(reinterpret_cast<uv_handle_t*>(&logAsync_), nullptr);
+}
+
 DebugIPC::~DebugIPC()
 {
     if (ctx_) {
         lws_context_destroy(ctx_);
     }
     unlink(socketPath_.c_str());
-
-    uv_close(reinterpret_cast<uv_handle_t*>(&logAsync_), nullptr);
 }
 
 // ============================================================================

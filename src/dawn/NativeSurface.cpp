@@ -20,6 +20,10 @@
 #  undef Success
 #endif
 
+#ifdef __APPLE__
+extern "C" void* createMetalLayer(void* nsWindow);
+#endif
+
 wgpu::Surface createNativeSurface(GLFWwindow* window, wgpu::Instance instance)
 {
 #ifdef __linux__
@@ -39,9 +43,15 @@ wgpu::Surface createNativeSurface(GLFWwindow* window, wgpu::Instance instance)
 
 #ifdef __APPLE__
     {
-        id nsWindow = glfwGetCocoaWindow(window);
-        // TODO: macOS surface creation
-        (void)nsWindow;
+        void* metalLayer = createMetalLayer(glfwGetCocoaWindow(window));
+        if (metalLayer) {
+            wgpu::SurfaceSourceMetalLayer metalSource;
+            metalSource.layer = metalLayer;
+
+            wgpu::SurfaceDescriptor surfDesc;
+            surfDesc.nextInChain = &metalSource;
+            return instance.CreateSurface(&surfDesc);
+        }
     }
 #endif
 

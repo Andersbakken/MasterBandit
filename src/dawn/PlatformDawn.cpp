@@ -264,6 +264,7 @@ public:
     wgpu::Queue queue() const { return queue_; }
 
     TerminalWindow* window() const { return window_; }
+    const std::string& exeDir() const { return exeDir_; }
 
 private:
     wgpu::Device device_;
@@ -405,6 +406,18 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         return nullptr;
     }
 
+    // Set pty window size now that the fd is valid (after init opens the pty)
+    {
+        int fw, fh;
+        glfwGetFramebufferSize(glfwWin, &fw, &fh);
+        struct winsize ws = {};
+        ws.ws_col = static_cast<unsigned short>(window->grid().cols());
+        ws.ws_row = static_cast<unsigned short>(window->grid().rows());
+        ws.ws_xpixel = static_cast<unsigned short>(fw);
+        ws.ws_ypixel = static_cast<unsigned short>(fh);
+        ioctl(window->masterFD(), TIOCSWINSZ, &ws);
+    }
+
     return window;
 }
 
@@ -456,7 +469,6 @@ int PlatformDawn::exec()
     if (debugSink_) {
         debugSink_->setIPC(nullptr);
     }
-    debugIPC_.reset();
 
     uv_timer_stop(&tickTimer_);
     uv_poll_stop(&ptyPoll_);
@@ -464,7 +476,9 @@ int PlatformDawn::exec()
     uv_close(reinterpret_cast<uv_handle_t*>(&tickTimer_), nullptr);
     uv_close(reinterpret_cast<uv_handle_t*>(&ptyPoll_), nullptr);
     uv_close(reinterpret_cast<uv_handle_t*>(&prepareCb_), nullptr);
+    if (debugIPC_) debugIPC_->closeHandles();
     uv_run(loop_, UV_RUN_DEFAULT);
+    debugIPC_.reset();
 
     return exitStatus_;
 }
@@ -494,6 +508,10 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     glfwGetFramebufferSize(glfwWindow_, &w, &h);
     fbWidth_ = static_cast<uint32_t>(w);
     fbHeight_ = static_cast<uint32_t>(h);
+
+    float xscale, yscale;
+    glfwGetWindowContentScale(glfwWindow_, &xscale, &yscale);
+    fontSize_ *= xscale;
 
     configureSurface(fbWidth_, fbHeight_);
 
@@ -529,7 +547,7 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     spdlog::info("Font metrics: charWidth={:.1f}, lineHeight={:.1f}", charWidth_, lineHeight_);
 
     std::string shaderDir = fs::weakly_canonical(
-        fs::path(fs::read_symlink("/proc/self/exe")).parent_path() / "shaders").string();
+        fs::path(platform_->exeDir()) / "shaders").string();
     if (!fs::exists(shaderDir)) {
         shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
     }
@@ -546,13 +564,6 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     resolvedCells_.resize(static_cast<size_t>(cols) * rows);
 
     resize(cols, rows);
-
-    struct winsize ws = {};
-    ws.ws_col = static_cast<unsigned short>(cols);
-    ws.ws_row = static_cast<unsigned short>(rows);
-    ws.ws_xpixel = static_cast<unsigned short>(fbWidth_);
-    ws.ws_ypixel = static_cast<unsigned short>(fbHeight_);
-    ioctl(masterFD(), TIOCSWINSZ, &ws);
 }
 
 TerminalWindow::~TerminalWindow()

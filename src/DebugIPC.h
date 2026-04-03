@@ -20,6 +20,9 @@ public:
     DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb);
     ~DebugIPC();
 
+    // Issue uv_close for owned handles. Must call before final uv_run.
+    void closeHandles();
+
     void broadcastLog(const std::string& msg);
     const std::string& socketPath() const { return socketPath_; }
 

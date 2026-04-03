@@ -9,49 +9,15 @@ Pane::Pane(int id)
 {
 }
 
-void Pane::addTab(std::unique_ptr<Terminal> terminal)
+void Pane::setTerminal(std::unique_ptr<Terminal> t)
 {
-    installOSCCallback(terminal.get());
-    mTabs.push_back(std::move(terminal));
-}
-
-void Pane::pushOverlay(std::unique_ptr<Terminal> terminal)
-{
-    installOSCCallback(terminal.get());
-    mOverlays.push_back(std::move(terminal));
-}
-
-void Pane::popOverlay()
-{
-    if (mOverlays.empty()) return;
-    int fd = mOverlays.back()->masterFD();
-    mOverlays.pop_back();
-    if (onOverlayPopped) onOverlayPopped(fd);
-}
-
-Terminal* Pane::topOverlay()
-{
-    if (mOverlays.empty()) return nullptr;
-    return mOverlays.back().get();
+    terminal_ = std::move(t);
+    if (terminal_) installOSCCallback(terminal_.get());
 }
 
 TerminalEmulator* Pane::activeTerm()
 {
-    if (!mOverlays.empty()) return mOverlays.back().get();
-    if (mTabs.empty()) return nullptr;
-    return mTabs[mActiveTab].get();
-}
-
-Terminal* Pane::activeTab()
-{
-    if (mTabs.empty()) return nullptr;
-    return mTabs[mActiveTab].get();
-}
-
-void Pane::setActiveTab(int idx)
-{
-    if (idx >= 0 && idx < static_cast<int>(mTabs.size()))
-        mActiveTab = idx;
+    return terminal_.get();
 }
 
 void Pane::resizeToRect(float charW, float lineH)
@@ -59,8 +25,7 @@ void Pane::resizeToRect(float charW, float lineH)
     if (mRect.isEmpty()) return;
     int cols = std::max(1, static_cast<int>(mRect.w / charW));
     int rows = std::max(1, static_cast<int>(mRect.h / lineH));
-    for (auto& t : mTabs)     t->resize(cols, rows);
-    for (auto& t : mOverlays) t->resize(cols, rows);
+    if (terminal_) terminal_->resize(cols, rows);
 }
 
 PopupPane* Pane::findPopup(const std::string& id)

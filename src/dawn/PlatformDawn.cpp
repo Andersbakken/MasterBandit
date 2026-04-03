@@ -11,6 +11,7 @@
 #include "FontResolver.h"
 #include "Layout.h"
 #include "Pane.h"
+#include "Tab.h"
 
 #include <glaze/glaze.hpp>
 
@@ -271,8 +272,24 @@ private:
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
 
-    // Layout
-    std::unique_ptr<Layout> layout_;
+    // Tabs
+    std::vector<std::unique_ptr<Tab>> tabs_;
+    int activeTabIdx_ = 0;
+
+    Tab* activeTab() {
+        if (tabs_.empty() || activeTabIdx_ < 0 || activeTabIdx_ >= static_cast<int>(tabs_.size()))
+            return nullptr;
+        return tabs_[activeTabIdx_].get();
+    }
+
+    // Active terminal for input routing
+    Terminal* activeTerm() {
+        Tab* tab = activeTab();
+        if (!tab) return nullptr;
+        if (tab->hasOverlay()) return tab->topOverlay();
+        Pane* pane = tab->layout()->focusedPane();
+        return pane ? static_cast<Terminal*>(pane->activeTerm()) : nullptr;
+    }
 
     // Shared rendering state (moved from TerminalWindow)
     GLFWwindow* glfwWindow_ = nullptr;
@@ -380,6 +397,9 @@ PlatformDawn::~PlatformDawn()
         for (auto* t : rs.pendingRelease) texturePool_.release(t);
     }
     paneRenderStates_.clear();
+
+    // Destroy tabs (and their layouts/panes/terminals) before GPU resources
+    tabs_.clear();
 
     surface_ = nullptr;
 
@@ -526,40 +546,24 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         glfwSetScrollCallback(glfwWindow_, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
             auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
             int lines = static_cast<int>(yoffset);
-            if (lines != 0 && self->layout_) {
-                Pane* fp = self->layout_->focusedPane();
-                if (fp && fp->activeTerm())
-                    fp->activeTerm()->scrollViewport(lines);
+            if (lines != 0) {
+                Terminal* t = self->activeTerm();
+                if (t) t->scrollViewport(lines);
             }
         });
 
         glfwSetWindowFocusCallback(glfwWindow_, [](GLFWwindow* w, int focused) {
             auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
-            if (self->layout_) {
-                Pane* fp = self->layout_->focusedPane();
-                if (fp && fp->activeTerm())
-                    fp->activeTerm()->focusEvent(focused != 0);
-            }
+            Terminal* t = self->activeTerm();
+            if (t) t->focusEvent(focused != 0);
         });
-
-        // Create layout with initial pane
-        layout_ = std::make_unique<Layout>();
     }
 
-    // Create a new pane (or reuse if first terminal)
-    Pane* pane = nullptr;
-    if (layout_->panes().empty()) {
-        pane = layout_->createPane();
-        layout_->setFocusedPane(pane->id());
-        // Compute initial rects
-        layout_->computeRects(fbWidth_, fbHeight_);
-    } else {
-        // For now, always add to the focused pane
-        pane = layout_->focusedPane();
-        if (!pane) {
-            pane = layout_->panes().front().get();
-        }
-    }
+    // Create a layout and tab for this terminal
+    auto layout = std::make_unique<Layout>();
+    Pane* pane = layout->createPane();
+    layout->setFocusedPane(pane->id());
+    layout->computeRects(fbWidth_, fbHeight_);
 
     int paneId = pane->id();
 
@@ -627,13 +631,19 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();
 
-    pane->addTab(std::move(terminal));  // Pane owns the Terminal now
+    pane->setTerminal(std::move(terminal));  // Pane owns the Terminal now
 
     if (loop_) {
         addPtyPoll(masterFD, termPtr);
     }
 
-    // Terminal is owned by the Pane/Layout — return nullptr, not a second owner.
+    // Build and store tab
+    auto tab = std::make_unique<Tab>(std::move(layout));
+    tabs_.push_back(std::move(tab));
+    // Make first tab active (subsequent calls add more tabs but we keep activeTabIdx_ at 0 for now)
+    activeTabIdx_ = 0;
+
+    // Terminal is owned by the Pane/Tab/Layout — return nullptr, not a second owner.
     return nullptr;
 }
 
@@ -663,14 +673,17 @@ void PlatformDawn::removePtyPoll(int fd)
 
 int PlatformDawn::exec()
 {
-    if (!layout_ || layout_->panes().empty()) return 1;
+    Tab* tab = activeTab();
+    if (!tab || tab->layout()->panes().empty()) return 1;
 
     running_ = true;
     loop_ = uv_default_loop();
 
     debugIPC_ = std::make_unique<DebugIPC>(loop_, nullptr,
         [this](int id) {
-            Pane* pane = layout_->focusedPane();
+            Tab* t = activeTab();
+            if (!t) return std::string{};
+            Pane* pane = t->layout()->focusedPane();
             return pane ? gridToJson(pane->id()) : std::string{};
         });
     if (debugSink_) {
@@ -678,10 +691,10 @@ int PlatformDawn::exec()
     }
 
     // Add PTY polls for all terminals already created
-    for (auto& panePtr : layout_->panes()) {
-        Terminal* tab = panePtr->activeTab();
-        if (tab && tab->masterFD() >= 0) {
-            addPtyPoll(tab->masterFD(), tab);
+    for (auto& panePtr : tab->layout()->panes()) {
+        Terminal* term = panePtr->terminal();
+        if (term && term->masterFD() >= 0) {
+            addPtyPoll(term->masterFD(), term);
         }
     }
 
@@ -743,8 +756,12 @@ void PlatformDawn::configureSurface(uint32_t width, uint32_t height)
 
 std::string PlatformDawn::gridToJson(int id)
 {
-    if (!layout_) return {};
-    Pane* pane = layout_->pane(id);
+    // Search for the pane across all tabs
+    Pane* pane = nullptr;
+    for (auto& tabPtr : tabs_) {
+        pane = tabPtr->layout()->pane(id);
+        if (pane) break;
+    }
     if (!pane) return {};
     TerminalEmulator* term = pane->activeTerm();
     if (!term) return {};
@@ -795,7 +812,11 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
     if (paneIt == paneRenderStates_.end()) return;
     PaneRenderState& rs = paneIt->second;
 
-    Pane* pane = layout_->pane(paneId);
+    Pane* pane = nullptr;
+    for (auto& tabPtr : tabs_) {
+        pane = tabPtr->layout()->pane(paneId);
+        if (pane) break;
+    }
     if (!pane) return;
     TerminalEmulator* term = pane->activeTerm();
     if (!term) return;
@@ -867,7 +888,8 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
 void PlatformDawn::renderFrame()
 {
     if (fbWidth_ == 0 || fbHeight_ == 0) return;
-    if (!layout_) return;
+    Tab* currentTab = activeTab();
+    if (!currentTab) return;
 
     wgpu::SurfaceTexture surfaceTexture;
     surface_.GetCurrentTexture(&surfaceTexture);
@@ -884,7 +906,7 @@ void PlatformDawn::renderFrame()
     std::vector<Renderer::CompositeEntry> compositeEntries;
     bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
 
-    for (auto& panePtr : layout_->panes()) {
+    for (auto& panePtr : currentTab->layout()->panes()) {
         Pane* pane = panePtr.get();
         if (pane->rect().isEmpty()) continue;
         int paneId = pane->id();
@@ -1143,7 +1165,7 @@ void PlatformDawn::renderFrame()
 
         // Collect all pending releases from all panes
         std::vector<PooledTexture*> toRelease;
-        for (auto& panePtr : layout_->panes()) {
+        for (auto& panePtr : currentTab->layout()->panes()) {
             auto it = paneRenderStates_.find(panePtr->id());
             if (it != paneRenderStates_.end()) {
                 toRelease.insert(toRelease.end(),
@@ -1166,10 +1188,7 @@ void PlatformDawn::renderFrame()
 
 void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
 {
-    if (!layout_) return;
-    Pane* fp = layout_->focusedPane();
-    if (!fp) return;
-    TerminalEmulator* term = fp->activeTerm();
+    TerminalEmulator* term = activeTerm();
     if (!term) return;
 
     spdlog::debug("onKey: key={} action={} mods={}", key, action, mods);
@@ -1231,10 +1250,7 @@ void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
 
 void PlatformDawn::onChar(unsigned int codepoint)
 {
-    if (!layout_) return;
-    Pane* fp = layout_->focusedPane();
-    if (!fp) return;
-    TerminalEmulator* term = fp->activeTerm();
+    TerminalEmulator* term = activeTerm();
     if (!term) return;
 
     spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
@@ -1260,11 +1276,12 @@ void PlatformDawn::onFramebufferResize(int width, int height)
     configureSurface(fbWidth_, fbHeight_);
     renderer_.setViewportSize(fbWidth_, fbHeight_);
 
-    if (!layout_) return;
+    Tab* tab = activeTab();
+    if (!tab) return;
 
-    layout_->computeRects(fbWidth_, fbHeight_);
+    tab->layout()->computeRects(fbWidth_, fbHeight_);
 
-    for (auto& panePtr : layout_->panes()) {
+    for (auto& panePtr : tab->layout()->panes()) {
         Pane* pane = panePtr.get();
         pane->resizeToRect(charWidth_, lineHeight_);
 
@@ -1298,10 +1315,12 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
 void PlatformDawn::onMouseButton(int button, int action, int mods)
 {
-    if (!layout_) return;
-    Pane* fp = layout_->focusedPane();
-    if (!fp) return;
-    TerminalEmulator* term = fp->activeTerm();
+    Tab* tab = activeTab();
+    if (!tab) return;
+    Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
+    TerminalEmulator* term = tab->hasOverlay()
+        ? static_cast<TerminalEmulator*>(tab->topOverlay())
+        : (fp ? fp->activeTerm() : nullptr);
     if (!term) return;
 
     lastMods_ = glfwModsToModifiers(mods);
@@ -1313,7 +1332,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
     double sy = y * contentScaleY_;
 
     // Adjust for pane origin
-    const PaneRect& pr = fp->rect();
+    PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
     double relX = sx - pr.x;
     double relY = sy - pr.y;
 
@@ -1337,16 +1356,18 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
 
 void PlatformDawn::onCursorPos(double x, double y)
 {
-    if (!layout_) return;
-    Pane* fp = layout_->focusedPane();
-    if (!fp) return;
-    TerminalEmulator* term = fp->activeTerm();
+    Tab* tab = activeTab();
+    if (!tab) return;
+    Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
+    TerminalEmulator* term = tab->hasOverlay()
+        ? static_cast<TerminalEmulator*>(tab->topOverlay())
+        : (fp ? fp->activeTerm() : nullptr);
     if (!term) return;
 
     double sx = x * contentScaleX_;
     double sy = y * contentScaleY_;
 
-    const PaneRect& pr = fp->rect();
+    PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
     double relX = sx - pr.x;
     double relY = sy - pr.y;
 

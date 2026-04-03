@@ -625,7 +625,9 @@ void Terminal::readFromFD()
     EINTRWRAP(ret, ::read(mMasterFD, buf, sizeof(buf) - 1));
     spdlog::debug("readFromFD: read {} bytes from masterFD={}", ret, mMasterFD);
     if (ret == -1) {
-        ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
+        if (errno != EIO) {
+            ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
+        }
         mPlatform->quit();
         return;
     } else if (ret == 0) {

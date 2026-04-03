@@ -358,6 +358,9 @@ PlatformDawn::PlatformDawn(int argc, char** argv)
 
 PlatformDawn::~PlatformDawn()
 {
+    queue_ = {};
+    device_ = {};
+    nativeInstance_.reset();
     glfwTerminate();
 }
 

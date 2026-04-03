@@ -217,6 +217,9 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
         bgDesc.entries = bindings;
         rectBindGroup_ = device_.CreateBindGroup(&bgDesc);
     }
+
+    // Initialize compute pipeline
+    initComputePipeline(device_, shaderDir);
 }
 
 void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
@@ -242,30 +245,23 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     gpu.uploadedSize = font.atlasUsed;
 
     // Uniform buffer: mat4x4f mvp + vec2f viewport + f32 gamma + f32 stem_darkening
-    // = 64 + 8 + 4 + 4 = 80 bytes, round to 96 for alignment
     {
         wgpu::BufferDescriptor desc = {};
         desc.size = 96;
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         gpu.uniformBuffer = device_.CreateBuffer(&desc);
 
-        // Build orthographic MVP: maps pixel coords to NDC
         float w = static_cast<float>(viewportW_);
         float h = static_cast<float>(viewportH_);
         // clang-format off
         float uniforms[24] = {
-            // mat4x4 mvp (column-major orthographic projection)
             2.0f/w,  0.0f,    0.0f, 0.0f,
             0.0f,   -2.0f/h,  0.0f, 0.0f,
             0.0f,    0.0f,    1.0f, 0.0f,
            -1.0f,    1.0f,    0.0f, 1.0f,
-            // vec2f viewport
             w, h,
-            // f32 gamma
             1.0f,
-            // f32 stem_darkening
             1.0f,
-            // padding
             0.0f, 0.0f, 0.0f, 0.0f,
         };
         // clang-format on
@@ -302,14 +298,11 @@ void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
 
     if (font.atlasUsed <= gpu.uploadedSize) return;
 
-    // Check if we need to grow the storage buffer
     if (font.atlasUsed > gpu.storageCapacity) {
-        // Need to recreate with larger capacity
         uploadFontAtlas(queue, fontName, font);
         return;
     }
 
-    // Incremental upload: only the new data
     uint64_t offset = static_cast<uint64_t>(gpu.uploadedSize) * 4 * sizeof(int32_t);
     uint64_t size = static_cast<uint64_t>(font.atlasUsed - gpu.uploadedSize) * 4 * sizeof(int32_t);
     queue.WriteBuffer(gpu.storageBuffer, offset,
@@ -321,23 +314,6 @@ void Renderer::setViewportSize(uint32_t width, uint32_t height)
 {
     viewportW_ = width;
     viewportH_ = height;
-
-    // Update rect uniform buffer
-    float uniforms[4] = {
-        static_cast<float>(width),
-        static_cast<float>(height),
-        0.0f, 0.0f
-    };
-    // Note: we need queue to write, but we don't have it here.
-    // The viewport update for text uniforms will be handled by re-uploading font atlas.
-    // For rect, we'll update in renderFrame.
-}
-
-void Renderer::queueGlyphVertices(const std::string& fontName,
-                                   const SlugVertex* verts, uint32_t count)
-{
-    auto& vec = textVertsByFont_[fontName];
-    vec.insert(vec.end(), verts, verts + count);
 }
 
 void Renderer::queueRect(float x, float y, float w, float h,
@@ -357,9 +333,6 @@ void Renderer::queueRect(float x, float y, float w, float h,
 
 void Renderer::clearQueues()
 {
-    for (auto& [name, verts] : textVertsByFont_) {
-        verts.clear();
-    }
     rectVerts_.clear();
 }
 
@@ -409,7 +382,268 @@ void Renderer::renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         clearPass.End();
     }
 
-    // Rect pass (selection, cursor — rendered before text so text overlays)
+    // Rect pass
+    if (!rectVerts_.empty()) {
+        uint32_t vertCount = static_cast<uint32_t>(rectVerts_.size());
+        if (vertCount > MAX_RECT_VERTS) vertCount = MAX_RECT_VERTS;
+
+        queue.WriteBuffer(rectVertexBuffer_, 0, rectVerts_.data(),
+                          vertCount * sizeof(RectVertex));
+
+        wgpu::RenderPassColorAttachment rectAttachment = {};
+        rectAttachment.view = swapchainView;
+        rectAttachment.loadOp = wgpu::LoadOp::Load;
+        rectAttachment.storeOp = wgpu::StoreOp::Store;
+
+        wgpu::RenderPassDescriptor rectPassDesc = {};
+        rectPassDesc.colorAttachmentCount = 1;
+        rectPassDesc.colorAttachments = &rectAttachment;
+
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rectPassDesc);
+        pass.SetPipeline(rectPipeline_);
+        pass.SetBindGroup(0, rectBindGroup_);
+        pass.SetVertexBuffer(0, rectVertexBuffer_);
+        pass.Draw(vertCount);
+        pass.End();
+    }
+}
+
+// ========================================
+// Compute pipeline
+// ========================================
+
+void Renderer::initComputePipeline(wgpu::Device& device, const std::string& shaderDir)
+{
+    auto shaderModule = renderer_utils::createShaderModule(device,
+        (fs::path(shaderDir) / "terminal_compute.wgsl").string().c_str());
+    if (!shaderModule) {
+        spdlog::error("Failed to load terminal_compute.wgsl shader");
+        return;
+    }
+
+    // Bind group layout: 5 bindings
+    wgpu::BindGroupLayoutEntry entries[5] = {};
+
+    // b0: uniform params
+    entries[0].binding = 0;
+    entries[0].visibility = wgpu::ShaderStage::Compute;
+    entries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+
+    // b1: resolved cells (read-only storage)
+    entries[1].binding = 1;
+    entries[1].visibility = wgpu::ShaderStage::Compute;
+    entries[1].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+
+    // b2: text vertices (read-write storage)
+    entries[2].binding = 2;
+    entries[2].visibility = wgpu::ShaderStage::Compute;
+    entries[2].buffer.type = wgpu::BufferBindingType::Storage;
+
+    // b3: rect vertices (read-write storage)
+    entries[3].binding = 3;
+    entries[3].visibility = wgpu::ShaderStage::Compute;
+    entries[3].buffer.type = wgpu::BufferBindingType::Storage;
+
+    // b4: counters/indirect args (read-write storage)
+    entries[4].binding = 4;
+    entries[4].visibility = wgpu::ShaderStage::Compute;
+    entries[4].buffer.type = wgpu::BufferBindingType::Storage;
+
+    wgpu::BindGroupLayoutDescriptor bglDesc = {};
+    bglDesc.entryCount = 5;
+    bglDesc.entries = entries;
+    computeBindGroupLayout_ = device.CreateBindGroupLayout(&bglDesc);
+
+    wgpu::PipelineLayoutDescriptor plDesc = {};
+    plDesc.bindGroupLayoutCount = 1;
+    plDesc.bindGroupLayouts = &computeBindGroupLayout_;
+    wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&plDesc);
+
+    wgpu::ComputePipelineDescriptor cpDesc = {};
+    cpDesc.layout = pipelineLayout;
+    cpDesc.compute.module = shaderModule;
+    cpDesc.compute.entryPoint = "main";
+    computePipeline_ = device.CreateComputePipeline(&cpDesc);
+
+    spdlog::info("Compute pipeline initialized");
+}
+
+void Renderer::resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows)
+{
+    if (cols == gridCols_ && rows == gridRows_ && computeReady_) return;
+
+    gridCols_ = cols;
+    gridRows_ = rows;
+    uint32_t totalCells = cols * rows;
+
+    // Resolved cell buffer: totalCells * 32 bytes
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = static_cast<uint64_t>(totalCells) * sizeof(ResolvedCell);
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+        resolvedCellBuffer_ = device.CreateBuffer(&desc);
+    }
+
+    // Text vertex buffer: worst case every cell has a glyph = totalCells * 6 verts * 36 bytes
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = static_cast<uint64_t>(totalCells) * 6 * 36; // SlugVertexStorage is 36 bytes
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
+        computeTextVertBuffer_ = device.CreateBuffer(&desc);
+    }
+
+    // Rect vertex buffer: worst case every cell has bg = totalCells * 6 verts * 24 bytes
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = static_cast<uint64_t>(totalCells) * 6 * 24; // RectVertexStorage is 24 bytes
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
+        computeRectVertBuffer_ = device.CreateBuffer(&desc);
+    }
+
+    // Indirect draw args buffer: 8 uint32s (2 indirect draw commands)
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = 32; // 8 * sizeof(uint32_t)
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Indirect | wgpu::BufferUsage::CopyDst;
+        indirectBuffer_ = device.CreateBuffer(&desc);
+    }
+
+    // Compute params uniform buffer
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = sizeof(TerminalComputeParams);
+        desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        computeParamsBuffer_ = device.CreateBuffer(&desc);
+    }
+
+    // Create bind group
+    wgpu::BindGroupEntry bgEntries[5] = {};
+    bgEntries[0].binding = 0;
+    bgEntries[0].buffer = computeParamsBuffer_;
+    bgEntries[0].size = sizeof(TerminalComputeParams);
+
+    bgEntries[1].binding = 1;
+    bgEntries[1].buffer = resolvedCellBuffer_;
+    bgEntries[1].size = static_cast<uint64_t>(totalCells) * sizeof(ResolvedCell);
+
+    bgEntries[2].binding = 2;
+    bgEntries[2].buffer = computeTextVertBuffer_;
+    bgEntries[2].size = static_cast<uint64_t>(totalCells) * 6 * 36;
+
+    bgEntries[3].binding = 3;
+    bgEntries[3].buffer = computeRectVertBuffer_;
+    bgEntries[3].size = static_cast<uint64_t>(totalCells) * 6 * 24;
+
+    bgEntries[4].binding = 4;
+    bgEntries[4].buffer = indirectBuffer_;
+    bgEntries[4].size = 32;
+
+    wgpu::BindGroupDescriptor bgDesc = {};
+    bgDesc.layout = computeBindGroupLayout_;
+    bgDesc.entryCount = 5;
+    bgDesc.entries = bgEntries;
+    computeBindGroup_ = device.CreateBindGroup(&bgDesc);
+
+    computeReady_ = true;
+
+    spdlog::info("Compute buffers resized: {}x{} ({} cells)", cols, rows, totalCells);
+}
+
+void Renderer::uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells, uint32_t count)
+{
+    if (!computeReady_ || count == 0) return;
+    queue.WriteBuffer(resolvedCellBuffer_, 0, cells,
+                      static_cast<uint64_t>(count) * sizeof(ResolvedCell));
+}
+
+void Renderer::renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                                   wgpu::TextureView swapchainView,
+                                   const std::string& fontName,
+                                   const TerminalComputeParams& params)
+{
+    if (!computeReady_) return;
+
+    auto fontIt = fontGPU_.find(fontName);
+    if (fontIt == fontGPU_.end()) return;
+
+    // Update uniforms
+    {
+        float w = static_cast<float>(viewportW_);
+        float h = static_cast<float>(viewportH_);
+        float uniforms[4] = { w, h, 0.0f, 0.0f };
+        queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
+
+        // Text uniforms for font
+        FontGPU& gpu = fontIt->second;
+        float textUniforms[24] = {
+            2.0f/w,  0.0f,    0.0f, 0.0f,
+            0.0f,   -2.0f/h,  0.0f, 0.0f,
+            0.0f,    0.0f,    1.0f, 0.0f,
+           -1.0f,    1.0f,    0.0f, 1.0f,
+            w, h,
+            1.0f,
+            1.0f,
+            0.0f, 0.0f, 0.0f, 0.0f,
+        };
+        queue.WriteBuffer(gpu.uniformBuffer, 0, textUniforms, sizeof(textUniforms));
+    }
+
+    // Upload compute params
+    queue.WriteBuffer(computeParamsBuffer_, 0, &params, sizeof(params));
+
+    // Zero indirect buffer counters (words 0 and 4)
+    // Format: [vertexCount, instanceCount=1, firstVertex=0, firstInstance=0] x2
+    uint32_t indirectInit[8] = {0, 1, 0, 0, 0, 1, 0, 0};
+    queue.WriteBuffer(indirectBuffer_, 0, indirectInit, sizeof(indirectInit));
+
+    // Compute pass
+    {
+        wgpu::ComputePassDescriptor cpDesc = {};
+        wgpu::ComputePassEncoder computePass = encoder.BeginComputePass(&cpDesc);
+        computePass.SetPipeline(computePipeline_);
+        computePass.SetBindGroup(0, computeBindGroup_);
+        uint32_t totalCells = gridCols_ * gridRows_;
+        uint32_t workgroups = (totalCells + 255) / 256;
+        computePass.DispatchWorkgroups(workgroups, 1, 1);
+        computePass.End();
+    }
+
+    // Clear render pass
+    {
+        wgpu::RenderPassColorAttachment clearAttachment = {};
+        clearAttachment.view = swapchainView;
+        clearAttachment.loadOp = wgpu::LoadOp::Clear;
+        clearAttachment.storeOp = wgpu::StoreOp::Store;
+        clearAttachment.clearValue = {0.0, 0.0, 0.0, 1.0};
+
+        wgpu::RenderPassDescriptor clearPassDesc = {};
+        clearPassDesc.colorAttachmentCount = 1;
+        clearPassDesc.colorAttachments = &clearAttachment;
+
+        wgpu::RenderPassEncoder clearPass = encoder.BeginRenderPass(&clearPassDesc);
+        clearPass.End();
+    }
+
+    // Rect pass: compute-generated bg rects via indirect draw
+    {
+        wgpu::RenderPassColorAttachment rectAttachment = {};
+        rectAttachment.view = swapchainView;
+        rectAttachment.loadOp = wgpu::LoadOp::Load;
+        rectAttachment.storeOp = wgpu::StoreOp::Store;
+
+        wgpu::RenderPassDescriptor rectPassDesc = {};
+        rectPassDesc.colorAttachmentCount = 1;
+        rectPassDesc.colorAttachments = &rectAttachment;
+
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rectPassDesc);
+        pass.SetPipeline(rectPipeline_);
+        pass.SetBindGroup(0, rectBindGroup_);
+        pass.SetVertexBuffer(0, computeRectVertBuffer_);
+        pass.DrawIndirect(indirectBuffer_, 16); // offset 16 = second indirect command
+        pass.End();
+    }
+
+    // CPU rect pass (cursor, selection — very few rects)
     if (!rectVerts_.empty()) {
         uint32_t vertCount = static_cast<uint32_t>(rectVerts_.size());
         if (vertCount > MAX_RECT_VERTS) vertCount = MAX_RECT_VERTS;
@@ -434,17 +668,8 @@ void Renderer::renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         pass.End();
     }
 
-    // Text pass (Slug)
-    for (auto& [fontName, verts] : textVertsByFont_) {
-        if (verts.empty()) continue;
-        if (fontGPU_.find(fontName) == fontGPU_.end()) continue;
-
-        uint32_t vertCount = static_cast<uint32_t>(verts.size());
-        if (vertCount > MAX_TEXT_VERTS) vertCount = MAX_TEXT_VERTS;
-
-        queue.WriteBuffer(textVertexBuffer_, 0, verts.data(),
-                          vertCount * sizeof(SlugVertex));
-
+    // Text pass: compute-generated text verts via indirect draw
+    {
         wgpu::RenderPassColorAttachment textAttachment = {};
         textAttachment.view = swapchainView;
         textAttachment.loadOp = wgpu::LoadOp::Load;
@@ -456,9 +681,9 @@ void Renderer::renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&textPassDesc);
         pass.SetPipeline(textPipeline_);
-        pass.SetBindGroup(0, fontGPU_[fontName].bindGroup);
-        pass.SetVertexBuffer(0, textVertexBuffer_);
-        pass.Draw(vertCount);
+        pass.SetBindGroup(0, fontIt->second.bindGroup);
+        pass.SetVertexBuffer(0, computeTextVertBuffer_);
+        pass.DrawIndirect(indirectBuffer_, 0); // offset 0 = first indirect command
         pass.End();
     }
 }

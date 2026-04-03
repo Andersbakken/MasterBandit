@@ -122,7 +122,6 @@ static Key glfwKeyToKey(int glfwKey)
     case GLFW_KEY_SPACE:        return Key_Space;
     case GLFW_KEY_MENU:         return Key_Menu;
     default:
-        // For printable ASCII keys, GLFW_KEY_A == 65 == 'A', etc.
         if (glfwKey >= GLFW_KEY_A && glfwKey <= GLFW_KEY_Z)
             return static_cast<Key>(Key_A + (glfwKey - GLFW_KEY_A));
         if (glfwKey >= GLFW_KEY_0 && glfwKey <= GLFW_KEY_9)
@@ -168,7 +167,6 @@ static std::vector<uint8_t> loadFontFile(const std::string& path)
 // --- Find a monospace font on the system ---
 static std::string findMonospaceFont()
 {
-    // Common monospace font locations
     static const char* candidates[] = {
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
@@ -204,8 +202,6 @@ public:
 
     // Terminal overrides
     void event(Event ev, void* data = nullptr) override;
-    void render(int x, int y, const std::string& str, int idx, int len,
-                int cursor, unsigned int flags) override;
 
     // Called from GLFW callbacks
     void onKey(int key, int scancode, int action, int mods);
@@ -222,11 +218,11 @@ public:
     void setDebugIPC(DebugIPC* ipc) { debugIPC_ = ipc; }
     DebugIPC* debugIPC() const { return debugIPC_; }
 
-    // Grid screenshot: serialize visible terminal lines to JSON
     std::string gridToJson(int id);
 
 private:
     void configureSurface(uint32_t width, uint32_t height);
+    void resolveRow(int row, const CellGrid& g, FontData* font, float scale);
 
     PlatformDawn* platform_;
     GLFWwindow* glfwWindow_;
@@ -242,15 +238,8 @@ private:
     float lineHeight_ = 0.0f;
     uint32_t fbWidth_ = 0, fbHeight_ = 0;
 
-    // Accumulated render data from Terminal::render() calls
-    struct RenderSegment {
-        int screenY;     // line index (0-based from viewport top)
-        int screenX;     // starting column
-        std::string text;
-        int cursorCol;   // cursor column within this segment, or -1
-        unsigned int flags;
-    };
-    std::vector<RenderSegment> renderSegments_;
+    // Resolved cells for compute shader upload
+    std::vector<ResolvedCell> resolvedCells_;
 
     bool needsRedraw_ = true;
     bool controlPressed_ = false;
@@ -298,7 +287,6 @@ private:
 
 PlatformDawn::PlatformDawn(int argc, char** argv)
 {
-    // Set up spdlog with file sink + debug IPC sink
     try {
         auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true);
         debugSink_ = std::make_shared<DebugIPCSink>();
@@ -316,7 +304,6 @@ PlatformDawn::PlatformDawn(int argc, char** argv)
         return;
     }
 
-    // Create Dawn instance
     nativeInstance_ = std::make_unique<dawn::native::Instance>();
     wgpu::Instance instance(nativeInstance_->Get());
 
@@ -373,7 +360,6 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         return nullptr;
     }
 
-    // Create Dawn surface from GLFW window
     wgpu::Instance instance(nativeInstance_->Get());
     wgpu::Surface surface = createNativeSurface(glfwWin, instance);
     if (!surface) {
@@ -385,7 +371,6 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     auto window = std::make_unique<TerminalWindow>(this, glfwWin, device_, queue_, surface);
     window_ = window.get();
 
-    // Set up GLFW callbacks with window pointer
     glfwSetWindowUserPointer(glfwWin, window_);
 
     glfwSetKeyCallback(glfwWin, [](GLFWwindow* w, int key, int scancode, int action, int mods) {
@@ -424,7 +409,6 @@ int PlatformDawn::exec()
     running_ = true;
     loop_ = uv_default_loop();
 
-    // Create DebugIPC with grid screenshot callback
     debugIPC_ = std::make_unique<DebugIPC>(loop_, window_,
         [this](int id) { return window_->gridToJson(id); });
     window_->setDebugIPC(debugIPC_.get());
@@ -432,7 +416,6 @@ int PlatformDawn::exec()
         debugSink_->setIPC(debugIPC_.get());
     }
 
-    // Poll PTY master FD for readable data
     uv_poll_init(loop_, &ptyPoll_, window_->masterFD());
     ptyPoll_.data = this;
     uv_poll_start(&ptyPoll_, UV_READABLE, [](uv_poll_t* handle, int status, int events) {
@@ -443,7 +426,6 @@ int PlatformDawn::exec()
         }
     });
 
-    // Prepare callback: run before each I/O poll — handle GLFW events + render
     uv_prepare_init(loop_, &prepareCb_);
     prepareCb_.data = this;
     uv_prepare_start(&prepareCb_, [](uv_prepare_t* handle) {
@@ -455,21 +437,16 @@ int PlatformDawn::exec()
             return;
         }
 
+        self->device_.Tick();
         self->window_->renderTerminal();
     });
 
-    // Timer to keep the event loop cycling so GLFW events get polled.
-    // Without this, libuv blocks in the poll phase waiting for PTY data
-    // and never calls glfwPollEvents() for keyboard/mouse input.
     uv_timer_init(loop_, &tickTimer_);
     tickTimer_.data = this;
-    uv_timer_start(&tickTimer_, [](uv_timer_t*) {
-        // no-op — just keeps the loop alive and cycling
-    }, 16, 16); // ~60Hz
+    uv_timer_start(&tickTimer_, [](uv_timer_t*) {}, 16, 16);
 
     uv_run(loop_, UV_RUN_DEFAULT);
 
-    // Cleanup
     if (debugSink_) {
         debugSink_->setIPC(nullptr);
     }
@@ -481,7 +458,7 @@ int PlatformDawn::exec()
     uv_close(reinterpret_cast<uv_handle_t*>(&tickTimer_), nullptr);
     uv_close(reinterpret_cast<uv_handle_t*>(&ptyPoll_), nullptr);
     uv_close(reinterpret_cast<uv_handle_t*>(&prepareCb_), nullptr);
-    uv_run(loop_, UV_RUN_DEFAULT); // drain close callbacks
+    uv_run(loop_, UV_RUN_DEFAULT);
 
     return exitStatus_;
 }
@@ -507,7 +484,6 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     , queue_(queue)
     , surface_(surface)
 {
-    // Get initial framebuffer size
     int w, h;
     glfwGetFramebufferSize(glfwWindow_, &w, &h);
     fbWidth_ = static_cast<uint32_t>(w);
@@ -515,7 +491,6 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
 
     configureSurface(fbWidth_, fbHeight_);
 
-    // Find and load a monospace font
     std::string fontPath = findMonospaceFont();
     if (fontPath.empty()) {
         spdlog::error("No monospace font found on system");
@@ -538,35 +513,34 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
         return;
     }
 
-    // Compute character metrics
     float scale = fontSize_ / font->baseSize;
     lineHeight_ = font->lineHeight * scale;
 
-    // Use 'M' advance for character width (monospace)
     const auto& shaped = textSystem_.shapeText(fontName_, "M", fontSize_);
     charWidth_ = shaped.width;
-    if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f; // fallback
+    if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
 
     spdlog::info("Font metrics: charWidth={:.1f}, lineHeight={:.1f}", charWidth_, lineHeight_);
 
-    // Init renderer
     std::string shaderDir = fs::weakly_canonical(
         fs::path(fs::read_symlink("/proc/self/exe")).parent_path() / "shaders").string();
     if (!fs::exists(shaderDir)) {
-        // Fallback: try relative to source
         shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
     }
     renderer_.init(device_, queue_, shaderDir, fbWidth_, fbHeight_);
     renderer_.uploadFontAtlas(queue_, fontName_, *font);
 
-    // Compute terminal dimensions in characters
     int cols = static_cast<int>(fbWidth_ / charWidth_);
     int rows = static_cast<int>(fbHeight_ / lineHeight_);
     if (cols < 1) cols = 80;
     if (rows < 1) rows = 24;
+
+    // Resize compute buffers for grid
+    renderer_.resizeComputeBuffers(device_, cols, rows);
+    resolvedCells_.resize(static_cast<size_t>(cols) * rows);
+
     resize(cols, rows);
 
-    // Set initial PTY window size
     struct winsize ws = {};
     ws.ws_col = static_cast<unsigned short>(cols);
     ws.ws_row = static_cast<unsigned short>(rows);
@@ -607,18 +581,6 @@ void TerminalWindow::event(Event ev, void* /*data*/)
     }
 }
 
-void TerminalWindow::render(int x, int y, const std::string& str, int idx, int len,
-                    int cursor, unsigned int flags)
-{
-    RenderSegment seg;
-    seg.screenX = x;
-    seg.screenY = y;
-    seg.text = str.substr(idx, len);
-    seg.cursorCol = cursor;
-    seg.flags = flags;
-    renderSegments_.push_back(std::move(seg));
-}
-
 // Replace invalid UTF-8 bytes with U+FFFD so glaze doesn't reject them
 static std::string sanitizeUtf8(const std::string& in)
 {
@@ -651,8 +613,7 @@ static std::string sanitizeUtf8(const std::string& in)
 
 std::string TerminalWindow::gridToJson(int id)
 {
-    renderSegments_.clear();
-    Terminal::render();
+    const CellGrid& g = grid();
 
     glz::generic::object_t resp;
     resp["type"] = "screenshot";
@@ -666,21 +627,85 @@ std::string TerminalWindow::gridToJson(int id)
     };
 
     glz::generic::array_t lines;
-    for (const auto& seg : renderSegments_) {
-        glz::generic::object_t line;
-        line["x"] = static_cast<double>(seg.screenX);
-        line["y"] = static_cast<double>(seg.screenY);
-        line["text"] = sanitizeUtf8(seg.text);
-        if (seg.flags & Render_Selected) {
-            line["selected"] = true;
+    for (int row = 0; row < g.rows(); ++row) {
+        std::string text;
+        for (int col = 0; col < g.cols(); ++col) {
+            const Cell& c = g.cell(col, row);
+            if (c.wc == 0) {
+                text += ' ';
+            } else {
+                text += codepointToUtf8(c.wc);
+            }
         }
-        lines.emplace_back(std::move(line));
+        // Trim trailing spaces
+        while (!text.empty() && text.back() == ' ') text.pop_back();
+        if (!text.empty()) {
+            glz::generic::object_t line;
+            line["y"] = static_cast<double>(row);
+            line["text"] = sanitizeUtf8(text);
+            lines.emplace_back(std::move(line));
+        }
     }
     resp["lines"] = std::move(lines);
 
     std::string buf;
     (void)glz::write_json(resp, buf);
     return buf;
+}
+
+void TerminalWindow::resolveRow(int row, const CellGrid& g, FontData* font, float scale)
+{
+    int cols = g.cols();
+    int baseIdx = row * cols;
+
+    for (int col = 0; col < cols; ++col) {
+        ResolvedCell& rc = resolvedCells_[baseIdx + col];
+        const Cell& cell = g.cell(col, row);
+
+        if (cell.wc == 0 || cell.attrs.wideSpacer()) {
+            // Empty or spacer cell
+            rc.atlas_offset = 0;
+            rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
+            rc.upem = 1;
+            rc.fg_color = 0xFFFFFFFF;
+            rc.bg_color = cell.attrs.packBgAsU32();
+            continue;
+        }
+
+        // Shape the single codepoint to get glyph info
+        std::string cpStr = codepointToUtf8(cell.wc);
+        const auto& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_);
+
+        if (shaped.glyphs.empty()) {
+            rc.atlas_offset = 0;
+            rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
+            rc.upem = 1;
+            rc.fg_color = cell.attrs.packFgAsU32();
+            rc.bg_color = cell.attrs.packBgAsU32();
+            continue;
+        }
+
+        const auto& sg = shaped.glyphs[0];
+        auto it = font->glyphs.find(sg.glyphId);
+        if (it == font->glyphs.end() || it->second.is_empty) {
+            rc.atlas_offset = 0;
+            rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
+            rc.upem = 1;
+            rc.fg_color = cell.attrs.packFgAsU32();
+            rc.bg_color = cell.attrs.packBgAsU32();
+            continue;
+        }
+
+        const GlyphInfo& gi = it->second;
+        rc.atlas_offset = gi.atlas_offset;
+        rc.ext_min_x = gi.ext_min_x;
+        rc.ext_min_y = gi.ext_min_y;
+        rc.ext_max_x = gi.ext_max_x;
+        rc.ext_max_y = gi.ext_max_y;
+        rc.upem = gi.upem;
+        rc.fg_color = cell.attrs.packFgAsU32();
+        rc.bg_color = cell.attrs.packBgAsU32();
+    }
 }
 
 void TerminalWindow::renderTerminal()
@@ -698,101 +723,56 @@ void TerminalWindow::renderTerminal()
     }
     wgpu::TextureView view = surfaceTexture.texture.CreateView();
 
-    // Collect render data from Terminal
-    renderSegments_.clear();
-    Terminal::render(); // calls our render() override per line
-
-    // Build glyph vertices and rects from render segments
-    renderer_.clearQueues();
-
     FontData* font = const_cast<FontData*>(textSystem_.getFont(fontName_));
     if (!font) return;
 
     float scale = fontSize_ / font->baseSize;
-    uint32_t tintWhite = 0xFFFFFFFF; // RGBA8 packed: white, full alpha
+    const CellGrid& g = grid();
 
-    for (const auto& seg : renderSegments_) {
-        if (seg.text.empty()) continue;
-
-        float baseX = static_cast<float>(seg.screenX) * charWidth_;
-        float baseY = static_cast<float>(seg.screenY - this->y()) * lineHeight_;
-
-        // Render background for selected text using rect pipeline
-        if (seg.flags & Render_Selected) {
-            float selW = seg.text.size() * charWidth_;
-            renderer_.queueRect(baseX, baseY, selW, lineHeight_, 0.3f, 0.3f, 0.8f, 1.0f);
-        }
-
-        // Shape the text segment (also lazily encodes new glyphs)
-        const auto& shaped = textSystem_.shapeText(fontName_, seg.text, fontSize_);
-
-        for (const auto& sg : shaped.glyphs) {
-            auto it = font->glyphs.find(sg.glyphId);
-            if (it == font->glyphs.end()) continue;
-            const GlyphInfo& gi = it->second;
-            if (gi.is_empty) continue;
-
-            float upem = static_cast<float>(gi.upem);
-            float emPerPos = upem / fontSize_;
-
-            // Compute glyph quad corners in pixel coords from design-unit extents
-            float extMinX = gi.ext_min_x / upem * fontSize_;
-            float extMinY = gi.ext_min_y / upem * fontSize_;
-            float extMaxX = gi.ext_max_x / upem * fontSize_;
-            float extMaxY = gi.ext_max_y / upem * fontSize_;
-
-            // Position: pen position + glyph offset
-            // Font coords are y-up, screen is y-down, so flip Y
-            float penX = baseX + sg.x;
-            float penY_base = baseY + font->ascender * scale + sg.y;
-
-            float x0 = penX + extMinX;
-            float y0 = penY_base - extMaxY; // flip: max Y in font = min Y on screen
-            float x1 = penX + extMaxX;
-            float y1 = penY_base - extMinY;
-
-            // Texcoords are in design units (em-space), what hb_gpu_render expects
-            float tc_x0 = gi.ext_min_x;
-            float tc_y0 = gi.ext_min_y;
-            float tc_x1 = gi.ext_max_x;
-            float tc_y1 = gi.ext_max_y;
-
-            // 6 vertices (2 triangles)
-            // Corner mapping (cx,cy from docs):
-            //   screen top-left  (x0,y0) = cx=0,cy=1 → normal(-1,-1), tc(min_x, max_y)
-            //   screen top-right (x1,y0) = cx=1,cy=1 → normal(+1,-1), tc(max_x, max_y)
-            //   screen bot-left  (x0,y1) = cx=0,cy=0 → normal(-1,+1), tc(min_x, min_y)
-            //   screen bot-right (x1,y1) = cx=1,cy=0 → normal(+1,+1), tc(max_x, min_y)
-            SlugVertex verts[6] = {
-                {{x0, y0}, {tc_x0, tc_y1}, {-1.0f, -1.0f}, emPerPos, gi.atlas_offset, tintWhite},
-                {{x1, y0}, {tc_x1, tc_y1}, { 1.0f, -1.0f}, emPerPos, gi.atlas_offset, tintWhite},
-                {{x0, y1}, {tc_x0, tc_y0}, {-1.0f,  1.0f}, emPerPos, gi.atlas_offset, tintWhite},
-                {{x1, y0}, {tc_x1, tc_y1}, { 1.0f, -1.0f}, emPerPos, gi.atlas_offset, tintWhite},
-                {{x1, y1}, {tc_x1, tc_y0}, { 1.0f,  1.0f}, emPerPos, gi.atlas_offset, tintWhite},
-                {{x0, y1}, {tc_x0, tc_y0}, {-1.0f,  1.0f}, emPerPos, gi.atlas_offset, tintWhite},
-            };
-            renderer_.queueGlyphVertices(fontName_, verts, 6);
-        }
-
-        // Render cursor using rect pipeline
-        if (seg.cursorCol >= 0) {
-            float curX = static_cast<float>(seg.cursorCol) * charWidth_;
-            renderer_.queueRect(curX, baseY, charWidth_, lineHeight_, 0.8f, 0.8f, 0.8f, 0.5f);
+    // Resolve dirty rows
+    for (int row = 0; row < g.rows(); ++row) {
+        if (g.isRowDirty(row)) {
+            resolveRow(row, g, font, scale);
         }
     }
+    // Clear dirty flags (const_cast since we need to mutate dirty state)
+    const_cast<CellGrid&>(g).clearAllDirty();
+
+    // Upload resolved cells
+    uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
+    renderer_.uploadResolvedCells(queue_, resolvedCells_.data(), totalCells);
 
     // Upload any newly encoded glyphs to GPU
     renderer_.updateFontAtlas(queue_, fontName_, *font);
+
+    // Queue cursor rect (CPU-side, 1 rect)
+    renderer_.clearQueues();
+    if (cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
+        cursorY() >= 0 && cursorY() < g.rows()) {
+        float curX = static_cast<float>(cursorX()) * charWidth_;
+        float curY = static_cast<float>(cursorY()) * lineHeight_;
+        renderer_.queueRect(curX, curY, charWidth_, lineHeight_, 0.8f, 0.8f, 0.8f, 0.5f);
+    }
+
+    // Build compute params
+    TerminalComputeParams params = {};
+    params.cols = static_cast<uint32_t>(g.cols());
+    params.rows = static_cast<uint32_t>(g.rows());
+    params.cell_width = charWidth_;
+    params.cell_height = lineHeight_;
+    params.viewport_w = static_cast<float>(fbWidth_);
+    params.viewport_h = static_cast<float>(fbHeight_);
+    params.font_ascender = font->ascender * scale;
 
     // Submit GPU work
     wgpu::CommandEncoderDescriptor encDesc = {};
     wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
 
-    renderer_.renderFrame(encoder, queue_, view);
+    renderer_.renderFrameCompute(encoder, queue_, view, fontName_, params);
 
-    // PNG screenshot readback: copy texture to buffer before Present()
+    // PNG screenshot readback
     if (debugIPC_ && debugIPC_->pngScreenshotPending()) {
-        uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256; // align to 256
+        uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256;
         uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * fbHeight_;
 
         wgpu::BufferDescriptor bufDesc = {};
@@ -821,13 +801,14 @@ void TerminalWindow::renderTerminal()
         DebugIPC* ipc = debugIPC_;
         uint32_t w = fbWidth_;
         uint32_t h = fbHeight_;
-        debugIPC_->clearPngPending();
+        debugIPC_->markReadbackInProgress();
 
         readbackBuf.MapAsync(wgpu::MapMode::Read, 0, bufferSize,
-            wgpu::CallbackMode::AllowProcessEvents,
+            wgpu::CallbackMode::AllowSpontaneous,
             [readbackBuf, ipc, w, h, bytesPerRow, pngId](wgpu::MapAsyncStatus status, wgpu::StringView) mutable {
                 if (status != wgpu::MapAsyncStatus::Success) {
-                    spdlog::error("DebugIPC: MapAsync failed");
+                    spdlog::error("DebugIPC: MapAsync failed (status {})",
+                                  static_cast<int>(status));
                     return;
                 }
                 const uint8_t* mapped = static_cast<const uint8_t*>(
@@ -837,21 +818,19 @@ void TerminalWindow::renderTerminal()
                     return;
                 }
 
-                // Swizzle BGRA → RGBA (packed, no row padding)
                 std::vector<uint8_t> rgba(w * h * 4);
                 for (uint32_t row = 0; row < h; ++row) {
                     const uint8_t* src = mapped + row * bytesPerRow;
                     uint8_t* dst = rgba.data() + row * w * 4;
                     for (uint32_t col = 0; col < w; ++col) {
-                        dst[col * 4 + 0] = src[col * 4 + 2]; // R←B
-                        dst[col * 4 + 1] = src[col * 4 + 1]; // G
-                        dst[col * 4 + 2] = src[col * 4 + 0]; // B←R
-                        dst[col * 4 + 3] = src[col * 4 + 3]; // A
+                        dst[col * 4 + 0] = src[col * 4 + 2];
+                        dst[col * 4 + 1] = src[col * 4 + 1];
+                        dst[col * 4 + 2] = src[col * 4 + 0];
+                        dst[col * 4 + 3] = src[col * 4 + 3];
                     }
                 }
                 readbackBuf.Unmap();
 
-                // Encode PNG to memory
                 std::vector<uint8_t> pngData;
                 stbi_write_png_to_func(
                     [](void* ctx, void* data, int size) {
@@ -888,7 +867,6 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
     Key k = glfwKeyToKey(key);
     spdlog::debug("onKey: mapped key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
 
-    // For control+letter combinations, generate the control character directly
     if (controlPressed_ && key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
         KeyEvent ev;
         ev.key = k;
@@ -900,7 +878,6 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
         return;
     }
 
-    // Non-printable keys — send with empty text, Terminal::keyPressEvent handles them
     if (k != Key_unknown && (key < GLFW_KEY_SPACE || key > GLFW_KEY_GRAVE_ACCENT)) {
         KeyEvent ev;
         ev.key = k;
@@ -916,7 +893,7 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
 void TerminalWindow::onChar(unsigned int codepoint)
 {
     spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
-    if (controlPressed_) return; // already handled in onKey
+    if (controlPressed_) return;
 
     KeyEvent ev;
     ev.key = Key_unknown;
@@ -937,14 +914,16 @@ void TerminalWindow::onFramebufferResize(int width, int height)
     configureSurface(fbWidth_, fbHeight_);
     renderer_.setViewportSize(fbWidth_, fbHeight_);
 
-    // Recompute terminal dimensions
     int cols = static_cast<int>(fbWidth_ / charWidth_);
     int rows = static_cast<int>(fbHeight_ / lineHeight_);
     if (cols < 1) cols = 1;
     if (rows < 1) rows = 1;
+
+    renderer_.resizeComputeBuffers(device_, cols, rows);
+    resolvedCells_.resize(static_cast<size_t>(cols) * rows);
+
     resize(cols, rows);
 
-    // Update PTY size
     struct winsize ws;
     ws.ws_col = static_cast<unsigned short>(cols);
     ws.ws_row = static_cast<unsigned short>(rows);
@@ -985,7 +964,6 @@ void TerminalWindow::onCursorPos(double x, double y)
     ev.globalX = static_cast<int>(x);
     ev.globalY = static_cast<int>(y);
     ev.button = NoButton;
-    // Get current button state
     if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
         ev.buttons |= LeftButton;
     if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)

@@ -314,6 +314,7 @@ void DebugIPC::onPngReady(const std::string& base64Png)
     sendResponse(pngWsi_, dumpObj(resp));
 
     pngPending_ = false;
+    pngReadbackInProgress_ = false;
     pngWsi_ = nullptr;
     pngId_ = 0;
 }

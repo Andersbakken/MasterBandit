@@ -7,6 +7,7 @@
 #include <string.h>
 #include <Platform.h>
 #include <TerminalOptions.h>
+#include <CellGrid.h>
 
 std::string toPrintable(const std::string &str);
 std::string toPrintable(const char *chars, int len);
@@ -35,15 +36,17 @@ public:
 
     int cursorX() const { return mCursorX; }
     int cursorY() const { return mCursorY; }
+    bool cursorVisible() const { return mCursorVisible; }
     int x() const { return mX; }
     int y() const { return mY; }
     int width() const { return mWidth; }
     int height() const { return mHeight; }
-    int scrollBackLength() const { return mScrollbackLength; }
+
+    const CellGrid& grid() const { return mUsingAltScreen ? mAltGrid : mGrid; }
+    CellGrid& grid() { return mUsingAltScreen ? mAltGrid : mGrid; }
 
     void scroll(int left, int top);
     void resize(int width, int height);
-    void render();
 
     enum Event {
         Update,
@@ -72,6 +75,7 @@ public:
             ClearToBeginningOfLine,
             ClearToEndOfLine,
             DeleteChars,
+            InsertChars,
             ScrollUp,
             ScrollDown,
             SelectGraphicRendition,
@@ -79,24 +83,19 @@ public:
             AUXPortOff,
             DeviceStatusReport,
             SaveCursorPosition,
-            RestoreCursorPosition
+            RestoreCursorPosition,
+            SetMode,
+            ResetMode
         } type { Invalid };
 
         static const char *typeName(Type type);
 
-        int count { 0 },  x { 0 }, y { 0 };
+        int count { 0 }, x { 0 }, y { 0 };
     };
 
     void onAction(const Action *action);
 
     virtual void event(Event, void *data = nullptr) = 0;
-    enum RenderFlag {
-        Render_None = 0,
-        Render_Selected = (1ull << 1)
-    };
-    virtual void render(int x, int y, const std::string &str, int idx, int len, int cursor, unsigned int flags) = 0;
-
-    void addText(const char *str, int len);
 
     void keyPressEvent(const KeyEvent *event);
     void keyReleaseEvent(const KeyEvent *event);
@@ -109,41 +108,29 @@ public:
 
     static unsigned long long mono();
 private:
-    bool isSelected(int y, int *start, int *length) const;
-private:
-    void processChunks();
-
     Platform *mPlatform;
     TerminalOptions mOptions;
     int mX { 0 }, mY { 0 }, mWidth { 0 }, mHeight { 0 };
-    int mCursorX { -1 }, mCursorY { -1 };
+    int mCursorX { 0 }, mCursorY { 0 };
+    bool mCursorVisible { true };
     unsigned int mFlags { 0 };
-    bool mHasSelection { false };
-    int mSelectionStartX { 0 }, mSelectionStartY { 0 }, mSelectionEndX { 0 }, mSelectionEndY { 0 };
     int mMasterFD { -1 }, mSlaveFD { -1 };
     int mExitCode { 0 };
 
-    struct Command {
-        enum Type {
-            None,
-            ResetToInitialState,
-            Color
-        } type { None };
-        std::string data;
-        int idx { -1 };
-    };
-    struct Line {
-        std::string data;
-        std::vector<int> lineBreaks;
-        std::vector<Command> commands;
-    };
-    std::vector<Line> mLines;
-    int mScrollbackLength { 0 };
+    CellGrid mGrid;
+    CellGrid mAltGrid;
+    bool mUsingAltScreen { false };
+
+    CellAttrs mCurrentAttrs;       // SGR "pen"
+    int mSavedCursorX { 0 }, mSavedCursorY { 0 };
+    CellAttrs mSavedAttrs;
+    int mScrollTop { 0 }, mScrollBottom { 0 }; // scroll region [top, bottom)
+
     enum State {
         Normal,
         InUtf8,
         InEscape,
-        InStringSequence // consuming OSC, DCS, SOS, PM, APC until BEL or ST
+        InStringSequence
     } mState { Normal };
     char mUtf8Buffer[6];
     int mUtf8Index { 0 };
@@ -153,23 +140,23 @@ private:
 
     // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {
-        SS2 = 'N', // Single Shift Two
-        SS3 = '0', // Single Shift Three
-        DCS = 'P', // Device Control String
-        CSI = '[', // Control Sequence Introducer
-        ST = '\\', // String Terminator
-        OSX = ']', // Operating System Command
-        SOS = 'X', // Start of String
-        PM = '^', // Privacy Message
-        APC = '_', // Application Program Command
-        RIS = 'c', // Reset to Initial State
-        VB = 'g', // Visible bell
-        DECKPAM = '=', // Application Keypad Mode
-        DECKPNM = '>' // Normal Keypad Mode
+        SS2 = 'N',
+        SS3 = '0',
+        DCS = 'P',
+        CSI = '[',
+        ST = '\\',
+        OSX = ']',
+        SOS = 'X',
+        PM = '^',
+        APC = '_',
+        RIS = 'c',
+        VB = 'g',
+        DECKPAM = '=',
+        DECKPNM = '>'
     };
 
     void processCSI();
-    void processSGR(Action *action);
+    void processSGR();
 
     static const char *escapeSequenceName(EscapeSequence seq);
 
@@ -178,7 +165,7 @@ private:
         CUD = 'B',
         CUF = 'C',
         CUB = 'D',
-        CNL	= 'E',
+        CNL = 'E',
         CPL = 'F',
         CHA = 'G',
         CUP = 'H',
@@ -186,27 +173,28 @@ private:
         EL = 'K',
         SU = 'S',
         SD = 'T',
-        HVP	= 'f',
-        SGR	= 'm',
-        AUX	= 'i', // Port On or Port Off
-        DSR	= 'n',
+        HVP = 'f',
+        SGR = 'm',
+        AUX = 'i',
+        DSR = 'n',
         SCP = 's',
-        RCP	= 'u',
+        RCP = 'u',
         DCH = 'P',
-        SM = 'h', // Set Mode (private: CSI ? ... h)
-        RM = 'l' // Reset Mode (private: CSI ? ... l)
-
-        // private sequences
-
-        // CSI ? 25 h	DECTCEM Shows the cursor, from the VT320.
-        // CSI ? 25 l	DECTCEM Hides the cursor.
-        // CSI ? 1049 h	Enable alternative screen buffer
-        // CSI ? 1049 l	Disable alternative screen buffer
-        // CSI ? 2004 h	Turn on bracketed paste mode. Text pasted into the terminal will be surrounded by ESC [200~ and ESC [201~, and characters in it should not be treated as commands (for example in Vim).[20] From Unix terminal emulators.
-        //                                                                                                                      CSI ? 2004 l	Turn off bracketed paste mode.
+        ICH = '@',
+        SM = 'h',
+        RM = 'l',
+        DECSTBM = 'r'  // Set Top and Bottom Margins (scroll region)
     };
 
     static const char *csiSequenceName(CSISequence seq);
+
+    void scrollUpInRegion(int n);
+    void advanceCursorToNewLine();
+
+    // 16-color palette (standard + bright) as RGB
+    static const uint8_t s16ColorPalette[16][3];
+    // 256-color palette lookup
+    static void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b);
 };
 
 #endif /* TERMINAL_H */

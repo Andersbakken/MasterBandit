@@ -26,10 +26,10 @@ public:
     // Called by TerminalWindow when a PNG readback completes
     void onPngReady(const std::string& base64Png);
 
-    // Returns true if a PNG screenshot is pending
-    bool pngScreenshotPending() const { return pngPending_; }
+    // Returns true if a PNG screenshot was requested and readback hasn't started
+    bool pngScreenshotPending() const { return pngPending_ && !pngReadbackInProgress_; }
     int pngScreenshotId() const { return pngId_; }
-    void clearPngPending() { pngPending_ = false; }
+    void markReadbackInProgress() { pngReadbackInProgress_ = true; }
 
     // Public because it's referenced from the static protocol table
     static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
@@ -67,6 +67,7 @@ private:
 
     // PNG screenshot state
     bool pngPending_ = false;
+    bool pngReadbackInProgress_ = false;
     int pngId_ = 0;
     struct lws* pngWsi_ = nullptr;
 

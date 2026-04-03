@@ -22,6 +22,29 @@ struct RectVertex {
     float color[4];
 };
 
+// CPU-resolved cell data for GPU upload (32 bytes)
+struct ResolvedCell {
+    uint32_t atlas_offset;   // 0 = empty/spacer
+    float ext_min_x, ext_min_y, ext_max_x, ext_max_y;
+    uint32_t upem;
+    uint32_t fg_color;       // packed RGBA8
+    uint32_t bg_color;       // packed RGBA8 (0 = default/transparent)
+};
+static_assert(sizeof(ResolvedCell) == 32);
+
+// Compute shader uniform params (32 bytes)
+struct TerminalComputeParams {
+    uint32_t cols;
+    uint32_t rows;
+    float cell_width;
+    float cell_height;
+    float viewport_w;
+    float viewport_h;
+    float font_ascender;
+    float _pad;
+};
+static_assert(sizeof(TerminalComputeParams) == 32);
+
 class Renderer {
 public:
     void init(wgpu::Device& device, wgpu::Queue& queue,
@@ -31,20 +54,30 @@ public:
     void uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
                          const FontData& font);
 
-    // Incremental atlas update (upload only new data since last upload)
     void updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
                          const FontData& font);
 
     void setViewportSize(uint32_t width, uint32_t height);
 
-    void queueGlyphVertices(const std::string& fontName,
-                            const SlugVertex* verts, uint32_t count);
+    // Legacy CPU vertex path (still used for cursor/selection rects)
     void queueRect(float x, float y, float w, float h,
                    float r, float g, float b, float a);
     void clearQueues();
 
+    // Legacy render frame (rect + text from CPU vertices)
     void renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                      wgpu::TextureView swapchainView);
+
+    // Compute pipeline
+    void initComputePipeline(wgpu::Device& device, const std::string& shaderDir);
+    void resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows);
+    void uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells, uint32_t count);
+
+    // Compute-based render: compute dispatch + indirect draw
+    void renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                            wgpu::TextureView swapchainView,
+                            const std::string& fontName,
+                            const TerminalComputeParams& params);
 
 private:
     wgpu::Device device_;
@@ -59,15 +92,13 @@ private:
     static constexpr uint32_t MAX_TEXT_VERTS = 16384 * 6;
 
     struct FontGPU {
-        wgpu::Buffer storageBuffer;      // glyph atlas storage<read>
-        wgpu::Buffer uniformBuffer;      // TextUniforms
+        wgpu::Buffer storageBuffer;
+        wgpu::Buffer uniformBuffer;
         wgpu::BindGroup bindGroup;
-        uint32_t uploadedSize = 0;       // texels uploaded so far
-        uint32_t storageCapacity = 0;    // total capacity in vec4<i32>
+        uint32_t uploadedSize = 0;
+        uint32_t storageCapacity = 0;
     };
     std::unordered_map<std::string, FontGPU> fontGPU_;
-
-    std::unordered_map<std::string, std::vector<SlugVertex>> textVertsByFont_;
 
     // Rect pipeline
     wgpu::ShaderModule rectShader_;
@@ -80,4 +111,16 @@ private:
     static constexpr uint32_t MAX_RECT_VERTS = 4096 * 6;
 
     std::vector<RectVertex> rectVerts_;
+
+    // Compute pipeline
+    wgpu::ComputePipeline computePipeline_;
+    wgpu::BindGroupLayout computeBindGroupLayout_;
+    wgpu::Buffer resolvedCellBuffer_;      // Storage
+    wgpu::Buffer computeTextVertBuffer_;   // Storage | Vertex
+    wgpu::Buffer computeRectVertBuffer_;   // Storage | Vertex
+    wgpu::Buffer indirectBuffer_;          // Storage | Indirect | CopyDst
+    wgpu::Buffer computeParamsBuffer_;     // Uniform | CopyDst
+    wgpu::BindGroup computeBindGroup_;
+    uint32_t gridCols_ = 0, gridRows_ = 0;
+    bool computeReady_ = false;
 };

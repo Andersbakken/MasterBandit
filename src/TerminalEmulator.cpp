@@ -1528,8 +1528,38 @@ void TerminalEmulator::processStringSequence()
 
     switch (oscNum) {
     case 0: processOSC_Title(payload, true); break;
-    case 1: break; // icon name only — not used
+    case 1:
+        if (mCallbacks.onIconChanged) mCallbacks.onIconChanged(std::string(payload));
+        break;
     case 2: processOSC_Title(payload, true); break;
+    case 9: {
+        // OSC 9;4 progress: "9;4;state" or "9;4;state;pct"
+        // Split mStringSequence on ';' after the "9" prefix
+        std::vector<std::string_view> parts;
+        {
+            std::string_view sv(mStringSequence);
+            size_t pos = 0;
+            while (pos <= sv.size()) {
+                size_t sep = sv.find(';', pos);
+                if (sep == std::string_view::npos) {
+                    parts.push_back(sv.substr(pos));
+                    break;
+                }
+                parts.push_back(sv.substr(pos, sep - pos));
+                pos = sep + 1;
+            }
+        }
+        if (parts.size() >= 3 && parts[0] == "9" && parts[1] == "4") {
+            int state = 0;
+            int pct = 0;
+            try { state = std::stoi(std::string(parts[2])); } catch (...) {}
+            if (parts.size() >= 4) {
+                try { pct = std::stoi(std::string(parts[3])); } catch (...) {}
+            }
+            if (mCallbacks.onProgressChanged) mCallbacks.onProgressChanged(state, pct);
+        }
+        break;
+    }
     case 52: processOSC_Clipboard(payload); break;
     case 999:
         if (mCallbacks.onOSCMB) mCallbacks.onOSCMB(payload);

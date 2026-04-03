@@ -221,6 +221,18 @@ static std::string sanitizeUtf8(const std::string& in)
     return out;
 }
 
+// Parse "#RRGGBB" hex color → packed BGRA8 (0xAARRGGBB in little-endian memory = BGRA GPU layout)
+// Dawn BGRA8Unorm: in memory bytes are B,G,R,A. As a uint32 read LE: (A<<24)|(R<<16)|(G<<8)|B
+static uint32_t parseHexColor(const std::string& hex, uint32_t def = 0xFF000000)
+{
+    if (hex.size() != 7 || hex[0] != '#') return def;
+    auto h = [&](int i) -> uint32_t {
+        return static_cast<uint32_t>(std::stoul(hex.substr(i, 2), nullptr, 16));
+    };
+    uint32_t r = h(1), g = h(3), b = h(5);
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
 // ========================================================================
 // PlatformDawn class
 // ========================================================================
@@ -322,6 +334,29 @@ private:
 
     // Multiple PTY poll handles — keyed by master fd
     std::unordered_map<int, uv_poll_t*> ptyPolls_;
+
+    // Tab bar
+    TabBarConfig  tabBarConfig_;
+    std::string   tabBarFontName_   = "tab_bar";
+    float         tabBarFontSize_   = 0.0f;
+    float         tabBarCharWidth_  = 0.0f;
+    float         tabBarLineHeight_ = 0.0f;
+    int           tabBarCols_       = 0;
+    PooledTexture* tabBarTexture_   = nullptr;
+    bool          tabBarDirty_      = true;
+    int           tabBarAnimFrame_  = 0;
+    uint64_t      lastAnimTick_     = 0;
+    std::vector<PooledTexture*> pendingTabBarRelease_;
+
+    // Tab bar colors (packed BGRA8 as used in ResolvedCell)
+    uint32_t tbBgColor_        = 0xFF261926;
+    uint32_t tbActiveBgColor_  = 0xFFf7a27a;
+    uint32_t tbActiveFgColor_  = 0xFF261a1b;
+    uint32_t tbInactiveBgColor_= 0xFF3b2824;
+    uint32_t tbInactiveFgColor_= 0xFF895f56;
+
+    void initTabBar(const TabBarConfig& cfg);
+    void renderTabBar();
 };
 
 // ========================================================================
@@ -397,6 +432,11 @@ PlatformDawn::~PlatformDawn()
         for (auto* t : rs.pendingRelease) texturePool_.release(t);
     }
     paneRenderStates_.clear();
+
+    // Release tab bar textures
+    if (tabBarTexture_) { texturePool_.release(tabBarTexture_); tabBarTexture_ = nullptr; }
+    for (auto* t : pendingTabBarRelease_) texturePool_.release(t);
+    pendingTabBarRelease_.clear();
 
     // Destroy tabs (and their layouts/panes/terminals) before GPU resources
     tabs_.clear();
@@ -601,8 +641,27 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         const char* clip = glfwGetClipboardString(glfwWindow_);
         return clip ? std::string(clip) : std::string();
     };
-    cbs.onTitleChanged = [this](const std::string& title) {
+    cbs.onTitleChanged = [this, tabIdx = static_cast<int>(tabs_.size())](const std::string& title) {
         glfwSetWindowTitle(glfwWindow_, title.c_str());
+        if (tabIdx < static_cast<int>(tabs_.size())) {
+            tabs_[tabIdx]->setTitle(title);
+        }
+        tabBarDirty_ = true;
+        needsRedraw_ = true;
+    };
+    cbs.onIconChanged = [this, tabIdx = static_cast<int>(tabs_.size())](const std::string& icon) {
+        if (tabIdx < static_cast<int>(tabs_.size())) {
+            tabs_[tabIdx]->setIcon(icon);
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
+    };
+    cbs.onProgressChanged = [this, tabIdx = static_cast<int>(tabs_.size())](int state, int pct) {
+        if (tabIdx < static_cast<int>(tabs_.size())) {
+            tabs_[tabIdx]->setProgress(state, pct);
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
     };
     cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
@@ -653,6 +712,28 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     tabs_.push_back(std::move(tab));
     // Make first tab active (subsequent calls add more tabs but we keep activeTabIdx_ at 0 for now)
     activeTabIdx_ = 0;
+
+    // Initialize tab bar (only once, on first terminal creation)
+    if (tabs_.size() == 1) {
+        tabBarConfig_ = options.tabBar;
+        initTabBar(options.tabBar);
+        // Recompute rects with tab bar height applied
+        tabs_.back()->layout()->computeRects(fbWidth_, fbHeight_);
+        // Recompute cols/rows for this pane after layout adjustment
+        {
+            Pane* p = tabs_.back()->layout()->focusedPane();
+            if (p) {
+                p->resizeToRect(charWidth_, lineHeight_);
+                TerminalEmulator* te = p->activeTerm();
+                if (te) {
+                    int c = te->width(), r = te->height();
+                    renderer_.resizeComputeBuffers(device_, c > 0 ? c : 1, r > 0 ? r : 1);
+                    auto& rs2 = paneRenderStates_[p->id()];
+                    rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
+                }
+            }
+        }
+    }
 
     // Terminal is owned by the Pane/Tab/Layout — return nullptr, not a second owner.
     return nullptr;
@@ -718,6 +799,23 @@ int PlatformDawn::exec()
         if (self->shouldClose()) {
             uv_stop(self->loop_);
             return;
+        }
+
+        // Advance indeterminate progress animation
+        if (self->tabBarConfig_.style != "hidden") {
+            auto now = TerminalEmulator::mono();
+            if (now - self->lastAnimTick_ > 100) {
+                self->lastAnimTick_ = now;
+                bool hasAnim = false;
+                for (auto& tab : self->tabs_) {
+                    if (tab->progressState() == 3) { hasAnim = true; break; }
+                }
+                if (hasAnim) {
+                    self->tabBarAnimFrame_++;
+                    self->tabBarDirty_ = true;
+                    self->needsRedraw_ = true;
+                }
+            }
         }
 
         self->device_.Tick();
@@ -943,6 +1041,10 @@ void PlatformDawn::renderFrame()
             if (rs.resolvedCells.size() != needed)
                 rs.resolvedCells.resize(needed);
 
+            // Ensure compute buffers are sized for this pane's grid.
+            // (Tab bar rendering may have resized them to a smaller size.)
+            renderer_.resizeComputeBuffers(device_, g.cols(), g.rows());
+
             if (term->viewportOffset() != 0) {
                 for (int row = 0; row < g.rows(); ++row)
                     resolveRow(paneId, row, font, scale);
@@ -1102,6 +1204,25 @@ void PlatformDawn::renderFrame()
         }
     }
 
+    // Render tab bar if dirty
+    if (tabBarConfig_.style != "hidden" && tabBarDirty_) {
+        renderTabBar();
+    }
+
+    // Add tab bar texture to composite entries
+    if (tabBarTexture_) {
+        PaneRect tbRect = activeTab()->layout()->tabBarRect(fbWidth_, fbHeight_);
+        if (!tbRect.isEmpty()) {
+            Renderer::CompositeEntry entry;
+            entry.texture = tabBarTexture_->texture;
+            entry.srcW = static_cast<uint32_t>(tbRect.w);
+            entry.srcH = static_cast<uint32_t>(tbRect.h);
+            entry.dstX = static_cast<uint32_t>(tbRect.x);
+            entry.dstY = static_cast<uint32_t>(tbRect.y);
+            compositeEntries.push_back(entry);
+        }
+    }
+
     // Composite + submit
     if (!compositeEntries.empty()) {
         wgpu::CommandEncoderDescriptor encDesc = {};
@@ -1174,7 +1295,7 @@ void PlatformDawn::renderFrame()
             queue_.Submit(1, &commands);
         }
 
-        // Collect all pending releases from all panes
+        // Collect all pending releases from all panes and tab bar
         std::vector<PooledTexture*> toRelease;
         for (auto& panePtr : currentTab->layout()->panes()) {
             auto it = paneRenderStates_.find(panePtr->id());
@@ -1185,6 +1306,8 @@ void PlatformDawn::renderFrame()
                 it->second.pendingRelease.clear();
             }
         }
+        toRelease.insert(toRelease.end(), pendingTabBarRelease_.begin(), pendingTabBarRelease_.end());
+        pendingTabBarRelease_.clear();
         TexturePool* pool = &texturePool_;
         queue_.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
             [pool, toRelease](wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
@@ -1328,25 +1451,72 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
 {
     Tab* tab = activeTab();
     if (!tab) return;
+
+    lastMods_ = glfwModsToModifiers(mods);
+
+    double x, y;
+    glfwGetCursorPos(glfwWindow_, &x, &y);
+    double sx = x * contentScaleX_;
+    double sy = y * contentScaleY_;
+
+    // Check if click is in tab bar
+    if (action == GLFW_PRESS && tabBarConfig_.style != "hidden") {
+        PaneRect tbRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
+        if (!tbRect.isEmpty() &&
+            sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
+            sy >= tbRect.y && sy < tbRect.y + tbRect.h) {
+            // Determine which tab was clicked by accumulated widths
+            if (tabBarCharWidth_ > 0.0f) {
+                int clickCol = static_cast<int>((sx - tbRect.x) / tabBarCharWidth_);
+                int col = 0;
+                for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
+                    Tab* t = tabs_[i].get();
+                    // Compute tab display width: same as renderTabBar logic
+                    std::string text = " ";
+                    if (!t->icon().empty()) text += t->icon() + " ";
+                    text += "[" + std::to_string(i + 1) + "] ";
+                    if (!t->title().empty()) text += t->title();
+                    text += " ";
+                    // Count UTF-8 chars
+                    int w = 0;
+                    const char* p = text.c_str();
+                    while (*p) {
+                        uint8_t b = static_cast<uint8_t>(*p);
+                        if (b < 0x80) { w++; p++; }
+                        else if ((b & 0xE0) == 0xC0) { w++; p += 2; }
+                        else if ((b & 0xF0) == 0xE0) { w++; p += 3; }
+                        else { w++; p += 4; }
+                    }
+                    w += 1; // separator
+                    if (clickCol >= col && clickCol < col + w) {
+                        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                            activeTabIdx_ = i;
+                            tabBarDirty_ = true;
+                            needsRedraw_ = true;
+                        } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
+                            spdlog::info("TODO: close tab {}", i);
+                        }
+                        return;
+                    }
+                    col += w;
+                }
+            }
+            return;
+        }
+    }
+
     Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
         : (fp ? fp->activeTerm() : nullptr);
     if (!term) return;
 
-    lastMods_ = glfwModsToModifiers(mods);
-
-    MouseEvent ev;
-    double x, y;
-    glfwGetCursorPos(glfwWindow_, &x, &y);
-    double sx = x * contentScaleX_;
-    double sy = y * contentScaleY_;
-
     // Adjust for pane origin
     PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
     double relX = sx - pr.x;
     double relY = sy - pr.y;
 
+    MouseEvent ev;
     ev.x = static_cast<int>(relX / charWidth_);
     ev.y = static_cast<int>(relY / lineHeight_);
     ev.globalX = static_cast<int>(sx);
@@ -1396,6 +1566,238 @@ void PlatformDawn::onCursorPos(double x, double y)
     if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
         ev.buttons |= RightButton;
     term->mouseMoveEvent(&ev);
+}
+
+// ========================================================================
+// Tab bar
+// ========================================================================
+
+void PlatformDawn::initTabBar(const TabBarConfig& cfg)
+{
+    if (cfg.style == "hidden") {
+        for (auto& tab : tabs_)
+            tab->layout()->setTabBar(0, cfg.position);
+        return;
+    }
+
+    // Resolve font
+    std::string fontPath = cfg.font.empty() ? primaryFontPath_
+                                             : resolveFontFamily(cfg.font);
+    if (fontPath.empty()) fontPath = primaryFontPath_;
+    float fontSize = (cfg.font_size > 0.0f) ? cfg.font_size * contentScaleX_ : fontSize_;
+    tabBarFontSize_ = fontSize;
+
+    auto fontData = loadFontFile(fontPath);
+    if (!fontData.empty()) {
+        std::vector<std::vector<uint8_t>> fl = {fontData};
+        auto nerdPath = (fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf").string();
+        auto nerdData = loadFontFile(nerdPath);
+        if (!nerdData.empty()) fl.push_back(std::move(nerdData));
+        textSystem_.registerFont(tabBarFontName_, fl, 48.0f);
+    }
+
+    const FontData* font = textSystem_.getFont(tabBarFontName_);
+    if (font) {
+        renderer_.uploadFontAtlas(queue_, tabBarFontName_, *font);
+        float scale = tabBarFontSize_ / font->baseSize;
+        tabBarLineHeight_ = font->lineHeight * scale;
+        const auto& shaped = textSystem_.shapeText(tabBarFontName_, "M", tabBarFontSize_);
+        tabBarCharWidth_ = shaped.width;
+        if (tabBarCharWidth_ < 1.0f) tabBarCharWidth_ = tabBarFontSize_ * 0.6f;
+    } else {
+        tabBarLineHeight_ = lineHeight_;
+        tabBarCharWidth_  = charWidth_;
+    }
+
+    int tabBarH = static_cast<int>(std::ceil(tabBarLineHeight_));
+    for (auto& tab : tabs_)
+        tab->layout()->setTabBar(tabBarH, cfg.position);
+
+    // Parse colors
+    tbBgColor_         = parseHexColor(cfg.colors.background);
+    tbActiveBgColor_   = parseHexColor(cfg.colors.active_bg);
+    tbActiveFgColor_   = parseHexColor(cfg.colors.active_fg);
+    tbInactiveBgColor_ = parseHexColor(cfg.colors.inactive_bg);
+    tbInactiveFgColor_ = parseHexColor(cfg.colors.inactive_fg);
+
+    tabBarDirty_ = true;
+}
+
+void PlatformDawn::renderTabBar()
+{
+    if (tabBarConfig_.style == "hidden") return;
+    if (tabs_.empty()) return;
+
+    Tab* active = activeTab();
+    if (!active) return;
+    PaneRect tbRect = active->layout()->tabBarRect(fbWidth_, fbHeight_);
+    if (tbRect.isEmpty()) return;
+
+    int cols = std::max(1, static_cast<int>(tbRect.w / tabBarCharWidth_));
+
+    // Resize compute buffers if cols changed
+    if (cols != tabBarCols_) {
+        renderer_.resizeComputeBuffers(device_, static_cast<uint32_t>(cols), 1);
+        tabBarCols_ = cols;
+    }
+
+    // Build resolved cells for 1 row
+    std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
+    for (auto& c : cells) {
+        c.atlas_offset = 0;
+        c.ext_min_x = c.ext_min_y = c.ext_max_x = c.ext_max_y = 0;
+        c.upem = 1;
+        c.fg_color = tbInactiveFgColor_;
+        c.bg_color = tbBgColor_;
+    }
+
+    // Powerline separator U+E0B0
+    const std::string SEP_RIGHT = "\xee\x82\xb0";
+
+    // Indeterminate animation glyphs
+    static const char32_t kAnimGlyphs[] = {
+        0xf0130, 0xf0a9e, 0xf0a9f, 0xf0aa0, 0xf0aa1,
+        0xf0aa2, 0xf0aa3, 0xf0aa4, 0xf0aa5
+    };
+    static constexpr int kAnimCount = 9;
+
+    auto cp32ToUtf8 = [](char32_t cp) -> std::string {
+        std::string s;
+        if (cp < 0x80) { s += static_cast<char>(cp); }
+        else if (cp < 0x800) { s += static_cast<char>(0xC0|(cp>>6)); s += static_cast<char>(0x80|(cp&0x3F)); }
+        else if (cp < 0x10000) { s += static_cast<char>(0xE0|(cp>>12)); s += static_cast<char>(0x80|((cp>>6)&0x3F)); s += static_cast<char>(0x80|(cp&0x3F)); }
+        else { s += static_cast<char>(0xF0|(cp>>18)); s += static_cast<char>(0x80|((cp>>12)&0x3F)); s += static_cast<char>(0x80|((cp>>6)&0x3F)); s += static_cast<char>(0x80|(cp&0x3F)); }
+        return s;
+    };
+
+    auto progressGlyph = [&](Tab* tab) -> std::string {
+        int st = tab->progressState();
+        if (st == 0) return "";
+        int idx;
+        if (st == 3) {
+            idx = tabBarAnimFrame_ % kAnimCount;
+        } else if (st == 1 || st == 2) {
+            idx = std::clamp(tab->progressPct() * kAnimCount / 100, 0, kAnimCount - 1);
+        } else {
+            return "";
+        }
+        return cp32ToUtf8(kAnimGlyphs[idx]);
+    };
+
+    struct TabInfo {
+        std::string text;
+        int width;
+        bool isActive;
+        uint32_t bgColor, fgColor;
+    };
+    std::vector<TabInfo> tabInfos;
+    for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
+        Tab* tab = tabs_[i].get();
+        bool isActive = (i == activeTabIdx_);
+        std::string text = " ";
+        std::string pg = progressGlyph(tab);
+        if (!pg.empty()) { text += pg; text += " "; }
+        if (!tab->icon().empty()) { text += tab->icon(); text += " "; }
+        text += "[";
+        text += std::to_string(i + 1);
+        text += "] ";
+        if (!tab->title().empty()) text += tab->title();
+        text += " ";
+
+        // Count UTF-8 codepoints
+        int w = 0;
+        const char* p = text.c_str();
+        while (*p) {
+            uint8_t b = static_cast<uint8_t>(*p);
+            if (b < 0x80) { w++; p++; }
+            else if ((b & 0xE0) == 0xC0) { w++; p += 2; }
+            else if ((b & 0xF0) == 0xE0) { w++; p += 3; }
+            else { w++; p += 4; }
+        }
+        tabInfos.push_back({text, w, isActive,
+            isActive ? tbActiveBgColor_ : tbInactiveBgColor_,
+            isActive ? tbActiveFgColor_ : tbInactiveFgColor_});
+    }
+
+    FontData* font = const_cast<FontData*>(textSystem_.getFont(tabBarFontName_));
+    if (!font) return;
+
+    auto placeChar = [&](int& col, const std::string& utf8ch, uint32_t fg, uint32_t bg) {
+        if (col >= cols) return;
+        ResolvedCell& rc = cells[static_cast<size_t>(col)];
+        rc.fg_color = fg;
+        rc.bg_color = bg;
+        const ShapedText& shaped = textSystem_.shapeText(tabBarFontName_, utf8ch, tabBarFontSize_);
+        if (!shaped.glyphs.empty()) {
+            uint64_t glyphId = shaped.glyphs[0].glyphId;
+            auto it = font->glyphs.find(glyphId);
+            if (it != font->glyphs.end() && !it->second.is_empty) {
+                const GlyphInfo& gi = it->second;
+                rc.atlas_offset = gi.atlas_offset;
+                rc.ext_min_x = gi.ext_min_x;
+                rc.ext_min_y = gi.ext_min_y;
+                rc.ext_max_x = gi.ext_max_x;
+                rc.ext_max_y = gi.ext_max_y;
+                rc.upem = gi.upem;
+            }
+        }
+        col++;
+    };
+
+    int col = 0;
+    for (int i = 0; i < static_cast<int>(tabInfos.size()); ++i) {
+        auto& ti = tabInfos[i];
+        const char* p = ti.text.c_str();
+        while (*p && col < cols) {
+            uint8_t b = static_cast<uint8_t>(*p);
+            int len = 1;
+            if ((b & 0xE0) == 0xC0) len = 2;
+            else if ((b & 0xF0) == 0xE0) len = 3;
+            else if ((b & 0xF8) == 0xF0) len = 4;
+            std::string ch(p, static_cast<size_t>(len));
+            placeChar(col, ch, ti.fgColor, ti.bgColor);
+            p += len;
+        }
+        // Powerline separator
+        uint32_t nextBg = (i + 1 < static_cast<int>(tabInfos.size()))
+            ? tabInfos[i + 1].bgColor : tbBgColor_;
+        placeChar(col, SEP_RIGHT, ti.bgColor, nextBg);
+    }
+
+    for (; col < cols; col++) {
+        cells[static_cast<size_t>(col)].bg_color = tbBgColor_;
+        cells[static_cast<size_t>(col)].fg_color = tbInactiveFgColor_;
+    }
+
+    float scale = tabBarFontSize_ / font->baseSize;
+    renderer_.updateFontAtlas(queue_, tabBarFontName_, *font);
+    renderer_.uploadResolvedCells(queue_, cells.data(), static_cast<uint32_t>(cols));
+
+    TerminalComputeParams params = {};
+    params.cols = static_cast<uint32_t>(cols);
+    params.rows = 1;
+    params.cell_width = tabBarCharWidth_;
+    params.cell_height = tabBarLineHeight_;
+    params.viewport_w = static_cast<float>(tbRect.w);
+    params.viewport_h = static_cast<float>(tbRect.h);
+    params.font_ascender = font->ascender * scale;
+    params.font_size = tabBarFontSize_;
+    params.pane_origin_x = 0.0f;
+    params.pane_origin_y = 0.0f;
+
+    PooledTexture* newTexture = texturePool_.acquire(
+        static_cast<uint32_t>(tbRect.w),
+        static_cast<uint32_t>(std::ceil(tabBarLineHeight_)));
+
+    wgpu::CommandEncoderDescriptor encDesc = {};
+    wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
+    renderer_.renderToPane(encoder, queue_, tabBarFontName_, params, newTexture->view, {});
+    wgpu::CommandBuffer commands = encoder.Finish();
+    queue_.Submit(1, &commands);
+
+    if (tabBarTexture_) pendingTabBarRelease_.push_back(tabBarTexture_);
+    tabBarTexture_ = newTexture;
+    tabBarDirty_ = false;
 }
 
 // ========================================================================

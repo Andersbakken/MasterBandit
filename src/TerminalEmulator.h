@@ -26,6 +26,8 @@ struct TerminalCallbacks {
     std::function<float()>                       cellPixelWidth;
     std::function<float()>                       cellPixelHeight;
     std::function<void(std::string_view)>        onOSCMB;  // called when OSC 999 received
+    std::function<void(const std::string&)>      onIconChanged;    // OSC 1
+    std::function<void(int /*state*/, int /*pct*/)> onProgressChanged; // OSC 9;4
 };
 
 class TerminalEmulator

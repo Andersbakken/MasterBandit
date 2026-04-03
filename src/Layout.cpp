@@ -141,10 +141,28 @@ void Layout::unzoom()
     spdlog::info("Layout: unzoomed");
 }
 
+PaneRect Layout::tabBarRect(uint32_t w, uint32_t h) const
+{
+    if (tabBarHeight_ <= 0) return {};
+    if (tabBarPosition_ == "top")
+        return {0, 0, static_cast<int>(w), tabBarHeight_};
+    return {0, static_cast<int>(h) - tabBarHeight_, static_cast<int>(w), tabBarHeight_};
+}
+
 void Layout::computeRects(uint32_t windowW, uint32_t windowH)
 {
     if (!mRoot) return;
+
+    // Reserve space for tab bar
     PaneRect full { 0, 0, static_cast<int>(windowW), static_cast<int>(windowH) };
+    if (tabBarHeight_ > 0) {
+        if (tabBarPosition_ == "top") {
+            full.y = tabBarHeight_;
+            full.h = static_cast<int>(windowH) - tabBarHeight_;
+        } else {
+            full.h = static_cast<int>(windowH) - tabBarHeight_;
+        }
+    }
 
     if (mZoomedPaneId >= 0) {
         // Give zoomed pane the full rect; all others get zero area

@@ -2,6 +2,7 @@
 
 #include "Pane.h"
 #include <memory>
+#include <string>
 #include <vector>
 
 struct LayoutNode {
@@ -46,6 +47,13 @@ public:
     void zoomPane(int id);
     void unzoom();
 
+    // Tab bar height reservation
+    void setTabBar(int height, const std::string& position) {
+        tabBarHeight_ = height;
+        tabBarPosition_ = position;
+    }
+    PaneRect tabBarRect(uint32_t windowW, uint32_t windowH) const;
+
     // Recompute all pane rects from window pixel dimensions
     void computeRects(uint32_t windowW, uint32_t windowH);
 
@@ -65,4 +73,6 @@ private:
     int mNextPaneId { 0 };
     int mFocusedPaneId { -1 };
     int mZoomedPaneId { -1 };
+    int tabBarHeight_ { 0 };
+    std::string tabBarPosition_ { "bottom" };
 };

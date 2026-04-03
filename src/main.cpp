@@ -44,6 +44,7 @@ int main(int argc, char **argv)
     TerminalOptions options;
     options.font = config.font;
     options.fontSize = config.font_size;
+    options.boldStrength = config.bold_strength;
     options.scrollbackLines = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
 
     char buf[1024];

@@ -59,9 +59,11 @@ public:
                       const std::vector<std::vector<uint8_t>>& ttfDataList,
                       float baseSize = 48.0f);
     const ShapedText& shapeText(const std::string& fontName, const std::string& text,
-                                float fontSize, float wrapWidth = 0, int align = 0);
+                                float fontSize, float wrapWidth = 0, int align = 0,
+                                int fontIndexHint = 0);
     const FontData* getFont(const std::string& name) const;
     bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
+    bool addSyntheticBoldVariant(const std::string& name, float xStrength = 0.02f, float yStrength = 0.02f);
 
     // Ensure a glyph is encoded in the atlas; called during shaping
     void ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId);

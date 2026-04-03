@@ -557,7 +557,25 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
     }
 
     std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
+
+    // Load bold variant (index 1 in the FontData)
+    const std::string& family = options.font.empty() ? std::string{} : options.font;
+    std::string boldPath = family.empty() ? std::string{} : resolveFontFamily(family, true);
+    bool hasBoldFont = false;
+    if (!boldPath.empty() && boldPath != fontPath) {
+        auto boldData = loadFontFile(boldPath);
+        if (!boldData.empty()) {
+            spdlog::info("Using bold font: {}", boldPath);
+            fontList.push_back(std::move(boldData));
+            hasBoldFont = true;
+        }
+    }
+
     textSystem_.registerFont(fontName_, fontList, 48.0f);
+
+    if (!hasBoldFont) {
+        textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
+    }
 
     const FontData* font = textSystem_.getFont(fontName_);
     if (!font) {
@@ -746,7 +764,8 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
             return &it->second;
         };
 
-        const ShapedText& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_);
+        const int boldHint = cell.attrs.bold() ? 1 : 0;
+        const ShapedText& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_, 0, 0, boldHint);
         const GlyphInfo* gi = resolveGlyph(shaped);
 
         // Try font fallback if glyph is missing (skip whitespace — no visible glyph expected)
@@ -757,7 +776,7 @@ void TerminalWindow::resolveRow(int row, FontData* font, float scale)
                 textSystem_.addFallbackFont(fontName_, fallbackData);
                 // Re-fetch font pointer (addFallbackFont modifies the FontData)
                 font = const_cast<FontData*>(textSystem_.getFont(fontName_));
-                const ShapedText& retry = textSystem_.shapeText(fontName_, cpStr, fontSize_);
+                const ShapedText& retry = textSystem_.shapeText(fontName_, cpStr, fontSize_, 0, 0, boldHint);
                 gi = resolveGlyph(retry);
                 if (!gi) {
                     spdlog::warn("FontFallback: still missing after fallback for U+{:04X}", static_cast<uint32_t>(cell.wc));

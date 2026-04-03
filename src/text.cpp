@@ -222,8 +222,38 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
     return true;
 }
 
+bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrength, float yStrength)
+{
+    auto it = fonts_.find(name);
+    if (it == fonts_.end()) return false;
+
+    FontData& font = it->second;
+    if (font.hbFonts.empty()) return false;
+
+    const auto& primary = font.hbFonts[0];
+
+    FontData::HBEntry entry;
+    entry.hbBlob = hb_blob_reference(primary.hbBlob);
+    entry.hbFace = hb_face_reference(primary.hbFace);
+    entry.hbFont = hb_font_create(entry.hbFace);
+    hb_font_set_synthetic_bold(entry.hbFont, xStrength, yStrength, false);
+    entry.gpuDraw = hb_gpu_draw_create_or_fail();
+    if (!entry.gpuDraw) {
+        spdlog::error("addSyntheticBoldVariant '{}': hb_gpu_draw_create_or_fail() returned null", name);
+        hb_font_destroy(entry.hbFont);
+        hb_face_destroy(entry.hbFace);
+        hb_blob_destroy(entry.hbBlob);
+        return false;
+    }
+
+    font.hbFonts.push_back(entry);
+    spdlog::info("Added synthetic bold variant to '{}'", name);
+    return true;
+}
+
 const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::string& text,
-                                         float fontSize, float wrapWidth, int align)
+                                         float fontSize, float wrapWidth, int align,
+                                         int fontIndexHint)
 {
     // Compute cache key
     size_t h = std::hash<std::string>{}(fontName);
@@ -231,6 +261,7 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
     h ^= std::hash<float>{}(fontSize) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<float>{}(wrapWidth) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<int>{}(align) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(fontIndexHint) + 0x9e3779b9 + (h << 6) + (h >> 2);
 
     // LRU lookup
     auto it = cacheMap_.find(h);
@@ -322,6 +353,26 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
         const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset);
         const uint8_t* end = p + seg.length;
 
+        // If a hint index is provided and valid, try it first
+        if (fontIndexHint > 0 && fontIndexHint < static_cast<int>(font.hbFonts.size())) {
+            p = reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset);
+            bool hintCovers = true;
+            while (p < end) {
+                uint32_t cp;
+                if (*p < 0x80) { cp = *p++; }
+                else if ((*p & 0xE0) == 0xC0) { cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; }
+                else if ((*p & 0xF0) == 0xE0) { cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; }
+                else { cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; }
+                uint32_t gid;
+                if (!hb_font_get_nominal_glyph(font.hbFonts[fontIndexHint].hbFont, cp, &gid)) {
+                    hintCovers = false;
+                    break;
+                }
+            }
+            if (hintCovers) return static_cast<uint32_t>(fontIndexHint);
+        }
+
+        p = reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset);
         bool primaryMissesAny = false;
         while (p < end) {
             uint32_t cp;

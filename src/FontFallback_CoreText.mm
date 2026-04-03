@@ -1,9 +1,61 @@
 #include "FontFallback.h"
 #include <spdlog/spdlog.h>
 #include <fstream>
+#include <vector>
+#include <string>
 
 #import <CoreText/CoreText.h>
 #import <Foundation/Foundation.h>
+
+static std::string fontFilePath(CTFontRef font)
+{
+    CFURLRef url = static_cast<CFURLRef>(CTFontCopyAttribute(font, kCTFontURLAttribute));
+    if (!url) return {};
+    char buf[1024];
+    bool ok = CFURLGetFileSystemRepresentation(url, true, reinterpret_cast<UInt8*>(buf), sizeof(buf));
+    CFRelease(url);
+    return ok ? std::string(buf) : std::string{};
+}
+
+static bool fontHasGlyph(CTFontRef font, const UniChar* utf16, CFIndex utf16Len)
+{
+    std::vector<CGGlyph> glyphs(utf16Len);
+    return CTFontGetGlyphsForCharacters(font, utf16, glyphs.data(), utf16Len) && glyphs[0] != 0;
+}
+
+static bool isNormalVariant(CTFontRef font)
+{
+    CTFontSymbolicTraits traits = CTFontGetSymbolicTraits(font);
+    // Reject bold, italic, condensed, expanded — only use regular variants as fallbacks
+    constexpr CTFontSymbolicTraits kReject =
+        kCTFontTraitBold | kCTFontTraitItalic | kCTFontTraitCondensed | kCTFontTraitExpanded;
+    return (traits & kReject) == 0;
+}
+
+static bool isLastResort(CTFontRef font)
+{
+    CFStringRef name = CTFontCopyFamilyName(font);
+    if (!name) return false;
+    bool result = CFStringCompare(name, CFSTR(".LastResort"), 0) == kCFCompareEqualTo;
+    CFRelease(name);
+    return result;
+}
+
+// Get Menlo — used as the base font for CTFontCreateForString, same as WezTerm.
+// Menlo is always available on macOS and gives consistent system fallback results.
+static CTFontRef getMenlo()
+{
+    static CTFontRef menlo = []() -> CTFontRef {
+        CTFontRef f = CTFontCreateWithName(CFSTR("Menlo"), 16.0, nullptr);
+        return f; // intentionally never released — process lifetime singleton
+    }();
+    return menlo;
+}
+
+struct CandidateFont {
+    std::string path;
+    size_t coverage; // number of codepoints covered (for sorting)
+};
 
 std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& primaryFontPath, char32_t codepoint)
 {
@@ -14,81 +66,84 @@ std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& prima
         return fallbackFonts_[it->second].data;
     }
 
-    // Create a CTFont from the primary font file
-    CFStringRef cfPath = CFStringCreateWithCString(nullptr, primaryFontPath.c_str(), kCFStringEncodingUTF8);
-    CFURLRef fontURL = CFURLCreateWithFileSystemPath(nullptr, cfPath, kCFURLPOSIXPathStyle, false);
-    CGDataProviderRef provider = CGDataProviderCreateWithURL(fontURL);
-    CGFontRef cgFont = provider ? CGFontCreateWithDataProvider(provider) : nullptr;
-    CTFontRef primaryFont = cgFont ? CTFontCreateWithGraphicsFont(cgFont, 16.0, nullptr, nullptr) : nullptr;
-
-    if (provider) CGDataProviderRelease(provider);
-    if (cgFont) CGFontRelease(cgFont);
-    CFRelease(fontURL);
-    CFRelease(cfPath);
-
-    if (!primaryFont) {
-        codepointCache_[codepoint] = -1;
-        return {};
-    }
-
-    // Create a string containing the codepoint
+    // Build UTF-16 for codepoint
     UniChar utf16[2];
     CFIndex utf16Len;
-    if (codepoint <= 0xFFFF) {
-        utf16[0] = static_cast<UniChar>(codepoint);
+    char32_t cp = codepoint;
+    if (cp <= 0xFFFF) {
+        utf16[0] = static_cast<UniChar>(cp);
         utf16Len = 1;
     } else {
-        // Surrogate pair
-        codepoint -= 0x10000;
-        utf16[0] = static_cast<UniChar>(0xD800 + (codepoint >> 10));
-        utf16[1] = static_cast<UniChar>(0xDC00 + (codepoint & 0x3FF));
+        cp -= 0x10000;
+        utf16[0] = static_cast<UniChar>(0xD800 + (cp >> 10));
+        utf16[1] = static_cast<UniChar>(0xDC00 + (cp & 0x3FF));
         utf16Len = 2;
     }
+
     CFStringRef str = CFStringCreateWithCharacters(nullptr, utf16, utf16Len);
 
-    // Ask Core Text for the fallback font
-    CTFontRef fallbackFont = CTFontCreateForString(primaryFont, str, CFRangeMake(0, utf16Len));
+    std::vector<CandidateFont> candidates;
+
+    // Ask CoreText for the best fallback using Menlo as base (same as WezTerm)
+    CTFontRef menlo = getMenlo();
+    if (menlo) {
+        CTFontRef fallback = CTFontCreateForString(menlo, str, CFRangeMake(0, utf16Len));
+        if (fallback) {
+            if (!isLastResort(fallback) && isNormalVariant(fallback) && fontHasGlyph(fallback, utf16, utf16Len)) {
+                std::string path = fontFilePath(fallback);
+                if (!path.empty() && path != primaryFontPath)
+                    candidates.push_back({std::move(path), 1});
+            }
+            CFRelease(fallback);
+        }
+    }
+
+    // If CTFontCreateForString found nothing usable, consult the system cascade list
+    if (candidates.empty()) {
+        CFArrayRef cascade = menlo
+            ? CTFontCopyDefaultCascadeListForLanguages(menlo, nullptr)
+            : nullptr;
+
+        if (cascade) {
+            CFIndex count = CFArrayGetCount(cascade);
+            for (CFIndex i = 0; i < count; ++i) {
+                CTFontDescriptorRef desc = static_cast<CTFontDescriptorRef>(
+                    CFArrayGetValueAtIndex(cascade, i));
+                CTFontRef candidate = CTFontCreateWithFontDescriptor(desc, 16.0, nullptr);
+                if (!candidate) continue;
+
+                if (!isLastResort(candidate) && isNormalVariant(candidate) &&
+                    fontHasGlyph(candidate, utf16, utf16Len)) {
+                    std::string path = fontFilePath(candidate);
+                    if (!path.empty() && path != primaryFontPath)
+                        candidates.push_back({std::move(path), 1});
+                }
+                CFRelease(candidate);
+            }
+            CFRelease(cascade);
+        }
+    }
+
     CFRelease(str);
-    CFRelease(primaryFont);
 
-    if (!fallbackFont) {
+    // Sort by descending coverage (currently all 1, but consistent with WezTerm's approach)
+    std::sort(candidates.begin(), candidates.end(),
+              [](const CandidateFont& a, const CandidateFont& b) {
+                  return a.coverage > b.coverage;
+              });
+
+    // Deduplicate by path
+    candidates.erase(std::unique(candidates.begin(), candidates.end(),
+                                 [](const CandidateFont& a, const CandidateFont& b) {
+                                     return a.path == b.path;
+                                 }), candidates.end());
+
+    if (candidates.empty()) {
         codepointCache_[codepoint] = -1;
         return {};
     }
 
-    // Check that the fallback actually has the glyph (CTFontCreateForString can return the same font)
-    CGGlyph glyphs[2];
-    bool hasGlyph = CTFontGetGlyphsForCharacters(fallbackFont, utf16, glyphs, static_cast<CFIndex>(utf16Len));
-    if (!hasGlyph || glyphs[0] == 0) {
-        CFRelease(fallbackFont);
-        codepointCache_[codepoint] = -1;
-        return {};
-    }
-
-    // Get the font file URL
-    CFURLRef fallbackURL = static_cast<CFURLRef>(CTFontCopyAttribute(fallbackFont, kCTFontURLAttribute));
-    CFRelease(fallbackFont);
-
-    if (!fallbackURL) {
-        codepointCache_[codepoint] = -1;
-        return {};
-    }
-
-    char pathBuf[1024];
-    if (!CFURLGetFileSystemRepresentation(fallbackURL, true, reinterpret_cast<UInt8*>(pathBuf), sizeof(pathBuf))) {
-        CFRelease(fallbackURL);
-        codepointCache_[codepoint] = -1;
-        return {};
-    }
-    CFRelease(fallbackURL);
-
-    std::string fallbackPath(pathBuf);
-
-    // Skip if it's the same as the primary font
-    if (fallbackPath == primaryFontPath) {
-        codepointCache_[codepoint] = -1;
-        return {};
-    }
+    const std::string& fallbackPath = candidates[0].path;
 
     // Check if we already loaded this font
     auto pathIt = pathToIndex_.find(fallbackPath);
@@ -112,8 +167,8 @@ std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& prima
     spdlog::info("FontFallback: loaded {} for U+{:04X}", fallbackPath, static_cast<uint32_t>(codepoint));
 
     int idx = static_cast<int>(fallbackFonts_.size());
-    fallbackFonts_.push_back({fallbackPath, data});
+    fallbackFonts_.push_back({fallbackPath, std::move(data)});
     pathToIndex_[fallbackPath] = idx;
     codepointCache_[codepoint] = idx;
-    return data;
+    return fallbackFonts_[idx].data;
 }

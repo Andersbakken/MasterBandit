@@ -2,10 +2,13 @@
 
 #include <fontconfig/fontconfig.h>
 
-std::string resolveFontFamily(const std::string& family)
+std::string resolveFontFamily(const std::string& family, bool bold)
 {
     FcPattern* pat = FcNameParse(reinterpret_cast<const FcChar8*>(family.c_str()));
     if (!pat) return {};
+
+    if (bold)
+        FcPatternAddInteger(pat, FC_WEIGHT, FC_WEIGHT_BOLD);
 
     FcConfigSubstitute(nullptr, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);

@@ -1,51 +1,8 @@
 #include "Document.h"
+#include "Utf8.h"
 #include <algorithm>
 #include <cassert>
 #include <cstring>
-
-// --- UTF-8 helpers (shared with old ScrollbackBuffer) ---
-
-static int encodeUtf8(char32_t cp, char* out) {
-    if (cp < 0x80) { out[0] = static_cast<char>(cp); return 1; }
-    if (cp < 0x800) {
-        out[0] = static_cast<char>(0xC0 | (cp >> 6));
-        out[1] = static_cast<char>(0x80 | (cp & 0x3F));
-        return 2;
-    }
-    if (cp < 0x10000) {
-        out[0] = static_cast<char>(0xE0 | (cp >> 12));
-        out[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out[2] = static_cast<char>(0x80 | (cp & 0x3F));
-        return 3;
-    }
-    out[0] = static_cast<char>(0xF0 | (cp >> 18));
-    out[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-    out[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out[3] = static_cast<char>(0x80 | (cp & 0x3F));
-    return 4;
-}
-
-static char32_t decodeUtf8(const char* s, int len, int& bytesConsumed) {
-    auto u = [](char c) -> uint8_t { return static_cast<uint8_t>(c); };
-    if (len <= 0) { bytesConsumed = 0; return 0; }
-    uint8_t b0 = u(s[0]);
-    if (b0 < 0x80) { bytesConsumed = 1; return b0; }
-    if ((b0 & 0xE0) == 0xC0 && len >= 2) {
-        bytesConsumed = 2;
-        return ((b0 & 0x1F) << 6) | (u(s[1]) & 0x3F);
-    }
-    if ((b0 & 0xF0) == 0xE0 && len >= 3) {
-        bytesConsumed = 3;
-        return ((b0 & 0x0F) << 12) | ((u(s[1]) & 0x3F) << 6) | (u(s[2]) & 0x3F);
-    }
-    if ((b0 & 0xF8) == 0xF0 && len >= 4) {
-        bytesConsumed = 4;
-        return ((b0 & 0x07) << 18) | ((u(s[1]) & 0x3F) << 12) |
-               ((u(s[2]) & 0x3F) << 6) | (u(s[3]) & 0x3F);
-    }
-    bytesConsumed = 1;
-    return 0xFFFD;
-}
 
 // --- SGR helpers (copied from ScrollbackBuffer.cpp) ---
 
@@ -440,7 +397,9 @@ const Cell* Document::viewportRow(int viewRow, int viewportOffset) const {
     if (logicalRow < histSize) {
         return historyRow(logicalRow);
     } else {
-        return row(logicalRow - histSize);
+        int screenRow = logicalRow - histSize;
+        if (screenRow < 0 || screenRow >= screenHeight_) return nullptr;
+        return row(screenRow);
     }
 }
 
@@ -564,7 +523,7 @@ std::string Document::serializeRow(const Cell* cells, int cols) {
             out += ' ';
         } else {
             char buf[4];
-            int n = encodeUtf8(cell.wc, buf);
+            int n = utf8::encode(cell.wc, buf);
             out.append(buf, n);
         }
     }
@@ -595,7 +554,7 @@ void Document::parseArchivedRow(const ArchivedRow& archived) const {
             }
         } else {
             int consumed;
-            char32_t cp = decodeUtf8(s + pos, len - pos, consumed);
+            char32_t cp = utf8::decode(s + pos, len - pos, consumed);
             parseBuffer_[col].wc = (cp == ' ') ? 0 : cp;
             parseBuffer_[col].attrs = currentAttrs;
             col++;

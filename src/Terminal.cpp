@@ -1,5 +1,7 @@
 #include "Terminal.h"
+#include "Base64.h"
 #include "Log.h"
+#include "Utf8.h"
 #include <spdlog/spdlog.h>
 
 #include <assert.h>
@@ -14,7 +16,6 @@
 #include <string.h>
 #include <limits>
 #include <signal.h>
-#include "Base64.h"
 #include <algorithm>
 #include <string_view>
 #include <cmath>
@@ -190,6 +191,7 @@ bool Terminal::init(const TerminalOptions &options)
 
 Terminal::~Terminal()
 {
+    if (mMasterFD != -1) ::close(mMasterFD);
 }
 
 void Terminal::resize(int width, int height)
@@ -539,26 +541,6 @@ bool Terminal::isCellSelected(int col, int absRow) const
     return true;
 }
 
-static std::string codepointToUtf8(char32_t cp)
-{
-    std::string result;
-    if (cp < 0x80) {
-        result += static_cast<char>(cp);
-    } else if (cp < 0x800) {
-        result += static_cast<char>(0xC0 | (cp >> 6));
-        result += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        result += static_cast<char>(0xE0 | (cp >> 12));
-        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        result += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-        result += static_cast<char>(0xF0 | (cp >> 18));
-        result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        result += static_cast<char>(0x80 | (cp & 0x3F));
-    }
-    return result;
-}
 
 std::string Terminal::selectedText() const
 {
@@ -599,7 +581,7 @@ std::string Terminal::selectedText() const
             if (cell.wc == 0 || cell.wc == ' ') {
                 line += ' ';
             } else {
-                line += codepointToUtf8(cell.wc);
+                line += utf8::fromCodepoint(cell.wc);
                 lastNonSpace = static_cast<int>(line.size()) - 1;
             }
         }
@@ -1096,7 +1078,7 @@ void Terminal::onAction(const Action *action)
         mCursorX = std::clamp(action->count - 1, 0, mWidth - 1);
         break;
     case Action::CursorPosition:
-        // CUP: action.x = row (1-based), action.y = col (1-based)
+        // CUP: action.x = row (1-based), action.y = col (1-based) — note x/y are swapped vs screen coords
         mCursorY = std::clamp(action->x - 1, 0, mHeight - 1);
         mCursorX = std::clamp(action->y - 1, 0, mWidth - 1);
         break;

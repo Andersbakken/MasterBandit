@@ -1,5 +1,4 @@
-#ifndef TERMINAL_H
-#define TERMINAL_H
+#pragma once
 
 #include <vector>
 #include <string>
@@ -272,5 +271,3 @@ private:
     // 256-color palette lookup
     static void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b);
 };
-
-#endif /* TERMINAL_H */

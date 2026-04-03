@@ -1,5 +1,4 @@
-#ifndef DEBUGIPC_H
-#define DEBUGIPC_H
+#pragma once
 
 #include <string>
 #include <vector>
@@ -79,5 +78,3 @@ private:
     std::mutex logMutex_;
     std::deque<std::string> logQueue_;
 };
-
-#endif /* DEBUGIPC_H */

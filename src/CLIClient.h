@@ -1,6 +1,3 @@
-#ifndef CLICLIENT_H
-#define CLICLIENT_H
+#pragma once
 
 int runCLI(int argc, char** argv);
-
-#endif /* CLICLIENT_H */

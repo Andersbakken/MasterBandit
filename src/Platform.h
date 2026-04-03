@@ -1,5 +1,4 @@
-#ifndef PLATFORM_H
-#define PLATFORM_H
+#pragma once
 
 #include <memory>
 #include <assert.h>
@@ -215,7 +214,7 @@ enum Key {
     Key_ydiaeresis = 0x0ff,
 
     // International input method support (X keycode - 0xEE00, the
-    // definition follows Qt/Embedded 2.3.7) Only interesting if
+    // Only interesting if
     // you are writing your own input method
 
     // International & multi-key character composition
@@ -325,7 +324,7 @@ enum Key {
     Key_Dead_Belowverticalline = 0x01001292,
     Key_Dead_Longsolidusoverlay = 0x01001293,
 
-    // multimedia/internet keys - ignored by default - see QKeyEvent c'tor
+    // multimedia/internet keys - ignored by default
     Key_Back  = 0x01000061,
     Key_Forward  = 0x01000062,
     Key_Stop  = 0x01000063,
@@ -593,4 +592,3 @@ public:
 
 std::unique_ptr<Platform> createPlatform(int argc, char **argv);
 
-#endif /* PLATFORM_H */

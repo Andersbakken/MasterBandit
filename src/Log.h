@@ -1,5 +1,4 @@
-#ifndef LOG_H
-#define LOG_H
+#pragma once
 
 #include <cstdarg>
 #include <string>
@@ -63,5 +62,3 @@ void fatal(const char *fmt, ...) __attribute__ ((__format__ (__printf__, 1, 2)))
         Log::fatal(__VA_ARGS__)
 
 }
-
-#endif /* LOG_H */

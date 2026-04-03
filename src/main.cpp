@@ -2,7 +2,7 @@
 #include "Terminal.h"
 #include <getopt.h>
 #include <cstring>
-#include <regex>
+#include <pwd.h>
 #include "Log.h"
 #include "CLIClient.h"
 
@@ -17,27 +17,11 @@ static std::string defaultShell(const std::string &user)
     if (const char *shell = getenv("SHELL")) {
         return shell;
     }
-    FILE *f = fopen("/etc/passwd", "r");
-    if (f) {
-// TODO: should use getpw
-        std::string r;
-        char line[1024];
-        std::regex rx("^" + user + ":[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^: ]+) *$");
-        while ((fgets(line, sizeof(line), f))) {
-            std::smatch m;
-            std::string l(line, strlen(line) - 1);
-            if (std::regex_search(l, m, rx)) {
-                r = std::move(m[1]);
-                break;
-            }
-        }
-        fclose(f);
-        if (!r.empty())
-            return r;
-    } else {
-        fprintf(stderr, "Failed to open /etc/passwd %d %s\n", errno, strerror(errno));
+    if (struct passwd *pw = getpwnam(user.c_str())) {
+        if (pw->pw_shell && pw->pw_shell[0])
+            return pw->pw_shell;
     }
-    return "/bin/dash";
+    return "/bin/sh";
 }
 
 int main(int argc, char **argv)
@@ -90,10 +74,5 @@ int main(int argc, char **argv)
     if (!terminal) {
         fprintf(stderr, "Failed to create terminal\n");
     }
-    // QFile file("../LICENSE");
-    // file.open(QIODevice::ReadOnly);
-    // const std::string str = file.readAll().toStdString();
-    // file.close();
-    // window.addText(str);
     return platform->exec();
 }

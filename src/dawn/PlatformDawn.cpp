@@ -74,6 +74,18 @@ private:
     DebugIPC* ipc_ = nullptr;
 };
 
+// --- GLFW modifier conversion ---
+
+static unsigned int glfwModsToModifiers(int mods)
+{
+    unsigned int m = 0;
+    if (mods & GLFW_MOD_SHIFT) m |= ShiftModifier;
+    if (mods & GLFW_MOD_CONTROL) m |= CtrlModifier;
+    if (mods & GLFW_MOD_ALT) m |= AltModifier;
+    if (mods & GLFW_MOD_SUPER) m |= MetaModifier;
+    return m;
+}
+
 // --- GLFW key → Platform Key mapping ---
 
 static Key glfwKeyToKey(int glfwKey)
@@ -202,6 +214,7 @@ public:
 
     // Terminal overrides
     void event(Event ev, void* data = nullptr) override;
+    void copyToClipboard(const std::string& text) override;
 
     // Called from GLFW callbacks
     void onKey(int key, int scancode, int action, int mods);
@@ -236,6 +249,7 @@ private:
     float fontSize_ = 16.0f;
     float charWidth_ = 0.0f;
     float lineHeight_ = 0.0f;
+    float contentScaleX_ = 1.0f, contentScaleY_ = 1.0f;
     uint32_t fbWidth_ = 0, fbHeight_ = 0;
 
     // Resolved cells for compute shader upload
@@ -243,6 +257,7 @@ private:
 
     bool needsRedraw_ = true;
     bool controlPressed_ = false;
+    unsigned int lastMods_ = 0;
 
     DebugIPC* debugIPC_ = nullptr;
 };
@@ -511,6 +526,8 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
 
     float xscale, yscale;
     glfwGetWindowContentScale(glfwWindow_, &xscale, &yscale);
+    contentScaleX_ = xscale;
+    contentScaleY_ = yscale;
     fontSize_ *= xscale;
 
     configureSurface(fbWidth_, fbHeight_);
@@ -596,6 +613,11 @@ void TerminalWindow::event(Event ev, void* /*data*/)
     case VisibleBell:
         break;
     }
+}
+
+void TerminalWindow::copyToClipboard(const std::string& text)
+{
+    glfwSetClipboardString(glfwWindow_, text.c_str());
 }
 
 // Replace invalid UTF-8 bytes with U+FFFD so glaze doesn't reject them
@@ -762,6 +784,24 @@ void TerminalWindow::renderTerminal()
     // Clear dirty flags (const_cast since we need to mutate dirty state)
     const_cast<CellGrid&>(g).clearAllDirty();
 
+    // Apply selection highlight and cursor, then restore after upload
+    // Track which rows were modified so we can mark them dirty for next frame
+    bool selectionVisible = hasSelection();
+    int histSize = scrollback().historySize();
+
+    if (selectionVisible) {
+        for (int row = 0; row < g.rows(); ++row) {
+            int absRow = histSize - viewportOffset() + row;
+            for (int col = 0; col < g.cols(); ++col) {
+                if (isCellSelected(col, absRow)) {
+                    int idx = row * g.cols() + col;
+                    resolvedCells_[idx].bg_color = 0xFF664422; // selection blue (ABGR)
+                    resolvedCells_[idx].fg_color = 0xFFFFFFFF;
+                }
+            }
+        }
+    }
+
     // Apply cursor: swap fg/bg on cursor cell for block cursor inversion
     int cursorIdx = -1;
     ResolvedCell savedCursorCell;
@@ -780,6 +820,19 @@ void TerminalWindow::renderTerminal()
     // Restore cursor cell so cached resolved data stays clean
     if (cursorIdx >= 0) {
         resolvedCells_[cursorIdx] = savedCursorCell;
+    }
+
+    // Mark selection rows dirty so they re-resolve cleanly next frame
+    if (selectionVisible) {
+        for (int row = 0; row < g.rows(); ++row) {
+            int absRow = histSize - viewportOffset() + row;
+            for (int col = 0; col < g.cols(); ++col) {
+                if (isCellSelected(col, absRow)) {
+                    const_cast<CellGrid&>(g).markRowDirty(row);
+                    break;
+                }
+            }
+        }
     }
 
     // Upload any newly encoded glyphs to GPU
@@ -895,6 +948,27 @@ void TerminalWindow::onKey(int key, int /*scancode*/, int action, int mods)
     }
 
     controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
+    lastMods_ = glfwModsToModifiers(mods);
+
+    // Cmd+V: paste from clipboard
+    if ((mods & GLFW_MOD_SUPER) && key == GLFW_KEY_V) {
+        const char* clip = glfwGetClipboardString(glfwWindow_);
+        if (clip && clip[0]) {
+            pasteText(std::string(clip));
+        }
+        return;
+    }
+
+    // Cmd+C: copy selection
+    if ((mods & GLFW_MOD_SUPER) && key == GLFW_KEY_C) {
+        if (hasSelection()) {
+            std::string text = selectedText();
+            if (!text.empty()) {
+                glfwSetClipboardString(glfwWindow_, text.c_str());
+            }
+        }
+        return;
+    }
 
     Key k = glfwKeyToKey(key);
     spdlog::debug("onKey: mapped key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
@@ -967,15 +1041,20 @@ void TerminalWindow::onFramebufferResize(int width, int height)
     needsRedraw_ = true;
 }
 
-void TerminalWindow::onMouseButton(int button, int action, int /*mods*/)
+void TerminalWindow::onMouseButton(int button, int action, int mods)
 {
+    lastMods_ = glfwModsToModifiers(mods);
+
     MouseEvent ev;
     double x, y;
     glfwGetCursorPos(glfwWindow_, &x, &y);
-    ev.x = static_cast<int>(x / charWidth_);
-    ev.y = static_cast<int>(y / lineHeight_);
-    ev.globalX = static_cast<int>(x);
-    ev.globalY = static_cast<int>(y);
+    double sx = x * contentScaleX_;
+    double sy = y * contentScaleY_;
+    ev.x = static_cast<int>(sx / charWidth_);
+    ev.y = static_cast<int>(sy / lineHeight_);
+    ev.globalX = static_cast<int>(sx);
+    ev.globalY = static_cast<int>(sy);
+    ev.modifiers = lastMods_;
 
     switch (button) {
     case GLFW_MOUSE_BUTTON_LEFT:  ev.button = LeftButton; break;
@@ -991,12 +1070,15 @@ void TerminalWindow::onMouseButton(int button, int action, int /*mods*/)
 
 void TerminalWindow::onCursorPos(double x, double y)
 {
+    double sx = x * contentScaleX_;
+    double sy = y * contentScaleY_;
     MouseEvent ev;
-    ev.x = static_cast<int>(x / charWidth_);
-    ev.y = static_cast<int>(y / lineHeight_);
-    ev.globalX = static_cast<int>(x);
-    ev.globalY = static_cast<int>(y);
+    ev.x = static_cast<int>(sx / charWidth_);
+    ev.y = static_cast<int>(sy / lineHeight_);
+    ev.globalX = static_cast<int>(sx);
+    ev.globalY = static_cast<int>(sy);
     ev.button = NoButton;
+    ev.modifiers = lastMods_;
     if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
         ev.buttons |= LeftButton;
     if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)

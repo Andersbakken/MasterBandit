@@ -199,6 +199,7 @@ void Terminal::resize(int width, int height)
     // Clamp cursor
     mCursorX = std::min(mCursorX, width - 1);
     mCursorY = std::min(mCursorY, height - 1);
+    clearSelection();
     event(Update);
 }
 
@@ -336,27 +337,272 @@ void Terminal::keyReleaseEvent(const KeyEvent *event)
     DEBUG("GOT KEYRELEASE [%s] %d %zu\n", event->text.c_str(), event->autoRepeat, event->count);
 }
 
-void Terminal::mousePressEvent(const MouseEvent *event)
+void Terminal::writeToPTY(const char* data, size_t len)
 {
-    DEBUG("Got mouse press event button %s buttons %s %d,%d (%d,%d)",
-          MouseEvent::buttonName(event->button).c_str(),
-          MouseEvent::buttonName(event->buttons).c_str(),
-          event->x, event->y, event->globalX, event->globalY);
+    while (len > 0) {
+        int ret;
+        EINTRWRAP(ret, ::write(mMasterFD, data, len));
+        if (ret == -1) {
+            FATAL("Failed to write to master %d %s", errno, strerror(errno));
+            mPlatform->quit();
+            return;
+        }
+        data += ret;
+        len -= ret;
+    }
 }
 
-void Terminal::mouseReleaseEvent(const MouseEvent *event)
+void Terminal::pasteText(const std::string& text)
 {
-    DEBUG("Got mouse release event button %s buttons %s %d,%d (%d,%d)",
-          MouseEvent::buttonName(event->button).c_str(),
-          MouseEvent::buttonName(event->buttons).c_str(),
-          event->x, event->y, event->globalX, event->globalY);
+    if (mBracketedPaste) {
+        writeToPTY("\x1b[200~", 6);
+    }
+    writeToPTY(text.c_str(), text.size());
+    if (mBracketedPaste) {
+        writeToPTY("\x1b[201~", 6);
+    }
 }
 
-void Terminal::mouseMoveEvent(const MouseEvent *event)
+void Terminal::sendMouseEvent(int button, bool press, bool motion, int cx, int cy, unsigned int modifiers)
 {
-    DEBUG("Got mouse move event buttons %s %d,%d (%d,%d)",
-          MouseEvent::buttonName(event->buttons).c_str(),
-          event->x, event->y, event->globalX, event->globalY);
+    // Encode modifier bits into button code
+    int cb = button;
+    if (motion) cb += 32;
+    if (modifiers & ShiftModifier) cb += 4;
+    if (modifiers & AltModifier) cb += 8;
+    if (modifiers & CtrlModifier) cb += 16;
+
+    // 1-based coordinates
+    int x = cx + 1;
+    int y = cy + 1;
+
+    if (mMouseMode1006) {
+        // SGR format: \x1b[<Cb;Cx;CyM (press) or m (release)
+        char buf[64];
+        int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", cb, x, y, press ? 'M' : 'm');
+        writeToPTY(buf, n);
+    } else {
+        // Legacy format: \x1b[Mcb cx cy (all + 32)
+        if (x > 223 || y > 223) return; // can't encode
+        char buf[6];
+        buf[0] = '\x1b';
+        buf[1] = '[';
+        buf[2] = 'M';
+        buf[3] = static_cast<char>(cb + 32);
+        buf[4] = static_cast<char>(x + 32);
+        buf[5] = static_cast<char>(y + 32);
+        writeToPTY(buf, 6);
+    }
+}
+
+static int buttonToCode(Button button)
+{
+    switch (button) {
+    case LeftButton: return 0;
+    case MidButton: return 1;
+    case RightButton: return 2;
+    default: return 0;
+    }
+}
+
+void Terminal::mousePressEvent(const MouseEvent *ev)
+{
+    // Shift overrides mouse reporting → always select
+    bool forceSelect = (ev->modifiers & ShiftModifier) != 0;
+
+    if (!forceSelect && mouseReportingActive()) {
+        int btn = buttonToCode(ev->button);
+        mMouseButtonDown = btn;
+        mLastMouseX = ev->x;
+        mLastMouseY = ev->y;
+        sendMouseEvent(btn, true, false, ev->x, ev->y, ev->modifiers);
+        return;
+    }
+
+    // Begin selection
+    clearSelection();
+    int absRow = mScrollback.historySize() - mViewportOffset + ev->y;
+    startSelection(ev->x, absRow);
+    event(Update);
+}
+
+void Terminal::mouseReleaseEvent(const MouseEvent *ev)
+{
+    if (mSelection.active) {
+        finalizeSelection();
+        std::string text = selectedText();
+        if (!text.empty()) {
+            copyToClipboard(text);
+        }
+        event(Update);
+        return;
+    }
+
+    if (mouseReportingActive() && mMouseButtonDown >= 0) {
+        int btn = buttonToCode(ev->button);
+        if (mMouseMode1006) {
+            sendMouseEvent(btn, false, false, ev->x, ev->y, ev->modifiers);
+        } else {
+            // Legacy: release is button code 3
+            sendMouseEvent(3, false, false, ev->x, ev->y, ev->modifiers);
+        }
+        mMouseButtonDown = -1;
+        mLastMouseX = -1;
+        mLastMouseY = -1;
+    }
+}
+
+void Terminal::mouseMoveEvent(const MouseEvent *ev)
+{
+    if (mSelection.active) {
+        int col = std::max(0, std::min(ev->x, mWidth - 1));
+        int row = std::max(0, std::min(ev->y, mHeight - 1));
+        int absRow = mScrollback.historySize() - mViewportOffset + row;
+        updateSelection(col, absRow);
+        event(Update);
+        return;
+    }
+
+    if (ev->x == mLastMouseX && ev->y == mLastMouseY) return;
+
+    if (mMouseMode1003) {
+        int btn = (mMouseButtonDown >= 0) ? mMouseButtonDown : 3; // 3 = no button in motion
+        sendMouseEvent(btn, true, true, ev->x, ev->y, ev->modifiers);
+        mLastMouseX = ev->x;
+        mLastMouseY = ev->y;
+    } else if (mMouseMode1002 && mMouseButtonDown >= 0) {
+        sendMouseEvent(mMouseButtonDown, true, true, ev->x, ev->y, ev->modifiers);
+        mLastMouseX = ev->x;
+        mLastMouseY = ev->y;
+    }
+}
+
+// Selection implementation
+void Terminal::startSelection(int col, int absRow)
+{
+    mSelection.startCol = col;
+    mSelection.startAbsRow = absRow;
+    mSelection.endCol = col;
+    mSelection.endAbsRow = absRow;
+    mSelection.active = true;
+    mSelection.valid = false;
+}
+
+void Terminal::updateSelection(int col, int absRow)
+{
+    mSelection.endCol = col;
+    mSelection.endAbsRow = absRow;
+}
+
+void Terminal::finalizeSelection()
+{
+    mSelection.active = false;
+    mSelection.valid = true;
+}
+
+void Terminal::clearSelection()
+{
+    mSelection.active = false;
+    mSelection.valid = false;
+}
+
+bool Terminal::isCellSelected(int col, int absRow) const
+{
+    if (!mSelection.active && !mSelection.valid) return false;
+
+    int r0 = mSelection.startAbsRow, c0 = mSelection.startCol;
+    int r1 = mSelection.endAbsRow, c1 = mSelection.endCol;
+
+    // Normalize so (r0,c0) <= (r1,c1)
+    if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+        std::swap(r0, r1);
+        std::swap(c0, c1);
+    }
+
+    if (absRow < r0 || absRow > r1) return false;
+    if (absRow == r0 && absRow == r1) return col >= c0 && col <= c1;
+    if (absRow == r0) return col >= c0;
+    if (absRow == r1) return col <= c1;
+    return true;
+}
+
+static std::string codepointToUtf8(char32_t cp)
+{
+    std::string result;
+    if (cp < 0x80) {
+        result += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        result += static_cast<char>(0xC0 | (cp >> 6));
+        result += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        result += static_cast<char>(0xE0 | (cp >> 12));
+        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        result += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        result += static_cast<char>(0xF0 | (cp >> 18));
+        result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        result += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+    return result;
+}
+
+std::string Terminal::selectedText() const
+{
+    if (!mSelection.active && !mSelection.valid) return {};
+
+    int r0 = mSelection.startAbsRow, c0 = mSelection.startCol;
+    int r1 = mSelection.endAbsRow, c1 = mSelection.endCol;
+    if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+        std::swap(r0, r1);
+        std::swap(c0, c1);
+    }
+
+    int histSize = mScrollback.historySize();
+    std::string result;
+
+    for (int absRow = r0; absRow <= r1; ++absRow) {
+        const Cell* row;
+        if (absRow < histSize) {
+            row = mScrollback.historyRow(absRow);
+        } else {
+            int gridRow = absRow - histSize;
+            if (gridRow < 0 || gridRow >= grid().rows()) continue;
+            row = grid().row(gridRow);
+        }
+        if (!row) continue;
+
+        int colStart = (absRow == r0) ? c0 : 0;
+        int colEnd = (absRow == r1) ? c1 : (mWidth - 1);
+        colStart = std::max(0, std::min(colStart, mWidth - 1));
+        colEnd = std::max(0, std::min(colEnd, mWidth - 1));
+
+        // Collect text, trimming trailing spaces
+        std::string line;
+        int lastNonSpace = colStart - 1;
+        for (int col = colStart; col <= colEnd; ++col) {
+            const Cell& cell = row[col];
+            if (cell.attrs.wideSpacer()) continue;
+            if (cell.wc == 0 || cell.wc == ' ') {
+                line += ' ';
+            } else {
+                line += codepointToUtf8(cell.wc);
+                lastNonSpace = static_cast<int>(line.size()) - 1;
+            }
+        }
+        // Trim trailing spaces
+        if (lastNonSpace >= 0) {
+            // Find the byte position after the last non-space content
+            line.resize(lastNonSpace + 1);
+        } else {
+            line.clear();
+        }
+
+        if (absRow > r0) result += '\n';
+        result += line;
+    }
+
+    return result;
 }
 
 void Terminal::readFromFD()
@@ -885,6 +1131,10 @@ void Terminal::onAction(const Action *action)
         case 25: // DECTCEM: show cursor
             mCursorVisible = true;
             break;
+        case 1000: mMouseMode1000 = true; break;
+        case 1002: mMouseMode1002 = true; break;
+        case 1003: mMouseMode1003 = true; break;
+        case 1006: mMouseMode1006 = true; break;
         case 1049: // Alt screen: save cursor, switch to alt, clear
             mSavedCursorX = mCursorX;
             mSavedCursorY = mCursorY;
@@ -896,9 +1146,10 @@ void Terminal::onAction(const Action *action)
             mAltGrid.markAllDirty();
             mScrollTop = 0;
             mScrollBottom = mHeight;
+            clearSelection();
             break;
-        case 2004: // Bracketed paste mode - acknowledge
-            DEBUG("Bracketed paste mode enabled");
+        case 2004:
+            mBracketedPaste = true;
             break;
         default:
             DEBUG("Ignoring private mode set %d", action->count);
@@ -910,6 +1161,10 @@ void Terminal::onAction(const Action *action)
         case 25: // DECTCEM: hide cursor
             mCursorVisible = false;
             break;
+        case 1000: mMouseMode1000 = false; break;
+        case 1002: mMouseMode1002 = false; break;
+        case 1003: mMouseMode1003 = false; break;
+        case 1006: mMouseMode1006 = false; break;
         case 1049: // Alt screen off: switch back to main, restore cursor
             mUsingAltScreen = false;
             mCursorX = mSavedCursorX;
@@ -918,9 +1173,10 @@ void Terminal::onAction(const Action *action)
             mGrid.markAllDirty();
             mScrollTop = 0;
             mScrollBottom = mHeight;
+            clearSelection();
             break;
-        case 2004: // Bracketed paste mode off
-            DEBUG("Bracketed paste mode disabled");
+        case 2004:
+            mBracketedPaste = false;
             break;
         default:
             DEBUG("Ignoring private mode reset %d", action->count);

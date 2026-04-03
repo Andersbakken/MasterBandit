@@ -111,7 +111,30 @@ public:
     void readFromFD();
     int exitCode() const { return mExitCode; }
 
+    bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
+
+    // Selection
+    struct Selection {
+        int startCol { 0 }, startAbsRow { 0 };
+        int endCol { 0 }, endAbsRow { 0 };
+        bool active { false };
+        bool valid { false };
+    };
+    void startSelection(int col, int absRow);
+    void updateSelection(int col, int absRow);
+    void finalizeSelection();
+    void clearSelection();
+    bool hasSelection() const { return mSelection.valid || mSelection.active; }
+    bool isCellSelected(int col, int absRow) const;
+    std::string selectedText() const;
+
+    virtual void copyToClipboard(const std::string&) {}
+
+    void pasteText(const std::string& text);
+
     static unsigned long long mono();
+protected:
+    void writeToPTY(const char* data, size_t len);
 private:
     Platform *mPlatform;
     TerminalOptions mOptions;
@@ -198,6 +221,19 @@ private:
 
     void scrollUpInRegion(int n);
     void advanceCursorToNewLine();
+
+    // Mouse reporting
+    void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, unsigned int modifiers);
+
+    bool mMouseMode1000 { false };
+    bool mMouseMode1002 { false };
+    bool mMouseMode1003 { false };
+    bool mMouseMode1006 { false };
+    int mMouseButtonDown { -1 };
+    int mLastMouseX { -1 }, mLastMouseY { -1 };
+    bool mBracketedPaste { false };
+
+    Selection mSelection;
 
     // 16-color palette (standard + bright) as RGB
     static const uint8_t s16ColorPalette[16][3];

@@ -535,6 +535,14 @@ enum Button {
     RightButton = 0x4
 };
 
+enum Modifier {
+    NoModifier    = 0x0,
+    ShiftModifier = 0x1,
+    CtrlModifier  = 0x2,
+    AltModifier   = 0x4,
+    MetaModifier  = 0x8
+};
+
 struct MouseEvent
 {
     int x { 0 };
@@ -562,6 +570,7 @@ struct MouseEvent
 
     Button button { NoButton };
     unsigned int buttons { 0 };
+    unsigned int modifiers { 0 };
 };
 
 struct KeyEvent

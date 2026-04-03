@@ -199,14 +199,6 @@ public:
                    const TerminalOptions& options);
     ~TerminalWindow();
 
-    // Terminal overrides
-    void event(Event ev, void* data = nullptr) override;
-    void copyToClipboard(const std::string& text) override;
-    std::string pasteFromClipboard() override;
-    void onTitleChanged(const std::string& title) override;
-    float cellPixelWidth() const override { return charWidth_; }
-    float cellPixelHeight() const override { return lineHeight_; }
-
     // Called from GLFW callbacks
     void onKey(int key, int scancode, int action, int mods);
     void onChar(unsigned int codepoint);
@@ -512,7 +504,32 @@ void PlatformDawn::quit(int status)
 TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
                wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
                const TerminalOptions& options)
-    : Terminal(platform)
+    : Terminal(platform, [this, glfwWindow]() -> TerminalCallbacks {
+        TerminalCallbacks cbs;
+        cbs.event = [this](TerminalEmulator*, int ev, void*) {
+            switch (static_cast<TerminalEmulator::Event>(ev)) {
+            case TerminalEmulator::Update:
+            case TerminalEmulator::ScrollbackChanged:
+                needsRedraw_ = true;
+                break;
+            case TerminalEmulator::VisibleBell:
+                break;
+            }
+        };
+        cbs.copyToClipboard = [glfwWindow](const std::string& text) {
+            glfwSetClipboardString(glfwWindow, text.c_str());
+        };
+        cbs.pasteFromClipboard = [glfwWindow]() -> std::string {
+            const char* clip = glfwGetClipboardString(glfwWindow);
+            return clip ? std::string(clip) : std::string();
+        };
+        cbs.onTitleChanged = [glfwWindow](const std::string& title) {
+            glfwSetWindowTitle(glfwWindow, title.c_str());
+        };
+        cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
+        cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
+        return cbs;
+    }())
     , platform_(platform)
     , glfwWindow_(glfwWindow)
     , device_(device)
@@ -632,33 +649,6 @@ void TerminalWindow::configureSurface(uint32_t width, uint32_t height)
     surface_.Configure(&config);
 }
 
-void TerminalWindow::event(Event ev, void* /*data*/)
-{
-    switch (ev) {
-    case Update:
-    case ScrollbackChanged:
-        needsRedraw_ = true;
-        break;
-    case VisibleBell:
-        break;
-    }
-}
-
-void TerminalWindow::copyToClipboard(const std::string& text)
-{
-    glfwSetClipboardString(glfwWindow_, text.c_str());
-}
-
-std::string TerminalWindow::pasteFromClipboard()
-{
-    const char* clip = glfwGetClipboardString(glfwWindow_);
-    return clip ? std::string(clip) : std::string();
-}
-
-void TerminalWindow::onTitleChanged(const std::string& title)
-{
-    glfwSetWindowTitle(glfwWindow_, title.c_str());
-}
 
 // Replace invalid UTF-8 bytes with U+FFFD so glaze doesn't reject them
 static std::string sanitizeUtf8(const std::string& in)

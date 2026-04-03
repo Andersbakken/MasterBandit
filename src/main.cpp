@@ -77,7 +77,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    Log::setLogLevel(Log::Debug); // forced for debugging
+    Log::setLogLevel(static_cast<Log::Level>(logLevel));
 
     // Terminal is now owned by the platform's layout — createTerminal returns nullptr on success.
     if (!platform->createTerminal(options)) {

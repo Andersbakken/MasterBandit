@@ -1,6 +1,7 @@
 #include "Renderer.h"
 #include "renderer_utils.h"
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <filesystem>
 #include <vector>
 #include <cstring>
@@ -311,21 +312,16 @@ void Renderer::destroy()
     rectBindGroupLayout_ = nullptr;
     rectUniformBuffer_   = nullptr;
     rectBindGroup_       = nullptr;
-    computePipeline_     = nullptr;
+    computePool_.clear();
+    computePipeline_        = nullptr;
     computeBindGroupLayout_ = nullptr;
-    resolvedCellBuffer_   = nullptr;
-    computeTextVertBuffer_ = nullptr;
-    computeRectVertBuffer_ = nullptr;
-    indirectBuffer_      = nullptr;
-    computeParamsBuffer_ = nullptr;
-    computeBindGroup_    = nullptr;
+    computeInitialized_     = false;
     imageShader_         = nullptr;
     imagePipeline_       = nullptr;
     imageBindGroupLayout_ = nullptr;
     imageUniformBuffer_  = nullptr;
     imageVertexBuffer_   = nullptr;
     imageSampler_        = nullptr;
-    computeReady_        = false;
     imagePipelineReady_  = false;
 }
 
@@ -393,94 +389,17 @@ void Renderer::initComputePipeline(wgpu::Device& device, const std::string& shad
     cpDesc.compute.entryPoint = "main";
     computePipeline_ = device.CreateComputePipeline(&cpDesc);
 
+    computePool_.init(device.Get(), computeBindGroupLayout_.Get());
+    computeInitialized_ = true;
     spdlog::info("Compute pipeline initialized");
 }
 
-void Renderer::resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows)
+
+void Renderer::uploadResolvedCells(wgpu::Queue& queue, ComputeState* state,
+                                    const ResolvedCell* cells, uint32_t count)
 {
-    if (cols == gridCols_ && rows == gridRows_ && computeReady_) return;
-
-    gridCols_ = cols;
-    gridRows_ = rows;
-    uint32_t totalCells = cols * rows;
-
-    // Resolved cell buffer: totalCells * 32 bytes
-    {
-        wgpu::BufferDescriptor desc = {};
-        desc.size = static_cast<uint64_t>(totalCells) * sizeof(ResolvedCell);
-        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
-        resolvedCellBuffer_ = device.CreateBuffer(&desc);
-    }
-
-    // Text vertex buffer: worst case every cell has a glyph = totalCells * 6 verts * 36 bytes
-    {
-        wgpu::BufferDescriptor desc = {};
-        desc.size = static_cast<uint64_t>(totalCells) * 6 * 36; // SlugVertexStorage is 36 bytes
-        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
-        computeTextVertBuffer_ = device.CreateBuffer(&desc);
-    }
-
-    // Rect vertex buffer: worst case every cell has bg = totalCells * 6 verts * 24 bytes
-    {
-        wgpu::BufferDescriptor desc = {};
-        desc.size = static_cast<uint64_t>(totalCells) * 6 * 24; // RectVertexStorage is 24 bytes
-        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
-        computeRectVertBuffer_ = device.CreateBuffer(&desc);
-    }
-
-    // Indirect draw args buffer: 8 uint32s (2 indirect draw commands)
-    {
-        wgpu::BufferDescriptor desc = {};
-        desc.size = 32; // 8 * sizeof(uint32_t)
-        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Indirect | wgpu::BufferUsage::CopyDst;
-        indirectBuffer_ = device.CreateBuffer(&desc);
-    }
-
-    // Compute params uniform buffer
-    {
-        wgpu::BufferDescriptor desc = {};
-        desc.size = sizeof(TerminalComputeParams);
-        desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-        computeParamsBuffer_ = device.CreateBuffer(&desc);
-    }
-
-    // Create bind group
-    wgpu::BindGroupEntry bgEntries[5] = {};
-    bgEntries[0].binding = 0;
-    bgEntries[0].buffer = computeParamsBuffer_;
-    bgEntries[0].size = sizeof(TerminalComputeParams);
-
-    bgEntries[1].binding = 1;
-    bgEntries[1].buffer = resolvedCellBuffer_;
-    bgEntries[1].size = static_cast<uint64_t>(totalCells) * sizeof(ResolvedCell);
-
-    bgEntries[2].binding = 2;
-    bgEntries[2].buffer = computeTextVertBuffer_;
-    bgEntries[2].size = static_cast<uint64_t>(totalCells) * 6 * 36;
-
-    bgEntries[3].binding = 3;
-    bgEntries[3].buffer = computeRectVertBuffer_;
-    bgEntries[3].size = static_cast<uint64_t>(totalCells) * 6 * 24;
-
-    bgEntries[4].binding = 4;
-    bgEntries[4].buffer = indirectBuffer_;
-    bgEntries[4].size = 32;
-
-    wgpu::BindGroupDescriptor bgDesc = {};
-    bgDesc.layout = computeBindGroupLayout_;
-    bgDesc.entryCount = 5;
-    bgDesc.entries = bgEntries;
-    computeBindGroup_ = device.CreateBindGroup(&bgDesc);
-
-    computeReady_ = true;
-
-    spdlog::info("Compute buffers resized: {}x{} ({} cells)", cols, rows, totalCells);
-}
-
-void Renderer::uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells, uint32_t count)
-{
-    if (!computeReady_ || count == 0) return;
-    queue.WriteBuffer(resolvedCellBuffer_, 0, cells,
+    if (!computeInitialized_ || !state || count == 0) return;
+    queue.WriteBuffer(state->resolvedCellBuffer, 0, cells,
                       static_cast<uint64_t>(count) * sizeof(ResolvedCell));
 }
 
@@ -699,10 +618,12 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              const std::string& fontName,
                              const TerminalComputeParams& params,
+                             ComputeState* computeState,
                              wgpu::TextureView target,
                              const std::vector<ImageDrawCmd>& imageCmds)
 {
-    if (!computeReady_) return;
+    if (!computeInitialized_) return;
+    if (!computeState) return;
 
     auto fontIt = fontGPU_.find(fontName);
     if (fontIt == fontGPU_.end()) return;
@@ -728,18 +649,18 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         queue.WriteBuffer(gpu.uniformBuffer, 0, textUniforms, sizeof(textUniforms));
     }
 
-    queue.WriteBuffer(computeParamsBuffer_, 0, &params, sizeof(params));
+    queue.WriteBuffer(computeState->computeParamsBuffer, 0, &params, sizeof(params));
 
     uint32_t indirectInit[8] = {0, 1, 0, 0, 0, 1, 0, 0};
-    queue.WriteBuffer(indirectBuffer_, 0, indirectInit, sizeof(indirectInit));
+    queue.WriteBuffer(computeState->indirectBuffer, 0, indirectInit, sizeof(indirectInit));
 
     // Compute pass — generates vertex data
     {
         wgpu::ComputePassDescriptor cpDesc = {};
         wgpu::ComputePassEncoder computePass = encoder.BeginComputePass(&cpDesc);
         computePass.SetPipeline(computePipeline_);
-        computePass.SetBindGroup(0, computeBindGroup_);
-        uint32_t totalCells = gridCols_ * gridRows_;
+        computePass.SetBindGroup(0, computeState->bindGroup);
+        uint32_t totalCells = params.cols * params.rows;
         uint32_t workgroups = (totalCells + 255) / 256;
         computePass.DispatchWorkgroups(workgroups, 1, 1);
         computePass.End();
@@ -770,8 +691,8 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(rectPipeline_);
         pass.SetBindGroup(0, rectBindGroup_);
-        pass.SetVertexBuffer(0, computeRectVertBuffer_);
-        pass.DrawIndirect(indirectBuffer_, 16);
+        pass.SetVertexBuffer(0, computeState->computeRectVertBuffer);
+        pass.DrawIndirect(computeState->indirectBuffer, 16);
         pass.End();
     }
 
@@ -791,8 +712,8 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(textPipeline_);
         pass.SetBindGroup(0, fontIt->second.bindGroup);
-        pass.SetVertexBuffer(0, computeTextVertBuffer_);
-        pass.DrawIndirect(indirectBuffer_, 0);
+        pass.SetVertexBuffer(0, computeState->computeTextVertBuffer);
+        pass.DrawIndirect(computeState->indirectBuffer, 0);
         pass.End();
     }
 }

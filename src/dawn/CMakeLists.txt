@@ -1,4 +1,4 @@
-set(DAWN_SOURCES PlatformDawn.cpp Renderer.cpp NativeSurface.cpp TexturePool.cpp)
+set(DAWN_SOURCES PlatformDawn.cpp Renderer.cpp NativeSurface.cpp TexturePool.cpp ComputeStatePool.cpp)
 if(APPLE)
     list(APPEND DAWN_SOURCES MetalLayer.mm ../FontFallback_CoreText.mm ../FontResolver_CoreText.mm)
 else()

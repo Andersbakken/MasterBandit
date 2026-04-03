@@ -2,6 +2,9 @@
 
 #include <dawn/webgpu_cpp.h>
 #include "text.h"
+#include "ComputeTypes.h"
+#include "ComputeStatePool.h"
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -21,31 +24,6 @@ struct RectVertex {
     float pos[2];
     float color[4];
 };
-
-// CPU-resolved cell data for GPU upload (32 bytes)
-struct ResolvedCell {
-    uint32_t atlas_offset;   // 0 = empty/spacer
-    float ext_min_x, ext_min_y, ext_max_x, ext_max_y;
-    uint32_t upem;
-    uint32_t fg_color;       // packed RGBA8
-    uint32_t bg_color;       // packed RGBA8 (0 = default/transparent)
-};
-static_assert(sizeof(ResolvedCell) == 32);
-
-// Compute shader uniform params (40 bytes)
-struct TerminalComputeParams {
-    uint32_t cols;
-    uint32_t rows;
-    float cell_width;
-    float cell_height;
-    float viewport_w;
-    float viewport_h;
-    float font_ascender;
-    float font_size;
-    float pane_origin_x;  // pixel X offset of pane within window
-    float pane_origin_y;  // pixel Y offset of pane within window
-};
-static_assert(sizeof(TerminalComputeParams) == 40);
 
 class Renderer {
 public:
@@ -72,13 +50,18 @@ public:
 
     // Compute pipeline
     void initComputePipeline(wgpu::Device& device, const std::string& shaderDir);
-    void resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows);
-    void uploadResolvedCells(wgpu::Queue& queue, const ResolvedCell* cells, uint32_t count);
+
+    // Compute state pool (byte-budget eviction, logged at info level)
+    ComputeStatePool& computePool() { return computePool_; }
+
+    void uploadResolvedCells(wgpu::Queue& queue, ComputeState* state,
+                             const ResolvedCell* cells, uint32_t count);
 
     // Render terminal content to an externally-provided texture from the TexturePool.
     void renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       const std::string& fontName,
                       const TerminalComputeParams& params,
+                      ComputeState* computeState,
                       wgpu::TextureView target,
                       const std::vector<ImageDrawCmd>& imageCmds = {});
 
@@ -138,14 +121,9 @@ private:
     // Compute pipeline
     wgpu::ComputePipeline computePipeline_;
     wgpu::BindGroupLayout computeBindGroupLayout_;
-    wgpu::Buffer resolvedCellBuffer_;      // Storage
-    wgpu::Buffer computeTextVertBuffer_;   // Storage | Vertex
-    wgpu::Buffer computeRectVertBuffer_;   // Storage | Vertex
-    wgpu::Buffer indirectBuffer_;          // Storage | Indirect | CopyDst
-    wgpu::Buffer computeParamsBuffer_;     // Uniform | CopyDst
-    wgpu::BindGroup computeBindGroup_;
-    uint32_t gridCols_ = 0, gridRows_ = 0;
-    bool computeReady_ = false;
+    bool computeInitialized_ = false;
+
+    ComputeStatePool computePool_;
 
     // Image pipeline
     wgpu::ShaderModule imageShader_;

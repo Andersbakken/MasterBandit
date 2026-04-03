@@ -11,6 +11,16 @@ Log::Level Log::logLevel()
 void Log::setLogLevel(Log::Level level)
 {
     sLevel = level;
+
+    // Keep spdlog's level in sync so spdlog::debug() etc. are gated the same way.
+    switch (level) {
+    case Verbose: spdlog::set_level(spdlog::level::trace);    break;
+    case Debug:   spdlog::set_level(spdlog::level::debug);    break;
+    case Warn:    spdlog::set_level(spdlog::level::warn);     break;
+    case Error:   spdlog::set_level(spdlog::level::err);      break;
+    case Fatal:   spdlog::set_level(spdlog::level::critical); break;
+    default:      spdlog::set_level(spdlog::level::info);     break;
+    }
 }
 
 void Log::log(Level level, const std::string &string)

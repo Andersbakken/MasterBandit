@@ -347,6 +347,7 @@ private:
     int           tabBarAnimFrame_  = 0;
     uint64_t      lastAnimTick_     = 0;
     std::vector<PooledTexture*> pendingTabBarRelease_;
+    std::vector<ComputeState*> pendingComputeRelease_;
 
     // Tab bar colors (packed BGRA8 as used in ResolvedCell)
     uint32_t tbBgColor_        = 0xFF261926;
@@ -437,6 +438,10 @@ PlatformDawn::~PlatformDawn()
     if (tabBarTexture_) { texturePool_.release(tabBarTexture_); tabBarTexture_ = nullptr; }
     for (auto* t : pendingTabBarRelease_) texturePool_.release(t);
     pendingTabBarRelease_.clear();
+
+    // Release any pending compute states before destroying renderer
+    for (auto* cs : pendingComputeRelease_) renderer_.computePool().release(cs);
+    pendingComputeRelease_.clear();
 
     // Destroy tabs (and their layouts/panes/terminals) before GPU resources
     tabs_.clear();
@@ -680,8 +685,6 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     if (cols < 1) cols = 80;
     if (rows < 1) rows = 24;
 
-    renderer_.resizeComputeBuffers(device_, cols, rows);
-
     // Init per-pane render state
     auto& rs = paneRenderStates_[paneId];
     rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
@@ -727,7 +730,6 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
                 TerminalEmulator* te = p->activeTerm();
                 if (te) {
                     int c = te->width(), r = te->height();
-                    renderer_.resizeComputeBuffers(device_, c > 0 ? c : 1, r > 0 ? r : 1);
                     auto& rs2 = paneRenderStates_[p->id()];
                     rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
                 }
@@ -1041,10 +1043,6 @@ void PlatformDawn::renderFrame()
             if (rs.resolvedCells.size() != needed)
                 rs.resolvedCells.resize(needed);
 
-            // Ensure compute buffers are sized for this pane's grid.
-            // (Tab bar rendering may have resized them to a smaller size.)
-            renderer_.resizeComputeBuffers(device_, g.cols(), g.rows());
-
             if (term->viewportOffset() != 0) {
                 for (int row = 0; row < g.rows(); ++row)
                     resolveRow(paneId, row, font, scale);
@@ -1085,7 +1083,8 @@ void PlatformDawn::renderFrame()
             }
 
             uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
-            renderer_.uploadResolvedCells(queue_, rs.resolvedCells.data(), totalCells);
+            ComputeState* cs = renderer_.computePool().acquire(totalCells);
+            renderer_.uploadResolvedCells(queue_, cs, rs.resolvedCells.data(), totalCells);
 
             // Restore cursor cell
             if (cursorIdx >= 0) {
@@ -1184,9 +1183,10 @@ void PlatformDawn::renderFrame()
 
             wgpu::CommandEncoderDescriptor encDesc = {};
             wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-            renderer_.renderToPane(encoder, queue_, fontName_, params, newTexture->view, imageCmds);
+            renderer_.renderToPane(encoder, queue_, fontName_, params, cs, newTexture->view, imageCmds);
             wgpu::CommandBuffer commands = encoder.Finish();
             queue_.Submit(1, &commands);
+            pendingComputeRelease_.push_back(cs);
 
             if (rs.heldTexture) rs.pendingRelease.push_back(rs.heldTexture);
             rs.heldTexture = newTexture;
@@ -1308,11 +1308,16 @@ void PlatformDawn::renderFrame()
         }
         toRelease.insert(toRelease.end(), pendingTabBarRelease_.begin(), pendingTabBarRelease_.end());
         pendingTabBarRelease_.clear();
-        TexturePool* pool = &texturePool_;
+        auto texturesToRelease = toRelease;
+        auto computeToRelease  = pendingComputeRelease_;
+        pendingComputeRelease_.clear();
+        TexturePool*      texturePool = &texturePool_;
+        ComputeStatePool* computePool = &renderer_.computePool();
         queue_.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
-            [pool, toRelease](wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
-                for (auto* t : toRelease) pool->release(t);
-                pool->tick();
+            [texturePool, texturesToRelease, computeToRelease, computePool]
+            (wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
+                for (auto* t  : texturesToRelease) texturePool->release(t);
+                for (auto* cs : computeToRelease)  computePool->release(cs);
             });
     }
 
@@ -1426,8 +1431,6 @@ void PlatformDawn::onFramebufferResize(int width, int height)
         int rows = term->height();
         if (cols < 1) cols = 1;
         if (rows < 1) rows = 1;
-
-        renderer_.resizeComputeBuffers(device_, cols, rows);
 
         auto& rs = paneRenderStates_[pane->id()];
         rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
@@ -1634,12 +1637,7 @@ void PlatformDawn::renderTabBar()
     if (tbRect.isEmpty()) return;
 
     int cols = std::max(1, static_cast<int>(tbRect.w / tabBarCharWidth_));
-
-    // Resize compute buffers if cols changed
-    if (cols != tabBarCols_) {
-        renderer_.resizeComputeBuffers(device_, static_cast<uint32_t>(cols), 1);
-        tabBarCols_ = cols;
-    }
+    tabBarCols_ = cols;
 
     // Build resolved cells for 1 row
     std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
@@ -1771,7 +1769,9 @@ void PlatformDawn::renderTabBar()
 
     float scale = tabBarFontSize_ / font->baseSize;
     renderer_.updateFontAtlas(queue_, tabBarFontName_, *font);
-    renderer_.uploadResolvedCells(queue_, cells.data(), static_cast<uint32_t>(cols));
+
+    ComputeState* cs = renderer_.computePool().acquire(static_cast<uint32_t>(cols));
+    renderer_.uploadResolvedCells(queue_, cs, cells.data(), static_cast<uint32_t>(cols));
 
     TerminalComputeParams params = {};
     params.cols = static_cast<uint32_t>(cols);
@@ -1791,9 +1791,10 @@ void PlatformDawn::renderTabBar()
 
     wgpu::CommandEncoderDescriptor encDesc = {};
     wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-    renderer_.renderToPane(encoder, queue_, tabBarFontName_, params, newTexture->view, {});
+    renderer_.renderToPane(encoder, queue_, tabBarFontName_, params, cs, newTexture->view, {});
     wgpu::CommandBuffer commands = encoder.Finish();
     queue_.Submit(1, &commands);
+    pendingComputeRelease_.push_back(cs);
 
     if (tabBarTexture_) pendingTabBarRelease_.push_back(tabBarTexture_);
     tabBarTexture_ = newTexture;

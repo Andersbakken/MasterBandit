@@ -194,7 +194,8 @@ class PlatformDawn;
 class TerminalWindow : public Terminal {
 public:
     TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
-                   wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface);
+                   wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
+                   const TerminalOptions& options);
     ~TerminalWindow();
 
     // Terminal overrides
@@ -235,7 +236,7 @@ private:
     Renderer renderer_;
     TextSystem textSystem_;
     std::string fontName_ = "mono";
-    float fontSize_ = 16.0f;
+    float fontSize_ = 16.0f; // overridden in constructor from TerminalOptions
     float charWidth_ = 0.0f;
     float lineHeight_ = 0.0f;
     float contentScaleX_ = 1.0f, contentScaleY_ = 1.0f;
@@ -383,7 +384,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         return nullptr;
     }
 
-    auto window = std::make_unique<TerminalWindow>(this, glfwWin, device_, queue_, surface);
+    auto window = std::make_unique<TerminalWindow>(this, glfwWin, device_, queue_, surface, options);
     window_ = window.get();
 
     glfwSetWindowUserPointer(glfwWin, window_);
@@ -508,13 +509,15 @@ void PlatformDawn::quit(int status)
 // ========================================================================
 
 TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
-               wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface)
+               wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
+               const TerminalOptions& options)
     : Terminal(platform)
     , platform_(platform)
     , glfwWindow_(glfwWindow)
     , device_(device)
     , queue_(queue)
     , surface_(surface)
+    , fontSize_(options.fontSize)
 {
     int w, h;
     glfwGetFramebufferSize(glfwWindow_, &w, &h);
@@ -529,7 +532,7 @@ TerminalWindow::TerminalWindow(PlatformDawn* platform, GLFWwindow* glfwWindow,
 
     configureSurface(fbWidth_, fbHeight_);
 
-    std::string fontPath = findMonospaceFont();
+    std::string fontPath = options.font.empty() ? findMonospaceFont() : options.font;
     if (fontPath.empty()) {
         spdlog::error("No monospace font found on system");
         return;

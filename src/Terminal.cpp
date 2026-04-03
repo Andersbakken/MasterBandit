@@ -110,7 +110,7 @@ bool Terminal::init(const TerminalOptions &options)
 {
     mOptions = options;
     // Re-initialize document with configured scrollback capacity
-    mDocument = Document(mDocument.cols(), mDocument.rows(), mOptions.scrollbackLines);
+    mDocument = Document(mDocument.cols(), mDocument.rows(), mOptions.resolvedScrollback());
 
     mMasterFD = posix_openpt(O_RDWR | O_NOCTTY);
     if (mMasterFD == -1) {

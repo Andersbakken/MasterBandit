@@ -107,8 +107,10 @@ Document::Document(int cols, int screenHeight, int tier1Capacity, int maxArchive
     , maxArchiveRows_(maxArchiveRows)
     , tier1Capacity_(tier1Capacity)
 {
-    // Ring must hold tier1 history + screen
-    ringCapacity_ = roundUpPow2(tier1Capacity + screenHeight + 64);
+    // Start the ring at a modest size; it grows dynamically as history accumulates.
+    // Cap the initial allocation to avoid overflow when tier1Capacity is INT_MAX (infinite).
+    int initialHistory = std::min(tier1Capacity, 1024);
+    ringCapacity_ = roundUpPow2(initialHistory + screenHeight + 64);
     ring_.resize(static_cast<size_t>(ringCapacity_) * cols_);
     ringExtras_.resize(ringCapacity_);
     dirty_.assign(screenHeight_, true);

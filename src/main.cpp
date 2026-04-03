@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include "Terminal.h"
+#include "Config.h"
 #include <getopt.h>
 #include <cstring>
 #include <pwd.h>
@@ -38,7 +39,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to create platform\n");
         return 1;
     }
+    Config config = loadConfig();
+
     TerminalOptions options;
+    options.font = config.font;
+    options.fontSize = config.font_size;
+    options.scrollbackLines = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
+
     char buf[1024];
     if (!getlogin_r(buf, sizeof(buf))) {
         options.user = buf;

@@ -102,14 +102,6 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
 
     textPipeline_ = device_.CreateRenderPipeline(&textPipeDesc);
 
-    // Text vertex buffer
-    {
-        wgpu::BufferDescriptor desc = {};
-        desc.size = MAX_TEXT_VERTS * sizeof(SlugVertex);
-        desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
-        textVertexBuffer_ = device_.CreateBuffer(&desc);
-    }
-
     // ========================================
     // Rect pipeline
     // ========================================
@@ -180,14 +172,6 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     rectPipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 
     rectPipeline_ = device_.CreateRenderPipeline(&rectPipeDesc);
-
-    // Rect vertex buffer
-    {
-        wgpu::BufferDescriptor desc = {};
-        desc.size = MAX_RECT_VERTS * sizeof(RectVertex);
-        desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
-        rectVertexBuffer_ = device_.CreateBuffer(&desc);
-    }
 
     // Rect uniform buffer (viewport)
     {
@@ -314,98 +298,6 @@ void Renderer::setViewportSize(uint32_t width, uint32_t height)
 {
     viewportW_ = width;
     viewportH_ = height;
-}
-
-void Renderer::queueRect(float x, float y, float w, float h,
-                          float r, float g, float b, float a)
-{
-    float x0 = x, y0 = y, x1 = x + w, y1 = y + h;
-    RectVertex verts[6] = {
-        {{x0, y0}, {r, g, b, a}},
-        {{x1, y0}, {r, g, b, a}},
-        {{x0, y1}, {r, g, b, a}},
-        {{x1, y0}, {r, g, b, a}},
-        {{x1, y1}, {r, g, b, a}},
-        {{x0, y1}, {r, g, b, a}},
-    };
-    rectVerts_.insert(rectVerts_.end(), std::begin(verts), std::end(verts));
-}
-
-void Renderer::clearQueues()
-{
-    rectVerts_.clear();
-}
-
-void Renderer::renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
-                            wgpu::TextureView swapchainView)
-{
-    // Update rect uniform with current viewport
-    {
-        float uniforms[4] = {
-            static_cast<float>(viewportW_),
-            static_cast<float>(viewportH_),
-            0.0f, 0.0f
-        };
-        queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
-    }
-
-    // Update text uniforms with current viewport for all fonts
-    for (auto& [fontName, gpu] : fontGPU_) {
-        float w = static_cast<float>(viewportW_);
-        float h = static_cast<float>(viewportH_);
-        float uniforms[24] = {
-            2.0f/w,  0.0f,    0.0f, 0.0f,
-            0.0f,   -2.0f/h,  0.0f, 0.0f,
-            0.0f,    0.0f,    1.0f, 0.0f,
-           -1.0f,    1.0f,    0.0f, 1.0f,
-            w, h,
-            1.0f,
-            1.0f,
-            0.0f, 0.0f, 0.0f, 0.0f,
-        };
-        queue.WriteBuffer(gpu.uniformBuffer, 0, uniforms, sizeof(uniforms));
-    }
-
-    // Clear pass (black background)
-    {
-        wgpu::RenderPassColorAttachment clearAttachment = {};
-        clearAttachment.view = swapchainView;
-        clearAttachment.loadOp = wgpu::LoadOp::Clear;
-        clearAttachment.storeOp = wgpu::StoreOp::Store;
-        clearAttachment.clearValue = {0.0, 0.0, 0.0, 1.0};
-
-        wgpu::RenderPassDescriptor clearPassDesc = {};
-        clearPassDesc.colorAttachmentCount = 1;
-        clearPassDesc.colorAttachments = &clearAttachment;
-
-        wgpu::RenderPassEncoder clearPass = encoder.BeginRenderPass(&clearPassDesc);
-        clearPass.End();
-    }
-
-    // Rect pass
-    if (!rectVerts_.empty()) {
-        uint32_t vertCount = static_cast<uint32_t>(rectVerts_.size());
-        if (vertCount > MAX_RECT_VERTS) vertCount = MAX_RECT_VERTS;
-
-        queue.WriteBuffer(rectVertexBuffer_, 0, rectVerts_.data(),
-                          vertCount * sizeof(RectVertex));
-
-        wgpu::RenderPassColorAttachment rectAttachment = {};
-        rectAttachment.view = swapchainView;
-        rectAttachment.loadOp = wgpu::LoadOp::Load;
-        rectAttachment.storeOp = wgpu::StoreOp::Store;
-
-        wgpu::RenderPassDescriptor rectPassDesc = {};
-        rectPassDesc.colorAttachmentCount = 1;
-        rectPassDesc.colorAttachments = &rectAttachment;
-
-        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rectPassDesc);
-        pass.SetPipeline(rectPipeline_);
-        pass.SetBindGroup(0, rectBindGroup_);
-        pass.SetVertexBuffer(0, rectVertexBuffer_);
-        pass.Draw(vertCount);
-        pass.End();
-    }
 }
 
 // ========================================
@@ -640,31 +532,6 @@ void Renderer::renderFrameCompute(wgpu::CommandEncoder& encoder, wgpu::Queue& qu
         pass.SetBindGroup(0, rectBindGroup_);
         pass.SetVertexBuffer(0, computeRectVertBuffer_);
         pass.DrawIndirect(indirectBuffer_, 16); // offset 16 = second indirect command
-        pass.End();
-    }
-
-    // CPU rect pass (cursor, selection — very few rects)
-    if (!rectVerts_.empty()) {
-        uint32_t vertCount = static_cast<uint32_t>(rectVerts_.size());
-        if (vertCount > MAX_RECT_VERTS) vertCount = MAX_RECT_VERTS;
-
-        queue.WriteBuffer(rectVertexBuffer_, 0, rectVerts_.data(),
-                          vertCount * sizeof(RectVertex));
-
-        wgpu::RenderPassColorAttachment rectAttachment = {};
-        rectAttachment.view = swapchainView;
-        rectAttachment.loadOp = wgpu::LoadOp::Load;
-        rectAttachment.storeOp = wgpu::StoreOp::Store;
-
-        wgpu::RenderPassDescriptor rectPassDesc = {};
-        rectPassDesc.colorAttachmentCount = 1;
-        rectPassDesc.colorAttachments = &rectAttachment;
-
-        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rectPassDesc);
-        pass.SetPipeline(rectPipeline_);
-        pass.SetBindGroup(0, rectBindGroup_);
-        pass.SetVertexBuffer(0, rectVertexBuffer_);
-        pass.Draw(vertCount);
         pass.End();
     }
 

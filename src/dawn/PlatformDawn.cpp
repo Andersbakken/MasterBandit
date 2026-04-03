@@ -762,21 +762,28 @@ void TerminalWindow::renderTerminal()
     // Clear dirty flags (const_cast since we need to mutate dirty state)
     const_cast<CellGrid&>(g).clearAllDirty();
 
+    // Apply cursor: swap fg/bg on cursor cell for block cursor inversion
+    int cursorIdx = -1;
+    ResolvedCell savedCursorCell;
+    if (viewportOffset() == 0 && cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
+        cursorY() >= 0 && cursorY() < g.rows()) {
+        cursorIdx = cursorY() * g.cols() + cursorX();
+        savedCursorCell = resolvedCells_[cursorIdx];
+        resolvedCells_[cursorIdx].bg_color = 0xFFCCCCCC;
+        resolvedCells_[cursorIdx].fg_color = 0xFF000000;
+    }
+
     // Upload resolved cells
     uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
     renderer_.uploadResolvedCells(queue_, resolvedCells_.data(), totalCells);
 
+    // Restore cursor cell so cached resolved data stays clean
+    if (cursorIdx >= 0) {
+        resolvedCells_[cursorIdx] = savedCursorCell;
+    }
+
     // Upload any newly encoded glyphs to GPU
     renderer_.updateFontAtlas(queue_, fontName_, *font);
-
-    // Queue cursor rect (CPU-side, 1 rect) — only when viewing live screen
-    renderer_.clearQueues();
-    if (viewportOffset() == 0 && cursorVisible() && cursorX() >= 0 && cursorX() < g.cols() &&
-        cursorY() >= 0 && cursorY() < g.rows()) {
-        float curX = static_cast<float>(cursorX()) * charWidth_;
-        float curY = static_cast<float>(cursorY()) * lineHeight_;
-        renderer_.queueRect(curX, curY, charWidth_, lineHeight_, 0.8f, 0.8f, 0.8f, 0.5f);
-    }
 
     // Build compute params
     TerminalComputeParams params = {};

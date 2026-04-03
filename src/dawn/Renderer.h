@@ -59,15 +59,6 @@ public:
 
     void setViewportSize(uint32_t width, uint32_t height);
 
-    // Legacy CPU vertex path (still used for cursor/selection rects)
-    void queueRect(float x, float y, float w, float h,
-                   float r, float g, float b, float a);
-    void clearQueues();
-
-    // Legacy render frame (rect + text from CPU vertices)
-    void renderFrame(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
-                     wgpu::TextureView swapchainView);
-
     // Compute pipeline
     void initComputePipeline(wgpu::Device& device, const std::string& shaderDir);
     void resizeComputeBuffers(wgpu::Device& device, uint32_t cols, uint32_t rows);
@@ -87,9 +78,6 @@ private:
     wgpu::ShaderModule textShader_;
     wgpu::RenderPipeline textPipeline_;
     wgpu::BindGroupLayout textBindGroupLayout_;
-    wgpu::Buffer textVertexBuffer_;
-
-    static constexpr uint32_t MAX_TEXT_VERTS = 16384 * 6;
 
     struct FontGPU {
         wgpu::Buffer storageBuffer;
@@ -104,13 +92,8 @@ private:
     wgpu::ShaderModule rectShader_;
     wgpu::RenderPipeline rectPipeline_;
     wgpu::BindGroupLayout rectBindGroupLayout_;
-    wgpu::Buffer rectVertexBuffer_;
     wgpu::Buffer rectUniformBuffer_;
     wgpu::BindGroup rectBindGroup_;
-
-    static constexpr uint32_t MAX_RECT_VERTS = 4096 * 6;
-
-    std::vector<RectVertex> rectVerts_;
 
     // Compute pipeline
     wgpu::ComputePipeline computePipeline_;

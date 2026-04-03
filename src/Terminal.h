@@ -73,8 +73,12 @@ public:
             ClearToEndOfLine,
             DeleteChars,
             InsertChars,
+            InsertLines,
+            DeleteLines,
+            EraseChars,
             ScrollUp,
             ScrollDown,
+            VerticalPositionAbsolute,
             SelectGraphicRendition,
             AUXPortOn,
             AUXPortOff,
@@ -195,7 +199,12 @@ private:
         RIS = 'c',
         VB = 'g',
         DECKPAM = '=',
-        DECKPNM = '>'
+        DECKPNM = '>',
+        DECSC = '7',
+        DECRC = '8',
+        IND = 'D',
+        NEL = 'E',
+        RI = 'M'
     };
 
     void processCSI();
@@ -224,6 +233,10 @@ private:
         RCP = 'u',
         DCH = 'P',
         ICH = '@',
+        IL = 'L',
+        DL = 'M',
+        ECH = 'X',
+        VPA = 'd',
         SM = 'h',
         RM = 'l',
         DECSTBM = 'r'  // Set Top and Bottom Margins (scroll region)
@@ -236,6 +249,9 @@ private:
 
     // Mouse reporting
     void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, unsigned int modifiers);
+
+    bool mCursorKeyMode { false };  // DECCKM: true = application mode
+    bool mKeypadMode { false };     // DECKPAM: true = application mode
 
     bool mMouseMode1000 { false };
     bool mMouseMode1002 { false };

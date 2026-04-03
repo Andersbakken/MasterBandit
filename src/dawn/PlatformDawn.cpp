@@ -246,6 +246,9 @@ private:
     bool controlPressed_ = false;
     unsigned int lastMods_ = 0;
 
+    int lastCursorX_ = -1, lastCursorY_ = -1;
+    bool lastCursorVisible_ = true;
+
     DebugIPC* debugIPC_ = nullptr;
 };
 
@@ -758,19 +761,29 @@ void TerminalWindow::renderTerminal()
     float scale = fontSize_ / font->baseSize;
     const IGrid& g = grid();
     bool poolRecreated = renderer_.prepareOffscreen();
-    bool needsRender = g.anyDirty() || poolRecreated;
+
+    // Track cursor position changes — cursor is baked into resolved cells,
+    // so we must re-render when it moves even if no cells are dirty.
+    int curX = cursorX(), curY = cursorY();
+    int prevCursorY = lastCursorY_;
+    bool cursorMoved = (curX != lastCursorX_ || curY != lastCursorY_ || cursorVisible() != lastCursorVisible_);
+    lastCursorX_ = curX;
+    lastCursorY_ = curY;
+    lastCursorVisible_ = cursorVisible();
+
+    bool needsRender = g.anyDirty() || poolRecreated || cursorMoved;
     bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
 
     // Render to offscreen only when content changed
     if (needsRender || pngNeeded) {
-        // Resolve dirty rows
+        // Resolve dirty rows (and cursor rows if cursor moved)
         if (viewportOffset() != 0) {
             for (int row = 0; row < g.rows(); ++row) {
                 resolveRow(row, font, scale);
             }
         } else {
             for (int row = 0; row < g.rows(); ++row) {
-                if (g.isRowDirty(row)) {
+                if (g.isRowDirty(row) || (cursorMoved && (row == curY || row == prevCursorY))) {
                     resolveRow(row, font, scale);
                 }
             }

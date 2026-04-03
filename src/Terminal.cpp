@@ -2,6 +2,7 @@
 #include "Base64.h"
 #include "Log.h"
 #include "Utf8.h"
+#include "Wcwidth.h"
 #include <spdlog/spdlog.h>
 
 #include <assert.h>
@@ -299,12 +300,12 @@ void Terminal::keyPressEvent(const KeyEvent *event)
         case Key_Tab:      text = "\t"; break;
         case Key_Escape:   text = "\x1b"; break;
         case Key_Delete:   text = "\x1b[3~"; break;
-        case Key_Left:     text = "\x1b[D"; break;
-        case Key_Right:    text = "\x1b[C"; break;
-        case Key_Up:       text = "\x1b[A"; break;
-        case Key_Down:     text = "\x1b[B"; break;
-        case Key_Home:     text = "\x1b[H"; break;
-        case Key_End:      text = "\x1b[F"; break;
+        case Key_Left:     text = mCursorKeyMode ? "\x1bOD" : "\x1b[D"; break;
+        case Key_Right:    text = mCursorKeyMode ? "\x1bOC" : "\x1b[C"; break;
+        case Key_Up:       text = mCursorKeyMode ? "\x1bOA" : "\x1b[A"; break;
+        case Key_Down:     text = mCursorKeyMode ? "\x1bOB" : "\x1b[B"; break;
+        case Key_Home:     text = mCursorKeyMode ? "\x1bOH" : "\x1b[H"; break;
+        case Key_End:      text = mCursorKeyMode ? "\x1bOF" : "\x1b[F"; break;
         case Key_PageUp:   text = "\x1b[5~"; break;
         case Key_PageDown: text = "\x1b[6~"; break;
         case Key_Insert:   text = "\x1b[2~"; break;
@@ -713,14 +714,47 @@ void Terminal::readFromFD()
                        | (static_cast<unsigned char>(mUtf8Buffer[3]) & 0x3F);
                 }
 
-                if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                    g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
-                    g.clearExtra(mCursorX, mCursorY);
-                    g.markRowDirty(mCursorY);
-                }
-                mCursorX++;
-                if (mCursorX >= mWidth) {
-                    advanceCursorToNewLine();
+                int w = wcwidth(cp);
+                if (w < 0) w = 0; // non-printable control char — skip
+                if (w == 0) {
+                    // Zero-width / combining character — attach to previous cell
+                    // (for now, just skip it)
+                } else if (w == 2) {
+                    // Wide character: needs two cells
+                    if (mCursorX + 1 >= mWidth) {
+                        // Not enough room — fill current cell with space and wrap
+                        if (mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                            g.cell(mCursorX, mCursorY) = Cell{' ', mCurrentAttrs};
+                            g.markRowDirty(mCursorY);
+                        }
+                        advanceCursorToNewLine();
+                    }
+                    if (mCursorX >= 0 && mCursorX + 1 < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        CellAttrs wideAttrs = mCurrentAttrs;
+                        wideAttrs.setWide(true);
+                        g.cell(mCursorX, mCursorY) = Cell{cp, wideAttrs};
+                        g.clearExtra(mCursorX, mCursorY);
+                        CellAttrs spacerAttrs = mCurrentAttrs;
+                        spacerAttrs.setWideSpacer(true);
+                        g.cell(mCursorX + 1, mCursorY) = Cell{0, spacerAttrs};
+                        g.clearExtra(mCursorX + 1, mCursorY);
+                        g.markRowDirty(mCursorY);
+                    }
+                    mCursorX += 2;
+                    if (mCursorX >= mWidth) {
+                        advanceCursorToNewLine();
+                    }
+                } else {
+                    // Normal single-width character
+                    if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
+                        g.clearExtra(mCursorX, mCursorY);
+                        g.markRowDirty(mCursorY);
+                    }
+                    mCursorX++;
+                    if (mCursorX >= mWidth) {
+                        advanceCursorToNewLine();
+                    }
                 }
 
                 mUtf8Index = 0;
@@ -795,8 +829,51 @@ void Terminal::readFromFD()
                 resetToNormal();
                 break;
             case DECKPAM:
+                mKeypadMode = true;
+                resetToNormal();
+                break;
             case DECKPNM:
-                DEBUG("Ignoring keypad mode escape %s", escapeSequenceName(static_cast<EscapeSequence>(mEscapeBuffer[0])));
+                mKeypadMode = false;
+                resetToNormal();
+                break;
+            case DECSC:
+                mSavedCursorX = mCursorX;
+                mSavedCursorY = mCursorY;
+                mSavedAttrs = mCurrentAttrs;
+                resetToNormal();
+                break;
+            case DECRC:
+                mCursorX = mSavedCursorX;
+                mCursorY = mSavedCursorY;
+                mCurrentAttrs = mSavedAttrs;
+                resetToNormal();
+                break;
+            case IND:
+                // Index: move cursor down one line, scroll if at bottom of scroll region
+                if (mCursorY == mScrollBottom - 1) {
+                    scrollUpInRegion(1);
+                } else if (mCursorY < mHeight - 1) {
+                    mCursorY++;
+                }
+                resetToNormal();
+                break;
+            case NEL:
+                // Next Line: move to beginning of next line, scroll if needed
+                mCursorX = 0;
+                if (mCursorY == mScrollBottom - 1) {
+                    scrollUpInRegion(1);
+                } else if (mCursorY < mHeight - 1) {
+                    mCursorY++;
+                }
+                resetToNormal();
+                break;
+            case RI:
+                // Reverse Index: move cursor up one line, scroll down if at top of scroll region
+                if (mCursorY == mScrollTop) {
+                    g.scrollDown(mScrollTop, mScrollBottom, 1);
+                } else if (mCursorY > 0) {
+                    mCursorY--;
+                }
                 resetToNormal();
                 break;
             default:
@@ -843,8 +920,9 @@ void Terminal::processCSI()
         return static_cast<int>(l);
     };
 
-    // Check for private mode prefix '?'
+    // Check for prefix characters '?' and '>'
     bool isPrivate = (mEscapeIndex > 1 && mEscapeBuffer[1] == '?');
+    bool isSecondary = (mEscapeIndex > 1 && mEscapeBuffer[1] == '>');
 
     Action action;
     char finalByte = mEscapeBuffer[mEscapeIndex - 1];
@@ -858,7 +936,11 @@ void Terminal::processCSI()
     case CPL:
     case CHA:
     case DCH:
-    case ICH: {
+    case ICH:
+    case IL:
+    case DL:
+    case ECH:
+    case VPA: {
         const int count = readCount(1);
         if (count == -1) {
             ERROR("Invalid parameters for CSI %s", csiSequenceName(static_cast<CSISequence>(finalByte)));
@@ -875,6 +957,10 @@ void Terminal::processCSI()
         case CHA: action.type = Action::CursorHorizontalAbsolute; break;
         case DCH: action.type = Action::DeleteChars; break;
         case ICH: action.type = Action::InsertChars; break;
+        case IL: action.type = Action::InsertLines; break;
+        case DL: action.type = Action::DeleteLines; break;
+        case ECH: action.type = Action::EraseChars; break;
+        case VPA: action.type = Action::VerticalPositionAbsolute; break;
         }
         break; }
     case HVP:
@@ -918,6 +1004,10 @@ void Terminal::processCSI()
         case 0: action.type = Action::ClearToEndOfScreen; break;
         case 1: action.type = Action::ClearToBeginningOfScreen; break;
         case 2: action.type = Action::ClearScreen; break;
+        case 3: // Clear screen + scrollback
+            action.type = Action::ClearScreen;
+            if (!mUsingAltScreen) mDocument.clearHistory();
+            break;
         default: ERROR("Invalid CSI ED %d", readCount(0)); break;
         }
         break;
@@ -974,17 +1064,23 @@ void Terminal::processCSI()
         }
         break;
     case SCP:
-        if (mEscapeIndex != 2) {
-            ERROR("Invalid SCP command (%d)", mEscapeIndex);
-        } else {
+        if (isPrivate) {
+            // CSI ? Ps s — XTERM save private mode values (ignore)
+            WARN("Ignoring XTERM save private mode: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+        } else if (mEscapeIndex == 2) {
             action.type = Action::SaveCursorPosition;
+        } else {
+            WARN("Ignoring CSI s variant: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
         }
         break;
     case RCP:
-        if (mEscapeIndex != 2) {
-            ERROR("Invalid RCP command (%d)", mEscapeIndex);
-        } else {
+        if (isPrivate || isSecondary) {
+            // CSI ? u — kitty keyboard query; CSI > Ps u — push keyboard mode
+            WARN("Ignoring kitty keyboard protocol: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+        } else if (mEscapeIndex == 2) {
             action.type = Action::RestoreCursorPosition;
+        } else {
+            WARN("Ignoring CSI u variant: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
         }
         break;
     case SM: // Set Mode
@@ -994,7 +1090,7 @@ void Terminal::processCSI()
             char *end;
             action.count = strtoul(mEscapeBuffer + 2, &end, 10); // skip "[?"
         } else {
-            DEBUG("Ignoring non-private SM: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            WARN("Ignoring non-private SM: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
         }
         break;
     case RM: // Reset Mode
@@ -1003,7 +1099,7 @@ void Terminal::processCSI()
             char *end;
             action.count = strtoul(mEscapeBuffer + 2, &end, 10);
         } else {
-            DEBUG("Ignoring non-private RM: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            WARN("Ignoring non-private RM: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
         }
         break;
     case DECSTBM: { // Set scrolling region
@@ -1025,6 +1121,27 @@ void Terminal::processCSI()
         mCursorX = 0;
         mCursorY = mScrollTop;
         break; }
+    case 'c': // Device Attributes
+        if (isSecondary) {
+            // CSI > c — Secondary DA: VT500-class, xterm version 2500
+            writeToPTY("\x1b[>64;2500;0c", 13);
+        } else if (mEscapeIndex == 2 || (mEscapeIndex == 3 && mEscapeBuffer[1] == '0')) {
+            // CSI c or CSI 0 c — Primary DA: VT420 with common features
+            writeToPTY("\x1b[?64;1;2;6;22c", 16);
+        } else {
+            WARN("Ignoring DA variant: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+        }
+        break;
+    case 'q':
+        if (isSecondary) {
+            // CSI > q — XTVERSION: report terminal name/version
+            static const char xtver[] = "\x1bP>|MasterBandit(0.1)\x1b\\";
+            writeToPTY(xtver, sizeof(xtver) - 1);
+        } else {
+            // CSI Ps SP q — DECSCUSR (Set Cursor Style): ignore for now
+            WARN("Ignoring DECSCUSR / CSI q: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+        }
+        break;
     default:
         ERROR("Unknown CSI final byte 0x%x", finalByte);
         break;
@@ -1107,6 +1224,25 @@ void Terminal::onAction(const Action *action)
     case Action::InsertChars:
         g.insertChars(mCursorY, mCursorX, action->count);
         break;
+    case Action::InsertLines:
+        // IL: insert blank lines at cursor, pushing existing lines down within scroll region
+        if (mCursorY >= mScrollTop && mCursorY < mScrollBottom) {
+            g.scrollDown(mCursorY, mScrollBottom, action->count);
+        }
+        break;
+    case Action::DeleteLines:
+        // DL: delete lines at cursor, pulling lines up within scroll region
+        if (mCursorY >= mScrollTop && mCursorY < mScrollBottom) {
+            g.scrollUp(mCursorY, mScrollBottom, action->count);
+        }
+        break;
+    case Action::EraseChars:
+        // ECH: erase N chars at cursor without moving it
+        g.clearRow(mCursorY, mCursorX, std::min(mCursorX + action->count, mWidth));
+        break;
+    case Action::VerticalPositionAbsolute:
+        mCursorY = std::clamp(action->count - 1, 0, mHeight - 1);
+        break;
     case Action::ScrollUp:
         g.scrollUp(mScrollTop, mScrollBottom, action->count);
         break;
@@ -1125,6 +1261,9 @@ void Terminal::onAction(const Action *action)
         break;
     case Action::SetMode:
         switch (action->count) {
+        case 1: // DECCKM: application cursor keys
+            mCursorKeyMode = true;
+            break;
         case 25: // DECTCEM: show cursor
             mCursorVisible = true;
             break;
@@ -1149,12 +1288,15 @@ void Terminal::onAction(const Action *action)
             mBracketedPaste = true;
             break;
         default:
-            DEBUG("Ignoring private mode set %d", action->count);
+            WARN("Ignoring private mode set %d", action->count);
             break;
         }
         break;
     case Action::ResetMode:
         switch (action->count) {
+        case 1: // DECCKM: normal cursor keys
+            mCursorKeyMode = false;
+            break;
         case 25: // DECTCEM: hide cursor
             mCursorVisible = false;
             break;
@@ -1176,7 +1318,7 @@ void Terminal::onAction(const Action *action)
             mBracketedPaste = false;
             break;
         default:
-            DEBUG("Ignoring private mode reset %d", action->count);
+            WARN("Ignoring private mode reset %d", action->count);
             break;
         }
         break;
@@ -1466,7 +1608,10 @@ void Terminal::placeImageInGrid(uint32_t imageId, int cellCols, int cellRows)
 // --- OSC processing ---
 void Terminal::processStringSequence()
 {
-    if (mStringSequenceType != OSX) return; // only handle OSC for now
+    if (mStringSequenceType != OSX) {
+        WARN("Ignoring non-OSC string sequence type 0x%x (len=%zu)", mStringSequenceType, mStringSequence.size());
+        return;
+    }
 
     // mStringSequence format: "<number>;<payload>" or just "<number>"
     size_t semi = mStringSequence.find(';');
@@ -1487,7 +1632,7 @@ void Terminal::processStringSequence()
     case 52: processOSC_Clipboard(payload); break;
     case 1337: processOSC_iTerm(payload); break;
     default:
-        DEBUG("Ignoring OSC %d", oscNum);
+        WARN("Ignoring OSC %d", oscNum);
         break;
     }
 }
@@ -1550,8 +1695,12 @@ const char *Terminal::Action::typeName(Type type)
     case ClearToEndOfLine: return "ClearToEndOfLine";
     case DeleteChars: return "DeleteChars";
     case InsertChars: return "InsertChars";
+    case InsertLines: return "InsertLines";
+    case DeleteLines: return "DeleteLines";
+    case EraseChars: return "EraseChars";
     case ScrollUp: return "ScrollUp";
     case ScrollDown: return "ScrollDown";
+    case VerticalPositionAbsolute: return "VerticalPositionAbsolute";
     case SelectGraphicRendition: return "SelectGraphicRendition";
     case AUXPortOn: return "AUXPortOn";
     case AUXPortOff: return "AUXPortOff";
@@ -1581,6 +1730,11 @@ const char *Terminal::escapeSequenceName(EscapeSequence seq)
     case VB: return "VB";
     case DECKPAM: return "DECKPAM";
     case DECKPNM: return "DECKPNM";
+    case DECSC: return "DECSC";
+    case DECRC: return "DECRC";
+    case IND: return "IND";
+    case NEL: return "NEL";
+    case RI: return "RI";
     }
     abort();
     return nullptr;
@@ -1606,6 +1760,10 @@ const char *Terminal::csiSequenceName(CSISequence seq)
     case AUX: return "AUX";
     case DSR: return "DSR";
     case SCP: return "SCP";
+    case IL: return "IL";
+    case DL: return "DL";
+    case ECH: return "ECH";
+    case VPA: return "VPA";
     case RCP: return "RCP";
     case DCH: return "DCH";
     case ICH: return "ICH";

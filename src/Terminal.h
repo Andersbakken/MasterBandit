@@ -10,7 +10,6 @@
 #include <CellGrid.h>
 #include <Document.h>
 
-std::string toPrintable(const std::string &str);
 std::string toPrintable(const char *chars, int len);
 inline std::string toPrintable(const std::string &string)
 {
@@ -30,11 +29,6 @@ public:
     virtual ~Terminal();
 
     virtual bool init(const TerminalOptions &options);
-    enum Flag {
-        None = 0,
-        LineWrap = (1ull << 1)
-    };
-
     int cursorX() const { return mCursorX; }
     int cursorY() const { return mCursorY; }
     bool cursorVisible() const { return mCursorVisible; }
@@ -58,8 +52,6 @@ public:
         ScrollbackChanged,
         VisibleBell
     };
-
-    static const char *eventName(Event event);
 
     struct Action
     {
@@ -103,14 +95,11 @@ public:
     virtual void event(Event, void *data = nullptr) = 0;
 
     void keyPressEvent(const KeyEvent *event);
-    void keyReleaseEvent(const KeyEvent *event);
     void mousePressEvent(const MouseEvent *event);
     void mouseReleaseEvent(const MouseEvent *event);
     void mouseMoveEvent(const MouseEvent *event);
     int masterFD() const { return mMasterFD; }
     void readFromFD();
-    int exitCode() const { return mExitCode; }
-
     bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
 
     // Selection
@@ -154,9 +143,7 @@ private:
     int mWidth { 0 }, mHeight { 0 };
     int mCursorX { 0 }, mCursorY { 0 };
     bool mCursorVisible { true };
-    unsigned int mFlags { 0 };
-    int mMasterFD { -1 }, mSlaveFD { -1 };
-    int mExitCode { 0 };
+    int mMasterFD { -1 };
 
     Document mDocument;
     CellGrid mAltGrid;
@@ -188,13 +175,11 @@ private:
     static constexpr size_t MAX_STRING_SEQUENCE = 16 * 1024 * 1024; // 16 MB
 
     void processStringSequence();
-    void processOSC_Title(std::string_view text, bool setIcon, bool setTitle);
+    void processOSC_Title(std::string_view text, bool setTitle);
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
     void placeImageInGrid(uint32_t imageId, int cellCols, int cellRows);
 
-    std::string mWindowTitle;
-    std::string mIconName;
 
     // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {

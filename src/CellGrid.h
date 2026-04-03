@@ -37,10 +37,6 @@ public:
     void clearExtra(int col, int row) override;
     void clearRowExtras(int row) override;
 
-    // Non-IGrid methods (for scrollback transfer — will be removed in later phase)
-    std::unordered_map<int, CellExtra> takeRowExtras(int row);
-    void setRowExtras(int row, std::unordered_map<int, CellExtra>&& extras);
-
 private:
     int cols_ = 0, rows_ = 0;
     std::vector<Cell> cells_;

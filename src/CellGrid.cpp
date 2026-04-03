@@ -207,15 +207,3 @@ void CellGrid::clearRowExtras(int row)
     if (row >= 0 && row < rows_) extras_[row].clear();
 }
 
-std::unordered_map<int, CellExtra> CellGrid::takeRowExtras(int row)
-{
-    if (row < 0 || row >= rows_) return {};
-    auto result = std::move(extras_[row]);
-    extras_[row].clear();
-    return result;
-}
-
-void CellGrid::setRowExtras(int row, std::unordered_map<int, CellExtra>&& extras)
-{
-    if (row >= 0 && row < rows_) extras_[row] = std::move(extras);
-}

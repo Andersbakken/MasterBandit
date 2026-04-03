@@ -133,8 +133,9 @@ bool Terminal::init(const TerminalOptions &options)
         return false;
     }
 
-    EINTRWRAP(mSlaveFD, open(slaveName, O_RDWR | O_NOCTTY));
-    if (mSlaveFD == -1) {
+    int slaveFD;
+    EINTRWRAP(slaveFD, open(slaveName, O_RDWR | O_NOCTTY));
+    if (slaveFD == -1) {
         FATAL("Failed to open slave fd -> %d %s", errno, strerror(errno));
         return false;
     }
@@ -145,20 +146,20 @@ bool Terminal::init(const TerminalOptions &options)
     case 0:
         EINTRWRAP(ret, ::close(mMasterFD));
         setsid();
-        if (ioctl(mSlaveFD, TIOCSCTTY, NULL) == -1) {
+        if (ioctl(slaveFD, TIOCSCTTY, NULL) == -1) {
             FATAL("Failed to ioctl slave fd in slave -> %d %s", errno, strerror(errno));
             return false;
         }
 
         for (int i=0; i<3; ++i) {
-            EINTRWRAP(ret, dup2(mSlaveFD, i));
+            EINTRWRAP(ret, dup2(slaveFD, i));
             if (ret == -1) {
                 FATAL("Failed to dup2(%d) slave fd in slave -> %d %s", i, errno, strerror(errno));
                 return false;
             }
         }
 
-        EINTRWRAP(ret, ::close(mSlaveFD));
+        EINTRWRAP(ret, ::close(slaveFD));
 
         unsetenv("COLUMNS");
         unsetenv("LINES");
@@ -183,7 +184,7 @@ bool Terminal::init(const TerminalOptions &options)
         FATAL("Failed to fork -> %d %s", errno, strerror(errno));
         return false;
     default:
-        EINTRWRAP(ret, ::close(mSlaveFD));
+        EINTRWRAP(ret, ::close(slaveFD));
         break;
     }
     return true;
@@ -345,11 +346,6 @@ void Terminal::keyPressEvent(const KeyEvent *event)
             }
         }
     }
-}
-
-void Terminal::keyReleaseEvent(const KeyEvent *event)
-{
-    DEBUG("GOT KEYRELEASE [%s] %d %zu\n", event->text.c_str(), event->autoRepeat, event->count);
 }
 
 void Terminal::writeToPTY(const char* data, size_t len)
@@ -611,7 +607,6 @@ void Terminal::readFromFD()
     spdlog::debug("readFromFD: read {} bytes from masterFD={}", ret, mMasterFD);
     if (ret == -1) {
         ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
-        mExitCode = 1;
         mPlatform->quit();
         return;
     } else if (ret == 0) {
@@ -1486,9 +1481,9 @@ void Terminal::processStringSequence()
     std::string_view payload(mStringSequence.data() + semi + 1, mStringSequence.size() - semi - 1);
 
     switch (oscNum) {
-    case 0: processOSC_Title(payload, true, true); break;
-    case 1: processOSC_Title(payload, true, false); break;
-    case 2: processOSC_Title(payload, false, true); break;
+    case 0: processOSC_Title(payload, true); break;
+    case 1: break; // icon name only — not used
+    case 2: processOSC_Title(payload, true); break;
     case 52: processOSC_Clipboard(payload); break;
     case 1337: processOSC_iTerm(payload); break;
     default:
@@ -1497,13 +1492,10 @@ void Terminal::processStringSequence()
     }
 }
 
-void Terminal::processOSC_Title(std::string_view text, bool setIcon, bool setTitle)
+void Terminal::processOSC_Title(std::string_view text, bool setTitle)
 {
-    std::string str(text);
-    if (setIcon) mIconName = str;
     if (setTitle) {
-        mWindowTitle = str;
-        onTitleChanged(mWindowTitle);
+        onTitleChanged(std::string(text));
     }
 }
 
@@ -1624,13 +1616,3 @@ const char *Terminal::csiSequenceName(CSISequence seq)
     return nullptr;
 }
 
-const char *Terminal::eventName(Event event)
-{
-    switch (event) {
-    case Update: return "Update";
-    case ScrollbackChanged: return "ScrollbackChanged";
-    case VisibleBell: return "VisibleBell";
-    }
-    abort();
-    return nullptr;
-}

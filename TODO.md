@@ -39,6 +39,10 @@
 - [x] Keybindings — configurable key mappings for tab/pane operations.
 - [ ] Cursor style — block/underline/bar, blink on/off, blink interval.
 
+## Emoji / Color Fonts
+
+- [ ] Color emoji rendering — current pipeline is outline-only (hb-gpu/Slug encodes Bézier paths; fragment shader applies a single fg tint). Color fonts (COLR layered vector, CBDT/CBLC bitmap, sbix) silently produce empty glyphs. Options: COLRv0 via multi-pass layered outline rendering; CBDT/sbix via bitmap texture upload; or ship a monochrome outline emoji fallback font.
+
 ## Infrastructure
 
 - [ ] Split PlatformDawn.cpp — it's grown large; separate platform/event loop, font loading, cell resolution into own files.

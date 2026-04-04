@@ -1087,12 +1087,16 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
         ResolvedCell& rc = rs.resolvedCells[baseIdx + col];
         const Cell& cell = rowData[col];
 
+        uint32_t fg = cell.attrs.packFgAsU32();
+        uint32_t bg = cell.attrs.packBgAsU32();
+        if (cell.attrs.inverse()) std::swap(fg, bg);
+
         if (cell.wc == 0 || cell.attrs.wideSpacer()) {
             rc.atlas_offset = 0;
             rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
             rc.upem = 1;
-            rc.fg_color = 0xFFFFFFFF;
-            rc.bg_color = cell.attrs.packBgAsU32();
+            rc.fg_color = fg;
+            rc.bg_color = bg;
             continue;
         }
 
@@ -1128,8 +1132,8 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
             rc.atlas_offset = 0;
             rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
             rc.upem = 1;
-            rc.fg_color = cell.attrs.packFgAsU32();
-            rc.bg_color = cell.attrs.packBgAsU32();
+            rc.fg_color = fg;
+            rc.bg_color = bg;
             continue;
         }
         rc.atlas_offset = gi->atlas_offset;
@@ -1138,8 +1142,8 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
         rc.ext_max_x = gi->ext_max_x;
         rc.ext_max_y = gi->ext_max_y;
         rc.upem = gi->upem;
-        rc.fg_color = cell.attrs.packFgAsU32();
-        rc.bg_color = cell.attrs.packBgAsU32();
+        rc.fg_color = fg;
+        rc.bg_color = bg;
     }
 }
 

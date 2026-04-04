@@ -384,8 +384,10 @@ private:
     void resizeAllPanesInTab(Tab* tab);
     void refreshDividers(Tab* tab);
     void clearDividers(Tab* tab);
-    // Release held pane textures back to the pool (call when switching away from a tab).
     void releaseTabTextures(Tab* tab);
+    void updateTabTitleFromFocusedPane(int tabIdx);
+    // Send focus-out to prevId's terminal and focus-in to newId's terminal.
+    void notifyPaneFocusChange(Tab* tab, int prevId, int newId);
 };
 
 // ========================================================================
@@ -675,17 +677,23 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         const char* clip = glfwGetClipboardString(glfwWindow_);
         return clip ? std::string(clip) : std::string();
     };
-    cbs.onTitleChanged = [this, tabIdx = static_cast<int>(tabs_.size())](const std::string& title) {
-        glfwSetWindowTitle(glfwWindow_, title.c_str());
-        if (tabIdx < static_cast<int>(tabs_.size())) {
-            tabs_[tabIdx]->setTitle(title);
+    cbs.onTitleChanged = [this, paneId, tabIdx = static_cast<int>(tabs_.size())](const std::string& title) {
+        if (tabIdx >= static_cast<int>(tabs_.size())) return;
+        Tab* t = tabs_[tabIdx].get();
+        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setTitle(title);
+            if (tabIdx == activeTabIdx_) glfwSetWindowTitle(glfwWindow_, title.c_str());
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
         }
-        tabBarDirty_ = true;
-        needsRedraw_ = true;
     };
-    cbs.onIconChanged = [this, tabIdx = static_cast<int>(tabs_.size())](const std::string& icon) {
-        if (tabIdx < static_cast<int>(tabs_.size())) {
-            tabs_[tabIdx]->setIcon(icon);
+    cbs.onIconChanged = [this, paneId, tabIdx = static_cast<int>(tabs_.size())](const std::string& icon) {
+        if (tabIdx >= static_cast<int>(tabs_.size())) return;
+        Tab* t = tabs_[tabIdx].get();
+        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setIcon(icon);
             tabBarDirty_ = true;
             needsRedraw_ = true;
         }
@@ -822,19 +830,26 @@ void PlatformDawn::createTab()
         const char* clip = glfwGetClipboardString(glfwWindow_);
         return clip ? std::string(clip) : std::string();
     };
-    cbs.onTitleChanged = [this, tabIdx](const std::string& title) {
-        if (tabIdx == activeTabIdx_)
-            glfwSetWindowTitle(glfwWindow_, title.c_str());
-        if (tabIdx < static_cast<int>(tabs_.size()))
-            tabs_[tabIdx]->setTitle(title);
-        tabBarDirty_ = true;
-        needsRedraw_ = true;
+    cbs.onTitleChanged = [this, paneId, tabIdx](const std::string& title) {
+        if (tabIdx >= static_cast<int>(tabs_.size())) return;
+        Tab* t = tabs_[tabIdx].get();
+        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setTitle(title);
+            if (tabIdx == activeTabIdx_) glfwSetWindowTitle(glfwWindow_, title.c_str());
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
     };
-    cbs.onIconChanged = [this, tabIdx](const std::string& icon) {
-        if (tabIdx < static_cast<int>(tabs_.size()))
-            tabs_[tabIdx]->setIcon(icon);
-        tabBarDirty_ = true;
-        needsRedraw_ = true;
+    cbs.onIconChanged = [this, paneId, tabIdx](const std::string& icon) {
+        if (tabIdx >= static_cast<int>(tabs_.size())) return;
+        Tab* t = tabs_[tabIdx].get();
+        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setIcon(icon);
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
     };
     cbs.onProgressChanged = [this, tabIdx](int state, int pct) {
         if (tabIdx < static_cast<int>(tabs_.size()))
@@ -1647,6 +1662,36 @@ void PlatformDawn::clearDividers(Tab* tab)
         paneRenderStates_[panePtr->id()].dividerVB = {};
 }
 
+void PlatformDawn::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
+{
+    if (!tab) return;
+    if (prevId >= 0) {
+        Pane* p = tab->layout()->pane(prevId);
+        if (p && p->activeTerm()) p->activeTerm()->focusEvent(false);
+    }
+    if (newId >= 0) {
+        Pane* p = tab->layout()->pane(newId);
+        if (p && p->activeTerm()) p->activeTerm()->focusEvent(true);
+    }
+}
+
+void PlatformDawn::updateTabTitleFromFocusedPane(int tabIdx)
+{
+    if (tabIdx < 0 || tabIdx >= static_cast<int>(tabs_.size())) return;
+    Tab* tab = tabs_[tabIdx].get();
+    Pane* fp = tab->layout()->focusedPane();
+    if (!fp) return;
+
+    const std::string& title = fp->title();
+    const std::string& icon  = fp->icon();
+    tab->setTitle(title);
+    if (!icon.empty()) tab->setIcon(icon);
+    if (tabIdx == activeTabIdx_ && !title.empty())
+        glfwSetWindowTitle(glfwWindow_, title.c_str());
+    tabBarDirty_ = true;
+    needsRedraw_  = true;
+}
+
 void PlatformDawn::releaseTabTextures(Tab* tab)
 {
     if (!tab) return;
@@ -1695,6 +1740,8 @@ void PlatformDawn::terminalExited(Terminal* terminal)
             } else {
                 tab->layout()->removePane(paneId);
                 resizeAllPanesInTab(tab);
+                notifyPaneFocusChange(tab, -1, tab->layout()->focusedPaneId());
+                updateTabTitleFromFocusedPane(tabIdx);
             }
 
             needsRedraw_ = true;
@@ -1724,19 +1771,26 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
         const char* clip = glfwGetClipboardString(glfwWindow_);
         return clip ? std::string(clip) : std::string();
     };
-    cbs.onTitleChanged = [this, tabIdx](const std::string& title) {
-        if (tabIdx == activeTabIdx_)
-            glfwSetWindowTitle(glfwWindow_, title.c_str());
-        if (tabIdx < static_cast<int>(tabs_.size()))
-            tabs_[tabIdx]->setTitle(title);
-        tabBarDirty_ = true;
-        needsRedraw_ = true;
+    cbs.onTitleChanged = [this, paneId, tabIdx](const std::string& title) {
+        if (tabIdx >= static_cast<int>(tabs_.size())) return;
+        Tab* t = tabs_[tabIdx].get();
+        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setTitle(title);
+            if (tabIdx == activeTabIdx_) glfwSetWindowTitle(glfwWindow_, title.c_str());
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
     };
-    cbs.onIconChanged = [this, tabIdx](const std::string& icon) {
-        if (tabIdx < static_cast<int>(tabs_.size()))
-            tabs_[tabIdx]->setIcon(icon);
-        tabBarDirty_ = true;
-        needsRedraw_ = true;
+    cbs.onIconChanged = [this, paneId, tabIdx](const std::string& icon) {
+        if (tabIdx >= static_cast<int>(tabs_.size())) return;
+        Tab* t = tabs_[tabIdx].get();
+        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setIcon(icon);
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
     };
     cbs.onProgressChanged = [this, tabIdx](int state, int pct) {
         if (tabIdx < static_cast<int>(tabs_.size()))
@@ -1828,8 +1882,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 releaseTabTextures(activeTab());
                 activeTabIdx_ = idx;
                 refreshDividers(activeTab());
-                tabBarDirty_  = true;
-                needsRedraw_  = true;
+                tabBarDirty_ = true;
+                needsRedraw_ = true;
             }
         },
         [&](const Action::ActivateTab& a) {
@@ -1838,8 +1892,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 releaseTabTextures(activeTab());
                 activeTabIdx_ = a.index;
                 refreshDividers(activeTab());
-                tabBarDirty_  = true;
-                needsRedraw_  = true;
+                tabBarDirty_ = true;
+                needsRedraw_ = true;
             }
         },
         [&](const Action::SplitPane& a) {
@@ -1867,9 +1921,12 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             layout->computeRects(fbWidth_, fbHeight_);
             int tabIdx = activeTabIdx_;
+            int prevId = layout->focusedPaneId();
             spawnTerminalForPane(newPane, tabIdx);
             resizeAllPanesInTab(tab);
             layout->setFocusedPane(newId);
+            notifyPaneFocusChange(tab, prevId, newId);
+            updateTabTitleFromFocusedPane(activeTabIdx_);
         },
         [&](const Action::ClosePane&) {
             Tab* tab = activeTab();
@@ -1895,6 +1952,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             layout->removePane(paneId);
             resizeAllPanesInTab(tab);
+            notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
+            updateTabTitleFromFocusedPane(activeTabIdx_);
         },
         [&](const Action::ZoomPane&) {
             Tab* tab = activeTab();
@@ -1921,7 +1980,10 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 int n = static_cast<int>(panes.size());
                 int delta = (a.dir == Action::Direction::Next) ? 1 : -1;
                 int next = ((cur + delta) % n + n) % n;
+                int prev = layout->focusedPaneId();
                 layout->setFocusedPane(panes[next]->id());
+                notifyPaneFocusChange(tab, prev, panes[next]->id());
+                updateTabTitleFromFocusedPane(activeTabIdx_);
                 needsRedraw_ = true;
                 return;
             }
@@ -1939,7 +2001,10 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             }
             int targetId = layout->paneAtPixel(px, py);
             if (targetId >= 0 && targetId != fp->id()) {
+                int prev = layout->focusedPaneId();
                 layout->setFocusedPane(targetId);
+                notifyPaneFocusChange(tab, prev, targetId);
+                updateTabTitleFromFocusedPane(activeTabIdx_);
                 needsRedraw_ = true;
             }
         },

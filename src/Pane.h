@@ -67,4 +67,6 @@ private:
     std::vector<PopupPane> mPopups;
     std::string mFocusedPopupId;
     PaneRect mRect;
+    std::string mTitle;
+    std::string mIcon;
 };

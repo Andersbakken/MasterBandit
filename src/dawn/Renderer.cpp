@@ -346,8 +346,8 @@ void Renderer::initComputePipeline(wgpu::Device& device, const std::string& shad
         return;
     }
 
-    // Bind group layout: 5 bindings
-    wgpu::BindGroupLayoutEntry entries[5] = {};
+    // Bind group layout: 6 bindings
+    wgpu::BindGroupLayoutEntry entries[6] = {};
 
     // b0: uniform params
     entries[0].binding = 0;
@@ -374,8 +374,13 @@ void Renderer::initComputePipeline(wgpu::Device& device, const std::string& shad
     entries[4].visibility = wgpu::ShaderStage::Compute;
     entries[4].buffer.type = wgpu::BufferBindingType::Storage;
 
+    // b5: glyph entries (read-only storage)
+    entries[5].binding = 5;
+    entries[5].visibility = wgpu::ShaderStage::Compute;
+    entries[5].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+
     wgpu::BindGroupLayoutDescriptor bglDesc = {};
-    bglDesc.entryCount = 5;
+    bglDesc.entryCount = 6;
     bglDesc.entries = entries;
     computeBindGroupLayout_ = device.CreateBindGroupLayout(&bglDesc);
 
@@ -402,6 +407,14 @@ void Renderer::uploadResolvedCells(wgpu::Queue& queue, ComputeState* state,
     if (!computeInitialized_ || !state || count == 0) return;
     queue.WriteBuffer(state->resolvedCellBuffer, 0, cells,
                       static_cast<uint64_t>(count) * sizeof(ResolvedCell));
+}
+
+void Renderer::uploadGlyphs(wgpu::Queue& queue, ComputeState* state,
+                              const GlyphEntry* glyphs, uint32_t count)
+{
+    if (!computeInitialized_ || !state || count == 0) return;
+    queue.WriteBuffer(state->glyphBuffer, 0, glyphs,
+                      static_cast<uint64_t>(count) * sizeof(GlyphEntry));
 }
 
 // ========================================

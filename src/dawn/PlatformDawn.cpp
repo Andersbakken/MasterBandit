@@ -367,6 +367,8 @@ private:
     // Per-pane render state
     struct PaneRenderState {
         std::vector<ResolvedCell> resolvedCells;
+        std::vector<GlyphEntry> glyphBuffer;      // all glyphs for all cells
+        uint32_t totalGlyphs = 0;
         int lastCursorX = -1, lastCursorY = -1;
         bool lastCursorVisible = true;
         PooledTexture* heldTexture = nullptr;
@@ -375,6 +377,15 @@ private:
         wgpu::Buffer dividerVB; // null = no divider for this pane
         int lastViewportOffset = 0;
         int lastHistorySize = 0;
+
+        // Per-row shaping cache: avoids re-shaping unchanged rows
+        struct RowGlyphCache {
+            std::vector<GlyphEntry> glyphs;
+            // Per-cell: (offset into glyphs, count)
+            std::vector<std::pair<uint32_t, uint32_t>> cellGlyphRanges;
+            bool valid = false;
+        };
+        std::vector<RowGlyphCache> rowShapingCache;
     };
     std::unordered_map<int, PaneRenderState> paneRenderStates_;
 
@@ -1349,6 +1360,15 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
     int baseIdx = row * cols;
     const Cell* rowData = term->viewportRow(row);
 
+    // Ensure row shaping cache is sized
+    if (static_cast<int>(rs.rowShapingCache.size()) != term->height())
+        rs.rowShapingCache.resize(term->height());
+
+    auto& rowCache = rs.rowShapingCache[row];
+    rowCache.glyphs.clear();
+    rowCache.cellGlyphRanges.assign(cols, {0, 0});
+
+    // Pass 1: Resolve per-cell decorations (fg, bg, underline)
     for (int col = 0; col < cols; ++col) {
         ResolvedCell& rc = rs.resolvedCells[baseIdx + col];
         const Cell& cell = rowData[col];
@@ -1357,7 +1377,6 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
         uint32_t bg = (cell.attrs.bgMode() == CellAttrs::Default) ? defaultBgColor_ : cell.attrs.packBgAsU32();
         if (cell.attrs.inverse()) std::swap(fg, bg);
 
-        // Underline info: bits 0-2 = style (1-based), bits 8-31 = color RGB
         uint32_t ulInfo = 0;
         {
             const CellExtra* extra = term->grid().getExtra(col, row);
@@ -1365,8 +1384,7 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
             bool isHyperlink = extra && extra->hyperlinkId;
             if (!hasUnderline && isHyperlink) hasUnderline = true;
             if (hasUnderline) {
-                // Hyperlinks get dotted underline unless explicit style is set
-                uint8_t style = cell.attrs.underline() ? cell.attrs.underlineStyle() : 3; // 3 = dotted
+                uint8_t style = cell.attrs.underline() ? cell.attrs.underlineStyle() : 3;
                 ulInfo = static_cast<uint32_t>(style + 1);
                 if (extra && extra->underlineColor) {
                     ulInfo |= (extra->underlineColor & 0x00FFFFFF) << 8;
@@ -1374,50 +1392,172 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
             }
         }
 
-        if (cell.wc == 0 || cell.attrs.wideSpacer()) {
-            rc.atlas_offset = 0;
-            rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
-            rc.upem = 1;
-            rc.fg_color = fg;
-            rc.bg_color = bg;
-            rc.underline_info = ulInfo;
-            continue;
-        }
-
-        std::string cpStr = codepointToUtf8(cell.wc);
-        auto resolveGlyph = [&](const ShapedText& shaped) -> const GlyphInfo* {
-            if (shaped.glyphs.empty()) return nullptr;
-            uint64_t glyphId = shaped.glyphs[0].glyphId;
-            if ((glyphId & 0xFFFFFFFF) == 0) return nullptr;
-            auto it = font->glyphs.find(glyphId);
-            if (it == font->glyphs.end() || it->second.is_empty) return nullptr;
-            return &it->second;
-        };
-
-        const int boldHint = cell.attrs.bold() ? 1 : 0;
-        // System font fallback happens automatically inside shapeText
-        const ShapedText& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_, 0, 0, boldHint);
-        const GlyphInfo* gi = resolveGlyph(shaped);
-
-        if (!gi) {
-            rc.atlas_offset = 0;
-            rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
-            rc.upem = 1;
-            rc.fg_color = fg;
-            rc.bg_color = bg;
-            rc.underline_info = ulInfo;
-            continue;
-        }
-        rc.atlas_offset = gi->atlas_offset;
-        rc.ext_min_x = gi->ext_min_x;
-        rc.ext_min_y = gi->ext_min_y;
-        rc.ext_max_x = gi->ext_max_x;
-        rc.ext_max_y = gi->ext_max_y;
-        rc.upem = gi->upem;
+        rc.glyph_offset = 0;
+        rc.glyph_count = 0;
         rc.fg_color = fg;
         rc.bg_color = bg;
         rc.underline_info = ulInfo;
     }
+
+    // Pass 2: Build runs and shape
+    float cellWidthPx = charWidth_;
+    int col = 0;
+    while (col < cols) {
+        const Cell& cell = rowData[col];
+
+        // Skip empty/spacer cells
+        if (cell.wc == 0 || cell.attrs.wideSpacer()) {
+            col++;
+            continue;
+        }
+
+        // Determine run-breaking attributes
+        bool runBold = cell.attrs.bold();
+        bool runItalic = cell.attrs.italic();
+        int runStart = col;
+
+        // Extend run while font-affecting attributes match
+        int runEnd = col + 1;
+        while (runEnd < cols) {
+            const Cell& next = rowData[runEnd];
+            if (next.wc == 0) break;
+            if (next.attrs.wideSpacer()) { runEnd++; continue; } // skip spacers, keep run going
+            if (next.attrs.bold() != runBold) break;
+            if (next.attrs.italic() != runItalic) break;
+            runEnd++;
+        }
+
+        // Build UTF-8 string and byte-to-cell mapping
+        std::string runText;
+        std::vector<std::pair<uint32_t, int>> byteToCell; // (byteOffset, cellCol)
+        for (int c = runStart; c < runEnd; ++c) {
+            if (rowData[c].attrs.wideSpacer()) continue;
+            if (rowData[c].wc == 0) continue;
+            byteToCell.push_back({static_cast<uint32_t>(runText.size()), c});
+            runText += codepointToUtf8(rowData[c].wc);
+        }
+
+        if (runText.empty()) {
+            col = runEnd;
+            continue;
+        }
+
+        // Shape the run
+        int boldHint = runBold ? 1 : 0;
+        const ShapedRun& shaped = textSystem_.shapeRun(fontName_, runText, fontSize_, boldHint);
+
+        // Find contiguous RTL cell ranges for mirroring.
+        // Build a map of which byteToCell indices are RTL.
+        struct RtlRange { int firstCell, lastCell; }; // inclusive cell columns
+        std::vector<RtlRange> rtlRanges;
+        {
+            int i = 0;
+            int n = static_cast<int>(byteToCell.size());
+            // Walk through shaped glyphs to identify which byteToCell entries are RTL
+            std::vector<bool> cellIsRtl(n, false);
+            for (const auto& sg : shaped.glyphs) {
+                if (!sg.rtl) continue;
+                for (int j = 0; j < n; j++) {
+                    if (sg.cluster >= byteToCell[j].first &&
+                        (j + 1 >= n || sg.cluster < byteToCell[j + 1].first)) {
+                        cellIsRtl[j] = true;
+                        break;
+                    }
+                }
+            }
+            // Build contiguous ranges of RTL cells
+            i = 0;
+            while (i < n) {
+                if (cellIsRtl[i]) {
+                    int start = i;
+                    while (i < n && cellIsRtl[i]) i++;
+                    rtlRanges.push_back({byteToCell[start].second, byteToCell[i - 1].second});
+                } else {
+                    i++;
+                }
+            }
+        }
+
+        // Map glyphs to cells via cluster index
+        float penX = 0;
+        for (const auto& sg : shaped.glyphs) {
+            // Find which cell this glyph belongs to via cluster (byte offset)
+            int cellCol = -1;
+            for (auto it = byteToCell.rbegin(); it != byteToCell.rend(); ++it) {
+                if (sg.cluster >= it->first) {
+                    cellCol = it->second;
+                    break;
+                }
+            }
+
+            // For RTL glyphs, mirror cell assignment within the RTL range they belong to
+            if (sg.rtl && cellCol >= 0) {
+                for (const auto& range : rtlRanges) {
+                    if (cellCol >= range.firstCell && cellCol <= range.lastCell) {
+                        cellCol = range.firstCell + (range.lastCell - cellCol);
+                        break;
+                    }
+                }
+            }
+
+            if (cellCol < 0 || cellCol >= cols) {
+                penX += sg.xAdvance;
+                continue;
+            }
+
+            // Look up glyph info in font atlas
+            uint64_t glyphId = sg.glyphId;
+            if ((glyphId & 0xFFFFFFFF) == 0) {
+                penX += sg.xAdvance;
+                continue;
+            }
+            auto git = font->glyphs.find(glyphId);
+            if (git == font->glyphs.end() || git->second.is_empty) {
+                penX += sg.xAdvance;
+                continue;
+            }
+            const GlyphInfo& gi = git->second;
+
+            // Glyph positioning: for substituted glyphs (ligatures, contextual forms),
+            // use HarfBuzz advance-based positioning to preserve inter-glyph relationships.
+            // For normal glyphs, anchor at cell origin — the terminal grid is authoritative.
+            float glyphX, glyphY;
+            if (sg.isSubstitution) {
+                float cellLocalX = static_cast<float>(cellCol - runStart) * cellWidthPx;
+                glyphX = penX + sg.xOffset - cellLocalX;
+            } else {
+                glyphX = sg.xOffset;
+            }
+            glyphY = sg.yOffset;
+
+            // Add to row glyph cache
+            GlyphEntry entry;
+            entry.atlas_offset = gi.atlas_offset;
+            entry.ext_min_x = gi.ext_min_x;
+            entry.ext_min_y = gi.ext_min_y;
+            entry.ext_max_x = gi.ext_max_x;
+            entry.ext_max_y = gi.ext_max_y;
+            entry.upem = gi.upem;
+            entry.x_offset = glyphX;
+            entry.y_offset = glyphY;
+
+            uint32_t glyphIdx = static_cast<uint32_t>(rowCache.glyphs.size());
+            rowCache.glyphs.push_back(entry);
+
+            // Track per-cell glyph range
+            auto& range = rowCache.cellGlyphRanges[cellCol];
+            if (range.second == 0) {
+                range.first = glyphIdx;
+            }
+            range.second++;
+
+            penX += sg.xAdvance;
+        }
+
+        col = runEnd;
+    }
+
+    rowCache.valid = true;
 }
 
 void PlatformDawn::renderFrame()
@@ -1503,6 +1643,23 @@ void PlatformDawn::renderFrame()
             }
             const_cast<IGrid&>(g).clearAllDirty();
 
+            // Assemble glyph buffer from per-row caches and set cell glyph_offset/glyph_count
+            rs.glyphBuffer.clear();
+            for (int row = 0; row < g.rows(); ++row) {
+                auto& rowCache = rs.rowShapingCache[row];
+                if (!rowCache.valid) continue;
+                uint32_t rowGlyphBase = static_cast<uint32_t>(rs.glyphBuffer.size());
+                rs.glyphBuffer.insert(rs.glyphBuffer.end(),
+                                      rowCache.glyphs.begin(), rowCache.glyphs.end());
+                int baseIdx = row * g.cols();
+                for (int col = 0; col < g.cols(); ++col) {
+                    auto& range = rowCache.cellGlyphRanges[col];
+                    rs.resolvedCells[baseIdx + col].glyph_offset = rowGlyphBase + range.first;
+                    rs.resolvedCells[baseIdx + col].glyph_count = range.second;
+                }
+            }
+            rs.totalGlyphs = static_cast<uint32_t>(rs.glyphBuffer.size());
+
             // Apply selection highlight
             bool selectionVisible = term->hasSelection();
             int histSize = term->document().historySize();
@@ -1524,7 +1681,13 @@ void PlatformDawn::renderFrame()
 
             uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
             ComputeState* cs = renderer_.computePool().acquire(totalCells);
+
+            // Ensure glyph buffer and vertex buffers are large enough (grow-only)
+            uint32_t glyphCount = std::max(rs.totalGlyphs, 1u); // at least 1 to avoid 0-size buffer
+            renderer_.computePool().ensureGlyphCapacity(cs, glyphCount);
+
             renderer_.uploadResolvedCells(queue_, cs, rs.resolvedCells.data(), totalCells);
+            renderer_.uploadGlyphs(queue_, cs, rs.glyphBuffer.data(), rs.totalGlyphs);
 
             // Mark selection rows dirty for next frame
             if (selectionVisible) {
@@ -1611,6 +1774,7 @@ void PlatformDawn::renderFrame()
             params.font_size = fontSize_;
             params.pane_origin_x = padLeft_;
             params.pane_origin_y = padTop_;
+            params.max_text_vertices = cs->maxTextVertices;
 
             // Cursor
             params.cursor_type = 0;
@@ -2757,12 +2921,13 @@ void PlatformDawn::renderTabBar()
 
     // Build resolved cells for 1 row
     std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
+    std::vector<GlyphEntry> tabBarGlyphs;
     for (auto& c : cells) {
-        c.atlas_offset = 0;
-        c.ext_min_x = c.ext_min_y = c.ext_max_x = c.ext_max_y = 0;
-        c.upem = 1;
+        c.glyph_offset = 0;
+        c.glyph_count = 0;
         c.fg_color = tbInactiveFgColor_;
         c.bg_color = tbBgColor_;
+        c.underline_info = 0;
     }
 
     // Powerline separator U+E0B0
@@ -2944,15 +3109,21 @@ void PlatformDawn::renderTabBar()
         const GlyphInfo* gi = resolveTabBarGlyph(shaped);
 
         if (gi) {
-            rc.atlas_offset = gi->atlas_offset;
-            rc.ext_min_x = gi->ext_min_x;
-            rc.ext_min_y = gi->ext_min_y;
-            rc.ext_max_x = gi->ext_max_x;
-            rc.ext_max_y = gi->ext_max_y;
-            rc.upem = gi->upem;
+            GlyphEntry entry;
+            entry.atlas_offset = gi->atlas_offset;
+            entry.ext_min_x = gi->ext_min_x;
+            entry.ext_min_y = gi->ext_min_y;
+            entry.ext_max_x = gi->ext_max_x;
+            entry.ext_max_y = gi->ext_max_y;
+            entry.upem = gi->upem;
             if (stretchY) {
-                rc.upem = gi->upem | 0x80000000u;
+                entry.upem = gi->upem | 0x80000000u;
             }
+            entry.x_offset = 0.0f;
+            entry.y_offset = 0.0f;
+            rc.glyph_offset = static_cast<uint32_t>(tabBarGlyphs.size());
+            rc.glyph_count = 1;
+            tabBarGlyphs.push_back(entry);
         }
         col++;
     };
@@ -2998,7 +3169,11 @@ void PlatformDawn::renderTabBar()
     renderer_.updateFontAtlas(queue_, tabBarFontName_, *font);
 
     ComputeState* cs = renderer_.computePool().acquire(static_cast<uint32_t>(cols));
+    uint32_t tbGlyphCount = std::max(static_cast<uint32_t>(tabBarGlyphs.size()), 1u);
+    renderer_.computePool().ensureGlyphCapacity(cs, tbGlyphCount);
     renderer_.uploadResolvedCells(queue_, cs, cells.data(), static_cast<uint32_t>(cols));
+    if (!tabBarGlyphs.empty())
+        renderer_.uploadGlyphs(queue_, cs, tabBarGlyphs.data(), static_cast<uint32_t>(tabBarGlyphs.size()));
 
     TerminalComputeParams params = {};
     params.cols = static_cast<uint32_t>(cols);
@@ -3011,6 +3186,7 @@ void PlatformDawn::renderTabBar()
     params.font_size = tabBarFontSize_;
     params.pane_origin_x = 0.0f;
     params.pane_origin_y = 0.0f;
+    params.max_text_vertices = cs->maxTextVertices;
 
     PooledTexture* newTexture = texturePool_.acquire(
         static_cast<uint32_t>(tbRect.w),

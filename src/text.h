@@ -53,6 +53,21 @@ struct ShapedText {
     float width, height;
 };
 
+// Terminal-specific shaped run: no BiDi reordering, no line wrapping.
+// Preserves cluster info and raw HarfBuzz advances/offsets.
+struct ShapedRunGlyph {
+    uint64_t glyphId;
+    uint32_t cluster;     // byte offset into input text
+    float xAdvance;       // scaled pixel advance
+    float xOffset;        // scaled pixel offset from pen position
+    float yOffset;        // scaled pixel offset from baseline
+    bool isSubstitution;  // true if HarfBuzz substituted the glyph (ligature, contextual form)
+    bool rtl;             // true if this glyph is from an RTL segment
+};
+struct ShapedRun {
+    std::vector<ShapedRunGlyph> glyphs;
+};
+
 class TextSystem {
 public:
     ~TextSystem();
@@ -62,6 +77,8 @@ public:
     const ShapedText& shapeText(const std::string& fontName, const std::string& text,
                                 float fontSize, float wrapWidth = 0, int align = 0,
                                 int fontIndexHint = 0);
+    const ShapedRun& shapeRun(const std::string& fontName, const std::string& text,
+                              float fontSize, int fontIndexHint = 0);
     const FontData* getFont(const std::string& name) const;
     bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
     bool addSyntheticBoldVariant(const std::string& name, float xStrength = 0.02f, float yStrength = 0.02f);
@@ -83,7 +100,7 @@ private:
     std::unordered_map<std::string, std::string> fontPrimaryPaths_; // font name → primary font file path
     SystemFallbackFn systemFallback_;
 
-    // LRU shape cache
+    // LRU shape cache (for shapeText — tab bar, etc.)
     static constexpr size_t MAX_SHAPE_CACHE = 512;
     struct CacheEntry {
         size_t key;
@@ -91,4 +108,13 @@ private:
     };
     mutable std::list<CacheEntry> cacheLru_;
     mutable std::unordered_map<size_t, std::list<CacheEntry>::iterator> cacheMap_;
+
+    // LRU run cache (for shapeRun — terminal cell rendering)
+    static constexpr size_t MAX_RUN_CACHE = 2048;
+    struct RunCacheEntry {
+        size_t key;
+        ShapedRun run;
+    };
+    mutable std::list<RunCacheEntry> runCacheLru_;
+    mutable std::unordered_map<size_t, std::list<RunCacheEntry>::iterator> runCacheMap_;
 };

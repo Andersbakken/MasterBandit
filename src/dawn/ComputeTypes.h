@@ -4,19 +4,31 @@
 #include <cstddef>
 #include <cstdint>
 
-// CPU-resolved cell data uploaded to GPU for the compute shader (36 bytes)
+// CPU-resolved cell data uploaded to GPU for the compute shader (20 bytes)
+// Glyph rendering data is stored separately in GlyphEntry buffer.
 struct ResolvedCell {
-    uint32_t atlas_offset;
-    float ext_min_x, ext_min_y, ext_max_x, ext_max_y;
-    uint32_t upem;
+    uint32_t glyph_offset;    // index into GlyphEntry buffer
+    uint32_t glyph_count;     // number of glyphs for this cell (0 = empty/spacer)
     uint32_t fg_color;        // packed RGBA8
     uint32_t bg_color;        // packed RGBA8 (0 = default/transparent)
     uint32_t underline_info;  // bits 0-2: style (0=none, 1=straight, 2=double, 3=curly, 4=dotted)
                               // bits 8-31: color packed RGB8 (0 = use fg_color)
 };
-static_assert(sizeof(ResolvedCell) == 36);
+static_assert(sizeof(ResolvedCell) == 20);
 
-// Compute shader uniform params (56 bytes)
+// Per-glyph data in a separate storage buffer (32 bytes)
+// Multiple glyphs may map to one cell (combining marks, decomposed characters).
+// Ligature glyphs appear only in the first cell; subsequent cells have glyph_count=0.
+struct GlyphEntry {
+    uint32_t atlas_offset;
+    float ext_min_x, ext_min_y, ext_max_x, ext_max_y;
+    uint32_t upem;
+    float x_offset;           // position relative to cell origin (pixels, from HarfBuzz)
+    float y_offset;           // position relative to baseline (pixels, from HarfBuzz)
+};
+static_assert(sizeof(GlyphEntry) == 32);
+
+// Compute shader uniform params (60 bytes)
 struct TerminalComputeParams {
     uint32_t cols;
     uint32_t rows;
@@ -33,17 +45,21 @@ struct TerminalComputeParams {
     uint32_t cursor_row;
     uint32_t cursor_type;
     uint32_t cursor_color; // packed RGBA8
+    uint32_t max_text_vertices;  // safety cap for text vertex emission
 };
-static_assert(sizeof(TerminalComputeParams) == 56);
+static_assert(sizeof(TerminalComputeParams) == 60);
 
 // One set of compute buffers + bind group for a single render call
 struct ComputeState {
     wgpu::Buffer    resolvedCellBuffer;
+    wgpu::Buffer    glyphBuffer;
     wgpu::Buffer    computeTextVertBuffer;
     wgpu::Buffer    computeRectVertBuffer;
     wgpu::Buffer    indirectBuffer;
     wgpu::Buffer    computeParamsBuffer;
     wgpu::BindGroup bindGroup;
     uint32_t        maxCells  = 0;
+    uint32_t        maxGlyphs = 0;
+    uint32_t        maxTextVertices = 0;
     size_t          sizeBytes = 0;
 };

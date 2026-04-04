@@ -15,19 +15,27 @@ struct TerminalParams {
     cursor_row: u32,
     cursor_type: u32,   // 0=none 1=solid 2=hollow 3=underline 4=bar
     cursor_color: u32,  // packed RGBA8
+    max_text_vertices: u32, // safety cap for text vertex emission
 };
 
 struct ResolvedCellGPU {
+    glyph_offset: u32,   // index into glyphs array
+    glyph_count: u32,    // number of glyphs for this cell
+    fg_color: u32,        // packed RGBA8
+    bg_color: u32,        // packed RGBA8 (0 = transparent/default)
+    underline_info: u32,  // bits 0-2: style (0=none 1=straight 2=double 3=curly 4=dotted)
+                          // bits 8-31: color packed RGB8 (0 = use fg_color)
+};
+
+struct GlyphEntryGPU {
     atlas_offset: u32,
     ext_min_x: f32,
     ext_min_y: f32,
     ext_max_x: f32,
     ext_max_y: f32,
     upem: u32,
-    fg_color: u32,        // packed RGBA8
-    bg_color: u32,        // packed RGBA8 (0 = transparent/default)
-    underline_info: u32,  // bits 0-2: style (0=none 1=straight 2=double 3=curly 4=dotted)
-                          // bits 8-31: color packed RGB8 (0 = use fg_color)
+    x_offset: f32,       // position relative to cell origin (pixels)
+    y_offset: f32,       // position relative to baseline (pixels)
 };
 
 // Scalar layout to avoid vec2f padding
@@ -57,6 +65,7 @@ struct RectVertexStorage {
 @group(0) @binding(2) var<storage, read_write> text_verts: array<SlugVertexStorage>;
 @group(0) @binding(3) var<storage, read_write> rect_verts: array<RectVertexStorage>;
 @group(0) @binding(4) var<storage, read_write> counters: array<atomic<u32>>;
+@group(0) @binding(5) var<storage, read> glyphs: array<GlyphEntryGPU>;
 // counters layout (also indirect draw args):
 // [0] text_vertexCount  [1] text_instanceCount(=1)  [2] text_firstVertex(=0)  [3] text_firstInstance(=0)
 // [4] rect_vertexCount  [5] rect_instanceCount(=1)  [6] rect_firstVertex(=0)  [7] rect_firstInstance(=0)
@@ -173,24 +182,33 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
-    // Text glyph quad
-    if (cell.atlas_offset != 0u) {
-        let base_idx = atomicAdd(&counters[0], 6u);
+    // Text glyphs — iterate cell's glyph list
+    let tint = cell.fg_color;
+    for (var gi = 0u; gi < cell.glyph_count; gi++) {
+        let g = glyphs[cell.glyph_offset + gi];
+        if (g.atlas_offset == 0u) {
+            continue;
+        }
 
-        let stretch_y = (cell.upem & 0x80000000u) != 0u;
-        let upem = f32(cell.upem & 0x7FFFFFFFu);
+        let base_idx = atomicAdd(&counters[0], 6u);
+        if (base_idx + 6u > params.max_text_vertices) {
+            break; // safety cap
+        }
+
+        let stretch_y = (g.upem & 0x80000000u) != 0u;
+        let upem = f32(g.upem & 0x7FFFFFFFu);
         let font_size = params.font_size;
         let em_per_pos = upem / font_size;
 
         // Pixel-space glyph extents
-        let ext_min_x_px = cell.ext_min_x / upem * font_size;
-        let ext_min_y_px = cell.ext_min_y / upem * font_size;
-        let ext_max_x_px = cell.ext_max_x / upem * font_size;
-        let ext_max_y_px = cell.ext_max_y / upem * font_size;
+        let ext_min_x_px = g.ext_min_x / upem * font_size;
+        let ext_min_y_px = g.ext_min_y / upem * font_size;
+        let ext_max_x_px = g.ext_max_x / upem * font_size;
+        let ext_max_y_px = g.ext_max_y / upem * font_size;
 
-        // Pen position: baseX at cell left, baseY at ascender
-        let pen_x = base_x;
-        let pen_y_base = base_y + params.font_ascender;
+        // Pen position: cell origin + glyph offsets from HarfBuzz
+        let pen_x = base_x + g.x_offset;
+        let pen_y_base = base_y + params.font_ascender + g.y_offset;
 
         let x0 = pen_x + ext_min_x_px;
         var y0 = pen_y_base - ext_max_y_px; // flip Y
@@ -204,16 +222,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
 
         // Texcoords in design units
-        let tc_x0 = cell.ext_min_x;
-        let tc_y0 = cell.ext_min_y;
-        let tc_x1 = cell.ext_max_x;
-        let tc_y1 = cell.ext_max_y;
+        let tc_x0 = g.ext_min_x;
+        let tc_y0 = g.ext_min_y;
+        let tc_x1 = g.ext_max_x;
+        let tc_y1 = g.ext_max_y;
 
-        let ao = cell.atlas_offset;
-        let tint = cell.fg_color;
+        let ao = g.atlas_offset;
 
         // 6 vertices: TL, TR, BL, TR, BR, BL
-        // Normal: corner*2-1 where corner is (0,0)/(1,0)/(0,1)/(1,1)
         text_verts[base_idx + 0u] = SlugVertexStorage(x0, y0, tc_x0, tc_y1, -1.0, -1.0, em_per_pos, ao, tint);
         text_verts[base_idx + 1u] = SlugVertexStorage(x1, y0, tc_x1, tc_y1,  1.0, -1.0, em_per_pos, ao, tint);
         text_verts[base_idx + 2u] = SlugVertexStorage(x0, y1, tc_x0, tc_y0, -1.0,  1.0, em_per_pos, ao, tint);

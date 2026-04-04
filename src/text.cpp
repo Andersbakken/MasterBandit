@@ -672,6 +672,252 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
     return cacheLru_.front().shaped;
 }
 
+// --- Terminal-specific run shaping (no BiDi reordering, no line wrapping) ---
+
+const ShapedRun& TextSystem::shapeRun(const std::string& fontName, const std::string& text,
+                                       float fontSize, int fontIndexHint)
+{
+    // Compute cache key
+    size_t h = std::hash<std::string>{}(fontName);
+    h ^= std::hash<std::string>{}(text) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<float>{}(fontSize) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(fontIndexHint) + 0x9e3779b9 + (h << 6) + (h >> 2);
+
+    // LRU lookup
+    auto it = runCacheMap_.find(h);
+    if (it != runCacheMap_.end()) {
+        runCacheLru_.splice(runCacheLru_.begin(), runCacheLru_, it->second);
+        return it->second->run;
+    }
+
+    static const ShapedRun empty{};
+
+    auto fontIt = fonts_.find(fontName);
+    if (fontIt == fonts_.end()) return empty;
+    FontData& font = fontIt->second;
+
+    if (text.empty()) {
+        runCacheLru_.push_front({h, ShapedRun{}});
+        runCacheMap_[h] = runCacheLru_.begin();
+        if (runCacheMap_.size() > MAX_RUN_CACHE) {
+            runCacheMap_.erase(runCacheLru_.back().key);
+            runCacheLru_.pop_back();
+        }
+        return runCacheLru_.front().run;
+    }
+
+    float scale = fontSize / font.baseSize;
+
+    // BiDi analysis — get per-character embedding levels
+    SBCodepointSequence cpSeq{SBStringEncodingUTF8, const_cast<char*>(text.c_str()),
+                              static_cast<SBUInteger>(text.size())};
+    SBAlgorithmRef bidiAlgo = SBAlgorithmCreate(&cpSeq);
+    SBParagraphRef bidiPara = SBAlgorithmCreateParagraph(
+        bidiAlgo, 0, static_cast<SBUInteger>(text.size()), SBLevelDefaultLTR);
+    const SBLevel* levels = SBParagraphGetLevelsPtr(bidiPara);
+
+    // Script run detection
+    SBScriptLocatorRef scriptLoc = SBScriptLocatorCreate();
+    SBScriptLocatorLoadCodepoints(scriptLoc, &cpSeq);
+
+    struct ScriptRun { SBUInteger offset, length; SBScript script; };
+    std::vector<ScriptRun> scriptRuns;
+    while (SBScriptLocatorMoveNext(scriptLoc)) {
+        const SBScriptAgent* agent = SBScriptLocatorGetAgent(scriptLoc);
+        scriptRuns.push_back({agent->offset, agent->length, agent->script});
+    }
+    SBScriptLocatorRelease(scriptLoc);
+
+    // Font selection lambda (same as shapeText)
+    auto fontIndexForSegment = [&](SBUInteger offset, SBUInteger length) -> uint32_t {
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
+        const uint8_t* end = p + length;
+
+        auto decodeUtf8 = [](const uint8_t*& p) -> uint32_t {
+            if (*p < 0x80) return *p++;
+            if ((*p & 0xE0) == 0xC0) { uint32_t cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; return cp; }
+            if ((*p & 0xF0) == 0xE0) { uint32_t cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; return cp; }
+            uint32_t cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; return cp;
+        };
+
+        // Try hint font first
+        if (fontIndexHint > 0 && fontIndexHint < static_cast<int>(font.hbFonts.size())) {
+            p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
+            bool hintCovers = true;
+            while (p < end) {
+                uint32_t cp = decodeUtf8(p);
+                uint32_t gid;
+                if (!hb_font_get_nominal_glyph(font.hbFonts[fontIndexHint].hbFont, cp, &gid)) {
+                    hintCovers = false;
+                    break;
+                }
+            }
+            if (hintCovers) return static_cast<uint32_t>(fontIndexHint);
+        }
+
+        // Try primary font
+        p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
+        bool primaryMissesAny = false;
+        while (p < end) {
+            uint32_t cp = decodeUtf8(p);
+            uint32_t gid;
+            if (!hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid))
+                primaryMissesAny = true;
+        }
+        if (!primaryMissesAny) return 0;
+
+        // Try fallback fonts
+        for (uint32_t fi = 1; fi < font.hbFonts.size(); fi++) {
+            p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
+            bool covers = true;
+            while (p < end) {
+                uint32_t cp = decodeUtf8(p);
+                uint32_t gid;
+                if (!hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid) &&
+                    !hb_font_get_nominal_glyph(font.hbFonts[fi].hbFont, cp, &gid)) {
+                    covers = false;
+                    break;
+                }
+            }
+            if (covers) return fi;
+        }
+
+        return 0;
+    };
+
+    ShapedRun result;
+
+    for (const auto& sr : scriptRuns) {
+        uint32_t fi = fontIndexForSegment(sr.offset, sr.length);
+
+        unsigned int fontUpem = hb_face_get_upem(font.hbFonts[fi].hbFace);
+        float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
+
+        // Determine direction from BiDi levels
+        bool segmentRtl = (levels[sr.offset] & 1) != 0;
+
+        hb_buffer_t* buf = hb_buffer_create();
+        hb_buffer_add_utf8(buf, text.c_str(), static_cast<int>(text.size()),
+                           static_cast<unsigned int>(sr.offset), static_cast<int>(sr.length));
+        hb_buffer_set_direction(buf, segmentRtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+        hb_buffer_set_script(buf, hb_script_from_iso15924_tag(
+            static_cast<hb_tag_t>(SBScriptGetUnicodeTag(sr.script))));
+        hb_buffer_set_language(buf, hb_language_get_default());
+        // Ensure base + combining marks share the same cluster value
+        hb_buffer_set_cluster_level(buf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
+        hb_shape(font.hbFonts[fi].hbFont, buf, nullptr, 0);
+
+        unsigned int count;
+        hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &count);
+        hb_glyph_position_t* positions = hb_buffer_get_glyph_positions(buf, &count);
+
+        for (unsigned int i = 0; i < count; i++) {
+            uint32_t gid = infos[i].codepoint;
+            uint32_t glyphFi = fi;
+
+            if (gid == 0) {
+                // Glyph missing — try fallback fonts
+                uint32_t cluster = infos[i].cluster;
+                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
+                uint32_t cp;
+                if (*p < 0x80) cp = *p;
+                else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
+                else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
+                else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+
+                // Try registered fallback fonts
+                bool found = false;
+                for (uint32_t tryFi = 0; tryFi < font.hbFonts.size(); tryFi++) {
+                    if (tryFi == fi) continue;
+                    uint32_t fallbackGid;
+                    if (hb_font_get_nominal_glyph(font.hbFonts[tryFi].hbFont, cp, &fallbackGid)) {
+                        gid = fallbackGid;
+                        glyphFi = tryFi;
+                        unsigned int fbUpem = hb_face_get_upem(font.hbFonts[tryFi].hbFace);
+                        float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
+                        float adv = hb_font_get_glyph_h_advance(font.hbFonts[tryFi].hbFont, fallbackGid) * fbScale * scale;
+                        ensureGlyphEncoded(font, glyphFi, gid);
+                        result.glyphs.push_back({glyphKey(glyphFi, gid), infos[i].cluster, adv, 0, 0, false, segmentRtl});
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) continue;
+
+                // Try system font fallback
+                if (systemFallback_) {
+                    auto pathIt = fontPrimaryPaths_.find(fontName);
+                    std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
+                    auto fallbackData = systemFallback_(primaryPath, static_cast<char32_t>(cp));
+                    if (!fallbackData.empty()) {
+                        addFallbackFont(fontName, fallbackData);
+                        uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
+                        uint32_t fallbackGid;
+                        if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &fallbackGid)) {
+                            gid = fallbackGid;
+                            glyphFi = newFi;
+                            unsigned int fbUpem = hb_face_get_upem(font.hbFonts[newFi].hbFace);
+                            float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
+                            float adv = hb_font_get_glyph_h_advance(font.hbFonts[newFi].hbFont, fallbackGid) * fbScale * scale;
+                            ensureGlyphEncoded(font, glyphFi, gid);
+                            result.glyphs.push_back({glyphKey(glyphFi, gid), infos[i].cluster, adv, 0, 0, false, segmentRtl});
+                            continue;
+                        }
+                    }
+                }
+
+                // Still missing — push with gid=0, will be skipped during rendering
+                continue;
+            }
+
+            // Normal glyph — check if HarfBuzz substituted it (ligature, contextual form)
+            bool isSubstitution = false;
+            {
+                // Decode codepoint from cluster position to compare against nominal glyph
+                uint32_t cluster = infos[i].cluster;
+                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
+                uint32_t cp;
+                if (*p < 0x80) cp = *p;
+                else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
+                else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
+                else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+
+                uint32_t nominalGid;
+                if (hb_font_get_nominal_glyph(font.hbFonts[fi].hbFont, cp, &nominalGid)) {
+                    isSubstitution = (gid != nominalGid);
+                }
+            }
+
+            ensureGlyphEncoded(font, glyphFi, gid);
+            result.glyphs.push_back({
+                glyphKey(glyphFi, gid),
+                infos[i].cluster,
+                positions[i].x_advance * fontPixelScale * scale,
+                positions[i].x_offset * fontPixelScale * scale,
+                positions[i].y_offset * fontPixelScale * scale,
+                isSubstitution,
+                segmentRtl
+            });
+        }
+
+        hb_buffer_destroy(buf);
+    }
+
+    SBParagraphRelease(bidiPara);
+    SBAlgorithmRelease(bidiAlgo);
+
+    // Insert into LRU cache
+    runCacheLru_.push_front({h, std::move(result)});
+    runCacheMap_[h] = runCacheLru_.begin();
+
+    if (runCacheMap_.size() > MAX_RUN_CACHE) {
+        runCacheMap_.erase(runCacheLru_.back().key);
+        runCacheLru_.pop_back();
+    }
+
+    return runCacheLru_.front().run;
+}
+
 const FontData* TextSystem::getFont(const std::string& name) const
 {
     auto it = fonts_.find(name);

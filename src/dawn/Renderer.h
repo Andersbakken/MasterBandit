@@ -56,6 +56,8 @@ public:
 
     void uploadResolvedCells(wgpu::Queue& queue, ComputeState* state,
                              const ResolvedCell* cells, uint32_t count);
+    void uploadGlyphs(wgpu::Queue& queue, ComputeState* state,
+                      const GlyphEntry* glyphs, uint32_t count);
 
     // Render terminal content to an externally-provided texture from the TexturePool.
     // pane_tint: RGBA multiplier applied to all rendered content (1,1,1,1 = no tint).

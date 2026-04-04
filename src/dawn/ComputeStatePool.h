@@ -8,7 +8,7 @@
 #include <vector>
 
 // Pool of ComputeState objects with byte-budget LRU eviction.
-// Each ComputeState holds the 5 compute buffers + bind group for one render call.
+// Each ComputeState holds the compute buffers + bind group for one render call.
 // Acquire returns the smallest free state >= minCells, or allocates a new one.
 // Release returns a state to the free list and evicts LRU entries if the free
 // list exceeds byteLimit bytes. Eviction is logged at info level.
@@ -21,6 +21,10 @@ public:
 
     ComputeState* acquire(uint32_t minCells);
     void release(ComputeState* state);
+
+    // Ensure the glyph buffer and vertex buffers are large enough.
+    // Grows buffers and rebuilds bind group if needed. Buffers only grow, never shrink.
+    void ensureGlyphCapacity(ComputeState* state, uint32_t glyphCount);
 
     // Destroy all states. Call before the WebGPU device is released.
     void clear();
@@ -38,6 +42,7 @@ public:
 private:
     void evictToLimit();
     ComputeState* allocate(uint32_t cells);
+    void rebuildBindGroup(ComputeState* state);
 
     WGPUDevice           device_          = nullptr;
     WGPUBindGroupLayout  bindGroupLayout_ = nullptr;

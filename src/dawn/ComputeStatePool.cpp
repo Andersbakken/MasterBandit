@@ -2,6 +2,10 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
+// SlugVertex is 36 bytes, RectVertex is 24 bytes
+static constexpr uint64_t SLUG_VERTEX_SIZE = 36;
+static constexpr uint64_t RECT_VERTEX_SIZE = 24;
+
 void ComputeStatePool::init(WGPUDevice device, WGPUBindGroupLayout bindGroupLayout, size_t byteLimit)
 {
     device_          = device;
@@ -64,37 +68,124 @@ void ComputeStatePool::clear()
     all_.clear();
 }
 
+void ComputeStatePool::ensureGlyphCapacity(ComputeState* state, uint32_t glyphCount)
+{
+    if (!state || !device_) return;
+
+    bool needRebuild = false;
+    wgpu::Device device(device_);
+
+    // Grow glyph buffer if needed
+    if (glyphCount > state->maxGlyphs) {
+        // Add 25% headroom to reduce frequent reallocations
+        uint32_t newMax = glyphCount + glyphCount / 4;
+        wgpu::BufferDescriptor desc = {};
+        desc.size  = static_cast<uint64_t>(newMax) * sizeof(GlyphEntry);
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+        state->glyphBuffer = device.CreateBuffer(&desc);
+        state->maxGlyphs = newMax;
+        needRebuild = true;
+    }
+
+    // Grow text vertex buffer if needed: (cells * 6 + glyphs * 6 + 24) vertices
+    uint32_t neededTextVerts = state->maxCells * 6 + glyphCount * 6 + 24;
+    if (neededTextVerts > state->maxTextVertices) {
+        uint32_t newMax = neededTextVerts + neededTextVerts / 4;
+        wgpu::BufferDescriptor desc = {};
+        desc.size  = static_cast<uint64_t>(newMax) * SLUG_VERTEX_SIZE;
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
+        state->computeTextVertBuffer = device.CreateBuffer(&desc);
+        state->maxTextVertices = newMax;
+        needRebuild = true;
+    }
+
+    if (needRebuild) {
+        rebuildBindGroup(state);
+        // Recompute sizeBytes
+        state->sizeBytes =
+            static_cast<size_t>(state->maxCells) * sizeof(ResolvedCell) +
+            static_cast<size_t>(state->maxGlyphs) * sizeof(GlyphEntry) +
+            static_cast<size_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE +
+            (static_cast<size_t>(state->maxCells) * 6 + 24) * RECT_VERTEX_SIZE +
+            32 + 256; // indirect + params
+    }
+}
+
+void ComputeStatePool::rebuildBindGroup(ComputeState* state)
+{
+    wgpu::Device device(device_);
+
+    wgpu::BindGroupEntry bgEntries[6] = {};
+    bgEntries[0].binding = 0;
+    bgEntries[0].buffer  = state->computeParamsBuffer;
+    bgEntries[0].size    = (sizeof(TerminalComputeParams) + 255) & ~255u;
+    bgEntries[1].binding = 1;
+    bgEntries[1].buffer  = state->resolvedCellBuffer;
+    bgEntries[1].size    = static_cast<uint64_t>(state->maxCells) * sizeof(ResolvedCell);
+    bgEntries[2].binding = 2;
+    bgEntries[2].buffer  = state->computeTextVertBuffer;
+    bgEntries[2].size    = static_cast<uint64_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE;
+    bgEntries[3].binding = 3;
+    bgEntries[3].buffer  = state->computeRectVertBuffer;
+    bgEntries[3].size    = (static_cast<uint64_t>(state->maxCells) * 6 + 24) * RECT_VERTEX_SIZE;
+    bgEntries[4].binding = 4;
+    bgEntries[4].buffer  = state->indirectBuffer;
+    bgEntries[4].size    = 32;
+    bgEntries[5].binding = 5;
+    bgEntries[5].buffer  = state->glyphBuffer;
+    bgEntries[5].size    = static_cast<uint64_t>(state->maxGlyphs) * sizeof(GlyphEntry);
+
+    wgpu::BindGroupDescriptor bgDesc = {};
+    bgDesc.layout     = wgpu::BindGroupLayout(bindGroupLayout_);
+    bgDesc.entryCount = 6;
+    bgDesc.entries    = bgEntries;
+    state->bindGroup  = device.CreateBindGroup(&bgDesc);
+}
+
 ComputeState* ComputeStatePool::allocate(uint32_t cells)
 {
     wgpu::Device device(device_);  // temporary owning wrapper (AddRef/Release)
 
     auto state = std::make_unique<ComputeState>();
 
+    // Resolved cell buffer
     {
         wgpu::BufferDescriptor desc = {};
         desc.size  = static_cast<uint64_t>(cells) * sizeof(ResolvedCell);
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
         state->resolvedCellBuffer = device.CreateBuffer(&desc);
     }
+    // Glyph buffer — start with 1 glyph per cell as initial estimate
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size  = static_cast<uint64_t>(cells) * 6 * 36;
+        desc.size  = static_cast<uint64_t>(cells) * sizeof(GlyphEntry);
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+        state->glyphBuffer = device.CreateBuffer(&desc);
+    }
+    // Text vertex buffer: (cells*6 + cells*6 + 24) initially (1 glyph per cell assumption)
+    {
+        uint32_t initTextVerts = cells * 6 + cells * 6 + 24;
+        wgpu::BufferDescriptor desc = {};
+        desc.size  = static_cast<uint64_t>(initTextVerts) * SLUG_VERTEX_SIZE;
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
         state->computeTextVertBuffer = device.CreateBuffer(&desc);
+        state->maxTextVertices = initTextVerts;
     }
+    // Rect vertex buffer: (cells*6 + 24) for backgrounds + cursor
     {
-        // Extra 24 verts to accommodate a hollow cursor (4 thin rects = 24 verts)
         wgpu::BufferDescriptor desc = {};
-        desc.size  = (static_cast<uint64_t>(cells) * 6 + 24) * 24;
+        desc.size  = (static_cast<uint64_t>(cells) * 6 + 24) * RECT_VERTEX_SIZE;
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
         state->computeRectVertBuffer = device.CreateBuffer(&desc);
     }
+    // Indirect buffer
     {
         wgpu::BufferDescriptor desc = {};
         desc.size  = 32;
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Indirect | wgpu::BufferUsage::CopyDst;
         state->indirectBuffer = device.CreateBuffer(&desc);
     }
+    // Compute params uniform buffer
     {
         wgpu::BufferDescriptor desc = {};
         desc.size  = (sizeof(TerminalComputeParams) + 255) & ~255u;
@@ -102,31 +193,16 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
         state->computeParamsBuffer = device.CreateBuffer(&desc);
     }
 
-    wgpu::BindGroupEntry bgEntries[5] = {};
-    bgEntries[0].binding = 0;
-    bgEntries[0].buffer  = state->computeParamsBuffer;
-    bgEntries[0].size    = (sizeof(TerminalComputeParams) + 255) & ~255u;
-    bgEntries[1].binding = 1;
-    bgEntries[1].buffer  = state->resolvedCellBuffer;
-    bgEntries[1].size    = static_cast<uint64_t>(cells) * sizeof(ResolvedCell);
-    bgEntries[2].binding = 2;
-    bgEntries[2].buffer  = state->computeTextVertBuffer;
-    bgEntries[2].size    = static_cast<uint64_t>(cells) * 6 * 36;
-    bgEntries[3].binding = 3;
-    bgEntries[3].buffer  = state->computeRectVertBuffer;
-    bgEntries[3].size    = (static_cast<uint64_t>(cells) * 6 + 24) * 24;
-    bgEntries[4].binding = 4;
-    bgEntries[4].buffer  = state->indirectBuffer;
-    bgEntries[4].size    = 32;
-
-    wgpu::BindGroupDescriptor bgDesc = {};
-    bgDesc.layout     = wgpu::BindGroupLayout(bindGroupLayout_);
-    bgDesc.entryCount = 5;
-    bgDesc.entries    = bgEntries;
-    state->bindGroup  = device.CreateBindGroup(&bgDesc);
-
     state->maxCells  = cells;
-    state->sizeBytes = static_cast<size_t>(cells) * (32 + 6*36 + 6*24) + 24*24 + 32 + 256;
+    state->maxGlyphs = cells;  // initial 1:1 estimate
+    state->sizeBytes =
+        static_cast<size_t>(cells) * sizeof(ResolvedCell) +
+        static_cast<size_t>(cells) * sizeof(GlyphEntry) +
+        static_cast<size_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE +
+        (static_cast<size_t>(cells) * 6 + 24) * RECT_VERTEX_SIZE +
+        32 + 256; // indirect + params
+
+    rebuildBindGroup(state.get());
 
     spdlog::debug("ComputeStatePool: allocated {} cells ({:.1f} KB)", cells, state->sizeBytes / 1024.0);
 

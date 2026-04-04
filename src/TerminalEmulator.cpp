@@ -52,7 +52,7 @@ std::string toPrintable(const char *bytes, int len)
 
 // Default 16-color palette (standard 8 + bright 8)
 const uint8_t TerminalEmulator::kDefaultPalette[16][3] = {
-    {  0,   0,   0}, // 0 black
+    { 58,  58,  58}, // 0 black (visible against black background)
     {204,   4,   3}, // 1 red
     { 25, 203,   0}, // 2 green
     {206, 203,   0}, // 3 yellow

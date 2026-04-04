@@ -73,7 +73,7 @@ struct ColorScheme {
     std::string cursor      = "#cccccc";
 
     // ANSI 16-color palette (0-7 normal, 8-15 bright)
-    std::string color0  = "#000000"; // black
+    std::string color0  = "#3a3a3a"; // black (visible against #000000 background)
     std::string color1  = "#cc0403"; // red
     std::string color2  = "#19cb00"; // green
     std::string color3  = "#cecb00"; // yellow

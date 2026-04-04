@@ -56,6 +56,7 @@
 - [x] Keybindings — configurable key mappings for tab/pane operations.
 - [x] Divider — `divider_color` (hex) and `divider_width` (pixels) in config.
 - [ ] Cursor style — block/underline/bar, blink on/off, blink interval.
+- [ ] Minimum contrast — auto-adjust foreground colors when too close to background (like iTerm2). Uses perceived brightness difference with configurable threshold. Would allow ANSI black to be true `#000000` while remaining visible.
 
 ## Emoji / Color Fonts
 

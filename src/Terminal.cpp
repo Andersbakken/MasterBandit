@@ -137,10 +137,10 @@ void Terminal::readFromFD()
         if (errno != EIO) {
             ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
         }
-        mPlatform->quit();
+        mPlatform->terminalExited(this);
         return;
     } else if (ret == 0) {
-        mPlatform->quit();
+        mPlatform->terminalExited(this);
         return;
     }
 

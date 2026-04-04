@@ -371,6 +371,7 @@ private:
     std::vector<Binding> bindings_;
     SequenceMatcher      sequenceMatcher_;
     void dispatchAction(const Action::Any& action);
+    void terminalExited(Terminal* terminal) override;
 
     // Pane helpers
     // Spawn a terminal for a freshly-created pane using stored terminalOptions_.
@@ -1490,6 +1491,49 @@ void PlatformDawn::renderFrame()
 
     surface_.Present();
     needsRedraw_ = false;
+}
+
+void PlatformDawn::terminalExited(Terminal* terminal)
+{
+    // Find which tab and pane owns this terminal
+    for (int tabIdx = 0; tabIdx < static_cast<int>(tabs_.size()); ++tabIdx) {
+        Tab* tab = tabs_[tabIdx].get();
+        for (auto& panePtr : tab->layout()->panes()) {
+            if (panePtr->terminal() != terminal) continue;
+
+            int paneId = panePtr->id();
+            removePtyPoll(terminal->masterFD());
+
+            auto it = paneRenderStates_.find(paneId);
+            if (it != paneRenderStates_.end()) {
+                if (it->second.heldTexture)
+                    pendingTabBarRelease_.push_back(it->second.heldTexture);
+                for (auto* tx : it->second.pendingRelease)
+                    pendingTabBarRelease_.push_back(tx);
+                paneRenderStates_.erase(it);
+            }
+
+            if (tab->layout()->panes().size() <= 1) {
+                // Last pane in the tab — close the tab
+                tabs_.erase(tabs_.begin() + tabIdx);
+                if (tabs_.empty()) {
+                    quit();
+                    return;
+                }
+                if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
+                    activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+                tabBarDirty_ = true;
+            } else {
+                tab->layout()->removePane(paneId);
+                resizeAllPanesInTab(tab);
+            }
+
+            needsRedraw_ = true;
+            return;
+        }
+    }
+    // Fallback: terminal not found in any pane
+    quit();
 }
 
 void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)

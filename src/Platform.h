@@ -588,6 +588,8 @@ public:
     virtual int exec() = 0;
     virtual void quit(int status = 0) = 0;
     virtual std::unique_ptr<Terminal> createTerminal(const TerminalOptions &options) = 0;
+    // Called when a terminal's PTY exits. Should close the pane/tab, or quit if it was the last.
+    virtual void terminalExited(Terminal* terminal) { quit(); }
 };
 
 std::unique_ptr<Platform> createPlatform(int argc, char **argv);

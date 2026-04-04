@@ -28,6 +28,10 @@ struct TestTerminal {
     // safely captured by the callback lambdas passed to term's constructor.
     std::string capturedTitle;
     std::string capturedIcon;
+    std::string capturedCWD;
+    std::string capturedNotifyTitle;
+    std::string capturedNotifyBody;
+    std::string capturedNotifyId;
 
     InnerTerminal term;
 
@@ -36,6 +40,10 @@ struct TestTerminal {
             TerminalCallbacks cb;
             cb.onTitleChanged = [this](const std::string& t) { capturedTitle = t; };
             cb.onIconChanged  = [this](const std::string& i) { capturedIcon  = i; };
+            cb.onCWDChanged   = [this](const std::string& d) { capturedCWD = d; };
+            cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id) {
+                capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id;
+            };
             return cb;
           }())
     {

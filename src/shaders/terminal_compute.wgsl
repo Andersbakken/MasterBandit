@@ -24,8 +24,10 @@ struct ResolvedCellGPU {
     ext_max_x: f32,
     ext_max_y: f32,
     upem: u32,
-    fg_color: u32,   // packed RGBA8
-    bg_color: u32,   // packed RGBA8 (0 = transparent/default)
+    fg_color: u32,        // packed RGBA8
+    bg_color: u32,        // packed RGBA8 (0 = transparent/default)
+    underline_info: u32,  // bits 0-2: style (0=none 1=straight 2=double 3=curly 4=dotted)
+                          // bits 8-31: color packed RGB8 (0 = use fg_color)
 };
 
 // Scalar layout to avoid vec2f padding
@@ -218,5 +220,98 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         text_verts[base_idx + 3u] = SlugVertexStorage(x1, y0, tc_x1, tc_y1,  1.0, -1.0, em_per_pos, ao, tint);
         text_verts[base_idx + 4u] = SlugVertexStorage(x1, y1, tc_x1, tc_y0,  1.0,  1.0, em_per_pos, ao, tint);
         text_verts[base_idx + 5u] = SlugVertexStorage(x0, y1, tc_x0, tc_y0, -1.0,  1.0, em_per_pos, ao, tint);
+    }
+
+    // Underline rendering
+    let ul_style = cell.underline_info & 0x07u;
+    if (ul_style != 0u) {
+        let ul_color_packed = cell.underline_info >> 8u;
+        var ur: f32; var ug: f32; var ub: f32; var ua: f32;
+        if (ul_color_packed != 0u) {
+            ur = f32(ul_color_packed & 0xFFu) / 255.0;
+            ug = f32((ul_color_packed >> 8u) & 0xFFu) / 255.0;
+            ub = f32((ul_color_packed >> 16u) & 0xFFu) / 255.0;
+            ua = 1.0;
+        } else {
+            // Use foreground color
+            ur = f32(cell.fg_color & 0xFFu) / 255.0;
+            ug = f32((cell.fg_color >> 8u) & 0xFFu) / 255.0;
+            ub = f32((cell.fg_color >> 16u) & 0xFFu) / 255.0;
+            ua = f32((cell.fg_color >> 24u) & 0xFFu) / 255.0;
+        }
+
+        let ul_t = 1.5; // underline thickness
+        let ul_y = base_y + params.cell_height - 2.0; // position near bottom
+
+        if (ul_style == 1u) {
+            // Straight underline
+            let base_idx = atomicAdd(&counters[4], 6u);
+            rect_verts[base_idx + 0u] = RectVertexStorage(base_x, ul_y, ur, ug, ub, ua);
+            rect_verts[base_idx + 1u] = RectVertexStorage(base_x + params.cell_width, ul_y, ur, ug, ub, ua);
+            rect_verts[base_idx + 2u] = RectVertexStorage(base_x, ul_y + ul_t, ur, ug, ub, ua);
+            rect_verts[base_idx + 3u] = RectVertexStorage(base_x + params.cell_width, ul_y, ur, ug, ub, ua);
+            rect_verts[base_idx + 4u] = RectVertexStorage(base_x + params.cell_width, ul_y + ul_t, ur, ug, ub, ua);
+            rect_verts[base_idx + 5u] = RectVertexStorage(base_x, ul_y + ul_t, ur, ug, ub, ua);
+        } else if (ul_style == 2u) {
+            // Double underline: two thin lines
+            let gap = 2.0;
+            let base_idx = atomicAdd(&counters[4], 12u);
+            // Top line
+            rect_verts[base_idx + 0u] = RectVertexStorage(base_x, ul_y - gap, ur, ug, ub, ua);
+            rect_verts[base_idx + 1u] = RectVertexStorage(base_x + params.cell_width, ul_y - gap, ur, ug, ub, ua);
+            rect_verts[base_idx + 2u] = RectVertexStorage(base_x, ul_y - gap + 1.0, ur, ug, ub, ua);
+            rect_verts[base_idx + 3u] = RectVertexStorage(base_x + params.cell_width, ul_y - gap, ur, ug, ub, ua);
+            rect_verts[base_idx + 4u] = RectVertexStorage(base_x + params.cell_width, ul_y - gap + 1.0, ur, ug, ub, ua);
+            rect_verts[base_idx + 5u] = RectVertexStorage(base_x, ul_y - gap + 1.0, ur, ug, ub, ua);
+            // Bottom line
+            rect_verts[base_idx + 6u] = RectVertexStorage(base_x, ul_y + 1.0, ur, ug, ub, ua);
+            rect_verts[base_idx + 7u] = RectVertexStorage(base_x + params.cell_width, ul_y + 1.0, ur, ug, ub, ua);
+            rect_verts[base_idx + 8u] = RectVertexStorage(base_x, ul_y + 2.0, ur, ug, ub, ua);
+            rect_verts[base_idx + 9u] = RectVertexStorage(base_x + params.cell_width, ul_y + 1.0, ur, ug, ub, ua);
+            rect_verts[base_idx + 10u] = RectVertexStorage(base_x + params.cell_width, ul_y + 2.0, ur, ug, ub, ua);
+            rect_verts[base_idx + 11u] = RectVertexStorage(base_x, ul_y + 2.0, ur, ug, ub, ua);
+        } else if (ul_style == 3u) {
+            // Curly underline: approximate with 4 small rects in a wave
+            let segments = 4u;
+            let seg_w = params.cell_width / f32(segments);
+            let amplitude = 2.0;
+            let base_idx = atomicAdd(&counters[4], segments * 6u);
+            for (var s = 0u; s < segments; s++) {
+                let sx0 = base_x + f32(s) * seg_w;
+                let sx1 = sx0 + seg_w;
+                // Alternate up/down
+                var sy0: f32; var sy1: f32;
+                if (s % 2u == 0u) {
+                    sy0 = ul_y - amplitude;
+                    sy1 = ul_y;
+                } else {
+                    sy0 = ul_y;
+                    sy1 = ul_y + amplitude;
+                }
+                let si = base_idx + s * 6u;
+                rect_verts[si + 0u] = RectVertexStorage(sx0, sy0, ur, ug, ub, ua);
+                rect_verts[si + 1u] = RectVertexStorage(sx1, sy0, ur, ug, ub, ua);
+                rect_verts[si + 2u] = RectVertexStorage(sx0, sy1, ur, ug, ub, ua);
+                rect_verts[si + 3u] = RectVertexStorage(sx1, sy0, ur, ug, ub, ua);
+                rect_verts[si + 4u] = RectVertexStorage(sx1, sy1, ur, ug, ub, ua);
+                rect_verts[si + 5u] = RectVertexStorage(sx0, sy1, ur, ug, ub, ua);
+            }
+        } else {
+            // Dotted (style 4): dashed segments
+            let segments = 3u;
+            let seg_w = params.cell_width / f32(segments * 2u);
+            let base_idx = atomicAdd(&counters[4], segments * 6u);
+            for (var s = 0u; s < segments; s++) {
+                let sx0 = base_x + f32(s * 2u) * seg_w;
+                let sx1 = sx0 + seg_w;
+                let si = base_idx + s * 6u;
+                rect_verts[si + 0u] = RectVertexStorage(sx0, ul_y, ur, ug, ub, ua);
+                rect_verts[si + 1u] = RectVertexStorage(sx1, ul_y, ur, ug, ub, ua);
+                rect_verts[si + 2u] = RectVertexStorage(sx0, ul_y + ul_t, ur, ug, ub, ua);
+                rect_verts[si + 3u] = RectVertexStorage(sx1, ul_y, ur, ug, ub, ua);
+                rect_verts[si + 4u] = RectVertexStorage(sx1, ul_y + ul_t, ur, ug, ub, ua);
+                rect_verts[si + 5u] = RectVertexStorage(sx0, ul_y + ul_t, ur, ug, ub, ua);
+            }
+        }
     }
 }

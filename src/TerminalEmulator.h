@@ -29,6 +29,8 @@ struct TerminalCallbacks {
     std::function<void(const std::string&)>      onIconChanged;    // OSC 1
     std::function<void(int /*state*/, int /*pct*/)> onProgressChanged; // OSC 9;4
     std::function<bool()>                        isDarkMode;         // for mode 2031
+    std::function<void(const std::string&)>      onCWDChanged;       // OSC 7
+    std::function<void(const std::string&, const std::string&, const std::string&)> onDesktopNotification; // OSC 99
 };
 
 class TerminalEmulator
@@ -122,6 +124,10 @@ public:
     bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
     bool syncOutputActive() const { return mSyncOutput; }
     bool colorPreferenceReporting() const { return mColorPreferenceReporting; }
+    const std::string* hyperlinkURI(uint32_t id) const {
+        auto it = mHyperlinkRegistry.find(id);
+        return it != mHyperlinkRegistry.end() ? &it->second.uri : nullptr;
+    }
     void notifyColorPreference(bool isDark);
     void focusEvent(bool focused);
 
@@ -184,6 +190,7 @@ private:
     int mViewportOffset { 0 };
 
     CellAttrs mCurrentAttrs;       // SGR "pen"
+    uint32_t mCurrentUnderlineColor { 0 }; // SGR 58: packed RGBA8, 0 = use fg
     int mSavedCursorX { 0 }, mSavedCursorY { 0 };
     bool mSavedWrapPending { false };
     CellAttrs mSavedAttrs;
@@ -303,4 +310,15 @@ private:
     // Image registry
     std::unordered_map<uint32_t, ImageEntry> mImageRegistry;
     uint32_t mNextImageId { 1 };
+
+    // Hyperlink registry (OSC 8)
+    struct HyperlinkEntry { std::string uri; std::string id; };
+    std::unordered_map<uint32_t, HyperlinkEntry> mHyperlinkRegistry;
+    uint32_t mNextHyperlinkId { 1 };
+    uint32_t mActiveHyperlinkId { 0 }; // 0 = no active hyperlink
+
+    // Desktop notification accumulator (OSC 99)
+    std::string mNotifyId;
+    std::string mNotifyTitle;
+    std::string mNotifyBody;
 };

@@ -53,6 +53,10 @@ struct CellAttrs {
     bool wideSpacer() const { return data[7] & 0x20; }
     void setWideSpacer(bool v) { if (v) data[7] |= 0x20; else data[7] &= ~0x20; }
 
+    // Underline style: 0=straight, 1=double, 2=curly, 3=dotted (stored in data[7] bits 6-7)
+    uint8_t underlineStyle() const { return (data[7] >> 6) & 0x03; }
+    void setUnderlineStyle(uint8_t s) { data[7] = (data[7] & 0x3F) | ((s & 0x03) << 6); }
+
     uint32_t packFgAsU32() const {
         if (fgMode() == Default) return 0xFFFFFFFF;
         return (static_cast<uint32_t>(data[0]))
@@ -82,4 +86,6 @@ struct CellExtra {
     uint32_t imageId { 0 };
     uint32_t imageOffsetCol { 0 };
     uint32_t imageOffsetRow { 0 };
+    uint32_t hyperlinkId { 0 };      // OSC 8: index into hyperlink registry
+    uint32_t underlineColor { 0 };   // SGR 58: packed RGBA8, 0 = use fg color
 };

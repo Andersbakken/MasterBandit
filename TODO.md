@@ -2,14 +2,18 @@
 
 ## Terminal Protocol Support
 
-- [ ] Mode 2031 — Color preference notification (light/dark mode). Send `CSI ? 997 ; 1/2 n` on macOS appearance change. Apps query via `CSI ? 996 n`.
+- [x] Mode 2031 — Color preference notification (light/dark mode).
+- [x] DECSCUSR (`CSI Ps SP q`) — Set cursor style: block, underline, bar, blinking variants.
+- [ ] Kitty keyboard protocol (`CSI > Ps u`) — Unambiguous key encoding. Distinguishes ESC from Alt+[, Ctrl+I from Tab, reports key release, supports non-Latin layouts. Used by Neovim, Vim, crossterm, textual, Ink.
 - [ ] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, virtual placement, z-layering, animation.
-- [ ] DECSCUSR (`CSI Ps SP q`) — Set cursor style: block, underline, bar, blinking variants. Currently silently ignored.
-- [ ] OSC 7 — Current working directory reporting. Shell sends CWD; new tabs/pane splits should open in the current pane's last-reported directory instead of home.
-- [ ] OSC 8 — Hyperlinks. `OSC 8 ; params ; url ST`. Clickable links from ls, gcc, grep, cargo, gh, etc.
+- [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
+- [x] OSC 7 — Current working directory reporting. Pane stores CWD for new splits.
+- [x] OSC 8 — Hyperlinks. Cmd/Ctrl+click opens URL. Auto-underlines linked text.
 - [ ] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Apps query to detect light vs dark theme.
 - [ ] OSC 22 — Set mouse cursor shape (pointer, text, etc.)
+- [x] OSC 99 — Desktop notifications (kitty). Title/body accumulation, macOS UNUserNotification.
 - [ ] OSC 133 — Shell integration prompt/command/output markers. Smart scrolling between prompts, command re-run.
+- [ ] Color stack (OSC 30001/30101) — Push/pop entire color state. Apps can safely change colors and restore.
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
 - [ ] REP (`CSI b`) — Repeat preceding character N times.
 - [ ] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking.

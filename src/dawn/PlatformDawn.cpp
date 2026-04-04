@@ -158,9 +158,11 @@ static std::string codepointToUtf8(uint32_t cp)
 }
 
 // --- Load TTF file into memory ---
-// Implemented in platform-specific files (MetalLayer.mm on macOS)
+// Implemented in platform-specific files (PlatformUtils_macOS.mm / PlatformUtils_Linux.cpp)
 bool platformIsDarkMode();
 void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback);
+void platformSendNotification(const std::string& title, const std::string& body);
+void platformOpenURL(const std::string& url);
 
 static std::vector<uint8_t> loadFontFile(const std::string& path)
 {
@@ -740,6 +742,17 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
     cbs.isDarkMode = []() { return platformIsDarkMode(); };
+    cbs.onCWDChanged = [this, paneId](const std::string& dir) {
+        for (auto& tab : tabs_) {
+            if (Pane* p = tab->layout()->pane(paneId)) {
+                p->setCWD(dir);
+                break;
+            }
+        }
+    };
+    cbs.onDesktopNotification = [](const std::string& title, const std::string& body, const std::string&) {
+        platformSendNotification(title, body);
+    };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
 
@@ -915,6 +928,17 @@ void PlatformDawn::createTab()
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
     cbs.isDarkMode = []() { return platformIsDarkMode(); };
+    cbs.onCWDChanged = [this, paneId](const std::string& dir) {
+        for (auto& tab : tabs_) {
+            if (Pane* p = tab->layout()->pane(paneId)) {
+                p->setCWD(dir);
+                break;
+            }
+        }
+    };
+    cbs.onDesktopNotification = [](const std::string& title, const std::string& body, const std::string&) {
+        platformSendNotification(title, body);
+    };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
     if (!terminal->init(terminalOptions_)) {
@@ -1255,12 +1279,30 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
         uint32_t bg = cell.attrs.packBgAsU32();
         if (cell.attrs.inverse()) std::swap(fg, bg);
 
+        // Underline info: bits 0-2 = style (1-based), bits 8-31 = color RGB
+        uint32_t ulInfo = 0;
+        {
+            const CellExtra* extra = term->grid().getExtra(col, row);
+            bool hasUnderline = cell.attrs.underline();
+            bool isHyperlink = extra && extra->hyperlinkId;
+            if (!hasUnderline && isHyperlink) hasUnderline = true;
+            if (hasUnderline) {
+                // Hyperlinks get dotted underline unless explicit style is set
+                uint8_t style = cell.attrs.underline() ? cell.attrs.underlineStyle() : 3; // 3 = dotted
+                ulInfo = static_cast<uint32_t>(style + 1);
+                if (extra && extra->underlineColor) {
+                    ulInfo |= (extra->underlineColor & 0x00FFFFFF) << 8;
+                }
+            }
+        }
+
         if (cell.wc == 0 || cell.attrs.wideSpacer()) {
             rc.atlas_offset = 0;
             rc.ext_min_x = rc.ext_min_y = rc.ext_max_x = rc.ext_max_y = 0;
             rc.upem = 1;
             rc.fg_color = fg;
             rc.bg_color = bg;
+            rc.underline_info = ulInfo;
             continue;
         }
 
@@ -1285,6 +1327,7 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
             rc.upem = 1;
             rc.fg_color = fg;
             rc.bg_color = bg;
+            rc.underline_info = ulInfo;
             continue;
         }
         rc.atlas_offset = gi->atlas_offset;
@@ -1295,6 +1338,7 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
         rc.upem = gi->upem;
         rc.fg_color = fg;
         rc.bg_color = bg;
+        rc.underline_info = ulInfo;
     }
 }
 
@@ -1867,6 +1911,17 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
     cbs.isDarkMode = []() { return platformIsDarkMode(); };
+    cbs.onCWDChanged = [this, paneId](const std::string& dir) {
+        for (auto& tab : tabs_) {
+            if (Pane* p = tab->layout()->pane(paneId)) {
+                p->setCWD(dir);
+                break;
+            }
+        }
+    };
+    cbs.onDesktopNotification = [](const std::string& title, const std::string& body, const std::string&) {
+        platformSendNotification(title, body);
+    };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
     if (!terminal->init(terminalOptions_)) {
@@ -2377,6 +2432,22 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
     default: ev.button = NoButton; break;
     }
     ev.buttons = ev.button;
+
+    // Cmd/Ctrl+click on hyperlinks opens the URL
+    if (action == GLFW_RELEASE && ev.button == LeftButton &&
+        (ev.modifiers & (MetaModifier | CtrlModifier))) {
+        int col = ev.x, row = ev.y;
+        if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
+            const CellExtra* extra = term->grid().getExtra(col, row);
+            if (extra && extra->hyperlinkId) {
+                const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
+                if (uri && !uri->empty()) {
+                    platformOpenURL(*uri);
+                    return;
+                }
+            }
+        }
+    }
 
     if (action == GLFW_PRESS) term->mousePressEvent(&ev);
     else term->mouseReleaseEvent(&ev);

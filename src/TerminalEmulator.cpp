@@ -565,6 +565,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
                         g.cell(mCursorX, mCursorY) = Cell{static_cast<char32_t>(buf[i]), mCurrentAttrs};
                         g.clearExtra(mCursorX, mCursorY);
+                        if (mActiveHyperlinkId || mCurrentUnderlineColor) {
+                            CellExtra& ex = g.ensureExtra(mCursorX, mCursorY);
+                            ex.hyperlinkId = mActiveHyperlinkId;
+                            ex.underlineColor = mCurrentUnderlineColor;
+                        }
                         g.markRowDirty(mCursorY);
                     }
                     mCursorX++;
@@ -639,6 +644,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         wideAttrs.setWide(true);
                         g.cell(mCursorX, mCursorY) = Cell{cp, wideAttrs};
                         g.clearExtra(mCursorX, mCursorY);
+                        if (mActiveHyperlinkId || mCurrentUnderlineColor) {
+                            CellExtra& ex = g.ensureExtra(mCursorX, mCursorY);
+                            ex.hyperlinkId = mActiveHyperlinkId;
+                            ex.underlineColor = mCurrentUnderlineColor;
+                        }
                         CellAttrs spacerAttrs = mCurrentAttrs;
                         spacerAttrs.setWideSpacer(true);
                         g.cell(mCursorX + 1, mCursorY) = Cell{0, spacerAttrs};
@@ -659,6 +669,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
                         g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
                         g.clearExtra(mCursorX, mCursorY);
+                        if (mActiveHyperlinkId || mCurrentUnderlineColor) {
+                            CellExtra& ex = g.ensureExtra(mCursorX, mCursorY);
+                            ex.hyperlinkId = mActiveHyperlinkId;
+                            ex.underlineColor = mCurrentUnderlineColor;
+                        }
                         g.markRowDirty(mCursorY);
                     }
                     mCursorX++;
@@ -1286,17 +1301,26 @@ void TerminalEmulator::processSGR()
 
     // Parse semicolon-delimited parameters from mEscapeBuffer[1..mEscapeIndex-2]
     // e.g. "[0;31m" -> params = {0, 31}
-    std::vector<int> params;
+    // Colon sub-params (e.g. "4:3") are encoded as negative: -4003
+    // meaning param 4 with sub-param 3.
+    struct SGRParam { int value; int subparam; }; // subparam = -1 if none
+    std::vector<SGRParam> params;
     {
         const char* start = mEscapeBuffer + 1;
         const char* end = mEscapeBuffer + mEscapeIndex - 1;
         if (start == end) {
-            params.push_back(0); // bare ESC[m = reset
+            params.push_back({0, -1});
         } else {
             while (start < end) {
                 char* next;
                 long val = strtol(start, &next, 10);
-                params.push_back(static_cast<int>(val));
+                int sub = -1;
+                if (next < end && *next == ':') {
+                    // Colon sub-parameter
+                    start = next + 1;
+                    sub = static_cast<int>(strtol(start, &next, 10));
+                }
+                params.push_back({static_cast<int>(val), sub});
                 if (next < end && *next == ';') {
                     start = next + 1;
                 } else {
@@ -1307,16 +1331,32 @@ void TerminalEmulator::processSGR()
     }
 
     for (size_t i = 0; i < params.size(); ++i) {
-        int p = params[i];
+        int p = params[i].value;
 
         switch (p) {
         case 0: // Reset
             mCurrentAttrs.reset();
+            mCurrentUnderlineColor = 0;
             break;
         case 1: mCurrentAttrs.setBold(true); break;
         case 2: mCurrentAttrs.setDim(true); break;
         case 3: mCurrentAttrs.setItalic(true); break;
-        case 4: mCurrentAttrs.setUnderline(true); break;
+        case 4: // Underline (with optional style sub-param)
+            if (params[i].subparam == 0) {
+                mCurrentAttrs.setUnderline(false);
+                mCurrentAttrs.setUnderlineStyle(0);
+            } else {
+                mCurrentAttrs.setUnderline(true);
+                switch (params[i].subparam) {
+                case 1: case -1: mCurrentAttrs.setUnderlineStyle(0); break; // straight (default)
+                case 2: mCurrentAttrs.setUnderlineStyle(1); break; // double
+                case 3: mCurrentAttrs.setUnderlineStyle(2); break; // curly
+                case 4: mCurrentAttrs.setUnderlineStyle(3); break; // dotted
+                case 5: mCurrentAttrs.setUnderlineStyle(3); break; // dashed (share with dotted)
+                default: mCurrentAttrs.setUnderlineStyle(0); break;
+                }
+            }
+            break;
         case 5: mCurrentAttrs.setBlink(true); break;
         case 7: mCurrentAttrs.setInverse(true); break;
         case 8: mCurrentAttrs.setInvisible(true); break;
@@ -1325,7 +1365,7 @@ void TerminalEmulator::processSGR()
         case 21: // doubly underlined or bold off (varies)
         case 22: mCurrentAttrs.setBold(false); mCurrentAttrs.setDim(false); break;
         case 23: mCurrentAttrs.setItalic(false); break;
-        case 24: mCurrentAttrs.setUnderline(false); break;
+        case 24: mCurrentAttrs.setUnderline(false); mCurrentAttrs.setUnderlineStyle(0); break;
         case 25: mCurrentAttrs.setBlink(false); break;
         case 27: mCurrentAttrs.setInverse(false); break;
         case 28: mCurrentAttrs.setInvisible(false); break;
@@ -1342,19 +1382,17 @@ void TerminalEmulator::processSGR()
 
         case 38: // Extended foreground
             if (i + 1 < params.size()) {
-                if (params[i + 1] == 5 && i + 2 < params.size()) {
-                    // 256-color: 38;5;N
+                if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
-                    color256ToRGB(params[i + 2], r, g, b);
+                    color256ToRGB(params[i + 2].value, r, g, b);
                     mCurrentAttrs.setFg(r, g, b);
                     mCurrentAttrs.setFgMode(CellAttrs::RGB);
                     i += 2;
-                } else if (params[i + 1] == 2 && i + 4 < params.size()) {
-                    // Truecolor: 38;2;R;G;B
+                } else if (params[i + 1].value == 2 && i + 4 < params.size()) {
                     mCurrentAttrs.setFg(
-                        static_cast<uint8_t>(params[i + 2]),
-                        static_cast<uint8_t>(params[i + 3]),
-                        static_cast<uint8_t>(params[i + 4]));
+                        static_cast<uint8_t>(params[i + 2].value),
+                        static_cast<uint8_t>(params[i + 3].value),
+                        static_cast<uint8_t>(params[i + 4].value));
                     mCurrentAttrs.setFgMode(CellAttrs::RGB);
                     i += 4;
                 }
@@ -1376,17 +1414,17 @@ void TerminalEmulator::processSGR()
 
         case 48: // Extended background
             if (i + 1 < params.size()) {
-                if (params[i + 1] == 5 && i + 2 < params.size()) {
+                if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
-                    color256ToRGB(params[i + 2], r, g, b);
+                    color256ToRGB(params[i + 2].value, r, g, b);
                     mCurrentAttrs.setBg(r, g, b);
                     mCurrentAttrs.setBgMode(CellAttrs::RGB);
                     i += 2;
-                } else if (params[i + 1] == 2 && i + 4 < params.size()) {
+                } else if (params[i + 1].value == 2 && i + 4 < params.size()) {
                     mCurrentAttrs.setBg(
-                        static_cast<uint8_t>(params[i + 2]),
-                        static_cast<uint8_t>(params[i + 3]),
-                        static_cast<uint8_t>(params[i + 4]));
+                        static_cast<uint8_t>(params[i + 2].value),
+                        static_cast<uint8_t>(params[i + 3].value),
+                        static_cast<uint8_t>(params[i + 4].value));
                     mCurrentAttrs.setBgMode(CellAttrs::RGB);
                     i += 4;
                 }
@@ -1395,6 +1433,30 @@ void TerminalEmulator::processSGR()
 
         case 49: // Default background
             mCurrentAttrs.setBgMode(CellAttrs::Default);
+            break;
+
+        case 58: // Underline color
+            if (i + 1 < params.size()) {
+                if (params[i + 1].value == 5 && i + 2 < params.size()) {
+                    uint8_t r, g, b;
+                    color256ToRGB(params[i + 2].value, r, g, b);
+                    mCurrentUnderlineColor = static_cast<uint32_t>(r)
+                        | (static_cast<uint32_t>(g) << 8)
+                        | (static_cast<uint32_t>(b) << 16)
+                        | 0xFF000000u;
+                    i += 2;
+                } else if (params[i + 1].value == 2 && i + 4 < params.size()) {
+                    mCurrentUnderlineColor = static_cast<uint32_t>(params[i + 2].value & 0xFF)
+                        | (static_cast<uint32_t>(params[i + 3].value & 0xFF) << 8)
+                        | (static_cast<uint32_t>(params[i + 4].value & 0xFF) << 16)
+                        | 0xFF000000u;
+                    i += 4;
+                }
+            }
+            break;
+
+        case 59: // Reset underline color
+            mCurrentUnderlineColor = 0;
             break;
 
         // Bright foreground (90-97)
@@ -1610,7 +1672,101 @@ void TerminalEmulator::processStringSequence()
         }
         break;
     }
+    case 7: // CWD reporting: file://hostname/path
+        if (mCallbacks.onCWDChanged) {
+            std::string_view url = payload;
+            // Strip file:// prefix and optional hostname
+            if (url.substr(0, 7) == "file://") {
+                url.remove_prefix(7);
+                auto slash = url.find('/');
+                if (slash != std::string_view::npos)
+                    url.remove_prefix(slash);
+            }
+            mCallbacks.onCWDChanged(std::string(url));
+        }
+        break;
+    case 8: // Hyperlinks: "params;uri" to start, ";;" to end
+        {
+            auto semi2 = payload.find(';');
+            if (semi2 == std::string_view::npos) break;
+            std::string_view params = payload.substr(0, semi2);
+            std::string_view uri = payload.substr(semi2 + 1);
+            if (uri.empty()) {
+                // End hyperlink
+                mActiveHyperlinkId = 0;
+            } else {
+                // Start hyperlink — extract optional id= param
+                std::string linkId;
+                size_t idPos = params.find("id=");
+                if (idPos != std::string_view::npos) {
+                    auto idEnd = params.find(';', idPos);
+                    if (idEnd == std::string_view::npos) idEnd = params.size();
+                    linkId = std::string(params.substr(idPos + 3, idEnd - idPos - 3));
+                }
+                // Check if same id already registered
+                uint32_t foundId = 0;
+                if (!linkId.empty()) {
+                    for (auto& [k, v] : mHyperlinkRegistry) {
+                        if (v.id == linkId && v.uri == std::string(uri)) {
+                            foundId = k;
+                            break;
+                        }
+                    }
+                }
+                if (foundId) {
+                    mActiveHyperlinkId = foundId;
+                } else {
+                    uint32_t id = mNextHyperlinkId++;
+                    mHyperlinkRegistry[id] = {std::string(uri), linkId};
+                    mActiveHyperlinkId = id;
+                }
+            }
+        }
+        break;
     case 52: processOSC_Clipboard(payload); break;
+    case 99: // Desktop notifications (kitty protocol)
+        {
+            // Format: "metadata;content" where metadata is colon-separated key=value pairs
+            // Keys: i=identifier, p=title|body, d=0|1 (done)
+            auto payloadSemi = payload.find(';');
+            std::string_view metadata = (payloadSemi != std::string_view::npos)
+                ? payload.substr(0, payloadSemi) : payload;
+            std::string text = (payloadSemi != std::string_view::npos)
+                ? std::string(payload.substr(payloadSemi + 1)) : std::string{};
+
+            std::string pType;
+            std::string nId;
+            bool done = false;
+
+            std::string_view sv = metadata;
+            while (!sv.empty()) {
+                auto eq = sv.find('=');
+                if (eq == std::string_view::npos) break;
+                auto key = sv.substr(0, eq);
+                sv.remove_prefix(eq + 1);
+                auto colon = sv.find(':');
+                auto val = (colon != std::string_view::npos) ? sv.substr(0, colon) : sv;
+                if (colon != std::string_view::npos) sv.remove_prefix(colon + 1);
+                else sv = {};
+
+                if (key == "i") nId = std::string(val);
+                else if (key == "d" && val == "1") done = true;
+                else if (key == "p") pType = std::string(val);
+            }
+
+            if (!nId.empty()) mNotifyId = nId;
+            if (pType == "title") mNotifyTitle = text;
+            else if (pType == "body") mNotifyBody = text;
+
+            if (done) {
+                if (mCallbacks.onDesktopNotification)
+                    mCallbacks.onDesktopNotification(mNotifyTitle, mNotifyBody, mNotifyId);
+                mNotifyId.clear();
+                mNotifyTitle.clear();
+                mNotifyBody.clear();
+            }
+        }
+        break;
     case 999:
         if (mCallbacks.onOSCMB) mCallbacks.onOSCMB(payload);
         break;

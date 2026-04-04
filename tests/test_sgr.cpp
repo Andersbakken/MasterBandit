@@ -32,6 +32,77 @@ TEST_CASE("SGR underline")
     t.csi("4m");
     t.feed("A");
     CHECK(t.attrs(0, 0).underline());
+    CHECK(t.attrs(0, 0).underlineStyle() == 0); // straight
+}
+
+TEST_CASE("SGR 4:3 curly underline")
+{
+    TestTerminal t;
+    t.csi("4:3m");
+    t.feed("A");
+    CHECK(t.attrs(0, 0).underline());
+    CHECK(t.attrs(0, 0).underlineStyle() == 2); // curly
+}
+
+TEST_CASE("SGR 4:2 double underline")
+{
+    TestTerminal t;
+    t.csi("4:2m");
+    t.feed("A");
+    CHECK(t.attrs(0, 0).underline());
+    CHECK(t.attrs(0, 0).underlineStyle() == 1); // double
+}
+
+TEST_CASE("SGR 4:4 dotted underline")
+{
+    TestTerminal t;
+    t.csi("4:4m");
+    t.feed("A");
+    CHECK(t.attrs(0, 0).underline());
+    CHECK(t.attrs(0, 0).underlineStyle() == 3); // dotted
+}
+
+TEST_CASE("SGR 4:0 removes underline")
+{
+    TestTerminal t;
+    t.csi("4:3m");
+    t.csi("4:0m");
+    t.feed("A");
+    CHECK_FALSE(t.attrs(0, 0).underline());
+}
+
+TEST_CASE("SGR 24 removes underline and style")
+{
+    TestTerminal t;
+    t.csi("4:3m");
+    t.csi("24m");
+    t.feed("A");
+    CHECK_FALSE(t.attrs(0, 0).underline());
+    CHECK(t.attrs(0, 0).underlineStyle() == 0);
+}
+
+TEST_CASE("SGR 58 sets underline color")
+{
+    TestTerminal t;
+    t.csi("4m");              // underline on
+    t.csi("58;2;255;0;128m"); // underline color: red+half-blue
+    t.feed("A");
+    CHECK(t.attrs(0, 0).underline());
+    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    REQUIRE(ex != nullptr);
+    CHECK(ex->underlineColor != 0);
+}
+
+TEST_CASE("SGR 59 resets underline color")
+{
+    TestTerminal t;
+    t.csi("4m");
+    t.csi("58;2;255;0;0m");
+    t.csi("59m");
+    t.feed("A");
+    // underlineColor should be 0 (use fg), or no CellExtra
+    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    CHECK((ex == nullptr || ex->underlineColor == 0));
 }
 
 TEST_CASE("SGR fg 256-color")

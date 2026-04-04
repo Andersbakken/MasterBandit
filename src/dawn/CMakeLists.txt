@@ -22,7 +22,7 @@ target_include_directories(platform_dawn PRIVATE ${Stb_INCLUDE_DIR})
 target_include_directories(platform_dawn PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 if(APPLE)
-    target_link_libraries(platform_dawn PUBLIC "-framework QuartzCore" "-framework Cocoa" "-framework CoreText")
+    target_link_libraries(platform_dawn PUBLIC "-framework QuartzCore" "-framework Cocoa" "-framework CoreText" "-framework UserNotifications")
 else()
     find_package(Fontconfig REQUIRED)
     target_link_libraries(platform_dawn PUBLIC Fontconfig::Fontconfig)

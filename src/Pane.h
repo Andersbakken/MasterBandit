@@ -47,6 +47,9 @@ public:
     int progressPct() const { return mProgressPct; }
     void setProgress(int state, int pct) { mProgressState = state; mProgressPct = pct; }
 
+    const std::string& cwd() const { return mCWD; }
+    void setCWD(const std::string& d) { mCWD = d; }
+
     // Rect (pixel coords, set by Layout::computeRects)
     void setRect(const PaneRect& r) { mRect = r; }
     const PaneRect& rect() const { return mRect; }
@@ -75,4 +78,5 @@ private:
     std::string mIcon;
     int mProgressState = 0;
     int mProgressPct = 0;
+    std::string mCWD;
 };

@@ -4,15 +4,17 @@
 #include <cstddef>
 #include <cstdint>
 
-// CPU-resolved cell data uploaded to GPU for the compute shader (32 bytes)
+// CPU-resolved cell data uploaded to GPU for the compute shader (36 bytes)
 struct ResolvedCell {
     uint32_t atlas_offset;
     float ext_min_x, ext_min_y, ext_max_x, ext_max_y;
     uint32_t upem;
-    uint32_t fg_color;   // packed RGBA8
-    uint32_t bg_color;   // packed RGBA8 (0 = default/transparent)
+    uint32_t fg_color;        // packed RGBA8
+    uint32_t bg_color;        // packed RGBA8 (0 = default/transparent)
+    uint32_t underline_info;  // bits 0-2: style (0=none, 1=straight, 2=double, 3=curly, 4=dotted)
+                              // bits 8-31: color packed RGB8 (0 = use fg_color)
 };
-static_assert(sizeof(ResolvedCell) == 32);
+static_assert(sizeof(ResolvedCell) == 36);
 
 // Compute shader uniform params (56 bytes)
 struct TerminalComputeParams {

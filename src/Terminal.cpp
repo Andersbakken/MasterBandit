@@ -91,6 +91,7 @@ bool Terminal::init(const TerminalOptions &options)
         setenv("SHELL", mOptions.shell.c_str(), 1);
         setenv("TERM", "xterm-256color", 1);
         setenv("COLORTERM", "truecolor", 1);
+        setenv("TERM_PROGRAM", "MasterBandit", 1);
 
         signal(SIGCHLD, SIG_DFL);
         signal(SIGHUP, SIG_DFL);

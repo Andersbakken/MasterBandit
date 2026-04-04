@@ -30,13 +30,17 @@ struct ScrollToTop         {};
 struct ScrollToBottom      {};
 struct PushOverlay         {};
 struct PopOverlay          {};
+struct IncreaseFontSize    {};
+struct DecreaseFontSize    {};
+struct ResetFontSize       {};
 
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
     SplitPane, ClosePane, ZoomPane, FocusPane, AdjustPaneSize,
     Copy, Paste,
     ScrollUp, ScrollDown, ScrollToTop, ScrollToBottom,
-    PushOverlay, PopOverlay
+    PushOverlay, PopOverlay,
+    IncreaseFontSize, DecreaseFontSize, ResetFontSize
 >;
 
 } // namespace Action

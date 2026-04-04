@@ -297,6 +297,7 @@ public:
     void onKey(int key, int scancode, int action, int mods);
     void onChar(unsigned int codepoint);
     void onFramebufferResize(int width, int height);
+    void adjustFontSize(float delta);
     void onMouseButton(int button, int action, int mods);
     void onCursorPos(double x, double y);
 
@@ -364,6 +365,7 @@ private:
     TextSystem textSystem_;
     std::string fontName_ = "mono";
     float fontSize_ = 16.0f;
+    float baseFontSize_ = 0.0f; // set from fontSize_ after scaling
     float charWidth_ = 0.0f;
     float lineHeight_ = 0.0f;
     float contentScaleX_ = 1.0f, contentScaleY_ = 1.0f;
@@ -578,6 +580,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         contentScaleX_ = xscale;
         contentScaleY_ = yscale;
         fontSize_ = options.fontSize * xscale;
+        baseFontSize_ = fontSize_;
 
         configureSurface(fbWidth_, fbHeight_);
 
@@ -2238,6 +2241,9 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             Tab* tab = activeTab();
             if (tab) tab->popOverlay();
         },
+        [&](const Action::IncreaseFontSize&) { adjustFontSize(1.0f);  },
+        [&](const Action::DecreaseFontSize&) { adjustFontSize(-1.0f); },
+        [&](const Action::ResetFontSize&)    { adjustFontSize(0.0f);  },
     }, action);
 }
 
@@ -2311,6 +2317,30 @@ void PlatformDawn::onChar(unsigned int codepoint)
     ev.count = 1;
     ev.autoRepeat = false;
     term->keyPressEvent(&ev);
+}
+
+void PlatformDawn::adjustFontSize(float delta)
+{
+    float newSize;
+    if (delta == 0.0f) {
+        newSize = baseFontSize_; // reset
+    } else {
+        newSize = fontSize_ + delta * contentScaleX_;
+    }
+    if (newSize < 6.0f * contentScaleX_ || newSize > 72.0f * contentScaleX_) return;
+    fontSize_ = newSize;
+
+    // Recalculate metrics
+    const FontData* font = textSystem_.getFont(fontName_);
+    if (!font) return;
+    float scale = fontSize_ / font->baseSize;
+    lineHeight_ = font->lineHeight * scale;
+    const auto& shaped = textSystem_.shapeText(fontName_, "M", fontSize_);
+    charWidth_ = shaped.width;
+    if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
+
+    // Trigger resize of all panes (recalculates grid dimensions)
+    onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
 }
 
 void PlatformDawn::onFramebufferResize(int width, int height)

@@ -68,3 +68,64 @@ TEST_CASE("UTF-8 multibyte text")
     CHECK(t.wc(2, 0) == U'f');
     CHECK(t.wc(3, 0) == U'\u00e9'); // é
 }
+
+// ── Control characters ───────────────────────────────────────────────────────
+
+TEST_CASE("vertical tab acts as line feed")
+{
+    TestTerminal t;
+    t.feed("A\vB");
+    CHECK(t.wc(0, 0) == U'A');
+    CHECK(t.term.cursorY() == 1);
+    CHECK(t.wc(1, 1) == U'B'); // column preserved (LF behavior)
+}
+
+TEST_CASE("form feed acts as line feed")
+{
+    TestTerminal t;
+    t.feed("A\fB");
+    CHECK(t.wc(0, 0) == U'A');
+    CHECK(t.term.cursorY() == 1);
+    CHECK(t.wc(1, 1) == U'B'); // column preserved
+}
+
+TEST_CASE("LF does not reset column")
+{
+    TestTerminal t;
+    t.feed("ABC\nD");
+    CHECK(t.wc(0, 0) == U'A');
+    CHECK(t.wc(3, 1) == U'D'); // column 3, not 0
+}
+
+// ── Deferred autowrap ────────────────────────────────────────────────────────
+
+TEST_CASE("deferred wrap: cursor stays at last column until next char")
+{
+    TestTerminal t(5, 3); // 5 columns
+    t.feed("ABCDE"); // fill entire row
+    // Cursor should be at col 4 (last column) with wrap pending
+    CHECK(t.term.cursorX() == 4);
+    CHECK(t.term.cursorY() == 0);
+    // Writing one more char triggers the wrap
+    t.feed("F");
+    CHECK(t.term.cursorX() == 1);
+    CHECK(t.term.cursorY() == 1);
+    CHECK(t.wc(0, 1) == U'F');
+}
+
+TEST_CASE("deferred wrap: CR clears pending wrap")
+{
+    TestTerminal t(5, 3);
+    t.feed("ABCDE"); // wrap pending
+    t.feed("\r");     // CR clears wrap, cursor to col 0
+    CHECK(t.term.cursorX() == 0);
+    CHECK(t.term.cursorY() == 0);
+}
+
+TEST_CASE("deferred wrap: cursor movement clears pending wrap")
+{
+    TestTerminal t(5, 3);
+    t.feed("ABCDE");  // wrap pending
+    t.csi("D");       // CUB 1 — should clear wrap, move left
+    CHECK(t.term.cursorY() == 0); // no wrap happened
+}

@@ -177,6 +177,9 @@ std::optional<Action::Any> parseAction(const std::string& name,
     if (name == "scroll_to_bottom") return Action::ScrollToBottom{};
     if (name == "push_overlay")     return Action::PushOverlay{};
     if (name == "pop_overlay")      return Action::PopOverlay{};
+    if (name == "increase_font_size") return Action::IncreaseFontSize{};
+    if (name == "decrease_font_size") return Action::DecreaseFontSize{};
+    if (name == "reset_font_size")    return Action::ResetFontSize{};
 
     spdlog::warn("Bindings: unknown action '{}'", name);
     return std::nullopt;
@@ -215,6 +218,22 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("meta+w") },            Action::ClosePane{} },
         { { *parseKeyStroke("meta+c") },            Action::Copy{}    },
         { { *parseKeyStroke("meta+v") },            Action::Paste{}   },
+        // Tab switching
+        { { *parseKeyStroke("meta+shift+]") },      Action::ActivateTabRelative{1}  },
+        { { *parseKeyStroke("meta+shift+[") },      Action::ActivateTabRelative{-1} },
+        { { *parseKeyStroke("meta+1") },            Action::ActivateTab{0} },
+        { { *parseKeyStroke("meta+2") },            Action::ActivateTab{1} },
+        { { *parseKeyStroke("meta+3") },            Action::ActivateTab{2} },
+        { { *parseKeyStroke("meta+4") },            Action::ActivateTab{3} },
+        { { *parseKeyStroke("meta+5") },            Action::ActivateTab{4} },
+        { { *parseKeyStroke("meta+6") },            Action::ActivateTab{5} },
+        { { *parseKeyStroke("meta+7") },            Action::ActivateTab{6} },
+        { { *parseKeyStroke("meta+8") },            Action::ActivateTab{7} },
+        { { *parseKeyStroke("meta+9") },            Action::ActivateTab{8} },
+        // Font size
+        { { *parseKeyStroke("meta+=") },            Action::IncreaseFontSize{} },
+        { { *parseKeyStroke("meta+-") },            Action::DecreaseFontSize{} },
+        { { *parseKeyStroke("meta+0") },            Action::ResetFontSize{}    },
         // Pane splits
         { { *parseKeyStroke("meta+d") },            Action::SplitPane{Action::Direction::Right} },
         { { *parseKeyStroke("meta+shift+d") },      Action::SplitPane{Action::Direction::Down}  },
@@ -236,6 +255,22 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("ctrl+shift+w") },      Action::ClosePane{} },
         { { *parseKeyStroke("ctrl+shift+c") },      Action::Copy{}    },
         { { *parseKeyStroke("ctrl+shift+v") },      Action::Paste{}   },
+        // Tab switching
+        { { *parseKeyStroke("ctrl+shift+pagedown") }, Action::ActivateTabRelative{1}  },
+        { { *parseKeyStroke("ctrl+shift+pageup") },   Action::ActivateTabRelative{-1} },
+        { { *parseKeyStroke("alt+1") },             Action::ActivateTab{0} },
+        { { *parseKeyStroke("alt+2") },             Action::ActivateTab{1} },
+        { { *parseKeyStroke("alt+3") },             Action::ActivateTab{2} },
+        { { *parseKeyStroke("alt+4") },             Action::ActivateTab{3} },
+        { { *parseKeyStroke("alt+5") },             Action::ActivateTab{4} },
+        { { *parseKeyStroke("alt+6") },             Action::ActivateTab{5} },
+        { { *parseKeyStroke("alt+7") },             Action::ActivateTab{6} },
+        { { *parseKeyStroke("alt+8") },             Action::ActivateTab{7} },
+        { { *parseKeyStroke("alt+9") },             Action::ActivateTab{8} },
+        // Font size
+        { { *parseKeyStroke("ctrl+=") },            Action::IncreaseFontSize{} },
+        { { *parseKeyStroke("ctrl+-") },            Action::DecreaseFontSize{} },
+        { { *parseKeyStroke("ctrl+0") },            Action::ResetFontSize{}    },
         // Pane splits
         { { *parseKeyStroke("ctrl+shift+e") },      Action::SplitPane{Action::Direction::Right} },
         { { *parseKeyStroke("ctrl+shift+o") },      Action::SplitPane{Action::Direction::Down}  },

@@ -550,6 +550,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 break;
             }
             case '\v':
+            case '\f':
+                // Vertical tab and form feed act as line feeds
+                mWrapPending = false;
+                lineFeed();
+                break;
             case '\a':
                 break;
             default:

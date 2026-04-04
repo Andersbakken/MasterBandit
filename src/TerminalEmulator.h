@@ -127,6 +127,7 @@ public:
     void setPaletteColor(int idx, uint8_t r, uint8_t g, uint8_t b) {
         if (idx >= 0 && idx < 16) { m16ColorPalette[idx][0] = r; m16ColorPalette[idx][1] = g; m16ColorPalette[idx][2] = b; }
     }
+    void applyColorScheme(const struct ColorScheme& cs);
     const std::string* hyperlinkURI(uint32_t id) const {
         auto it = mHyperlinkRegistry.find(id);
         return it != mHyperlinkRegistry.end() ? &it->second.uri : nullptr;
@@ -169,7 +170,6 @@ public:
 
     // 16-color palette (standard + bright) as RGB
     uint8_t m16ColorPalette[16][3];
-    static const uint8_t kDefaultPalette[16][3];
     // 256-color palette lookup
     void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const;
 

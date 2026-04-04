@@ -1,4 +1,5 @@
 #include "TerminalEmulator.h"
+#include "Config.h"
 #include "Utils.h"
 #include "Log.h"
 #include "Utf8.h"
@@ -50,25 +51,6 @@ std::string toPrintable(const char *bytes, int len)
     return ret;
 }
 
-// Default 16-color palette (standard 8 + bright 8)
-const uint8_t TerminalEmulator::kDefaultPalette[16][3] = {
-    { 58,  58,  58}, // 0 black (visible against black background)
-    {204,   4,   3}, // 1 red
-    { 25, 203,   0}, // 2 green
-    {206, 203,   0}, // 3 yellow
-    { 13, 115, 204}, // 4 blue
-    {203,  30, 209}, // 5 magenta
-    { 13, 205, 205}, // 6 cyan
-    {221, 221, 221}, // 7 white
-    {118, 118, 118}, // 8 bright black (gray)
-    {242,  32,  31}, // 9 bright red
-    { 35, 253,   0}, // 10 bright green
-    {255, 253,   0}, // 11 bright yellow
-    { 26, 143, 255}, // 12 bright blue
-    {253,  40, 255}, // 13 bright magenta
-    { 20, 255, 255}, // 14 bright cyan
-    {255, 255, 255}, // 15 bright white
-};
 
 void TerminalEmulator::color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const
 {
@@ -97,7 +79,7 @@ TerminalEmulator::TerminalEmulator(TerminalCallbacks callbacks)
 {
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
     memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
-    memcpy(m16ColorPalette, kDefaultPalette, sizeof(m16ColorPalette));
+    applyColorScheme(ColorScheme{}); // initialize from config defaults
 }
 
 TerminalEmulator::~TerminalEmulator()
@@ -107,6 +89,19 @@ TerminalEmulator::~TerminalEmulator()
 void TerminalEmulator::resetScrollback(int scrollbackLines)
 {
     mDocument = Document(mDocument.cols(), mDocument.rows(), scrollbackLines);
+}
+
+void TerminalEmulator::applyColorScheme(const ColorScheme& cs)
+{
+    const std::string* colors[] = {
+        &cs.color0, &cs.color1, &cs.color2, &cs.color3,
+        &cs.color4, &cs.color5, &cs.color6, &cs.color7,
+        &cs.color8, &cs.color9, &cs.color10, &cs.color11,
+        &cs.color12, &cs.color13, &cs.color14, &cs.color15
+    };
+    for (int i = 0; i < 16; ++i) {
+        color::parseHex(*colors[i], m16ColorPalette[i][0], m16ColorPalette[i][1], m16ColorPalette[i][2]);
+    }
 }
 
 void TerminalEmulator::resize(int width, int height)

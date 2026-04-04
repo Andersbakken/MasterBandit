@@ -158,23 +158,10 @@ static std::string codepointToUtf8(uint32_t cp)
 }
 
 // --- Load TTF file into memory ---
-static void applyPaletteFromHex(TerminalEmulator& term, const std::string& hex, int idx) {
-    if (hex.size() == 7 && hex[0] == '#') {
-        uint8_t r = static_cast<uint8_t>(std::stoul(hex.substr(1, 2), nullptr, 16));
-        uint8_t g = static_cast<uint8_t>(std::stoul(hex.substr(3, 2), nullptr, 16));
-        uint8_t b = static_cast<uint8_t>(std::stoul(hex.substr(5, 2), nullptr, 16));
-        term.setPaletteColor(idx, r, g, b);
-    }
-}
-
-static void applyColorScheme(TerminalEmulator& term, const ColorScheme& cs) {
-    const std::string* colors[] = {
-        &cs.color0, &cs.color1, &cs.color2, &cs.color3,
-        &cs.color4, &cs.color5, &cs.color6, &cs.color7,
-        &cs.color8, &cs.color9, &cs.color10, &cs.color11,
-        &cs.color12, &cs.color13, &cs.color14, &cs.color15
-    };
-    for (int i = 0; i < 16; ++i) applyPaletteFromHex(term, *colors[i], i);
+// Legacy parseHexColor kept for tab bar colors (BGRA format)
+// TODO: migrate tab bar colors to color::parseHexBGRA and remove this
+static uint32_t parseHexColor(const std::string& hex, uint32_t def = 0xFF000000) {
+    return color::parseHexBGRA(hex, def);
 }
 
 // Implemented in platform-specific files (PlatformUtils_macOS.mm / PlatformUtils_Linux.cpp)
@@ -251,26 +238,6 @@ static std::string sanitizeUtf8(const std::string& in)
 
 // Parse "#RRGGBB" hex color → packed BGRA8 (0xAARRGGBB in little-endian memory = BGRA GPU layout)
 // Dawn BGRA8Unorm: in memory bytes are B,G,R,A. As a uint32 read LE: (A<<24)|(R<<16)|(G<<8)|B
-static uint32_t parseHexColor(const std::string& hex, uint32_t def = 0xFF000000)
-{
-    if (hex.size() != 7 || hex[0] != '#') return def;
-    auto h = [&](int i) -> uint32_t {
-        return static_cast<uint32_t>(std::stoul(hex.substr(i, 2), nullptr, 16));
-    };
-    uint32_t r = h(1), g = h(3), b = h(5);
-    return 0xFF000000u | (r << 16) | (g << 8) | b;
-}
-
-// Parse hex color in packFgAsU32 byte order: R | G<<8 | B<<16 | A<<24
-static uint32_t parseHexColorRGBA(const std::string& hex, uint32_t def)
-{
-    if (hex.size() != 7 || hex[0] != '#') return def;
-    auto h = [&](int i) -> uint32_t {
-        return static_cast<uint32_t>(std::stoul(hex.substr(i, 2), nullptr, 16));
-    };
-    uint32_t r = h(1), g = h(3), b = h(5);
-    return r | (g << 8) | (b << 16) | 0xFF000000u;
-}
 
 // ========================================================================
 // PlatformDawn class
@@ -819,7 +786,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
 
-    applyColorScheme(*terminal, options.colors);
+    terminal->applyColorScheme(options.colors);
     if (!terminal->init(options)) {
         spdlog::error("Failed to init terminal");
         return nullptr;
@@ -894,8 +861,8 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
         // Parse color scheme
         const auto& cs = options.colors;
-        defaultFgColor_ = parseHexColorRGBA(cs.foreground, 0xFFDDDDDD);
-        defaultBgColor_ = parseHexColorRGBA(cs.background, 0x00000000);
+        defaultFgColor_ = color::parseHexRGBA(cs.foreground, 0xFFDDDDDD);
+        defaultBgColor_ = color::parseHexRGBA(cs.background, 0x00000000);
     }
 
     // Initialize bindings and tab bar (only once, on first terminal creation)
@@ -1036,7 +1003,7 @@ void PlatformDawn::createTab()
     };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
-    applyColorScheme(*terminal, terminalOptions_.colors);
+    terminal->applyColorScheme(terminalOptions_.colors);
     if (!terminal->init(terminalOptions_)) {
         spdlog::error("createTab: failed to init terminal");
         return;
@@ -2096,7 +2063,7 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
     };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
-    applyColorScheme(*terminal, terminalOptions_.colors);
+    terminal->applyColorScheme(terminalOptions_.colors);
     if (!terminal->init(terminalOptions_)) {
         spdlog::error("spawnTerminalForPane: failed to init terminal");
         return;
@@ -2751,10 +2718,13 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
 
     // Parse progress bar settings
     progressBarHeight_ = cfg.progress_height * contentScaleX_;
-    if (cfg.progress_color.size() == 7 && cfg.progress_color[0] == '#') {
-        progressColorR_ = static_cast<float>(std::stoul(cfg.progress_color.substr(1, 2), nullptr, 16)) / 255.0f;
-        progressColorG_ = static_cast<float>(std::stoul(cfg.progress_color.substr(3, 2), nullptr, 16)) / 255.0f;
-        progressColorB_ = static_cast<float>(std::stoul(cfg.progress_color.substr(5, 2), nullptr, 16)) / 255.0f;
+    {
+        uint8_t r, g, b;
+        if (color::parseHex(cfg.progress_color, r, g, b)) {
+            progressColorR_ = r / 255.0f;
+            progressColorG_ = g / 255.0f;
+            progressColorB_ = b / 255.0f;
+        }
     }
 
     tabBarDirty_ = true;

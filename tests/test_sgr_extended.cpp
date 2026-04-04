@@ -1,5 +1,19 @@
 #include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include "Config.h"
+#include "Utils.h"
+
+// Helper: get default palette color as r,g,b
+static void defaultPaletteColor(int idx, uint8_t& r, uint8_t& g, uint8_t& b) {
+    ColorScheme cs;
+    const std::string* colors[] = {
+        &cs.color0, &cs.color1, &cs.color2, &cs.color3,
+        &cs.color4, &cs.color5, &cs.color6, &cs.color7,
+        &cs.color8, &cs.color9, &cs.color10, &cs.color11,
+        &cs.color12, &cs.color13, &cs.color14, &cs.color15
+    };
+    color::parseHex(*colors[idx], r, g, b);
+}
 
 // ── dim, blink, inverse, invisible, strikethrough ────────────────────────────
 
@@ -118,9 +132,10 @@ TEST_CASE("SGR fg standard colors 30-37")
         t.csi(std::to_string(30 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).fgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).fgR() == TerminalEmulator::kDefaultPalette[i][0]);
-        CHECK(t.attrs(0, 0).fgG() == TerminalEmulator::kDefaultPalette[i][1]);
-        CHECK(t.attrs(0, 0).fgB() == TerminalEmulator::kDefaultPalette[i][2]);
+        { uint8_t er, eg, eb; defaultPaletteColor(i, er, eg, eb);
+        CHECK(t.attrs(0, 0).fgR() == er);
+        CHECK(t.attrs(0, 0).fgG() == eg);
+        CHECK(t.attrs(0, 0).fgB() == eb); }
     }
 }
 
@@ -133,9 +148,10 @@ TEST_CASE("SGR bg standard colors 40-47")
         t.csi(std::to_string(40 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).bgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).bgR() == TerminalEmulator::kDefaultPalette[i][0]);
-        CHECK(t.attrs(0, 0).bgG() == TerminalEmulator::kDefaultPalette[i][1]);
-        CHECK(t.attrs(0, 0).bgB() == TerminalEmulator::kDefaultPalette[i][2]);
+        { uint8_t er, eg, eb; defaultPaletteColor(i, er, eg, eb);
+        CHECK(t.attrs(0, 0).bgR() == er);
+        CHECK(t.attrs(0, 0).bgG() == eg);
+        CHECK(t.attrs(0, 0).bgB() == eb); }
     }
 }
 
@@ -148,9 +164,10 @@ TEST_CASE("SGR fg bright colors 90-97")
         t.csi(std::to_string(90 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).fgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).fgR() == TerminalEmulator::kDefaultPalette[8 + i][0]);
-        CHECK(t.attrs(0, 0).fgG() == TerminalEmulator::kDefaultPalette[8 + i][1]);
-        CHECK(t.attrs(0, 0).fgB() == TerminalEmulator::kDefaultPalette[8 + i][2]);
+        { uint8_t er, eg, eb; defaultPaletteColor(8 + i, er, eg, eb);
+        CHECK(t.attrs(0, 0).fgR() == er);
+        CHECK(t.attrs(0, 0).fgG() == eg);
+        CHECK(t.attrs(0, 0).fgB() == eb); }
     }
 }
 
@@ -163,9 +180,10 @@ TEST_CASE("SGR bg bright colors 100-107")
         t.csi(std::to_string(100 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).bgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).bgR() == TerminalEmulator::kDefaultPalette[8 + i][0]);
-        CHECK(t.attrs(0, 0).bgG() == TerminalEmulator::kDefaultPalette[8 + i][1]);
-        CHECK(t.attrs(0, 0).bgB() == TerminalEmulator::kDefaultPalette[8 + i][2]);
+        { uint8_t er, eg, eb; defaultPaletteColor(8 + i, er, eg, eb);
+        CHECK(t.attrs(0, 0).bgR() == er);
+        CHECK(t.attrs(0, 0).bgG() == eg);
+        CHECK(t.attrs(0, 0).bgB() == eb); }
     }
 }
 

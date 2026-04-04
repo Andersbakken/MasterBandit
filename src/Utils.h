@@ -54,6 +54,36 @@ inline std::string encode(const uint8_t* data, size_t len)
 
 } // namespace base64
 
+namespace color {
+
+// Parse "#RRGGBB" hex string into r, g, b bytes. Returns false on invalid input.
+inline bool parseHex(const std::string& hex, uint8_t& r, uint8_t& g, uint8_t& b)
+{
+    if (hex.size() != 7 || hex[0] != '#') return false;
+    r = static_cast<uint8_t>(std::stoul(hex.substr(1, 2), nullptr, 16));
+    g = static_cast<uint8_t>(std::stoul(hex.substr(3, 2), nullptr, 16));
+    b = static_cast<uint8_t>(std::stoul(hex.substr(5, 2), nullptr, 16));
+    return true;
+}
+
+// Parse "#RRGGBB" to packed uint32: R | G<<8 | B<<16 | 0xFF<<24 (matches CellAttrs::packFgAsU32)
+inline uint32_t parseHexRGBA(const std::string& hex, uint32_t def = 0)
+{
+    uint8_t r, g, b;
+    if (!parseHex(hex, r, g, b)) return def;
+    return r | (static_cast<uint32_t>(g) << 8) | (static_cast<uint32_t>(b) << 16) | 0xFF000000u;
+}
+
+// Parse "#RRGGBB" to packed uint32: 0xFF<<24 | R<<16 | G<<8 | B (tab bar / legacy format)
+inline uint32_t parseHexBGRA(const std::string& hex, uint32_t def = 0xFF000000)
+{
+    uint8_t r, g, b;
+    if (!parseHex(hex, r, g, b)) return def;
+    return 0xFF000000u | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+}
+
+} // namespace color
+
 namespace unicode {
 
 // Returns true for Unicode general category Zs (space separators)

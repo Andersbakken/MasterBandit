@@ -16,6 +16,7 @@ set(TEST_SOURCES
     test_inverse.cpp
     test_selection.cpp
     test_shaping.cpp
+    test_kitty_keyboard.cpp
     ../src/TerminalEmulator.cpp
     ../src/Document.cpp
     ../src/CellGrid.cpp

@@ -77,6 +77,8 @@ static unsigned int glfwModsToModifiers(int mods)
     if (mods & GLFW_MOD_CONTROL) m |= CtrlModifier;
     if (mods & GLFW_MOD_ALT) m |= AltModifier;
     if (mods & GLFW_MOD_SUPER) m |= MetaModifier;
+    if (mods & GLFW_MOD_CAPS_LOCK) m |= CapsLockModifier;
+    if (mods & GLFW_MOD_NUM_LOCK) m |= NumLockModifier;
     return m;
 }
 
@@ -102,14 +104,30 @@ static Key glfwKeyToKey(int glfwKey)
     case GLFW_KEY_DOWN:         return Key_Down;
     case GLFW_KEY_PAGE_UP:      return Key_PageUp;
     case GLFW_KEY_PAGE_DOWN:    return Key_PageDown;
-    case GLFW_KEY_LEFT_SHIFT:
-    case GLFW_KEY_RIGHT_SHIFT:  return Key_Shift;
-    case GLFW_KEY_LEFT_CONTROL:
-    case GLFW_KEY_RIGHT_CONTROL: return Key_Control;
-    case GLFW_KEY_LEFT_ALT:
-    case GLFW_KEY_RIGHT_ALT:    return Key_Alt;
+    case GLFW_KEY_LEFT_SHIFT:   return Key_Shift_L;
+    case GLFW_KEY_RIGHT_SHIFT:  return Key_Shift_R;
+    case GLFW_KEY_LEFT_CONTROL: return Key_Control_L;
+    case GLFW_KEY_RIGHT_CONTROL: return Key_Control_R;
+    case GLFW_KEY_LEFT_ALT:     return Key_Alt_L;
+    case GLFW_KEY_RIGHT_ALT:    return Key_Alt_R;
     case GLFW_KEY_LEFT_SUPER:   return Key_Super_L;
     case GLFW_KEY_RIGHT_SUPER:  return Key_Super_R;
+    case GLFW_KEY_KP_0:         return Key_KP_0;
+    case GLFW_KEY_KP_1:         return Key_KP_1;
+    case GLFW_KEY_KP_2:         return Key_KP_2;
+    case GLFW_KEY_KP_3:         return Key_KP_3;
+    case GLFW_KEY_KP_4:         return Key_KP_4;
+    case GLFW_KEY_KP_5:         return Key_KP_5;
+    case GLFW_KEY_KP_6:         return Key_KP_6;
+    case GLFW_KEY_KP_7:         return Key_KP_7;
+    case GLFW_KEY_KP_8:         return Key_KP_8;
+    case GLFW_KEY_KP_9:         return Key_KP_9;
+    case GLFW_KEY_KP_DECIMAL:   return Key_KP_Decimal;
+    case GLFW_KEY_KP_DIVIDE:    return Key_KP_Divide;
+    case GLFW_KEY_KP_MULTIPLY:  return Key_KP_Multiply;
+    case GLFW_KEY_KP_SUBTRACT:  return Key_KP_Subtract;
+    case GLFW_KEY_KP_ADD:       return Key_KP_Add;
+    case GLFW_KEY_KP_EQUAL:     return Key_KP_Equal;
     case GLFW_KEY_CAPS_LOCK:    return Key_CapsLock;
     case GLFW_KEY_NUM_LOCK:     return Key_NumLock;
     case GLFW_KEY_SCROLL_LOCK:  return Key_ScrollLock;
@@ -686,6 +704,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         // Wire up GLFW callbacks
         glfwSetWindowUserPointer(glfwWindow_, this);
 
+        glfwSetInputMode(glfwWindow_, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
         glfwSetKeyCallback(glfwWindow_, [](GLFWwindow* w, int key, int scancode, int action, int mods) {
             static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onKey(key, scancode, action, mods);
         });
@@ -2553,7 +2572,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
     }, action);
 }
 
-void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
+void PlatformDawn::onKey(int key, int scancode, int action, int mods)
 {
     TerminalEmulator* term = activeTerm();
     if (!term) return;
@@ -2561,45 +2580,57 @@ void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
     spdlog::debug("onKey: key={} action={} mods={}", key, action, mods);
     term->resetViewport();
 
-    if (action == GLFW_RELEASE) {
-        controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
-        return;
-    }
-
     controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
     lastMods_ = glfwModsToModifiers(mods);
 
     Key k = glfwKeyToKey(key);
     spdlog::debug("onKey: mapped key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
 
-    // Try binding lookup via sequence matcher
-    auto result = sequenceMatcher_.advance({k, lastMods_}, bindings_);
-    if (result.result == SequenceMatcher::Result::Match) {
-        dispatchAction(*result.action);
-        return;
+    // Bindings only on press/repeat (NOT release)
+    if (action != GLFW_RELEASE) {
+        auto result = sequenceMatcher_.advance({k, lastMods_}, bindings_);
+        if (result.result == SequenceMatcher::Result::Match) {
+            dispatchAction(*result.action);
+            return;
+        }
+        if (result.result == SequenceMatcher::Result::Prefix) {
+            return;
+        }
     }
-    if (result.result == SequenceMatcher::Result::Prefix) {
-        // Consumed — waiting for next key in sequence
+
+    KeyEvent ev;
+    ev.key = k;
+    ev.modifiers = lastMods_;
+    ev.action = (action == GLFW_RELEASE) ? KeyAction_Release
+              : (action == GLFW_REPEAT)  ? KeyAction_Repeat
+              :                            KeyAction_Press;
+    ev.autoRepeat = (action == GLFW_REPEAT);
+    ev.count = 1;
+
+    if (term->kittyFlags() != 0) {
+        // Kitty mode: generate text from key for printable keys
+        if (key >= GLFW_KEY_SPACE && key <= GLFW_KEY_GRAVE_ACCENT) {
+            const char* name = glfwGetKeyName(key, scancode);
+            if (name) ev.text = name;
+        } else if (controlPressed_ && key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
+            ev.text = std::string(1, static_cast<char>(key - GLFW_KEY_A + 1));
+        }
+        term->keyPressEvent(&ev);
         return;
     }
 
-    // NoMatch: forward to PTY
+    // Legacy mode: drop release events
+    if (action == GLFW_RELEASE) return;
+
+    // ctrl+letter: generate control character
     if (controlPressed_ && key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
-        KeyEvent ev;
-        ev.key = k;
         ev.text = std::string(1, static_cast<char>(key - GLFW_KEY_A + 1));
-        ev.count = 1;
-        ev.autoRepeat = (action == GLFW_REPEAT);
         spdlog::debug("onKey: ctrl+letter, sending text=0x{:02x}", static_cast<unsigned char>(ev.text[0]));
         term->keyPressEvent(&ev);
         return;
     }
 
     if (k != Key_unknown && (key < GLFW_KEY_SPACE || key > GLFW_KEY_GRAVE_ACCENT)) {
-        KeyEvent ev;
-        ev.key = k;
-        ev.count = 1;
-        ev.autoRepeat = (action == GLFW_REPEAT);
         spdlog::debug("onKey: non-printable key=0x{:x}, dispatching", static_cast<int>(k));
         term->keyPressEvent(&ev);
     } else {
@@ -2614,11 +2645,17 @@ void PlatformDawn::onChar(unsigned int codepoint)
 
     spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
     term->resetViewport();
+
+    // In Kitty mode, onKey handles everything
+    if (term->kittyFlags() != 0) return;
+
     if (controlPressed_) return;
 
     KeyEvent ev;
     ev.key = Key_unknown;
     ev.text = codepointToUtf8(codepoint);
+    ev.modifiers = lastMods_;
+    ev.action = KeyAction_Press;
     spdlog::debug("onChar: sending text='{}' ({} bytes)", ev.text, ev.text.size());
     ev.count = 1;
     ev.autoRepeat = false;

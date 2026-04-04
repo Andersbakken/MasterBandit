@@ -123,6 +123,7 @@ public:
     void mouseMoveEvent(const MouseEvent *event);
     bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
     bool syncOutputActive() const { return mSyncOutput; }
+    uint8_t kittyFlags() const { return mKittyFlags; }
     bool colorPreferenceReporting() const { return mColorPreferenceReporting; }
     void setPaletteColor(int idx, uint8_t r, uint8_t g, uint8_t b) {
         if (idx >= 0 && idx < 16) { m16ColorPalette[idx][0] = r; m16ColorPalette[idx][1] = g; m16ColorPalette[idx][2] = b; }
@@ -303,6 +304,20 @@ private:
     bool mFocusReporting { false };  // Mode 1004
     bool mSyncOutput { false };      // Mode 2026: synchronized output
     bool mColorPreferenceReporting { false }; // Mode 2031
+
+    // Kitty keyboard protocol
+    static constexpr int KITTY_STACK_MAX = 8;
+    uint8_t mKittyFlags { 0 };
+    uint8_t mKittyStackMain[KITTY_STACK_MAX] {};
+    uint8_t mKittyStackAlt[KITTY_STACK_MAX] {};
+    int mKittyStackDepthMain { 0 };
+    int mKittyStackDepthAlt { 0 };
+
+    void kittyPushFlags(uint8_t flags);
+    void kittyPopFlags(int count);
+    void kittySetFlags(uint8_t flags, int mode);
+    void kittyQueryFlags();
+    std::string encodeKittyKey(const KeyEvent& ev) const;
 
     // Pending selection: button is pressed but mouse hasn't moved yet
     bool mPendingSelection { false };

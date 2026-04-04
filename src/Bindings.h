@@ -7,13 +7,25 @@
 
 struct BindingConfig; // defined in Config.h
 
+// Normalize left/right modifier keys to their generic form for binding matching
+inline Key normalizeModifierKey(Key k)
+{
+    switch (k) {
+    case Key_Shift_L: case Key_Shift_R: return Key_Shift;
+    case Key_Control_L: case Key_Control_R: return Key_Control;
+    case Key_Alt_L: case Key_Alt_R: return Key_Alt;
+    case Key_Super_L: case Key_Super_R: return Key_Meta;
+    default: return k;
+    }
+}
+
 struct KeyStroke {
     Key          key  = Key_unknown;
     unsigned int mods = 0;
 
     bool operator==(const KeyStroke& o) const noexcept
     {
-        return key == o.key && mods == o.mods;
+        return normalizeModifierKey(key) == normalizeModifierKey(o.key) && mods == o.mods;
     }
 };
 

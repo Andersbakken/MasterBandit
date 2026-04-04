@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <assert.h>
 #include <TerminalOptions.h>
@@ -25,13 +26,22 @@ enum Key {
     Key_Down = 0x01000015,
     Key_PageUp = 0x01000016,
     Key_PageDown = 0x01000017,
-    Key_Shift = 0x01000020,                // modifiers
+    Key_Shift = 0x01000020,                // modifiers (generic)
     Key_Control = 0x01000021,
     Key_Meta = 0x01000022,
     Key_Alt = 0x01000023,
     Key_CapsLock = 0x01000024,
     Key_NumLock = 0x01000025,
     Key_ScrollLock = 0x01000026,
+
+    // Left/right modifier keys (Kitty keyboard protocol)
+    Key_Shift_L = 0x01000070,
+    Key_Shift_R = 0x01000071,
+    Key_Control_L = 0x01000072,
+    Key_Control_R = 0x01000073,
+    Key_Alt_L = 0x01000074,
+    Key_Alt_R = 0x01000075,
+    // Key_Super_L/R and Key_Hyper_L/R already defined below
     Key_F1 = 0x01000030,                // function keys
     Key_F2 = 0x01000031,
     Key_F3 = 0x01000032,
@@ -524,6 +534,25 @@ enum Key {
     Key_Camera = 0x01100020,
     Key_CameraFocus = 0x01100021,
 
+    // Keypad keys (Kitty keyboard protocol)
+    Key_KP_0 = 0x01200000,
+    Key_KP_1 = 0x01200001,
+    Key_KP_2 = 0x01200002,
+    Key_KP_3 = 0x01200003,
+    Key_KP_4 = 0x01200004,
+    Key_KP_5 = 0x01200005,
+    Key_KP_6 = 0x01200006,
+    Key_KP_7 = 0x01200007,
+    Key_KP_8 = 0x01200008,
+    Key_KP_9 = 0x01200009,
+    Key_KP_Decimal  = 0x0120000a,
+    Key_KP_Divide   = 0x0120000b,
+    Key_KP_Multiply = 0x0120000c,
+    Key_KP_Subtract = 0x0120000d,
+    Key_KP_Add      = 0x0120000e,
+    Key_KP_Enter    = 0x0120000f,
+    Key_KP_Equal    = 0x01200010,
+
     Key_unknown = 0x01ffffff
 };
 
@@ -535,11 +564,20 @@ enum Button {
 };
 
 enum Modifier {
-    NoModifier    = 0x0,
-    ShiftModifier = 0x1,
-    CtrlModifier  = 0x2,
-    AltModifier   = 0x4,
-    MetaModifier  = 0x8
+    NoModifier       = 0x0,
+    ShiftModifier    = 0x1,
+    CtrlModifier     = 0x2,
+    AltModifier      = 0x4,
+    MetaModifier     = 0x8,
+    HyperModifier    = 0x10,
+    CapsLockModifier = 0x20,
+    NumLockModifier  = 0x40,
+};
+
+enum KeyAction : uint8_t {
+    KeyAction_Press   = 1,
+    KeyAction_Repeat  = 2,
+    KeyAction_Release = 3,
 };
 
 struct MouseEvent
@@ -578,6 +616,8 @@ struct KeyEvent
     std::string text;
     size_t count { 1 };
     bool autoRepeat { false };
+    unsigned int modifiers { 0 };
+    KeyAction action { KeyAction_Press };
 };
 
 class Terminal;

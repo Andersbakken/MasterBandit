@@ -103,4 +103,19 @@ struct TestTerminal {
     }
 
     void clearOutput() { term.capturedOutput.clear(); }
+    const std::string& output() const { return term.capturedOutput; }
+
+    void sendKey(Key key, unsigned int mods = 0,
+                 KeyAction action = KeyAction_Press,
+                 const std::string& text = "")
+    {
+        KeyEvent ev;
+        ev.key = key;
+        ev.modifiers = mods;
+        ev.action = action;
+        ev.text = text;
+        ev.count = 1;
+        ev.autoRepeat = (action == KeyAction_Repeat);
+        term.keyPressEvent(&ev);
+    }
 };

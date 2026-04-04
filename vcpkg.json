@@ -9,6 +9,7 @@
         "libunibreak",
         "libwebsockets",
         "glaze",
-        "stb"
+        "stb",
+        "doctest"
     ]
 }

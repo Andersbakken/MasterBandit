@@ -321,15 +321,18 @@ void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
         return;
     }
 
-    // Begin selection
+    // Arm pending selection — actual selection starts only when the mouse moves
     clearSelection();
-    int absRow = mDocument.historySize() - mViewportOffset + ev->y;
-    startSelection(ev->x, absRow);
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    mPendingSelection    = true;
+    mPendingSelCol       = ev->x;
+    mPendingSelAbsRow    = mDocument.historySize() - mViewportOffset + ev->y;
 }
 
 void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
 {
+    // Button released without moving — discard pending selection
+    mPendingSelection = false;
+
     if (mSelection.active) {
         finalizeSelection();
         std::string text = selectedText();
@@ -356,6 +359,12 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
 
 void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
 {
+    // First move after press — activate the pending selection
+    if (mPendingSelection) {
+        mPendingSelection = false;
+        startSelection(mPendingSelCol, mPendingSelAbsRow);
+    }
+
     if (mSelection.active) {
         int col = std::max(0, std::min(ev->x, mWidth - 1));
         int row = std::max(0, std::min(ev->y, mHeight - 1));

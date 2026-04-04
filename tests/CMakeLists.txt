@@ -13,6 +13,7 @@ add_executable(mb-tests
     test_osc.cpp
     test_wide.cpp
     test_inverse.cpp
+    test_selection.cpp
     ../src/TerminalEmulator.cpp
     ../src/Document.cpp
     ../src/CellGrid.cpp

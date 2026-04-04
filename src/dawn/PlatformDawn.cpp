@@ -2297,6 +2297,17 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
         }
     }
 
+    // Click on an inactive pane — switch focus before routing the event
+    if (action == GLFW_PRESS && !tab->hasOverlay()) {
+        int clickedId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+        if (clickedId >= 0 && clickedId != tab->layout()->focusedPaneId()) {
+            int prev = tab->layout()->focusedPaneId();
+            tab->layout()->setFocusedPane(clickedId);
+            notifyPaneFocusChange(tab, prev, clickedId);
+            updateTabTitleFromFocusedPane(activeTabIdx_);
+        }
+    }
+
     Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())

@@ -277,6 +277,11 @@ private:
     bool mFocusReporting { false };  // Mode 1004
     bool mSyncOutput { false };      // Mode 2026: synchronized output
 
+    // Pending selection: button is pressed but mouse hasn't moved yet
+    bool mPendingSelection { false };
+    int  mPendingSelCol { 0 };
+    int  mPendingSelAbsRow { 0 };
+
     Selection mSelection;
 
     // Image registry

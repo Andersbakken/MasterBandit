@@ -332,6 +332,26 @@ private:
     int activeTabIdx_ = 0;
     int lastFocusedPaneId_ = -1;
 
+    void updateTabBarVisibility() {
+        if (tabBarConfig_.style != "auto") return;
+        int h = tabBarVisible() ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
+        for (auto& tab : tabs_)
+            tab->layout()->setTabBar(h, tabBarConfig_.position);
+        // Recompute layout for active tab
+        Tab* tab = activeTab();
+        if (tab) {
+            tab->layout()->computeRects(fbWidth_, fbHeight_);
+            for (auto& p : tab->layout()->panes())
+                p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
+        }
+    }
+
+    bool tabBarVisible() const {
+        if (tabBarConfig_.style == "hidden") return false;
+        if (tabBarConfig_.style == "auto") return tabs_.size() > 1;
+        return true; // "visible" or legacy "powerline"
+    }
+
     Tab* activeTab() {
         if (tabs_.empty() || activeTabIdx_ < 0 || activeTabIdx_ >= static_cast<int>(tabs_.size()))
             return nullptr;
@@ -425,6 +445,11 @@ private:
     uint32_t tbActiveFgColor_  = 0xFF261a1b;
     uint32_t tbInactiveBgColor_= 0xFF3b2824;
     uint32_t tbInactiveFgColor_= 0xFF895f56;
+    float progressColorR_ = 0.0f, progressColorG_ = 0.6f, progressColorB_ = 1.0f;
+    float progressBarHeight_ = 3.0f;
+
+    // Scaled padding in pixels
+    float padLeft_ = 0, padTop_ = 0, padRight_ = 0, padBottom_ = 0;
 
     void initTabBar(const TabBarConfig& cfg);
     void renderTabBar();
@@ -665,6 +690,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
             shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
         }
         renderer_.init(device_, queue_, shaderDir, fbWidth_, fbHeight_);
+        renderer_.initProgressPipeline(device_, shaderDir);
         renderer_.uploadFontAtlas(queue_, fontName_, *font);
 
         // Wire up GLFW callbacks
@@ -799,10 +825,20 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         return nullptr;
     }
 
+    // Parse padding early so it's available for grid calculation
+    if (padTop_ == 0 && padLeft_ == 0 && padRight_ == 0 && padBottom_ == 0) {
+        padLeft_   = options.padding.left   * contentScaleX_;
+        padTop_    = options.padding.top    * contentScaleX_;
+        padRight_  = options.padding.right  * contentScaleX_;
+        padBottom_ = options.padding.bottom * contentScaleX_;
+    }
+
     // Compute cols/rows from pane rect
     const PaneRect& pr = pane->rect();
-    int cols = (pr.w > 0 && charWidth_ > 0) ? static_cast<int>(pr.w / charWidth_) : static_cast<int>(fbWidth_ / charWidth_);
-    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>(pr.h / lineHeight_) : static_cast<int>(fbHeight_ / lineHeight_);
+    float usableW = std::max(0.0f, static_cast<float>(pr.w > 0 ? pr.w : fbWidth_) - padLeft_ - padRight_);
+    float usableH = std::max(0.0f, static_cast<float>(pr.h > 0 ? pr.h : fbHeight_) - padTop_ - padBottom_);
+    int cols = (charWidth_ > 0) ? static_cast<int>(usableW / charWidth_) : 80;
+    int rows = (lineHeight_ > 0) ? static_cast<int>(usableH / lineHeight_) : 24;
     if (cols < 1) cols = 80;
     if (rows < 1) rows = 24;
 
@@ -849,6 +885,12 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     // Store options for future createTab() calls
     if (tabs_.size() == 1) {
         terminalOptions_ = options;
+
+        // Parse padding (scale by content scale)
+        padLeft_   = options.padding.left   * contentScaleX_;
+        padTop_    = options.padding.top    * contentScaleX_;
+        padRight_  = options.padding.right  * contentScaleX_;
+        padBottom_ = options.padding.bottom * contentScaleX_;
 
         // Parse color scheme
         const auto& cs = options.colors;
@@ -899,7 +941,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         {
             Pane* p = tabs_.back()->layout()->focusedPane();
             if (p) {
-                p->resizeToRect(charWidth_, lineHeight_);
+                p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
                 TerminalEmulator* te = p->activeTerm();
                 if (te) {
                     int c = te->width(), r = te->height();
@@ -924,7 +966,7 @@ void PlatformDawn::createTab()
     layout->setFocusedPane(pane->id());
 
     // Apply tab bar height to the new layout
-    if (tabBarConfig_.style != "hidden" && tabBarLineHeight_ > 0.0f) {
+    if (tabBarVisible() && tabBarLineHeight_ > 0.0f) {
         layout->setTabBar(static_cast<int>(std::ceil(tabBarLineHeight_)), tabBarConfig_.position);
     }
     layout->computeRects(fbWidth_, fbHeight_);
@@ -1001,8 +1043,8 @@ void PlatformDawn::createTab()
     }
 
     const PaneRect& pr = pane->rect();
-    int cols = (pr.w > 0 && charWidth_ > 0) ? static_cast<int>(pr.w / charWidth_) : 80;
-    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>(pr.h / lineHeight_) : 24;
+    int cols = (pr.w > 0 && charWidth_ > 0) ? static_cast<int>((pr.w - padLeft_ - padRight_) / charWidth_) : 80;
+    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>((pr.h - padTop_ - padBottom_) / lineHeight_) : 24;
 
     auto& rs = paneRenderStates_[paneId];
     rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
@@ -1036,6 +1078,7 @@ void PlatformDawn::createTab()
     tab->setTitle(pane->title());
     tabs_.push_back(std::move(tab));
 
+    updateTabBarVisibility();
     tabBarDirty_ = true;
     needsRedraw_ = true;
 
@@ -1071,6 +1114,7 @@ void PlatformDawn::closeTab(int idx)
     if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
         activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
 
+    updateTabBarVisibility();
     tabBarDirty_ = true;
     needsRedraw_ = true;
     spdlog::info("Closed tab {}", idx + 1);
@@ -1139,20 +1183,24 @@ int PlatformDawn::exec()
             return;
         }
 
-        // Advance indeterminate progress animation
-        if (self->tabBarConfig_.style != "hidden") {
-            auto now = TerminalEmulator::mono();
-            if (now - self->lastAnimTick_ > 100) {
-                self->lastAnimTick_ = now;
-                bool hasAnim = false;
-                for (auto& tab : self->tabs_) {
-                    Pane* fp = tab->layout()->focusedPane();
-                    if (fp && fp->progressState() == 3) { hasAnim = true; break; }
+        // Advance progress animations
+        {
+            bool hasAnim = false;
+            for (auto& tab : self->tabs_) {
+                for (auto& panePtr : tab->layout()->panes()) {
+                    if (panePtr->progressState() == 3) { hasAnim = true; break; }
                 }
-                if (hasAnim) {
+                if (hasAnim) break;
+            }
+            if (hasAnim) {
+                // Indeterminate: redraw every frame for smooth animation
+                self->needsRedraw_ = true;
+                // Tab bar glyph animation at 10fps
+                auto now = TerminalEmulator::mono();
+                if (self->tabBarVisible() && now - self->lastAnimTick_ > 100) {
+                    self->lastAnimTick_ = now;
                     self->tabBarAnimFrame_++;
                     self->tabBarDirty_ = true;
-                    self->needsRedraw_ = true;
                 }
             }
         }
@@ -1582,8 +1630,8 @@ void PlatformDawn::renderFrame()
             params.viewport_h = static_cast<float>(pane->rect().h);
             params.font_ascender = font->ascender * scale;
             params.font_size = fontSize_;
-            params.pane_origin_x = 0.0f;
-            params.pane_origin_y = 0.0f;
+            params.pane_origin_x = padLeft_;
+            params.pane_origin_y = padTop_;
 
             // Cursor
             params.cursor_type = 0;
@@ -1642,7 +1690,7 @@ void PlatformDawn::renderFrame()
     }
 
     // Render tab bar if dirty
-    if (tabBarConfig_.style != "hidden" && tabBarDirty_) {
+    if (tabBarVisible() && tabBarDirty_) {
         renderTabBar();
     }
 
@@ -1672,6 +1720,66 @@ void PlatformDawn::renderFrame()
             if (it == paneRenderStates_.end() || !it->second.dividerVB) continue;
             renderer_.drawDivider(encoder, surfaceTexture.texture,
                                    fbWidth_, fbHeight_, it->second.dividerVB);
+        }
+
+        // Draw per-pane progress bars at top of pane
+        if (tabBarConfig_.progress_bar) for (auto& panePtr : currentTab->layout()->panes()) {
+            int st = panePtr->progressState();
+            if (st == 0) continue;
+            const PaneRect& pr = panePtr->rect();
+            float barHeight = progressBarHeight_;
+            float barY = static_cast<float>(pr.y);
+            float barX = static_cast<float>(pr.x);
+            float barW = static_cast<float>(pr.w);
+            float edgeSoft = 40.0f * contentScaleX_;
+
+            Renderer::ProgressBarParams pbp{};
+            pbp.h = barHeight;
+            pbp.a = 1.0f;
+
+            if (st == 1 || st == 2) {
+                // Determinate: fill from left, sharp left edge, gradient right edge
+                float pct = std::clamp(static_cast<float>(panePtr->progressPct()) / 100.0f, 0.0f, 1.0f);
+                pbp.x = barX;
+                pbp.y = barY;
+                pbp.w = barW;
+                pbp.fillFrac = pct;
+                pbp.edgeSoftness = edgeSoft;
+                pbp.softLeft = 0.0f;
+                pbp.softRight = 1.0f;
+                pbp.r = (st == 2) ? 0.8f : progressColorR_;
+                pbp.g = (st == 2) ? 0.2f : progressColorG_;
+                pbp.b = (st == 2) ? 0.2f : progressColorB_;
+                renderer_.drawProgressBar(encoder, queue_, surfaceTexture.texture,
+                                           fbWidth_, fbHeight_, pbp);
+            } else if (st == 3) {
+                // Indeterminate: sliding segment with gradient edges
+                double now = static_cast<double>(TerminalEmulator::mono()) / 1000.0;
+                float t = static_cast<float>(std::fmod(now, 2.0) / 2.0);
+                float segFrac = 0.3f;
+                float segW = barW * segFrac;
+                float overshoot = segW;
+                float segX = barX - overshoot + t * (barW + 2.0f * overshoot);
+                // Clamp to pane — track which edges are clipped
+                float x0 = std::max(segX, barX);
+                float x1 = std::min(segX + segW, barX + barW);
+                bool clippedLeft = (segX < barX);
+                bool clippedRight = (segX + segW > barX + barW);
+                if (x1 > x0) {
+                    pbp.x = x0;
+                    pbp.y = barY;
+                    pbp.w = x1 - x0;
+                    pbp.fillFrac = 1.0f;
+                    pbp.edgeSoftness = edgeSoft;
+                    pbp.softLeft = clippedLeft ? 0.0f : 1.0f;
+                    pbp.softRight = clippedRight ? 0.0f : 1.0f;
+                    pbp.r = progressColorR_;
+                    pbp.g = progressColorG_;
+                    pbp.b = progressColorB_;
+                    renderer_.drawProgressBar(encoder, queue_, surfaceTexture.texture,
+                                               fbWidth_, fbHeight_, pbp);
+                }
+            }
         }
 
         if (pngNeeded) {
@@ -2036,7 +2144,7 @@ void PlatformDawn::resizeAllPanesInTab(Tab* tab)
 
     for (auto& panePtr : tab->layout()->panes()) {
         Pane* pane = panePtr.get();
-        pane->resizeToRect(charWidth_, lineHeight_);
+        pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
         TerminalEmulator* term = pane->activeTerm();
         if (!term) continue;
@@ -2393,7 +2501,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
     for (auto& panePtr : tab->layout()->panes()) {
         Pane* pane = panePtr.get();
-        pane->resizeToRect(charWidth_, lineHeight_);
+        pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
         TerminalEmulator* term = pane->activeTerm();
         if (!term) continue;
@@ -2448,7 +2556,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
     double sy = y * contentScaleY_;
 
     // Check if click is in tab bar
-    if (action == GLFW_PRESS && tabBarConfig_.style != "hidden") {
+    if (action == GLFW_PRESS && tabBarVisible()) {
         PaneRect tbRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
         if (!tbRect.isEmpty() &&
             sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
@@ -2598,6 +2706,8 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
         return;
     }
 
+    // For "auto" mode with 1 tab, still load fonts but set height to 0
+
     // Resolve font
     std::string fontPath = cfg.font.empty() ? primaryFontPath_
                                              : resolveFontFamily(cfg.font);
@@ -2628,7 +2738,7 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
         tabBarCharWidth_  = charWidth_;
     }
 
-    int tabBarH = static_cast<int>(std::ceil(tabBarLineHeight_));
+    int tabBarH = tabBarVisible() ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
     for (auto& tab : tabs_)
         tab->layout()->setTabBar(tabBarH, cfg.position);
 
@@ -2639,12 +2749,20 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
     tbInactiveBgColor_ = parseHexColor(cfg.colors.inactive_bg);
     tbInactiveFgColor_ = parseHexColor(cfg.colors.inactive_fg);
 
+    // Parse progress bar settings
+    progressBarHeight_ = cfg.progress_height * contentScaleX_;
+    if (cfg.progress_color.size() == 7 && cfg.progress_color[0] == '#') {
+        progressColorR_ = static_cast<float>(std::stoul(cfg.progress_color.substr(1, 2), nullptr, 16)) / 255.0f;
+        progressColorG_ = static_cast<float>(std::stoul(cfg.progress_color.substr(3, 2), nullptr, 16)) / 255.0f;
+        progressColorB_ = static_cast<float>(std::stoul(cfg.progress_color.substr(5, 2), nullptr, 16)) / 255.0f;
+    }
+
     tabBarDirty_ = true;
 }
 
 void PlatformDawn::renderTabBar()
 {
-    if (tabBarConfig_.style == "hidden") return;
+    if (!tabBarVisible()) return;
     if (tabs_.empty()) return;
 
     Tab* active = activeTab();
@@ -2751,7 +2869,7 @@ void PlatformDawn::renderTabBar()
         ti.fgColor = isActive ? tbActiveFgColor_ : tbInactiveFgColor_;
 
         ti.prefix = " ";
-        std::string pg = progressGlyph(tab);
+        std::string pg = tabBarConfig_.progress_icon ? progressGlyph(tab) : "";
         if (!pg.empty()) { ti.prefix += pg; ti.prefix += " "; }
         if (!tab->icon().empty()) { ti.prefix += tab->icon(); ti.prefix += " "; }
         ti.prefix += "[";

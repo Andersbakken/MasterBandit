@@ -413,6 +413,142 @@ struct ImageVertex {
     float uv[2];
 };
 
+// ── Progress bar pipeline ──────────────────────────────────────────────────
+
+void Renderer::initProgressPipeline(wgpu::Device& device, const std::string& shaderDir)
+{
+    progressShader_ = renderer_utils::createShaderModule(device,
+        (fs::path(shaderDir) / "progress_bar.wgsl").string().c_str());
+    if (!progressShader_) {
+        spdlog::error("Failed to load progress_bar.wgsl shader");
+        return;
+    }
+
+    // Uniform buffer for progress params (80 bytes padded to 16-byte alignment)
+    struct GPUProgressParams {
+        float rect[4];
+        float fill_frac;
+        float edge_softness;
+        float viewport_w;
+        float viewport_h;
+        float color[4];
+        float soft_edges[2];
+        float _pad2[2];
+    };
+
+    wgpu::BufferDescriptor ubDesc{};
+    ubDesc.size = sizeof(GPUProgressParams);
+    ubDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    progressUniformBuffer_ = device.CreateBuffer(&ubDesc);
+
+    // Bind group layout: single uniform buffer
+    wgpu::BindGroupLayoutEntry entry{};
+    entry.binding = 0;
+    entry.visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
+    entry.buffer.type = wgpu::BufferBindingType::Uniform;
+
+    wgpu::BindGroupLayoutDescriptor bglDesc{};
+    bglDesc.entryCount = 1;
+    bglDesc.entries = &entry;
+    progressBindGroupLayout_ = device.CreateBindGroupLayout(&bglDesc);
+
+    wgpu::BindGroupEntry bgEntry{};
+    bgEntry.binding = 0;
+    bgEntry.buffer = progressUniformBuffer_;
+    bgEntry.size = sizeof(GPUProgressParams);
+
+    wgpu::BindGroupDescriptor bgDesc{};
+    bgDesc.layout = progressBindGroupLayout_;
+    bgDesc.entryCount = 1;
+    bgDesc.entries = &bgEntry;
+    progressBindGroup_ = device.CreateBindGroup(&bgDesc);
+
+    // Pipeline
+    wgpu::PipelineLayoutDescriptor plDesc{};
+    plDesc.bindGroupLayoutCount = 1;
+    plDesc.bindGroupLayouts = &progressBindGroupLayout_;
+    wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&plDesc);
+
+    wgpu::ColorTargetState colorTarget{};
+    colorTarget.format = wgpu::TextureFormat::BGRA8Unorm;
+    wgpu::BlendState blend{};
+    blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+    blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    blend.alpha.srcFactor = wgpu::BlendFactor::One;
+    blend.alpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    colorTarget.blend = &blend;
+
+    wgpu::FragmentState fragment{};
+    fragment.module = progressShader_;
+    fragment.targetCount = 1;
+    fragment.targets = &colorTarget;
+
+    wgpu::RenderPipelineDescriptor rpDesc{};
+    rpDesc.layout = pipelineLayout;
+    rpDesc.vertex.module = progressShader_;
+    rpDesc.fragment = &fragment;
+    rpDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+
+    progressPipeline_ = device.CreateRenderPipeline(&rpDesc);
+    progressPipelineReady_ = true;
+    spdlog::info("Progress bar pipeline initialized");
+}
+
+void Renderer::drawProgressBar(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                                wgpu::Texture target, uint32_t fbW, uint32_t fbH,
+                                const ProgressBarParams& p)
+{
+    if (!progressPipelineReady_) return;
+
+    struct GPUProgressParams {
+        float rect[4];
+        float fill_frac;
+        float edge_softness;
+        float viewport_w;
+        float viewport_h;
+        float color[4];
+        float soft_edges[2];
+        float _pad2[2];
+    };
+
+    GPUProgressParams gpu{};
+    gpu.rect[0] = p.x;
+    gpu.rect[1] = p.y;
+    gpu.rect[2] = p.w;
+    gpu.rect[3] = p.h;
+    gpu.fill_frac = p.fillFrac;
+    gpu.edge_softness = p.edgeSoftness;
+    gpu.viewport_w = static_cast<float>(fbW);
+    gpu.viewport_h = static_cast<float>(fbH);
+    gpu.color[0] = p.r;
+    gpu.color[1] = p.g;
+    gpu.color[2] = p.b;
+    gpu.color[3] = p.a;
+    gpu.soft_edges[0] = p.softLeft;
+    gpu.soft_edges[1] = p.softRight;
+    gpu._pad2[0] = gpu._pad2[1] = 0;
+
+    queue.WriteBuffer(progressUniformBuffer_, 0, &gpu, sizeof(gpu));
+
+    wgpu::TextureViewDescriptor tvDesc{};
+    wgpu::TextureView targetView = target.CreateView(&tvDesc);
+
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = targetView;
+    colorAtt.loadOp = wgpu::LoadOp::Load;
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDescriptor rpDesc{};
+    rpDesc.colorAttachmentCount = 1;
+    rpDesc.colorAttachments = &colorAtt;
+
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+    pass.SetPipeline(progressPipeline_);
+    pass.SetBindGroup(0, progressBindGroup_);
+    pass.Draw(6); // 2 triangles
+    pass.End();
+}
+
 void Renderer::initImagePipeline(wgpu::Device& device, const std::string& shaderDir)
 {
     imageShader_ = renderer_utils::createShaderModule(device,

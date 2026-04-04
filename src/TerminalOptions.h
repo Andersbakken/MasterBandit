@@ -20,6 +20,7 @@ struct TerminalOptions {
     float inactivePaneTintAlpha = 0.3f;
     std::string activePaneTint = "#000000";
     float activePaneTintAlpha = 0.0f;
+    PaddingConfig padding;
     ColorScheme colors;
 
     // Returns the tier1 capacity to pass to Document: INT_MAX when infinite.

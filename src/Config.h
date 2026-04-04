@@ -39,11 +39,15 @@ struct TabBarColors {
 };
 
 struct TabBarConfig {
-    std::string style    = "powerline";   // "powerline" | "hidden"
+    std::string style    = "auto";         // "auto" | "visible" | "hidden"
     std::string position = "bottom";      // "top" | "bottom"
     std::string font;                     // empty = same as terminal font
     float       font_size = 0.0f;         // 0 = same as terminal font_size
     int         max_title_length = 30;    // 0 = no limit
+    bool        progress_icon = true;    // show nerd font progress icon in tab
+    bool        progress_bar  = true;    // show progress bar line at top of pane
+    std::string progress_color = "#0099ff"; // progress bar color
+    float       progress_height = 3.0f;    // progress bar height in points
     TabBarColors colors;
 
     struct glaze {
@@ -54,6 +58,10 @@ struct TabBarConfig {
             "font",             &T::font,
             "font_size",        &T::font_size,
             "max_title_length", &T::max_title_length,
+            "progress_icon",    &T::progress_icon,
+            "progress_bar",     &T::progress_bar,
+            "progress_color",   &T::progress_color,
+            "progress_height",  &T::progress_height,
             "colors",           &T::colors
         );
     };
@@ -100,11 +108,29 @@ struct ColorScheme {
     };
 };
 
+struct PaddingConfig {
+    int left   = 0;
+    int top    = 6;  // room for progress bar
+    int right  = 0;
+    int bottom = 0;
+
+    struct glaze {
+        using T = PaddingConfig;
+        static constexpr auto value = glz::object(
+            "left",   &T::left,
+            "top",    &T::top,
+            "right",  &T::right,
+            "bottom", &T::bottom
+        );
+    };
+};
+
 struct Config {
     std::string font;
     float font_size = 16.0f;
     float bold_strength = 0.04f;
     int scrollback_lines = -1; // -1 = infinite
+    PaddingConfig padding;
     ColorScheme colors;
     TabBarConfig tab_bar;
     std::vector<BindingConfig> keybindings;
@@ -122,6 +148,7 @@ struct Config {
             "font_size", &T::font_size,
             "bold_strength", &T::bold_strength,
             "scrollback_lines", &T::scrollback_lines,
+            "padding", &T::padding,
             "colors", &T::colors,
             "tab_bar", &T::tab_bar,
             "keybinding", &T::keybindings,

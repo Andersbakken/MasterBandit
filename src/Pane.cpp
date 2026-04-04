@@ -20,11 +20,13 @@ TerminalEmulator* Pane::activeTerm()
     return terminal_.get();
 }
 
-void Pane::resizeToRect(float charW, float lineH)
+void Pane::resizeToRect(float charW, float lineH, float padL, float padT, float padR, float padB)
 {
     if (mRect.isEmpty()) return;
-    int cols = std::max(1, static_cast<int>(mRect.w / charW));
-    int rows = std::max(1, static_cast<int>(mRect.h / lineH));
+    float usableW = std::max(0.0f, static_cast<float>(mRect.w) - padL - padR);
+    float usableH = std::max(0.0f, static_cast<float>(mRect.h) - padT - padB);
+    int cols = std::max(1, static_cast<int>(usableW / charW));
+    int rows = std::max(1, static_cast<int>(usableH / lineH));
     if (terminal_) terminal_->resize(cols, rows);
 }
 

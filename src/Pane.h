@@ -55,7 +55,7 @@ public:
     const PaneRect& rect() const { return mRect; }
 
     // Resize the contained terminal to fit current rect given font metrics
-    void resizeToRect(float charW, float lineH);
+    void resizeToRect(float charW, float lineH, float padL = 0, float padT = 0, float padR = 0, float padB = 0);
 
     // Set by PlatformDawn; called when a popup emulator fires an event (triggers redraw)
     std::function<void()> onPopupEvent;

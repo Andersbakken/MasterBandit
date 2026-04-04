@@ -97,6 +97,20 @@ public:
                      uint32_t fbWidth, uint32_t fbHeight,
                      const wgpu::Buffer& vb);
 
+    // Progress bar rendering
+    struct ProgressBarParams {
+        float x, y, w, h;     // bar rect in pixels
+        float fillFrac;        // 0-1 fill fraction
+        float edgeSoftness;    // gradient edge width in pixels
+        float r, g, b, a;     // color
+        float softLeft;        // 1.0 = gradient, 0.0 = sharp edge
+        float softRight;       // 1.0 = gradient, 0.0 = sharp edge
+    };
+    void initProgressPipeline(wgpu::Device& device, const std::string& shaderDir);
+    void drawProgressBar(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                         wgpu::Texture target, uint32_t fbW, uint32_t fbH,
+                         const ProgressBarParams& params);
+
     // Image rendering
     struct ImageGPU {
         wgpu::Texture texture;
@@ -140,6 +154,14 @@ private:
     // Persistent divider bind group — uses swapchain viewport, updated on resize
     wgpu::Buffer dividerUniformBuffer_;
     wgpu::BindGroup dividerBindGroup_;
+
+    // Progress bar pipeline
+    wgpu::ShaderModule progressShader_;
+    wgpu::RenderPipeline progressPipeline_;
+    wgpu::BindGroupLayout progressBindGroupLayout_;
+    wgpu::Buffer progressUniformBuffer_;
+    wgpu::BindGroup progressBindGroup_;
+    bool progressPipelineReady_ = false;
 
     // Compute pipeline
     wgpu::ComputePipeline computePipeline_;

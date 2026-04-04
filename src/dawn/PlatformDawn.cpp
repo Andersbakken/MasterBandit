@@ -373,6 +373,8 @@ private:
         bool dirty = true;
         std::vector<PooledTexture*> pendingRelease;
         wgpu::Buffer dividerVB; // null = no divider for this pane
+        int lastViewportOffset = 0;
+        int lastHistorySize = 0;
     };
     std::unordered_map<int, PaneRenderState> paneRenderStates_;
 
@@ -1477,13 +1479,26 @@ void PlatformDawn::renderFrame()
             if (rs.resolvedCells.size() != needed)
                 rs.resolvedCells.resize(needed);
 
-            if (term->viewportOffset() != 0) {
-                for (int row = 0; row < g.rows(); ++row)
-                    resolveRow(paneId, row, font, scale);
-            } else {
-                for (int row = 0; row < g.rows(); ++row) {
-                    if (g.isRowDirty(row) || (cursorMoved && row == curY))
+            {
+                int vo = term->viewportOffset();
+                int histSize = term->document().historySize();
+                // Detect whether the viewport content shifted since last frame:
+                // viewport offset changed, or new output grew the history while scrolled.
+                bool viewportShifted = (vo != rs.lastViewportOffset ||
+                                        (vo != 0 && histSize != rs.lastHistorySize));
+                rs.lastViewportOffset = vo;
+                rs.lastHistorySize = histSize;
+
+                if (viewportShifted) {
+                    // Content shifted — must re-resolve all rows
+                    for (int row = 0; row < g.rows(); ++row)
                         resolveRow(paneId, row, font, scale);
+                } else {
+                    // Stable viewport — only resolve dirty rows
+                    for (int row = 0; row < g.rows(); ++row) {
+                        if (g.isRowDirty(row) || (cursorMoved && row == curY))
+                            resolveRow(paneId, row, font, scale);
+                    }
                 }
             }
             const_cast<IGrid&>(g).clearAllDirty();

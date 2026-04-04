@@ -5,7 +5,7 @@
 - [ ] Mode 2031 — Color preference notification (light/dark mode). Send `CSI ? 997 ; 1/2 n` on macOS appearance change. Apps query via `CSI ? 996 n`.
 - [ ] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, virtual placement, z-layering, animation.
 - [ ] DECSCUSR (`CSI Ps SP q`) — Set cursor style: block, underline, bar, blinking variants. Currently silently ignored.
-- [ ] OSC 7 — Current working directory reporting. Shell sends CWD for new tab/split support.
+- [ ] OSC 7 — Current working directory reporting. Shell sends CWD; new tabs/pane splits should open in the current pane's last-reported directory instead of home.
 - [ ] OSC 8 — Hyperlinks. `OSC 8 ; params ; url ST`. Clickable links from ls, gcc, grep, cargo, gh, etc.
 - [ ] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Apps query to detect light vs dark theme.
 - [ ] OSC 22 — Set mouse cursor shape (pointer, text, etc.)
@@ -44,6 +44,7 @@
 - [x] Action/binding system — `Action::Any` variant, sequence-based key bindings (Kitty-style `key1 > key2`), TOML config via `[[keybinding]]`. Default bindings for all tab and pane operations.
 - [x] SGR inverse (reverse video) — correctly swaps fg/bg in cell resolution; fixes TUI app cursors (Claude Code, htop, vim selection, etc.).
 - [x] `$COLORTERM=truecolor` — set in PTY environment so apps detect 24-bit color support.
+- [ ] Platform-appropriate default bindings — current defaults are inconsistent (Ctrl+Shift+T for new tab but Meta+C/V for copy/paste). macOS convention: Cmd+T new tab, Cmd+W close, Cmd+C/V copy/paste, Cmd+N new window. Linux convention: Ctrl+Shift+T new tab, Ctrl+Shift+W close, Ctrl+Shift+C/V copy/paste. Should either detect platform at runtime and apply appropriate defaults, or document clearly that defaults need to be configured.
 
 ## Configuration
 

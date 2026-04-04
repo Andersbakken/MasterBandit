@@ -825,6 +825,14 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();
 
+    // Set initial title from shell name
+    {
+        std::string shellName = options.shell;
+        auto slash = shellName.rfind('/');
+        if (slash != std::string::npos) shellName = shellName.substr(slash + 1);
+        pane->setTitle(shellName);
+    }
+
     pane->setTerminal(std::move(terminal));  // Pane owns the Terminal now
 
     if (loop_) {
@@ -833,8 +841,10 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
     // Build and store tab
     auto tab = std::make_unique<Tab>(std::move(layout));
+    tab->setTitle(pane->title());
     activeTabIdx_ = static_cast<int>(tabs_.size());
     tabs_.push_back(std::move(tab));
+    glfwSetWindowTitle(glfwWindow_, pane->title().c_str());
 
     // Store options for future createTab() calls
     if (tabs_.size() == 1) {
@@ -1008,13 +1018,23 @@ void PlatformDawn::createTab()
         ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
     }
 
+    // Set initial title from shell name
+    {
+        std::string shellName = terminalOptions_.shell;
+        auto slash = shellName.rfind('/');
+        if (slash != std::string::npos) shellName = shellName.substr(slash + 1);
+        pane->setTitle(shellName);
+    }
+
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();
     pane->setTerminal(std::move(terminal));
     addPtyPoll(masterFD, termPtr);
 
     activeTabIdx_ = tabIdx;
-    tabs_.push_back(std::make_unique<Tab>(std::move(layout)));
+    auto tab = std::make_unique<Tab>(std::move(layout));
+    tab->setTitle(pane->title());
+    tabs_.push_back(std::move(tab));
 
     tabBarDirty_ = true;
     needsRedraw_ = true;
@@ -1994,6 +2014,14 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
         ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
     }
 
+    // Set initial title from shell name
+    {
+        std::string shellName = terminalOptions_.shell;
+        auto slash = shellName.rfind('/');
+        if (slash != std::string::npos) shellName = shellName.substr(slash + 1);
+        pane->setTitle(shellName);
+    }
+
     int masterFD = terminal->masterFD();
     Terminal* termPtr = terminal.get();
     pane->setTerminal(std::move(terminal));
@@ -2675,66 +2703,122 @@ void PlatformDawn::renderTabBar()
         return cp32ToUtf8(kAnimGlyphs[idx]);
     };
 
+    // Helper: count UTF-8 codepoints in a string
+    auto cpLen = [](const std::string& s) -> int {
+        int w = 0;
+        const char* p = s.c_str();
+        while (*p) {
+            uint8_t b = static_cast<uint8_t>(*p);
+            if (b < 0x80) p++; else if ((b & 0xE0) == 0xC0) p += 2;
+            else if ((b & 0xF0) == 0xE0) p += 3; else p += 4;
+            w++;
+        }
+        return w;
+    };
+
+    // Helper: truncate UTF-8 string to maxCp codepoints, append ellipsis if truncated
+    auto truncUtf8 = [](const std::string& s, int maxCp) -> std::string {
+        if (maxCp <= 0) return {};
+        int cp = 0;
+        const char* p = s.c_str();
+        while (*p && cp < maxCp) {
+            uint8_t b = static_cast<uint8_t>(*p);
+            if (b < 0x80) p++; else if ((b & 0xE0) == 0xC0) p += 2;
+            else if ((b & 0xF0) == 0xE0) p += 3; else p += 4;
+            cp++;
+        }
+        if (*p) return std::string(s.c_str(), p) + "\xe2\x80\xa6";
+        return s;
+    };
+
     struct TabInfo {
-        std::string text;
+        std::string prefix;  // " [N] " or " icon [N] "
+        std::string title;   // full title
+        std::string text;    // final rendered text (prefix + truncated title + " ")
         int width;
         bool isActive;
         uint32_t bgColor, fgColor;
     };
+
+    // Build tab info with full titles
     std::vector<TabInfo> tabInfos;
     for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
         Tab* tab = tabs_[i].get();
         bool isActive = (i == activeTabIdx_);
-        std::string text = " ";
-        std::string pg = progressGlyph(tab);
-        if (!pg.empty()) { text += pg; text += " "; }
-        if (!tab->icon().empty()) { text += tab->icon(); text += " "; }
-        text += "[";
-        text += std::to_string(i + 1);
-        text += "] ";
-        if (!tab->title().empty()) {
-            const std::string& title = tab->title();
-            int maxLen = tabBarConfig_.max_title_length;
-            if (maxLen > 0) {
-                // Truncate to maxLen codepoints, append ellipsis if truncated
-                int cpCount = 0;
-                const char* p = title.c_str();
-                const char* truncEnd = p;
-                while (*p && cpCount < maxLen) {
-                    uint8_t b = static_cast<uint8_t>(*p);
-                    if (b < 0x80) p++;
-                    else if ((b & 0xE0) == 0xC0) p += 2;
-                    else if ((b & 0xF0) == 0xE0) p += 3;
-                    else p += 4;
-                    cpCount++;
-                    truncEnd = p;
-                }
-                if (*truncEnd) {
-                    // Title was truncated
-                    text.append(title.c_str(), static_cast<size_t>(truncEnd - title.c_str()));
-                    text += "\xe2\x80\xa6"; // U+2026 HORIZONTAL ELLIPSIS
-                } else {
-                    text += title;
-                }
-            } else {
-                text += title;
-            }
-        }
-        text += " ";
+        TabInfo ti;
+        ti.isActive = isActive;
+        ti.bgColor = isActive ? tbActiveBgColor_ : tbInactiveBgColor_;
+        ti.fgColor = isActive ? tbActiveFgColor_ : tbInactiveFgColor_;
 
-        // Count UTF-8 codepoints
-        int w = 0;
-        const char* p = text.c_str();
-        while (*p) {
-            uint8_t b = static_cast<uint8_t>(*p);
-            if (b < 0x80) { w++; p++; }
-            else if ((b & 0xE0) == 0xC0) { w++; p += 2; }
-            else if ((b & 0xF0) == 0xE0) { w++; p += 3; }
-            else { w++; p += 4; }
+        ti.prefix = " ";
+        std::string pg = progressGlyph(tab);
+        if (!pg.empty()) { ti.prefix += pg; ti.prefix += " "; }
+        if (!tab->icon().empty()) { ti.prefix += tab->icon(); ti.prefix += " "; }
+        ti.prefix += "[";
+        ti.prefix += std::to_string(i + 1);
+        ti.prefix += "] ";
+        ti.title = tab->title();
+        tabInfos.push_back(std::move(ti));
+    }
+
+    int numTabs = static_cast<int>(tabInfos.size());
+    int sepWidth = 1; // powerline separator per tab
+    int availCols = cols;
+
+    // Determine max title length that fits all tabs
+    // Start with configured max, shrink until everything fits or titles are gone
+    int maxTitleLen = tabBarConfig_.max_title_length > 0 ? tabBarConfig_.max_title_length : 9999;
+    for (;;) {
+        int total = 0;
+        for (auto& ti : tabInfos) {
+            std::string truncTitle = truncUtf8(ti.title, maxTitleLen);
+            ti.text = ti.prefix + truncTitle + (truncTitle.empty() ? "" : " ");
+            if (ti.text.back() != ' ') ti.text += " ";
+            ti.width = cpLen(ti.text);
+            total += ti.width + sepWidth;
         }
-        tabInfos.push_back({text, w, isActive,
-            isActive ? tbActiveBgColor_ : tbInactiveBgColor_,
-            isActive ? tbActiveFgColor_ : tbInactiveFgColor_});
+        if (total <= availCols || maxTitleLen <= 0) break;
+        maxTitleLen--;
+    }
+
+    // Check if we still overflow at minimum (no title text at all)
+    int totalWidth = 0;
+    for (auto& ti : tabInfos) totalWidth += ti.width + sepWidth;
+
+    // Determine visible tab range if overflow
+    int visStart = 0, visEnd = numTabs;
+    bool overflowLeft = false, overflowRight = false;
+    if (totalWidth > availCols && numTabs > 1) {
+        // Start from active tab, expand outward until we fill
+        visStart = activeTabIdx_;
+        visEnd = activeTabIdx_ + 1;
+        int used = tabInfos[activeTabIdx_].width + sepWidth;
+        int indicatorWidth = 2; // "< " or " >" indicator
+
+        while (visStart > 0 || visEnd < numTabs) {
+            bool expanded = false;
+            // Try expanding right
+            if (visEnd < numTabs) {
+                int need = tabInfos[visEnd].width + sepWidth + (visEnd + 1 < numTabs ? indicatorWidth : 0);
+                if (used + need + (visStart > 0 ? indicatorWidth : 0) <= availCols) {
+                    used += tabInfos[visEnd].width + sepWidth;
+                    visEnd++;
+                    expanded = true;
+                }
+            }
+            // Try expanding left
+            if (visStart > 0) {
+                int need = tabInfos[visStart - 1].width + sepWidth + (visStart - 1 > 0 ? indicatorWidth : 0);
+                if (used + need + (visEnd < numTabs ? indicatorWidth : 0) <= availCols) {
+                    visStart--;
+                    used += tabInfos[visStart].width + sepWidth;
+                    expanded = true;
+                }
+            }
+            if (!expanded) break;
+        }
+        overflowLeft = (visStart > 0);
+        overflowRight = (visEnd < numTabs);
     }
 
     FontData* font = const_cast<FontData*>(textSystem_.getFont(tabBarFontName_));
@@ -2774,7 +2858,14 @@ void PlatformDawn::renderTabBar()
     };
 
     int col = 0;
-    for (int i = 0; i < static_cast<int>(tabInfos.size()); ++i) {
+
+    // Left overflow indicator
+    if (overflowLeft) {
+        placeChar(col, "\xe2\x97\x80", tbInactiveFgColor_, tbBgColor_); // U+25C0 ◀
+        placeChar(col, " ", tbInactiveFgColor_, tbBgColor_);
+    }
+
+    for (int i = visStart; i < visEnd; ++i) {
         auto& ti = tabInfos[i];
         const char* p = ti.text.c_str();
         while (*p && col < cols) {
@@ -2788,9 +2879,15 @@ void PlatformDawn::renderTabBar()
             p += len;
         }
         // Powerline separator
-        uint32_t nextBg = (i + 1 < static_cast<int>(tabInfos.size()))
+        uint32_t nextBg = (i + 1 < visEnd)
             ? tabInfos[i + 1].bgColor : tbBgColor_;
         placeChar(col, SEP_RIGHT, ti.bgColor, nextBg, true);
+    }
+
+    // Right overflow indicator
+    if (overflowRight && col + 2 <= cols) {
+        placeChar(col, " ", tbInactiveFgColor_, tbBgColor_);
+        placeChar(col, "\xe2\x96\xb6", tbInactiveFgColor_, tbBgColor_); // U+25B6 ▶
     }
 
     for (; col < cols; col++) {

@@ -765,6 +765,14 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(VisibleBell), nullptr);
                 resetToNormal();
                 break;
+            case '(':  // G0 charset designation — ESC ( X
+            case ')':  // G1 charset designation — ESC ) X
+                // Need one more byte (the charset designator). If we have it, consume and ignore.
+                if (mEscapeIndex >= 2) {
+                    resetToNormal();
+                }
+                // Otherwise wait for the next byte.
+                break;
             case DECKPAM:
                 mKeypadMode = true;
                 resetToNormal();

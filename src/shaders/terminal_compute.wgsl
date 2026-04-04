@@ -11,6 +11,10 @@ struct TerminalParams {
     font_size: f32,     // font size in pixels
     pane_origin_x: f32, // pixel X offset of pane within window
     pane_origin_y: f32, // pixel Y offset of pane within window
+    cursor_col: u32,
+    cursor_row: u32,
+    cursor_type: u32,   // 0=none 1=solid 2=hollow
+    cursor_color: u32,  // packed RGBA8
 };
 
 struct ResolvedCellGPU {
@@ -90,6 +94,62 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         rect_verts[base_idx + 3u] = RectVertexStorage(x1, y0, r, g, b, a);
         rect_verts[base_idx + 4u] = RectVertexStorage(x1, y1, r, g, b, a);
         rect_verts[base_idx + 5u] = RectVertexStorage(x0, y1, r, g, b, a);
+    }
+
+    // Cursor
+    if (col == params.cursor_col && row == params.cursor_row && params.cursor_type != 0u) {
+        let cr = f32(params.cursor_color & 0xFFu) / 255.0;
+        let cg = f32((params.cursor_color >> 8u) & 0xFFu) / 255.0;
+        let cb = f32((params.cursor_color >> 16u) & 0xFFu) / 255.0;
+        let ca = f32((params.cursor_color >> 24u) & 0xFFu) / 255.0;
+
+        let x0 = base_x;
+        let y0 = base_y;
+        let x1 = base_x + params.cell_width;
+        let y1 = base_y + params.cell_height;
+
+        if (params.cursor_type == 1u) {
+            // Solid cursor: one filled rect
+            let base_idx = atomicAdd(&counters[4], 6u);
+            rect_verts[base_idx + 0u] = RectVertexStorage(x0, y0, cr, cg, cb, ca);
+            rect_verts[base_idx + 1u] = RectVertexStorage(x1, y0, cr, cg, cb, ca);
+            rect_verts[base_idx + 2u] = RectVertexStorage(x0, y1, cr, cg, cb, ca);
+            rect_verts[base_idx + 3u] = RectVertexStorage(x1, y0, cr, cg, cb, ca);
+            rect_verts[base_idx + 4u] = RectVertexStorage(x1, y1, cr, cg, cb, ca);
+            rect_verts[base_idx + 5u] = RectVertexStorage(x0, y1, cr, cg, cb, ca);
+        } else {
+            // Hollow cursor: 4 thin border rects
+            let t = 1.5; // border thickness in pixels
+            let base_idx = atomicAdd(&counters[4], 24u);
+            // Top
+            rect_verts[base_idx +  0u] = RectVertexStorage(x0,   y0,   cr, cg, cb, ca);
+            rect_verts[base_idx +  1u] = RectVertexStorage(x1,   y0,   cr, cg, cb, ca);
+            rect_verts[base_idx +  2u] = RectVertexStorage(x0,   y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx +  3u] = RectVertexStorage(x1,   y0,   cr, cg, cb, ca);
+            rect_verts[base_idx +  4u] = RectVertexStorage(x1,   y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx +  5u] = RectVertexStorage(x0,   y0+t, cr, cg, cb, ca);
+            // Bottom
+            rect_verts[base_idx +  6u] = RectVertexStorage(x0,   y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx +  7u] = RectVertexStorage(x1,   y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx +  8u] = RectVertexStorage(x0,   y1,   cr, cg, cb, ca);
+            rect_verts[base_idx +  9u] = RectVertexStorage(x1,   y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 10u] = RectVertexStorage(x1,   y1,   cr, cg, cb, ca);
+            rect_verts[base_idx + 11u] = RectVertexStorage(x0,   y1,   cr, cg, cb, ca);
+            // Left
+            rect_verts[base_idx + 12u] = RectVertexStorage(x0,   y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx + 13u] = RectVertexStorage(x0+t, y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx + 14u] = RectVertexStorage(x0,   y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 15u] = RectVertexStorage(x0+t, y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx + 16u] = RectVertexStorage(x0+t, y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 17u] = RectVertexStorage(x0,   y1-t, cr, cg, cb, ca);
+            // Right
+            rect_verts[base_idx + 18u] = RectVertexStorage(x1-t, y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx + 19u] = RectVertexStorage(x1,   y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx + 20u] = RectVertexStorage(x1-t, y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 21u] = RectVertexStorage(x1,   y0+t, cr, cg, cb, ca);
+            rect_verts[base_idx + 22u] = RectVertexStorage(x1,   y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 23u] = RectVertexStorage(x1-t, y1-t, cr, cg, cb, ca);
+        }
     }
 
     // Text glyph quad

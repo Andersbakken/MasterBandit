@@ -14,20 +14,25 @@ struct ResolvedCell {
 };
 static_assert(sizeof(ResolvedCell) == 32);
 
-// Compute shader uniform params (40 bytes)
+// Compute shader uniform params (56 bytes)
 struct TerminalComputeParams {
     uint32_t cols;
     uint32_t rows;
-    float cell_width;
-    float cell_height;
-    float viewport_w;
-    float viewport_h;
-    float font_ascender;
-    float font_size;
-    float pane_origin_x;
-    float pane_origin_y;
+    float    cell_width;
+    float    cell_height;
+    float    viewport_w;
+    float    viewport_h;
+    float    font_ascender;
+    float    font_size;
+    float    pane_origin_x;
+    float    pane_origin_y;
+    // Cursor (0=none, 1=solid, 2=hollow)
+    uint32_t cursor_col;
+    uint32_t cursor_row;
+    uint32_t cursor_type;
+    uint32_t cursor_color; // packed RGBA8
 };
-static_assert(sizeof(TerminalComputeParams) == 40);
+static_assert(sizeof(TerminalComputeParams) == 56);
 
 // One set of compute buffers + bind group for a single render call
 struct ComputeState {

@@ -109,12 +109,14 @@ std::optional<Action::Any> parseAction(const std::string& name,
     }
     if (name == "split_pane") {
         if (args.empty()) {
-            spdlog::warn("Bindings: split_pane requires an arg (\"horizontal\" or \"vertical\")");
+            spdlog::warn("Bindings: split_pane requires a direction arg (\"right\", \"down\", \"left\", \"up\")");
             return std::nullopt;
         }
         std::string d = toLower(args[0]);
-        if (d == "horizontal") return Action::SplitPane{Action::SplitDir::Horizontal};
-        if (d == "vertical")   return Action::SplitPane{Action::SplitDir::Vertical};
+        if (d == "right") return Action::SplitPane{Action::Direction::Right};
+        if (d == "down")  return Action::SplitPane{Action::Direction::Down};
+        if (d == "left")  return Action::SplitPane{Action::Direction::Left};
+        if (d == "up")    return Action::SplitPane{Action::Direction::Up};
         spdlog::warn("Bindings: unknown split_pane direction '{}'", args[0]);
         return std::nullopt;
     }
@@ -123,7 +125,7 @@ std::optional<Action::Any> parseAction(const std::string& name,
 
     if (name == "focus_pane") {
         if (args.empty()) {
-            spdlog::warn("Bindings: focus_pane requires an arg (\"left\", \"right\", \"up\", \"down\")");
+            spdlog::warn("Bindings: focus_pane requires a direction arg");
             return std::nullopt;
         }
         std::string d = toLower(args[0]);
@@ -131,7 +133,24 @@ std::optional<Action::Any> parseAction(const std::string& name,
         if (d == "right") return Action::FocusPane{Action::Direction::Right};
         if (d == "up")    return Action::FocusPane{Action::Direction::Up};
         if (d == "down")  return Action::FocusPane{Action::Direction::Down};
+        if (d == "next")  return Action::FocusPane{Action::Direction::Next};
+        if (d == "prev")  return Action::FocusPane{Action::Direction::Prev};
         spdlog::warn("Bindings: unknown focus_pane direction '{}'", args[0]);
+        return std::nullopt;
+    }
+    if (name == "adjust_pane_size") {
+        if (args.size() < 2) {
+            spdlog::warn("Bindings: adjust_pane_size requires direction and amount args");
+            return std::nullopt;
+        }
+        std::string d = toLower(args[0]);
+        int amount = 1;
+        try { amount = std::stoi(args[1]); } catch (...) {}
+        if (d == "left")  return Action::AdjustPaneSize{Action::Direction::Left,  amount};
+        if (d == "right") return Action::AdjustPaneSize{Action::Direction::Right, amount};
+        if (d == "up")    return Action::AdjustPaneSize{Action::Direction::Up,    amount};
+        if (d == "down")  return Action::AdjustPaneSize{Action::Direction::Down,  amount};
+        spdlog::warn("Bindings: unknown adjust_pane_size direction '{}'", args[0]);
         return std::nullopt;
     }
 
@@ -182,9 +201,24 @@ std::vector<Binding> parseBindings(const std::vector<BindingConfig>& configs)
 std::vector<Binding> defaultBindings()
 {
     return {
-        { { *parseKeyStroke("ctrl+shift+t") }, Action::NewTab{} },
-        { { *parseKeyStroke("meta+c") },        Action::Copy{}  },
-        { { *parseKeyStroke("meta+v") },        Action::Paste{} },
+        // Tab management
+        { { *parseKeyStroke("ctrl+shift+t") },     Action::NewTab{} },
+        { { *parseKeyStroke("meta+c") },            Action::Copy{}   },
+        { { *parseKeyStroke("meta+v") },            Action::Paste{}  },
+        // Pane splits
+        { { *parseKeyStroke("ctrl+shift+e") },     Action::SplitPane{Action::Direction::Right} },
+        { { *parseKeyStroke("ctrl+shift+o") },     Action::SplitPane{Action::Direction::Down}  },
+        // Pane management
+        { { *parseKeyStroke("ctrl+shift+w") },     Action::ClosePane{} },
+        { { *parseKeyStroke("ctrl+shift+z") },     Action::ZoomPane{}  },
+        // Pane focus — spatial
+        { { *parseKeyStroke("ctrl+shift+left") },  Action::FocusPane{Action::Direction::Left}  },
+        { { *parseKeyStroke("ctrl+shift+right") }, Action::FocusPane{Action::Direction::Right} },
+        { { *parseKeyStroke("ctrl+shift+up") },    Action::FocusPane{Action::Direction::Up}    },
+        { { *parseKeyStroke("ctrl+shift+down") },  Action::FocusPane{Action::Direction::Down}  },
+        // Pane focus — cyclic
+        { { *parseKeyStroke("ctrl+shift+n") },     Action::FocusPane{Action::Direction::Next} },
+        { { *parseKeyStroke("ctrl+shift+p") },     Action::FocusPane{Action::Direction::Prev} },
     };
 }
 

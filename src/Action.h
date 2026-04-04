@@ -7,17 +7,21 @@ struct overloaded : Ts... { using Ts::operator()...; };
 
 namespace Action {
 
-enum class Direction { Left, Right, Up, Down };
-enum class SplitDir  { Horizontal, Vertical };
+// Spatial directions + cyclic navigation
+enum class Direction { Left, Right, Up, Down, Next, Prev };
 
 struct NewTab             {};
 struct CloseTab           {};
 struct ActivateTabRelative { int delta; };
 struct ActivateTab         { int index; };
-struct SplitPane           { SplitDir dir; };
+// dir = where the new pane appears (Right/Down/Left/Up)
+struct SplitPane           { Direction dir; };
 struct ClosePane           {};
 struct ZoomPane            {};
+// Spatial (Left/Right/Up/Down) or cyclic (Next/Prev)
 struct FocusPane           { Direction dir; };
+// Resize: grow current pane toward dir by `amount` cells
+struct AdjustPaneSize      { Direction dir; int amount; };
 struct Copy                {};
 struct Paste               {};
 struct ScrollUp            { int lines = 3; };
@@ -29,7 +33,7 @@ struct PopOverlay          {};
 
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
-    SplitPane, ClosePane, ZoomPane, FocusPane,
+    SplitPane, ClosePane, ZoomPane, FocusPane, AdjustPaneSize,
     Copy, Paste,
     ScrollUp, ScrollDown, ScrollToTop, ScrollToBottom,
     PushOverlay, PopOverlay

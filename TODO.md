@@ -16,11 +16,14 @@
 
 ## Multi-Tab / Multi-Pane
 
-- [ ] Pane splits — keyboard shortcuts to split current pane horizontally/vertically.
-- [ ] Pane focus navigation — keyboard shortcuts to move focus between panes.
-- [ ] Pane resize — drag split dividers or keyboard shortcuts to adjust split ratio.
-- [ ] Pane close — keyboard shortcut to close focused pane (currently only tabs are closeable via middle-click).
-- [ ] Zoom — keyboard shortcut to zoom focused pane to fill the window (Layout::zoomPane is implemented, needs keybinding).
+- [x] Pane splits — keyboard shortcuts to split current pane horizontally/vertically.
+- [x] Pane focus navigation — keyboard shortcuts to move focus between panes.
+- [x] Pane resize — keyboard shortcuts to adjust split ratio (Ctrl+Shift+E/O split, AdjustPaneSize action; drag dividers still TODO).
+- [x] Pane close — keyboard shortcut to close focused pane.
+- [x] Zoom — keyboard shortcut to zoom focused pane to fill the window.
+- [ ] Pane resize — drag split dividers with mouse (needs mouse binding system first).
+- [ ] Pane swap/rotate — swap focused pane with another, rotate panes clockwise/counterclockwise.
+- [ ] Move pane to new tab or new window.
 - [ ] Full-screen overlays — Tab::pushOverlay / popOverlay are implemented; need a way to trigger (e.g. Cmd+Shift+Enter kitty-style).
 - [ ] Popup panes (OSC 999) — Pane::handleOSCMB and TerminalEmulator dispatch are implemented; needs end-to-end testing.
 - [ ] Tab bar: tab title from OSC 0/2 is wired but tab titles display as empty until shell sets them.

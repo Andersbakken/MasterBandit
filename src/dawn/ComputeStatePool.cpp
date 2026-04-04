@@ -83,8 +83,9 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
         state->computeTextVertBuffer = device.CreateBuffer(&desc);
     }
     {
+        // Extra 24 verts to accommodate a hollow cursor (4 thin rects = 24 verts)
         wgpu::BufferDescriptor desc = {};
-        desc.size  = static_cast<uint64_t>(cells) * 6 * 24;
+        desc.size  = (static_cast<uint64_t>(cells) * 6 + 24) * 24;
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
         state->computeRectVertBuffer = device.CreateBuffer(&desc);
     }
@@ -113,7 +114,7 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
     bgEntries[2].size    = static_cast<uint64_t>(cells) * 6 * 36;
     bgEntries[3].binding = 3;
     bgEntries[3].buffer  = state->computeRectVertBuffer;
-    bgEntries[3].size    = static_cast<uint64_t>(cells) * 6 * 24;
+    bgEntries[3].size    = (static_cast<uint64_t>(cells) * 6 + 24) * 24;
     bgEntries[4].binding = 4;
     bgEntries[4].buffer  = state->indirectBuffer;
     bgEntries[4].size    = 32;
@@ -125,7 +126,7 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
     state->bindGroup  = device.CreateBindGroup(&bgDesc);
 
     state->maxCells  = cells;
-    state->sizeBytes = static_cast<size_t>(cells) * (32 + 6*36 + 6*24) + 32 + 256;
+    state->sizeBytes = static_cast<size_t>(cells) * (32 + 6*36 + 6*24) + 24*24 + 32 + 256;
 
     spdlog::debug("ComputeStatePool: allocated {} cells ({:.1f} KB)", cells, state->sizeBytes / 1024.0);
 

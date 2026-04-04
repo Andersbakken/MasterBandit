@@ -26,8 +26,9 @@ public:
     // Create the initial pane (must be called once before use)
     Pane* createPane();
 
-    // Split the pane containing paneId along dir; returns the new pane's id
-    int splitPane(int paneId, LayoutNode::Dir dir, float ratio = 0.5f);
+    // Split the pane containing paneId along dir; returns the new pane's id.
+    // newIsFirst=true places the new pane as the first (left/top) child.
+    int splitPane(int paneId, LayoutNode::Dir dir, float ratio = 0.5f, bool newIsFirst = false);
 
     // Remove a pane; its sibling collapses up to fill the parent split
     void removePane(int paneId);
@@ -59,6 +60,12 @@ public:
 
     // Return pane id at pixel (px, py), or -1
     int paneAtPixel(int px, int py) const;
+
+    // Grow the pane by deltaPixels toward the given split axis.
+    // Finds the nearest containing split of type splitDir and adjusts its ratio
+    // so the current pane grows (positive delta) or shrinks (negative delta).
+    // Returns false if no relevant split was found.
+    bool growPane(int paneId, LayoutNode::Dir splitDir, int deltaPixels);
 
     const LayoutNode* root() const { return mRoot.get(); }
 

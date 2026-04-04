@@ -1,6 +1,7 @@
 #include "Layout.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <optional>
 
 Layout::Layout() = default;
 
@@ -24,7 +25,7 @@ Pane* Layout::createPane()
     return ptr;
 }
 
-int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio)
+int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFirst)
 {
     LayoutNode* leaf = findLeafForPane(paneId, mRoot.get());
     if (!leaf) {
@@ -36,13 +37,6 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio)
     auto newPane = std::make_unique<Pane>(newId);
     mPanes.push_back(std::move(newPane));
 
-    // Replace the leaf with a split node
-    // The existing pane becomes `first`, the new pane becomes `second`
-    auto split = std::make_unique<LayoutNode>();
-    split->isLeaf = false;
-    split->dir = dir;
-    split->ratio = ratio;
-
     auto existingLeaf = std::make_unique<LayoutNode>();
     existingLeaf->isLeaf = true;
     existingLeaf->paneId = paneId;
@@ -51,16 +45,18 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio)
     newLeaf->isLeaf = true;
     newLeaf->paneId = newId;
 
-    split->first = std::move(existingLeaf);
-    split->second = std::move(newLeaf);
-
-    // Swap the leaf's content with the new split node in-place
+    // Replace the leaf in-place with a split node.
     leaf->isLeaf = false;
     leaf->paneId = -1;
-    leaf->dir = dir;
-    leaf->ratio = ratio;
-    leaf->first = std::move(split->first);
-    leaf->second = std::move(split->second);
+    leaf->dir    = dir;
+    leaf->ratio  = newIsFirst ? (1.0f - ratio) : ratio;
+    if (newIsFirst) {
+        leaf->first  = std::move(newLeaf);
+        leaf->second = std::move(existingLeaf);
+    } else {
+        leaf->first  = std::move(existingLeaf);
+        leaf->second = std::move(newLeaf);
+    }
 
     return newId;
 }
@@ -213,6 +209,61 @@ LayoutNode* Layout::findLeafForPane(int paneId, LayoutNode* node)
     if (node->isLeaf) return node->paneId == paneId ? node : nullptr;
     if (auto* found = findLeafForPane(paneId, node->first.get())) return found;
     return findLeafForPane(paneId, node->second.get());
+}
+
+static bool subtreeContains(int paneId, const LayoutNode* node)
+{
+    if (!node) return false;
+    if (node->isLeaf) return node->paneId == paneId;
+    return subtreeContains(paneId, node->first.get()) ||
+           subtreeContains(paneId, node->second.get());
+}
+
+struct SplitFind { LayoutNode* node; bool inFirst; };
+
+static std::optional<SplitFind> findSplitContaining(
+    int paneId, LayoutNode::Dir dir, LayoutNode* node)
+{
+    if (!node || node->isLeaf) return std::nullopt;
+
+    bool firstHas  = subtreeContains(paneId, node->first.get());
+    bool secondHas = subtreeContains(paneId, node->second.get());
+
+    if (node->dir == dir) {
+        if (firstHas) {
+            // Prefer a closer split inside first subtree
+            auto inner = findSplitContaining(paneId, dir, node->first.get());
+            return inner ? inner : SplitFind{node, true};
+        }
+        if (secondHas) {
+            auto inner = findSplitContaining(paneId, dir, node->second.get());
+            return inner ? inner : SplitFind{node, false};
+        }
+    } else {
+        if (firstHas)  return findSplitContaining(paneId, dir, node->first.get());
+        if (secondHas) return findSplitContaining(paneId, dir, node->second.get());
+    }
+    return std::nullopt;
+}
+
+bool Layout::growPane(int paneId, LayoutNode::Dir splitDir, int deltaPixels)
+{
+    auto result = findSplitContaining(paneId, splitDir, mRoot.get());
+    if (!result) return false;
+
+    LayoutNode* splitNode = result->node;
+    float totalDim = (splitDir == LayoutNode::Dir::Horizontal)
+                     ? static_cast<float>(splitNode->rect.w)
+                     : static_cast<float>(splitNode->rect.h);
+    if (totalDim <= 0.0f) return false;
+
+    float deltaRatio = static_cast<float>(deltaPixels) / totalDim;
+    // If pane is in first (left/top) child: growing it increases ratio.
+    // If pane is in second (right/bottom) child: growing it decreases ratio.
+    if (!result->inFirst) deltaRatio = -deltaRatio;
+
+    splitNode->ratio = std::clamp(splitNode->ratio + deltaRatio, 0.05f, 0.95f);
+    return true;
 }
 
 int Layout::paneAtPixel(int px, int py) const

@@ -292,6 +292,7 @@ private:
     // Tabs
     std::vector<std::unique_ptr<Tab>> tabs_;
     int activeTabIdx_ = 0;
+    int lastFocusedPaneId_ = -1;
 
     Tab* activeTab() {
         if (tabs_.empty() || activeTabIdx_ < 0 || activeTabIdx_ >= static_cast<int>(tabs_.size()))
@@ -370,6 +371,12 @@ private:
     std::vector<Binding> bindings_;
     SequenceMatcher      sequenceMatcher_;
     void dispatchAction(const Action::Any& action);
+
+    // Pane helpers
+    // Spawn a terminal for a freshly-created pane using stored terminalOptions_.
+    void spawnTerminalForPane(Pane* pane, int tabIdx);
+    // Recompute rects and resize all pane terminals in tab; marks everything dirty.
+    void resizeAllPanesInTab(Tab* tab);
 };
 
 // ========================================================================
@@ -1168,6 +1175,19 @@ void PlatformDawn::renderFrame()
     std::vector<Renderer::CompositeEntry> compositeEntries;
     bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
 
+    // If the focused pane changed, mark both old and new pane dirty so the
+    // cursor switches between solid and hollow without waiting for other content.
+    int currentFocusedPaneId = currentTab->layout()->focusedPaneId();
+    if (currentFocusedPaneId != lastFocusedPaneId_) {
+        auto markDirty = [&](int id) {
+            auto it = paneRenderStates_.find(id);
+            if (it != paneRenderStates_.end()) it->second.dirty = true;
+        };
+        markDirty(lastFocusedPaneId_);
+        markDirty(currentFocusedPaneId);
+        lastFocusedPaneId_ = currentFocusedPaneId;
+    }
+
     for (auto& panePtr : currentTab->layout()->panes()) {
         Pane* pane = panePtr.get();
         if (pane->rect().isEmpty()) continue;
@@ -1179,7 +1199,6 @@ void PlatformDawn::renderFrame()
         const IGrid& g = term->grid();
 
         int curX = term->cursorX(), curY = term->cursorY();
-        int prevCursorY = rs.lastCursorY;
         bool cursorMoved = (curX != rs.lastCursorX || curY != rs.lastCursorY ||
                             term->cursorVisible() != rs.lastCursorVisible);
         rs.lastCursorX = curX;
@@ -1199,7 +1218,7 @@ void PlatformDawn::renderFrame()
                     resolveRow(paneId, row, font, scale);
             } else {
                 for (int row = 0; row < g.rows(); ++row) {
-                    if (g.isRowDirty(row) || (cursorMoved && (row == curY || row == prevCursorY)))
+                    if (g.isRowDirty(row) || (cursorMoved && row == curY))
                         resolveRow(paneId, row, font, scale);
                 }
             }
@@ -1221,26 +1240,12 @@ void PlatformDawn::renderFrame()
                 }
             }
 
-            // Apply cursor
-            int cursorIdx = -1;
-            ResolvedCell savedCursorCell;
-            if (term->viewportOffset() == 0 && term->cursorVisible() &&
-                term->cursorX() >= 0 && term->cursorX() < g.cols() &&
-                term->cursorY() >= 0 && term->cursorY() < g.rows()) {
-                cursorIdx = term->cursorY() * g.cols() + term->cursorX();
-                savedCursorCell = rs.resolvedCells[cursorIdx];
-                rs.resolvedCells[cursorIdx].bg_color = 0xFFCCCCCC;
-                rs.resolvedCells[cursorIdx].fg_color = 0xFF000000;
-            }
+            // Cursor — passed as UBO params, no cell mutation needed
+            bool isFocused = (paneId == currentTab->layout()->focusedPaneId());
 
             uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
             ComputeState* cs = renderer_.computePool().acquire(totalCells);
             renderer_.uploadResolvedCells(queue_, cs, rs.resolvedCells.data(), totalCells);
-
-            // Restore cursor cell
-            if (cursorIdx >= 0) {
-                rs.resolvedCells[cursorIdx] = savedCursorCell;
-            }
 
             // Mark selection rows dirty for next frame
             if (selectionVisible) {
@@ -1327,6 +1332,17 @@ void PlatformDawn::renderFrame()
             params.font_size = fontSize_;
             params.pane_origin_x = 0.0f;
             params.pane_origin_y = 0.0f;
+
+            // Cursor
+            params.cursor_type = 0;
+            if (term->viewportOffset() == 0 && term->cursorVisible() &&
+                term->cursorX() >= 0 && term->cursorX() < g.cols() &&
+                term->cursorY() >= 0 && term->cursorY() < g.rows()) {
+                params.cursor_col   = static_cast<uint32_t>(term->cursorX());
+                params.cursor_row   = static_cast<uint32_t>(term->cursorY());
+                params.cursor_color = 0xFFCCCCCCu;
+                params.cursor_type  = isFocused ? 1u : 2u;
+            }
 
             PooledTexture* newTexture = texturePool_.acquire(
                 static_cast<uint32_t>(pane->rect().w),
@@ -1476,6 +1492,115 @@ void PlatformDawn::renderFrame()
     needsRedraw_ = false;
 }
 
+void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
+{
+    int paneId = pane->id();
+
+    TerminalCallbacks cbs;
+    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
+        if (ev == TerminalEmulator::Update || ev == TerminalEmulator::ScrollbackChanged) {
+            needsRedraw_ = true;
+            auto it = paneRenderStates_.find(paneId);
+            if (it != paneRenderStates_.end()) it->second.dirty = true;
+        }
+    };
+    cbs.copyToClipboard = [this](const std::string& text) {
+        glfwSetClipboardString(glfwWindow_, text.c_str());
+    };
+    cbs.pasteFromClipboard = [this]() -> std::string {
+        const char* clip = glfwGetClipboardString(glfwWindow_);
+        return clip ? std::string(clip) : std::string();
+    };
+    cbs.onTitleChanged = [this, tabIdx](const std::string& title) {
+        if (tabIdx == activeTabIdx_)
+            glfwSetWindowTitle(glfwWindow_, title.c_str());
+        if (tabIdx < static_cast<int>(tabs_.size()))
+            tabs_[tabIdx]->setTitle(title);
+        tabBarDirty_ = true;
+        needsRedraw_ = true;
+    };
+    cbs.onIconChanged = [this, tabIdx](const std::string& icon) {
+        if (tabIdx < static_cast<int>(tabs_.size()))
+            tabs_[tabIdx]->setIcon(icon);
+        tabBarDirty_ = true;
+        needsRedraw_ = true;
+    };
+    cbs.onProgressChanged = [this, tabIdx](int state, int pct) {
+        if (tabIdx < static_cast<int>(tabs_.size()))
+            tabs_[tabIdx]->setProgress(state, pct);
+        tabBarDirty_ = true;
+        needsRedraw_ = true;
+    };
+    cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
+    cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
+
+    auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
+    if (!terminal->init(terminalOptions_)) {
+        spdlog::error("spawnTerminalForPane: failed to init terminal");
+        return;
+    }
+
+    const PaneRect& pr = pane->rect();
+    int cols = (pr.w > 0 && charWidth_ > 0)  ? static_cast<int>(pr.w / charWidth_)  : 80;
+    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>(pr.h / lineHeight_) : 24;
+    cols = std::max(cols, 1);
+    rows = std::max(rows, 1);
+
+    auto& rs = paneRenderStates_[paneId];
+    rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+    rs.dirty = true;
+
+    terminal->resize(cols, rows);
+    {
+        struct winsize ws = {};
+        ws.ws_col    = static_cast<unsigned short>(cols);
+        ws.ws_row    = static_cast<unsigned short>(rows);
+        ws.ws_xpixel = static_cast<unsigned short>(pr.w);
+        ws.ws_ypixel = static_cast<unsigned short>(pr.h);
+        ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
+    }
+
+    int masterFD = terminal->masterFD();
+    Terminal* termPtr = terminal.get();
+    pane->setTerminal(std::move(terminal));
+    addPtyPoll(masterFD, termPtr);
+}
+
+void PlatformDawn::resizeAllPanesInTab(Tab* tab)
+{
+    if (!tab) return;
+    tab->layout()->computeRects(fbWidth_, fbHeight_);
+
+    for (auto& panePtr : tab->layout()->panes()) {
+        Pane* pane = panePtr.get();
+        pane->resizeToRect(charWidth_, lineHeight_);
+
+        TerminalEmulator* term = pane->activeTerm();
+        if (!term) continue;
+
+        int cols = std::max(term->width(),  1);
+        int rows = std::max(term->height(), 1);
+
+        auto& rs = paneRenderStates_[pane->id()];
+        rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+        rs.dirty = true;
+        if (rs.heldTexture) {
+            rs.pendingRelease.push_back(rs.heldTexture);
+            rs.heldTexture = nullptr;
+        }
+
+        if (auto* t = dynamic_cast<Terminal*>(term); t && t->masterFD() >= 0) {
+            struct winsize ws = {};
+            ws.ws_col    = static_cast<unsigned short>(cols);
+            ws.ws_row    = static_cast<unsigned short>(rows);
+            ws.ws_xpixel = static_cast<unsigned short>(pane->rect().w);
+            ws.ws_ypixel = static_cast<unsigned short>(pane->rect().h);
+            ioctl(t->masterFD(), TIOCSWINSZ, &ws);
+        }
+    }
+    needsRedraw_ = true;
+}
+
 void PlatformDawn::dispatchAction(const Action::Any& action)
 {
     std::visit(overloaded {
@@ -1496,10 +1621,138 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 needsRedraw_  = true;
             }
         },
-        [&](const Action::SplitPane&)  { /* TODO */ },
-        [&](const Action::ClosePane&)  { /* TODO */ },
-        [&](const Action::ZoomPane&)   { /* TODO */ },
-        [&](const Action::FocusPane&)  { /* TODO */ },
+        [&](const Action::SplitPane& a) {
+            Tab* tab = activeTab();
+            if (!tab) return;
+            Layout* layout = tab->layout();
+            Pane* fp = layout->focusedPane();
+            if (!fp) return;
+
+            LayoutNode::Dir dir;
+            bool newIsFirst = false;
+            switch (a.dir) {
+            case Action::Direction::Right: dir = LayoutNode::Dir::Horizontal; break;
+            case Action::Direction::Left:  dir = LayoutNode::Dir::Horizontal; newIsFirst = true; break;
+            case Action::Direction::Down:  dir = LayoutNode::Dir::Vertical;   break;
+            case Action::Direction::Up:    dir = LayoutNode::Dir::Vertical;   newIsFirst = true; break;
+            default: return;
+            }
+
+            int newId = layout->splitPane(fp->id(), dir, 0.5f, newIsFirst);
+            if (newId < 0) return;
+
+            Pane* newPane = layout->pane(newId);
+            if (!newPane) return;
+
+            layout->computeRects(fbWidth_, fbHeight_);
+            int tabIdx = activeTabIdx_;
+            spawnTerminalForPane(newPane, tabIdx);
+            resizeAllPanesInTab(tab);
+            layout->setFocusedPane(newId);
+        },
+        [&](const Action::ClosePane&) {
+            Tab* tab = activeTab();
+            if (!tab) return;
+            Layout* layout = tab->layout();
+            if (layout->panes().size() <= 1) return; // keep last pane
+            Pane* fp = layout->focusedPane();
+            if (!fp) return;
+            int paneId = fp->id();
+
+            // Stop PTY poll and release render state
+            if (auto* t = dynamic_cast<Terminal*>(fp->activeTerm())) {
+                removePtyPoll(t->masterFD());
+            }
+            auto it = paneRenderStates_.find(paneId);
+            if (it != paneRenderStates_.end()) {
+                if (it->second.heldTexture)
+                    pendingTabBarRelease_.push_back(it->second.heldTexture);
+                for (auto* tx : it->second.pendingRelease)
+                    pendingTabBarRelease_.push_back(tx);
+                paneRenderStates_.erase(it);
+            }
+
+            layout->removePane(paneId);
+            resizeAllPanesInTab(tab);
+        },
+        [&](const Action::ZoomPane&) {
+            Tab* tab = activeTab();
+            if (!tab) return;
+            Layout* layout = tab->layout();
+            Pane* fp = layout->focusedPane();
+            if (!fp) return;
+            layout->zoomPane(fp->id());
+            resizeAllPanesInTab(tab);
+        },
+        [&](const Action::FocusPane& a) {
+            Tab* tab = activeTab();
+            if (!tab) return;
+            Layout* layout = tab->layout();
+
+            if (a.dir == Action::Direction::Next || a.dir == Action::Direction::Prev) {
+                const auto& panes = layout->panes();
+                if (panes.size() <= 1) return;
+                int cur = -1;
+                for (int i = 0; i < static_cast<int>(panes.size()); ++i) {
+                    if (panes[i]->id() == layout->focusedPaneId()) { cur = i; break; }
+                }
+                if (cur < 0) return;
+                int n = static_cast<int>(panes.size());
+                int delta = (a.dir == Action::Direction::Next) ? 1 : -1;
+                int next = ((cur + delta) % n + n) % n;
+                layout->setFocusedPane(panes[next]->id());
+                needsRedraw_ = true;
+                return;
+            }
+
+            Pane* fp = layout->focusedPane();
+            if (!fp) return;
+            const PaneRect& r = fp->rect();
+            int px = 0, py = 0;
+            switch (a.dir) {
+            case Action::Direction::Left:  px = r.x - 1;       py = r.y + r.h / 2; break;
+            case Action::Direction::Right: px = r.x + r.w + 1; py = r.y + r.h / 2; break;
+            case Action::Direction::Up:    px = r.x + r.w / 2; py = r.y - 1;       break;
+            case Action::Direction::Down:  px = r.x + r.w / 2; py = r.y + r.h + 1; break;
+            default: return;
+            }
+            int targetId = layout->paneAtPixel(px, py);
+            if (targetId >= 0 && targetId != fp->id()) {
+                layout->setFocusedPane(targetId);
+                needsRedraw_ = true;
+            }
+        },
+        [&](const Action::AdjustPaneSize& a) {
+            Tab* tab = activeTab();
+            if (!tab) return;
+            Layout* layout = tab->layout();
+            Pane* fp = layout->focusedPane();
+            if (!fp) return;
+
+            LayoutNode::Dir splitDir;
+            int deltaPixels;
+            switch (a.dir) {
+            case Action::Direction::Left:
+                splitDir   = LayoutNode::Dir::Horizontal;
+                deltaPixels = -static_cast<int>(a.amount * charWidth_);
+                break;
+            case Action::Direction::Right:
+                splitDir   = LayoutNode::Dir::Horizontal;
+                deltaPixels = static_cast<int>(a.amount * charWidth_);
+                break;
+            case Action::Direction::Up:
+                splitDir   = LayoutNode::Dir::Vertical;
+                deltaPixels = -static_cast<int>(a.amount * lineHeight_);
+                break;
+            case Action::Direction::Down:
+                splitDir   = LayoutNode::Dir::Vertical;
+                deltaPixels = static_cast<int>(a.amount * lineHeight_);
+                break;
+            default: return;
+            }
+            if (layout->growPane(fp->id(), splitDir, deltaPixels))
+                resizeAllPanesInTab(tab);
+        },
         [&](const Action::Copy&) {
             Terminal* term = activeTerm();
             if (term && term->hasSelection()) {

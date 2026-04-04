@@ -13,7 +13,7 @@ set(PLATFORM "dawn")
 include_directories(${CMAKE_CURRENT_LIST_DIR})
 add_subdirectory(${PLATFORM})
 
-add_executable(mb main.cpp Terminal.cpp TerminalEmulator.cpp Pane.cpp Tab.cpp Layout.cpp CellGrid.cpp Document.cpp Log.cpp text.cpp DebugIPC.cpp CLIClient.cpp Config.cpp)
+add_executable(mb main.cpp Terminal.cpp TerminalEmulator.cpp Pane.cpp Tab.cpp Layout.cpp CellGrid.cpp Document.cpp Log.cpp text.cpp DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp)
 target_link_libraries(mb platform_${PLATFORM} glaze::glaze)
 
 # Copy shaders next to the executable

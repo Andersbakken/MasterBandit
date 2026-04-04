@@ -12,6 +12,8 @@
 #include "Layout.h"
 #include "Pane.h"
 #include "Tab.h"
+#include "Action.h"
+#include "Bindings.h"
 
 #include <glaze/glaze.hpp>
 
@@ -34,6 +36,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -362,6 +365,11 @@ private:
 
     void initTabBar(const TabBarConfig& cfg);
     void renderTabBar();
+
+    // Keybindings
+    std::vector<Binding> bindings_;
+    SequenceMatcher      sequenceMatcher_;
+    void dispatchAction(const Action::Any& action);
 };
 
 // ========================================================================
@@ -724,8 +732,12 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         terminalOptions_ = options;
     }
 
-    // Initialize tab bar (only once, on first terminal creation)
+    // Initialize bindings and tab bar (only once, on first terminal creation)
     if (tabs_.size() == 1) {
+        bindings_ = defaultBindings();
+        auto userBindings = parseBindings(options.keybindings);
+        bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
+
         tabBarConfig_ = options.tabBar;
         initTabBar(options.tabBar);
         // Recompute rects with tab bar height applied
@@ -1460,6 +1472,68 @@ void PlatformDawn::renderFrame()
     needsRedraw_ = false;
 }
 
+void PlatformDawn::dispatchAction(const Action::Any& action)
+{
+    std::visit(overloaded {
+        [&](const Action::NewTab&)  { createTab(); },
+        [&](const Action::CloseTab&) { closeTab(activeTabIdx_); },
+        [&](const Action::ActivateTabRelative& a) {
+            int idx = activeTabIdx_ + a.delta;
+            if (idx >= 0 && idx < static_cast<int>(tabs_.size())) {
+                activeTabIdx_ = idx;
+                tabBarDirty_  = true;
+                needsRedraw_  = true;
+            }
+        },
+        [&](const Action::ActivateTab& a) {
+            if (a.index >= 0 && a.index < static_cast<int>(tabs_.size())) {
+                activeTabIdx_ = a.index;
+                tabBarDirty_  = true;
+                needsRedraw_  = true;
+            }
+        },
+        [&](const Action::SplitPane&)  { /* TODO */ },
+        [&](const Action::ClosePane&)  { /* TODO */ },
+        [&](const Action::ZoomPane&)   { /* TODO */ },
+        [&](const Action::FocusPane&)  { /* TODO */ },
+        [&](const Action::Copy&) {
+            Terminal* term = activeTerm();
+            if (term && term->hasSelection()) {
+                std::string text = term->selectedText();
+                if (!text.empty())
+                    glfwSetClipboardString(glfwWindow_, text.c_str());
+            }
+        },
+        [&](const Action::Paste&) {
+            Terminal* term = activeTerm();
+            const char* clip = glfwGetClipboardString(glfwWindow_);
+            if (term && clip && clip[0])
+                term->pasteText(std::string(clip));
+        },
+        [&](const Action::ScrollUp& a) {
+            Terminal* term = activeTerm();
+            if (term) term->scrollViewport(a.lines);
+        },
+        [&](const Action::ScrollDown& a) {
+            Terminal* term = activeTerm();
+            if (term) term->scrollViewport(-a.lines);
+        },
+        [&](const Action::ScrollToTop&) {
+            Terminal* term = activeTerm();
+            if (term) term->scrollViewport(std::numeric_limits<int>::max());
+        },
+        [&](const Action::ScrollToBottom&) {
+            Terminal* term = activeTerm();
+            if (term) term->resetViewport();
+        },
+        [&](const Action::PushOverlay&) { /* TODO */ },
+        [&](const Action::PopOverlay&) {
+            Tab* tab = activeTab();
+            if (tab) tab->popOverlay();
+        },
+    }, action);
+}
+
 void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
 {
     TerminalEmulator* term = activeTerm();
@@ -1476,35 +1550,21 @@ void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
     controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
     lastMods_ = glfwModsToModifiers(mods);
 
-    // Ctrl+Shift+T: new tab
-    if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_SHIFT) && key == GLFW_KEY_T) {
-        createTab();
-        return;
-    }
-
-    // Cmd+V: paste from clipboard
-    if ((mods & GLFW_MOD_SUPER) && key == GLFW_KEY_V) {
-        const char* clip = glfwGetClipboardString(glfwWindow_);
-        if (clip && clip[0]) {
-            static_cast<Terminal*>(term)->pasteText(std::string(clip));
-        }
-        return;
-    }
-
-    // Cmd+C: copy selection
-    if ((mods & GLFW_MOD_SUPER) && key == GLFW_KEY_C) {
-        if (term->hasSelection()) {
-            std::string text = term->selectedText();
-            if (!text.empty()) {
-                glfwSetClipboardString(glfwWindow_, text.c_str());
-            }
-        }
-        return;
-    }
-
     Key k = glfwKeyToKey(key);
     spdlog::debug("onKey: mapped key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
 
+    // Try binding lookup via sequence matcher
+    auto result = sequenceMatcher_.advance({k, lastMods_}, bindings_);
+    if (result.result == SequenceMatcher::Result::Match) {
+        dispatchAction(*result.action);
+        return;
+    }
+    if (result.result == SequenceMatcher::Result::Prefix) {
+        // Consumed — waiting for next key in sequence
+        return;
+    }
+
+    // NoMatch: forward to PTY
     if (controlPressed_ && key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
         KeyEvent ev;
         ev.key = k;

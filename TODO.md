@@ -26,13 +26,17 @@
 - [ ] Tab bar: tab title from OSC 0/2 is wired but tab titles display as empty until shell sets them.
 - [ ] Tab bar: cursor-blink optimization — re-render to held texture when only cursor changes (500 ms interval guarantees GPU completion).
 - [ ] Tab bar: color packing uses BGR order (parseHexColor packs R<<16|G<<8|B but shader reads R from bits 0-7). Colors are visually incorrect (R/B swapped) — fix to match packFgAsU32 byte order.
-- [ ] Tab bar: configurable keybindings for new tab (Ctrl+Shift+T) and tab close.
+- [x] Tab bar: configurable keybindings for new tab (Ctrl+Shift+T) and tab close.
 - [ ] Non-powerline tab bar styles (fade, slant, separator, round) from config.
+
+## Mouse Bindings
+
+- [ ] Mouse binding system — extend Action/Binding to cover mouse triggers: button, event type (press/release/click/doubleclick), modifiers. Mirror WezTerm/Kitty: location (tab bar vs pane) determined by hit-test before binding lookup, not encoded in the trigger. Tab bar bindings (left-click → switch tab, middle-click → close tab) and pane bindings resolved separately.
 
 ## Configuration
 
 - [ ] Color scheme — `[colors]` config section for ANSI palette, foreground, background, cursor.
-- [ ] Keybindings — configurable key mappings for tab/pane operations.
+- [x] Keybindings — configurable key mappings for tab/pane operations.
 - [ ] Cursor style — block/underline/bar, blink on/off, blink interval.
 
 ## Infrastructure

@@ -2,6 +2,22 @@
 
 #include <glaze/core/common.hpp>
 #include <string>
+#include <vector>
+
+struct BindingConfig {
+    std::vector<std::string> keys;
+    std::string              action;
+    std::vector<std::string> args;
+
+    struct glaze {
+        using T = BindingConfig;
+        static constexpr auto value = glz::object(
+            "keys",   &T::keys,
+            "action", &T::action,
+            "args",   &T::args
+        );
+    };
+};
 
 struct TabBarColors {
     std::string background  = "#1a1b26";
@@ -47,6 +63,7 @@ struct Config {
     float bold_strength = 0.04f;
     int scrollback_lines = -1; // -1 = infinite
     TabBarConfig tab_bar;
+    std::vector<BindingConfig> keybindings;
 
     struct glaze {
         using T = Config;
@@ -55,7 +72,8 @@ struct Config {
             "font_size", &T::font_size,
             "bold_strength", &T::bold_strength,
             "scrollback_lines", &T::scrollback_lines,
-            "tab_bar", &T::tab_bar
+            "tab_bar", &T::tab_bar,
+            "keybinding", &T::keybindings
         );
     };
 };

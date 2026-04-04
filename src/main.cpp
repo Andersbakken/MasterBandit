@@ -47,6 +47,7 @@ int main(int argc, char **argv)
     options.boldStrength = config.bold_strength;
     options.scrollbackLines = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
     options.tabBar = config.tab_bar;
+    options.keybindings = config.keybindings;
 
     char buf[1024];
     if (!getlogin_r(buf, sizeof(buf))) {

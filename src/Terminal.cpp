@@ -90,6 +90,7 @@ bool Terminal::init(const TerminalOptions &options)
         setenv("USER", mOptions.user.c_str(), 1);
         setenv("SHELL", mOptions.shell.c_str(), 1);
         setenv("TERM", "xterm-256color", 1);
+        setenv("COLORTERM", "truecolor", 1);
 
         signal(SIGCHLD, SIG_DFL);
         signal(SIGHUP, SIG_DFL);

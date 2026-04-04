@@ -13,6 +13,7 @@ struct TerminalOptions {
     float boldStrength = 0.04f;
     std::optional<int> scrollbackLines; // nullopt = infinite
     TabBarConfig tabBar;
+    std::vector<BindingConfig> keybindings;
 
     // Returns the tier1 capacity to pass to Document: INT_MAX when infinite.
     int resolvedScrollback() const

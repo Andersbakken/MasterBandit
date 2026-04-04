@@ -5,7 +5,13 @@ find_package(Stb REQUIRED)
 add_executable(mb-tests
     test_terminal.cpp
     test_sgr.cpp
+    test_sgr_extended.cpp
     test_cursor.cpp
+    test_screen.cpp
+    test_modes.cpp
+    test_scrollback.cpp
+    test_osc.cpp
+    test_wide.cpp
     ../src/TerminalEmulator.cpp
     ../src/Document.cpp
     ../src/CellGrid.cpp

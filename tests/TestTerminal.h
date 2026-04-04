@@ -3,14 +3,44 @@
 #include <string>
 
 // Lightweight wrapper around TerminalEmulator for use in unit tests.
-// No PTY, no GPU — just feed bytes in and inspect the cell grid.
+// No PTY, no GPU — feed bytes in, inspect the cell grid.
 struct TestTerminal {
-    TerminalEmulator term;
+
+    // TerminalEmulator subclass that captures writeToOutput and exposes
+    // protected members we want to assert on in tests.
+    struct InnerTerminal : public TerminalEmulator {
+        std::string capturedOutput;
+
+        InnerTerminal(TerminalCallbacks cb)
+            : TerminalEmulator(std::move(cb)) {}
+
+        void writeToOutput(const char* data, size_t len) override
+        {
+            capturedOutput.append(data, len);
+        }
+
+        // Expose protected accessors as public for tests.
+        using TerminalEmulator::bracketedPaste;
+        using TerminalEmulator::resetScrollback;
+    };
+
+    // Declared before `term` so they are initialized first and can be
+    // safely captured by the callback lambdas passed to term's constructor.
+    std::string capturedTitle;
+    std::string capturedIcon;
+
+    InnerTerminal term;
 
     TestTerminal(int cols = 80, int rows = 24)
-        : term(TerminalCallbacks{})
+        : term([this]() {
+            TerminalCallbacks cb;
+            cb.onTitleChanged = [this](const std::string& t) { capturedTitle = t; };
+            cb.onIconChanged  = [this](const std::string& i) { capturedIcon  = i; };
+            return cb;
+          }())
     {
         term.resize(cols, rows);
+        term.resetScrollback(4096);
     }
 
     void feed(const std::string& s)
@@ -18,9 +48,9 @@ struct TestTerminal {
         term.injectData(s.data(), s.size());
     }
 
-    // Feed a printf-style escape sequence. ESC = \x1b.
     void esc(const std::string& s) { feed("\x1b" + s); }
     void csi(const std::string& s) { feed("\x1b[" + s); }
+    void osc(const std::string& s) { feed("\x1b]" + s + "\x07"); } // BEL-terminated
 
     const Cell& cell(int col, int row) const
     {
@@ -37,7 +67,7 @@ struct TestTerminal {
         return term.grid().cell(col, row).attrs;
     }
 
-    // Returns the visible text of a row, trimmed of trailing spaces/nulls.
+    // Returns visible text of a row, trimmed of trailing spaces/nulls.
     std::string rowText(int row) const
     {
         std::string result;
@@ -63,4 +93,6 @@ struct TestTerminal {
         auto end = result.find_last_not_of(' ');
         return end == std::string::npos ? "" : result.substr(0, end + 1);
     }
+
+    void clearOutput() { term.capturedOutput.clear(); }
 };

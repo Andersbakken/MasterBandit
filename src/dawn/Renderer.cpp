@@ -779,10 +779,10 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     auto fontIt = fontGPU_.find(fontName);
     if (fontIt == fontGPU_.end()) return;
 
-    // Update uniforms — use pane dimensions (cols*cell_width, rows*cell_height) for NDC transform
+    // Update uniforms — use full pane viewport (including padding) for NDC transform
     {
-        float w = static_cast<float>(params.cols) * params.cell_width;
-        float h = static_cast<float>(params.rows) * params.cell_height;
+        float w = params.viewport_w;
+        float h = params.viewport_h;
         float uniforms[8] = { w, h, 0.0f, 0.0f,
                                pane_tint[0], pane_tint[1], pane_tint[2], pane_tint[3] };
         queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
@@ -831,10 +831,9 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         encoder.BeginRenderPass(&rpDesc).End();
     }
 
-    // Content dimensions — may be smaller than the texture if a larger pool texture was reused.
-    // Setting an explicit viewport ensures NDC maps to the content area, not the full texture.
-    float contentW = static_cast<float>(params.cols) * params.cell_width;
-    float contentH = static_cast<float>(params.rows) * params.cell_height;
+    // Use full pane viewport (including padding) so NDC maps correctly.
+    float contentW = params.viewport_w;
+    float contentH = params.viewport_h;
 
     // Rect pass
     {

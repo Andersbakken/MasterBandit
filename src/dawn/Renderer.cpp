@@ -679,6 +679,11 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         encoder.BeginRenderPass(&rpDesc).End();
     }
 
+    // Content dimensions — may be smaller than the texture if a larger pool texture was reused.
+    // Setting an explicit viewport ensures NDC maps to the content area, not the full texture.
+    float contentW = static_cast<float>(params.cols) * params.cell_width;
+    float contentH = static_cast<float>(params.rows) * params.cell_height;
+
     // Rect pass
     {
         wgpu::RenderPassColorAttachment att = {};
@@ -689,6 +694,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         rpDesc.colorAttachmentCount = 1;
         rpDesc.colorAttachments = &att;
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+        pass.SetViewport(0.0f, 0.0f, contentW, contentH, 0.0f, 1.0f);
         pass.SetPipeline(rectPipeline_);
         pass.SetBindGroup(0, rectBindGroup_);
         pass.SetVertexBuffer(0, computeState->computeRectVertBuffer);
@@ -710,6 +716,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         rpDesc.colorAttachmentCount = 1;
         rpDesc.colorAttachments = &att;
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+        pass.SetViewport(0.0f, 0.0f, contentW, contentH, 0.0f, 1.0f);
         pass.SetPipeline(textPipeline_);
         pass.SetBindGroup(0, fontIt->second.bindGroup);
         pass.SetVertexBuffer(0, computeState->computeTextVertBuffer);

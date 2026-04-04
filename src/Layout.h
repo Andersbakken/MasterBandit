@@ -70,7 +70,6 @@ private:
 
     std::unique_ptr<LayoutNode> mRoot;
     std::vector<std::unique_ptr<Pane>> mPanes;
-    int mNextPaneId { 0 };
     int mFocusedPaneId { -1 };
     int mZoomedPaneId { -1 };
     int tabBarHeight_ { 0 };

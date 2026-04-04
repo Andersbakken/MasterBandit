@@ -245,6 +245,7 @@ public:
     int exec() override;
     void quit(int status = 0) override;
     std::unique_ptr<Terminal> createTerminal(const TerminalOptions& options) override;
+    void createTab();
 
     wgpu::Device device() const { return device_; }
     wgpu::Queue queue() const { return queue_; }
@@ -334,6 +335,8 @@ private:
 
     // Multiple PTY poll handles — keyed by master fd
     std::unordered_map<int, uv_poll_t*> ptyPolls_;
+
+    TerminalOptions terminalOptions_;  // stored from first createTerminal call
 
     // Tab bar
     TabBarConfig  tabBarConfig_;
@@ -712,9 +715,13 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
     // Build and store tab
     auto tab = std::make_unique<Tab>(std::move(layout));
+    activeTabIdx_ = static_cast<int>(tabs_.size());
     tabs_.push_back(std::move(tab));
-    // Make first tab active (subsequent calls add more tabs but we keep activeTabIdx_ at 0 for now)
-    activeTabIdx_ = 0;
+
+    // Store options for future createTab() calls
+    if (tabs_.size() == 1) {
+        terminalOptions_ = options;
+    }
 
     // Initialize tab bar (only once, on first terminal creation)
     if (tabs_.size() == 1) {
@@ -739,6 +746,99 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
     // Terminal is owned by the Pane/Tab/Layout — return nullptr, not a second owner.
     return nullptr;
+}
+
+void PlatformDawn::createTab()
+{
+    if (!device_ || !glfwWindow_) return;
+
+    auto layout = std::make_unique<Layout>();
+    Pane* pane = layout->createPane();
+    layout->setFocusedPane(pane->id());
+
+    // Apply tab bar height to the new layout
+    if (tabBarConfig_.style != "hidden" && tabBarLineHeight_ > 0.0f) {
+        layout->setTabBar(static_cast<int>(std::ceil(tabBarLineHeight_)), tabBarConfig_.position);
+    }
+    layout->computeRects(fbWidth_, fbHeight_);
+
+    int paneId = pane->id();
+    int tabIdx = static_cast<int>(tabs_.size());
+
+    TerminalCallbacks cbs;
+    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
+        if (ev == TerminalEmulator::Update || ev == TerminalEmulator::ScrollbackChanged) {
+            needsRedraw_ = true;
+            auto it = paneRenderStates_.find(paneId);
+            if (it != paneRenderStates_.end()) it->second.dirty = true;
+        }
+    };
+    cbs.copyToClipboard = [this](const std::string& text) {
+        glfwSetClipboardString(glfwWindow_, text.c_str());
+    };
+    cbs.pasteFromClipboard = [this]() -> std::string {
+        const char* clip = glfwGetClipboardString(glfwWindow_);
+        return clip ? std::string(clip) : std::string();
+    };
+    cbs.onTitleChanged = [this, tabIdx](const std::string& title) {
+        if (tabIdx == activeTabIdx_)
+            glfwSetWindowTitle(glfwWindow_, title.c_str());
+        if (tabIdx < static_cast<int>(tabs_.size()))
+            tabs_[tabIdx]->setTitle(title);
+        tabBarDirty_ = true;
+        needsRedraw_ = true;
+    };
+    cbs.onIconChanged = [this, tabIdx](const std::string& icon) {
+        if (tabIdx < static_cast<int>(tabs_.size()))
+            tabs_[tabIdx]->setIcon(icon);
+        tabBarDirty_ = true;
+        needsRedraw_ = true;
+    };
+    cbs.onProgressChanged = [this, tabIdx](int state, int pct) {
+        if (tabIdx < static_cast<int>(tabs_.size()))
+            tabs_[tabIdx]->setProgress(state, pct);
+        tabBarDirty_ = true;
+        needsRedraw_ = true;
+    };
+    cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
+    cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
+
+    auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
+    if (!terminal->init(terminalOptions_)) {
+        spdlog::error("createTab: failed to init terminal");
+        return;
+    }
+
+    const PaneRect& pr = pane->rect();
+    int cols = (pr.w > 0 && charWidth_ > 0) ? static_cast<int>(pr.w / charWidth_) : 80;
+    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>(pr.h / lineHeight_) : 24;
+
+    auto& rs = paneRenderStates_[paneId];
+    rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+    rs.dirty = true;
+
+    terminal->resize(cols, rows);
+    {
+        struct winsize ws = {};
+        ws.ws_col    = static_cast<unsigned short>(cols);
+        ws.ws_row    = static_cast<unsigned short>(rows);
+        ws.ws_xpixel = static_cast<unsigned short>(fbWidth_);
+        ws.ws_ypixel = static_cast<unsigned short>(fbHeight_);
+        ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
+    }
+
+    Terminal* termPtr = terminal.get();
+    int masterFD = terminal->masterFD();
+    pane->setTerminal(std::move(terminal));
+    addPtyPoll(masterFD, termPtr);
+
+    activeTabIdx_ = tabIdx;
+    tabs_.push_back(std::make_unique<Tab>(std::move(layout)));
+
+    tabBarDirty_ = true;
+    needsRedraw_ = true;
+
+    spdlog::info("Created tab {}", tabIdx + 1);
 }
 
 void PlatformDawn::addPtyPoll(int fd, Terminal* term)
@@ -1340,6 +1440,12 @@ void PlatformDawn::onKey(int key, int /*scancode*/, int action, int mods)
 
     controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
     lastMods_ = glfwModsToModifiers(mods);
+
+    // Ctrl+Shift+T: new tab
+    if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_SHIFT) && key == GLFW_KEY_T) {
+        createTab();
+        return;
+    }
 
     // Cmd+V: paste from clipboard
     if ((mods & GLFW_MOD_SUPER) && key == GLFW_KEY_V) {

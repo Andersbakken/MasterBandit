@@ -4,9 +4,11 @@
 
 Layout::Layout() = default;
 
+static int sGlobalPaneId = 0;
+
 Pane* Layout::createPane()
 {
-    int id = mNextPaneId++;
+    int id = sGlobalPaneId++;
     auto pane = std::make_unique<Pane>(id);
     Pane* ptr = pane.get();
     mPanes.push_back(std::move(pane));
@@ -30,7 +32,7 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio)
         return -1;
     }
 
-    int newId = mNextPaneId++;
+    int newId = sGlobalPaneId++;
     auto newPane = std::make_unique<Pane>(newId);
     mPanes.push_back(std::move(newPane));
 

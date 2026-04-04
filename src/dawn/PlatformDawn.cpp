@@ -332,7 +332,6 @@ private:
         std::vector<ResolvedCell> resolvedCells;
         int lastCursorX = -1, lastCursorY = -1;
         bool lastCursorVisible = true;
-        std::unordered_set<char32_t> fallbackAttempted;
         PooledTexture* heldTexture = nullptr;
         bool dirty = true;
         std::vector<PooledTexture*> pendingRelease;
@@ -571,6 +570,10 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         }
 
         textSystem_.registerFont(fontName_, fontList, 48.0f);
+        textSystem_.setPrimaryFontPath(fontName_, primaryFontPath_);
+        textSystem_.setSystemFallback([this](const std::string& path, char32_t cp) {
+            return fontFallback_.fontDataForCodepoint(path, cp);
+        });
 
         if (!hasBoldFont) {
             textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
@@ -1240,22 +1243,9 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
         };
 
         const int boldHint = cell.attrs.bold() ? 1 : 0;
+        // System font fallback happens automatically inside shapeText
         const ShapedText& shaped = textSystem_.shapeText(fontName_, cpStr, fontSize_, 0, 0, boldHint);
         const GlyphInfo* gi = resolveGlyph(shaped);
-
-        if (!gi && !unicode::isSpace(cell.wc) && rs.fallbackAttempted.find(cell.wc) == rs.fallbackAttempted.end()) {
-            rs.fallbackAttempted.insert(cell.wc);
-            auto fallbackData = fontFallback_.fontDataForCodepoint(primaryFontPath_, cell.wc);
-            if (!fallbackData.empty()) {
-                textSystem_.addFallbackFont(fontName_, fallbackData);
-                font = const_cast<FontData*>(textSystem_.getFont(fontName_));
-                const ShapedText& retry = textSystem_.shapeText(fontName_, cpStr, fontSize_, 0, 0, boldHint);
-                gi = resolveGlyph(retry);
-                if (!gi) {
-                    spdlog::warn("FontFallback: still missing after fallback for U+{:04X}", static_cast<uint32_t>(cell.wc));
-                }
-            }
-        }
 
         if (!gi) {
             rc.atlas_offset = 0;
@@ -2397,6 +2387,7 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
         auto nerdData = loadFontFile(nerdPath);
         if (!nerdData.empty()) fl.push_back(std::move(nerdData));
         textSystem_.registerFont(tabBarFontName_, fl, 48.0f);
+        textSystem_.setPrimaryFontPath(tabBarFontName_, fontPath);
     }
 
     const FontData* font = textSystem_.getFont(tabBarFontName_);
@@ -2521,26 +2512,33 @@ void PlatformDawn::renderTabBar()
     if (!font) return;
     float scale = tabBarFontSize_ / font->baseSize;
 
+    auto resolveTabBarGlyph = [&](const ShapedText& shaped) -> const GlyphInfo* {
+        if (shaped.glyphs.empty()) return nullptr;
+        uint64_t glyphId = shaped.glyphs[0].glyphId;
+        if ((glyphId & 0xFFFFFFFF) == 0) return nullptr; // .notdef
+        auto it = font->glyphs.find(glyphId);
+        if (it == font->glyphs.end() || it->second.is_empty) return nullptr;
+        return &it->second;
+    };
+
     auto placeChar = [&](int& col, const std::string& utf8ch, uint32_t fg, uint32_t bg, bool stretchY = false) {
         if (col >= cols) return;
         ResolvedCell& rc = cells[static_cast<size_t>(col)];
         rc.fg_color = fg;
         rc.bg_color = bg;
+        // System font fallback happens automatically inside shapeText
         const ShapedText& shaped = textSystem_.shapeText(tabBarFontName_, utf8ch, tabBarFontSize_);
-        if (!shaped.glyphs.empty()) {
-            uint64_t glyphId = shaped.glyphs[0].glyphId;
-            auto it = font->glyphs.find(glyphId);
-            if (it != font->glyphs.end() && !it->second.is_empty) {
-                const GlyphInfo& gi = it->second;
-                rc.atlas_offset = gi.atlas_offset;
-                rc.ext_min_x = gi.ext_min_x;
-                rc.ext_min_y = gi.ext_min_y;
-                rc.ext_max_x = gi.ext_max_x;
-                rc.ext_max_y = gi.ext_max_y;
-                rc.upem = gi.upem;
-                if (stretchY) {
-                    rc.upem = gi.upem | 0x80000000u;
-                }
+        const GlyphInfo* gi = resolveTabBarGlyph(shaped);
+
+        if (gi) {
+            rc.atlas_offset = gi->atlas_offset;
+            rc.ext_min_x = gi->ext_min_x;
+            rc.ext_min_y = gi->ext_min_y;
+            rc.ext_max_x = gi->ext_max_x;
+            rc.ext_max_y = gi->ext_max_y;
+            rc.upem = gi->upem;
+            if (stretchY) {
+                rc.upem = gi->upem | 0x80000000u;
             }
         }
         col++;

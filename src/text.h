@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <string>
 #include <unordered_map>
@@ -65,11 +66,22 @@ public:
     bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
     bool addSyntheticBoldVariant(const std::string& name, float xStrength = 0.02f, float yStrength = 0.02f);
 
+    // System font fallback callback. Given a primary font path and a codepoint,
+    // returns font file data for a system font covering that codepoint.
+    // Empty return = no fallback available.
+    using SystemFallbackFn = std::function<std::vector<uint8_t>(const std::string& primaryFontPath, char32_t codepoint)>;
+    void setSystemFallback(SystemFallbackFn fn);
+
+    // Set the primary font path for a registered font (used by system fallback).
+    void setPrimaryFontPath(const std::string& name, const std::string& path);
+
     // Ensure a glyph is encoded in the atlas; called during shaping
     void ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId);
 
 private:
     std::unordered_map<std::string, FontData> fonts_;
+    std::unordered_map<std::string, std::string> fontPrimaryPaths_; // font name → primary font file path
+    SystemFallbackFn systemFallback_;
 
     // LRU shape cache
     static constexpr size_t MAX_SHAPE_CACHE = 512;

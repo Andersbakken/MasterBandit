@@ -222,6 +222,16 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
     return true;
 }
 
+void TextSystem::setSystemFallback(SystemFallbackFn fn)
+{
+    systemFallback_ = std::move(fn);
+}
+
+void TextSystem::setPrimaryFontPath(const std::string& name, const std::string& path)
+{
+    fontPrimaryPaths_[name] = path;
+}
+
 bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrength, float yStrength)
 {
     auto it = fonts_.find(name);
@@ -445,16 +455,18 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
             uint32_t glyphFi = fi;
 
             if (gid == 0) {
+                // Decode codepoint from cluster
+                uint32_t cluster = infos[idx].cluster;
+                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
+                uint32_t cp;
+                if (*p < 0x80) cp = *p;
+                else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
+                else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
+                else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+
+                // Try registered fallback fonts
                 for (uint32_t tryFi = 0; tryFi < font.hbFonts.size(); tryFi++) {
                     if (tryFi == fi) continue;
-                    uint32_t cluster = infos[idx].cluster;
-                    const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
-                    uint32_t cp;
-                    if (*p < 0x80) cp = *p;
-                    else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
-                    else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
-                    else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
-
                     uint32_t fallbackGid;
                     if (hb_font_get_nominal_glyph(font.hbFonts[tryFi].hbFont, cp, &fallbackGid)) {
                         gid = fallbackGid;
@@ -462,11 +474,34 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
                         unsigned int fbUpem = hb_face_get_upem(font.hbFonts[tryFi].hbFace);
                         float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
                         float adv = hb_font_get_glyph_h_advance(font.hbFonts[tryFi].hbFont, fallbackGid) * fbScale * scale;
-                        // Ensure fallback glyph is encoded
                         ensureGlyphEncoded(font, glyphFi, gid);
                         allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
                             adv, 0, 0, seg.level});
                         return;
+                    }
+                }
+
+                // Try system font fallback
+                if (systemFallback_) {
+                    auto pathIt = fontPrimaryPaths_.find(fontName);
+                    std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
+                    auto fallbackData = systemFallback_(primaryPath, static_cast<char32_t>(cp));
+                    if (!fallbackData.empty()) {
+                        addFallbackFont(fontName, fallbackData);
+                        // The new font is now the last entry — try it
+                        uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
+                        uint32_t fallbackGid;
+                        if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &fallbackGid)) {
+                            gid = fallbackGid;
+                            glyphFi = newFi;
+                            unsigned int fbUpem = hb_face_get_upem(font.hbFonts[newFi].hbFace);
+                            float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
+                            float adv = hb_font_get_glyph_h_advance(font.hbFonts[newFi].hbFont, fallbackGid) * fbScale * scale;
+                            ensureGlyphEncoded(font, glyphFi, gid);
+                            allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
+                                adv, 0, 0, seg.level});
+                            return;
+                        }
                     }
                 }
             }

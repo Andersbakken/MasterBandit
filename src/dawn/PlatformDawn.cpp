@@ -727,11 +727,14 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
             needsRedraw_ = true;
         }
     };
-    cbs.onProgressChanged = [this, tabIdx = static_cast<int>(tabs_.size())](int state, int pct) {
-        if (tabIdx < static_cast<int>(tabs_.size())) {
-            tabs_[tabIdx]->setProgress(state, pct);
-            tabBarDirty_ = true;
-            needsRedraw_ = true;
+    cbs.onProgressChanged = [this, paneId](int state, int pct) {
+        for (auto& tab : tabs_) {
+            if (Pane* p = tab->layout()->pane(paneId)) {
+                p->setProgress(state, pct);
+                tabBarDirty_ = true;
+                needsRedraw_ = true;
+                break;
+            }
         }
     };
     cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
@@ -899,11 +902,15 @@ void PlatformDawn::createTab()
             needsRedraw_ = true;
         }
     };
-    cbs.onProgressChanged = [this, tabIdx](int state, int pct) {
-        if (tabIdx < static_cast<int>(tabs_.size()))
-            tabs_[tabIdx]->setProgress(state, pct);
-        tabBarDirty_ = true;
-        needsRedraw_ = true;
+    cbs.onProgressChanged = [this, paneId](int state, int pct) {
+        for (auto& tab : tabs_) {
+            if (Pane* p = tab->layout()->pane(paneId)) {
+                p->setProgress(state, pct);
+                tabBarDirty_ = true;
+                needsRedraw_ = true;
+                break;
+            }
+        }
     };
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
@@ -1051,7 +1058,8 @@ int PlatformDawn::exec()
                 self->lastAnimTick_ = now;
                 bool hasAnim = false;
                 for (auto& tab : self->tabs_) {
-                    if (tab->progressState() == 3) { hasAnim = true; break; }
+                    Pane* fp = tab->layout()->focusedPane();
+                    if (fp && fp->progressState() == 3) { hasAnim = true; break; }
                 }
                 if (hasAnim) {
                     self->tabBarAnimFrame_++;
@@ -1846,11 +1854,15 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
             needsRedraw_ = true;
         }
     };
-    cbs.onProgressChanged = [this, tabIdx](int state, int pct) {
-        if (tabIdx < static_cast<int>(tabs_.size()))
-            tabs_[tabIdx]->setProgress(state, pct);
-        tabBarDirty_ = true;
-        needsRedraw_ = true;
+    cbs.onProgressChanged = [this, paneId](int state, int pct) {
+        for (auto& tab : tabs_) {
+            if (Pane* p = tab->layout()->pane(paneId)) {
+                p->setProgress(state, pct);
+                tabBarDirty_ = true;
+                needsRedraw_ = true;
+                break;
+            }
+        }
     };
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
@@ -2502,13 +2514,18 @@ void PlatformDawn::renderTabBar()
     };
 
     auto progressGlyph = [&](Tab* tab) -> std::string {
-        int st = tab->progressState();
+        Pane* focusedPane = tab->layout()->focusedPane();
+        int st = focusedPane ? focusedPane->progressState() : 0;
+        int pct = focusedPane ? focusedPane->progressPct() : 0;
         if (st == 0) return "";
         int idx;
         if (st == 3) {
-            idx = tabBarAnimFrame_ % kAnimCount;
+            // Bounce: 0..8..0..8.. (period = 2 * (kAnimCount - 1))
+            int period = 2 * (kAnimCount - 1);
+            int pos = tabBarAnimFrame_ % period;
+            idx = (pos < kAnimCount) ? pos : period - pos;
         } else if (st == 1 || st == 2) {
-            idx = std::clamp(tab->progressPct() * kAnimCount / 100, 0, kAnimCount - 1);
+            idx = std::clamp(pct * kAnimCount / 100, 0, kAnimCount - 1);
         } else {
             return "";
         }
@@ -2532,7 +2549,34 @@ void PlatformDawn::renderTabBar()
         text += "[";
         text += std::to_string(i + 1);
         text += "] ";
-        if (!tab->title().empty()) text += tab->title();
+        if (!tab->title().empty()) {
+            const std::string& title = tab->title();
+            int maxLen = tabBarConfig_.max_title_length;
+            if (maxLen > 0) {
+                // Truncate to maxLen codepoints, append ellipsis if truncated
+                int cpCount = 0;
+                const char* p = title.c_str();
+                const char* truncEnd = p;
+                while (*p && cpCount < maxLen) {
+                    uint8_t b = static_cast<uint8_t>(*p);
+                    if (b < 0x80) p++;
+                    else if ((b & 0xE0) == 0xC0) p += 2;
+                    else if ((b & 0xF0) == 0xE0) p += 3;
+                    else p += 4;
+                    cpCount++;
+                    truncEnd = p;
+                }
+                if (*truncEnd) {
+                    // Title was truncated
+                    text.append(title.c_str(), static_cast<size_t>(truncEnd - title.c_str()));
+                    text += "\xe2\x80\xa6"; // U+2026 HORIZONTAL ELLIPSIS
+                } else {
+                    text += title;
+                }
+            } else {
+                text += title;
+            }
+        }
         text += " ";
 
         // Count UTF-8 codepoints

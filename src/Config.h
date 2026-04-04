@@ -43,16 +43,18 @@ struct TabBarConfig {
     std::string position = "bottom";      // "top" | "bottom"
     std::string font;                     // empty = same as terminal font
     float       font_size = 0.0f;         // 0 = same as terminal font_size
+    int         max_title_length = 30;    // 0 = no limit
     TabBarColors colors;
 
     struct glaze {
         using T = TabBarConfig;
         static constexpr auto value = glz::object(
-            "style",     &T::style,
-            "position",  &T::position,
-            "font",      &T::font,
-            "font_size", &T::font_size,
-            "colors",    &T::colors
+            "style",            &T::style,
+            "position",         &T::position,
+            "font",             &T::font,
+            "font_size",        &T::font_size,
+            "max_title_length", &T::max_title_length,
+            "colors",           &T::colors
         );
     };
 };

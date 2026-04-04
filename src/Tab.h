@@ -17,12 +17,9 @@ public:
     const std::string& title() const { return title_; }
     void setTitle(const std::string& t) { title_ = t; }
 
-    // Icon (from OSC 1) and progress (from OSC 9;4)
+    // Icon (from OSC 1)
     const std::string& icon() const { return icon_; }
     void setIcon(const std::string& s) { icon_ = s; }
-    int progressState() const { return progressState_; }
-    int progressPct() const { return progressPct_; }
-    void setProgress(int state, int pct) { progressState_ = state; progressPct_ = pct; }
 
     // Full-screen overlay (kitty-style): covers the entire tab's layout area.
     // Not shown in the tab bar.
@@ -41,7 +38,5 @@ private:
     std::unique_ptr<Layout> layout_;
     std::string title_;
     std::string icon_;
-    int progressState_ = 0;   // 0=none 1=set 2=error 3=indeterminate 4=paused
-    int progressPct_   = 0;   // 0-100, used when state==1 or 2
     std::vector<std::unique_ptr<Terminal>> overlays_;
 };

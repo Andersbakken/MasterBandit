@@ -43,6 +43,10 @@ public:
     const std::string& icon() const { return mIcon; }
     void setIcon(const std::string& i) { mIcon = i; }
 
+    int progressState() const { return mProgressState; }
+    int progressPct() const { return mProgressPct; }
+    void setProgress(int state, int pct) { mProgressState = state; mProgressPct = pct; }
+
     // Rect (pixel coords, set by Layout::computeRects)
     void setRect(const PaneRect& r) { mRect = r; }
     const PaneRect& rect() const { return mRect; }
@@ -69,4 +73,6 @@ private:
     PaneRect mRect;
     std::string mTitle;
     std::string mIcon;
+    int mProgressState = 0;
+    int mProgressPct = 0;
 };

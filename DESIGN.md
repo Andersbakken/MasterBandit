@@ -67,26 +67,38 @@ Tier 1 overflow pushes the oldest row into Tier 2 before reuse.
 
 ---
 
-## 4. Ligatures (to implement)
-
-Optional, user-configurable.
+## 4. Run-Based Shaping & Ligatures (implemented)
 
 **Principle**: the cell grid stores raw codepoints and attributes only — no
-ligature state is persisted. Ligature detection happens at render time.
+ligature or shaping state is persisted. Shaping happens at render time via
+`TextSystem::shapeRun()`.
 
-**Shaping pass** (CPU, per dirty row):
+**Run building** (CPU, per dirty row in `resolveRow()`):
 
-1. Accumulate runs of adjacent cells sharing identical attributes.
-2. Feed each run to HarfBuzz.
-3. Inspect cluster output to detect ligature substitutions.
-4. Ligature glyph renders in the first cell, spanning N cell widths; the
-   remaining N−1 cells become spacers.
+1. Accumulate runs of adjacent cells sharing font-affecting attributes
+   (bold, italic). Runs do NOT break on color — this allows ligatures across
+   syntax highlighting boundaries.
+2. Feed each run to `shapeRun()` which performs script-run detection (SheenBidi),
+   per-segment HarfBuzz shaping, and font fallback.
+3. Map shaped glyphs back to cells via HarfBuzz cluster indices.
 
-**Attribute boundaries break ligatures**: if adjacent cells differ in fg color or
-other attributes, they belong to separate shaping runs.
+**Glyph positioning**: normal (non-substituted) glyphs anchor at their cell's
+grid origin. Substituted glyphs (ligatures, Arabic contextual forms) use
+HarfBuzz advance-based positioning to preserve inter-glyph relationships.
+Substitution is detected by comparing shaped glyph ID against nominal lookup.
 
-**Caching**: shaping result cached per row; invalidated when the row's dirty bit
-is set.
+**RTL support**: SheenBidi BiDi analysis determines per-character embedding
+levels. RTL segments are shaped with `HB_DIRECTION_RTL`. Cell assignments for
+RTL glyphs are mirrored within their contiguous RTL range.
+
+**Indirect glyph list**: `ResolvedCell` stores `glyph_offset` + `glyph_count`
+into a separate `GlyphEntry` storage buffer. Each `GlyphEntry` carries atlas
+data, font extents, and per-glyph x/y offsets from HarfBuzz. The compute shader
+loops over each cell's glyphs, supporting combining marks (multiple glyphs per
+cell) and ligatures (zero glyphs in trailing cells).
+
+**Per-row cache**: shaped run results are cached per row in `PaneRenderState`.
+Only dirty rows are re-shaped. Clean rows reuse cached glyph data.
 
 ---
 

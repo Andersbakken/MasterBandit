@@ -1,8 +1,9 @@
 find_package(doctest CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
+find_package(SheenBidi CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 
-add_executable(mb-tests
+set(TEST_SOURCES
     test_terminal.cpp
     test_sgr.cpp
     test_sgr_extended.cpp
@@ -14,11 +15,21 @@ add_executable(mb-tests
     test_wide.cpp
     test_inverse.cpp
     test_selection.cpp
+    test_shaping.cpp
     ../src/TerminalEmulator.cpp
     ../src/Document.cpp
     ../src/CellGrid.cpp
     ../src/Log.cpp
+    ../src/text.cpp
 )
+
+if(APPLE)
+    list(APPEND TEST_SOURCES ../src/FontResolver_CoreText.mm ../src/FontFallback_CoreText.mm)
+else()
+    list(APPEND TEST_SOURCES ../src/FontResolver_FontConfig.cpp ../src/FontFallback_FontConfig.cpp)
+endif()
+
+add_executable(mb-tests ${TEST_SOURCES})
 
 target_include_directories(mb-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -28,7 +39,18 @@ target_include_directories(mb-tests PRIVATE
 target_link_libraries(mb-tests PRIVATE
     doctest::doctest
     spdlog::spdlog
+    harfbuzz
+    harfbuzz-gpu
+    SheenBidi::SheenBidi
+    libunibreak::libunibreak
 )
+
+if(APPLE)
+    target_link_libraries(mb-tests PRIVATE "-framework CoreText" "-framework Cocoa")
+else()
+    find_package(Fontconfig REQUIRED)
+    target_link_libraries(mb-tests PRIVATE Fontconfig::Fontconfig)
+endif()
 
 include(doctest)
 doctest_discover_tests(mb-tests)

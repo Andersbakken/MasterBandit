@@ -29,7 +29,7 @@ struct FontData {
 
     // Glyph atlas: storage buffer contents (4 ints per texel)
     std::vector<int32_t> atlasData;
-    uint32_t atlasUsed = 0;              // number of vec4<i32> texels used
+    uint32_t atlasUsed = 1;              // number of vec4<i32> texels used (starts at 1; 0 is reserved as "no glyph" sentinel)
 
     // Glyph ID key = (fontIndex << 32) | glyphId
     std::unordered_map<uint64_t, GlyphInfo> glyphs;

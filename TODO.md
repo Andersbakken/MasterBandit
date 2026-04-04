@@ -58,6 +58,16 @@
 - [ ] Cursor style — block/underline/bar, blink on/off, blink interval.
 - [ ] Minimum contrast — auto-adjust foreground colors when too close to background (like iTerm2). Uses perceived brightness difference with configurable threshold. Would allow ANSI black to be true `#000000` while remaining visible.
 
+## Text Shaping
+
+- [x] Run-based shaping — adjacent cells grouped into runs, shaped via HarfBuzz. Replaces per-cell shaping. Enables ligatures, Arabic contextual forms, combining marks.
+- [x] RTL support — SheenBidi BiDi analysis, HarfBuzz RTL direction, cell mirroring within contiguous RTL segments. Mixed LTR/RTL lines render correctly.
+- [x] Indirect glyph list — ResolvedCell stores offset+count into GlyphEntry buffer. Supports multiple glyphs per cell (combining marks) and zero glyphs (ligature trailing cells).
+- [x] Substitution detection — shaped glyph ID compared against nominal lookup. Substituted glyphs use HarfBuzz advance positioning; normal glyphs anchor at cell origin.
+- [x] Per-row shaping cache — only dirty rows re-shaped. Clean rows reuse cached glyph data.
+- [ ] Ligature verification — test with ligature fonts (Fira Code, JetBrains Mono).
+- [ ] Arabic cursive connection verification — test with proper Arabic fonts (GSUB contextual forms).
+
 ## Emoji / Color Fonts
 
 - [ ] Color emoji rendering — current pipeline is outline-only (hb-gpu/Slug encodes Bézier paths; fragment shader applies a single fg tint). Color fonts (COLR layered vector, CBDT/CBLC bitmap, sbix) silently produce empty glyphs. Options: COLRv0 via multi-pass layered outline rendering; CBDT/sbix via bitmap texture upload; or ship a monochrome outline emoji fallback font.
@@ -77,3 +87,4 @@
 ## Testing
 
 - [x] Unit test suite — doctest-based, tests `TerminalEmulator` in isolation. Covers: text output, cursor movement, SGR (all attributes, 16/256/truecolor colors, inverse), screen operations (ED, EL, SU/SD, DECSTBM, CNL/CPL/VPA, DCH/ICH, IL/DL, ECH), terminal modes (alt screen, mouse, bracketed paste, sync output, DA/XTVERSION, RIS), scrollback viewport, OSC title/icon, wide characters, SGR inverse color swap.
+- [x] shapeRun() unit tests — ASCII clusters/advances/flags, Arabic RTL detection, mixed LTR/RTL, cache behavior, multibyte UTF-8 clusters. Uses system font resolver + fallback.

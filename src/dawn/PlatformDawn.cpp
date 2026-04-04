@@ -1553,6 +1553,19 @@ void PlatformDawn::onFramebufferResize(int width, int height)
         }
     }
 
+    // Release all held textures — they're now the wrong size for the new framebuffer.
+    for (auto& [id, rs] : paneRenderStates_) {
+        if (rs.heldTexture) {
+            rs.pendingRelease.push_back(rs.heldTexture);
+            rs.heldTexture = nullptr;
+        }
+        rs.dirty = true;
+    }
+    if (tabBarTexture_) {
+        pendingTabBarRelease_.push_back(tabBarTexture_);
+        tabBarTexture_ = nullptr;
+    }
+    tabBarDirty_ = true;
     needsRedraw_ = true;
 }
 

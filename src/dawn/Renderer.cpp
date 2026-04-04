@@ -756,7 +756,12 @@ void Renderer::composite(wgpu::CommandEncoder& encoder,
         dst.texture = swapchainTexture;
         dst.origin  = { e.dstX, e.dstY, 0 };
 
-        wgpu::Extent3D extent = { e.srcW, e.srcH, 1 };
+        // Clamp to actual texture size to guard against stale entries after resize.
+        wgpu::Extent3D texSize = e.texture.GetWidth() > 0
+            ? wgpu::Extent3D{ e.texture.GetWidth(), e.texture.GetHeight(), 1 }
+            : wgpu::Extent3D{ e.srcW, e.srcH, 1 };
+        wgpu::Extent3D extent = { std::min(e.srcW, texSize.width),
+                                  std::min(e.srcH, texSize.height), 1 };
         encoder.CopyTextureToTexture(&src, &dst, &extent);
     }
 }

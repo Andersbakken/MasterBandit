@@ -246,6 +246,7 @@ public:
     void quit(int status = 0) override;
     std::unique_ptr<Terminal> createTerminal(const TerminalOptions& options) override;
     void createTab();
+    void closeTab(int idx);
 
     wgpu::Device device() const { return device_; }
     wgpu::Queue queue() const { return queue_; }
@@ -839,6 +840,40 @@ void PlatformDawn::createTab()
     needsRedraw_ = true;
 
     spdlog::info("Created tab {}", tabIdx + 1);
+}
+
+void PlatformDawn::closeTab(int idx)
+{
+    if (tabs_.empty() || idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
+    if (tabs_.size() == 1) return; // can't close the last tab
+
+    // Stop PTY polls for all terminals in this tab
+    Tab* tab = tabs_[idx].get();
+    for (auto& panePtr : tab->layout()->panes()) {
+        TerminalEmulator* term = panePtr->activeTerm();
+        if (auto* t = dynamic_cast<Terminal*>(term)) {
+            removePtyPoll(t->masterFD());
+        }
+        // Release pane render state
+        auto it = paneRenderStates_.find(panePtr->id());
+        if (it != paneRenderStates_.end()) {
+            if (it->second.heldTexture)
+                pendingTabBarRelease_.push_back(it->second.heldTexture);
+            for (auto* t2 : it->second.pendingRelease)
+                pendingTabBarRelease_.push_back(t2);
+            paneRenderStates_.erase(it);
+        }
+    }
+
+    tabs_.erase(tabs_.begin() + idx);
+
+    // Adjust active tab index
+    if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
+        activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+
+    tabBarDirty_ = true;
+    needsRedraw_ = true;
+    spdlog::info("Closed tab {}", idx + 1);
 }
 
 void PlatformDawn::addPtyPoll(int fd, Terminal* term)
@@ -1616,7 +1651,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
                             tabBarDirty_ = true;
                             needsRedraw_ = true;
                         } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
-                            spdlog::info("TODO: close tab {}", i);
+                            closeTab(i);
                         }
                         return;
                     }

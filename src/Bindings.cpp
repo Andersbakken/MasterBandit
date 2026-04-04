@@ -52,6 +52,14 @@ std::optional<KeyStroke> parseKeyStroke(const std::string& s)
         key = static_cast<Key>(Key_A + (ks[0] - 'a'));
     } else if (ks.size() == 1 && ks[0] >= '0' && ks[0] <= '9') {
         key = static_cast<Key>(Key_0 + (ks[0] - '0'));
+    } else if (ks == "[") {
+        key = Key_BracketLeft;
+    } else if (ks == "]") {
+        key = Key_BracketRight;
+    } else if (ks == "-" || ks == "minus") {
+        key = Key_Minus;
+    } else if (ks == "=" || ks == "equals") {
+        key = Key_Equal;
     } else {
         static const std::unordered_map<std::string, Key> keyMap = {
             {"escape",    Key_Escape},
@@ -200,26 +208,49 @@ std::vector<Binding> parseBindings(const std::vector<BindingConfig>& configs)
 
 std::vector<Binding> defaultBindings()
 {
+#ifdef __APPLE__
     return {
-        // Tab management
-        { { *parseKeyStroke("ctrl+shift+t") },     Action::NewTab{} },
-        { { *parseKeyStroke("meta+c") },            Action::Copy{}   },
-        { { *parseKeyStroke("meta+v") },            Action::Paste{}  },
+        // Tab management (Cmd+key on macOS)
+        { { *parseKeyStroke("meta+t") },            Action::NewTab{}  },
+        { { *parseKeyStroke("meta+w") },            Action::ClosePane{} },
+        { { *parseKeyStroke("meta+c") },            Action::Copy{}    },
+        { { *parseKeyStroke("meta+v") },            Action::Paste{}   },
         // Pane splits
-        { { *parseKeyStroke("ctrl+shift+e") },     Action::SplitPane{Action::Direction::Right} },
-        { { *parseKeyStroke("ctrl+shift+o") },     Action::SplitPane{Action::Direction::Down}  },
+        { { *parseKeyStroke("meta+d") },            Action::SplitPane{Action::Direction::Right} },
+        { { *parseKeyStroke("meta+shift+d") },      Action::SplitPane{Action::Direction::Down}  },
         // Pane management
-        { { *parseKeyStroke("ctrl+shift+w") },     Action::ClosePane{} },
-        { { *parseKeyStroke("ctrl+shift+z") },     Action::ZoomPane{}  },
+        { { *parseKeyStroke("meta+shift+z") },      Action::ZoomPane{}  },
         // Pane focus — spatial
-        { { *parseKeyStroke("ctrl+shift+left") },  Action::FocusPane{Action::Direction::Left}  },
-        { { *parseKeyStroke("ctrl+shift+right") }, Action::FocusPane{Action::Direction::Right} },
-        { { *parseKeyStroke("ctrl+shift+up") },    Action::FocusPane{Action::Direction::Up}    },
-        { { *parseKeyStroke("ctrl+shift+down") },  Action::FocusPane{Action::Direction::Down}  },
+        { { *parseKeyStroke("meta+alt+left") },     Action::FocusPane{Action::Direction::Left}  },
+        { { *parseKeyStroke("meta+alt+right") },    Action::FocusPane{Action::Direction::Right} },
+        { { *parseKeyStroke("meta+alt+up") },       Action::FocusPane{Action::Direction::Up}    },
+        { { *parseKeyStroke("meta+alt+down") },     Action::FocusPane{Action::Direction::Down}  },
         // Pane focus — cyclic
-        { { *parseKeyStroke("ctrl+shift+n") },     Action::FocusPane{Action::Direction::Next} },
-        { { *parseKeyStroke("ctrl+shift+p") },     Action::FocusPane{Action::Direction::Prev} },
+        { { *parseKeyStroke("meta+]") },            Action::FocusPane{Action::Direction::Next} },
+        { { *parseKeyStroke("meta+[") },            Action::FocusPane{Action::Direction::Prev} },
     };
+#else
+    return {
+        // Tab management (Ctrl+Shift+key on Linux)
+        { { *parseKeyStroke("ctrl+shift+t") },      Action::NewTab{}  },
+        { { *parseKeyStroke("ctrl+shift+w") },      Action::ClosePane{} },
+        { { *parseKeyStroke("ctrl+shift+c") },      Action::Copy{}    },
+        { { *parseKeyStroke("ctrl+shift+v") },      Action::Paste{}   },
+        // Pane splits
+        { { *parseKeyStroke("ctrl+shift+e") },      Action::SplitPane{Action::Direction::Right} },
+        { { *parseKeyStroke("ctrl+shift+o") },      Action::SplitPane{Action::Direction::Down}  },
+        // Pane management
+        { { *parseKeyStroke("ctrl+shift+z") },      Action::ZoomPane{}  },
+        // Pane focus — spatial
+        { { *parseKeyStroke("ctrl+shift+left") },   Action::FocusPane{Action::Direction::Left}  },
+        { { *parseKeyStroke("ctrl+shift+right") },  Action::FocusPane{Action::Direction::Right} },
+        { { *parseKeyStroke("ctrl+shift+up") },     Action::FocusPane{Action::Direction::Up}    },
+        { { *parseKeyStroke("ctrl+shift+down") },   Action::FocusPane{Action::Direction::Down}  },
+        // Pane focus — cyclic
+        { { *parseKeyStroke("ctrl+shift+n") },      Action::FocusPane{Action::Direction::Next} },
+        { { *parseKeyStroke("ctrl+shift+p") },      Action::FocusPane{Action::Direction::Prev} },
+    };
+#endif
 }
 
 SequenceMatcher::MatchResult SequenceMatcher::advance(

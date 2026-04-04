@@ -700,7 +700,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
             break;
         }
         case InEscape:
-            assert(mEscapeIndex < static_cast<int>(sizeof(mEscapeBuffer)));
+            if (mEscapeIndex >= static_cast<int>(sizeof(mEscapeBuffer))) {
+                ERROR("Escape buffer overflow");
+                resetToNormal();
+                break;
+            }
             mEscapeBuffer[mEscapeIndex++] = buf[i];
             DEBUG("Adding escape byte [%d] %s %d -> %s", mEscapeIndex - 1,
                   toPrintable(buf + i, 1).c_str(),
@@ -731,7 +735,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
                         processCSI();
                         assert(mState == Normal);
-                    } else if (mEscapeIndex == sizeof(mEscapeBuffer)) {
+                    } else if (mEscapeIndex >= static_cast<int>(sizeof(mEscapeBuffer))) {
                         ERROR("CSI sequence is too long %zu", sizeof(mEscapeBuffer));
                         resetToNormal();
                     } else if (buf[i] < 0x20 || buf[i] > 0x3f) {

@@ -54,6 +54,7 @@ int main(int argc, char **argv)
     options.inactivePaneTintAlpha = config.inactive_pane_tint_alpha;
     options.activePaneTint        = config.active_pane_tint;
     options.activePaneTintAlpha   = config.active_pane_tint_alpha;
+    options.colors                = config.colors;
 
     char buf[1024];
     if (!getlogin_r(buf, sizeof(buf))) {

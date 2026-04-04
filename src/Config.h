@@ -59,11 +59,53 @@ struct TabBarConfig {
     };
 };
 
+struct ColorScheme {
+    std::string foreground  = "#dddddd";
+    std::string background  = "#000000";
+    std::string cursor      = "#cccccc";
+
+    // ANSI 16-color palette (0-7 normal, 8-15 bright)
+    std::string color0  = "#000000"; // black
+    std::string color1  = "#cc0403"; // red
+    std::string color2  = "#19cb00"; // green
+    std::string color3  = "#cecb00"; // yellow
+    std::string color4  = "#0d73cc"; // blue
+    std::string color5  = "#cb1ed1"; // magenta
+    std::string color6  = "#0dcdcd"; // cyan
+    std::string color7  = "#dddddd"; // white
+    std::string color8  = "#767676"; // bright black
+    std::string color9  = "#f2201f"; // bright red
+    std::string color10 = "#23fd00"; // bright green
+    std::string color11 = "#fffd00"; // bright yellow
+    std::string color12 = "#1a8fff"; // bright blue
+    std::string color13 = "#fd28ff"; // bright magenta
+    std::string color14 = "#14ffff"; // bright cyan
+    std::string color15 = "#ffffff"; // bright white
+
+    struct glaze {
+        using T = ColorScheme;
+        static constexpr auto value = glz::object(
+            "foreground",  &T::foreground,
+            "background",  &T::background,
+            "cursor",      &T::cursor,
+            "color0",  &T::color0,  "color1",  &T::color1,
+            "color2",  &T::color2,  "color3",  &T::color3,
+            "color4",  &T::color4,  "color5",  &T::color5,
+            "color6",  &T::color6,  "color7",  &T::color7,
+            "color8",  &T::color8,  "color9",  &T::color9,
+            "color10", &T::color10, "color11", &T::color11,
+            "color12", &T::color12, "color13", &T::color13,
+            "color14", &T::color14, "color15", &T::color15
+        );
+    };
+};
+
 struct Config {
     std::string font;
     float font_size = 16.0f;
     float bold_strength = 0.04f;
     int scrollback_lines = -1; // -1 = infinite
+    ColorScheme colors;
     TabBarConfig tab_bar;
     std::vector<BindingConfig> keybindings;
     std::string divider_color = "#3d3d3d";
@@ -80,6 +122,7 @@ struct Config {
             "font_size", &T::font_size,
             "bold_strength", &T::bold_strength,
             "scrollback_lines", &T::scrollback_lines,
+            "colors", &T::colors,
             "tab_bar", &T::tab_bar,
             "keybinding", &T::keybindings,
             "divider_color", &T::divider_color,

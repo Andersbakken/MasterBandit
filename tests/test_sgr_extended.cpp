@@ -118,9 +118,9 @@ TEST_CASE("SGR fg standard colors 30-37")
         t.csi(std::to_string(30 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).fgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).fgR() == TerminalEmulator::s16ColorPalette[i][0]);
-        CHECK(t.attrs(0, 0).fgG() == TerminalEmulator::s16ColorPalette[i][1]);
-        CHECK(t.attrs(0, 0).fgB() == TerminalEmulator::s16ColorPalette[i][2]);
+        CHECK(t.attrs(0, 0).fgR() == TerminalEmulator::kDefaultPalette[i][0]);
+        CHECK(t.attrs(0, 0).fgG() == TerminalEmulator::kDefaultPalette[i][1]);
+        CHECK(t.attrs(0, 0).fgB() == TerminalEmulator::kDefaultPalette[i][2]);
     }
 }
 
@@ -133,9 +133,9 @@ TEST_CASE("SGR bg standard colors 40-47")
         t.csi(std::to_string(40 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).bgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).bgR() == TerminalEmulator::s16ColorPalette[i][0]);
-        CHECK(t.attrs(0, 0).bgG() == TerminalEmulator::s16ColorPalette[i][1]);
-        CHECK(t.attrs(0, 0).bgB() == TerminalEmulator::s16ColorPalette[i][2]);
+        CHECK(t.attrs(0, 0).bgR() == TerminalEmulator::kDefaultPalette[i][0]);
+        CHECK(t.attrs(0, 0).bgG() == TerminalEmulator::kDefaultPalette[i][1]);
+        CHECK(t.attrs(0, 0).bgB() == TerminalEmulator::kDefaultPalette[i][2]);
     }
 }
 
@@ -148,9 +148,9 @@ TEST_CASE("SGR fg bright colors 90-97")
         t.csi(std::to_string(90 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).fgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).fgR() == TerminalEmulator::s16ColorPalette[8 + i][0]);
-        CHECK(t.attrs(0, 0).fgG() == TerminalEmulator::s16ColorPalette[8 + i][1]);
-        CHECK(t.attrs(0, 0).fgB() == TerminalEmulator::s16ColorPalette[8 + i][2]);
+        CHECK(t.attrs(0, 0).fgR() == TerminalEmulator::kDefaultPalette[8 + i][0]);
+        CHECK(t.attrs(0, 0).fgG() == TerminalEmulator::kDefaultPalette[8 + i][1]);
+        CHECK(t.attrs(0, 0).fgB() == TerminalEmulator::kDefaultPalette[8 + i][2]);
     }
 }
 
@@ -163,9 +163,9 @@ TEST_CASE("SGR bg bright colors 100-107")
         t.csi(std::to_string(100 + i) + "m");
         t.feed("A");
         CHECK(t.attrs(0, 0).bgMode() == CellAttrs::RGB);
-        CHECK(t.attrs(0, 0).bgR() == TerminalEmulator::s16ColorPalette[8 + i][0]);
-        CHECK(t.attrs(0, 0).bgG() == TerminalEmulator::s16ColorPalette[8 + i][1]);
-        CHECK(t.attrs(0, 0).bgB() == TerminalEmulator::s16ColorPalette[8 + i][2]);
+        CHECK(t.attrs(0, 0).bgR() == TerminalEmulator::kDefaultPalette[8 + i][0]);
+        CHECK(t.attrs(0, 0).bgG() == TerminalEmulator::kDefaultPalette[8 + i][1]);
+        CHECK(t.attrs(0, 0).bgB() == TerminalEmulator::kDefaultPalette[8 + i][2]);
     }
 }
 

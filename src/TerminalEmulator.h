@@ -124,6 +124,9 @@ public:
     bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
     bool syncOutputActive() const { return mSyncOutput; }
     bool colorPreferenceReporting() const { return mColorPreferenceReporting; }
+    void setPaletteColor(int idx, uint8_t r, uint8_t g, uint8_t b) {
+        if (idx >= 0 && idx < 16) { m16ColorPalette[idx][0] = r; m16ColorPalette[idx][1] = g; m16ColorPalette[idx][2] = b; }
+    }
     const std::string* hyperlinkURI(uint32_t id) const {
         auto it = mHyperlinkRegistry.find(id);
         return it != mHyperlinkRegistry.end() ? &it->second.uri : nullptr;
@@ -165,9 +168,10 @@ public:
     static unsigned long long mono();
 
     // 16-color palette (standard + bright) as RGB
-    static const uint8_t s16ColorPalette[16][3];
+    uint8_t m16ColorPalette[16][3];
+    static const uint8_t kDefaultPalette[16][3];
     // 256-color palette lookup
-    static void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b);
+    void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const;
 
 protected:
     virtual void writeToOutput(const char* data, size_t len) {}

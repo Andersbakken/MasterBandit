@@ -50,32 +50,32 @@ std::string toPrintable(const char *bytes, int len)
     return ret;
 }
 
-// Standard 16-color palette (standard 8 + bright 8)
-const uint8_t TerminalEmulator::s16ColorPalette[16][3] = {
+// Default 16-color palette (standard 8 + bright 8)
+const uint8_t TerminalEmulator::kDefaultPalette[16][3] = {
     {  0,   0,   0}, // 0 black
-    {205,   0,   0}, // 1 red
-    {  0, 205,   0}, // 2 green
-    {205, 205,   0}, // 3 yellow
-    {  0,   0, 238}, // 4 blue
-    {205,   0, 205}, // 5 magenta
-    {  0, 205, 205}, // 6 cyan
-    {229, 229, 229}, // 7 white
-    {127, 127, 127}, // 8 bright black (gray)
-    {255,   0,   0}, // 9 bright red
-    {  0, 255,   0}, // 10 bright green
-    {255, 255,   0}, // 11 bright yellow
-    { 92,  92, 255}, // 12 bright blue
-    {255,   0, 255}, // 13 bright magenta
-    {  0, 255, 255}, // 14 bright cyan
+    {204,   4,   3}, // 1 red
+    { 25, 203,   0}, // 2 green
+    {206, 203,   0}, // 3 yellow
+    { 13, 115, 204}, // 4 blue
+    {203,  30, 209}, // 5 magenta
+    { 13, 205, 205}, // 6 cyan
+    {221, 221, 221}, // 7 white
+    {118, 118, 118}, // 8 bright black (gray)
+    {242,  32,  31}, // 9 bright red
+    { 35, 253,   0}, // 10 bright green
+    {255, 253,   0}, // 11 bright yellow
+    { 26, 143, 255}, // 12 bright blue
+    {253,  40, 255}, // 13 bright magenta
+    { 20, 255, 255}, // 14 bright cyan
     {255, 255, 255}, // 15 bright white
 };
 
-void TerminalEmulator::color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b)
+void TerminalEmulator::color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const
 {
     if (idx < 16) {
-        r = s16ColorPalette[idx][0];
-        g = s16ColorPalette[idx][1];
-        b = s16ColorPalette[idx][2];
+        r = m16ColorPalette[idx][0];
+        g = m16ColorPalette[idx][1];
+        b = m16ColorPalette[idx][2];
     } else if (idx < 232) {
         // 6x6x6 color cube
         int v = idx - 16;
@@ -97,6 +97,7 @@ TerminalEmulator::TerminalEmulator(TerminalCallbacks callbacks)
 {
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
     memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
+    memcpy(m16ColorPalette, kDefaultPalette, sizeof(m16ColorPalette));
 }
 
 TerminalEmulator::~TerminalEmulator()
@@ -1375,7 +1376,7 @@ void TerminalEmulator::processSGR()
         case 30: case 31: case 32: case 33:
         case 34: case 35: case 36: case 37: {
             int idx = p - 30;
-            mCurrentAttrs.setFg(s16ColorPalette[idx][0], s16ColorPalette[idx][1], s16ColorPalette[idx][2]);
+            mCurrentAttrs.setFg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
             mCurrentAttrs.setFgMode(CellAttrs::RGB);
             break;
         }
@@ -1407,7 +1408,7 @@ void TerminalEmulator::processSGR()
         case 40: case 41: case 42: case 43:
         case 44: case 45: case 46: case 47: {
             int idx = p - 40;
-            mCurrentAttrs.setBg(s16ColorPalette[idx][0], s16ColorPalette[idx][1], s16ColorPalette[idx][2]);
+            mCurrentAttrs.setBg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
             mCurrentAttrs.setBgMode(CellAttrs::RGB);
             break;
         }
@@ -1463,7 +1464,7 @@ void TerminalEmulator::processSGR()
         case 90: case 91: case 92: case 93:
         case 94: case 95: case 96: case 97: {
             int idx = p - 90 + 8;
-            mCurrentAttrs.setFg(s16ColorPalette[idx][0], s16ColorPalette[idx][1], s16ColorPalette[idx][2]);
+            mCurrentAttrs.setFg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
             mCurrentAttrs.setFgMode(CellAttrs::RGB);
             break;
         }
@@ -1472,7 +1473,7 @@ void TerminalEmulator::processSGR()
         case 100: case 101: case 102: case 103:
         case 104: case 105: case 106: case 107: {
             int idx = p - 100 + 8;
-            mCurrentAttrs.setBg(s16ColorPalette[idx][0], s16ColorPalette[idx][1], s16ColorPalette[idx][2]);
+            mCurrentAttrs.setBg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
             mCurrentAttrs.setBgMode(CellAttrs::RGB);
             break;
         }

@@ -265,6 +265,15 @@ void TerminalEmulator::focusEvent(bool focused)
     }
 }
 
+void TerminalEmulator::notifyColorPreference(bool isDark)
+{
+    if (mColorPreferenceReporting) {
+        char response[16];
+        int rlen = snprintf(response, sizeof(response), "\x1b[?997;%dn", isDark ? 1 : 2);
+        writeToOutput(response, rlen);
+    }
+}
+
 void TerminalEmulator::sendMouseEvent(int button, bool press, bool motion, int cx, int cy, unsigned int modifiers)
 {
     // Encode modifier bits into button code
@@ -956,14 +965,28 @@ void TerminalEmulator::processCSI()
         }
         break;
     case DSR:
-        if (mEscapeIndex == 3 && mEscapeBuffer[1] == '6') {
+        if (isPrivate && mEscapeIndex >= 4) {
+            // CSI ? Ps n — private DSR queries
+            char* end;
+            int ps = static_cast<int>(strtoul(mEscapeBuffer + 2, &end, 10));
+            if (ps == 996) {
+                // Color preference query: 1=dark, 2=light
+                bool isDark = true;
+                if (mCallbacks.isDarkMode) isDark = mCallbacks.isDarkMode();
+                char response[16];
+                int rlen = snprintf(response, sizeof(response), "\x1b[?997;%dn", isDark ? 1 : 2);
+                writeToOutput(response, rlen);
+            } else {
+                WARN("Unhandled private DSR %d", ps);
+            }
+        } else if (mEscapeIndex == 3 && mEscapeBuffer[1] == '6') {
             // Report cursor position: ESC [ row ; col R
             char response[32];
             int rlen = snprintf(response, sizeof(response), "\x1b[%d;%dR",
                                 mCursorY + 1, mCursorX + 1);
             writeToOutput(response, rlen);
         } else {
-            ERROR("Invalid DSR command (%d)", mEscapeIndex);
+            WARN("Unhandled DSR: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
         }
         break;
     case SCP:
@@ -1041,8 +1064,24 @@ void TerminalEmulator::processCSI()
             static const char xtver[] = "\x1bP>|MasterBandit(0.1)\x1b\\";
             writeToOutput(xtver, sizeof(xtver) - 1);
         } else {
-            // CSI Ps SP q — DECSCUSR (Set Cursor Style): ignore for now
-            WARN("Ignoring DECSCUSR / CSI q: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            // CSI Ps SP q — DECSCUSR (Set Cursor Style)
+            {
+                int ps = 0;
+                if (mEscapeIndex > 3) {
+                    // Parse parameter between '[' and ' q'
+                    char* end;
+                    ps = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
+                }
+                switch (ps) {
+                case 0: case 1: mCursorShape = CursorBlock; break;
+                case 2: mCursorShape = CursorSteadyBlock; break;
+                case 3: mCursorShape = CursorUnderline; break;
+                case 4: mCursorShape = CursorSteadyUnderline; break;
+                case 5: mCursorShape = CursorBar; break;
+                case 6: mCursorShape = CursorSteadyBar; break;
+                default: break;
+                }
+            }
         }
         break;
     default:
@@ -1197,6 +1236,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 1004: mFocusReporting = true; break;
         case 2004: mBracketedPaste = true; break;
         case 2026: mSyncOutput = true; break;
+        case 2031: mColorPreferenceReporting = true; break;
         default:
             WARN("Ignoring private mode set %d", action->count);
             break;
@@ -1228,6 +1268,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 1004: mFocusReporting = false; break;
         case 2004: mBracketedPaste = false; break;
         case 2026: mSyncOutput = false; break;
+        case 2031: mColorPreferenceReporting = false; break;
         default:
             WARN("Ignoring private mode reset %d", action->count);
             break;

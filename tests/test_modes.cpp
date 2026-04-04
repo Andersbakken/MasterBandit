@@ -156,3 +156,101 @@ TEST_CASE("XTVERSION responds to CSI > q")
     // DCS response: ESC P > | ...
     CHECK(t.term.capturedOutput.find("MasterBandit") != std::string::npos);
 }
+
+// ── DECSCUSR (cursor style) ──────────────────────────────────────────────────
+
+TEST_CASE("DECSCUSR default is block")
+{
+    TestTerminal t;
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+}
+
+TEST_CASE("DECSCUSR 0 resets to block")
+{
+    TestTerminal t;
+    t.csi("5 q");  // bar
+    t.csi("0 q");  // reset
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+}
+
+TEST_CASE("DECSCUSR 1 sets blinking block")
+{
+    TestTerminal t;
+    t.csi("1 q");
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+}
+
+TEST_CASE("DECSCUSR 2 sets steady block")
+{
+    TestTerminal t;
+    t.csi("2 q");
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
+}
+
+TEST_CASE("DECSCUSR 3 sets blinking underline")
+{
+    TestTerminal t;
+    t.csi("3 q");
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorUnderline);
+}
+
+TEST_CASE("DECSCUSR 4 sets steady underline")
+{
+    TestTerminal t;
+    t.csi("4 q");
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyUnderline);
+}
+
+TEST_CASE("DECSCUSR 5 sets blinking bar")
+{
+    TestTerminal t;
+    t.csi("5 q");
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBar);
+}
+
+TEST_CASE("DECSCUSR 6 sets steady bar")
+{
+    TestTerminal t;
+    t.csi("6 q");
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBar);
+}
+
+// ── color preference notification (mode 2031) ───────────────────────────────
+
+TEST_CASE("mode 2031 set/reset")
+{
+    TestTerminal t;
+    CHECK_FALSE(t.term.colorPreferenceReporting());
+    t.csi("?2031h");
+    CHECK(t.term.colorPreferenceReporting());
+    t.csi("?2031l");
+    CHECK_FALSE(t.term.colorPreferenceReporting());
+}
+
+TEST_CASE("DSR 996 responds with color preference")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.feed("\x1b[?996n");
+    CHECK_FALSE(t.term.capturedOutput.empty());
+    // Response: ESC [ ? 997 ; 1 n (dark) or ESC [ ? 997 ; 2 n (light)
+    // Default isDarkMode callback is null, so defaults to dark (1)
+    CHECK(t.term.capturedOutput == "\x1b[?997;1n");
+}
+
+TEST_CASE("notifyColorPreference sends when mode 2031 is set")
+{
+    TestTerminal t;
+    t.csi("?2031h");
+    t.clearOutput();
+    t.term.notifyColorPreference(false);  // light mode
+    CHECK(t.term.capturedOutput == "\x1b[?997;2n");
+}
+
+TEST_CASE("notifyColorPreference silent when mode 2031 is not set")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.term.notifyColorPreference(true);
+    CHECK(t.term.capturedOutput.empty());
+}

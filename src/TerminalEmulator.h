@@ -28,6 +28,7 @@ struct TerminalCallbacks {
     std::function<void(std::string_view)>        onOSCMB;  // called when OSC 999 received
     std::function<void(const std::string&)>      onIconChanged;    // OSC 1
     std::function<void(int /*state*/, int /*pct*/)> onProgressChanged; // OSC 9;4
+    std::function<bool()>                        isDarkMode;         // for mode 2031
 };
 
 class TerminalEmulator
@@ -39,6 +40,17 @@ public:
     int cursorX() const { return mCursorX; }
     int cursorY() const { return mCursorY; }
     bool cursorVisible() const { return mCursorVisible; }
+
+    // DECSCUSR cursor shapes
+    enum CursorShape {
+        CursorBlock = 0,         // blinking block (default)
+        CursorSteadyBlock = 2,
+        CursorUnderline = 3,     // blinking underline
+        CursorSteadyUnderline = 4,
+        CursorBar = 5,           // blinking bar
+        CursorSteadyBar = 6
+    };
+    CursorShape cursorShape() const { return mCursorShape; }
     int width() const { return mWidth; }
     int height() const { return mHeight; }
 
@@ -109,6 +121,8 @@ public:
     void mouseMoveEvent(const MouseEvent *event);
     bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
     bool syncOutputActive() const { return mSyncOutput; }
+    bool colorPreferenceReporting() const { return mColorPreferenceReporting; }
+    void notifyColorPreference(bool isDark);
     void focusEvent(bool focused);
 
     // Selection
@@ -160,6 +174,7 @@ private:
     int mWidth { 0 }, mHeight { 0 };
     int mCursorX { 0 }, mCursorY { 0 };
     bool mCursorVisible { true };
+    CursorShape mCursorShape { CursorBlock };
     bool mWrapPending { false };    // deferred autowrap state
 
     Document mDocument;
@@ -276,6 +291,7 @@ private:
     bool mBracketedPaste { false };
     bool mFocusReporting { false };  // Mode 1004
     bool mSyncOutput { false };      // Mode 2026: synchronized output
+    bool mColorPreferenceReporting { false }; // Mode 2031
 
     // Pending selection: button is pressed but mouse hasn't moved yet
     bool mPendingSelection { false };

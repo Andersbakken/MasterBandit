@@ -13,7 +13,7 @@ struct TerminalParams {
     pane_origin_y: f32, // pixel Y offset of pane within window
     cursor_col: u32,
     cursor_row: u32,
-    cursor_type: u32,   // 0=none 1=solid 2=hollow
+    cursor_type: u32,   // 0=none 1=solid 2=hollow 3=underline 4=bar
     cursor_color: u32,  // packed RGBA8
 };
 
@@ -108,8 +108,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let x1 = base_x + params.cell_width;
         let y1 = base_y + params.cell_height;
 
+        let t = 2.0; // cursor thickness in pixels
+
         if (params.cursor_type == 1u) {
-            // Solid cursor: one filled rect
+            // Solid block cursor
             let base_idx = atomicAdd(&counters[4], 6u);
             rect_verts[base_idx + 0u] = RectVertexStorage(x0, y0, cr, cg, cb, ca);
             rect_verts[base_idx + 1u] = RectVertexStorage(x1, y0, cr, cg, cb, ca);
@@ -117,9 +119,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             rect_verts[base_idx + 3u] = RectVertexStorage(x1, y0, cr, cg, cb, ca);
             rect_verts[base_idx + 4u] = RectVertexStorage(x1, y1, cr, cg, cb, ca);
             rect_verts[base_idx + 5u] = RectVertexStorage(x0, y1, cr, cg, cb, ca);
-        } else {
-            // Hollow cursor: 4 thin border rects
-            let t = 1.5; // border thickness in pixels
+        } else if (params.cursor_type == 2u) {
+            // Hollow block cursor: 4 thin border rects
             let base_idx = atomicAdd(&counters[4], 24u);
             // Top
             rect_verts[base_idx +  0u] = RectVertexStorage(x0,   y0,   cr, cg, cb, ca);
@@ -149,6 +150,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             rect_verts[base_idx + 21u] = RectVertexStorage(x1,   y0+t, cr, cg, cb, ca);
             rect_verts[base_idx + 22u] = RectVertexStorage(x1,   y1-t, cr, cg, cb, ca);
             rect_verts[base_idx + 23u] = RectVertexStorage(x1-t, y1-t, cr, cg, cb, ca);
+        } else if (params.cursor_type == 3u) {
+            // Underline cursor: thin rect at bottom of cell
+            let base_idx = atomicAdd(&counters[4], 6u);
+            rect_verts[base_idx + 0u] = RectVertexStorage(x0, y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 1u] = RectVertexStorage(x1, y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 2u] = RectVertexStorage(x0, y1,   cr, cg, cb, ca);
+            rect_verts[base_idx + 3u] = RectVertexStorage(x1, y1-t, cr, cg, cb, ca);
+            rect_verts[base_idx + 4u] = RectVertexStorage(x1, y1,   cr, cg, cb, ca);
+            rect_verts[base_idx + 5u] = RectVertexStorage(x0, y1,   cr, cg, cb, ca);
+        } else if (params.cursor_type == 4u) {
+            // Bar cursor: thin rect at left of cell
+            let base_idx = atomicAdd(&counters[4], 6u);
+            rect_verts[base_idx + 0u] = RectVertexStorage(x0,   y0, cr, cg, cb, ca);
+            rect_verts[base_idx + 1u] = RectVertexStorage(x0+t, y0, cr, cg, cb, ca);
+            rect_verts[base_idx + 2u] = RectVertexStorage(x0,   y1, cr, cg, cb, ca);
+            rect_verts[base_idx + 3u] = RectVertexStorage(x0+t, y0, cr, cg, cb, ca);
+            rect_verts[base_idx + 4u] = RectVertexStorage(x0+t, y1, cr, cg, cb, ca);
+            rect_verts[base_idx + 5u] = RectVertexStorage(x0,   y1, cr, cg, cb, ca);
         }
     }
 

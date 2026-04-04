@@ -158,6 +158,10 @@ static std::string codepointToUtf8(uint32_t cp)
 }
 
 // --- Load TTF file into memory ---
+// Implemented in platform-specific files (MetalLayer.mm on macOS)
+bool platformIsDarkMode();
+void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback);
+
 static std::vector<uint8_t> loadFontFile(const std::string& path)
 {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -299,6 +303,17 @@ private:
         if (tabs_.empty() || activeTabIdx_ < 0 || activeTabIdx_ >= static_cast<int>(tabs_.size()))
             return nullptr;
         return tabs_[activeTabIdx_].get();
+    }
+
+    void notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn) {
+        for (auto& tab : tabs_) {
+            for (auto& [paneId, _] : paneRenderStates_) {
+                Pane* pane = tab->layout()->pane(paneId);
+                if (pane) {
+                    if (auto* term = pane->activeTerm()) fn(term);
+                }
+            }
+        }
     }
 
     // Active terminal for input routing
@@ -650,6 +665,13 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
             Terminal* t = self->activeTerm();
             if (t) t->focusEvent(focused != 0);
         });
+
+        // Observe system appearance changes for mode 2031
+        platformObserveAppearanceChanges([this](bool isDark) {
+            notifyAllTerminals([isDark](TerminalEmulator* term) {
+                term->notifyColorPreference(isDark);
+            });
+        });
     }
 
     // Create a layout and tab for this terminal
@@ -714,6 +736,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
     };
     cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
+    cbs.isDarkMode = []() { return platformIsDarkMode(); };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
 
@@ -884,6 +907,7 @@ void PlatformDawn::createTab()
     };
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
+    cbs.isDarkMode = []() { return platformIsDarkMode(); };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
     if (!terminal->init(terminalOptions_)) {
@@ -1453,7 +1477,24 @@ void PlatformDawn::renderFrame()
                 params.cursor_col   = static_cast<uint32_t>(term->cursorX());
                 params.cursor_row   = static_cast<uint32_t>(term->cursorY());
                 params.cursor_color = 0xFFCCCCCCu;
-                params.cursor_type  = isFocused ? 1u : 2u;
+                if (!isFocused) {
+                    params.cursor_type = 2u; // hollow for unfocused
+                } else {
+                    switch (term->cursorShape()) {
+                    case TerminalEmulator::CursorBlock:
+                    case TerminalEmulator::CursorSteadyBlock:
+                        params.cursor_type = 1u; // solid block
+                        break;
+                    case TerminalEmulator::CursorUnderline:
+                    case TerminalEmulator::CursorSteadyUnderline:
+                        params.cursor_type = 3u; // underline
+                        break;
+                    case TerminalEmulator::CursorBar:
+                    case TerminalEmulator::CursorSteadyBar:
+                        params.cursor_type = 4u; // bar
+                        break;
+                    }
+                }
             }
 
             PooledTexture* newTexture = texturePool_.acquire(
@@ -1813,6 +1854,7 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
     };
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
+    cbs.isDarkMode = []() { return platformIsDarkMode(); };
 
     auto terminal = std::make_unique<Terminal>(this, std::move(cbs));
     if (!terminal->init(terminalOptions_)) {

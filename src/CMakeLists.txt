@@ -10,10 +10,19 @@ find_package(libwebsockets CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 
 set(PLATFORM "dawn")
-include_directories(${CMAKE_CURRENT_LIST_DIR})
+include_directories(${CMAKE_CURRENT_LIST_DIR} ${CMAKE_CURRENT_LIST_DIR}/terminal)
 add_subdirectory(${PLATFORM})
 
-add_executable(mb main.cpp Terminal.cpp TerminalEmulator.cpp Pane.cpp Tab.cpp Layout.cpp CellGrid.cpp Document.cpp Log.cpp text.cpp DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp)
+add_executable(mb main.cpp
+    terminal/Terminal.cpp
+    terminal/TerminalEmulator.cpp
+    terminal/KittyKeyboard.cpp
+    terminal/MouseAndSelection.cpp
+    terminal/SGR.cpp
+    terminal/OSC.cpp
+    terminal/CellGrid.cpp
+    terminal/Document.cpp
+    Pane.cpp Tab.cpp Layout.cpp Log.cpp text.cpp DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp)
 target_link_libraries(mb platform_${PLATFORM} glaze::glaze)
 
 # Copy shaders next to the executable

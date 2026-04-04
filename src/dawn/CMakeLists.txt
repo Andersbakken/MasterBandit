@@ -19,7 +19,7 @@ target_link_libraries(platform_dawn PUBLIC
     glaze::glaze
 )
 target_include_directories(platform_dawn PRIVATE ${Stb_INCLUDE_DIR})
-target_include_directories(platform_dawn PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(platform_dawn PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/terminal)
 
 if(APPLE)
     target_link_libraries(platform_dawn PUBLIC "-framework QuartzCore" "-framework Cocoa" "-framework CoreText" "-framework UserNotifications")

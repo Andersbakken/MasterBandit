@@ -38,6 +38,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -407,6 +408,11 @@ private:
     uint64_t      lastAnimTick_     = 0;
     std::vector<PooledTexture*> pendingTabBarRelease_;
     std::vector<ComputeState*> pendingComputeRelease_;
+
+    // Deferred release from GPU completion callbacks (thread-safe)
+    std::mutex deferredReleaseMutex_;
+    std::vector<PooledTexture*> deferredTextureRelease_;
+    std::vector<ComputeState*> deferredComputeRelease_;
 
     // Tab bar colors (packed BGRA8 as used in ResolvedCell)
     // Pane divider
@@ -1578,6 +1584,15 @@ void PlatformDawn::renderFrame()
 
     float scale = fontSize_ / font->baseSize;
 
+    // Drain deferred releases from GPU completion callbacks (thread-safe)
+    {
+        std::lock_guard<std::mutex> lock(deferredReleaseMutex_);
+        for (auto* t : deferredTextureRelease_) texturePool_.release(t);
+        deferredTextureRelease_.clear();
+        for (auto* cs : deferredComputeRelease_) renderer_.computePool().release(cs);
+        deferredComputeRelease_.clear();
+    }
+
     std::vector<Renderer::CompositeEntry> compositeEntries;
     bool pngNeeded = debugIPC_ && debugIPC_->pngScreenshotPending();
 
@@ -2007,13 +2022,17 @@ void PlatformDawn::renderFrame()
         auto texturesToRelease = toRelease;
         auto computeToRelease  = pendingComputeRelease_;
         pendingComputeRelease_.clear();
-        TexturePool*      texturePool = &texturePool_;
-        ComputeStatePool* computePool = &renderer_.computePool();
+        auto* mutex = &deferredReleaseMutex_;
+        auto* deferredTextures = &deferredTextureRelease_;
+        auto* deferredCompute = &deferredComputeRelease_;
         queue_.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
-            [texturePool, texturesToRelease, computeToRelease, computePool]
+            [mutex, deferredTextures, deferredCompute, texturesToRelease, computeToRelease]
             (wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
-                for (auto* t  : texturesToRelease) texturePool->release(t);
-                for (auto* cs : computeToRelease)  computePool->release(cs);
+                std::lock_guard<std::mutex> lock(*mutex);
+                deferredTextures->insert(deferredTextures->end(),
+                    texturesToRelease.begin(), texturesToRelease.end());
+                deferredCompute->insert(deferredCompute->end(),
+                    computeToRelease.begin(), computeToRelease.end());
             });
     }
 

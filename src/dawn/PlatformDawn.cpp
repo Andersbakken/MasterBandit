@@ -2519,8 +2519,9 @@ void PlatformDawn::renderTabBar()
 
     FontData* font = const_cast<FontData*>(textSystem_.getFont(tabBarFontName_));
     if (!font) return;
+    float scale = tabBarFontSize_ / font->baseSize;
 
-    auto placeChar = [&](int& col, const std::string& utf8ch, uint32_t fg, uint32_t bg) {
+    auto placeChar = [&](int& col, const std::string& utf8ch, uint32_t fg, uint32_t bg, bool stretchY = false) {
         if (col >= cols) return;
         ResolvedCell& rc = cells[static_cast<size_t>(col)];
         rc.fg_color = fg;
@@ -2537,6 +2538,9 @@ void PlatformDawn::renderTabBar()
                 rc.ext_max_x = gi.ext_max_x;
                 rc.ext_max_y = gi.ext_max_y;
                 rc.upem = gi.upem;
+                if (stretchY) {
+                    rc.upem = gi.upem | 0x80000000u;
+                }
             }
         }
         col++;
@@ -2559,7 +2563,7 @@ void PlatformDawn::renderTabBar()
         // Powerline separator
         uint32_t nextBg = (i + 1 < static_cast<int>(tabInfos.size()))
             ? tabInfos[i + 1].bgColor : tbBgColor_;
-        placeChar(col, SEP_RIGHT, ti.bgColor, nextBg);
+        placeChar(col, SEP_RIGHT, ti.bgColor, nextBg, true);
     }
 
     for (; col < cols; col++) {
@@ -2567,7 +2571,6 @@ void PlatformDawn::renderTabBar()
         cells[static_cast<size_t>(col)].fg_color = tbInactiveFgColor_;
     }
 
-    float scale = tabBarFontSize_ / font->baseSize;
     renderer_.updateFontAtlas(queue_, tabBarFontName_, *font);
 
     ComputeState* cs = renderer_.computePool().acquire(static_cast<uint32_t>(cols));

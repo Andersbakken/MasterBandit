@@ -156,7 +156,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (cell.atlas_offset != 0u) {
         let base_idx = atomicAdd(&counters[0], 6u);
 
-        let upem = f32(cell.upem);
+        let stretch_y = (cell.upem & 0x80000000u) != 0u;
+        let upem = f32(cell.upem & 0x7FFFFFFFu);
         let font_size = params.font_size;
         let em_per_pos = upem / font_size;
 
@@ -171,9 +172,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let pen_y_base = base_y + params.font_ascender;
 
         let x0 = pen_x + ext_min_x_px;
-        let y0 = pen_y_base - ext_max_y_px; // flip Y
+        var y0 = pen_y_base - ext_max_y_px; // flip Y
         let x1 = pen_x + ext_max_x_px;
-        let y1 = pen_y_base - ext_min_y_px;
+        var y1 = pen_y_base - ext_min_y_px;
+
+        // Stretch glyph vertically to fill cell
+        if (stretch_y) {
+            y0 = base_y;
+            y1 = base_y + params.cell_height;
+        }
 
         // Texcoords in design units
         let tc_x0 = cell.ext_min_x;

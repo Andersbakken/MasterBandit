@@ -136,10 +136,10 @@ static Key glfwKeyToKey(int glfwKey)
     }
 }
 
-// --- UTF-32 codepoint to UTF-8 string ---
-static std::string codepointToUtf8(uint32_t cp)
+// --- UTF-32 codepoint to UTF-8 ---
+// Append variant: appends UTF-8 bytes directly to an existing string (no allocation)
+static void appendUtf8(std::string& s, uint32_t cp)
 {
-    std::string s;
     if (cp < 0x80) {
         s += static_cast<char>(cp);
     } else if (cp < 0x800) {
@@ -155,6 +155,13 @@ static std::string codepointToUtf8(uint32_t cp)
         s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
         s += static_cast<char>(0x80 | (cp & 0x3F));
     }
+}
+
+// Convenience: returns a new string (for non-hot-path callers)
+static std::string codepointToUtf8(uint32_t cp)
+{
+    std::string s;
+    appendUtf8(s, cp);
     return s;
 }
 
@@ -1266,7 +1273,7 @@ std::string PlatformDawn::gridToJson(int id)
             if (c.wc == 0) {
                 text += ' ';
             } else {
-                text += codepointToUtf8(c.wc);
+                appendUtf8(text, c.wc);
             }
         }
         // Trim trailing spaces
@@ -1435,12 +1442,13 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
 
         // Build UTF-8 string and byte-to-cell mapping
         std::string runText;
+        runText.reserve(static_cast<size_t>(runEnd - runStart) * 4); // worst case: 4 bytes per codepoint
         std::vector<std::pair<uint32_t, int>> byteToCell; // (byteOffset, cellCol)
         for (int c = runStart; c < runEnd; ++c) {
             if (rowData[c].attrs.wideSpacer()) continue;
             if (rowData[c].wc == 0) continue;
             byteToCell.push_back({static_cast<uint32_t>(runText.size()), c});
-            runText += codepointToUtf8(rowData[c].wc);
+            appendUtf8(runText, rowData[c].wc);
         }
 
         if (runText.empty()) {

@@ -302,11 +302,8 @@ private:
     void updateTabBarVisibility() {
         if (tabBarConfig_.style != "auto") return;
         int h = tabBarVisible() ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
-        for (auto& tab : tabs_)
+        for (auto& tab : tabs_) {
             tab->layout()->setTabBar(h, tabBarConfig_.position);
-        // Recompute layout for active tab
-        Tab* tab = activeTab();
-        if (tab) {
             tab->layout()->computeRects(fbWidth_, fbHeight_);
             for (auto& p : tab->layout()->panes())
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);

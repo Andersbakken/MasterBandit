@@ -364,6 +364,10 @@ private:
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;
     int   dividerWidth_ = 1;
 
+    // Pane tints (RGBA, applied as uniform multiplier in shaders)
+    float activeTint_[4]   = {1.0f, 1.0f, 1.0f, 1.0f};
+    float inactiveTint_[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+
     uint32_t tbBgColor_        = 0xFF261926;
     uint32_t tbActiveBgColor_  = 0xFFf7a27a;
     uint32_t tbActiveFgColor_  = 0xFF261a1b;
@@ -772,6 +776,24 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
             };
             dividerR_ = h(1); dividerG_ = h(3); dividerB_ = h(5); dividerA_ = 1.0f;
         }
+
+        // Pane tints
+        auto parseTint = [](const std::string& col, float alpha, float out[4]) {
+            float r = 0.0f, g = 0.0f, b = 0.0f;
+            if (col.size() == 7 && col[0] == '#') {
+                r = std::stoul(col.substr(1, 2), nullptr, 16) / 255.0f;
+                g = std::stoul(col.substr(3, 2), nullptr, 16) / 255.0f;
+                b = std::stoul(col.substr(5, 2), nullptr, 16) / 255.0f;
+            }
+            // Tint is a multiplicative blend: dim by blending toward tint color.
+            // result = src * (tint * alpha + (1 - alpha))
+            out[0] = r * alpha + (1.0f - alpha);
+            out[1] = g * alpha + (1.0f - alpha);
+            out[2] = b * alpha + (1.0f - alpha);
+            out[3] = 1.0f;
+        };
+        parseTint(options.activePaneTint,   options.activePaneTintAlpha,   activeTint_);
+        parseTint(options.inactivePaneTint, options.inactivePaneTintAlpha, inactiveTint_);
 
         renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
         tabBarConfig_ = options.tabBar;
@@ -1450,7 +1472,8 @@ void PlatformDawn::renderFrame()
 
             wgpu::CommandEncoderDescriptor encDesc = {};
             wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-            renderer_.renderToPane(encoder, queue_, fontName_, params, cs, newTexture->view, imageCmds);
+            const float* tint = isFocused ? activeTint_ : inactiveTint_;
+            renderer_.renderToPane(encoder, queue_, fontName_, params, cs, newTexture->view, tint, imageCmds);
             wgpu::CommandBuffer commands = encoder.Finish();
             queue_.Submit(1, &commands);
             pendingComputeRelease_.push_back(cs);
@@ -2557,7 +2580,8 @@ void PlatformDawn::renderTabBar()
 
     wgpu::CommandEncoderDescriptor encDesc = {};
     wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-    renderer_.renderToPane(encoder, queue_, tabBarFontName_, params, cs, newTexture->view, {});
+    static constexpr float kNoTint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    renderer_.renderToPane(encoder, queue_, tabBarFontName_, params, cs, newTexture->view, kNoTint, {});
     wgpu::CommandBuffer commands = encoder.Finish();
     queue_.Submit(1, &commands);
     pendingComputeRelease_.push_back(cs);

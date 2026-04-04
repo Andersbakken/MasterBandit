@@ -65,7 +65,11 @@ struct Config {
     TabBarConfig tab_bar;
     std::vector<BindingConfig> keybindings;
     std::string divider_color = "#3d3d3d";
-    int divider_width = 1;
+    int   divider_width = 1;
+    std::string inactive_pane_tint = "#000000";
+    float inactive_pane_tint_alpha = 0.3f;
+    std::string active_pane_tint = "#000000";
+    float active_pane_tint_alpha = 0.0f;
 
     struct glaze {
         using T = Config;
@@ -77,7 +81,11 @@ struct Config {
             "tab_bar", &T::tab_bar,
             "keybinding", &T::keybindings,
             "divider_color", &T::divider_color,
-            "divider_width", &T::divider_width
+            "divider_width", &T::divider_width,
+            "inactive_pane_tint", &T::inactive_pane_tint,
+            "inactive_pane_tint_alpha", &T::inactive_pane_tint_alpha,
+            "active_pane_tint", &T::active_pane_tint,
+            "active_pane_tint_alpha", &T::active_pane_tint_alpha
         );
     };
 };

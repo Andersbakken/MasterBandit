@@ -12,7 +12,9 @@ struct VSOutput {
 };
 
 struct RectUniforms {
-    viewport: vec2f,
+    viewport:   vec2f,
+    _pad:       vec2f,
+    pane_tint:  vec4f,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: RectUniforms;
@@ -29,5 +31,5 @@ fn vs_main(in: VSInput) -> VSOutput {
 
 @fragment
 fn fs_main(in: VSOutput) -> @location(0) vec4f {
-    return in.color;
+    return in.color * uniforms.pane_tint;
 }

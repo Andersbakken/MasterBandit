@@ -48,8 +48,12 @@ int main(int argc, char **argv)
     options.scrollbackLines = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
     options.tabBar = config.tab_bar;
     options.keybindings = config.keybindings;
-    options.dividerColor = config.divider_color;
-    options.dividerWidth = config.divider_width;
+    options.dividerColor          = config.divider_color;
+    options.dividerWidth          = config.divider_width;
+    options.inactivePaneTint      = config.inactive_pane_tint;
+    options.inactivePaneTintAlpha = config.inactive_pane_tint_alpha;
+    options.activePaneTint        = config.active_pane_tint;
+    options.activePaneTintAlpha   = config.active_pane_tint_alpha;
 
     char buf[1024];
     if (!getlogin_r(buf, sizeof(buf))) {

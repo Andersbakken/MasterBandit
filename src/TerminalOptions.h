@@ -15,7 +15,11 @@ struct TerminalOptions {
     TabBarConfig tabBar;
     std::vector<BindingConfig> keybindings;
     std::string dividerColor = "#3d3d3d";
-    int dividerWidth = 1;
+    int   dividerWidth = 1;
+    std::string inactivePaneTint = "#000000";
+    float inactivePaneTintAlpha = 0.3f;
+    std::string activePaneTint = "#000000";
+    float activePaneTintAlpha = 0.0f;
 
     // Returns the tier1 capacity to pass to Document: INT_MAX when infinite.
     int resolvedScrollback() const

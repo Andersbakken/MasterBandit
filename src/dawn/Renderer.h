@@ -58,11 +58,13 @@ public:
                              const ResolvedCell* cells, uint32_t count);
 
     // Render terminal content to an externally-provided texture from the TexturePool.
+    // pane_tint: RGBA multiplier applied to all rendered content (1,1,1,1 = no tint).
     void renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       const std::string& fontName,
                       const TerminalComputeParams& params,
                       ComputeState* computeState,
                       wgpu::TextureView target,
+                      const float pane_tint[4],
                       const std::vector<ImageDrawCmd>& imageCmds = {});
 
     // Composite entry: a rendered pane texture and where to place it on the swapchain.

@@ -26,6 +26,7 @@ struct TextUniforms {
     viewport: vec2f,
     gamma: f32,
     stem_darkening: f32,
+    pane_tint: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: TextUniforms;
@@ -69,5 +70,5 @@ fn fs_main(in: VSOutput) -> @location(0) vec4f {
     if (coverage < 0.01) {
         discard;
     }
-    return vec4f(in.tint.rgb, in.tint.a * coverage);
+    return vec4f(in.tint.rgb * uniforms.pane_tint.rgb, in.tint.a * coverage);
 }

@@ -116,7 +116,7 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     // Bind group layout: uniform (b0)
     wgpu::BindGroupLayoutEntry rectEntries[1] = {};
     rectEntries[0].binding = 0;
-    rectEntries[0].visibility = wgpu::ShaderStage::Vertex;
+    rectEntries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
     rectEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
 
     wgpu::BindGroupLayoutDescriptor rectBglDesc = {};
@@ -177,14 +177,15 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     // Rect uniform buffer (viewport)
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = 16; // vec2f viewport + padding
+        desc.size = 32; // vec2f viewport + vec2f pad + vec4f pane_tint
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         rectUniformBuffer_ = device_.CreateBuffer(&desc);
 
-        float uniforms[4] = {
+        float uniforms[8] = {
             static_cast<float>(viewportW_),
             static_cast<float>(viewportH_),
-            0.0f, 0.0f
+            0.0f, 0.0f,
+            1.0f, 1.0f, 1.0f, 1.0f  // pane_tint default = no tint
         };
         queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
     }
@@ -194,7 +195,7 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
         wgpu::BindGroupEntry bindings[1] = {};
         bindings[0].binding = 0;
         bindings[0].buffer = rectUniformBuffer_;
-        bindings[0].size = 16;
+        bindings[0].size = 32;
 
         wgpu::BindGroupDescriptor bgDesc = {};
         bgDesc.layout = rectBindGroupLayout_;
@@ -620,6 +621,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              const TerminalComputeParams& params,
                              ComputeState* computeState,
                              wgpu::TextureView target,
+                             const float pane_tint[4],
                              const std::vector<ImageDrawCmd>& imageCmds)
 {
     if (!computeInitialized_) return;
@@ -632,7 +634,8 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     {
         float w = static_cast<float>(params.cols) * params.cell_width;
         float h = static_cast<float>(params.rows) * params.cell_height;
-        float uniforms[4] = { w, h, 0.0f, 0.0f };
+        float uniforms[8] = { w, h, 0.0f, 0.0f,
+                               pane_tint[0], pane_tint[1], pane_tint[2], pane_tint[3] };
         queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
         FontGPU& gpu = fontIt->second;
@@ -644,7 +647,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
             w, h,
             1.0f,
             1.0f,
-            0.0f, 0.0f, 0.0f, 0.0f,
+            pane_tint[0], pane_tint[1], pane_tint[2], pane_tint[3],
         };
         queue.WriteBuffer(gpu.uniformBuffer, 0, textUniforms, sizeof(textUniforms));
     }
@@ -770,18 +773,20 @@ void Renderer::updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint3
 {
     if (!rectBindGroupLayout_) return;
 
-    float uniforms[2] = { static_cast<float>(fbWidth), static_cast<float>(fbHeight) };
+    // Dividers always use no tint (1,1,1,1); viewport in first two floats.
+    float uniforms[8] = { static_cast<float>(fbWidth), static_cast<float>(fbHeight),
+                           0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 
     if (!dividerUniformBuffer_) {
         wgpu::BufferDescriptor desc = {};
-        desc.size  = 256;
+        desc.size  = 32; // matches RectUniforms: vec2f viewport + vec2f pad + vec4f pane_tint
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         dividerUniformBuffer_ = device_.CreateBuffer(&desc);
 
         wgpu::BindGroupEntry entry = {};
         entry.binding = 0;
         entry.buffer  = dividerUniformBuffer_;
-        entry.size    = 256;
+        entry.size    = 32;
         wgpu::BindGroupDescriptor bgDesc = {};
         bgDesc.layout     = rectBindGroupLayout_;
         bgDesc.entryCount = 1;

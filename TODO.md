@@ -14,7 +14,29 @@
 - [ ] REP (`CSI b`) — Repeat preceding character N times.
 - [ ] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking.
 
+## Multi-Tab / Multi-Pane
+
+- [ ] Pane splits — keyboard shortcuts to split current pane horizontally/vertically.
+- [ ] Pane focus navigation — keyboard shortcuts to move focus between panes.
+- [ ] Pane resize — drag split dividers or keyboard shortcuts to adjust split ratio.
+- [ ] Pane close — keyboard shortcut to close focused pane (currently only tabs are closeable via middle-click).
+- [ ] Zoom — keyboard shortcut to zoom focused pane to fill the window (Layout::zoomPane is implemented, needs keybinding).
+- [ ] Full-screen overlays — Tab::pushOverlay / popOverlay are implemented; need a way to trigger (e.g. Cmd+Shift+Enter kitty-style).
+- [ ] Popup panes (OSC 999) — Pane::handleOSCMB and TerminalEmulator dispatch are implemented; needs end-to-end testing.
+- [ ] Tab bar: tab title from OSC 0/2 is wired but tab titles display as empty until shell sets them.
+- [ ] Tab bar: cursor-blink optimization — re-render to held texture when only cursor changes (500 ms interval guarantees GPU completion).
+- [ ] Tab bar: color packing uses BGR order (parseHexColor packs R<<16|G<<8|B but shader reads R from bits 0-7). Colors are visually incorrect (R/B swapped) — fix to match packFgAsU32 byte order.
+- [ ] Tab bar: configurable keybindings for new tab (Ctrl+Shift+T) and tab close.
+- [ ] Non-powerline tab bar styles (fade, slant, separator, round) from config.
+
+## Configuration
+
+- [ ] Color scheme — `[colors]` config section for ANSI palette, foreground, background, cursor.
+- [ ] Keybindings — configurable key mappings for tab/pane operations.
+- [ ] Cursor style — block/underline/bar, blink on/off, blink interval.
+
 ## Infrastructure
 
-- [ ] Split PlatformDawn.cpp — Separate platform/event loop, font loading, cell resolution, and TerminalWindow into own files. The Dawn-specific code is a minority of the ~1100 lines.
-- [ ] System font discovery — Replace hardcoded path list in `PlatformDawn.cpp:findMonospaceFont()`. Use Core Text on macOS, fontconfig on Linux. Support font selection by name, font fallback chains for CJK/emoji coverage.
+- [ ] Split PlatformDawn.cpp — it's grown large; separate platform/event loop, font loading, cell resolution into own files.
+- [ ] Log level — currently defaulting to Error; `-v` flags lower it. Debug level enables pool allocation logs.
+- [ ] macOS font fallback — CoreText two-pass strategy implemented; parity with Linux fontconfig pass needs verification.

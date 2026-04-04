@@ -29,10 +29,7 @@ cells.
 
 ## 2. Cell Grid (implemented)
 
-Replace the current `Line { string, commands }` model with a `cols × rows` cell
-array providing O(1) random access for cursor-addressed writes.
-
-**Target cell**: ~12 bytes (foot-inspired)
+A `cols × rows` cell array providing O(1) random access for cursor-addressed writes.
 
 | Field | Size | Contents |
 |---|---|---|
@@ -40,30 +37,28 @@ array providing O(1) random access for cursor-addressed writes.
 | packed attrs | 8 B | 24-bit fg, 24-bit bg, 2-bit color mode per color, 1-bit flags: bold, italic, underline, strikethrough, blink, inverse, dim |
 
 Rare attributes (hyperlinks, combining characters, image refs) are stored in a
-lazy-allocated side table keyed by cell coordinate — keeps the hot path small.
+lazy-allocated side table keyed by cell coordinate.
 
 **Wide characters**: first cell holds the glyph, subsequent cells are marked as
 spacers (same model reused for ligatures).
 
 ---
 
-## 3. Scrollback (to implement)
+## 3. Scrollback (implemented)
 
-Two-tier design (kitty-inspired).
+Two-tier design.
 
 ### Tier 1 — Ring buffer of full cell rows
 
-- Visible screen + bounded history (configurable row count, power-of-2 for fast
-  modulo).
-- Each row is a contiguous array of cells, so ~2.4 KB for a 200-column line.
+- Visible screen + bounded history (configurable, default infinite).
+- Each row is a contiguous array of cells.
 - Mutable; direct target of terminal writes.
 
 ### Tier 2 — Compressed archive
 
 - Lines re-encoded as UTF-8 text + inline ANSI SGR escape sequences.
-- Much more compact: ~100 bytes/line typical vs ~2.4 KB for full cells.
 - Read-only. Re-parsed on demand when the user scrolls back far enough.
-- Supports deep/unlimited scrollback without proportional memory cost.
+- Supports unlimited scrollback without proportional memory cost.
 
 Tier 1 overflow pushes the oldest row into Tier 2 before reuse.
 
@@ -82,12 +77,10 @@ ligature state is persisted. Ligature detection happens at render time.
 2. Feed each run to HarfBuzz.
 3. Inspect cluster output to detect ligature substitutions.
 4. Ligature glyph renders in the first cell, spanning N cell widths; the
-   remaining N−1 cells become spacers (same wide-char model).
+   remaining N−1 cells become spacers.
 
-**Attribute boundaries break ligatures** (foot-style): if adjacent cells differ in
-fg color or other attributes, they belong to separate shaping runs even if the
-font contains a ligature for that sequence. This respects the user's explicit
-color/style choices.
+**Attribute boundaries break ligatures**: if adjacent cells differ in fg color or
+other attributes, they belong to separate shaping runs.
 
 **Caching**: shaping result cached per row; invalidated when the row's dirty bit
 is set.
@@ -98,79 +91,124 @@ is set.
 
 Per-frame flow:
 
-1. **CPU**: shape dirty rows → produce a resolved row buffer. Each entry contains
+1. **CPU**: shape dirty rows → produce a resolved cell buffer. Each entry contains
    glyph ID, atlas offset, cell span, and packed color.
-2. **Upload**: resolved rows written to a GPU storage buffer.
-3. **Compute shader**: reads resolved rows + font metrics, emits `SlugVertex`
-   entries into a vertex buffer. Also emits `RectVertex` for cells with
-   non-default background colors.
+2. **Upload**: resolved cells written to a `ComputeState` GPU storage buffer
+   (acquired from `ComputeStatePool`).
+3. **Compute shader**: reads resolved cells + font metrics, emits `SlugVertex`
+   entries into a vertex buffer. Also emits `RectVertex` for non-default backgrounds.
 4. **Render passes**: rect pass (backgrounds, cursor, selection) then Slug text
-   pass (existing fragment shader, unchanged).
-
-**Common case** (no dirty rows): skip CPU shaping and compute dispatch entirely;
-reuse the previous frame's vertex buffer.
+   pass.
+5. **Texture pool**: rendered output goes into a `PooledTexture` from
+   `TexturePool`. Textures are held between frames when content is unchanged and
+   re-acquired when dirty. Both pools use byte-budget LRU eviction.
+6. **Compositor**: composites all visible pane textures plus the tab bar texture
+   onto the swapchain via `CopyTextureToTexture`. An explicit viewport is set on
+   each render pass to ensure correct NDC mapping when a pool texture is larger
+   than the content area.
 
 ---
 
 ## 6. Dirty Tracking (implemented)
 
-- Per-row dirty bit.
-- Only dirty rows are re-shaped (HarfBuzz) and have vertices regenerated.
-- Clean rows reuse cached shaping results and existing vertex data.
-- Grid-level "all dirty" flag for full-screen redraws: resize, alternate screen
-  switch, bulk scroll.
+- Per-row dirty bit in the grid.
+- Per-pane `dirty` flag in `PaneRenderState` — set on terminal update events.
+- Only dirty panes acquire a new pool texture and re-render.
+- Clean panes reuse their held texture and are composited without re-rendering.
+- Tab bar has its own `tabBarDirty_` flag; re-renders on tab add/remove/switch,
+  title/icon/progress change, and animation frame advance.
 
 ---
 
-## 7. UI Abstraction (to implement)
+## 7. Multi-Tab / Multi-Pane Architecture (implemented)
 
-A backend-agnostic UI layer for config panels, tab bars, status lines, and other
-chrome. The element tree is pure data with no rendering knowledge; visual
-presentation is delegated to a virtual backend.
-
-### Element types
-
-| Element | Data | Action |
-|---|---|---|
-| `Button` | label | terminal action or show panel |
-| `Checkbox` | label, bound value | toggle bound value |
-| `Label` | text | — |
-| `TabBar` | tab labels | show corresponding panel |
-| `TextInput` | placeholder, bound value | edit bound value |
-| `List` | items | on_select callback |
-| `Panel` | children, layout hints | container |
-
-Each element's action is either "navigate to another panel" or "execute a
-terminal/app action." This keeps the description declarative.
-
-### Backend interface
+### Hierarchy
 
 ```
-UIBackend (virtual)
-    renderButton(Button, bounds)
-    renderCheckbox(Checkbox, bounds)
-    renderLabel(Label, bounds)
-    renderTabBar(TabBar, bounds)
-    renderTextInput(TextInput, bounds)
-    renderList(List, bounds)
-    layout(Panel, available_rect)
-    handleInput(InputEvent) → bool
+PlatformDawn
+  └── tabs_: Vec<Tab>            ← tab bar shows one entry per Tab
+        └── Tab
+              ├── layout_: Layout      ← binary split tree of Panes
+              │     └── Pane           ← one terminal per pane
+              │           ├── terminal_: Terminal  (PTY + VT parser)
+              │           └── popups_: Vec<PopupPane>  (OSC 999)
+              └── overlays_: Vec<Terminal>  ← full-screen overlays (no tab bar entry)
 ```
 
-### Planned backends
+### TerminalEmulator / Terminal split
 
-- **CellGridUIBackend** — draws into a CellGrid overlay using box-drawing
-  characters, highlights, and cell attributes. Mouse and keyboard input routed
-  through the terminal's existing input path.
-- **GtkUIBackend** — maps elements to GtkWidget tree.
-- **CocoaUIBackend** — maps elements to NSView hierarchy.
+- **`TerminalEmulator`**: VT parser + cell state + selection + image registry.
+  No PTY. Can be used standalone for popup panes. Callbacks via `TerminalCallbacks`.
+- **`Terminal`** extends `TerminalEmulator`: adds PTY management (fork, masterFD,
+  `readFromFD`, resize+ioctl).
 
-Layout is backend-specific: the TUI backend snaps to cell boundaries, native
-backends use pixel coordinates.
+### Tab bar
 
-### Relationship to panes/tabs
+- Rendered as a 1-row cell grid using the same compute/text/rect GPU pipeline.
+- Powerline style: U+E0B0 chevron separators via bundled Symbols Nerd Font Mono.
+- Per-tab: index `[N]`, optional icon (OSC 1), title (OSC 2), progress glyph
+  (OSC 9;4) with indeterminate animation.
+- Configurable: style (powerline/hidden), position (top/bottom), font, font size,
+  colors. Stored in `[tab_bar]` config section.
+- Left-click: switch tab. Middle-click: close tab (no-op if last tab).
 
-The pane tree (how terminals are spatially arranged) is structural. The UI layer
-is presentational (how the user interacts with config and chrome). They connect
-at the action layer: a UI button "split horizontal" dispatches a pane manager
-action.
+### Popup panes (OSC 999)
+
+Shell-driven floating cell grids. No PTY — content written via escape sequence.
+Protocol: `OSC 999 ; create/write/focus/blur/destroy ; id=<id> ; ... ST`.
+Keyboard routing: focused popup receives keys; responses go back via owning
+terminal's PTY.
+
+### Resource pools
+
+- **`TexturePool`**: GPU textures (RenderAttachment|CopySrc). Best-fit acquire,
+  immediate release, byte-budget LRU eviction.
+- **`ComputeStatePool`**: sets of 5 compute buffers + bind group. Same
+  acquire/release/eviction pattern. Lives inside `Renderer`.
+
+---
+
+## 8. Configuration (implemented)
+
+TOML config at `$XDG_CONFIG_HOME/MasterBandit/config.toml`. Parsed via glaze.
+
+```toml
+font = "Inconsolata"
+font_size = 20.0
+bold_strength = 0.04
+scrollback_lines = -1   # -1 = infinite
+
+[tab_bar]
+style = "powerline"     # powerline | hidden
+position = "bottom"     # top | bottom
+font = ""               # empty = same as terminal font
+font_size = 0.0         # 0 = same as terminal font_size
+
+[tab_bar.colors]
+background  = "#1a1b26"
+active_bg   = "#7aa2f7"
+active_fg   = "#1a1b26"
+inactive_bg = "#24283b"
+inactive_fg = "#565f89"
+```
+
+Font resolution uses fontconfig (Linux) or CoreText (macOS) for family→file
+lookup, with monospace-first fallback for missing glyphs.
+
+Bold: uses a real bold font variant if found; otherwise synthesizes via
+`hb_font_set_synthetic_bold`.
+
+---
+
+## 9. Font Fallback (implemented)
+
+Two-pass fontconfig strategy (same as WezTerm):
+- **Pass 1**: monospace fonts only (FC_MONO / FC_DUAL / FC_CHARCELL), using
+  `FcFontList` (database order, no sort-scoring bias).
+- **Pass 2**: any font if no monospace covers the codepoint.
+
+Unicode whitespace codepoints are excluded from fallback (no visible glyph needed).
+
+Bundled fallback: **Symbols Nerd Font Mono** (OFL licensed) copied alongside the
+binary, loaded as a registered fallback for powerline glyphs (U+E0B0–E0B3) and
+other symbols.

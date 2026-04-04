@@ -765,3 +765,81 @@ void Renderer::composite(wgpu::CommandEncoder& encoder,
         encoder.CopyTextureToTexture(&src, &dst, &extent);
     }
 }
+
+void Renderer::updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint32_t fbHeight)
+{
+    if (!rectBindGroupLayout_) return;
+
+    float uniforms[2] = { static_cast<float>(fbWidth), static_cast<float>(fbHeight) };
+
+    if (!dividerUniformBuffer_) {
+        wgpu::BufferDescriptor desc = {};
+        desc.size  = 256;
+        desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        dividerUniformBuffer_ = device_.CreateBuffer(&desc);
+
+        wgpu::BindGroupEntry entry = {};
+        entry.binding = 0;
+        entry.buffer  = dividerUniformBuffer_;
+        entry.size    = 256;
+        wgpu::BindGroupDescriptor bgDesc = {};
+        bgDesc.layout     = rectBindGroupLayout_;
+        bgDesc.entryCount = 1;
+        bgDesc.entries    = &entry;
+        dividerBindGroup_ = device_.CreateBindGroup(&bgDesc);
+    }
+
+    queue.WriteBuffer(dividerUniformBuffer_, 0, uniforms, sizeof(uniforms));
+}
+
+void Renderer::updateDividerBuffer(wgpu::Queue& queue,
+                                    wgpu::Buffer& vb,
+                                    float x, float y, float w, float h,
+                                    float r, float g, float b, float a)
+{
+    RectVertex verts[6];
+    float x0 = x, y0 = y, x1 = x + w, y1 = y + h;
+    auto set = [&](int i, float px, float py) {
+        verts[i].pos[0] = px; verts[i].pos[1] = py;
+        verts[i].color[0] = r; verts[i].color[1] = g;
+        verts[i].color[2] = b; verts[i].color[3] = a;
+    };
+    set(0, x0, y0); set(1, x1, y0); set(2, x0, y1);
+    set(3, x1, y0); set(4, x1, y1); set(5, x0, y1);
+
+    if (!vb) {
+        wgpu::BufferDescriptor desc = {};
+        desc.size  = sizeof(verts);
+        desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        vb = device_.CreateBuffer(&desc);
+    }
+    queue.WriteBuffer(vb, 0, verts, sizeof(verts));
+}
+
+void Renderer::drawDivider(wgpu::CommandEncoder& encoder,
+                            wgpu::Texture swapchainTexture,
+                            uint32_t fbWidth, uint32_t fbHeight,
+                            const wgpu::Buffer& vb)
+{
+    if (!vb || !dividerBindGroup_ || !rectPipeline_) return;
+
+    wgpu::TextureViewDescriptor viewDesc = {};
+    wgpu::TextureView swapView = swapchainTexture.CreateView(&viewDesc);
+    wgpu::RenderPassColorAttachment att = {};
+    att.view    = swapView;
+    att.loadOp  = wgpu::LoadOp::Load;
+    att.storeOp = wgpu::StoreOp::Store;
+    wgpu::RenderPassDescriptor rpDesc = {};
+    rpDesc.colorAttachmentCount = 1;
+    rpDesc.colorAttachments = &att;
+
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+    pass.SetViewport(0.0f, 0.0f,
+                     static_cast<float>(fbWidth), static_cast<float>(fbHeight),
+                     0.0f, 1.0f);
+    pass.SetPipeline(rectPipeline_);
+    pass.SetBindGroup(0, dividerBindGroup_);
+    pass.SetVertexBuffer(0, vb);
+    pass.Draw(6);
+    pass.End();
+}

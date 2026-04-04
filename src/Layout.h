@@ -48,6 +48,10 @@ public:
     void zoomPane(int id);
     void unzoom();
 
+    // Divider between panes
+    void setDividerPixels(int px) { dividerPixels_ = std::max(0, px); }
+    int dividerPixels() const { return dividerPixels_; }
+
     // Tab bar height reservation
     void setTabBar(int height, const std::string& position) {
         tabBarHeight_ = height;
@@ -60,6 +64,10 @@ public:
 
     // Return pane id at pixel (px, py), or -1
     int paneAtPixel(int px, int py) const;
+
+    // Return pixel rects of all split dividers (one per split node).
+    // dividerPixels: width/height of each divider in pixels.
+    std::vector<PaneRect> dividerRects(int dividerPixels) const;
 
     // Grow the pane by deltaPixels toward the given split axis.
     // Finds the nearest containing split of type splitDir and adjusts its ratio
@@ -81,4 +89,5 @@ private:
     int mZoomedPaneId { -1 };
     int tabBarHeight_ { 0 };
     std::string tabBarPosition_ { "bottom" };
+    int dividerPixels_ { 1 };
 };

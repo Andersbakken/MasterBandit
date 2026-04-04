@@ -191,13 +191,15 @@ void Layout::computeRectsRecursive(LayoutNode* node, PaneRect rect)
 
     if (node->dir == LayoutNode::Dir::Horizontal) {
         firstRect.w  = static_cast<int>(rect.w * node->ratio);
-        secondRect.x = rect.x + firstRect.w;
-        secondRect.w = rect.w - firstRect.w;
+        secondRect.x = rect.x + firstRect.w + dividerPixels_;
+        secondRect.w = rect.w - firstRect.w - dividerPixels_;
     } else {
         firstRect.h  = static_cast<int>(rect.h * node->ratio);
-        secondRect.y = rect.y + firstRect.h;
-        secondRect.h = rect.h - firstRect.h;
+        secondRect.y = rect.y + firstRect.h + dividerPixels_;
+        secondRect.h = rect.h - firstRect.h - dividerPixels_;
     }
+    if (secondRect.w < 0) secondRect.w = 0;
+    if (secondRect.h < 0) secondRect.h = 0;
 
     computeRectsRecursive(node->first.get(), firstRect);
     computeRectsRecursive(node->second.get(), secondRect);
@@ -275,4 +277,30 @@ int Layout::paneAtPixel(int px, int py) const
             return p->id();
     }
     return -1;
+}
+
+static void collectDividerRects(const LayoutNode* node, int divPx, std::vector<PaneRect>& out)
+{
+    if (!node || node->isLeaf || divPx <= 0) return;
+
+    // The divider occupies the gap between first and second child rects.
+    const PaneRect& r = node->rect;
+    if (node->dir == LayoutNode::Dir::Horizontal) {
+        int splitX = node->first ? (node->first->rect.x + node->first->rect.w) : 0;
+        out.push_back({splitX, r.y, divPx, r.h});
+    } else {
+        int splitY = node->first ? (node->first->rect.y + node->first->rect.h) : 0;
+        out.push_back({r.x, splitY, r.w, divPx});
+    }
+
+    collectDividerRects(node->first.get(),  divPx, out);
+    collectDividerRects(node->second.get(), divPx, out);
+}
+
+std::vector<PaneRect> Layout::dividerRects(int dividerPixels) const
+{
+    std::vector<PaneRect> result;
+    if (mRoot && mZoomedPaneId < 0)
+        collectDividerRects(mRoot.get(), dividerPixels, result);
+    return result;
 }

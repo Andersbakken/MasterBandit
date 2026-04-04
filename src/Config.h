@@ -64,6 +64,8 @@ struct Config {
     int scrollback_lines = -1; // -1 = infinite
     TabBarConfig tab_bar;
     std::vector<BindingConfig> keybindings;
+    std::string divider_color = "#3d3d3d";
+    int divider_width = 1;
 
     struct glaze {
         using T = Config;
@@ -73,7 +75,9 @@ struct Config {
             "bold_strength", &T::bold_strength,
             "scrollback_lines", &T::scrollback_lines,
             "tab_bar", &T::tab_bar,
-            "keybinding", &T::keybindings
+            "keybinding", &T::keybindings,
+            "divider_color", &T::divider_color,
+            "divider_width", &T::divider_width
         );
     };
 };

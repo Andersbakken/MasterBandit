@@ -78,6 +78,23 @@ public:
                    wgpu::Texture swapchainTexture,
                    const std::vector<CompositeEntry>& entries);
 
+    // Persistent divider support.
+    // Call updateDividerViewport whenever the swapchain dimensions change.
+    void updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint32_t fbHeight);
+
+    // Build (or update) a 6-vertex buffer for a single divider rect.
+    // Pass a null Buffer to create a new one; pass an existing Buffer to overwrite in place.
+    void updateDividerBuffer(wgpu::Queue& queue,
+                             wgpu::Buffer& vb,
+                             float x, float y, float w, float h,
+                             float r, float g, float b, float a);
+
+    // Draw one divider from its pre-built vertex buffer.
+    void drawDivider(wgpu::CommandEncoder& encoder,
+                     wgpu::Texture swapchainTexture,
+                     uint32_t fbWidth, uint32_t fbHeight,
+                     const wgpu::Buffer& vb);
+
     // Image rendering
     struct ImageGPU {
         wgpu::Texture texture;
@@ -117,6 +134,10 @@ private:
     wgpu::BindGroupLayout rectBindGroupLayout_;
     wgpu::Buffer rectUniformBuffer_;
     wgpu::BindGroup rectBindGroup_;
+
+    // Persistent divider bind group — uses swapchain viewport, updated on resize
+    wgpu::Buffer dividerUniformBuffer_;
+    wgpu::BindGroup dividerBindGroup_;
 
     // Compute pipeline
     wgpu::ComputePipeline computePipeline_;

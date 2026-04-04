@@ -335,6 +335,7 @@ private:
         PooledTexture* heldTexture = nullptr;
         bool dirty = true;
         std::vector<PooledTexture*> pendingRelease;
+        wgpu::Buffer dividerVB; // null = no divider for this pane
     };
     std::unordered_map<int, PaneRenderState> paneRenderStates_;
 
@@ -358,6 +359,10 @@ private:
     std::vector<ComputeState*> pendingComputeRelease_;
 
     // Tab bar colors (packed BGRA8 as used in ResolvedCell)
+    // Pane divider
+    float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;
+    int   dividerWidth_ = 1;
+
     uint32_t tbBgColor_        = 0xFF261926;
     uint32_t tbActiveBgColor_  = 0xFFf7a27a;
     uint32_t tbActiveFgColor_  = 0xFF261a1b;
@@ -374,10 +379,12 @@ private:
     void terminalExited(Terminal* terminal) override;
 
     // Pane helpers
-    // Spawn a terminal for a freshly-created pane using stored terminalOptions_.
     void spawnTerminalForPane(Pane* pane, int tabIdx);
-    // Recompute rects and resize all pane terminals in tab; marks everything dirty.
     void resizeAllPanesInTab(Tab* tab);
+    void refreshDividers(Tab* tab);
+    void clearDividers(Tab* tab);
+    // Release held pane textures back to the pool (call when switching away from a tab).
+    void releaseTabTextures(Tab* tab);
 };
 
 // ========================================================================
@@ -637,6 +644,7 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
 
     // Create a layout and tab for this terminal
     auto layout = std::make_unique<Layout>();
+    layout->setDividerPixels(dividerWidth_);
     Pane* pane = layout->createPane();
     layout->setFocusedPane(pane->id());
     layout->computeRects(fbWidth_, fbHeight_);
@@ -746,6 +754,17 @@ std::unique_ptr<Terminal> PlatformDawn::createTerminal(const TerminalOptions& op
         auto userBindings = parseBindings(options.keybindings);
         bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
 
+        // Divider color
+        dividerWidth_ = std::max(0, options.dividerWidth);
+        const std::string& dc = options.dividerColor;
+        if (dc.size() == 7 && dc[0] == '#') {
+            auto h = [&](int i) -> float {
+                return std::stoul(dc.substr(i, 2), nullptr, 16) / 255.0f;
+            };
+            dividerR_ = h(1); dividerG_ = h(3); dividerB_ = h(5); dividerA_ = 1.0f;
+        }
+
+        renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
         tabBarConfig_ = options.tabBar;
         initTabBar(options.tabBar);
         // Recompute rects with tab bar height applied
@@ -774,6 +793,7 @@ void PlatformDawn::createTab()
     if (!device_ || !glfwWindow_) return;
 
     auto layout = std::make_unique<Layout>();
+    layout->setDividerPixels(dividerWidth_);
     Pane* pane = layout->createPane();
     layout->setFocusedPane(pane->id());
 
@@ -1397,6 +1417,14 @@ void PlatformDawn::renderFrame()
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
         renderer_.composite(encoder, surfaceTexture.texture, compositeEntries);
 
+        // Draw per-pane dividers (pre-built vertex buffers, no allocation)
+        for (auto& panePtr : currentTab->layout()->panes()) {
+            auto it = paneRenderStates_.find(panePtr->id());
+            if (it == paneRenderStates_.end() || !it->second.dividerVB) continue;
+            renderer_.drawDivider(encoder, surfaceTexture.texture,
+                                   fbWidth_, fbHeight_, it->second.dividerVB);
+        }
+
         if (pngNeeded) {
             uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256;
             uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * fbHeight_;
@@ -1491,6 +1519,83 @@ void PlatformDawn::renderFrame()
 
     surface_.Present();
     needsRedraw_ = false;
+}
+
+static void collectFirstPaneDividers(const LayoutNode* node, int divPx,
+                                      std::vector<std::pair<int, PaneRect>>& out)
+{
+    if (!node || node->isLeaf || divPx <= 0) return;
+    const PaneRect& r = node->rect;
+
+    // The "first" (left/top) child owns this divider.
+    int firstPaneId = -1;
+    const LayoutNode* first = node->first.get();
+    while (first && !first->isLeaf) first = first->first.get(); // leftmost leaf
+    if (first) firstPaneId = first->paneId;
+
+    if (firstPaneId >= 0) {
+        PaneRect divRect;
+        if (node->dir == LayoutNode::Dir::Horizontal) {
+            int splitX = node->first ? (node->first->rect.x + node->first->rect.w) : 0;
+            divRect = {splitX, r.y, divPx, r.h};
+        } else {
+            int splitY = node->first ? (node->first->rect.y + node->first->rect.h) : 0;
+            divRect = {r.x, splitY, r.w, divPx};
+        }
+        out.push_back({firstPaneId, divRect});
+    }
+
+    collectFirstPaneDividers(node->first.get(),  divPx, out);
+    collectFirstPaneDividers(node->second.get(), divPx, out);
+}
+
+void PlatformDawn::refreshDividers(Tab* tab)
+{
+    if (!tab || dividerWidth_ <= 0) return;
+    Layout* layout = tab->layout();
+
+    // Clear all divider VBs for this tab's panes
+    for (auto& panePtr : layout->panes())
+        paneRenderStates_[panePtr->id()].dividerVB = {};
+
+    if (layout->panes().size() <= 1 || layout->isZoomed()) return;
+
+    // Collect (paneId, dividerRect) for each split node
+    std::vector<std::pair<int, PaneRect>> dividers;
+    collectFirstPaneDividers(layout->root(), dividerWidth_, dividers);
+
+    renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
+
+    for (auto& [paneId, dr] : dividers) {
+        auto it = paneRenderStates_.find(paneId);
+        if (it == paneRenderStates_.end()) continue;
+        renderer_.updateDividerBuffer(queue_, it->second.dividerVB,
+            static_cast<float>(dr.x), static_cast<float>(dr.y),
+            static_cast<float>(dr.w), static_cast<float>(dr.h),
+            dividerR_, dividerG_, dividerB_, dividerA_);
+    }
+}
+
+void PlatformDawn::clearDividers(Tab* tab)
+{
+    if (!tab) return;
+    for (auto& panePtr : tab->layout()->panes())
+        paneRenderStates_[panePtr->id()].dividerVB = {};
+}
+
+void PlatformDawn::releaseTabTextures(Tab* tab)
+{
+    if (!tab) return;
+    for (auto& panePtr : tab->layout()->panes()) {
+        auto it = paneRenderStates_.find(panePtr->id());
+        if (it == paneRenderStates_.end()) continue;
+        PaneRenderState& rs = it->second;
+        if (rs.heldTexture) {
+            pendingTabBarRelease_.push_back(rs.heldTexture);
+            rs.heldTexture = nullptr;
+            rs.dirty = true;
+        }
+    }
 }
 
 void PlatformDawn::terminalExited(Terminal* terminal)
@@ -1613,6 +1718,7 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
 void PlatformDawn::resizeAllPanesInTab(Tab* tab)
 {
     if (!tab) return;
+    clearDividers(tab);
     tab->layout()->computeRects(fbWidth_, fbHeight_);
 
     for (auto& panePtr : tab->layout()->panes()) {
@@ -1642,6 +1748,7 @@ void PlatformDawn::resizeAllPanesInTab(Tab* tab)
             ioctl(t->masterFD(), TIOCSWINSZ, &ws);
         }
     }
+    refreshDividers(tab);
     needsRedraw_ = true;
 }
 
@@ -1653,14 +1760,20 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
         [&](const Action::ActivateTabRelative& a) {
             int idx = activeTabIdx_ + a.delta;
             if (idx >= 0 && idx < static_cast<int>(tabs_.size())) {
+                clearDividers(activeTab());
+                releaseTabTextures(activeTab());
                 activeTabIdx_ = idx;
+                refreshDividers(activeTab());
                 tabBarDirty_  = true;
                 needsRedraw_  = true;
             }
         },
         [&](const Action::ActivateTab& a) {
             if (a.index >= 0 && a.index < static_cast<int>(tabs_.size())) {
+                clearDividers(activeTab());
+                releaseTabTextures(activeTab());
                 activeTabIdx_ = a.index;
+                refreshDividers(activeTab());
                 tabBarDirty_  = true;
                 needsRedraw_  = true;
             }
@@ -1916,6 +2029,11 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
     configureSurface(fbWidth_, fbHeight_);
     renderer_.setViewportSize(fbWidth_, fbHeight_);
+    renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
+
+    // Clear divider buffers for all tabs — geometry is now stale
+    for (auto& tabPtr : tabs_)
+        clearDividers(tabPtr.get());
 
     Tab* tab = activeTab();
     if (!tab) return;
@@ -1962,6 +2080,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
         tabBarTexture_ = nullptr;
     }
     tabBarDirty_ = true;
+    refreshDividers(tab);
     needsRedraw_ = true;
 }
 
@@ -2008,7 +2127,10 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
                     w += 1; // separator
                     if (clickCol >= col && clickCol < col + w) {
                         if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                            clearDividers(activeTab());
+                            releaseTabTextures(activeTab());
                             activeTabIdx_ = i;
+                            refreshDividers(activeTab());
                             tabBarDirty_ = true;
                             needsRedraw_ = true;
                         } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {

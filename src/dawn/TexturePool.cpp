@@ -97,3 +97,11 @@ PooledTexture* TexturePool::allocate(uint32_t w, uint32_t h)
     all_.push_back(std::move(entry));
     return ptr;
 }
+
+TexturePool::Stats TexturePool::stats() const
+{
+    size_t totalBytes = 0;
+    for (const auto& t : all_) totalBytes += t->sizeBytes;
+    return { all_.size(), all_.size() - free_.size(), free_.size(),
+             totalBytes, freeBytes_, byteLimit_ };
+}

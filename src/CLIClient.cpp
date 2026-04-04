@@ -196,6 +196,7 @@ static void cliUsage()
         "  key --text <text>                Send text input\n"
         "  key --key <name> [--mod <mod>]   Send a named key with optional modifier\n"
         "  logs                             Stream log messages (Ctrl+C to stop)\n"
+        "  stats                            Report GPU pool and pane memory usage\n"
         "\n"
         "Socket selection:\n"
         "  --pid <pid>    Connect to /tmp/mb-<pid>.sock\n"
@@ -280,6 +281,8 @@ int runCLI(int argc, char** argv)
         reqObj["cmd"] = "subscribe";
         reqObj["channel"] = "logs";
         streaming = true;
+    } else if (command == "stats") {
+        reqObj["cmd"] = "stats";
     } else {
         fprintf(stderr, "Unknown command: %s\n", command.c_str());
         cliUsage();

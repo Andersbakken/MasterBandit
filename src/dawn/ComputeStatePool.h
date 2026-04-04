@@ -25,6 +25,16 @@ public:
     // Destroy all states. Call before the WebGPU device is released.
     void clear();
 
+    struct Stats {
+        size_t total;
+        size_t inUse;
+        size_t free;
+        size_t totalBytes;
+        size_t freeBytes;
+        size_t limitBytes;
+    };
+    Stats stats() const;
+
 private:
     void evictToLimit();
     ComputeState* allocate(uint32_t cells);

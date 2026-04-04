@@ -32,6 +32,16 @@ public:
     // Destroy all textures immediately. Call before the WebGPU device is released.
     void clear();
 
+    struct Stats {
+        size_t total;      // total textures allocated
+        size_t inUse;      // currently held (total - free)
+        size_t free;       // in free list
+        size_t totalBytes; // bytes across all allocated textures
+        size_t freeBytes;  // bytes in free list
+        size_t limitBytes; // eviction budget
+    };
+    Stats stats() const;
+
 private:
     void evictToLimit();
     PooledTexture* allocate(uint32_t w, uint32_t h);

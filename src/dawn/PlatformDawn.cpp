@@ -268,6 +268,7 @@ public:
     bool shouldClose() { return glfwWindow_ && glfwWindowShouldClose(glfwWindow_); }
 
     std::string gridToJson(int id);
+    std::string statsJson(int id);
 
 private:
     void configureSurface(uint32_t width, uint32_t height);
@@ -954,7 +955,8 @@ int PlatformDawn::exec()
             if (!t) return std::string{};
             Pane* pane = t->layout()->focusedPane();
             return pane ? gridToJson(pane->id()) : std::string{};
-        });
+        },
+        [this](int id) { return statsJson(id); });
     if (debugSink_) {
         debugSink_->setIPC(debugIPC_.get());
     }
@@ -1086,6 +1088,68 @@ std::string PlatformDawn::gridToJson(int id)
         }
     }
     resp["lines"] = std::move(lines);
+
+    std::string buf;
+    (void)glz::write_json(resp, buf);
+    return buf;
+}
+
+std::string PlatformDawn::statsJson(int id)
+{
+    auto texStats     = texturePool_.stats();
+    auto computeStats = renderer_.computePool().stats();
+
+    glz::generic::object_t resp;
+    resp["type"] = "stats";
+    if (id) resp["id"] = static_cast<double>(id);
+
+    auto toKB = [](size_t b) { return static_cast<double>(b) / 1024.0; };
+
+    resp["texture_pool"] = glz::generic::object_t{
+        {"total",       static_cast<double>(texStats.total)},
+        {"in_use",      static_cast<double>(texStats.inUse)},
+        {"free",        static_cast<double>(texStats.free)},
+        {"total_kb",    toKB(texStats.totalBytes)},
+        {"free_kb",     toKB(texStats.freeBytes)},
+        {"limit_kb",    toKB(texStats.limitBytes)},
+    };
+    resp["compute_pool"] = glz::generic::object_t{
+        {"total",       static_cast<double>(computeStats.total)},
+        {"in_use",      static_cast<double>(computeStats.inUse)},
+        {"free",        static_cast<double>(computeStats.free)},
+        {"total_kb",    toKB(computeStats.totalBytes)},
+        {"free_kb",     toKB(computeStats.freeBytes)},
+        {"limit_kb",    toKB(computeStats.limitBytes)},
+    };
+
+    glz::generic::array_t tabsArr;
+    for (int ti = 0; ti < static_cast<int>(tabs_.size()); ++ti) {
+        Tab* tab = tabs_[ti].get();
+        glz::generic::array_t panesArr;
+        for (auto& panePtr : tab->layout()->panes()) {
+            int pid = panePtr->id();
+            auto it = paneRenderStates_.find(pid);
+            TerminalEmulator* term = panePtr->activeTerm();
+            glz::generic::object_t paneObj;
+            paneObj["id"]   = static_cast<double>(pid);
+            paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);
+            paneObj["rows"] = static_cast<double>(term ? term->height() : 0);
+            if (it != paneRenderStates_.end()) {
+                const auto& rs = it->second;
+                paneObj["held_texture"] = rs.heldTexture != nullptr;
+                paneObj["texture_kb"]   = rs.heldTexture
+                    ? toKB(rs.heldTexture->sizeBytes) : 0.0;
+                paneObj["has_divider"]  = rs.dividerVB != nullptr;
+            }
+            panesArr.emplace_back(std::move(paneObj));
+        }
+        glz::generic::object_t tabObj;
+        tabObj["index"]  = static_cast<double>(ti);
+        tabObj["active"] = (ti == activeTabIdx_);
+        tabObj["panes"]  = std::move(panesArr);
+        tabsArr.emplace_back(std::move(tabObj));
+    }
+    resp["tabs"] = std::move(tabsArr);
 
     std::string buf;
     (void)glz::write_json(resp, buf);

@@ -147,9 +147,11 @@ static const struct lws_protocols sProtocols[] = {
     LWS_PROTOCOL_LIST_TERM
 };
 
-DebugIPC::DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb)
+DebugIPC::DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb,
+                   StatsCallback statsCb)
     : terminal_(terminal)
     , gridCb_(std::move(gridCb))
+    , statsCb_(std::move(statsCb))
 {
     socketPath_ = "/tmp/mb-" + std::to_string(getpid()) + ".sock";
 
@@ -251,6 +253,8 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
             }
         }
         cmdSendKey(wsi, id, text, key, mods);
+    } else if (cmd == "stats") {
+        cmdStats(wsi, id);
     } else if (cmd == "subscribe") {
         std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
@@ -407,6 +411,19 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
     resp["type"] = "ok";
     if (id) resp["id"] = static_cast<double>(id);
     sendResponse(wsi, dumpObj(resp));
+}
+
+// ============================================================================
+// Command: stats
+// ============================================================================
+
+void DebugIPC::cmdStats(struct lws* wsi, int id)
+{
+    if (statsCb_) {
+        sendResponse(wsi, statsCb_(id));
+    } else {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "stats not available"}}));
+    }
 }
 
 // ============================================================================

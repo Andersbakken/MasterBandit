@@ -134,3 +134,11 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
     all_.push_back(std::move(state));
     return ptr;
 }
+
+ComputeStatePool::Stats ComputeStatePool::stats() const
+{
+    size_t totalBytes = 0;
+    for (const auto& cs : all_) totalBytes += cs->sizeBytes;
+    return { all_.size(), all_.size() - free_.size(), free_.size(),
+             totalBytes, freeBytes_, byteLimit_ };
+}

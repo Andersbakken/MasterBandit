@@ -37,6 +37,12 @@ public:
     std::string focusedPopupId() const { return mFocusedPopupId; }
     PopupPane* focusedPopup();
 
+    // Title and icon set by the shell via OSC sequences
+    const std::string& title() const { return mTitle; }
+    void setTitle(const std::string& t) { mTitle = t; }
+    const std::string& icon() const { return mIcon; }
+    void setIcon(const std::string& i) { mIcon = i; }
+
     // Rect (pixel coords, set by Layout::computeRects)
     void setRect(const PaneRect& r) { mRect = r; }
     const PaneRect& rect() const { return mRect; }

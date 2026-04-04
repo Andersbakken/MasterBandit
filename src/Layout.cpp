@@ -7,6 +7,25 @@ Layout::Layout() = default;
 
 static int sGlobalPaneId = 0;
 
+static int leftmostPaneId(const LayoutNode* node)
+{
+    if (!node) return -1;
+    if (node->isLeaf) return node->paneId;
+    return leftmostPaneId(node->first.get());
+}
+
+static int siblingPaneId(int paneId, const LayoutNode* node)
+{
+    if (!node || node->isLeaf) return -1;
+    if (node->first && node->first->isLeaf && node->first->paneId == paneId)
+        return leftmostPaneId(node->second.get());
+    if (node->second && node->second->isLeaf && node->second->paneId == paneId)
+        return leftmostPaneId(node->first.get());
+    int r = siblingPaneId(paneId, node->first.get());
+    if (r >= 0) return r;
+    return siblingPaneId(paneId, node->second.get());
+}
+
 Pane* Layout::createPane()
 {
     int id = sGlobalPaneId++;
@@ -71,6 +90,9 @@ void Layout::removePane(int paneId)
         return;
     }
 
+    // Find sibling before modifying the tree
+    int newFocus = (mFocusedPaneId == paneId) ? siblingPaneId(paneId, mRoot.get()) : -1;
+
     removeLeafRecursive(mRoot, paneId);
 
     // Remove from panes list
@@ -80,7 +102,8 @@ void Layout::removePane(int paneId)
                                 }), mPanes.end());
 
     if (mFocusedPaneId == paneId) {
-        mFocusedPaneId = mPanes.empty() ? -1 : mPanes.front()->id();
+        mFocusedPaneId = (newFocus >= 0) ? newFocus
+                       : (mPanes.empty() ? -1 : mPanes.front()->id());
     }
     if (mZoomedPaneId == paneId) {
         mZoomedPaneId = -1;

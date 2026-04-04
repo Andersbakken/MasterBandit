@@ -13,10 +13,11 @@ class Terminal;
 
 class DebugIPC {
 public:
-    // gridCallback: called with (id) → returns JSON string for grid screenshot
-    using GridCallback = std::function<std::string(int id)>;
+    using GridCallback  = std::function<std::string(int id)>;
+    using StatsCallback = std::function<std::string(int id)>;
 
-    DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb);
+    DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb,
+             StatsCallback statsCb = {});
     ~DebugIPC();
 
     // Issue uv_close for owned handles. Must call before final uv_run.
@@ -46,6 +47,7 @@ private:
     void cmdScreenshotGrid(struct lws* wsi, int id);
     void cmdSendKey(struct lws* wsi, int id, const std::string& text,
                     const std::string& key, const std::vector<std::string>& mods);
+    void cmdStats(struct lws* wsi, int id);
     void cmdSubscribeLogs(struct lws* wsi, int id);
     void cmdUnsubscribeLogs(struct lws* wsi, int id);
 
@@ -53,6 +55,7 @@ private:
     std::string socketPath_;
     Terminal* terminal_;
     GridCallback gridCb_;
+    StatsCallback statsCb_;
 
     struct PerConnection {
         std::string rxBuffer;

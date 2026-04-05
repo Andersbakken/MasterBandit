@@ -402,11 +402,14 @@ void PlatformDawn::renderFrame()
                     }
                 }
 
-                // Dispatch to worker pool
-                if (!dirtyRows.empty()) {
+                // Resolve rows — use worker pool for large batches, inline for small
+                if (dirtyRows.size() > 4) {
                     renderWorkers_.dispatch(dirtyRows, [&](int row) {
                         resolveRow(rs, term, row, font, scale);
                     });
+                } else {
+                    for (int row : dirtyRows)
+                        resolveRow(rs, term, row, font, scale);
                 }
             }
             const_cast<IGrid&>(g).clearAllDirty();

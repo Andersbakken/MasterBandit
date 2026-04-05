@@ -264,6 +264,8 @@ std::vector<Binding> defaultBindings()
         // Pane focus — cyclic
         { { *parseKeyStroke("meta+]") },            Action::FocusPane{Action::Direction::Next} },
         { { *parseKeyStroke("meta+[") },            Action::FocusPane{Action::Direction::Prev} },
+        // Command palette
+        { { *parseKeyStroke("meta+shift+p") },      Action::ScriptAction{"palette.open", {}} },
         // Popup focus cycling
         { { *parseKeyStroke("meta+shift+i") },      Action::FocusPopup{} },
         // Prompt navigation
@@ -308,6 +310,8 @@ std::vector<Binding> defaultBindings()
         // Pane focus — cyclic
         { { *parseKeyStroke("ctrl+shift+n") },      Action::FocusPane{Action::Direction::Next} },
         { { *parseKeyStroke("ctrl+shift+p") },      Action::FocusPane{Action::Direction::Prev} },
+        // Command palette
+        { { *parseKeyStroke("ctrl+shift+p") },      Action::ScriptAction{"palette.open", {}} },
         // Popup focus cycling
         { { *parseKeyStroke("ctrl+shift+i") },      Action::FocusPopup{} },
         // Prompt navigation

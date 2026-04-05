@@ -1,4 +1,5 @@
 #include "ScriptEngine.h"
+#include "Action.h"
 
 #include <quickjs.h>
 #include <spdlog/spdlog.h>
@@ -821,6 +822,93 @@ static JSValue jsMbActiveTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
     return JS_UNDEFINED;
 }
 
+// PascalCase → snake_case: "FocusPane" → "focus_pane"
+static std::string toSnakeCase(std::string_view name) {
+    std::string result;
+    for (size_t i = 0; i < name.size(); ++i) {
+        char c = name[i];
+        if (c >= 'A' && c <= 'Z') {
+            if (i > 0) result += '_';
+            result += static_cast<char>(c + 32);
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
+
+// PascalCase → spaced label: "FocusPane" → "Focus Pane"
+static std::string toLabel(std::string_view name) {
+    std::string result;
+    for (size_t i = 0; i < name.size(); ++i) {
+        char c = name[i];
+        if (c >= 'A' && c <= 'Z' && i > 0)
+            result += ' ';
+        result += c;
+    }
+    return result;
+}
+
+// mb.actions() -> array of {name, label, builtin, args?} objects
+static JSValue jsMbActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    Engine* eng = engineFromCtx(ctx);
+
+    // Directional arg expansions for actions that take Direction
+    struct ArgVariant { const char* arg; const char* labelSuffix; };
+    static const std::unordered_map<std::string_view, std::vector<ArgVariant>> argVariants = {
+        {"SplitPane",  {{"right", "Right"}, {"down", "Down"}, {"left", "Left"}, {"up", "Up"}}},
+        {"FocusPane",  {{"next", "Next"}, {"prev", "Previous"}, {"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}}},
+        {"AdjustPaneSize", {{"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}}},
+        {"ScrollToPrompt", {{"-1", "Previous"}, {"1", "Next"}}},
+    };
+
+    JSValue arr = JS_NewArray(ctx);
+    uint32_t idx = 0;
+
+    for (Action::TypeIndex i = 0; i < Action::count; ++i) {
+        auto pascalName = Action::nameTable[i];
+        // Skip ScriptAction — script actions come from the registered set below
+        if (pascalName == "ScriptAction") continue;
+
+        std::string snakeName = toSnakeCase(pascalName);
+        std::string baseLabel = toLabel(pascalName);
+
+        auto vit = argVariants.find(pascalName);
+        if (vit != argVariants.end()) {
+            // Expand into one entry per variant
+            for (const auto& v : vit->second) {
+                JSValue obj = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, snakeName.c_str()));
+                std::string label = baseLabel + " " + v.labelSuffix;
+                JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, label.c_str()));
+                JS_SetPropertyStr(ctx, obj, "builtin", JS_TRUE);
+                JSValue args = JS_NewArray(ctx);
+                JS_SetPropertyUint32(ctx, args, 0, JS_NewString(ctx, v.arg));
+                JS_SetPropertyStr(ctx, obj, "args", args);
+                JS_SetPropertyUint32(ctx, arr, idx++, obj);
+            }
+        } else {
+            JSValue obj = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, snakeName.c_str()));
+            JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, baseLabel.c_str()));
+            JS_SetPropertyStr(ctx, obj, "builtin", JS_TRUE);
+            JS_SetPropertyUint32(ctx, arr, idx++, obj);
+        }
+    }
+
+    // Script actions
+    for (const auto& fullName : eng->registeredActions()) {
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, fullName.c_str()));
+        JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, fullName.c_str()));
+        JS_SetPropertyStr(ctx, obj, "builtin", JS_FALSE);
+        JS_SetPropertyUint32(ctx, arr, idx++, obj);
+    }
+
+    return arr;
+}
+
 // mb.loadApplet(path) -> instanceId or 0
 static JSValue jsMbLoadApplet(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -1277,6 +1365,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbActivePane, "activePane", 0));
     JS_SetPropertyStr(ctx, mb, "activeTab",
         JS_NewCFunction(ctx, jsMbActiveTab, "activeTab", 0));
+    JS_SetPropertyStr(ctx, mb, "actions",
+        JS_NewCFunction(ctx, jsMbActions, "actions", 0));
     JS_SetPropertyStr(ctx, mb, "loadApplet",
         JS_NewCFunction(ctx, jsMbLoadApplet, "loadApplet", 1));
     JS_SetPropertyStr(ctx, mb, "loadController",

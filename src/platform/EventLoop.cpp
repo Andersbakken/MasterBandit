@@ -266,6 +266,7 @@ int PlatformDawn::exec()
     {
         std::string scriptsDir = exeDir_ + "/scripts/";
         scriptEngine_.loadController(scriptsDir + "applet-loader.js");
+        scriptEngine_.loadController(scriptsDir + "command-palette.js");
     }
 
     // Add PTY polls for all terminals already created

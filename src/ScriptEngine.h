@@ -154,6 +154,7 @@ public:
     bool setNamespace(InstanceId id, const std::string& ns);
     bool registerAction(InstanceId id, const std::string& name);
     bool isActionRegistered(const std::string& fullName) const;
+    const std::set<std::string>& registeredActions() const { return registeredActions_; }
 
 private:
     JSRuntime* rt_ = nullptr;

@@ -19,7 +19,7 @@ static std::vector<uint8_t> loadFontFile(const std::string& path)
 }
 
 static uint32_t parseHexColor(const std::string& hex, uint32_t def = 0xFF000000) {
-    return color::parseHexBGRA(hex, def);
+    return color::parseHexRGBA(hex, def);
 }
 
 // Append variant: appends UTF-8 bytes directly to an existing string (no allocation)

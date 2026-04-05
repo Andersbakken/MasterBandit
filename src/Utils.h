@@ -74,14 +74,6 @@ inline uint32_t parseHexRGBA(const std::string& hex, uint32_t def = 0)
     return r | (static_cast<uint32_t>(g) << 8) | (static_cast<uint32_t>(b) << 16) | 0xFF000000u;
 }
 
-// Parse "#RRGGBB" to packed uint32: 0xFF<<24 | R<<16 | G<<8 | B (tab bar / legacy format)
-inline uint32_t parseHexBGRA(const std::string& hex, uint32_t def = 0xFF000000)
-{
-    uint8_t r, g, b;
-    if (!parseHex(hex, r, g, b)) return def;
-    return 0xFF000000u | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
-}
-
 } // namespace color
 
 namespace unicode {

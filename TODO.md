@@ -37,7 +37,7 @@
 - [ ] Full-screen overlays — Tab::pushOverlay / popOverlay are implemented; need a way to trigger (e.g. Cmd+Shift+Enter kitty-style).
 - [ ] Popup panes (OSC 999) — Pane::handleOSCMB and TerminalEmulator dispatch are implemented; needs end-to-end testing.
 - [ ] Tab bar: cursor-blink optimization — re-render to held texture when only cursor changes (500 ms interval guarantees GPU completion).
-- [ ] Tab bar: color packing uses BGR order (parseHexColor packs R<<16|G<<8|B but shader reads R from bits 0-7). Colors are visually incorrect (R/B swapped) — fix to match packFgAsU32 byte order.
+- [x] Tab bar: color packing uses BGR order (parseHexColor packs R<<16|G<<8|B but shader reads R from bits 0-7). Colors are visually incorrect (R/B swapped) — fix to match packFgAsU32 byte order.
 - [x] Tab bar: configurable keybindings for new tab (Ctrl+Shift+T) and tab close.
 - [ ] Non-powerline tab bar styles (fade, slant, separator, round) from config.
 - [ ] Per-tab color rules — color tabs based on title, active process, or index. Requires foreground process tracking and a rule matching engine in the tab bar renderer. Config via `[[tab_bar.color_rules]]` with match patterns (e.g. `title:*ssh*`, `process:python`, `index:0`).
@@ -65,7 +65,7 @@
 
 ## Configuration
 
-- [ ] Color scheme — `[colors]` config section for ANSI palette, foreground, background, cursor.
+- [x] Color scheme — `[colors]` config section for ANSI palette, foreground, background, cursor.
 - [x] Keybindings — configurable key mappings for tab/pane operations.
 - [x] Divider — `divider_color` (hex) and `divider_width` (pixels) in config.
 - [ ] Cursor style — block/underline/bar, blink on/off, blink interval.

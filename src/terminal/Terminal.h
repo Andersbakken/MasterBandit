@@ -14,6 +14,13 @@ class Terminal; // forward declare for PlatformCallbacks
 struct PlatformCallbacks {
     std::function<void(Terminal*)> onTerminalExited;
     std::function<void()> quit;
+    // Output filter: check shouldFilterOutput first (cheap, no copy),
+    // then call filterOutput only if it returns true.
+    std::function<bool()> shouldFilterOutput;
+    std::function<void(std::string& data)> filterOutput;
+    // Input filter: same pattern.
+    std::function<bool()> shouldFilterInput;
+    std::function<void(std::string& data)> filterInput;
 };
 
 class Terminal : public TerminalEmulator {

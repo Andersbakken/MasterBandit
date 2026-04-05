@@ -85,6 +85,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 paneRenderStates_.erase(it);
             }
 
+            scriptEngine_.notifyPaneDestroyed(paneId);
             layout->removePane(paneId);
             resizeAllPanesInTab(tab);
             notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
@@ -207,7 +208,10 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
         [&](const Action::PushOverlay&) { /* TODO */ },
         [&](const Action::PopOverlay&) {
             Tab* tab = activeTab();
-            if (tab) tab->popOverlay();
+            if (tab && tab->hasOverlay()) {
+                scriptEngine_.notifyOverlayDestroyed(activeTabIdx_);
+                tab->popOverlay();
+            }
         },
         [&](const Action::IncreaseFontSize&) { adjustFontSize(1.0f);  },
         [&](const Action::DecreaseFontSize&) { adjustFontSize(-1.0f); },
@@ -252,6 +256,13 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 uv_idle_t* cleanup = new uv_idle_t;
                 cleanup->data = new std::function<void()>([this, tab, fd]() {
                     removePtyPoll(fd);
+                    // Find tab index for script notification
+                    for (int ti = 0; ti < static_cast<int>(tabs_.size()); ++ti) {
+                        if (tabs_[ti].get() == tab) {
+                            scriptEngine_.notifyOverlayDestroyed(ti);
+                            break;
+                        }
+                    }
                     tab->popOverlay();
                     auto oit = overlayRenderStates_.find(tab);
                     if (oit != overlayRenderStates_.end()) {
@@ -288,6 +299,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             addPtyPoll(overlay->masterFD(), overlay.get());
             tab->pushOverlay(std::move(overlay));
+            scriptEngine_.notifyOverlayCreated(activeTabIdx_);
             needsRedraw_ = true;
         },
     }, action);

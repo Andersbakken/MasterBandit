@@ -167,7 +167,14 @@ void Terminal::readFromFD()
             if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
             return;
         }
-        injectData(buf, static_cast<size_t>(ret));
+        if (mPlatformCbs.shouldFilterOutput && mPlatformCbs.shouldFilterOutput()) {
+            std::string s(buf, static_cast<size_t>(ret));
+            mPlatformCbs.filterOutput(s);
+            if (!s.empty())
+                injectData(s.data(), s.size());
+        } else {
+            injectData(buf, static_cast<size_t>(ret));
+        }
     }
 }
 
@@ -229,7 +236,14 @@ void Terminal::flushWriteQueue()
 
 void Terminal::writeToOutput(const char* data, size_t len)
 {
-    writeToPTY(data, len);
+    if (mPlatformCbs.shouldFilterInput && mPlatformCbs.shouldFilterInput()) {
+        std::string s(data, len);
+        mPlatformCbs.filterInput(s);
+        if (!s.empty())
+            writeToPTY(s.data(), s.size());
+    } else {
+        writeToPTY(data, len);
+    }
 }
 
 void Terminal::pasteText(const std::string& text)

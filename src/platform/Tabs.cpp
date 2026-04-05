@@ -169,6 +169,18 @@ void PlatformDawn::createTab()
     PlatformCallbacks pcbs;
     pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
     pcbs.quit = [this]() { quit(); };
+    pcbs.shouldFilterOutput = [this, paneId]() {
+        return scriptEngine_.hasPaneOutputFilters(paneId);
+    };
+    pcbs.filterOutput = [this, paneId](std::string& data) {
+        scriptEngine_.filterPaneOutput(paneId, data);
+    };
+    pcbs.shouldFilterInput = [this, paneId]() {
+        return scriptEngine_.hasPaneInputFilters(paneId);
+    };
+    pcbs.filterInput = [this, paneId](std::string& data) {
+        scriptEngine_.filterPaneInput(paneId, data);
+    };
     auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
     // Inherit CWD from the focused pane of the active tab
     auto opts = terminalOptions_;
@@ -218,6 +230,9 @@ void PlatformDawn::createTab()
     tabBarDirty_ = true;
     needsRedraw_ = true;
 
+    scriptEngine_.notifyTabCreated(tabIdx);
+    scriptEngine_.notifyPaneCreated(tabIdx, paneId);
+
     spdlog::info("Created tab {}", tabIdx + 1);
 }
 
@@ -243,7 +258,12 @@ void PlatformDawn::closeTab(int idx)
                 pendingTabBarRelease_.push_back(t2);
             paneRenderStates_.erase(it);
         }
+        scriptEngine_.notifyPaneDestroyed(panePtr->id());
     }
+
+    if (tab->hasOverlay())
+        scriptEngine_.notifyOverlayDestroyed(idx);
+    scriptEngine_.notifyTabDestroyed(idx);
 
     tabs_.erase(tabs_.begin() + idx);
 
@@ -389,8 +409,13 @@ void PlatformDawn::terminalExited(Terminal* terminal)
                 paneRenderStates_.erase(it);
             }
 
+            scriptEngine_.notifyPaneDestroyed(paneId);
+
             if (tab->layout()->panes().size() <= 1) {
                 // Last pane in the tab — close the tab
+                if (tab->hasOverlay())
+                    scriptEngine_.notifyOverlayDestroyed(tabIdx);
+                scriptEngine_.notifyTabDestroyed(tabIdx);
                 tabs_.erase(tabs_.begin() + tabIdx);
                 if (tabs_.empty()) {
                     quit();
@@ -425,6 +450,18 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
     PlatformCallbacks pcbs;
     pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
     pcbs.quit = [this]() { quit(); };
+    pcbs.shouldFilterOutput = [this, paneId]() {
+        return scriptEngine_.hasPaneOutputFilters(paneId);
+    };
+    pcbs.filterOutput = [this, paneId](std::string& data) {
+        scriptEngine_.filterPaneOutput(paneId, data);
+    };
+    pcbs.shouldFilterInput = [this, paneId]() {
+        return scriptEngine_.hasPaneInputFilters(paneId);
+    };
+    pcbs.filterInput = [this, paneId](std::string& data) {
+        scriptEngine_.filterPaneInput(paneId, data);
+    };
     auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
     auto opts = terminalOptions_;
     if (!cwd.empty()) opts.cwd = cwd;
@@ -460,6 +497,8 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
     Terminal* termPtr = terminal.get();
     pane->setTerminal(std::move(terminal));
     addPtyPoll(masterFD, termPtr);
+
+    scriptEngine_.notifyPaneCreated(tabIdx, paneId);
 }
 
 

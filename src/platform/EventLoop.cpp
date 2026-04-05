@@ -32,6 +32,104 @@ int PlatformDawn::exec()
         debugSink_->setIPC(debugIPC_.get());
     }
 
+    // Set up script engine callbacks
+    {
+        Script::AppCallbacks scbs;
+        scbs.injectPaneData = [this](Script::PaneId paneId, const std::string& data) {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (auto* t = p->activeTerm())
+                        t->injectData(data.c_str(), data.size());
+                    return;
+                }
+            }
+        };
+        scbs.injectOverlayData = [this](Script::TabId tabId, const std::string& data) {
+            if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
+                if (auto* ov = tabs_[tabId]->topOverlay())
+                    ov->injectData(data.c_str(), data.size());
+            }
+        };
+        scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (auto* t = dynamic_cast<Terminal*>(p->activeTerm()))
+                        t->pasteText(data);
+                    return;
+                }
+            }
+        };
+        scbs.writeOverlayToShell = [this](Script::TabId tabId, const std::string& data) {
+            if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
+                if (auto* ov = tabs_[tabId]->topOverlay())
+                    ov->pasteText(data);
+            }
+        };
+        scbs.paneHasPty = [this](Script::PaneId paneId) -> bool {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    auto* t = dynamic_cast<Terminal*>(p->activeTerm());
+                    return t && t->masterFD() >= 0;
+                }
+            }
+            return false;
+        };
+        scbs.overlayHasPty = [this](Script::TabId tabId) -> bool {
+            if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
+                if (auto* ov = tabs_[tabId]->topOverlay())
+                    return ov->masterFD() >= 0;
+            }
+            return false;
+        };
+        scbs.invokeAction = [this](const std::string& action, const std::vector<std::string>& args) -> bool {
+            auto parsed = parseAction(action, args);
+            if (!parsed) return false;
+            dispatchAction(*parsed);
+            return true;
+        };
+        scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    auto* t = p->activeTerm();
+                    auto* term = dynamic_cast<Terminal*>(t);
+                    return {
+                        t ? t->width() : 0, t ? t->height() : 0,
+                        p->title(), p->cwd(),
+                        term && term->masterFD() >= 0
+                    };
+                }
+            }
+            return {};
+        };
+        scbs.overlayInfo = [this](Script::TabId tabId) -> Script::AppCallbacks::OverlayInfo {
+            if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
+                if (auto* ov = tabs_[tabId]->topOverlay())
+                    return {ov->width(), ov->height(), ov->masterFD() >= 0, true};
+            }
+            return {0, 0, false, false};
+        };
+        scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo> {
+            std::vector<Script::AppCallbacks::TabInfo> result;
+            for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
+                Script::AppCallbacks::TabInfo ti;
+                ti.id = i;
+                ti.active = (i == activeTabIdx_);
+                ti.hasOverlay = tabs_[i]->hasOverlay();
+                ti.focusedPane = tabs_[i]->layout()->focusedPaneId();
+                for (auto& p : tabs_[i]->layout()->panes())
+                    ti.panes.push_back(p->id());
+                result.push_back(std::move(ti));
+            }
+            return result;
+        };
+        scriptEngine_.setCallbacks(std::move(scbs));
+    }
+
+    // Hook action dispatcher to notify script engine
+    actionDispatcher_.addListener([this](Action::TypeIndex idx, const Action::Any&) {
+        scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
+    });
+
     // Add PTY polls for all terminals already created
     for (auto& panePtr : tab->layout()->panes()) {
         Terminal* term = panePtr->terminal();
@@ -74,6 +172,9 @@ int PlatformDawn::exec()
                 }
             }
         }
+
+        // Run pending JS microtasks
+        self->scriptEngine_.executePendingJobs();
 
         self->device_.Tick();
         self->renderFrame();

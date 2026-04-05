@@ -42,6 +42,26 @@ static JsPaneData* jsPaneGet(JSContext* ctx, JSValueConst val)
     return static_cast<JsPaneData*>(JS_GetOpaque(val, jsPaneClassId));
 }
 
+// Register a JS object in a global registry by integer key, so filters can find it.
+static void registerInGlobal(JSContext* ctx, const char* registryName,
+                              uint32_t key, JSValueConst obj)
+{
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue registry = JS_GetPropertyStr(ctx, global, registryName);
+    if (JS_IsUndefined(registry)) {
+        registry = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, global, registryName, JS_DupValue(ctx, registry));
+    }
+    // Only set if not already registered
+    JSValue existing = JS_GetPropertyUint32(ctx, registry, key);
+    if (JS_IsUndefined(existing)) {
+        JS_SetPropertyUint32(ctx, registry, key, JS_DupValue(ctx, obj));
+    }
+    JS_FreeValue(ctx, existing);
+    JS_FreeValue(ctx, registry);
+    JS_FreeValue(ctx, global);
+}
+
 static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
                                        int argc, JSValueConst* argv)
 {
@@ -58,11 +78,15 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
     if (strcmp(event, "output") == 0) {
         prop = "__output_filters";
         eng->addPaneOutputFilter(pane->id);
+        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else if (strcmp(event, "input") == 0) {
         prop = "__input_filters";
         eng->addPaneInputFilter(pane->id);
+        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else {
         prop = std::string("__evt_") + event;
+        // Register for lifecycle events too (so destroyed can be found)
+        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     }
     JS_FreeCString(ctx, event);
 
@@ -184,11 +208,14 @@ static JSValue jsOverlayAddEventListener(JSContext* ctx, JSValueConst this_val,
     if (strcmp(event, "output") == 0) {
         prop = "__output_filters";
         eng->addOverlayOutputFilter(ov->tabId);
+        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
     } else if (strcmp(event, "input") == 0) {
         prop = "__input_filters";
         eng->addOverlayInputFilter(ov->tabId);
+        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
     } else {
         prop = std::string("__evt_") + event;
+        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
     }
     JS_FreeCString(ctx, event);
 
@@ -302,6 +329,8 @@ static JSValue jsTabAddEventListener(JSContext* ctx, JSValueConst this_val,
     std::string prop = std::string("__evt_") + event;
     JS_FreeCString(ctx, event);
 
+    registerInGlobal(ctx, "__tab_registry", static_cast<uint32_t>(tab->id), this_val);
+
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
     if (JS_IsUndefined(arr)) {
         arr = JS_NewArray(ctx);
@@ -332,10 +361,44 @@ static JSValue jsTabGetId(JSContext* ctx, JSValueConst this_val)
     return JS_NewInt32(ctx, tab->id);
 }
 
+// tab.panes — returns array of Pane objects
+static JSValue jsTabGetPanes(JSContext* ctx, JSValueConst this_val)
+{
+    auto* tab = jsTabGet(ctx, this_val);
+    if (!tab || !tab->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    auto tabInfos = eng->callbacks().tabs();
+    for (auto& ti : tabInfos) {
+        if (ti.id == tab->id) {
+            JSValue arr = JS_NewArray(ctx);
+            for (uint32_t i = 0; i < ti.panes.size(); ++i)
+                JS_SetPropertyUint32(ctx, arr, i, jsPaneNew(ctx, ti.panes[i]));
+            return arr;
+        }
+    }
+    return JS_NewArray(ctx);
+}
+
+// tab.activePane — returns focused pane or undefined
+static JSValue jsTabGetActivePane(JSContext* ctx, JSValueConst this_val)
+{
+    auto* tab = jsTabGet(ctx, this_val);
+    if (!tab || !tab->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    auto tabInfos = eng->callbacks().tabs();
+    for (auto& ti : tabInfos) {
+        if (ti.id == tab->id && ti.focusedPane >= 0)
+            return jsPaneNew(ctx, ti.focusedPane);
+    }
+    return JS_UNDEFINED;
+}
+
 static const JSCFunctionListEntry jsTabProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsTabAddEventListener),
     JS_CGETSET_DEF("overlay", jsTabGetOverlay, nullptr),
     JS_CGETSET_DEF("id", jsTabGetId, nullptr),
+    JS_CGETSET_DEF("panes", jsTabGetPanes, nullptr),
+    JS_CGETSET_DEF("activePane", jsTabGetActivePane, nullptr),
 };
 
 // ============================================================================
@@ -360,15 +423,39 @@ static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
     return JS_NewBool(ctx, ok);
 }
 
+// mb.addEventListener("action", "ActionName", fn) — 3 args
+// mb.addEventListener("tabCreated", fn) — 2 args
 static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
                                      int argc, JSValueConst* argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+    if (argc < 2 || !JS_IsString(argv[0])) return JS_UNDEFINED;
 
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
-    std::string prop = std::string("__evt_") + event;
+
+    std::string prop;
+    JSValueConst callback;
+
+    if (strcmp(event, "action") == 0) {
+        // Three-arg form: ("action", "ActionName", fn)
+        if (argc < 3 || !JS_IsString(argv[1]) || !JS_IsFunction(ctx, argv[2])) {
+            JS_FreeCString(ctx, event);
+            return JS_UNDEFINED;
+        }
+        const char* actionName = JS_ToCString(ctx, argv[1]);
+        if (!actionName) { JS_FreeCString(ctx, event); return JS_EXCEPTION; }
+        prop = std::string("__evt_action_") + actionName;
+        JS_FreeCString(ctx, actionName);
+        callback = argv[2];
+    } else {
+        // Two-arg form: ("tabCreated", fn)
+        if (!JS_IsFunction(ctx, argv[1])) {
+            JS_FreeCString(ctx, event);
+            return JS_UNDEFINED;
+        }
+        prop = std::string("__evt_") + event;
+        callback = argv[1];
+    }
     JS_FreeCString(ctx, event);
 
     JSValue global = JS_GetGlobalObject(ctx);
@@ -379,7 +466,7 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
         JS_SetPropertyStr(ctx, mb, prop.c_str(), JS_DupValue(ctx, arr));
     }
     JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
-    JS_Call(ctx, pushFn, arr, 1, &argv[1]);
+    JS_Call(ctx, pushFn, arr, 1, &callback);
     JS_FreeValue(ctx, pushFn);
     JS_FreeValue(ctx, arr);
     JS_FreeValue(ctx, mb);
@@ -883,12 +970,61 @@ void Engine::cleanupPane(PaneId pane)
 {
     paneOutputFilterCount_.erase(pane);
     paneInputFilterCount_.erase(pane);
+
+    for (auto& inst : instances_) {
+        if (inst.type != Instance::Type::Controller) continue;
+
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            // Fire destroyed listeners
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_destroyed");
+            enqueueListeners(inst.ctx, arr, 0, nullptr);
+            JS_FreeValue(inst.ctx, arr);
+
+            // Mark dead
+            auto* data = jsPaneGet(inst.ctx, paneObj);
+            if (data) data->alive = false;
+
+            // Remove from registry
+            JS_SetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane), JS_UNDEFINED);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
 }
 
 void Engine::cleanupTab(TabId tab)
 {
     overlayOutputFilterCount_.erase(tab);
     overlayInputFilterCount_.erase(tab);
+
+    for (auto& inst : instances_) {
+        if (inst.type != Instance::Type::Controller) continue;
+
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue tabObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(tab));
+        if (!JS_IsUndefined(tabObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, tabObj, "__evt_destroyed");
+            enqueueListeners(inst.ctx, arr, 0, nullptr);
+            JS_FreeValue(inst.ctx, arr);
+
+            auto* data = jsTabGet(inst.ctx, tabObj);
+            if (data) data->alive = false;
+
+            JS_SetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(tab), JS_UNDEFINED);
+        }
+        JS_FreeValue(inst.ctx, tabObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
 }
 
 // ============================================================================

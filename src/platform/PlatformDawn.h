@@ -13,6 +13,7 @@
 #include "Action.h"
 #include "Bindings.h"
 #include "WorkerPool.h"
+#include "ScriptEngine.h"
 
 #include <dawn/webgpu_cpp.h>
 #include <dawn/native/DawnNative.h>
@@ -277,6 +278,9 @@ private:
 
     // Worker pool for parallel row resolution
     WorkerPool renderWorkers_;
+
+    // Script engine
+    Script::Engine scriptEngine_;
 
     // Callback/terminal helpers
     TerminalCallbacks buildTerminalCallbacks(int paneId);

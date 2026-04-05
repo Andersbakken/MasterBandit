@@ -40,6 +40,9 @@
 - [ ] Tab bar: color packing uses BGR order (parseHexColor packs R<<16|G<<8|B but shader reads R from bits 0-7). Colors are visually incorrect (R/B swapped) — fix to match packFgAsU32 byte order.
 - [x] Tab bar: configurable keybindings for new tab (Ctrl+Shift+T) and tab close.
 - [ ] Non-powerline tab bar styles (fade, slant, separator, round) from config.
+- [ ] Per-tab color rules — color tabs based on title, active process, or index. Requires foreground process tracking and a rule matching engine in the tab bar renderer. Config via `[[tab_bar.color_rules]]` with match patterns (e.g. `title:*ssh*`, `process:python`, `index:0`).
+- [ ] Foreground process tracking — poll `tcgetpgrp()` on the master PTY fd to detect the foreground process group, then look up the process name (`proc_pidpath` on macOS, `/proc/<pid>/cmdline` on Linux). Update tab title when the foreground process changes (like iTerm2/kitty). Needed for per-tab color rules, accurate tab titles, and jump-to-tab-by-process.
+- [ ] Jump to tab by title/process — keybinding action that activates the first tab matching a title or process pattern. E.g. `action = "activate_tab_matching"`, `args = ["process:claude", "forward"]`. Repeating cycles to the next match; a second binding with `"backward"` cycles in reverse. Combined with foreground process tracking, allows quick switching to specific running apps.
 
 ## Mouse Bindings
 

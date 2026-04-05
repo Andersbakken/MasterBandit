@@ -16,9 +16,9 @@
 #include <signal.h>
 #include <algorithm>
 
-Terminal::Terminal(Platform *platform, TerminalCallbacks callbacks)
+Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
     : TerminalEmulator(std::move(callbacks))
-    , mPlatform(platform)
+    , mPlatformCbs(std::move(platformCbs))
 {
 }
 
@@ -138,10 +138,10 @@ void Terminal::readFromFD()
         if (errno != EIO) {
             ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
         }
-        mPlatform->terminalExited(this);
+        if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
         return;
     } else if (ret == 0) {
-        mPlatform->terminalExited(this);
+        if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
         return;
     }
 
@@ -155,7 +155,7 @@ void Terminal::writeToPTY(const char* data, size_t len)
         EINTRWRAP(ret, ::write(mMasterFD, data, len));
         if (ret == -1) {
             FATAL("Failed to write to master %d %s", errno, strerror(errno));
-            mPlatform->quit();
+            if (mPlatformCbs.quit) mPlatformCbs.quit();
             return;
         }
         data += ret;

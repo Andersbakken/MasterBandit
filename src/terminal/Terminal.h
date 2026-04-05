@@ -1,16 +1,22 @@
 #pragma once
 #include "TerminalEmulator.h"
 #include "TerminalOptions.h"
-// Platform.h and toPrintable already provided by TerminalEmulator.h
 
 #define EINTRWRAP(ret, op) \
     do {                   \
         ret = (op);        \
     } while (ret == -1 && errno == EINTR)
 
+class Terminal; // forward declare for PlatformCallbacks
+
+struct PlatformCallbacks {
+    std::function<void(Terminal*)> onTerminalExited;
+    std::function<void()> quit;
+};
+
 class Terminal : public TerminalEmulator {
 public:
-    Terminal(Platform* platform, TerminalCallbacks callbacks);
+    Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks);
     ~Terminal() override;
 
     bool init(const TerminalOptions& options);
@@ -25,7 +31,7 @@ protected:
 private:
     void writeToPTY(const char* data, size_t len);
 
-    Platform* mPlatform;
+    PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
     int mMasterFD { -1 };
 };

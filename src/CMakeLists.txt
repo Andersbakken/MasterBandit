@@ -9,8 +9,8 @@ find_package(glaze CONFIG REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 
-set(PLATFORM "dawn")
-include_directories(${CMAKE_CURRENT_LIST_DIR} ${CMAKE_CURRENT_LIST_DIR}/terminal)
+set(PLATFORM "platform")
+include_directories(${CMAKE_CURRENT_LIST_DIR} ${CMAKE_CURRENT_LIST_DIR}/terminal ${CMAKE_CURRENT_LIST_DIR}/platform)
 add_subdirectory(${PLATFORM})
 
 add_executable(mb main.cpp
@@ -23,7 +23,7 @@ add_executable(mb main.cpp
     terminal/CellGrid.cpp
     terminal/Document.cpp
     Pane.cpp Tab.cpp Layout.cpp Log.cpp text.cpp DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp)
-target_link_libraries(mb platform_${PLATFORM} glaze::glaze)
+target_link_libraries(mb platform_impl glaze::glaze)
 
 # Copy shaders next to the executable
 file(GLOB SHADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")

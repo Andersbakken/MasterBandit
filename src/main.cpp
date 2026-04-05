@@ -1,5 +1,5 @@
 #include <unistd.h>
-#include "Terminal.h"
+#include "PlatformDawn.h"
 #include "Config.h"
 #include <getopt.h>
 #include <cstring>
@@ -34,7 +34,7 @@ int main(int argc, char **argv)
         }
     }
 
-    std::unique_ptr<Platform> platform = createPlatform(argc, argv);
+    auto platform = createPlatform(argc, argv);
     if (!platform) {
         fprintf(stderr, "Failed to create platform\n");
         return 1;
@@ -88,9 +88,6 @@ int main(int argc, char **argv)
     }
     Log::setLogLevel(static_cast<Log::Level>(logLevel));
 
-    // Terminal is now owned by the platform's layout — createTerminal returns nullptr on success.
-    if (!platform->createTerminal(options)) {
-        // null is normal; a failed setup logs its own error and exec() will return early.
-    }
+    platform->createTerminal(options);
     return platform->exec();
 }

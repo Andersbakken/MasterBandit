@@ -17,13 +17,6 @@ set(TEST_SOURCES
     test_selection.cpp
     test_shaping.cpp
     test_kitty_keyboard.cpp
-    ../src/terminal/TerminalEmulator.cpp
-    ../src/terminal/KittyKeyboard.cpp
-    ../src/terminal/MouseAndSelection.cpp
-    ../src/terminal/SGR.cpp
-    ../src/terminal/OSC.cpp
-    ../src/terminal/Document.cpp
-    ../src/terminal/CellGrid.cpp
     ../src/Log.cpp
     ../src/text.cpp
 )
@@ -39,10 +32,12 @@ add_executable(mb-tests ${TEST_SOURCES})
 target_include_directories(mb-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/terminal
+    ${CMAKE_SOURCE_DIR}/src/platform
     ${Stb_INCLUDE_DIR}
 )
 
 target_link_libraries(mb-tests PRIVATE
+    terminal
     doctest::doctest
     spdlog::spdlog
     harfbuzz

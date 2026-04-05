@@ -9,21 +9,22 @@ find_package(glaze CONFIG REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 
-set(PLATFORM "platform")
-include_directories(${CMAKE_CURRENT_LIST_DIR} ${CMAKE_CURRENT_LIST_DIR}/terminal ${CMAKE_CURRENT_LIST_DIR}/platform)
-add_subdirectory(${PLATFORM})
+add_subdirectory(terminal)
+add_subdirectory(platform)
 
-add_executable(mb main.cpp
-    terminal/Terminal.cpp
-    terminal/TerminalEmulator.cpp
-    terminal/KittyKeyboard.cpp
-    terminal/MouseAndSelection.cpp
-    terminal/SGR.cpp
-    terminal/OSC.cpp
-    terminal/CellGrid.cpp
-    terminal/Document.cpp
-    Pane.cpp Tab.cpp Layout.cpp Log.cpp text.cpp DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp)
-target_link_libraries(mb platform_impl glaze::glaze)
+add_executable(mb
+    main.cpp
+    Pane.cpp Tab.cpp Layout.cpp Log.cpp text.cpp
+    DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp
+)
+
+target_include_directories(mb PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/terminal
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform
+)
+
+target_link_libraries(mb PRIVATE terminal platform glaze::glaze)
 
 # Copy shaders next to the executable
 file(GLOB SHADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")

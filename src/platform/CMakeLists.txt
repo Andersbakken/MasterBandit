@@ -1,4 +1,4 @@
-set(DAWN_SOURCES
+set(PLATFORM_SOURCES
     PlatformDawn.cpp
     EventLoop.cpp
     Input.cpp
@@ -13,30 +13,37 @@ set(DAWN_SOURCES
     ComputeStatePool.cpp
 )
 if(APPLE)
-    list(APPEND DAWN_SOURCES MetalLayer.mm PlatformUtils_macOS.mm ../FontFallback_CoreText.mm ../FontResolver_CoreText.mm)
+    list(APPEND PLATFORM_SOURCES MetalLayer.mm PlatformUtils_macOS.mm ../FontFallback_CoreText.mm ../FontResolver_CoreText.mm)
 else()
-    list(APPEND DAWN_SOURCES PlatformUtils_Linux.cpp ../FontFallback_FontConfig.cpp ../FontResolver_FontConfig.cpp)
+    list(APPEND PLATFORM_SOURCES PlatformUtils_Linux.cpp ../FontFallback_FontConfig.cpp ../FontResolver_FontConfig.cpp)
 endif()
-add_library(platform_impl STATIC ${DAWN_SOURCES})
-target_link_libraries(platform_impl PUBLIC
+
+add_library(platform OBJECT ${PLATFORM_SOURCES})
+
+target_include_directories(platform PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/terminal
+)
+
+target_include_directories(platform PRIVATE ${Stb_INCLUDE_DIR})
+
+target_link_libraries(platform PUBLIC
     dawn::webgpu_dawn
     glfw
     $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,uv>
     harfbuzz
     harfbuzz-gpu
-
     spdlog::spdlog
     SheenBidi::SheenBidi
     libunibreak::libunibreak
     websockets
     glaze::glaze
 )
-target_include_directories(platform_impl PRIVATE ${Stb_INCLUDE_DIR})
-target_include_directories(platform_impl PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/terminal)
 
 if(APPLE)
-    target_link_libraries(platform_impl PUBLIC "-framework QuartzCore" "-framework Cocoa" "-framework CoreText" "-framework UserNotifications")
+    target_link_libraries(platform PUBLIC "-framework QuartzCore" "-framework Cocoa" "-framework CoreText" "-framework UserNotifications")
 else()
     find_package(Fontconfig REQUIRED)
-    target_link_libraries(platform_impl PUBLIC Fontconfig::Fontconfig)
+    target_link_libraries(platform PUBLIC Fontconfig::Fontconfig)
 endif()

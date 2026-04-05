@@ -1,6 +1,6 @@
 #pragma once
 #include "Action.h"
-#include "Platform.h"
+#include "InputTypes.h"
 #include <optional>
 #include <string>
 #include <vector>

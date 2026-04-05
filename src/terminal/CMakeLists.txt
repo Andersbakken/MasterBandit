@@ -1,0 +1,22 @@
+add_library(terminal OBJECT
+    Terminal.cpp
+    TerminalEmulator.cpp
+    KittyKeyboard.cpp
+    MouseAndSelection.cpp
+    SGR.cpp
+    OSC.cpp
+    CellGrid.cpp
+    Document.cpp
+)
+
+target_include_directories(terminal PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/platform
+)
+
+target_link_libraries(terminal PUBLIC
+    spdlog::spdlog
+)
+
+target_include_directories(terminal PRIVATE ${Stb_INCLUDE_DIR})

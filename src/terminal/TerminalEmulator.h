@@ -8,7 +8,7 @@
 #include <functional>
 #include <CellGrid.h>
 #include <Document.h>
-#include <Platform.h>
+#include <InputTypes.h>
 
 std::string toPrintable(const char *chars, int len);
 inline std::string toPrintable(const std::string &string)

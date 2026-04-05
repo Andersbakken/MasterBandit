@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Platform.h"
+#include "InputTypes.h"
 #include "Terminal.h"
 #include "Renderer.h"
 #include "TexturePool.h"

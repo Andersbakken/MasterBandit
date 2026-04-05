@@ -14,9 +14,6 @@ namespace Script {
 using InstanceId = uint64_t;
 using PaneId = int;
 using TabId = int;
-// Overlays don't have a stable id in C++; we use the Tab id they belong to
-// combined with a generation counter to identify them.
-using OverlayId = uint64_t;
 
 struct AppCallbacks {
     // Inject data directly into a terminal emulator (bypass PTY)
@@ -39,6 +36,14 @@ struct AppCallbacks {
     // Query tab/pane structure
     struct TabInfo { TabId id; bool active; std::vector<PaneId> panes; PaneId focusedPane; bool hasOverlay; };
     std::function<std::vector<TabInfo>()> tabs;
+    // Create a headless overlay on a tab. onInput is called when user types into it.
+    std::function<bool(TabId, std::function<void(const char*, size_t)> onInput)> createOverlay;
+    // Pop overlay from a tab.
+    std::function<void(TabId)> popOverlay;
+    // Create a new tab. Returns the tab index.
+    std::function<int()> createTab;
+    // Close a tab by index.
+    std::function<void(int)> closeTab;
 };
 
 class Engine {
@@ -78,9 +83,9 @@ public:
     void notifyOverlayDestroyed(TabId tab);
     void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
 
-    // Applet events
-    void deliverAppletInput(InstanceId id, const std::string& data);
-    void deliverAppletResize(InstanceId id, int cols, int rows);
+    // Deliver input to listeners on registered objects across all contexts.
+    // registryName is "__pane_registry" or "__overlay_registry".
+    void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);
 
     // Run pending JS jobs. Call from main loop.
     void executePendingJobs();

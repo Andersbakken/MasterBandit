@@ -29,8 +29,13 @@ function registerPane(pane) {
                 console.error("applet-loader: missing path in applet OSC");
                 return;
             }
-            console.log("applet-loader: applet requested:", path);
-            // TODO: load applet once mb.loadApplet() is implemented
+            // TODO: confirmation dialog before loading
+            const id = mb.loadApplet(path);
+            if (id) {
+                console.log("applet-loader: loaded applet:", path, "id:", id);
+            } else {
+                console.error("applet-loader: failed to load applet:", path);
+            }
         } else {
             console.log("applet-loader: unknown verb:", parsed.verb);
         }

@@ -122,6 +122,52 @@ int PlatformDawn::exec()
             }
             return result;
         };
+        scbs.createOverlay = [this](Script::TabId tabId,
+                                     std::function<void(const char*, size_t)> onInput) -> bool {
+            if (tabId < 0 || tabId >= static_cast<int>(tabs_.size())) return false;
+            Tab* tab = tabs_[tabId].get();
+            if (tab->hasOverlay()) return false; // only one overlay at a time
+
+            TerminalCallbacks cbs;
+            cbs.event = [this](TerminalEmulator*, int, void*) {
+                needsRedraw_ = true;
+            };
+
+            PlatformCallbacks pcbs;
+            pcbs.onTerminalExited = [](Terminal*) {}; // headless, no exit
+            pcbs.quit = [this]() { quit(); };
+            pcbs.onInput = std::move(onInput);
+
+            auto overlay = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+            TerminalOptions opts = terminalOptions_;
+            opts.scrollbackLines = 0;
+            if (!overlay->initHeadless(opts)) return false;
+
+            float usableW = std::max(0.0f, static_cast<float>(fbWidth_) - padLeft_ - padRight_);
+            float usableH = std::max(0.0f, static_cast<float>(fbHeight_) - padTop_ - padBottom_);
+            int cols = std::max(1, static_cast<int>(usableW / charWidth_));
+            int rows = std::max(1, static_cast<int>(usableH / lineHeight_));
+            overlay->resize(cols, rows);
+
+            tab->pushOverlay(std::move(overlay));
+            needsRedraw_ = true;
+            return true;
+        };
+        scbs.popOverlay = [this](Script::TabId tabId) {
+            if (tabId < 0 || tabId >= static_cast<int>(tabs_.size())) return;
+            Tab* tab = tabs_[tabId].get();
+            if (tab->hasOverlay()) {
+                tab->popOverlay();
+                needsRedraw_ = true;
+            }
+        };
+        scbs.createTab = [this]() -> int {
+            createTab();
+            return activeTabIdx_;
+        };
+        scbs.closeTab = [this](int tabId) {
+            closeTab(tabId);
+        };
         scriptEngine_.setCallbacks(std::move(scbs));
     }
 

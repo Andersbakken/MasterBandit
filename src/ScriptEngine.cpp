@@ -277,10 +277,14 @@ static JSValue jsOverlayGetProp(JSContext* ctx, JSValueConst this_val, int magic
     }
 }
 
+// Forward declaration — defined later after mb functions
+static JSValue jsOverlayClose(JSContext* ctx, JSValueConst this_val, int, JSValueConst*);
+
 static const JSCFunctionListEntry jsOverlayProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsOverlayAddEventListener),
     JS_CFUNC_DEF("inject", 1, jsOverlayInject),
     JS_CFUNC_DEF("write", 1, jsOverlayWrite),
+    JS_CFUNC_DEF("close", 0, jsOverlayClose),
     JS_CGETSET_MAGIC_DEF("cols", jsOverlayGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("rows", jsOverlayGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("hasPty", jsOverlayGetProp, nullptr, 2),
@@ -393,8 +397,55 @@ static JSValue jsTabGetActivePane(JSContext* ctx, JSValueConst this_val)
     return JS_UNDEFINED;
 }
 
+// tab.createOverlay() -> Overlay or undefined
+static JSValue jsTabCreateOverlay(JSContext* ctx, JSValueConst this_val,
+                                   int, JSValueConst*)
+{
+    auto* tab = jsTabGet(ctx, this_val);
+    if (!tab || !tab->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+
+    JSValue overlayObj = jsOverlayNew(ctx, tab->id);
+
+    int tabId = tab->id;
+    bool ok = eng->callbacks().createOverlay(tabId, [eng, tabId](const char* data, size_t len) {
+        eng->deliverInput("__overlay_registry", static_cast<uint32_t>(tabId), data, len);
+    });
+
+    if (!ok) {
+        JS_FreeValue(ctx, overlayObj);
+        return JS_UNDEFINED;
+    }
+    registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(tab->id), overlayObj);
+    return overlayObj;
+}
+
+// tab.closeOverlay()
+static JSValue jsTabCloseOverlay(JSContext* ctx, JSValueConst this_val,
+                                  int, JSValueConst*)
+{
+    auto* tab = jsTabGet(ctx, this_val);
+    if (!tab || !tab->alive) return JS_UNDEFINED;
+    engineFromCtx(ctx)->callbacks().popOverlay(tab->id);
+    return JS_UNDEFINED;
+}
+
+// tab.close()
+static JSValue jsTabClose(JSContext* ctx, JSValueConst this_val,
+                           int, JSValueConst*)
+{
+    auto* tab = jsTabGet(ctx, this_val);
+    if (!tab || !tab->alive) return JS_UNDEFINED;
+    engineFromCtx(ctx)->callbacks().closeTab(tab->id);
+    tab->alive = false;
+    return JS_UNDEFINED;
+}
+
 static const JSCFunctionListEntry jsTabProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsTabAddEventListener),
+    JS_CFUNC_DEF("createOverlay", 0, jsTabCreateOverlay),
+    JS_CFUNC_DEF("closeOverlay", 0, jsTabCloseOverlay),
+    JS_CFUNC_DEF("close", 0, jsTabClose),
     JS_CGETSET_DEF("overlay", jsTabGetOverlay, nullptr),
     JS_CGETSET_DEF("id", jsTabGetId, nullptr),
     JS_CGETSET_DEF("panes", jsTabGetPanes, nullptr),
@@ -500,6 +551,87 @@ static JSValue jsMbActiveTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
     auto tabInfos = eng->callbacks().tabs();
     for (auto& ti : tabInfos)
         if (ti.active) return jsTabNew(ctx, ti.id);
+    return JS_UNDEFINED;
+}
+
+// mb.loadApplet(path) -> instanceId or 0
+static JSValue jsMbLoadApplet(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_NewInt64(ctx, 0);
+    Engine* eng = engineFromCtx(ctx);
+    auto* inst = eng->findInstanceByCtx(ctx);
+    if (!inst || inst->type != Engine::Instance::Type::Controller)
+        return JS_ThrowTypeError(ctx, "loadApplet is only available to controller scripts");
+
+    const char* path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_EXCEPTION;
+    uint64_t id = eng->loadApplet(std::string(path));
+    JS_FreeCString(ctx, path);
+    return JS_NewInt64(ctx, static_cast<int64_t>(id));
+}
+
+// mb.loadController(path) -> instanceId or 0
+static JSValue jsMbLoadController(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_NewInt64(ctx, 0);
+    Engine* eng = engineFromCtx(ctx);
+    auto* inst = eng->findInstanceByCtx(ctx);
+    if (!inst || inst->type != Engine::Instance::Type::Controller)
+        return JS_ThrowTypeError(ctx, "loadController is only available to controller scripts");
+
+    const char* path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_EXCEPTION;
+    uint64_t id = eng->loadController(std::string(path));
+    JS_FreeCString(ctx, path);
+    return JS_NewInt64(ctx, static_cast<int64_t>(id));
+}
+
+// mb.createTab() -> Tab
+static JSValue jsMbCreateTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    Engine* eng = engineFromCtx(ctx);
+    int tabId = eng->callbacks().createTab();
+    return jsTabNew(ctx, tabId);
+}
+
+// mb.closeTab(tabId?)
+static JSValue jsMbCloseTab(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    Engine* eng = engineFromCtx(ctx);
+    int tabId = -1;
+    if (argc >= 1 && JS_IsNumber(argv[0]))
+        JS_ToInt32(ctx, &tabId, argv[0]);
+
+    if (tabId < 0) {
+        auto tabInfos = eng->callbacks().tabs();
+        for (auto& ti : tabInfos)
+            if (ti.active) { tabId = ti.id; break; }
+    }
+    if (tabId >= 0)
+        eng->callbacks().closeTab(tabId);
+    return JS_UNDEFINED;
+}
+
+// mb.unloadScript(id)
+static JSValue jsMbUnloadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    int64_t id;
+    JS_ToInt64(ctx, &id, argv[0]);
+    if (id > 0) eng->unload(static_cast<uint64_t>(id));
+    return JS_UNDEFINED;
+}
+
+// overlay.close() — pops the overlay
+static JSValue jsOverlayClose(JSContext* ctx, JSValueConst this_val,
+                               int, JSValueConst*)
+{
+    auto* ov = jsOverlayGet(ctx, this_val);
+    if (!ov || !ov->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    eng->callbacks().popOverlay(ov->tabId);
+    ov->alive = false;
     return JS_UNDEFINED;
 }
 
@@ -670,36 +802,25 @@ void Engine::setupControllerGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbActivePane, "activePane", 0));
     JS_SetPropertyStr(ctx, mb, "activeTab",
         JS_NewCFunction(ctx, jsMbActiveTab, "activeTab", 0));
+    JS_SetPropertyStr(ctx, mb, "loadApplet",
+        JS_NewCFunction(ctx, jsMbLoadApplet, "loadApplet", 1));
+    JS_SetPropertyStr(ctx, mb, "loadController",
+        JS_NewCFunction(ctx, jsMbLoadController, "loadController", 1));
+    JS_SetPropertyStr(ctx, mb, "createTab",
+        JS_NewCFunction(ctx, jsMbCreateTab, "createTab", 0));
+    JS_SetPropertyStr(ctx, mb, "closeTab",
+        JS_NewCFunction(ctx, jsMbCloseTab, "closeTab", 0));
+    JS_SetPropertyStr(ctx, mb, "unloadScript",
+        JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, global, "mb", mb);
     JS_FreeValue(ctx, global);
 }
 
 InstanceId Engine::loadApplet(const std::string& path)
 {
-    std::string src = readFile(path);
-    if (src.empty()) {
-        spdlog::error("ScriptEngine: failed to read applet '{}'", path);
-        return 0;
-    }
-    JSContext* ctx = createContext();
-    InstanceId id = nextId_++;
-    setupAppletGlobals(ctx, id);
-
-    JSValue result = JS_Eval(ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
-    if (JS_IsException(result)) {
-        JSValue exc = JS_GetException(ctx);
-        const char* str = JS_ToCString(ctx, exc);
-        spdlog::error("ScriptEngine: applet '{}' error: {}", path, str ? str : "(null)");
-        if (str) JS_FreeCString(ctx, str);
-        JS_FreeValue(ctx, exc);
-        JS_FreeValue(ctx, result);
-        JS_FreeContext(ctx);
-        return 0;
-    }
-    JS_FreeValue(ctx, result);
-    instances_.push_back({id, ctx, Instance::Type::Applet});
-    spdlog::info("ScriptEngine: loaded applet '{}' (id={})", path, id);
-    return id;
+    // For now, applets get full controller privileges.
+    // TODO: permission system to restrict applet API access.
+    return loadController(path);
 }
 
 InstanceId Engine::loadController(const std::string& path)
@@ -713,7 +834,7 @@ InstanceId Engine::loadController(const std::string& path)
     InstanceId id = nextId_++;
     setupControllerGlobals(ctx, id);
 
-    JSValue result = JS_Eval(ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
+    JSValue result = JS_Eval(ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(result)) {
         JSValue exc = JS_GetException(ctx);
         const char* str = JS_ToCString(ctx, exc);
@@ -1091,35 +1212,56 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
     }
 }
 
-void Engine::deliverAppletInput(InstanceId id, const std::string& data)
+void Engine::deliverInput(const char* registryName, uint32_t key,
+                           const char* data, size_t len)
 {
-    Instance* inst = findInstance(id);
-    if (!inst || inst->type != Instance::Type::Applet) return;
+    for (auto& inst : instances_) {
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, registryName);
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
 
-    JSValue global = JS_GetGlobalObject(inst->ctx);
-    JSValue onInput = JS_GetPropertyStr(inst->ctx, global, "onInput");
-    if (JS_IsFunction(inst->ctx, onInput)) {
-        JSValue args[] = { onInput, JS_NewStringLen(inst->ctx, data.c_str(), data.size()) };
-        JS_EnqueueJob(inst->ctx, eventJobFunc, 2, args);
-        JS_FreeValue(inst->ctx, args[1]);
+        JSValue obj = JS_GetPropertyUint32(inst.ctx, registry, key);
+        if (JS_IsUndefined(obj)) {
+            JS_FreeValue(inst.ctx, obj);
+            JS_FreeValue(inst.ctx, registry);
+            continue;
+        }
+
+        JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__input_filters");
+        if (JS_IsUndefined(arr)) {
+            JS_FreeValue(inst.ctx, arr);
+            JS_FreeValue(inst.ctx, obj);
+            JS_FreeValue(inst.ctx, registry);
+            continue;
+        }
+
+        JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+        int32_t arrLen = 0;
+        JS_ToInt32(inst.ctx, &arrLen, lenVal);
+        JS_FreeValue(inst.ctx, lenVal);
+
+        JSValue arg = JS_NewStringLen(inst.ctx, data, len);
+        for (int32_t i = 0; i < arrLen; ++i) {
+            JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
+            if (JS_IsFunction(inst.ctx, fn)) {
+                JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &arg);
+                if (JS_IsException(ret)) {
+                    JSValue exc = JS_GetException(inst.ctx);
+                    const char* s = JS_ToCString(inst.ctx, exc);
+                    spdlog::error("ScriptEngine: input listener error: {}", s ? s : "(null)");
+                    if (s) JS_FreeCString(inst.ctx, s);
+                    JS_FreeValue(inst.ctx, exc);
+                }
+                JS_FreeValue(inst.ctx, ret);
+            }
+            JS_FreeValue(inst.ctx, fn);
+        }
+        JS_FreeValue(inst.ctx, arg);
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
     }
-    JS_FreeValue(inst->ctx, onInput);
-    JS_FreeValue(inst->ctx, global);
-}
-
-void Engine::deliverAppletResize(InstanceId id, int cols, int rows)
-{
-    Instance* inst = findInstance(id);
-    if (!inst || inst->type != Instance::Type::Applet) return;
-
-    JSValue global = JS_GetGlobalObject(inst->ctx);
-    JSValue onResize = JS_GetPropertyStr(inst->ctx, global, "onResize");
-    if (JS_IsFunction(inst->ctx, onResize)) {
-        JSValue args[] = { onResize, JS_NewInt32(inst->ctx, cols), JS_NewInt32(inst->ctx, rows) };
-        JS_EnqueueJob(inst->ctx, eventJobFunc, 3, args);
-    }
-    JS_FreeValue(inst->ctx, onResize);
-    JS_FreeValue(inst->ctx, global);
 }
 
 void Engine::executePendingJobs()

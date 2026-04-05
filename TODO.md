@@ -114,7 +114,8 @@
 - [ ] Scripting: OSC handler routing — register JS handlers for specific OSC numbers (`pane.addEventListener("osc:7777", fn)`). Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
 - [ ] Scripting: applet launch via OSC — shell emits `OSC 7777 ; applet:/path/to/script.js ST`. Engine shows a confirmation popup (non-focusing, top-right corner via PopupPane). User must focus the popup via keybinding to respond y/n/always. Allowlist persisted in config dir.
 - [ ] Scripting: command line loading — `--script <path>` for controllers, `--applet <path>` for applets.
-- [ ] Scripting: `console.log` — route QuickJS console output to spdlog.
+- [x] Scripting: `console.log` — route QuickJS console output to spdlog.
+- [ ] Scripting: permission system — scripts request permissions up front (via OSC payload: `permissions=ui,panes,actions`). Permissions: `ui` (create overlays/popups), `panes` (read pane content, listen to output), `input` (filter/inject input), `actions` (invoke actions), `shell` (write to shell stdin). Engine checks permissions before every sensitive callback, throws if denied. Allowlist stores `{path, content hash, permissions}` in config dir. If script content or requested permissions change since last "always" approval, user is re-prompted. Erases the applet/controller distinction — built-in scripts (like applet-loader) are fully trusted, user scripts get approved permissions only.
 - [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 

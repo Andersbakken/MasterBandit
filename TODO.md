@@ -104,6 +104,7 @@
 - [ ] Config colors as floats — tab bar colors use packed uint32 (parseHexColor), progress bar uses floats. Unify to float storage throughout so no unpacking is needed at render time.
 - [ ] Wayland support — `NativeSurface.cpp` only handles X11 (`GLFW_PLATFORM_X11`). Add `GLFW_PLATFORM_WAYLAND` branch using `glfwGetWaylandDisplay()` / `glfwGetWaylandWindow()` and `wgpu::SurfaceSourceWaylandSurface`. Requires GLFW built with `-DGLFW_BUILD_WAYLAND=ON`.
 - [x] PTY write EAGAIN — `writeToPTY` fails with EAGAIN when pasting large text (PTY buffer full). Should retry with backoff or use non-blocking write with a write queue.
+- [ ] Prompt-aware reflow — when OSC 133 markers are present, blank the rprompt region of prompt lines before reflow to prevent rprompt padding from wrapping into extra rows. The shell redraws the current prompt after SIGWINCH; history prompts could use the marker to identify and strip the rprompt portion.
 - [x] Reflow strips spaces — cursor gap detection treated spaces as null cells, truncating content after cursor.
 - [x] Underlines not cleared on scroll — deleteChars/insertChars didn't shift extras map entries, leaving stale underline colors at wrong columns.
 - [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.

@@ -229,29 +229,24 @@ void PlatformDawn::onFramebufferResize(int width, int height)
     for (auto& tabPtr : tabs_)
         clearDividers(tabPtr.get());
 
-    Tab* tab = activeTab();
-    if (!tab) return;
+    for (auto& tabPtr : tabs_) {
+        tabPtr->layout()->computeRects(fbWidth_, fbHeight_);
 
-    tab->layout()->computeRects(fbWidth_, fbHeight_);
+        for (auto& panePtr : tabPtr->layout()->panes()) {
+            Pane* pane = panePtr.get();
+            pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
-    for (auto& panePtr : tab->layout()->panes()) {
-        Pane* pane = panePtr.get();
-        pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
+            TerminalEmulator* term = pane->activeTerm();
+            if (!term) continue;
 
-        TerminalEmulator* term = pane->activeTerm();
-        if (!term) continue;
+            int cols = term->width();
+            int rows = term->height();
+            if (cols < 1) cols = 1;
+            if (rows < 1) rows = 1;
 
-        // resizeToRect already called terminal->resize() which sets
-        // mResizePending if dimensions changed. TIOCSWINSZ is sent
-        // later via flushPendingResize() in the render loop.
-
-        int cols = term->width();
-        int rows = term->height();
-        if (cols < 1) cols = 1;
-        if (rows < 1) rows = 1;
-
-        auto& rs = paneRenderStates_[pane->id()];
-        rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+            auto& rs = paneRenderStates_[pane->id()];
+            rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+        }
     }
 
     // Release all held textures — they're now the wrong size for the new framebuffer.
@@ -267,7 +262,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
         tabBarTexture_ = nullptr;
     }
     tabBarDirty_ = true;
-    refreshDividers(tab);
+    if (Tab* active = activeTab()) refreshDividers(active);
     needsRedraw_ = true;
 
 }

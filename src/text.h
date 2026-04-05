@@ -90,11 +90,11 @@ public:
     bool registerFont(const std::string& name,
                       const std::vector<std::vector<uint8_t>>& ttfDataList,
                       float baseSize = 48.0f);
-    const ShapedText& shapeText(const std::string& fontName, const std::string& text,
-                                float fontSize, float wrapWidth = 0, int align = 0,
-                                FontStyle style = {});
-    const ShapedRun& shapeRun(const std::string& fontName, const std::string& text,
-                              float fontSize, FontStyle style = {});
+    ShapedText shapeText(const std::string& fontName, const std::string& text,
+                         float fontSize, float wrapWidth = 0, int align = 0,
+                         FontStyle style = {});
+    ShapedRun shapeRun(const std::string& fontName, const std::string& text,
+                       float fontSize, FontStyle style = {});
     const FontData* getFont(const std::string& name) const;
     bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
     bool addSyntheticBoldVariant(const std::string& name, float xStrength = 0.02f, float yStrength = 0.02f);
@@ -139,21 +139,4 @@ private:
     SystemFallbackFn systemFallback_;
     float boldStrengthX_ = 0.04f, boldStrengthY_ = 0.04f;
 
-    // LRU shape cache (for shapeText — tab bar, etc.)
-    static constexpr size_t MAX_SHAPE_CACHE = 512;
-    struct CacheEntry {
-        size_t key;
-        ShapedText shaped;
-    };
-    mutable std::list<CacheEntry> cacheLru_;
-    mutable std::unordered_map<size_t, std::list<CacheEntry>::iterator> cacheMap_;
-
-    // LRU run cache (for shapeRun — terminal cell rendering)
-    static constexpr size_t MAX_RUN_CACHE = 2048;
-    struct RunCacheEntry {
-        size_t key;
-        ShapedRun run;
-    };
-    mutable std::list<RunCacheEntry> runCacheLru_;
-    mutable std::unordered_map<size_t, std::list<RunCacheEntry>::iterator> runCacheMap_;
 };

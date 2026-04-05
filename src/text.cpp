@@ -214,10 +214,6 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
 
     font.hbFonts.push_back(entry);
 
-    // Invalidate shape cache since a new fallback may resolve previously missing glyphs
-    cacheLru_.clear();
-    cacheMap_.clear();
-
     spdlog::info("Added fallback font #{} to '{}'", font.hbFonts.size() - 1, name);
     return true;
 }
@@ -383,41 +379,16 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
     return {0, 0};  // not found
 }
 
-const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::string& text,
-                                         float fontSize, float wrapWidth, int align,
-                                         FontStyle style)
+ShapedText TextSystem::shapeText(const std::string& fontName, const std::string& text,
+                                  float fontSize, float wrapWidth, int align,
+                                  FontStyle style)
 {
-    // Compute cache key
-    size_t h = std::hash<std::string>{}(fontName);
-    h ^= std::hash<std::string>{}(text) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<float>{}(fontSize) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<float>{}(wrapWidth) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<int>{}(align) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<int>{}(style.key()) + 0x9e3779b9 + (h << 6) + (h >> 2);
-
-    // LRU lookup
-    auto it = cacheMap_.find(h);
-    if (it != cacheMap_.end()) {
-        cacheLru_.splice(cacheLru_.begin(), cacheLru_, it->second);
-        return it->second->shaped;
-    }
-
-    // Cache miss
-    static const ShapedText empty{};
-
     auto fontIt = fonts_.find(fontName);
-    if (fontIt == fonts_.end()) return empty;
+    if (fontIt == fonts_.end()) return {};
     FontData& font = fontIt->second;
 
-    if (text.empty()) {
-        cacheLru_.push_front({h, ShapedText{{}, 0, font.lineHeight * (fontSize / font.baseSize)}});
-        cacheMap_[h] = cacheLru_.begin();
-        if (cacheMap_.size() > MAX_SHAPE_CACHE) {
-            cacheMap_.erase(cacheLru_.back().key);
-            cacheLru_.pop_back();
-        }
-        return cacheLru_.front().shaped;
-    }
+    if (text.empty())
+        return ShapedText{{}, 0, font.lineHeight * (fontSize / font.baseSize)};
 
     float scale = fontSize / font.baseSize;
     float scaledLineHeight = font.lineHeight * scale;
@@ -692,52 +663,19 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
     SBParagraphRelease(bidiPara);
     SBAlgorithmRelease(bidiAlgo);
 
-    // Insert into LRU cache
-    cacheLru_.push_front({h, std::move(result)});
-    cacheMap_[h] = cacheLru_.begin();
-
-    if (cacheMap_.size() > MAX_SHAPE_CACHE) {
-        auto& back = cacheLru_.back();
-        cacheMap_.erase(back.key);
-        cacheLru_.pop_back();
-    }
-
-    return cacheLru_.front().shaped;
+    return result;
 }
 
 // --- Terminal-specific run shaping (no BiDi reordering, no line wrapping) ---
 
-const ShapedRun& TextSystem::shapeRun(const std::string& fontName, const std::string& text,
-                                       float fontSize, FontStyle style)
+ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& text,
+                                float fontSize, FontStyle style)
 {
-    // Compute cache key
-    size_t h = std::hash<std::string>{}(fontName);
-    h ^= std::hash<std::string>{}(text) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<float>{}(fontSize) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<int>{}(style.key()) + 0x9e3779b9 + (h << 6) + (h >> 2);
-
-    // LRU lookup
-    auto it = runCacheMap_.find(h);
-    if (it != runCacheMap_.end()) {
-        runCacheLru_.splice(runCacheLru_.begin(), runCacheLru_, it->second);
-        return it->second->run;
-    }
-
-    static const ShapedRun empty{};
-
     auto fontIt = fonts_.find(fontName);
-    if (fontIt == fonts_.end()) return empty;
+    if (fontIt == fonts_.end()) return {};
     FontData& font = fontIt->second;
 
-    if (text.empty()) {
-        runCacheLru_.push_front({h, ShapedRun{}});
-        runCacheMap_[h] = runCacheLru_.begin();
-        if (runCacheMap_.size() > MAX_RUN_CACHE) {
-            runCacheMap_.erase(runCacheLru_.back().key);
-            runCacheLru_.pop_back();
-        }
-        return runCacheLru_.front().run;
-    }
+    if (text.empty()) return {};
 
     float scale = fontSize / font.baseSize;
 
@@ -854,16 +792,7 @@ const ShapedRun& TextSystem::shapeRun(const std::string& fontName, const std::st
     SBParagraphRelease(bidiPara);
     SBAlgorithmRelease(bidiAlgo);
 
-    // Insert into LRU cache
-    runCacheLru_.push_front({h, std::move(result)});
-    runCacheMap_[h] = runCacheLru_.begin();
-
-    if (runCacheMap_.size() > MAX_RUN_CACHE) {
-        runCacheMap_.erase(runCacheLru_.back().key);
-        runCacheLru_.pop_back();
-    }
-
-    return runCacheLru_.front().run;
+    return result;
 }
 
 const FontData* TextSystem::getFont(const std::string& name) const

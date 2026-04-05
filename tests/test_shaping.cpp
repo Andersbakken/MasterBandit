@@ -159,24 +159,17 @@ TEST_CASE("shapeRun: advances are positive") {
     }
 }
 
-TEST_CASE("shapeRun: cache returns same result") {
+TEST_CASE("shapeRun: repeated calls produce identical results") {
     auto* ts = getTextSystem();
     if (!ts) { MESSAGE("No system font found, skipping"); return; }
 
-    const auto& run1 = ts->shapeRun("test", "test", 20.0f);
-    const auto& run2 = ts->shapeRun("test", "test", 20.0f);
-    CHECK(&run1 == &run2); // same reference from cache
-}
-
-TEST_CASE("shapeRun: different FontStyle produces different cache entry") {
-    auto* ts = getTextSystem();
-    if (!ts) { MESSAGE("No system font found, skipping"); return; }
-
-    const auto& run1 = ts->shapeRun("test", "abc", 20.0f, FontStyle{});
-    const auto& run2 = ts->shapeRun("test", "abc", 20.0f, FontStyle{.bold = true});
-    // Different style = different cache key, so different addresses
-    // (unless hash collision, which is unlikely)
-    CHECK(&run1 != &run2);
+    auto run1 = ts->shapeRun("test", "test", 20.0f);
+    auto run2 = ts->shapeRun("test", "test", 20.0f);
+    REQUIRE(run1.glyphs.size() == run2.glyphs.size());
+    for (size_t i = 0; i < run1.glyphs.size(); ++i) {
+        CHECK(run1.glyphs[i].glyphId == run2.glyphs[i].glyphId);
+        CHECK(run1.glyphs[i].xAdvance == run2.glyphs[i].xAdvance);
+    }
 }
 
 TEST_CASE("shapeRun: multibyte UTF-8 clusters") {

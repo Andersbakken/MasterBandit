@@ -103,6 +103,8 @@
 - [ ] macOS font fallback — CoreText two-pass strategy implemented; parity with Linux fontconfig pass needs verification.
 - [ ] Config colors as floats — tab bar colors use packed uint32 (parseHexColor), progress bar uses floats. Unify to float storage throughout so no unpacking is needed at render time.
 - [ ] Wayland support — `NativeSurface.cpp` only handles X11 (`GLFW_PLATFORM_X11`). Add `GLFW_PLATFORM_WAYLAND` branch using `glfwGetWaylandDisplay()` / `glfwGetWaylandWindow()` and `wgpu::SurfaceSourceWaylandSurface`. Requires GLFW built with `-DGLFW_BUILD_WAYLAND=ON`.
+- [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.
+- [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
 ## Testing
 

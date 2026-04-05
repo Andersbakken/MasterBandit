@@ -12,16 +12,7 @@
 
 namespace fs = std::filesystem;
 
-static std::vector<uint8_t> loadFontFile(const std::string& path)
-{
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open()) return {};
-    auto size = f.tellg();
-    f.seekg(0);
-    std::vector<uint8_t> data(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(data.data()), size);
-    return data;
-}
+static std::vector<uint8_t> loadFontFile(const std::string& path) { return io::loadFile(path); }
 
 // --- Find a monospace font on the system ---
 static std::string findMonospaceFont()
@@ -356,87 +347,11 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     int paneId = pane->id();
 
-    // Build TerminalCallbacks capturing paneId
-    TerminalCallbacks cbs;
-    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
-        switch (static_cast<TerminalEmulator::Event>(ev)) {
-        case TerminalEmulator::Update:
-        case TerminalEmulator::ScrollbackChanged:
-            needsRedraw_ = true;
-            {
-                auto it = paneRenderStates_.find(paneId);
-                if (it != paneRenderStates_.end()) it->second.dirty = true;
-            }
-            break;
-        case TerminalEmulator::VisibleBell:
-            break;
-        }
-    };
-    if (!headless_) {
-        cbs.copyToClipboard = [this](const std::string& text) {
-            glfwSetClipboardString(glfwWindow_, text.c_str());
-        };
-        cbs.pasteFromClipboard = [this]() -> std::string {
-            const char* clip = glfwGetClipboardString(glfwWindow_);
-            return clip ? std::string(clip) : std::string();
-        };
-    } else {
-        cbs.copyToClipboard = [](const std::string&) {};
-        cbs.pasteFromClipboard = []() -> std::string { return {}; };
-    }
-    cbs.onTitleChanged = [this, paneId, tabIdx = static_cast<int>(tabs_.size())](const std::string& title) {
-        if (tabIdx >= static_cast<int>(tabs_.size())) return;
-        Tab* t = tabs_[tabIdx].get();
-        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setTitle(title);
-            if (tabIdx == activeTabIdx_ && !headless_)
-                glfwSetWindowTitle(glfwWindow_, title.c_str());
-            tabBarDirty_ = true;
-            needsRedraw_ = true;
-        }
-    };
-    cbs.onIconChanged = [this, paneId, tabIdx = static_cast<int>(tabs_.size())](const std::string& icon) {
-        if (tabIdx >= static_cast<int>(tabs_.size())) return;
-        Tab* t = tabs_[tabIdx].get();
-        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setIcon(icon);
-            tabBarDirty_ = true;
-            needsRedraw_ = true;
-        }
-    };
-    cbs.onProgressChanged = [this, paneId](int state, int pct) {
-        for (auto& tab : tabs_) {
-            if (Pane* p = tab->layout()->pane(paneId)) {
-                p->setProgress(state, pct);
-                tabBarDirty_ = true;
-                needsRedraw_ = true;
-                break;
-            }
-        }
-    };
-    cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
-    cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    cbs.isDarkMode = headless_ ? []() { return true; } : []() { return platformIsDarkMode(); };
-    cbs.onCWDChanged = [this, paneId](const std::string& dir) {
-        for (auto& tab : tabs_) {
-            if (Pane* p = tab->layout()->pane(paneId)) {
-                p->setCWD(dir);
-                break;
-            }
-        }
-    };
-    cbs.onDesktopNotification = headless_
-        ? [](const std::string&, const std::string&, const std::string&) {}
-        : [](const std::string& title, const std::string& body, const std::string&) {
-            platformSendNotification(title, body);
-        };
-
+    auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
-        pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
-        pcbs.quit = [this]() { quit(); };
-        auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+    pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
+    pcbs.quit = [this]() { quit(); };
+    auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
 
     terminal->applyColorScheme(options.colors);
     if (!terminal->init(options)) {

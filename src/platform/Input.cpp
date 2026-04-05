@@ -89,34 +89,8 @@ static Key glfwKeyToKey(int glfwKey)
     }
 }
 
-// --- UTF-32 codepoint to UTF-8 ---
-// Append variant: appends UTF-8 bytes directly to an existing string (no allocation)
-static void appendUtf8(std::string& s, uint32_t cp)
-{
-    if (cp < 0x80) {
-        s += static_cast<char>(cp);
-    } else if (cp < 0x800) {
-        s += static_cast<char>(0xC0 | (cp >> 6));
-        s += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        s += static_cast<char>(0xE0 | (cp >> 12));
-        s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        s += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-        s += static_cast<char>(0xF0 | (cp >> 18));
-        s += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-        s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        s += static_cast<char>(0x80 | (cp & 0x3F));
-    }
-}
-
-// Convenience: returns a new string (for non-hot-path callers)
-static std::string codepointToUtf8(uint32_t cp)
-{
-    std::string s;
-    appendUtf8(s, cp);
-    return s;
-}
+static void appendUtf8(std::string& s, uint32_t cp) { utf8::append(s, cp); }
+static std::string codepointToUtf8(uint32_t cp) { return utf8::encode(cp); }
 
 
 void PlatformDawn::onKey(int key, int scancode, int action, int mods)
@@ -328,15 +302,15 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
                     text += "[" + std::to_string(i + 1) + "] ";
                     if (!t->title().empty()) text += t->title();
                     text += " ";
-                    // Count UTF-8 chars
+                    // Count UTF-8 codepoints
                     int w = 0;
                     const char* p = text.c_str();
-                    while (*p) {
+                    const char* end = p + text.size();
+                    while (p < end) {
                         uint8_t b = static_cast<uint8_t>(*p);
-                        if (b < 0x80) { w++; p++; }
-                        else if ((b & 0xE0) == 0xC0) { w++; p += 2; }
-                        else if ((b & 0xF0) == 0xE0) { w++; p += 3; }
-                        else { w++; p += 4; }
+                        int seqLen = (b < 0x80) ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : 4;
+                        w++;
+                        p += std::min(seqLen, static_cast<int>(end - p));
                     }
                     w += 1; // separator
                     if (clickCol >= col && clickCol < col + w) {

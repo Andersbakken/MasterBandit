@@ -271,6 +271,9 @@ private:
     void dispatchAction(const Action::Any& action);
     void terminalExited(Terminal* terminal);
 
+    // Callback/terminal helpers
+    TerminalCallbacks buildTerminalCallbacks(int paneId);
+
     // Pane helpers
     void spawnTerminalForPane(Pane* pane, int tabIdx, const std::string& cwd = {});
     void resizeAllPanesInTab(Tab* tab);

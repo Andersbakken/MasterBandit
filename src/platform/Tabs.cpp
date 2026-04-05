@@ -32,6 +32,105 @@ static void collectFirstPaneDividers(const LayoutNode* node, int divPx,
 }
 
 
+// Helper: find which tab contains a given pane
+static Tab* findTabForPane(const std::vector<std::unique_ptr<Tab>>& tabs, int paneId, int* outTabIdx = nullptr)
+{
+    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
+        if (tabs[i]->layout()->pane(paneId)) {
+            if (outTabIdx) *outTabIdx = i;
+            return tabs[i].get();
+        }
+    }
+    return nullptr;
+}
+
+TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
+{
+    TerminalCallbacks cbs;
+
+    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
+        switch (static_cast<TerminalEmulator::Event>(ev)) {
+        case TerminalEmulator::Update:
+        case TerminalEmulator::ScrollbackChanged:
+            needsRedraw_ = true;
+            {
+                auto it = paneRenderStates_.find(paneId);
+                if (it != paneRenderStates_.end()) it->second.dirty = true;
+            }
+            break;
+        case TerminalEmulator::VisibleBell:
+            break;
+        }
+    };
+
+    if (!headless_) {
+        cbs.copyToClipboard = [this](const std::string& text) {
+            glfwSetClipboardString(glfwWindow_, text.c_str());
+        };
+        cbs.pasteFromClipboard = [this]() -> std::string {
+            const char* clip = glfwGetClipboardString(glfwWindow_);
+            return clip ? std::string(clip) : std::string();
+        };
+    } else {
+        cbs.copyToClipboard = [](const std::string&) {};
+        cbs.pasteFromClipboard = []() -> std::string { return {}; };
+    }
+
+    cbs.onTitleChanged = [this, paneId](const std::string& title) {
+        int tabIdx = -1;
+        Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
+        if (!t) return;
+        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setTitle(title);
+            if (tabIdx == activeTabIdx_ && !headless_)
+                glfwSetWindowTitle(glfwWindow_, title.c_str());
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
+    };
+
+    cbs.onIconChanged = [this, paneId](const std::string& icon) {
+        Tab* t = findTabForPane(tabs_, paneId);
+        if (!t) return;
+        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
+        if (t->layout()->focusedPaneId() == paneId) {
+            t->setIcon(icon);
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
+    };
+
+    cbs.onProgressChanged = [this, paneId](int state, int pct) {
+        Tab* t = findTabForPane(tabs_, paneId);
+        if (!t) return;
+        if (Pane* p = t->layout()->pane(paneId)) {
+            p->setProgress(state, pct);
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
+    };
+
+    cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
+    cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
+    cbs.isDarkMode = headless_ ? []() { return true; } : []() { return platformIsDarkMode(); };
+
+    cbs.onCWDChanged = [this, paneId](const std::string& dir) {
+        Tab* t = findTabForPane(tabs_, paneId);
+        if (!t) return;
+        if (Pane* p = t->layout()->pane(paneId)) p->setCWD(dir);
+    };
+
+    cbs.onDesktopNotification = headless_
+        ? [](const std::string&, const std::string&, const std::string&) {}
+        : [](const std::string& title, const std::string& body, const std::string&) {
+            platformSendNotification(title, body);
+        };
+
+    return cbs;
+}
+
+
 void PlatformDawn::createTab()
 {
     if (!device_ || !glfwWindow_) return;
@@ -50,71 +149,11 @@ void PlatformDawn::createTab()
     int paneId = pane->id();
     int tabIdx = static_cast<int>(tabs_.size());
 
-    TerminalCallbacks cbs;
-    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
-        if (ev == TerminalEmulator::Update || ev == TerminalEmulator::ScrollbackChanged) {
-            needsRedraw_ = true;
-            auto it = paneRenderStates_.find(paneId);
-            if (it != paneRenderStates_.end()) it->second.dirty = true;
-        }
-    };
-    cbs.copyToClipboard = [this](const std::string& text) {
-        glfwSetClipboardString(glfwWindow_, text.c_str());
-    };
-    cbs.pasteFromClipboard = [this]() -> std::string {
-        const char* clip = glfwGetClipboardString(glfwWindow_);
-        return clip ? std::string(clip) : std::string();
-    };
-    cbs.onTitleChanged = [this, paneId, tabIdx](const std::string& title) {
-        if (tabIdx >= static_cast<int>(tabs_.size())) return;
-        Tab* t = tabs_[tabIdx].get();
-        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setTitle(title);
-            if (tabIdx == activeTabIdx_) glfwSetWindowTitle(glfwWindow_, title.c_str());
-            tabBarDirty_ = true;
-            needsRedraw_ = true;
-        }
-    };
-    cbs.onIconChanged = [this, paneId, tabIdx](const std::string& icon) {
-        if (tabIdx >= static_cast<int>(tabs_.size())) return;
-        Tab* t = tabs_[tabIdx].get();
-        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setIcon(icon);
-            tabBarDirty_ = true;
-            needsRedraw_ = true;
-        }
-    };
-    cbs.onProgressChanged = [this, paneId](int state, int pct) {
-        for (auto& tab : tabs_) {
-            if (Pane* p = tab->layout()->pane(paneId)) {
-                p->setProgress(state, pct);
-                tabBarDirty_ = true;
-                needsRedraw_ = true;
-                break;
-            }
-        }
-    };
-    cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
-    cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    cbs.isDarkMode = []() { return platformIsDarkMode(); };
-    cbs.onCWDChanged = [this, paneId](const std::string& dir) {
-        for (auto& tab : tabs_) {
-            if (Pane* p = tab->layout()->pane(paneId)) {
-                p->setCWD(dir);
-                break;
-            }
-        }
-    };
-    cbs.onDesktopNotification = [](const std::string& title, const std::string& body, const std::string&) {
-        platformSendNotification(title, body);
-    };
-
+    auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
-        pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
-        pcbs.quit = [this]() { quit(); };
-        auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+    pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
+    pcbs.quit = [this]() { quit(); };
+    auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
     // Inherit CWD from the focused pane of the active tab
     auto opts = terminalOptions_;
     if (Tab* at = activeTab()) {
@@ -362,71 +401,11 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
 {
     int paneId = pane->id();
 
-    TerminalCallbacks cbs;
-    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
-        if (ev == TerminalEmulator::Update || ev == TerminalEmulator::ScrollbackChanged) {
-            needsRedraw_ = true;
-            auto it = paneRenderStates_.find(paneId);
-            if (it != paneRenderStates_.end()) it->second.dirty = true;
-        }
-    };
-    cbs.copyToClipboard = [this](const std::string& text) {
-        glfwSetClipboardString(glfwWindow_, text.c_str());
-    };
-    cbs.pasteFromClipboard = [this]() -> std::string {
-        const char* clip = glfwGetClipboardString(glfwWindow_);
-        return clip ? std::string(clip) : std::string();
-    };
-    cbs.onTitleChanged = [this, paneId, tabIdx](const std::string& title) {
-        if (tabIdx >= static_cast<int>(tabs_.size())) return;
-        Tab* t = tabs_[tabIdx].get();
-        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setTitle(title);
-            if (tabIdx == activeTabIdx_) glfwSetWindowTitle(glfwWindow_, title.c_str());
-            tabBarDirty_ = true;
-            needsRedraw_ = true;
-        }
-    };
-    cbs.onIconChanged = [this, paneId, tabIdx](const std::string& icon) {
-        if (tabIdx >= static_cast<int>(tabs_.size())) return;
-        Tab* t = tabs_[tabIdx].get();
-        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setIcon(icon);
-            tabBarDirty_ = true;
-            needsRedraw_ = true;
-        }
-    };
-    cbs.onProgressChanged = [this, paneId](int state, int pct) {
-        for (auto& tab : tabs_) {
-            if (Pane* p = tab->layout()->pane(paneId)) {
-                p->setProgress(state, pct);
-                tabBarDirty_ = true;
-                needsRedraw_ = true;
-                break;
-            }
-        }
-    };
-    cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
-    cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    cbs.isDarkMode = []() { return platformIsDarkMode(); };
-    cbs.onCWDChanged = [this, paneId](const std::string& dir) {
-        for (auto& tab : tabs_) {
-            if (Pane* p = tab->layout()->pane(paneId)) {
-                p->setCWD(dir);
-                break;
-            }
-        }
-    };
-    cbs.onDesktopNotification = [](const std::string& title, const std::string& body, const std::string&) {
-        platformSendNotification(title, body);
-    };
-
+    auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
-        pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
-        pcbs.quit = [this]() { quit(); };
-        auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+    pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
+    pcbs.quit = [this]() { quit(); };
+    auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
     auto opts = terminalOptions_;
     if (!cwd.empty()) opts.cwd = cwd;
 
@@ -437,8 +416,8 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
     }
 
     const PaneRect& pr = pane->rect();
-    int cols = (pr.w > 0 && charWidth_ > 0)  ? static_cast<int>(pr.w / charWidth_)  : 80;
-    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>(pr.h / lineHeight_) : 24;
+    int cols = (pr.w > 0 && charWidth_ > 0)  ? static_cast<int>((pr.w - padLeft_ - padRight_) / charWidth_)  : 80;
+    int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>((pr.h - padTop_ - padBottom_) / lineHeight_) : 24;
     cols = std::max(cols, 1);
     rows = std::max(rows, 1);
 

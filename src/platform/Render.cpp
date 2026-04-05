@@ -5,27 +5,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-// Append variant: appends UTF-8 bytes directly to an existing string (no allocation)
-static void appendUtf8(std::string& s, uint32_t cp)
-{
-    if (cp < 0x80) {
-        s += static_cast<char>(cp);
-    } else if (cp < 0x800) {
-        s += static_cast<char>(0xC0 | (cp >> 6));
-        s += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        s += static_cast<char>(0xE0 | (cp >> 12));
-        s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        s += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-        s += static_cast<char>(0xF0 | (cp >> 18));
-        s += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-        s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        s += static_cast<char>(0x80 | (cp & 0x3F));
-    }
-}
-
-// Convenience: returns a new string (for non-hot-path callers)
+static void appendUtf8(std::string& s, uint32_t cp) { utf8::append(s, cp); }
 
 
 void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale)

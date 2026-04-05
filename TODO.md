@@ -108,7 +108,8 @@
 - [x] Reflow strips spaces — cursor gap detection treated spaces as null cells, truncating content after cursor.
 - [x] Underlines not cleared on scroll — deleteChars/insertChars didn't shift extras map entries, leaving stale underline colors at wrong columns.
 - [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.
-- [ ] Configuration UI — interactive TUI config editor using FTXUI. Browse/edit config options without manual TOML editing.
+- [ ] Scripting engine (QuickJS-ng) — embed QuickJS as the extension runtime. Expose: all actions (new_tab, split_pane, etc.), config read/write, pane/tab introspection, screen content, event hooks (on resize, on focus, on title change, on key). Scripts can run in an overlay pane (stdout/stdin connected to PTY for TUI rendering via escape sequences) or headless (IPC-only). Bundled scripts ship alongside the binary.
+- [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
 ## Testing

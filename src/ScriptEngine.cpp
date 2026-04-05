@@ -328,9 +328,33 @@ static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
     }
 }
 
+// popup.resize({x, y, w, h})
+static JSValue jsPopupResize(JSContext* ctx, JSValueConst this_val,
+                              int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsObject(argv[0])) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, UiPopupCreate);
+    auto* popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) return JS_UNDEFINED;
+
+    int32_t x, y, w, h;
+    JSValue v;
+    // Default to current values if not specified — need to query
+    // For simplicity, all four are required
+    v = JS_GetPropertyStr(ctx, argv[0], "x"); JS_ToInt32(ctx, &x, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "y"); JS_ToInt32(ctx, &y, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "w"); JS_ToInt32(ctx, &w, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "h"); JS_ToInt32(ctx, &h, v); JS_FreeValue(ctx, v);
+
+    Engine* eng = engineFromCtx(ctx);
+    eng->callbacks().resizePopup(popup->paneId, popup->popupId, x, y, w, h);
+    return JS_UNDEFINED;
+}
+
 static const JSCFunctionListEntry jsPopupProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsPopupAddEventListener),
     JS_CFUNC_DEF("inject", 1, jsPopupInject),
+    JS_CFUNC_DEF("resize", 1, jsPopupResize),
     JS_CFUNC_DEF("destroy", 0, jsPopupDestroy),
     JS_CGETSET_MAGIC_DEF("paneId", jsPopupGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("id", jsPopupGetProp, nullptr, 1),

@@ -35,6 +35,7 @@ public:
     PopupPane* createPopup(const std::string& id, int x, int y, int w, int h,
                            PlatformCallbacks pcbs);
     void destroyPopup(const std::string& id);
+    bool resizePopup(const std::string& id, int x, int y, int w, int h);
     PopupPane* findPopup(const std::string& id);
     const std::vector<PopupPane>& popups() const { return mPopups; }
     std::string focusedPopupId() const { return mFocusedPopupId; }

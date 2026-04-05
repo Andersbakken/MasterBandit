@@ -83,6 +83,18 @@ PopupPane* Pane::createPopup(const std::string& id, int x, int y, int w, int h,
     return &mPopups.back();
 }
 
+bool Pane::resizePopup(const std::string& id, int x, int y, int w, int h)
+{
+    auto* p = findPopup(id);
+    if (!p) return false;
+    p->cellX = x;
+    p->cellY = y;
+    p->cellW = w;
+    p->cellH = h;
+    if (p->terminal) p->terminal->resize(w, h);
+    return true;
+}
+
 void Pane::destroyPopup(const std::string& id)
 {
     if (mFocusedPopupId == id) mFocusedPopupId.clear();

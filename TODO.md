@@ -100,7 +100,7 @@
 - [x] Reflow on resize — soft-wrap tracking via per-row continued flag. Full reflow on column change with cursor tracking. SIGWINCH coalesced to once per render frame.
 - [x] Overlay rendering — overlays render as full-screen terminals over pane layout. Used by scrollback pager. Per-tab render state. Deferred cleanup on exit.
 - [ ] Input delay — buffer PTY input for ~3ms before rendering (like kitty's `input_delay`) to avoid showing intermediate redraw states in apps that don't use Mode 2026.
-- [ ] Shell integration injection — auto-source OSC 133 hooks for zsh/bash/fish (like kitty's `ZDOTDIR` hijack) so prompt markers work without user configuration.
+- [ ] Shell integration injection — auto-source OSC 133 hooks for zsh/bash/fish (like kitty's `ZDOTDIR` hijack) so prompt markers work without user configuration. Also needed to fix: closing a second tab produces a spurious newline in tab 1 because `updateTabBarVisibility` resizes the surviving pane (tab bar hidden → pane grows), triggering SIGWINCH → shell reprints prompt. With OSC 133 markers the terminal could suppress the redraw or preserve prompt position.
 - [ ] Log level — currently defaulting to Error; `-v` flags lower it. Debug level enables pool allocation logs.
 - [ ] macOS font fallback — CoreText two-pass strategy implemented; parity with Linux fontconfig pass needs verification.
 - [ ] Config colors as floats — tab bar colors use packed uint32 (parseHexColor), progress bar uses floats. Unify to float storage throughout so no unpacking is needed at render time.

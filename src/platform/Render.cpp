@@ -807,7 +807,11 @@ void PlatformDawn::renderFrame()
                 bool bordersChanged = prs.popupBorders.size() != pane->popups().size();
                 if (!bordersChanged) {
                     for (size_t i = 0; i < pane->popups().size(); ++i) {
-                        if (prs.popupBorders[i].popupId != pane->popups()[i].id) {
+                        const auto& pb = prs.popupBorders[i];
+                        const auto& pp = pane->popups()[i];
+                        if (pb.popupId != pp.id ||
+                            pb.cellX != pp.cellX || pb.cellY != pp.cellY ||
+                            pb.cellW != pp.cellW || pb.cellH != pp.cellH) {
                             bordersChanged = true;
                             break;
                         }
@@ -827,6 +831,10 @@ void PlatformDawn::renderFrame()
 
                         PaneRenderState::PopupBorder pb;
                         pb.popupId = popup.id;
+                        pb.cellX = popup.cellX;
+                        pb.cellY = popup.cellY;
+                        pb.cellW = popup.cellW;
+                        pb.cellH = popup.cellH;
                         renderer_.updateDividerBuffer(queue_, pb.top,
                             px - bw, py - bw, pw + 2 * bw, bw,
                             dividerR_, dividerG_, dividerB_, dividerA_);

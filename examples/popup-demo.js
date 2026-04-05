@@ -9,7 +9,8 @@
 const pane = mb.activePane();
 if (!pane) throw new Error("no active pane");
 
-const W = 30, H = 7;
+let W = 30, H = 7;
+let expanded = false;
 const popup = pane.createPopup({
     id: "demo",
     x: 2, y: 1,
@@ -19,8 +20,10 @@ if (!popup) throw new Error("failed to create popup");
 
 // Cursor position within the editable area (row 2-4, col 1-28)
 let curCol = 1, curRow = 2;
-const minCol = 1, maxCol = W - 2;
-const minRow = 2, maxRow = H - 3;
+const minCol = 1;
+let maxCol = W - 2;
+const minRow = 2;
+let maxRow = H - 3;
 
 function render() {
     const focused = popup.focused;
@@ -33,7 +36,7 @@ function render() {
     const pad = (s, w) => s.length >= w ? s.substring(0, w) : s + " ".repeat(w - s.length);
 
     const titleText = focused ? " Popup Demo FOCUSED " : " Popup Demo UNFOCUSED ";
-    const hintText  = focused ? " q:close arrows:move"  : " use keybind to focus";
+    const hintText  = focused ? " q:close r:resize arrows:move" : " use keybind to focus";
 
     const top    = border + "+" + "-".repeat(inner) + "+" + reset;
     const bottom = border + "+" + "-".repeat(inner) + "+" + reset;
@@ -66,6 +69,20 @@ popup.addEventListener("input", (data) => {
     }
 
     // Arrow keys come as escape sequences from the terminal emulator
+    if (data === "r" || data === "R") {
+        // Toggle size
+        expanded = !expanded;
+        W = expanded ? 50 : 30;
+        H = expanded ? 10 : 7;
+        popup.resize({ x: 2, y: 1, w: W, h: H });
+        maxCol = W - 2;
+        maxRow = H - 3;
+        if (curCol > maxCol) curCol = maxCol;
+        if (curRow > maxRow) curRow = maxRow;
+        render();
+        return;
+    }
+
     if (data === "\x1b[A") { // up
         if (curRow > minRow) curRow--;
         render();

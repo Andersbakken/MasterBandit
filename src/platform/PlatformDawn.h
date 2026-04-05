@@ -209,6 +209,7 @@ private:
         // Cached popup border buffers: 4 buffers (top/bottom/left/right) per popup
         struct PopupBorder {
             std::string popupId;
+            int cellX = 0, cellY = 0, cellW = 0, cellH = 0;
             wgpu::Buffer top, bottom, left, right;
         };
         std::vector<PopupBorder> popupBorders;

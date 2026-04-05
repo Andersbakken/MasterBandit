@@ -222,6 +222,22 @@ int PlatformDawn::exec()
                 }
             }
         };
+        scbs.resizePopup = [this](Script::PaneId paneId, const std::string& popupId,
+                                   int x, int y, int w, int h) -> bool {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (p->resizePopup(popupId, x, y, w, h)) {
+                        if (auto* t = p->terminal()) t->grid().markAllDirty();
+                        auto it = paneRenderStates_.find(paneId);
+                        if (it != paneRenderStates_.end()) it->second.dirty = true;
+                        needsRedraw_ = true;
+                        return true;
+                    }
+                    return false;
+                }
+            }
+            return false;
+        };
         scbs.injectPopupData = [this](Script::PaneId paneId, const std::string& popupId,
                                        const std::string& data) {
             for (auto& tab : tabs_) {

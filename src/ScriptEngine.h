@@ -59,6 +59,8 @@ struct AppCallbacks {
                        std::function<void(const char*, size_t)> onInput)> createPopup;
     // Destroy a popup on a pane.
     std::function<void(PaneId, const std::string& id)> destroyPopup;
+    // Resize/move a popup on a pane.
+    std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h)> resizePopup;
     // Inject data into a popup's terminal.
     std::function<void(PaneId, const std::string& id, const std::string& data)> injectPopupData;
 };

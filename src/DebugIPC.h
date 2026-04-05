@@ -17,9 +17,10 @@ public:
     using GridCallback     = std::function<std::string(int id)>;
     using StatsCallback    = std::function<std::string(int id)>;
     using TerminalCallback = std::function<Terminal*()>;
+    using ActionCallback   = std::function<bool(const std::string& action, const std::vector<std::string>& args)>;
 
     DebugIPC(uv_loop_t* loop, TerminalCallback termCb, GridCallback gridCb,
-             StatsCallback statsCb = {});
+             StatsCallback statsCb = {}, ActionCallback actionCb = {});
     ~DebugIPC();
 
     // Issue uv_close for owned handles. Must call before final uv_run.
@@ -55,6 +56,8 @@ private:
     void cmdSendKey(struct lws* wsi, int id, const std::string& text,
                     const std::string& key, const std::vector<std::string>& mods);
     void cmdStats(struct lws* wsi, int id);
+    void cmdAction(struct lws* wsi, int id, const std::string& action,
+                   const std::vector<std::string>& args);
     void cmdSubscribeLogs(struct lws* wsi, int id);
     void cmdUnsubscribeLogs(struct lws* wsi, int id);
 
@@ -63,6 +66,7 @@ private:
     TerminalCallback termCb_;
     GridCallback gridCb_;
     StatsCallback statsCb_;
+    ActionCallback actionCb_;
 
     struct PerConnection {
         std::string rxBuffer;

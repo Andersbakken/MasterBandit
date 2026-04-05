@@ -151,6 +151,7 @@ std::string PlatformDawn::statsJson(int id)
             paneObj["id"]   = static_cast<double>(pid);
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);
             paneObj["rows"] = static_cast<double>(term ? term->height() : 0);
+            paneObj["cwd"]  = panePtr->cwd();
             if (it != paneRenderStates_.end()) {
                 const auto& rs = it->second;
                 paneObj["held_texture"] = rs.heldTexture != nullptr;

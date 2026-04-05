@@ -83,6 +83,10 @@ bool Terminal::init(const TerminalOptions &options)
 
         EINTRWRAP(ret, ::close(slaveFD));
 
+        if (!mOptions.cwd.empty()) {
+            chdir(mOptions.cwd.c_str());
+        }
+
         unsetenv("COLUMNS");
         unsetenv("LINES");
         unsetenv("TERMCAP");

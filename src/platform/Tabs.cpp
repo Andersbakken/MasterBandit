@@ -115,8 +115,16 @@ void PlatformDawn::createTab()
         pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
         pcbs.quit = [this]() { quit(); };
         auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
-    terminal->applyColorScheme(terminalOptions_.colors);
-    if (!terminal->init(terminalOptions_)) {
+    // Inherit CWD from the focused pane of the active tab
+    auto opts = terminalOptions_;
+    if (Tab* at = activeTab()) {
+        if (Pane* fp = at->layout()->focusedPane()) {
+            if (!fp->cwd().empty()) opts.cwd = fp->cwd();
+        }
+    }
+
+    terminal->applyColorScheme(opts.colors);
+    if (!terminal->init(opts)) {
         spdlog::error("createTab: failed to init terminal");
         return;
     }
@@ -350,7 +358,7 @@ void PlatformDawn::terminalExited(Terminal* terminal)
 }
 
 
-void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
+void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::string& cwd)
 {
     int paneId = pane->id();
 
@@ -419,8 +427,11 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
         pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
         pcbs.quit = [this]() { quit(); };
         auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
-    terminal->applyColorScheme(terminalOptions_.colors);
-    if (!terminal->init(terminalOptions_)) {
+    auto opts = terminalOptions_;
+    if (!cwd.empty()) opts.cwd = cwd;
+
+    terminal->applyColorScheme(opts.colors);
+    if (!terminal->init(opts)) {
         spdlog::error("spawnTerminalForPane: failed to init terminal");
         return;
     }

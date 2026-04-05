@@ -55,7 +55,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             layout->computeRects(fbWidth_, fbHeight_);
             int tabIdx = activeTabIdx_;
             int prevId = layout->focusedPaneId();
-            spawnTerminalForPane(newPane, tabIdx);
+            spawnTerminalForPane(newPane, tabIdx, fp->cwd());
             resizeAllPanesInTab(tab);
             layout->setFocusedPane(newId);
             notifyPaneFocusChange(tab, prevId, newId);

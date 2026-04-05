@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "RenderTest.h"
+#include "MBConnection.h"
 
 // These tests require a GPU and launch mb --test as a child process.
 // A single shared process is reused across tests (reset between each).
@@ -9,7 +9,7 @@
 
 TEST_CASE("render: headless startup and screenshot" * doctest::test_suite("render"))
 {
-    auto& rt = RenderTest::shared();
+    auto& rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.wait(500);
@@ -25,7 +25,7 @@ TEST_CASE("render: headless startup and screenshot" * doctest::test_suite("rende
 
 TEST_CASE("render: text injection and cell rect screenshot" * doctest::test_suite("render"))
 {
-    auto& rt = RenderTest::shared();
+    auto& rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.reset();
@@ -44,7 +44,7 @@ TEST_CASE("render: text injection and cell rect screenshot" * doctest::test_suit
 
 TEST_CASE("render: pane screenshot" * doctest::test_suite("render"))
 {
-    auto& rt = RenderTest::shared();
+    auto& rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.reset();

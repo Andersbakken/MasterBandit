@@ -272,7 +272,7 @@ private:
     void terminalExited(Terminal* terminal);
 
     // Pane helpers
-    void spawnTerminalForPane(Pane* pane, int tabIdx);
+    void spawnTerminalForPane(Pane* pane, int tabIdx, const std::string& cwd = {});
     void resizeAllPanesInTab(Tab* tab);
     void refreshDividers(Tab* tab);
     void clearDividers(Tab* tab);

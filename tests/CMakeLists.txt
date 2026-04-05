@@ -23,7 +23,8 @@ set(TEST_SOURCES
     test_reflow.cpp
     test_prompt.cpp
     test_render.cpp
-    RenderTest.cpp
+    test_cwd.cpp
+    MBConnection.cpp
     ../src/Log.cpp
     ../src/text.cpp
 )

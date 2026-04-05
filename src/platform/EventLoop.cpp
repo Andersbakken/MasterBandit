@@ -21,7 +21,13 @@ int PlatformDawn::exec()
             Pane* pane = t->layout()->focusedPane();
             return pane ? gridToJson(pane->id()) : std::string{};
         },
-        [this](int id) { return statsJson(id); });
+        [this](int id) { return statsJson(id); },
+        [this](const std::string& action, const std::vector<std::string>& args) -> bool {
+            auto parsed = parseAction(action, args);
+            if (!parsed) return false;
+            dispatchAction(*parsed);
+            return true;
+        });
     if (debugSink_) {
         debugSink_->setIPC(debugIPC_.get());
     }

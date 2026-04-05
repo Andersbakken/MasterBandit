@@ -7,7 +7,7 @@
 #include <uv.h>
 #include <libwebsockets.h>
 
-class RenderTest {
+class MBConnection {
 public:
     struct Options {
         std::string fontPath;   // defaults to MB_TEST_FONT
@@ -16,12 +16,12 @@ public:
         float fontSize = 16.0f;
     };
 
-    RenderTest();
-    explicit RenderTest(const Options& opts);
-    ~RenderTest();
+    MBConnection();
+    explicit MBConnection(const Options& opts);
+    ~MBConnection();
 
-    RenderTest(const RenderTest&) = delete;
-    RenderTest& operator=(const RenderTest&) = delete;
+    MBConnection(const MBConnection&) = delete;
+    MBConnection& operator=(const MBConnection&) = delete;
 
     // Connect to the mb --test child's IPC socket. Blocks with timeout.
     bool connect(int timeoutMs = 5000);
@@ -56,6 +56,12 @@ public:
     // Load raw PNG bytes from a file
     static std::vector<uint8_t> loadPng(const std::string& path);
 
+    // Query stats JSON from the running instance
+    std::string queryStats(int timeoutMs = 2000);
+
+    // Dispatch a named action (e.g. "new_tab", "split_pane") with optional args
+    bool sendAction(const std::string& action, const std::vector<std::string>& args = {}, int timeoutMs = 2000);
+
     // Wait for the given duration while keeping the WebSocket alive
     void wait(int ms);
 
@@ -66,7 +72,7 @@ public:
     pid_t childPid() const { return pid_; }
 
     // Shared instance for tests with default options (lazily created)
-    static RenderTest& shared();
+    static MBConnection& shared();
 
     // Public because it's referenced from the static protocol table
     static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,

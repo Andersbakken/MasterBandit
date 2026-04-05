@@ -45,7 +45,7 @@
 - [ ] Jump to tab by title/process — keybinding action that activates the first tab matching a title or process pattern. E.g. `action = "activate_tab_matching"`, `args = ["process:claude", "forward"]`. Repeating cycles to the next match; a second binding with `"backward"` cycles in reverse. Combined with foreground process tracking, allows quick switching to specific running apps.
 - [ ] Tab reordering — drag tabs in the tab bar to rearrange, or keybindings to move current tab left/right. Drag UX: render dragged tab at low opacity following the cursor, draw a vertical insertion bar (via rect pipeline, same as pane dividers) at the drop position.
 - [ ] Tab close confirmation — prompt when closing a tab that has a foreground process other than the shell (requires foreground process tracking). Skip prompt for idle shell.
-- [ ] New tab/pane inherits CWD — new tabs and pane splits start in the focused pane's working directory (already tracked via OSC 7).
+- [x] New tab/pane inherits CWD — new tabs and pane splits start in the focused pane's working directory (already tracked via OSC 7).
 - [ ] Automatic tab ordering — sort rules that pin tabs to preferred positions based on title/process. E.g. `match = "process:clangd"`, `position = 1`. Multiple matches for the same position group together adjacent. Unmatched tabs fill in around pinned groups. Shares pattern matching infrastructure with color rules and jump-to-tab.
 
 ## Mouse Bindings

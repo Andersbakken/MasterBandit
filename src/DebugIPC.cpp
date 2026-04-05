@@ -148,10 +148,11 @@ static const struct lws_protocols sProtocols[] = {
 };
 
 DebugIPC::DebugIPC(uv_loop_t* loop, TerminalCallback termCb, GridCallback gridCb,
-                   StatsCallback statsCb)
+                   StatsCallback statsCb, ActionCallback actionCb)
     : termCb_(std::move(termCb))
     , gridCb_(std::move(gridCb))
     , statsCb_(std::move(statsCb))
+    , actionCb_(std::move(actionCb))
 {
     socketPath_ = "/tmp/mb-" + std::to_string(getpid()) + ".sock";
 
@@ -255,6 +256,22 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
         cmdSendKey(wsi, id, text, key, mods);
     } else if (cmd == "stats") {
         cmdStats(wsi, id);
+    } else if (cmd == "action") {
+        std::string action = jsonStr(j, "action");
+        std::vector<std::string> args;
+        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+            auto it = obj->find("args");
+            if (it != obj->end()) {
+                if (auto* arr = std::get_if<glz::generic::array_t>(&it->second.data)) {
+                    for (const auto& a : *arr) {
+                        if (auto* s = std::get_if<std::string>(&a.data)) {
+                            args.push_back(*s);
+                        }
+                    }
+                }
+            }
+        }
+        cmdAction(wsi, id, action, args);
     } else if (cmd == "subscribe") {
         std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
@@ -446,6 +463,27 @@ void DebugIPC::cmdStats(struct lws* wsi, int id)
     } else {
         sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "stats not available"}}));
     }
+}
+
+// ============================================================================
+// Command: action
+// ============================================================================
+
+void DebugIPC::cmdAction(struct lws* wsi, int id, const std::string& action,
+                         const std::vector<std::string>& args)
+{
+    if (!actionCb_) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "action dispatch not available"}}));
+        return;
+    }
+
+    bool ok = actionCb_(action, args);
+    glz::generic::object_t resp;
+    resp["type"] = "action";
+    resp["id"] = static_cast<double>(id);
+    resp["ok"] = ok;
+    if (!ok) resp["msg"] = std::string("unknown action: " + action);
+    sendResponse(wsi, dumpObj(resp));
 }
 
 // ============================================================================

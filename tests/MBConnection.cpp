@@ -1,4 +1,4 @@
-#include "RenderTest.h"
+#include "MBConnection.h"
 
 #include <glaze/glaze.hpp>
 
@@ -56,15 +56,15 @@ static std::vector<uint8_t> base64Decode(const std::string& encoded)
 // ============================================================================
 
 static const struct lws_protocols sProtos[] = {
-    { "mb-debug", RenderTest::wsCallback, 0, 65536 },
+    { "mb-debug", MBConnection::wsCallback, 0, 65536 },
     LWS_PROTOCOL_LIST_TERM
 };
 
-int RenderTest::wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
+int MBConnection::wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
                            void* /*user*/, void* in, size_t len)
 {
     struct lws_context* ctx = lws_get_context(wsi);
-    RenderTest* self = static_cast<RenderTest*>(lws_context_user(ctx));
+    MBConnection* self = static_cast<MBConnection*>(lws_context_user(ctx));
     if (!self) return 0;
 
     switch (reason) {
@@ -111,9 +111,9 @@ int RenderTest::wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
 // Constructor / Destructor
 // ============================================================================
 
-RenderTest::RenderTest() : RenderTest(Options{}) {}
+MBConnection::MBConnection() : MBConnection(Options{}) {}
 
-RenderTest::RenderTest(const Options& opts)
+MBConnection::MBConnection(const Options& opts)
 {
     std::string fontPath = opts.fontPath.empty() ? MB_TEST_FONT : opts.fontPath;
     std::string mbBinary = MB_BINARY;
@@ -137,7 +137,7 @@ RenderTest::RenderTest(const Options& opts)
     socketPath_ = "/tmp/mb-" + std::to_string(pid_) + ".sock";
 }
 
-RenderTest::~RenderTest()
+MBConnection::~MBConnection()
 {
     // Disconnect WebSocket
     if (ctx_) {
@@ -159,7 +159,7 @@ RenderTest::~RenderTest()
 // Connect
 // ============================================================================
 
-bool RenderTest::connect(int timeoutMs)
+bool MBConnection::connect(int timeoutMs)
 {
     // Poll for socket file existence
     {
@@ -218,7 +218,7 @@ bool RenderTest::connect(int timeoutMs)
 // Send request and wait for response
 // ============================================================================
 
-std::string RenderTest::sendRequest(const std::string& json, int timeoutMs)
+std::string MBConnection::sendRequest(const std::string& json, int timeoutMs)
 {
     if (!connected_ || !wsi_) return {};
 
@@ -248,7 +248,50 @@ std::string RenderTest::sendRequest(const std::string& json, int timeoutMs)
 // Public API
 // ============================================================================
 
-void RenderTest::wait(int ms)
+bool MBConnection::sendAction(const std::string& action, const std::vector<std::string>& args, int timeoutMs)
+{
+    glz::generic::object_t req;
+    req["cmd"] = "action";
+    req["action"] = action;
+    req["id"] = static_cast<double>(nextId_++);
+
+    if (!args.empty()) {
+        glz::generic::array_t argsArr;
+        for (const auto& a : args) argsArr.emplace_back(a);
+        req["args"] = std::move(argsArr);
+    }
+
+    std::string json;
+    (void)glz::write_json(req, json);
+    auto resp = sendRequest(json, timeoutMs);
+    if (resp.empty()) return false;
+
+    // Check "ok" field in response
+    glz::generic j;
+    if (glz::read_json(j, resp)) return false;
+    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        auto it = obj->find("ok");
+        if (it != obj->end()) {
+            if (auto* b = std::get_if<bool>(&it->second.data)) {
+                return *b;
+            }
+        }
+    }
+    return false;
+}
+
+std::string MBConnection::queryStats(int timeoutMs)
+{
+    glz::generic::object_t req;
+    req["cmd"] = "stats";
+    req["id"] = static_cast<double>(nextId_++);
+
+    std::string json;
+    (void)glz::write_json(req, json);
+    return sendRequest(json, timeoutMs);
+}
+
+void MBConnection::wait(int ms)
 {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (connected_ && std::chrono::steady_clock::now() < deadline) {
@@ -257,15 +300,15 @@ void RenderTest::wait(int ms)
     }
 }
 
-bool RenderTest::reset(int timeoutMs)
+bool MBConnection::reset(int timeoutMs)
 {
     // Send RIS (Reset Initial State) escape sequence via the PTY
     return sendText("\033c", timeoutMs);
 }
 
-RenderTest& RenderTest::shared()
+MBConnection& MBConnection::shared()
 {
-    static RenderTest instance({.cols = 40, .rows = 10});
+    static MBConnection instance({.cols = 40, .rows = 10});
     static bool initialized = false;
     if (!initialized) {
         initialized = instance.connect();
@@ -273,7 +316,7 @@ RenderTest& RenderTest::shared()
     return instance;
 }
 
-bool RenderTest::sendText(const std::string& text, int timeoutMs)
+bool MBConnection::sendText(const std::string& text, int timeoutMs)
 {
     glz::generic::object_t req;
     req["cmd"] = "key";
@@ -286,7 +329,7 @@ bool RenderTest::sendText(const std::string& text, int timeoutMs)
     return !resp.empty();
 }
 
-bool RenderTest::sendKey(const std::string& key, const std::vector<std::string>& mods, int timeoutMs)
+bool MBConnection::sendKey(const std::string& key, const std::vector<std::string>& mods, int timeoutMs)
 {
     glz::generic::object_t req;
     req["cmd"] = "key";
@@ -305,7 +348,7 @@ bool RenderTest::sendKey(const std::string& key, const std::vector<std::string>&
     return !resp.empty();
 }
 
-std::vector<uint8_t> RenderTest::doScreenshot(const std::string& target,
+std::vector<uint8_t> MBConnection::doScreenshot(const std::string& target,
                                                int x, int y, int w, int h,
                                                bool hasRect, int timeoutMs)
 {
@@ -347,22 +390,22 @@ std::vector<uint8_t> RenderTest::doScreenshot(const std::string& target,
     return {};
 }
 
-std::vector<uint8_t> RenderTest::screenshotPng(int timeoutMs)
+std::vector<uint8_t> MBConnection::screenshotPng(int timeoutMs)
 {
     return doScreenshot("", 0, 0, 0, 0, false, timeoutMs);
 }
 
-std::vector<uint8_t> RenderTest::screenshotPane(int paneId, int timeoutMs)
+std::vector<uint8_t> MBConnection::screenshotPane(int paneId, int timeoutMs)
 {
     return doScreenshot("pane:" + std::to_string(paneId), 0, 0, 0, 0, false, timeoutMs);
 }
 
-std::vector<uint8_t> RenderTest::screenshotRect(int x, int y, int w, int h, int timeoutMs)
+std::vector<uint8_t> MBConnection::screenshotRect(int x, int y, int w, int h, int timeoutMs)
 {
     return doScreenshot("", x, y, w, h, true, timeoutMs);
 }
 
-std::vector<uint8_t> RenderTest::screenshotPaneRect(int paneId, int x, int y, int w, int h, int timeoutMs)
+std::vector<uint8_t> MBConnection::screenshotPaneRect(int paneId, int x, int y, int w, int h, int timeoutMs)
 {
     return doScreenshot("pane:" + std::to_string(paneId), x, y, w, h, true, timeoutMs);
 }
@@ -374,7 +417,7 @@ std::vector<uint8_t> RenderTest::screenshotPaneRect(int paneId, int x, int y, in
 // stb_image for decoding — STB_IMAGE_IMPLEMENTATION is defined in terminal/OSC.cpp
 #include <stb_image.h>
 
-int RenderTest::comparePng(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b)
+int MBConnection::comparePng(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b)
 {
     int wa, ha, ca, wb, hb, cb;
     uint8_t* pixA = stbi_load_from_memory(a.data(), static_cast<int>(a.size()), &wa, &ha, &ca, 4);
@@ -398,7 +441,7 @@ int RenderTest::comparePng(const std::vector<uint8_t>& a, const std::vector<uint
     return maxDiff;
 }
 
-bool RenderTest::matchesReference(const std::vector<uint8_t>& png, const std::string& refName, int tolerance)
+bool MBConnection::matchesReference(const std::vector<uint8_t>& png, const std::string& refName, int tolerance)
 {
     std::string refPath = std::string(MB_REF_DIR) + "/" + refName;
 
@@ -416,13 +459,13 @@ bool RenderTest::matchesReference(const std::vector<uint8_t>& png, const std::st
     return comparePng(png, ref) <= tolerance;
 }
 
-void RenderTest::savePng(const std::vector<uint8_t>& png, const std::string& path)
+void MBConnection::savePng(const std::vector<uint8_t>& png, const std::string& path)
 {
     std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char*>(png.data()), png.size());
 }
 
-std::vector<uint8_t> RenderTest::loadPng(const std::string& path)
+std::vector<uint8_t> MBConnection::loadPng(const std::string& path)
 {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f.is_open()) return {};

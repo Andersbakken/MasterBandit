@@ -214,6 +214,7 @@ void PlatformDawn::createTab()
     tabs_.push_back(std::move(tab));
 
     updateTabBarVisibility();
+    updateWindowTitle();
     tabBarDirty_ = true;
     needsRedraw_ = true;
 
@@ -397,6 +398,8 @@ void PlatformDawn::terminalExited(Terminal* terminal)
                 }
                 if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
                     activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+                updateTabBarVisibility();
+                updateWindowTitle();
                 tabBarDirty_ = true;
             } else {
                 tab->layout()->removePane(paneId);

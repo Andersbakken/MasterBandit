@@ -229,6 +229,142 @@ void TerminalEmulator::resetViewport()
     }
 }
 
+void TerminalEmulator::scrollToPrompt(int direction)
+{
+    // Scan history + screen rows for PromptStart markers.
+    // Rows are indexed as absolute: 0 = oldest history, historySize() + screenRow = screen.
+    // Current viewport top is at absolute row: historySize() - mViewportOffset.
+    int histSize = mDocument.historySize();
+    int totalRows = histSize + mHeight;
+
+    // Current position: the row at the top of the viewport
+    int currentAbsRow = histSize - mViewportOffset;
+
+    if (direction < 0) {
+        // Search upward from current viewport top - 1
+        for (int absRow = currentAbsRow - 1; absRow >= 0; --absRow) {
+            Document::PromptKind pk;
+            if (absRow < histSize) {
+                pk = mDocument.historyRowPromptKind(absRow);
+            } else {
+                pk = mDocument.rowPromptKind(absRow - histSize);
+            }
+            if (pk == Document::PromptStart) {
+                // Scroll so this row is near the top of the viewport
+                int newOffset = histSize - absRow;
+                mViewportOffset = std::clamp(newOffset, 0, histSize);
+                grid().markAllDirty();
+                if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
+                return;
+            }
+        }
+    } else {
+        // Search downward from current viewport top + 1
+        for (int absRow = currentAbsRow + 1; absRow < totalRows; ++absRow) {
+            Document::PromptKind pk;
+            if (absRow < histSize) {
+                pk = mDocument.historyRowPromptKind(absRow);
+            } else {
+                pk = mDocument.rowPromptKind(absRow - histSize);
+            }
+            if (pk == Document::PromptStart) {
+                int newOffset = histSize - absRow;
+                if (newOffset <= 0) {
+                    // On screen or past it — reset to live
+                    resetViewport();
+                } else {
+                    mViewportOffset = std::clamp(newOffset, 0, histSize);
+                    grid().markAllDirty();
+                    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
+                }
+                return;
+            }
+        }
+        // No next prompt found — jump to live
+        resetViewport();
+    }
+}
+
+void TerminalEmulator::selectCommandOutput()
+{
+    // Find the command output region around the current viewport position.
+    // Look for OutputStart (C) above, then PromptStart (A) below for the boundary.
+    int histSize = mDocument.historySize();
+    int currentAbsRow = histSize - mViewportOffset + (mHeight / 2); // middle of viewport
+
+    // Find OutputStart at or above current position
+    int outputStart = -1;
+    for (int absRow = currentAbsRow; absRow >= 0; --absRow) {
+        Document::PromptKind pk;
+        if (absRow < histSize) pk = mDocument.historyRowPromptKind(absRow);
+        else pk = mDocument.rowPromptKind(absRow - histSize);
+
+        if (pk == Document::OutputStart) { outputStart = absRow; break; }
+        if (pk == Document::PromptStart && absRow < currentAbsRow) break; // passed a prompt boundary
+    }
+    if (outputStart < 0) return;
+
+    // Find end: next PromptStart or end of content
+    int outputEnd = histSize + mHeight - 1;
+    for (int absRow = outputStart + 1; absRow < histSize + mHeight; ++absRow) {
+        Document::PromptKind pk;
+        if (absRow < histSize) pk = mDocument.historyRowPromptKind(absRow);
+        else pk = mDocument.rowPromptKind(absRow - histSize);
+
+        if (pk == Document::PromptStart) { outputEnd = absRow - 1; break; }
+    }
+
+    // Select the range
+    startSelection(0, outputStart);
+    updateSelection(mWidth - 1, outputEnd);
+    finalizeSelection();
+
+    std::string text = selectedText();
+    if (!text.empty() && mCallbacks.copyToClipboard) {
+        mCallbacks.copyToClipboard(text);
+    }
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+}
+
+std::string TerminalEmulator::serializeScrollback() const
+{
+    std::string result;
+    int histSize = mDocument.historySize();
+
+    // Serialize all rows: history first, then screen
+    for (int i = 0; i < histSize + mHeight; ++i) {
+        const Cell* row;
+        if (i < histSize) {
+            row = mDocument.historyRow(i);
+        } else {
+            row = mDocument.row(i - histSize);
+        }
+        if (!row) continue;
+
+        // Find effective width (trim trailing blank cells)
+        int effectiveWidth = mWidth;
+        while (effectiveWidth > 0 && row[effectiveWidth - 1].wc == 0) {
+            effectiveWidth--;
+        }
+
+        // Convert cells to UTF-8
+        for (int c = 0; c < effectiveWidth; ++c) {
+            if (row[c].attrs.wideSpacer()) continue;
+            char32_t cp = row[c].wc;
+            if (cp == 0) cp = ' ';
+            if (cp < 0x80) {
+                result += static_cast<char>(cp);
+            } else {
+                char buf[4];
+                int n = utf8::encode(cp, buf);
+                result.append(buf, n);
+            }
+        }
+        result += '\n';
+    }
+    return result;
+}
+
 void TerminalEmulator::advanceCursorToNewLine()
 {
     // Mark current row as continued (soft-wrapped) — main screen only

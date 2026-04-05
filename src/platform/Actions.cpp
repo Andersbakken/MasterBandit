@@ -1,5 +1,6 @@
 #include "PlatformDawn.h"
 #include "Log.h"
+#include <unistd.h>
 
 
 void PlatformDawn::dispatchAction(const Action::Any& action)
@@ -209,6 +210,54 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
         [&](const Action::IncreaseFontSize&) { adjustFontSize(1.0f);  },
         [&](const Action::DecreaseFontSize&) { adjustFontSize(-1.0f); },
         [&](const Action::ResetFontSize&)    { adjustFontSize(0.0f);  },
+        [&](const Action::ScrollToPrompt& a) {
+            Terminal* term = activeTerm();
+            if (term) term->scrollToPrompt(a.direction);
+        },
+        [&](const Action::SelectCommandOutput&) {
+            Terminal* term = activeTerm();
+            if (term) term->selectCommandOutput();
+        },
+        [&](const Action::ShowScrollback&) {
+            Terminal* term = activeTerm();
+            Tab* tab = activeTab();
+            if (!term || !tab) return;
+
+            // Write scrollback to temp file
+            std::string content = term->serializeScrollback();
+            char tmpPath[] = "/tmp/mb-scrollback-XXXXXX";
+            int tmpFd = mkstemp(tmpPath);
+            if (tmpFd < 0) return;
+            ::write(tmpFd, content.data(), content.size());
+            ::close(tmpFd);
+
+            // Spawn pager as overlay terminal
+            TerminalOptions opts = terminalOptions_;
+            opts.command = "less -R " + std::string(tmpPath) + "; rm -f " + std::string(tmpPath);
+            opts.scrollbackLines = 0;
+
+            TerminalCallbacks cbs;
+            cbs.event = [this](TerminalEmulator*, int, void*) { needsRedraw_ = true; };
+
+            PlatformCallbacks pcbs;
+            pcbs.onTerminalExited = [this, tab](Terminal*) {
+                tab->popOverlay();
+                needsRedraw_ = true;
+            };
+            pcbs.quit = [this]() { quit(); };
+
+            auto overlay = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+            if (!overlay->init(opts)) return;
+
+            int cols = term->width();
+            int rows = term->height();
+            overlay->resize(cols, rows);
+            overlay->flushPendingResize();
+
+            addPtyPoll(overlay->masterFD(), overlay.get());
+            tab->pushOverlay(std::move(overlay));
+            needsRedraw_ = true;
+        },
     }, action);
 }
 

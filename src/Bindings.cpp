@@ -180,6 +180,10 @@ std::optional<Action::Any> parseAction(const std::string& name,
     if (name == "increase_font_size") return Action::IncreaseFontSize{};
     if (name == "decrease_font_size") return Action::DecreaseFontSize{};
     if (name == "reset_font_size")    return Action::ResetFontSize{};
+    if (name == "scroll_to_previous_prompt") return Action::ScrollToPrompt{-1};
+    if (name == "scroll_to_next_prompt")     return Action::ScrollToPrompt{1};
+    if (name == "select_command_output")     return Action::SelectCommandOutput{};
+    if (name == "show_scrollback")           return Action::ShowScrollback{};
 
     spdlog::warn("Bindings: unknown action '{}'", name);
     return std::nullopt;
@@ -247,6 +251,11 @@ std::vector<Binding> defaultBindings()
         // Pane focus — cyclic
         { { *parseKeyStroke("meta+]") },            Action::FocusPane{Action::Direction::Next} },
         { { *parseKeyStroke("meta+[") },            Action::FocusPane{Action::Direction::Prev} },
+        // Prompt navigation
+        { { *parseKeyStroke("meta+up") },           Action::ScrollToPrompt{-1} },
+        { { *parseKeyStroke("meta+down") },         Action::ScrollToPrompt{1}  },
+        // Scrollback search
+        { { *parseKeyStroke("meta+f") },            Action::ShowScrollback{} },
     };
 #else
     return {
@@ -284,6 +293,11 @@ std::vector<Binding> defaultBindings()
         // Pane focus — cyclic
         { { *parseKeyStroke("ctrl+shift+n") },      Action::FocusPane{Action::Direction::Next} },
         { { *parseKeyStroke("ctrl+shift+p") },      Action::FocusPane{Action::Direction::Prev} },
+        // Prompt navigation
+        { { *parseKeyStroke("ctrl+alt+z") },        Action::ScrollToPrompt{-1} },
+        { { *parseKeyStroke("ctrl+alt+x") },        Action::ScrollToPrompt{1}  },
+        // Scrollback search
+        { { *parseKeyStroke("ctrl+shift+f") },      Action::ShowScrollback{} },
     };
 #endif
 }

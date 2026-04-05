@@ -1,6 +1,5 @@
 #include "Document.h"
 #include "Utf8.h"
-#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -461,6 +460,14 @@ void Document::setRowPromptKind(int screenRow, PromptKind kind) {
     promptKind_[phys] = kind;
 }
 
+Document::PromptKind Document::historyRowPromptKind(int idx) const {
+    int archiveSize = static_cast<int>(archive_.size());
+    if (idx < archiveSize) return UnknownPrompt; // archive doesn't store prompt kind
+    int tier1Idx = idx - archiveSize;
+    if (tier1Idx < 0 || tier1Idx >= historyCount_) return UnknownPrompt;
+    return promptKind_[historyTier1ToPhysical(tier1Idx)];
+}
+
 // --- Resize ---
 
 void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
@@ -645,7 +652,6 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                     if (dstCol >= newCols) {
                         bool moreContent = (sc + 1 < effectiveWidth) || (ri < logEnd);
                         if (moreContent) {
-                                         ri, sc, effectiveWidth, newCols, static_cast<uint32_t>(cell.wc));
                             finishDstRow(true);
                             startNewDstRow();
                         } else {

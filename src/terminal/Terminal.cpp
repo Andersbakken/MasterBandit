@@ -100,7 +100,12 @@ bool Terminal::init(const TerminalOptions &options)
         signal(SIGTERM, SIG_DFL);
         signal(SIGALRM, SIG_DFL);
 
-        execl(mOptions.shell.c_str(), mOptions.shell.c_str(), nullptr);
+        if (!mOptions.command.empty()) {
+            // Run a specific command (e.g. pager) instead of a shell
+            execl("/bin/sh", "sh", "-c", mOptions.command.c_str(), nullptr);
+        } else {
+            execl(mOptions.shell.c_str(), mOptions.shell.c_str(), nullptr);
+        }
         return false;
 
         break;

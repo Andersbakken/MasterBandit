@@ -70,6 +70,7 @@ public:
     };
     PromptKind rowPromptKind(int screenRow) const;
     void setRowPromptKind(int screenRow, PromptKind kind);
+    PromptKind historyRowPromptKind(int idx) const; // idx 0 = oldest
 
 private:
     int cols_ = 0;

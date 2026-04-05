@@ -67,6 +67,9 @@ public:
     void scrollViewport(int delta);
     void resetViewport();
     int viewportOffset() const { return mViewportOffset; }
+    void scrollToPrompt(int direction); // -1 = previous, +1 = next
+    void selectCommandOutput();         // select output around current viewport position
+    std::string serializeScrollback() const; // serialize all content for pager
 
     enum Event {
         Update,

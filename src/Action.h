@@ -33,6 +33,9 @@ struct PopOverlay          {};
 struct IncreaseFontSize    {};
 struct DecreaseFontSize    {};
 struct ResetFontSize       {};
+struct ScrollToPrompt      { int direction = -1; }; // -1 = previous, +1 = next
+struct SelectCommandOutput {};
+struct ShowScrollback      {};
 
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
@@ -40,7 +43,8 @@ using Any = std::variant<
     Copy, Paste,
     ScrollUp, ScrollDown, ScrollToTop, ScrollToBottom,
     PushOverlay, PopOverlay,
-    IncreaseFontSize, DecreaseFontSize, ResetFontSize
+    IncreaseFontSize, DecreaseFontSize, ResetFontSize,
+    ScrollToPrompt, SelectCommandOutput, ShowScrollback
 >;
 
 } // namespace Action

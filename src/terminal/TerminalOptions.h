@@ -7,6 +7,7 @@
 
 struct TerminalOptions {
     std::string shell;
+    std::string command;             // if set, exec this instead of shell (for pager etc.)
     std::string user;
     std::string font;               // empty = auto-detect
     float fontSize = 16.0f;

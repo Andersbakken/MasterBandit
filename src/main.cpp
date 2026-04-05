@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <signal.h>
 #include "PlatformDawn.h"
 #include "Config.h"
 #include <cstring>
@@ -6,6 +7,16 @@
 #include "Log.h"
 #include "CLIClient.h"
 #include <cxxopts.hpp>
+
+static void cleanupSocketAndExit(int sig)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/mb-%d.sock", getpid());
+    unlink(path);
+    // Re-raise with default handler to get correct exit status
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
 
 static std::string defaultShell(const std::string &user)
 {
@@ -113,6 +124,12 @@ int main(int argc, char **argv)
         if (logLevel > 0) --logLevel;
     }
     Log::setLogLevel(static_cast<Log::Level>(logLevel));
+
+    signal(SIGTERM, cleanupSocketAndExit);
+    signal(SIGINT, cleanupSocketAndExit);
+    signal(SIGSEGV, cleanupSocketAndExit);
+    signal(SIGBUS, cleanupSocketAndExit);
+    signal(SIGABRT, cleanupSocketAndExit);
 
     platform->createTerminal(options);
     return platform->exec();

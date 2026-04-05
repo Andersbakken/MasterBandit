@@ -109,13 +109,12 @@ MBConnection::~MBConnection()
     }
     uv_loop_close(&loop_);
 
-    // Kill child and clean up its socket
+    // Kill child — its SIGTERM handler will clean up the socket
     if (pid_ > 0) {
         kill(pid_, SIGTERM);
         int status;
         waitpid(pid_, &status, 0);
     }
-    unlink(socketPath_.c_str());
 }
 
 // ============================================================================

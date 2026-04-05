@@ -38,6 +38,9 @@ public:
     bool isHeadless() const { return mHeadless; }
     void readFromFD();
     void pasteText(const std::string& text);
+
+    // Query the foreground process name via tcgetpgrp + platform process lookup
+    std::string foregroundProcess() const;
     void resize(int width, int height) override;
 
     // Deferred TIOCSWINSZ: set by resize(), consumed by flushPendingResize()
@@ -57,6 +60,7 @@ private:
     int mMasterFD { -1 };
     bool mHeadless { false };
     bool mResizePending { false };
+    pid_t mLastFgPgid { -1 };
     uv_loop_t* mLoop { nullptr };
     uv_poll_t mWritePoll {};
     bool mWritePollActive { false };

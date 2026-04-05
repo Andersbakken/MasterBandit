@@ -15,6 +15,9 @@
 #include <string.h>
 #include <signal.h>
 #include <algorithm>
+#ifdef __APPLE__
+#include <libproc.h>
+#endif
 
 Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
     : TerminalEmulator(std::move(callbacks))
@@ -184,6 +187,15 @@ void Terminal::readFromFD()
         } else {
             injectData(buf, static_cast<size_t>(ret));
         }
+
+        // Check for foreground process change after each read batch
+        if (callbacks().onForegroundProcessChanged) {
+            pid_t pgid = tcgetpgrp(mMasterFD);
+            if (pgid > 0 && pgid != mLastFgPgid) {
+                mLastFgPgid = pgid;
+                callbacks().onForegroundProcessChanged(foregroundProcess());
+            }
+        }
     }
 }
 
@@ -270,4 +282,36 @@ void Terminal::pasteText(const std::string& text)
     if (bracketedPaste()) {
         writeToPTY("\x1b[201~", 6);
     }
+}
+
+std::string Terminal::foregroundProcess() const
+{
+    if (mMasterFD < 0) return {};
+
+    pid_t pgid = tcgetpgrp(mMasterFD);
+    if (pgid < 0) return {};
+
+#ifdef __APPLE__
+    char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pgid, pathbuf, sizeof(pathbuf)) > 0) {
+        // Extract basename
+        const char* slash = strrchr(pathbuf, '/');
+        return slash ? slash + 1 : pathbuf;
+    }
+    return {};
+#else
+    // Linux: read /proc/<pid>/comm
+    char comm[256];
+    snprintf(comm, sizeof(comm), "/proc/%d/comm", static_cast<int>(pgid));
+    FILE* f = fopen(comm, "r");
+    if (!f) return {};
+    char name[256] = {};
+    if (fgets(name, sizeof(name), f)) {
+        // Strip trailing newline
+        size_t len = strlen(name);
+        if (len > 0 && name[len - 1] == '\n') name[len - 1] = '\0';
+    }
+    fclose(f);
+    return name;
+#endif
 }

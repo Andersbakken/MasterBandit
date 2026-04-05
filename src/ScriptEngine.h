@@ -35,7 +35,7 @@ struct AppCallbacks {
     // Invoke an action by name
     std::function<bool(const std::string&, const std::vector<std::string>&)> invokeAction;
     // Query pane info
-    struct PaneInfo { int cols; int rows; std::string title; std::string cwd; bool hasPty; bool focused; std::string focusedPopupId; };
+    struct PaneInfo { int cols; int rows; std::string title; std::string cwd; bool hasPty; bool focused; std::string focusedPopupId; std::string foregroundProcess; };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query overlay info
     struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
@@ -113,6 +113,7 @@ public:
     void notifyOverlayCreated(TabId tab);
     void notifyOverlayDestroyed(TabId tab);
     void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
+    void notifyForegroundProcessChanged(PaneId pane, const std::string& processName);
 
     // Deliver input to listeners on registered objects across all contexts.
     void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);

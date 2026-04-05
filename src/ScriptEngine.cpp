@@ -199,6 +199,7 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
     case 7: return info.focusedPopupId.empty()
                  ? JS_NULL
                  : JS_NewString(ctx, info.focusedPopupId.c_str());
+    case 8: return JS_NewString(ctx, info.foregroundProcess.c_str());
     default: return JS_UNDEFINED;
     }
 }
@@ -222,6 +223,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
     JS_CGETSET_MAGIC_DEF("focused", jsPaneGetProp, nullptr, 6),
     JS_CGETSET_MAGIC_DEF("focusedPopupId", jsPaneGetProp, nullptr, 7),
+    JS_CGETSET_MAGIC_DEF("foregroundProcess", jsPaneGetProp, nullptr, 8),
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
 };
 
@@ -2013,6 +2015,27 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
         JS_FreeValue(inst.ctx, mbArr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global2);
+    }
+}
+
+void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& processName)
+{
+    for (auto& inst : instances_) {
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_foregroundProcess");
+            JSValue arg = JS_NewString(inst.ctx, processName.c_str());
+            enqueueListeners(inst.ctx, arr, 1, &arg);
+            JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
     }
 }
 

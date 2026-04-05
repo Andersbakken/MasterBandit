@@ -31,6 +31,7 @@ struct TerminalCallbacks {
     std::function<bool()>                        isDarkMode;         // for mode 2031
     std::function<void(const std::string&)>      onCWDChanged;       // OSC 7
     std::function<void(const std::string&, const std::string&, const std::string&)> onDesktopNotification; // OSC 99
+    std::function<void(const std::string&)>      onForegroundProcessChanged;
 };
 
 class TerminalEmulator
@@ -190,6 +191,7 @@ protected:
     virtual void writeToOutput(const char* data, size_t len) {}
     bool bracketedPaste() const { return mBracketedPaste; }
     void resetScrollback(int scrollbackLines);  // reinitializes document with given scrollback capacity
+    TerminalCallbacks& callbacks() { return mCallbacks; }
 
 private:
     TerminalCallbacks mCallbacks;

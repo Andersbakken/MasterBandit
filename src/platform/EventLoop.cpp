@@ -99,7 +99,8 @@ int PlatformDawn::exec()
                         t ? t->width() : 0, t ? t->height() : 0,
                         p->title(), p->cwd(),
                         term && term->masterFD() >= 0,
-                        isFocused, p->focusedPopupId()
+                        isFocused, p->focusedPopupId(),
+                        term ? term->foregroundProcess() : std::string{}
                     };
                 }
             }

@@ -393,13 +393,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();
 
-    // Set initial title from shell name
-    {
-        std::string shellName = options.shell;
-        auto slash = shellName.rfind('/');
-        if (slash != std::string::npos) shellName = shellName.substr(slash + 1);
-        pane->setTitle(shellName);
-    }
+    // Title will be set by foreground process detection on first PTY read
 
     pane->setTerminal(std::move(terminal));  // Pane owns the Terminal now
 

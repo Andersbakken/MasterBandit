@@ -147,6 +147,21 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         scriptEngine_.notifyOSC(paneId, oscNum, std::string(payload));
     };
 
+    cbs.onForegroundProcessChanged = [this, paneId](const std::string& proc) {
+        scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
+        // Use foreground process as tab title if pane has no OSC title
+        int tabIdx = -1;
+        Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
+        if (!t) return;
+        Pane* p = t->layout()->pane(paneId);
+        if (p && p->title().empty() && t->layout()->focusedPaneId() == paneId) {
+            t->setTitle(proc);
+            if (tabIdx == activeTabIdx_) updateWindowTitle();
+            tabBarDirty_ = true;
+            needsRedraw_ = true;
+        }
+    };
+
     return cbs;
 }
 
@@ -210,14 +225,6 @@ void PlatformDawn::createTab()
 
     terminal->resize(cols, rows);
     terminal->flushPendingResize(); // initial size — send immediately
-
-    // Set initial title from shell name
-    {
-        std::string shellName = terminalOptions_.shell;
-        auto slash = shellName.rfind('/');
-        if (slash != std::string::npos) shellName = shellName.substr(slash + 1);
-        pane->setTitle(shellName);
-    }
 
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();
@@ -491,14 +498,6 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
 
     terminal->resize(cols, rows);
     terminal->flushPendingResize(); // initial size — send immediately
-
-    // Set initial title from shell name
-    {
-        std::string shellName = terminalOptions_.shell;
-        auto slash = shellName.rfind('/');
-        if (slash != std::string::npos) shellName = shellName.substr(slash + 1);
-        pane->setTitle(shellName);
-    }
 
     int masterFD = terminal->masterFD();
     Terminal* termPtr = terminal.get();

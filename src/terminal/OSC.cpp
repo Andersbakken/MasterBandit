@@ -186,6 +186,11 @@ void TerminalEmulator::processStringSequence()
         if (mCallbacks.onIconChanged) mCallbacks.onIconChanged(std::string(payload));
         break;
     case 2: processOSC_Title(payload, true); break;
+    case 10: // Default foreground color
+    case 11: // Default background color
+    case 12: // Cursor color
+        processOSC_Color(oscNum, payload);
+        break;
     case 9: {
         // OSC 9;4 progress: "9;4;state" or "9;4;state;pct"
         // Split mStringSequence on ';' after the "9" prefix
@@ -345,5 +350,89 @@ void TerminalEmulator::processOSC_Clipboard(std::string_view payload)
         std::vector<uint8_t> decoded = base64::decode(data);
         std::string text(decoded.begin(), decoded.end());
         if (mCallbacks.copyToClipboard) mCallbacks.copyToClipboard(text);
+    }
+}
+
+// Parse X11 color spec: "rgb:RR/GG/BB", "rgb:RRRR/GGGG/BBBB", or "#RRGGBB"
+static bool parseX11Color(std::string_view spec, uint8_t& r, uint8_t& g, uint8_t& b)
+{
+    if (spec.size() == 7 && spec[0] == '#') {
+        auto hex = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        int rr = hex(spec[1]) * 16 + hex(spec[2]);
+        int gg = hex(spec[3]) * 16 + hex(spec[4]);
+        int bb = hex(spec[5]) * 16 + hex(spec[6]);
+        if (rr < 0 || gg < 0 || bb < 0) return false;
+        r = static_cast<uint8_t>(rr);
+        g = static_cast<uint8_t>(gg);
+        b = static_cast<uint8_t>(bb);
+        return true;
+    }
+    if (spec.substr(0, 4) == "rgb:") {
+        // rgb:R/G/B or rgb:RR/GG/BB or rgb:RRRR/GGGG/BBBB
+        auto rest = spec.substr(4);
+        auto s1 = rest.find('/');
+        if (s1 == std::string_view::npos) return false;
+        auto s2 = rest.find('/', s1 + 1);
+        if (s2 == std::string_view::npos) return false;
+        auto parseComponent = [](std::string_view s) -> int {
+            unsigned int v = 0;
+            for (char c : s) {
+                int d;
+                if (c >= '0' && c <= '9') d = c - '0';
+                else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                else return -1;
+                v = v * 16 + d;
+            }
+            // Scale to 8-bit: 1-digit=*17, 2-digit=as-is, 3-digit=>>4, 4-digit=>>8
+            if (s.size() == 1) return v * 17;
+            if (s.size() == 2) return v;
+            if (s.size() == 3) return v >> 4;
+            if (s.size() == 4) return v >> 8;
+            return -1;
+        };
+        int rr = parseComponent(rest.substr(0, s1));
+        int gg = parseComponent(rest.substr(s1 + 1, s2 - s1 - 1));
+        int bb = parseComponent(rest.substr(s2 + 1));
+        if (rr < 0 || gg < 0 || bb < 0) return false;
+        r = static_cast<uint8_t>(rr);
+        g = static_cast<uint8_t>(gg);
+        b = static_cast<uint8_t>(bb);
+        return true;
+    }
+    return false;
+}
+
+void TerminalEmulator::processOSC_Color(int oscNum, std::string_view payload)
+{
+    uint8_t* r; uint8_t* g; uint8_t* b;
+    switch (oscNum) {
+    case 10: r = &mDefaultColors.fgR; g = &mDefaultColors.fgG; b = &mDefaultColors.fgB; break;
+    case 11: r = &mDefaultColors.bgR; g = &mDefaultColors.bgG; b = &mDefaultColors.bgB; break;
+    case 12: r = &mDefaultColors.cursorR; g = &mDefaultColors.cursorG; b = &mDefaultColors.cursorB; break;
+    default: return;
+    }
+
+    if (payload == "?") {
+        // Query: respond with rgb:RRRR/GGGG/BBBB (16-bit per channel)
+        char response[64];
+        int len = snprintf(response, sizeof(response),
+            "\x1b]%d;rgb:%04x/%04x/%04x\x1b\\",
+            oscNum,
+            static_cast<unsigned>(*r) * 257,
+            static_cast<unsigned>(*g) * 257,
+            static_cast<unsigned>(*b) * 257);
+        writeToOutput(response, len);
+    } else {
+        // Set color
+        uint8_t nr, ng, nb;
+        if (parseX11Color(payload, nr, ng, nb)) {
+            *r = nr; *g = ng; *b = nb;
+        }
     }
 }

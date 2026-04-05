@@ -129,3 +129,49 @@ TEST_CASE("deferred wrap: cursor movement clears pending wrap")
     t.csi("D");       // CUB 1 — should clear wrap, move left
     CHECK(t.term.cursorY() == 0); // no wrap happened
 }
+
+// === REP (CSI b) tests ===
+
+TEST_CASE("REP repeats last character")
+{
+    TestTerminal t;
+    t.feed("A");
+    t.csi("3b"); // repeat 'A' 3 times
+    CHECK(t.rowText(0) == "AAAA");
+}
+
+TEST_CASE("REP with default count repeats once")
+{
+    TestTerminal t;
+    t.feed("X");
+    t.csi("b"); // no count = 1
+    CHECK(t.rowText(0) == "XX");
+}
+
+TEST_CASE("REP does nothing without prior character")
+{
+    TestTerminal t;
+    t.csi("5b");
+    CHECK(t.rowText(0) == "");
+}
+
+TEST_CASE("REP wraps at line boundary")
+{
+    TestTerminal t(5, 3);
+    t.feed("A");
+    t.csi("6b"); // repeat 6 times, total 7 chars in 5-col terminal
+    CHECK(t.rowText(0) == "AAAAA");
+    CHECK(t.rowText(1) == "AA");
+}
+
+TEST_CASE("REP uses current attributes")
+{
+    TestTerminal t;
+    t.csi("1m"); // bold
+    t.feed("B");
+    t.csi("2b"); // repeat 2 times
+    // All three 'B's should be bold
+    CHECK(t.attrs(0, 0).bold());
+    CHECK(t.attrs(1, 0).bold());
+    CHECK(t.attrs(2, 0).bold());
+}

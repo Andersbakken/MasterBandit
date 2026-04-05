@@ -129,6 +129,15 @@ public:
         if (idx >= 0 && idx < 16) { m16ColorPalette[idx][0] = r; m16ColorPalette[idx][1] = g; m16ColorPalette[idx][2] = b; }
     }
     void applyColorScheme(const struct ColorScheme& cs);
+
+    // Default colors (for OSC 10/11/12 and rendering)
+    struct DefaultColors {
+        uint8_t fgR { 0xDD }, fgG { 0xDD }, fgB { 0xDD };
+        uint8_t bgR { 0x00 }, bgG { 0x00 }, bgB { 0x00 };
+        uint8_t cursorR { 0xCC }, cursorG { 0xCC }, cursorB { 0xCC };
+    };
+    const DefaultColors& defaultColors() const { return mDefaultColors; }
+
     const std::string* hyperlinkURI(uint32_t id) const {
         auto it = mHyperlinkRegistry.find(id);
         return it != mHyperlinkRegistry.end() ? &it->second.uri : nullptr;
@@ -196,6 +205,7 @@ private:
 
     CellAttrs mCurrentAttrs;       // SGR "pen"
     uint32_t mCurrentUnderlineColor { 0 }; // SGR 58: packed RGBA8, 0 = use fg
+    char32_t mLastPrintedChar { 0 };       // for REP (CSI b)
     int mSavedCursorX { 0 }, mSavedCursorY { 0 };
     bool mSavedWrapPending { false };
     CellAttrs mSavedAttrs;
@@ -221,6 +231,7 @@ private:
 
     void processStringSequence();
     void processOSC_Title(std::string_view text, bool setTitle);
+    void processOSC_Color(int oscNum, std::string_view payload);
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
     void placeImageInGrid(uint32_t imageId, int cellCols, int cellRows);
@@ -276,6 +287,7 @@ private:
         IL = 'L',
         DL = 'M',
         ECH = 'X',
+        REP = 'b',
         VPA = 'd',
         SM = 'h',
         RM = 'l',
@@ -340,4 +352,7 @@ private:
     std::string mNotifyId;
     std::string mNotifyTitle;
     std::string mNotifyBody;
+
+    // Default colors (OSC 10/11/12)
+    DefaultColors mDefaultColors;
 };

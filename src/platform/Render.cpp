@@ -60,8 +60,13 @@ void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
         ResolvedCell& rc = rs.resolvedCells[baseIdx + col];
         const Cell& cell = rowData[col];
 
-        uint32_t fg = (cell.attrs.fgMode() == CellAttrs::Default) ? defaultFgColor_ : cell.attrs.packFgAsU32();
-        uint32_t bg = (cell.attrs.bgMode() == CellAttrs::Default) ? defaultBgColor_ : cell.attrs.packBgAsU32();
+        const auto& dc = term->defaultColors();
+        uint32_t defFg = static_cast<uint32_t>(dc.fgR) | (static_cast<uint32_t>(dc.fgG) << 8) | (static_cast<uint32_t>(dc.fgB) << 16) | 0xFF000000u;
+        uint32_t defBg = (dc.bgR || dc.bgG || dc.bgB)
+            ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
+            : 0x00000000u; // transparent = use clear color
+        uint32_t fg = (cell.attrs.fgMode() == CellAttrs::Default) ? defFg : cell.attrs.packFgAsU32();
+        uint32_t bg = (cell.attrs.bgMode() == CellAttrs::Default) ? defBg : cell.attrs.packBgAsU32();
         if (cell.attrs.inverse()) std::swap(fg, bg);
 
         uint32_t ulInfo = 0;

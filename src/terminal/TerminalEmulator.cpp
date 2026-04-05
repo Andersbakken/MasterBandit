@@ -94,6 +94,9 @@ void TerminalEmulator::applyColorScheme(const ColorScheme& cs)
     for (int i = 0; i < 16; ++i) {
         color::parseHex(*colors[i], m16ColorPalette[i][0], m16ColorPalette[i][1], m16ColorPalette[i][2]);
     }
+    color::parseHex(cs.foreground, mDefaultColors.fgR, mDefaultColors.fgG, mDefaultColors.fgB);
+    color::parseHex(cs.background, mDefaultColors.bgR, mDefaultColors.bgG, mDefaultColors.bgB);
+    color::parseHex(cs.cursor, mDefaultColors.cursorR, mDefaultColors.cursorG, mDefaultColors.cursorB);
 }
 
 void TerminalEmulator::resize(int width, int height)
@@ -247,6 +250,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     mState = InUtf8;
                 } else {
                     // ASCII character — write to cell grid
+                    mLastPrintedChar = static_cast<char32_t>(buf[i]);
                     if (mWrapPending) {
                         advanceCursorToNewLine();
                         mWrapPending = false;
@@ -316,6 +320,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     // (for now, just skip it)
                 } else if (w == 2) {
                     // Wide character: needs two cells
+                    mLastPrintedChar = cp;
                     if (mWrapPending) {
                         advanceCursorToNewLine();
                         mWrapPending = false;
@@ -351,6 +356,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     }
                 } else {
                     // Normal single-width character
+                    mLastPrintedChar = cp;
                     if (mWrapPending) {
                         advanceCursorToNewLine();
                         mWrapPending = false;
@@ -695,6 +701,53 @@ void TerminalEmulator::processCSI()
     case SGR:
         processSGR();
         break;
+    case REP: {
+        // Repeat preceding graphic character N times
+        const int n = readCount(1);
+        if (n > 0 && mLastPrintedChar != 0) {
+            IGrid& g = grid();
+            int w = wcwidth(mLastPrintedChar);
+            if (w < 1) w = 1;
+            for (int rep = 0; rep < n; ++rep) {
+                if (mWrapPending) {
+                    advanceCursorToNewLine();
+                    mWrapPending = false;
+                }
+                if (w == 2) {
+                    if (mCursorX + 1 >= mWidth) {
+                        if (mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                            g.cell(mCursorX, mCursorY) = Cell{' ', mCurrentAttrs};
+                            g.markRowDirty(mCursorY);
+                        }
+                        advanceCursorToNewLine();
+                    }
+                    if (mCursorX >= 0 && mCursorX + 1 < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        CellAttrs wideAttrs = mCurrentAttrs;
+                        wideAttrs.setWide(true);
+                        g.cell(mCursorX, mCursorY) = Cell{mLastPrintedChar, wideAttrs};
+                        g.clearExtra(mCursorX, mCursorY);
+                        CellAttrs spacerAttrs = mCurrentAttrs;
+                        spacerAttrs.setWideSpacer(true);
+                        g.cell(mCursorX + 1, mCursorY) = Cell{0, spacerAttrs};
+                        g.clearExtra(mCursorX + 1, mCursorY);
+                        g.markRowDirty(mCursorY);
+                    }
+                    mCursorX += 2;
+                } else {
+                    if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        g.cell(mCursorX, mCursorY) = Cell{mLastPrintedChar, mCurrentAttrs};
+                        g.clearExtra(mCursorX, mCursorY);
+                        g.markRowDirty(mCursorY);
+                    }
+                    mCursorX++;
+                }
+                if (mCursorX >= mWidth) {
+                    mCursorX = mWidth - 1;
+                    mWrapPending = true;
+                }
+            }
+        }
+        break; }
     case AUX:
         if (mEscapeIndex != 3) {
             ERROR("Invalid AUX CSI command (%d)", mEscapeIndex);
@@ -1131,6 +1184,7 @@ const char *TerminalEmulator::csiSequenceName(CSISequence seq)
     case SD: return "SD";
     case HVP: return "HVP";
     case SGR: return "SGR";
+    case REP: return "REP";
     case AUX: return "AUX";
     case DSR: return "DSR";
     case SCP: return "SCP";

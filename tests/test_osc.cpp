@@ -130,3 +130,60 @@ TEST_CASE("OSC 99 does not fire without d=1")
     t.osc("99;d=0:p=title;Test");
     CHECK(t.capturedNotifyTitle.empty());
 }
+
+// === OSC 10/11/12 — default color query/set ===
+
+TEST_CASE("OSC 10 query returns default foreground")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.osc("10;?");
+    // Default fg is #dddddd → rgb:dddd/dddd/dddd
+    CHECK(t.output() == "\x1b]10;rgb:dddd/dddd/dddd\x1b\\");
+}
+
+TEST_CASE("OSC 11 query returns default background")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.osc("11;?");
+    // Default bg is #000000 → rgb:0000/0000/0000
+    CHECK(t.output() == "\x1b]11;rgb:0000/0000/0000\x1b\\");
+}
+
+TEST_CASE("OSC 12 query returns cursor color")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.osc("12;?");
+    // Default cursor is #cccccc → rgb:cccc/cccc/cccc
+    CHECK(t.output() == "\x1b]12;rgb:cccc/cccc/cccc\x1b\\");
+}
+
+TEST_CASE("OSC 10 set changes foreground")
+{
+    TestTerminal t;
+    t.osc("10;#ff8800");
+    t.clearOutput();
+    t.osc("10;?");
+    CHECK(t.output() == "\x1b]10;rgb:ffff/8888/0000\x1b\\");
+}
+
+TEST_CASE("OSC 11 set with rgb: format")
+{
+    TestTerminal t;
+    t.osc("11;rgb:aa/bb/cc");
+    t.clearOutput();
+    t.osc("11;?");
+    CHECK(t.output() == "\x1b]11;rgb:aaaa/bbbb/cccc\x1b\\");
+}
+
+TEST_CASE("OSC 10 set updates defaultColors struct")
+{
+    TestTerminal t;
+    t.osc("10;#102030");
+    auto dc = t.term.defaultColors();
+    CHECK(dc.fgR == 0x10);
+    CHECK(dc.fgG == 0x20);
+    CHECK(dc.fgB == 0x30);
+}

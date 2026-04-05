@@ -48,7 +48,7 @@
 - [x] Action/binding system — `Action::Any` variant, sequence-based key bindings (Kitty-style `key1 > key2`), TOML config via `[[keybinding]]`. Default bindings for all tab and pane operations.
 - [x] SGR inverse (reverse video) — correctly swaps fg/bg in cell resolution; fixes TUI app cursors (Claude Code, htop, vim selection, etc.).
 - [x] `$COLORTERM=truecolor` — set in PTY environment so apps detect 24-bit color support.
-- [ ] Platform-appropriate default bindings — current defaults are inconsistent (Ctrl+Shift+T for new tab but Meta+C/V for copy/paste). macOS convention: Cmd+T new tab, Cmd+W close, Cmd+C/V copy/paste, Cmd+N new window. Linux convention: Ctrl+Shift+T new tab, Ctrl+Shift+W close, Ctrl+Shift+C/V copy/paste. Should either detect platform at runtime and apply appropriate defaults, or document clearly that defaults need to be configured.
+- [x] Platform-appropriate default bindings — `#ifdef __APPLE__` uses Cmd-based bindings (Cmd+T, Cmd+W, Cmd+C/V, Cmd+D split), Linux uses Ctrl+Shift (Ctrl+Shift+T, Ctrl+Shift+W, Ctrl+Shift+C/V).
 
 ## Configuration
 

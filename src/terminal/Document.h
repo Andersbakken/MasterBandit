@@ -40,6 +40,7 @@ public:
 
     // --- History/scrollback API ---
     int historySize() const;
+    int archiveSize() const { return static_cast<int>(archive_.size()); }
     const Cell* historyRow(int idx) const;  // idx 0 = oldest
     const std::unordered_map<int, CellExtra>* historyExtras(int idx) const;
     void clearHistory();

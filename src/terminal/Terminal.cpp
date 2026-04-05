@@ -24,6 +24,10 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
 
 Terminal::~Terminal()
 {
+    if (mWritePollActive) {
+        uv_poll_stop(&mWritePoll);
+        mWritePollActive = false;
+    }
     if (mMasterFD != -1) ::close(mMasterFD);
 }
 
@@ -48,6 +52,9 @@ bool Terminal::init(const TerminalOptions &options)
         FATAL("Failed to unlockpt -> %d %s", errno, strerror(errno));
         return false;
     }
+
+    // Non-blocking so readFromFD can drain the buffer in a loop
+    fcntl(mMasterFD, F_SETFL, fcntl(mMasterFD, F_GETFL) | O_NONBLOCK);
 
     char *slaveName = ptsname(mMasterFD);
     if (!slaveName) {
@@ -144,39 +151,79 @@ void Terminal::flushPendingResize()
 
 void Terminal::readFromFD()
 {
-    char buf[4096];
-#ifndef NDEBUG
-    memset(buf, 0, sizeof(buf));
-#endif
-    int ret;
-    EINTRWRAP(ret, ::read(mMasterFD, buf, sizeof(buf) - 1));
-    spdlog::debug("readFromFD: read {} bytes from masterFD={}", ret, mMasterFD);
-    if (ret == -1) {
-        if (errno != EIO) {
-            ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
+    // Drain all available data to avoid rendering intermediate states.
+    char buf[65536];
+    for (;;) {
+        int ret;
+        EINTRWRAP(ret, ::read(mMasterFD, buf, sizeof(buf)));
+        if (ret == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            if (errno != EIO) {
+                ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
+            }
+            if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
+            return;
+        } else if (ret == 0) {
+            if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
+            return;
         }
-        if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
-        return;
-    } else if (ret == 0) {
-        if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
-        return;
+        injectData(buf, static_cast<size_t>(ret));
     }
-
-    injectData(buf, static_cast<size_t>(ret));
 }
 
 void Terminal::writeToPTY(const char* data, size_t len)
 {
-    while (len > 0) {
+    // Try to write directly first
+    while (len > 0 && mWriteQueue.empty()) {
         int ret;
         EINTRWRAP(ret, ::write(mMasterFD, data, len));
         if (ret == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             FATAL("Failed to write to master %d %s", errno, strerror(errno));
             if (mPlatformCbs.quit) mPlatformCbs.quit();
             return;
         }
         data += ret;
         len -= ret;
+    }
+
+    // Queue remaining data and start write poll
+    if (len > 0) {
+        mWriteQueue.insert(mWriteQueue.end(), data, data + len);
+        if (!mWritePollActive && mLoop) {
+            uv_poll_init(mLoop, &mWritePoll, mMasterFD);
+            mWritePoll.data = this;
+            uv_poll_start(&mWritePoll, UV_WRITABLE, onWritePollReady);
+            mWritePollActive = true;
+        }
+    }
+}
+
+void Terminal::onWritePollReady(uv_poll_t* handle, int status, int events)
+{
+    if (status < 0) return;
+    auto* self = static_cast<Terminal*>(handle->data);
+    if (events & UV_WRITABLE) self->flushWriteQueue();
+}
+
+void Terminal::flushWriteQueue()
+{
+    while (!mWriteQueue.empty()) {
+        int ret;
+        EINTRWRAP(ret, ::write(mMasterFD, mWriteQueue.data(), mWriteQueue.size()));
+        if (ret == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return; // try again next poll
+            FATAL("Failed to write to master %d %s", errno, strerror(errno));
+            if (mPlatformCbs.quit) mPlatformCbs.quit();
+            return;
+        }
+        mWriteQueue.erase(mWriteQueue.begin(), mWriteQueue.begin() + ret);
+    }
+    // Queue drained — stop write poll
+    if (mWritePollActive) {
+        uv_poll_stop(&mWritePoll);
+        uv_close(reinterpret_cast<uv_handle_t*>(&mWritePoll), nullptr);
+        mWritePollActive = false;
     }
 }
 

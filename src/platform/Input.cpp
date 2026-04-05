@@ -269,6 +269,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
     tabBarDirty_ = true;
     refreshDividers(tab);
     needsRedraw_ = true;
+
 }
 
 

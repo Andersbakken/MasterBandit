@@ -243,6 +243,7 @@ void PlatformDawn::closeTab(int idx)
 
 void PlatformDawn::addPtyPoll(int fd, Terminal* term)
 {
+    term->setLoop(loop_);
     auto* poll = new uv_poll_t{};
     uv_poll_init(loop_, poll, fd);
     poll->data = term;

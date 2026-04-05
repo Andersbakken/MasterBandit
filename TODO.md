@@ -12,10 +12,12 @@
 - [ ] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Apps query to detect light vs dark theme.
 - [ ] OSC 22 — Set mouse cursor shape (pointer, text, etc.)
 - [x] OSC 99 — Desktop notifications (kitty). Title/body accumulation, macOS UNUserNotification.
-- [ ] OSC 133 — Shell integration prompt/command/output markers. Smart scrolling between prompts, command re-run.
+- [x] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Responses in `rgb:RRRR/GGGG/BBBB` format.
+- [x] OSC 133 — Shell integration prompt/command/output markers. Stored per-row. Used for jump-to-prompt and command output selection.
+- [x] REP (`CSI b`) — Repeat preceding character N times.
+- [x] Mode 2026 — Synchronized output. Defers rendering while active so intermediate states aren't shown.
 - [ ] Color stack (OSC 30001/30101) — Push/pop entire color state. Apps can safely change colors and restore.
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
-- [ ] REP (`CSI b`) — Repeat preceding character N times.
 - [ ] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking.
 
 ## Multi-Tab / Multi-Pane
@@ -49,6 +51,10 @@
 - [x] SGR inverse (reverse video) — correctly swaps fg/bg in cell resolution; fixes TUI app cursors (Claude Code, htop, vim selection, etc.).
 - [x] `$COLORTERM=truecolor` — set in PTY environment so apps detect 24-bit color support.
 - [x] Platform-appropriate default bindings — `#ifdef __APPLE__` uses Cmd-based bindings (Cmd+T, Cmd+W, Cmd+C/V, Cmd+D split), Linux uses Ctrl+Shift (Ctrl+Shift+T, Ctrl+Shift+W, Ctrl+Shift+C/V).
+- [x] Jump to prompt — Cmd+Up/Down (macOS), Ctrl+Alt+Z/X (Linux). Scans history for OSC 133 PromptStart markers.
+- [x] Scrollback pager — Cmd+F (macOS), Ctrl+Shift+F (Linux). Opens `less -R` in overlay with serialized scrollback.
+- [ ] Prompt navigation mode — enter a mode that highlights the current command's output (dim everything else, like iTerm). Previous/next keybinds to cycle between prompts. Copy output of highlighted command. Requires per-row tinting in the compute shader. Exit on Escape.
+- [ ] Select command output — select output of a specific command (between OSC 133 C and next A). Needs a way to target which command (click, or previous/next navigation).
 
 ## Configuration
 
@@ -82,6 +88,10 @@
 - [x] Split PlatformDawn.cpp — extracted into `platform/` directory: PlatformDawn.cpp (init), EventLoop.cpp, Input.cpp, Actions.cpp, Render.cpp, Tabs.cpp, TabBar.cpp, Debug.cpp.
 - [x] Removed Platform abstract class — Terminal uses `PlatformCallbacks` (onTerminalExited, quit) instead of virtual base. main.cpp uses PlatformDawn directly.
 - [x] Object library build — `terminal` and `platform` are CMake OBJECT libraries with their own CMakeLists.txt. Tests link `terminal` directly.
+- [x] Reflow on resize — soft-wrap tracking via per-row continued flag. Full reflow on column change with cursor tracking. SIGWINCH coalesced to once per render frame.
+- [x] Overlay rendering — overlays render as full-screen terminals over pane layout. Used by scrollback pager. Per-tab render state. Deferred cleanup on exit.
+- [ ] Input delay — buffer PTY input for ~3ms before rendering (like kitty's `input_delay`) to avoid showing intermediate redraw states in apps that don't use Mode 2026.
+- [ ] Shell integration injection — auto-source OSC 133 hooks for zsh/bash/fish (like kitty's `ZDOTDIR` hijack) so prompt markers work without user configuration.
 - [ ] Log level — currently defaulting to Error; `-v` flags lower it. Debug level enables pool allocation logs.
 - [ ] macOS font fallback — CoreText two-pass strategy implemented; parity with Linux fontconfig pass needs verification.
 - [ ] Config colors as floats — tab bar colors use packed uint32 (parseHexColor), progress bar uses floats. Unify to float storage throughout so no unpacking is needed at render time.
@@ -92,3 +102,8 @@
 - [x] Unit test suite — doctest-based, tests `TerminalEmulator` in isolation. Covers: text output, cursor movement, SGR (all attributes, 16/256/truecolor colors, inverse), screen operations (ED, EL, SU/SD, DECSTBM, CNL/CPL/VPA, DCH/ICH, IL/DL, ECH), terminal modes (alt screen, mouse, bracketed paste, sync output, DA/XTVERSION, RIS), scrollback viewport, OSC title/icon, wide characters, SGR inverse color swap.
 - [x] shapeRun() unit tests — ASCII clusters/advances/flags, Arabic RTL detection, mixed LTR/RTL, cache behavior, multibyte UTF-8 clusters. Uses system font resolver + fallback.
 - [x] Kitty keyboard protocol tests — mode management (push/pop/set/query/stack overflow/alt screen/RIS), key encoding for all flag modes, legacy key compatibility, modifier-only keys, RIS comprehensive reset, alt screen grid reference.
+- [x] Reflow tests — shrink/grow, newline preservation, trailing blank trimming, cursor tracking, SGR preservation, wide chars, history reflow, height-only change.
+- [x] OSC 10/11/12 tests — query/set default colors, format parsing.
+- [x] REP tests — basic repeat, default count, no prior char, wrapping, wide chars, attribute preservation.
+- [x] Prompt tests — OSC 133 markers, jump to prompt, command output selection, scrollback serialization.
+- [ ] Rendering tests — pixel comparison against reference images. Launch `mb` as a child process, drive it via the existing debug IPC (`mb --ctl screenshot --format png`, `mb --ctl key`), compare PNG output against reference images. No headless device needed — uses the real render pipeline. Needs: test harness that launches/connects/drives, reference image storage, comparison with tolerance.

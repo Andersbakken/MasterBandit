@@ -254,7 +254,98 @@ shape, mouse modes, bracketed paste, kitty flags).
 
 ---
 
-## 9. Keybindings / Actions (implemented)
+## 9. Reflow on Resize (implemented)
+
+When the terminal width changes, soft-wrapped lines are re-wrapped to the new
+width. Hard newlines (explicit `\n`) are preserved.
+
+**Soft-wrap tracking**: each row in the Document ring buffer has a `continued`
+flag (`std::vector<bool>` indexed by physical slot). Set by
+`advanceCursorToNewLine()` when autowrap fires on the main screen. Explicit
+line feeds do not set it. The flag is serialized in tier-2 `ArchivedRow`.
+
+**Reflow algorithm** (Document::resize, column change):
+
+1. Collect all source rows in order: tier-2 archive → tier-1 history → screen.
+   Trailing blank screen rows below the cursor are trimmed.
+2. Join logical lines: consecutive rows where all but the last have
+   `continued=true`. Trailing blank cells in each source row are trimmed.
+3. Re-wrap logical lines at the new width. Wide characters at the boundary get
+   a padding space. Wide spacer cells are regenerated.
+4. Cursor position tracked during the copy via `CursorTrack` (source absolute
+   row+col → destination absolute row+col).
+5. Result installed as new ring. Excess history evicted to tier-2 archive.
+
+**Cursor beyond content**: if the cursor was at/past the last content line
+(e.g. at a prompt with rprompt), the cursor is placed at the end of content
+after reflow, not where reflow tracked it. This prevents rprompt wrapping
+from shifting the cursor down.
+
+**Alt screen**: does not reflow. CellGrid::resize truncates/pads as before.
+
+**SIGWINCH coalescing**: `Terminal::resize()` sets a `mResizePending` flag.
+`flushPendingResize()` sends a single `TIOCSWINSZ` ioctl per render frame,
+after all resize events have been coalesced. Prevents rapid SIGWINCH storms
+during window drag.
+
+---
+
+## 10. OSC 133 Shell Integration (implemented)
+
+Prompt markers from the FinalTerm/semantic prompts protocol. Stored per-row
+in the Document ring buffer (`promptKind_` vector).
+
+**Markers**:
+- `A` — prompt start (primary or secondary with `k=s`)
+- `B` — command input starts (after prompt text)
+- `C` — command output starts
+- `D` — command finished (with exit code, currently ignored)
+
+**Features using markers**:
+- **Jump to prompt**: `scrollToPrompt(direction)` scans history + screen for
+  `PromptStart` markers and scrolls the viewport. Keybindings: Cmd+Up/Down
+  (macOS), Ctrl+Alt+Z/X (Linux).
+- **Select command output**: `selectCommandOutput()` finds the `OutputStart`
+  region around the viewport center and selects all text to the next
+  `PromptStart`.
+- **Prompt-aware reflow**: when OSC 133 markers are present, prompt lines can
+  be blanked before reflow to prevent rprompt content from causing wrapping.
+
+**Requires shell integration**: the shell must emit OSC 133 sequences. Kitty
+auto-injects these via `ZDOTDIR` hijacking; we don't yet (planned).
+
+---
+
+## 11. Overlays (implemented)
+
+Full-screen terminal overlays that cover the entire tab's layout area. Used
+by the scrollback pager.
+
+**Hierarchy**: `Tab::overlays_` is a stack of `unique_ptr<Terminal>`. When an
+overlay is active, `activeTerm()` returns the top overlay for input routing.
+The render loop detects `currentTab->hasOverlay()` and renders the overlay
+terminal instead of the pane layout.
+
+**Overlay render state**: stored in `overlayRenderStates_` keyed by `Tab*`.
+Created on first render, cleaned up when the overlay exits. The overlay's
+content area excludes the tab bar and resizes dynamically if the tab bar
+changes visibility.
+
+**Scrollback pager** (`ShowScrollback` action):
+1. Serializes all scrollback (tier-2 archive + tier-1 history + screen) to a
+   temp file via `serializeScrollback()`.
+2. Spawns `less -R <tmpfile>` as an overlay terminal using `TerminalOptions::command`.
+3. On exit (PTY closes), cleanup is deferred to the next idle tick to avoid
+   use-after-free (the exit callback fires from `Terminal::readFromFD`).
+4. Keybindings: Cmd+F (macOS), Ctrl+Shift+F (Linux).
+
+**Mode 2026 (synchronized output)**: when active, rendering is deferred until
+the app disables sync. Prevents showing intermediate states during screen
+redraws. Checked per-pane in the render loop.
+
+---
+
+## 12. Keybindings / Actions (implemented)
 
 Actions are defined as `Action::Any` (`std::variant` of all action structs) in
 `Action.h`. Key bindings map sequences of `KeyStroke` (key + modifiers) to
@@ -286,7 +377,7 @@ binding system.
 
 ---
 
-## 10. Configuration (implemented)
+## 13. Configuration (implemented)
 
 TOML config at `$XDG_CONFIG_HOME/MasterBandit/config.toml`. Parsed via glaze.
 
@@ -327,7 +418,7 @@ PTY environment: `$TERM=xterm-256color`, `$COLORTERM=truecolor`.
 
 ---
 
-## 11. Font Fallback (implemented)
+## 14. Font Fallback (implemented)
 
 Two-pass fontconfig strategy (same as WezTerm):
 - **Pass 1**: monospace fonts only (FC_MONO / FC_DUAL / FC_CHARCELL), using
@@ -342,7 +433,7 @@ other symbols.
 
 ---
 
-## 12. Debug IPC (implemented)
+## 15. Debug IPC (implemented)
 
 WebSocket server on a Unix domain socket (`/tmp/mb-<pid>.sock`). Accessed via
 `mb --ctl <command>`.
@@ -360,7 +451,7 @@ per-tab/per-pane information (dimensions, held texture size, divider buffer).
 
 ---
 
-## 13. Project Structure
+## 16. Project Structure
 
 ```
 src/
@@ -403,7 +494,7 @@ tests/
 
 ---
 
-## 14. Testing (implemented)
+## 17. Testing (implemented)
 
 Unit test suite using doctest (`tests/`). `TestTerminal` wraps `TerminalEmulator`
 with no PTY or GPU — feeds escape sequences via `injectData`, asserts on cell grid

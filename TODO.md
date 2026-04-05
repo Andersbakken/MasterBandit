@@ -108,6 +108,7 @@
 - [x] Reflow strips spaces — cursor gap detection treated spaces as null cells, truncating content after cursor.
 - [x] Underlines not cleared on scroll — deleteChars/insertChars didn't shift extras map entries, leaving stale underline colors at wrong columns.
 - [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.
+- [ ] Configuration UI — interactive TUI config editor using FTXUI. Browse/edit config options without manual TOML editing.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
 ## Testing

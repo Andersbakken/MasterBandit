@@ -147,6 +147,10 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
     case 3: return JS_NewString(ctx, info.title.c_str());
     case 4: return JS_NewString(ctx, info.cwd.c_str());
     case 5: return JS_NewBool(ctx, info.hasPty);
+    case 6: return JS_NewBool(ctx, info.focused);
+    case 7: return info.focusedPopupId.empty()
+                 ? JS_NULL
+                 : JS_NewString(ctx, info.focusedPopupId.c_str());
     default: return JS_UNDEFINED;
     }
 }
@@ -154,6 +158,7 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 // Forward declarations — defined after Popup class
 static JSValue jsPaneCreatePopup(JSContext*, JSValueConst, int, JSValueConst*);
 static JSValue jsPaneDestroyPopup(JSContext*, JSValueConst, int, JSValueConst*);
+static JSValue jsPaneGetPopups(JSContext*, JSValueConst);
 
 static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsPaneAddEventListener),
@@ -167,6 +172,9 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("title", jsPaneGetProp, nullptr, 3),
     JS_CGETSET_MAGIC_DEF("cwd", jsPaneGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
+    JS_CGETSET_MAGIC_DEF("focused", jsPaneGetProp, nullptr, 6),
+    JS_CGETSET_MAGIC_DEF("focusedPopupId", jsPaneGetProp, nullptr, 7),
+    JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
 };
 
 // ============================================================================
@@ -276,7 +284,7 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// popup.cols, popup.rows (getters)
+// popup.paneId, popup.id, popup.focused (getters)
 static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
     auto* popup = jsPopupGet(ctx, this_val);
@@ -284,6 +292,11 @@ static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
     switch (magic) {
     case 0: return JS_NewInt32(ctx, popup->paneId);
     case 1: return JS_NewString(ctx, popup->popupId.c_str());
+    case 2: {
+        Engine* eng = engineFromCtx(ctx);
+        auto info = eng->callbacks().paneInfo(popup->paneId);
+        return JS_NewBool(ctx, info.focusedPopupId == popup->popupId);
+    }
     default: return JS_UNDEFINED;
     }
 }
@@ -294,6 +307,7 @@ static const JSCFunctionListEntry jsPopupProto[] = {
     JS_CFUNC_DEF("destroy", 0, jsPopupDestroy),
     JS_CGETSET_MAGIC_DEF("paneId", jsPopupGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("id", jsPopupGetProp, nullptr, 1),
+    JS_CGETSET_MAGIC_DEF("focused", jsPopupGetProp, nullptr, 2),
 };
 
 // pane.createPopup({id, x, y, w, h}) -> Popup
@@ -345,6 +359,19 @@ static JSValue jsPaneDestroyPopup(JSContext* ctx, JSValueConst this_val,
     engineFromCtx(ctx)->callbacks().destroyPopup(pane->id, std::string(id));
     JS_FreeCString(ctx, id);
     return JS_UNDEFINED;
+}
+
+// pane.popups — returns array of Popup objects for this pane
+static JSValue jsPaneGetPopups(JSContext* ctx, JSValueConst this_val)
+{
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_NewArray(ctx);
+    Engine* eng = engineFromCtx(ctx);
+    auto popups = eng->callbacks().panePopups(pane->id);
+    JSValue arr = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < popups.size(); ++i)
+        JS_SetPropertyUint32(ctx, arr, i, jsPopupNew(ctx, pane->id, popups[i].id));
+    return arr;
 }
 
 // ============================================================================

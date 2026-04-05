@@ -249,8 +249,7 @@ void PlatformDawn::closeTab(int idx)
     // Stop PTY polls for all terminals in this tab
     Tab* tab = tabs_[idx].get();
     for (auto& panePtr : tab->layout()->panes()) {
-        TerminalEmulator* term = panePtr->activeTerm();
-        if (auto* t = dynamic_cast<Terminal*>(term)) {
+        if (auto* t = panePtr->terminal()) {
             removePtyPoll(t->masterFD());
         }
         // Release pane render state
@@ -350,11 +349,15 @@ void PlatformDawn::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
     if (!tab) return;
     if (prevId >= 0) {
         Pane* p = tab->layout()->pane(prevId);
-        if (p && p->activeTerm()) p->activeTerm()->focusEvent(false);
+        if (p) {
+            // Clear popup focus when pane loses focus
+            p->clearFocusedPopup();
+            if (p->terminal()) p->terminal()->focusEvent(false);
+        }
     }
     if (newId >= 0) {
         Pane* p = tab->layout()->pane(newId);
-        if (p && p->activeTerm()) p->activeTerm()->focusEvent(true);
+        if (p && p->terminal()) p->terminal()->focusEvent(true);
     }
 }
 
@@ -516,7 +519,7 @@ void PlatformDawn::resizeAllPanesInTab(Tab* tab)
         Pane* pane = panePtr.get();
         pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
-        TerminalEmulator* term = pane->activeTerm();
+        Terminal* term = pane->terminal();
         if (!term) continue;
 
         int cols = std::max(term->width(),  1);

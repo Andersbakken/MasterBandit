@@ -236,7 +236,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
             Pane* pane = panePtr.get();
             pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
-            TerminalEmulator* term = pane->activeTerm();
+            TerminalEmulator* term = pane->terminal();
             if (!term) continue;
 
             int cols = term->width();
@@ -338,7 +338,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
     Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
-        : (fp ? fp->activeTerm() : nullptr);
+        : (fp ? static_cast<TerminalEmulator*>(fp->terminal()) : nullptr);
     if (!term) return;
 
     // Adjust for pane origin
@@ -389,7 +389,7 @@ void PlatformDawn::onCursorPos(double x, double y)
     Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
-        : (fp ? fp->activeTerm() : nullptr);
+        : (fp ? static_cast<TerminalEmulator*>(fp->terminal()) : nullptr);
     if (!term) return;
 
     double sx = x * contentScaleX_;

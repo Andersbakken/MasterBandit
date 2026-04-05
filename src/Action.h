@@ -41,6 +41,7 @@ struct ResetFontSize       {};
 struct ScrollToPrompt      { int direction = -1; }; // -1 = previous, +1 = next
 struct SelectCommandOutput {};
 struct ShowScrollback      {};
+struct FocusPopup          {}; // Cycle focus: main terminal → popup1 → popup2 → ... → main
 
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
@@ -49,7 +50,8 @@ using Any = std::variant<
     ScrollUp, ScrollDown, ScrollToTop, ScrollToBottom,
     PushOverlay, PopOverlay,
     IncreaseFontSize, DecreaseFontSize, ResetFontSize,
-    ScrollToPrompt, SelectCommandOutput, ShowScrollback
+    ScrollToPrompt, SelectCommandOutput, ShowScrollback,
+    FocusPopup
 >;
 
 // Action type identity is the variant index.

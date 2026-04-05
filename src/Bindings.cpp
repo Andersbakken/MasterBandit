@@ -168,6 +168,8 @@ std::optional<Action::Any> parseAction(const std::string& name,
         return std::nullopt;
     }
 
+    if (name == "focus_popup") return Action::FocusPopup{};
+
     if (name == "copy")  return Action::Copy{};
     if (name == "paste") return Action::Paste{};
 
@@ -257,6 +259,8 @@ std::vector<Binding> defaultBindings()
         // Pane focus — cyclic
         { { *parseKeyStroke("meta+]") },            Action::FocusPane{Action::Direction::Next} },
         { { *parseKeyStroke("meta+[") },            Action::FocusPane{Action::Direction::Prev} },
+        // Popup focus cycling
+        { { *parseKeyStroke("meta+shift+i") },      Action::FocusPopup{} },
         // Prompt navigation
         { { *parseKeyStroke("meta+up") },           Action::ScrollToPrompt{-1} },
         { { *parseKeyStroke("meta+down") },         Action::ScrollToPrompt{1}  },
@@ -299,6 +303,8 @@ std::vector<Binding> defaultBindings()
         // Pane focus — cyclic
         { { *parseKeyStroke("ctrl+shift+n") },      Action::FocusPane{Action::Direction::Next} },
         { { *parseKeyStroke("ctrl+shift+p") },      Action::FocusPane{Action::Direction::Prev} },
+        // Popup focus cycling
+        { { *parseKeyStroke("ctrl+shift+i") },      Action::FocusPopup{} },
         // Prompt navigation
         { { *parseKeyStroke("ctrl+alt+z") },        Action::ScrollToPrompt{-1} },
         { { *parseKeyStroke("ctrl+alt+x") },        Action::ScrollToPrompt{1}  },

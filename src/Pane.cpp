@@ -17,6 +17,8 @@ void Pane::setTerminal(std::unique_ptr<Terminal> t)
 
 TerminalEmulator* Pane::activeTerm()
 {
+    if (auto* pp = focusedPopup())
+        return pp->terminal.get();
     return terminal_.get();
 }
 

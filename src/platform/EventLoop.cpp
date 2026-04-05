@@ -40,7 +40,7 @@ int PlatformDawn::exec()
         scbs.injectPaneData = [this](Script::PaneId paneId, const std::string& data) {
             for (auto& tab : tabs_) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
-                    if (auto* t = p->activeTerm())
+                    if (auto* t = p->terminal())
                         t->injectData(data.c_str(), data.size());
                     return;
                 }
@@ -55,7 +55,7 @@ int PlatformDawn::exec()
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
             for (auto& tab : tabs_) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
-                    if (auto* t = dynamic_cast<Terminal*>(p->activeTerm()))
+                    if (auto* t = p->terminal())
                         t->pasteText(data);
                     return;
                 }
@@ -70,7 +70,7 @@ int PlatformDawn::exec()
         scbs.paneHasPty = [this](Script::PaneId paneId) -> bool {
             for (auto& tab : tabs_) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
-                    auto* t = dynamic_cast<Terminal*>(p->activeTerm());
+                    auto* t = p->terminal();
                     return t && t->masterFD() >= 0;
                 }
             }
@@ -92,12 +92,14 @@ int PlatformDawn::exec()
         scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo {
             for (auto& tab : tabs_) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
-                    auto* t = p->activeTerm();
+                    auto* t = p->terminal();
                     auto* term = dynamic_cast<Terminal*>(t);
+                    bool isFocused = tab->layout()->focusedPaneId() == paneId;
                     return {
                         t ? t->width() : 0, t ? t->height() : 0,
                         p->title(), p->cwd(),
-                        term && term->masterFD() >= 0
+                        term && term->masterFD() >= 0,
+                        isFocused, p->focusedPopupId()
                     };
                 }
             }
@@ -170,6 +172,21 @@ int PlatformDawn::exec()
         scbs.closeTab = [this](int tabId) {
             closeTab(tabId);
         };
+        scbs.panePopups = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::PopupInfo> {
+            std::vector<Script::AppCallbacks::PopupInfo> result;
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    const std::string& focusedId = p->focusedPopupId();
+                    for (const auto& popup : p->popups()) {
+                        result.push_back({popup.id, popup.cellX, popup.cellY,
+                                          popup.cellW, popup.cellH,
+                                          popup.id == focusedId});
+                    }
+                    break;
+                }
+            }
+            return result;
+        };
         scbs.createPopup = [this](Script::PaneId paneId, const std::string& popupId,
                                    int x, int y, int w, int h,
                                    std::function<void(const char*, size_t)> onInput) -> bool {
@@ -179,7 +196,15 @@ int PlatformDawn::exec()
                     pcbs.onTerminalExited = [](Terminal*) {};
                     pcbs.quit = [this]() { quit(); };
                     pcbs.onInput = std::move(onInput);
-                    return p->createPopup(popupId, x, y, w, h, std::move(pcbs)) != nullptr;
+                    if (p->createPopup(popupId, x, y, w, h, std::move(pcbs))) {
+                        p->onPopupEvent = [this, paneId]() {
+                            auto it = paneRenderStates_.find(paneId);
+                            if (it != paneRenderStates_.end()) it->second.dirty = true;
+                            needsRedraw_ = true;
+                        };
+                        return true;
+                    }
+                    return false;
                 }
             }
             return false;

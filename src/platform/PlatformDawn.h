@@ -159,7 +159,7 @@ private:
             for (auto& [paneId, _] : paneRenderStates_) {
                 Pane* pane = tab->layout()->pane(paneId);
                 if (pane) {
-                    if (auto* term = pane->activeTerm()) fn(term);
+                    if (auto* term = pane->terminal()) fn(term);
                 }
             }
         }

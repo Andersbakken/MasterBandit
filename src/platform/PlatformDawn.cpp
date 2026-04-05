@@ -326,8 +326,14 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
             glfwSetWindowFocusCallback(glfwWindow_, [](GLFWwindow* w, int focused) {
                 auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
-                Terminal* t = self->activeTerm();
-                if (t) t->focusEvent(focused != 0);
+                // Window focus goes to the main pane terminal, not popup
+                Tab* tab = self->activeTab();
+                if (tab && !tab->hasOverlay()) {
+                    Pane* fp = tab->layout()->focusedPane();
+                    if (fp && fp->terminal()) fp->terminal()->focusEvent(focused != 0);
+                } else if (tab && tab->hasOverlay()) {
+                    tab->topOverlay()->focusEvent(focused != 0);
+                }
             });
 
             // Observe system appearance changes for mode 2031
@@ -468,7 +474,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             Pane* p = tabs_.back()->layout()->focusedPane();
             if (p) {
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
-                TerminalEmulator* te = p->activeTerm();
+                TerminalEmulator* te = p->terminal();
                 if (te) {
                     int c = te->width(), r = te->height();
                     auto& rs2 = paneRenderStates_[p->id()];

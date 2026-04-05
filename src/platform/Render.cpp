@@ -235,7 +235,7 @@ void PlatformDawn::renderFrame()
     // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
     // events in this frame have been coalesced.
     for (auto& panePtr : currentTab->layout()->panes()) {
-        if (auto* t = dynamic_cast<Terminal*>(panePtr->activeTerm()))
+        if (auto* t = panePtr->terminal())
             t->flushPendingResize();
     }
 
@@ -344,7 +344,7 @@ void PlatformDawn::renderFrame()
         for (auto& panePtr : currentTab->layout()->panes()) {
             Pane* pane = panePtr.get();
             if (pane->rect().isEmpty()) continue;
-            TerminalEmulator* term = pane->activeTerm();
+            Terminal* term = pane->terminal();
             if (!term) continue;
             bool focused = (pane->id() == currentTab->layout()->focusedPaneId());
             renderTargets.push_back({term, &paneRenderStates_[pane->id()], pane->rect(), focused, pane});
@@ -678,30 +678,58 @@ void PlatformDawn::renderFrame()
             params.pane_origin_y = padTop_;
             params.max_text_vertices = cs->maxTextVertices;
 
-            // Cursor
+            // Cursor — use focused popup's cursor if one exists, otherwise main terminal's
             params.cursor_type = 0;
-            if (term->viewportOffset() == 0 && term->cursorVisible() &&
-                term->cursorX() >= 0 && term->cursorX() < g.cols() &&
-                term->cursorY() >= 0 && term->cursorY() < g.rows()) {
-                params.cursor_col   = static_cast<uint32_t>(term->cursorX());
-                params.cursor_row   = static_cast<uint32_t>(term->cursorY());
-                params.cursor_color = 0xFFCCCCCCu;
-                if (!isFocused) {
-                    params.cursor_type = 2u; // hollow for unfocused
-                } else {
-                    switch (term->cursorShape()) {
-                    case TerminalEmulator::CursorBlock:
-                    case TerminalEmulator::CursorSteadyBlock:
-                        params.cursor_type = 1u; // solid block
-                        break;
-                    case TerminalEmulator::CursorUnderline:
-                    case TerminalEmulator::CursorSteadyUnderline:
-                        params.cursor_type = 3u; // underline
-                        break;
-                    case TerminalEmulator::CursorBar:
-                    case TerminalEmulator::CursorSteadyBar:
-                        params.cursor_type = 4u; // bar
-                        break;
+            PopupPane* focusedPopup = target.pane ? target.pane->focusedPopup() : nullptr;
+            if (focusedPopup && focusedPopup->terminal) {
+                // Render the focused popup's cursor at its pane-relative position
+                TerminalEmulator* pt = focusedPopup->terminal.get();
+                int pcx = focusedPopup->cellX + pt->cursorX();
+                int pcy = focusedPopup->cellY + pt->cursorY();
+                if (pt->cursorVisible() &&
+                    pcx >= 0 && pcx < g.cols() && pcy >= 0 && pcy < g.rows()) {
+                    params.cursor_col   = static_cast<uint32_t>(pcx);
+                    params.cursor_row   = static_cast<uint32_t>(pcy);
+                    params.cursor_color = 0xFFCCCCCCu;
+                    params.cursor_type  = 1u; // solid block
+                }
+            } else {
+                // Main terminal cursor — suppress if behind a popup
+                bool cursorBehindPopup = false;
+                if (target.pane) {
+                    int cx = term->cursorX(), cy = term->cursorY();
+                    for (const auto& popup : target.pane->popups()) {
+                        if (cx >= popup.cellX && cx < popup.cellX + popup.cellW &&
+                            cy >= popup.cellY && cy < popup.cellY + popup.cellH) {
+                            cursorBehindPopup = true;
+                            break;
+                        }
+                    }
+                }
+                if (!cursorBehindPopup &&
+                    term->viewportOffset() == 0 && term->cursorVisible() &&
+                    term->cursorX() >= 0 && term->cursorX() < g.cols() &&
+                    term->cursorY() >= 0 && term->cursorY() < g.rows()) {
+                    params.cursor_col   = static_cast<uint32_t>(term->cursorX());
+                    params.cursor_row   = static_cast<uint32_t>(term->cursorY());
+                    params.cursor_color = 0xFFCCCCCCu;
+                    if (!isFocused) {
+                        params.cursor_type = 2u; // hollow for unfocused
+                    } else {
+                        switch (term->cursorShape()) {
+                        case TerminalEmulator::CursorBlock:
+                        case TerminalEmulator::CursorSteadyBlock:
+                            params.cursor_type = 1u; // solid block
+                            break;
+                        case TerminalEmulator::CursorUnderline:
+                        case TerminalEmulator::CursorSteadyUnderline:
+                            params.cursor_type = 3u; // underline
+                            break;
+                        case TerminalEmulator::CursorBar:
+                        case TerminalEmulator::CursorSteadyBar:
+                            params.cursor_type = 4u; // bar
+                            break;
+                        }
                     }
                 }
             }

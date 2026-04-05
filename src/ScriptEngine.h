@@ -30,7 +30,7 @@ struct AppCallbacks {
     // Invoke an action by name
     std::function<bool(const std::string&, const std::vector<std::string>&)> invokeAction;
     // Query pane info
-    struct PaneInfo { int cols; int rows; std::string title; std::string cwd; bool hasPty; };
+    struct PaneInfo { int cols; int rows; std::string title; std::string cwd; bool hasPty; bool focused; std::string focusedPopupId; };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query overlay info
     struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
@@ -46,6 +46,9 @@ struct AppCallbacks {
     std::function<int()> createTab;
     // Close a tab by index.
     std::function<void(int)> closeTab;
+    // Query popups on a pane.
+    struct PopupInfo { std::string id; int x; int y; int w; int h; bool focused; };
+    std::function<std::vector<PopupInfo>(PaneId)> panePopups;
     // Create a popup on a pane. Returns false on failure.
     std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h,
                        std::function<void(const char*, size_t)> onInput)> createPopup;

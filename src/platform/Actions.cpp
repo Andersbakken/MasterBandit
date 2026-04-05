@@ -73,7 +73,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             int paneId = fp->id();
 
             // Stop PTY poll and release render state
-            if (auto* t = dynamic_cast<Terminal*>(fp->activeTerm())) {
+            if (auto* t = fp->terminal()) {
                 removePtyPoll(t->masterFD());
             }
             auto it = paneRenderStates_.find(paneId);
@@ -224,6 +224,33 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             Terminal* term = activeTerm();
             if (term) term->selectCommandOutput();
         },
+        [&](const Action::FocusPopup&) {
+            Tab* tab = activeTab();
+            if (!tab || tab->hasOverlay()) return;
+            Pane* fp = tab->layout()->focusedPane();
+            if (!fp || fp->popups().empty()) return;
+
+            const auto& popups = fp->popups();
+            const std::string& curFocus = fp->focusedPopupId();
+
+            if (curFocus.empty()) {
+                // No popup focused — focus first popup
+                fp->setFocusedPopup(popups.front().id);
+            } else {
+                // Find current popup index, cycle to next or back to main
+                int cur = -1;
+                for (int i = 0; i < static_cast<int>(popups.size()); ++i) {
+                    if (popups[i].id == curFocus) { cur = i; break; }
+                }
+                if (cur < 0 || cur + 1 >= static_cast<int>(popups.size())) {
+                    // Last popup or not found — back to main terminal
+                    fp->clearFocusedPopup();
+                } else {
+                    fp->setFocusedPopup(popups[cur + 1].id);
+                }
+            }
+            needsRedraw_ = true;
+        },
         [&](const Action::ShowScrollback&) {
             Terminal* term = dynamic_cast<Terminal*>(activeTerm());
             Tab* tab = activeTab();
@@ -320,5 +347,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
     }, action);
 
     actionDispatcher_.notify(action.index(), action);
+
+    // Flush JS microtasks so action listeners update state before the next render
+    scriptEngine_.executePendingJobs();
 }
 

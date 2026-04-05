@@ -44,7 +44,7 @@ std::string PlatformDawn::gridToJson(int id)
         if (pane) break;
     }
     if (!pane) return {};
-    TerminalEmulator* term = pane->activeTerm();
+    TerminalEmulator* term = pane->terminal();
     if (!term) return {};
 
     const IGrid& g = term->grid();
@@ -123,7 +123,7 @@ std::string PlatformDawn::statsJson(int id)
         for (auto& panePtr : tab->layout()->panes()) {
             int pid = panePtr->id();
             auto it = paneRenderStates_.find(pid);
-            TerminalEmulator* term = panePtr->activeTerm();
+            TerminalEmulator* term = panePtr->terminal();
             glz::generic::object_t paneObj;
             paneObj["id"]   = static_cast<double>(pid);
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);

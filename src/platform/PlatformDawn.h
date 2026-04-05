@@ -281,6 +281,7 @@ private:
     void clearDividers(Tab* tab);
     void releaseTabTextures(Tab* tab);
     void updateTabTitleFromFocusedPane(int tabIdx);
+    void updateWindowTitle();
     void notifyPaneFocusChange(Tab* tab, int prevId, int newId);
 };
 

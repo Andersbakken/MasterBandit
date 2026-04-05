@@ -15,6 +15,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 releaseTabTextures(activeTab());
                 activeTabIdx_ = idx;
                 refreshDividers(activeTab());
+                updateWindowTitle();
                 tabBarDirty_ = true;
                 needsRedraw_ = true;
             }
@@ -25,6 +26,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 releaseTabTextures(activeTab());
                 activeTabIdx_ = a.index;
                 refreshDividers(activeTab());
+                updateWindowTitle();
                 tabBarDirty_ = true;
                 needsRedraw_ = true;
             }

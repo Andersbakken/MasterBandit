@@ -320,6 +320,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
                             releaseTabTextures(activeTab());
                             activeTabIdx_ = i;
                             refreshDividers(activeTab());
+                            updateWindowTitle();
                             tabBarDirty_ = true;
                             needsRedraw_ = true;
                         } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {

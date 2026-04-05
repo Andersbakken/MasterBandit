@@ -32,6 +32,21 @@ static void collectFirstPaneDividers(const LayoutNode* node, int divPx,
 }
 
 
+// Helper: update the macOS window title from the active tab's focused pane
+void PlatformDawn::updateWindowTitle()
+{
+    if (headless_) return;
+    Tab* t = activeTab();
+    if (!t) return;
+    Pane* fp = t->layout()->focusedPane();
+    if (!fp) return;
+    const std::string& icon = fp->icon();
+    const std::string& title = fp->title();
+    if (title.empty()) return;
+    std::string windowTitle = icon.empty() ? title : icon + " " + title;
+    glfwSetWindowTitle(glfwWindow_, windowTitle.c_str());
+}
+
 // Helper: find which tab contains a given pane
 static Tab* findTabForPane(const std::vector<std::unique_ptr<Tab>>& tabs, int paneId, int* outTabIdx = nullptr)
 {
@@ -83,19 +98,20 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
         if (t->layout()->focusedPaneId() == paneId) {
             t->setTitle(title);
-            if (tabIdx == activeTabIdx_ && !headless_)
-                glfwSetWindowTitle(glfwWindow_, title.c_str());
+            if (tabIdx == activeTabIdx_) updateWindowTitle();
             tabBarDirty_ = true;
             needsRedraw_ = true;
         }
     };
 
     cbs.onIconChanged = [this, paneId](const std::string& icon) {
-        Tab* t = findTabForPane(tabs_, paneId);
+        int tabIdx = -1;
+        Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
         if (!t) return;
         if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
         if (t->layout()->focusedPaneId() == paneId) {
             t->setIcon(icon);
+            if (tabIdx == activeTabIdx_) updateWindowTitle();
             tabBarDirty_ = true;
             needsRedraw_ = true;
         }
@@ -329,8 +345,8 @@ void PlatformDawn::updateTabTitleFromFocusedPane(int tabIdx)
     const std::string& icon  = fp->icon();
     tab->setTitle(title);
     if (!icon.empty()) tab->setIcon(icon);
-    if (tabIdx == activeTabIdx_ && !title.empty() && !headless_)
-        glfwSetWindowTitle(glfwWindow_, title.c_str());
+    if (tabIdx == activeTabIdx_ && !title.empty())
+        updateWindowTitle();
     tabBarDirty_ = true;
     needsRedraw_  = true;
 }

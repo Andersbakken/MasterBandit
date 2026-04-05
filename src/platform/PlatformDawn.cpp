@@ -405,7 +405,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     tab->setTitle(pane->title());
     activeTabIdx_ = static_cast<int>(tabs_.size());
     tabs_.push_back(std::move(tab));
-    if (!headless_) glfwSetWindowTitle(glfwWindow_, pane->title().c_str());
+    updateWindowTitle();
 
     // Store options for future createTab() calls
     if (tabs_.size() == 1) {

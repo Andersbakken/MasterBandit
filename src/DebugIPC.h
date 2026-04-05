@@ -56,6 +56,7 @@ private:
     void cmdSendKey(struct lws* wsi, int id, const std::string& text,
                     const std::string& key, const std::vector<std::string>& mods);
     void cmdStats(struct lws* wsi, int id);
+    void cmdInject(struct lws* wsi, int id, const std::string& data);
     void cmdAction(struct lws* wsi, int id, const std::string& action,
                    const std::vector<std::string>& args);
     void cmdSubscribeLogs(struct lws* wsi, int id);

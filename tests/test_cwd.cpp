@@ -78,7 +78,7 @@ TEST_CASE("cwd: OSC 7 sets pane CWD visible in stats" * doctest::test_suite("ren
     rt.wait(500);
 
     // Send OSC 7 to set CWD to /tmp (OSC parser strips file://hostname prefix)
-    rt.sendText("\033]7;file://localhost/tmp\033\\");
+    rt.injectData("\033]7;file://localhost/tmp\007");
     rt.wait(200);
 
     auto stats = rt.queryStats();
@@ -95,7 +95,7 @@ TEST_CASE("cwd: new tab inherits CWD from focused pane" * doctest::test_suite("r
     rt.wait(500);
 
     // Set CWD on the current pane via OSC 7
-    rt.sendText("\033]7;file://localhost/tmp\033\\");
+    rt.injectData("\033]7;file://localhost/tmp\007");
     rt.wait(200);
 
     // Create a new tab via action
@@ -126,7 +126,7 @@ TEST_CASE("cwd: split pane inherits CWD from source pane" * doctest::test_suite(
     rt.wait(500);
 
     // Set CWD on the current pane via OSC 7
-    rt.sendText("\033]7;file://localhost/tmp\033\\");
+    rt.injectData("\033]7;file://localhost/tmp\007");
     rt.wait(200);
 
     // Split pane right

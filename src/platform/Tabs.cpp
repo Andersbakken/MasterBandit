@@ -133,7 +133,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
 void PlatformDawn::createTab()
 {
-    if (!device_ || !glfwWindow_) return;
+    if (!device_ || (!glfwWindow_ && !headless_)) return;
 
     auto layout = std::make_unique<Layout>();
     layout->setDividerPixels(dividerWidth_);
@@ -329,7 +329,7 @@ void PlatformDawn::updateTabTitleFromFocusedPane(int tabIdx)
     const std::string& icon  = fp->icon();
     tab->setTitle(title);
     if (!icon.empty()) tab->setIcon(icon);
-    if (tabIdx == activeTabIdx_ && !title.empty())
+    if (tabIdx == activeTabIdx_ && !title.empty() && !headless_)
         glfwSetWindowTitle(glfwWindow_, title.c_str());
     tabBarDirty_ = true;
     needsRedraw_  = true;

@@ -32,6 +32,9 @@ public:
     // Inject a named key with optional modifiers
     bool sendKey(const std::string& key, const std::vector<std::string>& mods = {}, int timeoutMs = 2000);
 
+    // Inject raw data directly into the terminal emulator (bypass PTY)
+    bool injectData(const std::string& data, int timeoutMs = 2000);
+
     // Take a PNG screenshot of the full composite
     std::vector<uint8_t> screenshotPng(int timeoutMs = 5000);
 

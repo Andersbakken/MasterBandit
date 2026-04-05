@@ -1,6 +1,7 @@
 #include "DebugIPC.h"
 #include "Terminal.h"
 #include "Log.h"
+#include "Utils.h"
 
 #include <glaze/glaze.hpp>
 #include <spdlog/spdlog.h>
@@ -272,6 +273,9 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
             }
         }
         cmdAction(wsi, id, action, args);
+    } else if (cmd == "inject") {
+        std::string data = jsonStr(j, "data");
+        cmdInject(wsi, id, data);
     } else if (cmd == "subscribe") {
         std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
@@ -484,6 +488,24 @@ void DebugIPC::cmdAction(struct lws* wsi, int id, const std::string& action,
     resp["ok"] = ok;
     if (!ok) resp["msg"] = std::string("unknown action: " + action);
     sendResponse(wsi, dumpObj(resp));
+}
+
+// ============================================================================
+// Command: inject
+// ============================================================================
+
+void DebugIPC::cmdInject(struct lws* wsi, int id, const std::string& data)
+{
+    Terminal* terminal = termCb_ ? termCb_() : nullptr;
+    if (!terminal) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no active terminal"}}));
+        return;
+    }
+
+    // Data is base64-encoded to avoid JSON escaping issues with control characters
+    auto decoded = base64::decode(data);
+    terminal->injectData(reinterpret_cast<const char*>(decoded.data()), decoded.size());
+    sendResponse(wsi, dumpObj({{"type", "ok"}, {"id", static_cast<double>(id)}}));
 }
 
 // ============================================================================

@@ -1,4 +1,5 @@
 #include "MBConnection.h"
+#include "Utils.h"
 
 #include <glaze/glaze.hpp>
 
@@ -11,45 +12,7 @@
 #include <chrono>
 #include <thread>
 
-// Base64 decoding (minimal, for PNG data from IPC)
-static std::vector<uint8_t> base64Decode(const std::string& encoded)
-{
-    static const uint8_t T[256] = {
-        // clang-format off
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,62,64,64,64,63,
-        52,53,54,55,56,57,58,59,60,61,64,64,64,64,64,64,
-        64, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
-        15,16,17,18,19,20,21,22,23,24,25,64,64,64,64,64,
-        64,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
-        41,42,43,44,45,46,47,48,49,50,51,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
-        // clang-format on
-    };
 
-    std::vector<uint8_t> out;
-    out.reserve(encoded.size() * 3 / 4);
-    uint32_t val = 0;
-    int bits = -8;
-    for (uint8_t c : encoded) {
-        if (T[c] == 64) continue;
-        val = (val << 6) | T[c];
-        bits += 6;
-        if (bits >= 0) {
-            out.push_back(static_cast<uint8_t>((val >> bits) & 0xFF));
-            bits -= 8;
-        }
-    }
-    return out;
-}
 
 // ============================================================================
 // WebSocket callback
@@ -280,6 +243,22 @@ bool MBConnection::sendAction(const std::string& action, const std::vector<std::
     return false;
 }
 
+bool MBConnection::injectData(const std::string& data, int timeoutMs)
+{
+    // Base64-encode to avoid JSON control character issues
+    std::string b64 = base64::encode(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+
+    glz::generic::object_t req;
+    req["cmd"] = "inject";
+    req["data"] = b64;
+    req["id"] = static_cast<double>(nextId_++);
+
+    std::string json;
+    (void)glz::write_json(req, json);
+    auto resp = sendRequest(json, timeoutMs);
+    return !resp.empty();
+}
+
 std::string MBConnection::queryStats(int timeoutMs)
 {
     glz::generic::object_t req;
@@ -383,7 +362,7 @@ std::vector<uint8_t> MBConnection::doScreenshot(const std::string& target,
         if (it != obj->end()) {
             if (auto* s = std::get_if<std::string>(&it->second.data)) {
                 if (s->empty()) return {};
-                return base64Decode(*s);
+                return base64::decode(*s);
             }
         }
     }

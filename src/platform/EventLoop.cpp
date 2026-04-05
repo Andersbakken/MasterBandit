@@ -213,6 +213,8 @@ int PlatformDawn::exec()
             for (auto& tab : tabs_) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     p->destroyPopup(popupId);
+                    // Force re-resolve all rows so popup overlay cells are cleared
+                    if (auto* t = p->terminal()) t->grid().markAllDirty();
                     auto it = paneRenderStates_.find(paneId);
                     if (it != paneRenderStates_.end()) it->second.dirty = true;
                     needsRedraw_ = true;
@@ -239,6 +241,21 @@ int PlatformDawn::exec()
     actionDispatcher_.addListener([this](Action::TypeIndex idx, const Action::Any&) {
         scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
     });
+
+    // Set up script engine config dir for allowlist persistence
+    {
+        const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");
+        std::string configDir;
+        if (xdgConfig && xdgConfig[0]) {
+            configDir = std::string(xdgConfig) + "/MasterBandit";
+        } else {
+            const char* home = std::getenv("HOME");
+            if (home && home[0])
+                configDir = std::string(home) + "/.config/MasterBandit";
+        }
+        if (!configDir.empty())
+            scriptEngine_.setConfigDir(configDir);
+    }
 
     // Load built-in scripts
     {

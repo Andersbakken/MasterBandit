@@ -29,12 +29,12 @@ function registerPane(pane) {
                 console.error("applet-loader: missing path in applet OSC");
                 return;
             }
-            // TODO: confirmation dialog before loading
-            const id = mb.loadApplet(path);
+            const permissions = parsed.kv.permissions || "";
+            const id = mb.loadScript(path, permissions);
             if (id) {
-                console.log("applet-loader: loaded applet:", path, "id:", id);
+                console.log("applet-loader: loaded script:", path, "id:", id);
             } else {
-                console.error("applet-loader: failed to load applet:", path);
+                console.log("applet-loader: script pending approval or denied:", path);
             }
         } else {
             console.log("applet-loader: unknown verb:", parsed.verb);

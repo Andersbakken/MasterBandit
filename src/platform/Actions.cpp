@@ -249,6 +249,9 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                     fp->setFocusedPopup(popups[cur + 1].id);
                 }
             }
+            // Mark pane dirty so cursor position updates in the pane texture
+            auto it = paneRenderStates_.find(fp->id());
+            if (it != paneRenderStates_.end()) it->second.dirty = true;
             needsRedraw_ = true;
         },
         [&](const Action::ShowScrollback&) {

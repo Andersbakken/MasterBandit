@@ -1,7 +1,7 @@
 // popup-demo.js — demo popup with focus-aware rendering and input handling
 //
 // Load with: mb --script popup-demo.js
-// Or via OSC: printf '\e]58237;applet;path=/path/to/popup-demo.js\e\\'
+// Or via OSC: printf '\e]58237;applet;path=/path/to/popup-demo.js;permissions=ui,io,actions\e\\'
 //
 // Press Cmd+Shift+I (macOS) or Ctrl+Shift+I (Linux) to focus the popup.
 // Press 'q' while focused to close it. Arrow keys move the cursor.

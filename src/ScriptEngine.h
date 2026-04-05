@@ -1,6 +1,9 @@
 #pragma once
 
+#include "ScriptPermissions.h"
+
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -8,6 +11,7 @@
 
 struct JSRuntime;
 struct JSContext;
+struct JSValue;
 struct uv_loop_s;
 typedef struct uv_loop_s uv_loop_t;
 
@@ -70,10 +74,20 @@ public:
     void setLoop(uv_loop_t* loop) { loop_ = loop; }
     uv_loop_t* loop() const { return loop_; }
 
-    // Load scripts
-    InstanceId loadApplet(const std::string& path);
+    // Set config directory for allowlist persistence
+    void setConfigDir(const std::string& dir);
+
+    // Load a built-in script (fully trusted, all permissions)
     InstanceId loadController(const std::string& path);
+
+    // Load a user script with declared permissions.
+    // Returns instanceId if pre-approved, 0 if pending user prompt or denied.
+    InstanceId loadScript(const std::string& path, uint32_t requestedPerms);
+
     void unload(InstanceId id);
+
+    // Called when user responds to permission prompt popup
+    void handlePermissionResponse(const std::string& popupId, char response);
 
     // --- Synchronous filters (called from PTY read / input path) ---
     bool filterPaneOutput(PaneId pane, std::string& data);
@@ -98,7 +112,6 @@ public:
     void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
 
     // Deliver input to listeners on registered objects across all contexts.
-    // registryName is "__pane_registry" or "__overlay_registry".
     void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);
     // Deliver input to popup listeners (keyed by "paneId:popupId" string).
     void deliverPopupInput(const std::string& regKey, const char* data, size_t len);
@@ -118,17 +131,35 @@ public:
     struct Instance {
         InstanceId id;
         JSContext* ctx;
-        enum class Type { Applet, Controller } type;
+        std::string path;
+        std::string contentHash;
+        uint32_t permissions = Perm::All;
+        bool builtIn = false;
     };
     Instance* findInstanceByCtx(JSContext* ctx);
+    Instance* findInstance(InstanceId id);
 
 private:
     JSRuntime* rt_ = nullptr;
     uv_loop_t* loop_ = nullptr;
-    std::vector<Instance> instances_;
+    std::deque<Instance> instances_; // deque for pointer stability
     InstanceId nextId_ = 1;
     uint32_t nextTimerId_ = 1;
     AppCallbacks callbacks_;
+
+    // Permission system
+    Allowlist allowlist_;
+    std::string configDir_;
+
+    struct PendingScript {
+        std::string path;
+        std::string content;
+        std::string hash;
+        uint32_t requestedPerms;
+        std::string popupId;
+        PaneId promptPaneId;
+    };
+    std::unordered_map<std::string, PendingScript> pendingScripts_;
 
     std::unordered_map<PaneId, int> paneOutputFilterCount_;
     std::unordered_map<PaneId, int> paneInputFilterCount_;
@@ -136,9 +167,12 @@ private:
     std::unordered_map<TabId, int> overlayInputFilterCount_;
 
     JSContext* createContext();
-    void setupAppletGlobals(JSContext* ctx, InstanceId id);
-    void setupControllerGlobals(JSContext* ctx, InstanceId id);
-    Instance* findInstance(InstanceId id);
+    void setupGlobals(JSContext* ctx, InstanceId id);
+
+    InstanceId loadScriptInternal(const std::string& path, const std::string& content,
+                                   uint32_t permissions);
+    void showPermissionPrompt(const std::string& path, const std::string& content,
+                               const std::string& hash, uint32_t requestedPerms);
 
     bool runPaneFilters(PaneId pane, const char* filterProp, std::string& data);
     bool runOverlayFilters(TabId tab, const char* filterProp, std::string& data);

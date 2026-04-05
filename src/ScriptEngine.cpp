@@ -13,6 +13,22 @@ static Engine* engineFromCtx(JSContext* ctx) {
     return static_cast<Engine*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
 }
 
+static Engine::Instance* instanceFromCtx(JSContext* ctx) {
+    auto* eng = engineFromCtx(ctx);
+    uintptr_t id = reinterpret_cast<uintptr_t>(JS_GetContextOpaque(ctx));
+    return eng->findInstance(static_cast<InstanceId>(id));
+}
+
+static bool checkPerm(JSContext* ctx, uint32_t required) {
+    auto* inst = instanceFromCtx(ctx);
+    return inst && (inst->permissions & required) != 0;
+}
+
+#define REQUIRE_PERM(ctx, perm) \
+    do { if (!checkPerm(ctx, Script::Perm::perm)) \
+        return JS_ThrowTypeError(ctx, "permission denied: " #perm " not granted"); \
+    } while(0)
+
 // ============================================================================
 // Pane JS class
 // ============================================================================
@@ -77,10 +93,12 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
 
     std::string prop;
     if (strcmp(event, "output") == 0) {
+        if (!checkPerm(ctx, Perm::IoFilterOutput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput"); }
         prop = "__output_filters";
         eng->addPaneOutputFilter(pane->id);
         registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else if (strcmp(event, "input") == 0) {
+        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
         eng->addPaneInputFilter(pane->id);
         registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
@@ -107,6 +125,7 @@ static JSValue jsPaneInject(JSContext* ctx, JSValueConst this_val,
                              int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, IoInject);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_UNDEFINED;
     size_t len;
@@ -121,6 +140,7 @@ static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
                             int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, ShellWrite);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_UNDEFINED;
     Engine* eng = engineFromCtx(ctx);
@@ -213,6 +233,7 @@ static JSValue jsPopupInject(JSContext* ctx, JSValueConst this_val,
                               int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, IoInject);
     auto* popup = jsPopupGet(ctx, this_val);
     if (!popup || !popup->alive) return JS_UNDEFINED;
     size_t len;
@@ -228,6 +249,7 @@ static JSValue jsPopupInject(JSContext* ctx, JSValueConst this_val,
 static JSValue jsPopupDestroy(JSContext* ctx, JSValueConst this_val,
                                int, JSValueConst*)
 {
+    REQUIRE_PERM(ctx, UiPopupDestroy);
     auto* popup = jsPopupGet(ctx, this_val);
     if (!popup || !popup->alive) return JS_UNDEFINED;
     engineFromCtx(ctx)->callbacks().destroyPopup(popup->paneId, popup->popupId);
@@ -249,6 +271,7 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
 
     std::string prop;
     if (strcmp(event, "input") == 0) {
+        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
     } else {
         prop = std::string("__evt_") + event;
@@ -315,6 +338,7 @@ static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
                                   int argc, JSValueConst* argv)
 {
     if (argc < 1 || !JS_IsObject(argv[0])) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, UiPopupCreate);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_UNDEFINED;
     Engine* eng = engineFromCtx(ctx);
@@ -352,6 +376,7 @@ static JSValue jsPaneDestroyPopup(JSContext* ctx, JSValueConst this_val,
                                    int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, UiPopupDestroy);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_UNDEFINED;
     const char* id = JS_ToCString(ctx, argv[0]);
@@ -418,10 +443,12 @@ static JSValue jsOverlayAddEventListener(JSContext* ctx, JSValueConst this_val,
 
     std::string prop;
     if (strcmp(event, "output") == 0) {
+        if (!checkPerm(ctx, Perm::IoFilterOutput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput"); }
         prop = "__output_filters";
         eng->addOverlayOutputFilter(ov->tabId);
         registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
     } else if (strcmp(event, "input") == 0) {
+        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
         eng->addOverlayInputFilter(ov->tabId);
         registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
@@ -447,6 +474,7 @@ static JSValue jsOverlayInject(JSContext* ctx, JSValueConst this_val,
                                 int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, IoInject);
     auto* ov = jsOverlayGet(ctx, this_val);
     if (!ov || !ov->alive) return JS_UNDEFINED;
     size_t len;
@@ -461,6 +489,7 @@ static JSValue jsOverlayWrite(JSContext* ctx, JSValueConst this_val,
                                int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, ShellWrite);
     auto* ov = jsOverlayGet(ctx, this_val);
     if (!ov || !ov->alive) return JS_UNDEFINED;
     Engine* eng = engineFromCtx(ctx);
@@ -613,6 +642,7 @@ static JSValue jsTabGetActivePane(JSContext* ctx, JSValueConst this_val)
 static JSValue jsTabCreateOverlay(JSContext* ctx, JSValueConst this_val,
                                    int, JSValueConst*)
 {
+    REQUIRE_PERM(ctx, UiOverlayCreate);
     auto* tab = jsTabGet(ctx, this_val);
     if (!tab || !tab->alive) return JS_UNDEFINED;
     Engine* eng = engineFromCtx(ctx);
@@ -636,6 +666,7 @@ static JSValue jsTabCreateOverlay(JSContext* ctx, JSValueConst this_val,
 static JSValue jsTabCloseOverlay(JSContext* ctx, JSValueConst this_val,
                                   int, JSValueConst*)
 {
+    REQUIRE_PERM(ctx, UiOverlayClose);
     auto* tab = jsTabGet(ctx, this_val);
     if (!tab || !tab->alive) return JS_UNDEFINED;
     engineFromCtx(ctx)->callbacks().popOverlay(tab->id);
@@ -646,6 +677,7 @@ static JSValue jsTabCloseOverlay(JSContext* ctx, JSValueConst this_val,
 static JSValue jsTabClose(JSContext* ctx, JSValueConst this_val,
                            int, JSValueConst*)
 {
+    REQUIRE_PERM(ctx, TabsClose);
     auto* tab = jsTabGet(ctx, this_val);
     if (!tab || !tab->alive) return JS_UNDEFINED;
     engineFromCtx(ctx)->callbacks().closeTab(tab->id);
@@ -672,9 +704,16 @@ static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
                                  int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_FALSE;
+    REQUIRE_PERM(ctx, ActionsInvoke);
     Engine* eng = engineFromCtx(ctx);
     const char* name = JS_ToCString(ctx, argv[0]);
     if (!name) return JS_EXCEPTION;
+
+    uint32_t extraPerm = actionPermission(std::string(name));
+    if (extraPerm && !checkPerm(ctx, extraPerm)) {
+        JS_FreeCString(ctx, name);
+        return JS_ThrowTypeError(ctx, "permission denied: action requires additional permissions");
+    }
 
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
@@ -770,14 +809,13 @@ static JSValue jsMbActiveTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
 static JSValue jsMbLoadApplet(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_NewInt64(ctx, 0);
+    REQUIRE_PERM(ctx, ScriptsLoad);
     Engine* eng = engineFromCtx(ctx);
-    auto* inst = eng->findInstanceByCtx(ctx);
-    if (!inst || inst->type != Engine::Instance::Type::Controller)
-        return JS_ThrowTypeError(ctx, "loadApplet is only available to controller scripts");
 
     const char* path = JS_ToCString(ctx, argv[0]);
     if (!path) return JS_EXCEPTION;
-    uint64_t id = eng->loadApplet(std::string(path));
+    // loadApplet with full permissions for backward compat (built-in callers are trusted)
+    uint64_t id = eng->loadScript(std::string(path), Perm::All);
     JS_FreeCString(ctx, path);
     return JS_NewInt64(ctx, static_cast<int64_t>(id));
 }
@@ -786,10 +824,8 @@ static JSValue jsMbLoadApplet(JSContext* ctx, JSValueConst, int argc, JSValueCon
 static JSValue jsMbLoadController(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_NewInt64(ctx, 0);
+    REQUIRE_PERM(ctx, ScriptsLoad);
     Engine* eng = engineFromCtx(ctx);
-    auto* inst = eng->findInstanceByCtx(ctx);
-    if (!inst || inst->type != Engine::Instance::Type::Controller)
-        return JS_ThrowTypeError(ctx, "loadController is only available to controller scripts");
 
     const char* path = JS_ToCString(ctx, argv[0]);
     if (!path) return JS_EXCEPTION;
@@ -798,9 +834,32 @@ static JSValue jsMbLoadController(JSContext* ctx, JSValueConst, int argc, JSValu
     return JS_NewInt64(ctx, static_cast<int64_t>(id));
 }
 
+// mb.loadScript(path, permissionsStr) -> instanceId or 0
+static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_NewInt64(ctx, 0);
+    REQUIRE_PERM(ctx, ScriptsLoad);
+    Engine* eng = engineFromCtx(ctx);
+
+    const char* path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_EXCEPTION;
+
+    std::string permsStr;
+    if (argc >= 2) {
+        const char* p = JS_ToCString(ctx, argv[1]);
+        if (p) { permsStr = p; JS_FreeCString(ctx, p); }
+    }
+
+    uint32_t perms = parsePermissions(permsStr);
+    uint64_t id = eng->loadScript(std::string(path), perms);
+    JS_FreeCString(ctx, path);
+    return JS_NewInt64(ctx, static_cast<int64_t>(id));
+}
+
 // mb.createTab() -> Tab
 static JSValue jsMbCreateTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
+    REQUIRE_PERM(ctx, TabsCreate);
     Engine* eng = engineFromCtx(ctx);
     int tabId = eng->callbacks().createTab();
     return jsTabNew(ctx, tabId);
@@ -809,6 +868,7 @@ static JSValue jsMbCreateTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
 // mb.closeTab(tabId?)
 static JSValue jsMbCloseTab(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
+    REQUIRE_PERM(ctx, TabsClose);
     Engine* eng = engineFromCtx(ctx);
     int tabId = -1;
     if (argc >= 1 && JS_IsNumber(argv[0]))
@@ -828,6 +888,7 @@ static JSValue jsMbCloseTab(JSContext* ctx, JSValueConst, int argc, JSValueConst
 static JSValue jsMbUnloadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
+    REQUIRE_PERM(ctx, ScriptsUnload);
     Engine* eng = engineFromCtx(ctx);
     int64_t id;
     JS_ToInt64(ctx, &id, argv[0]);
@@ -1115,17 +1176,7 @@ JSContext* Engine::createContext()
     return ctx;
 }
 
-void Engine::setupAppletGlobals(JSContext* ctx, InstanceId id)
-{
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue term = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, term, "inject",
-        JS_NewCFunction(ctx, jsPaneInject, "inject", 1));
-    JS_SetPropertyStr(ctx, global, "term", term);
-    JS_FreeValue(ctx, global);
-}
-
-void Engine::setupControllerGlobals(JSContext* ctx, InstanceId id)
+void Engine::setupGlobals(JSContext* ctx, InstanceId id)
 {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue mb = JS_NewObject(ctx);
@@ -1149,42 +1200,39 @@ void Engine::setupControllerGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbCloseTab, "closeTab", 0));
     JS_SetPropertyStr(ctx, mb, "unloadScript",
         JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
+    JS_SetPropertyStr(ctx, mb, "loadScript",
+        JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
     JS_SetPropertyStr(ctx, global, "mb", mb);
     JS_FreeValue(ctx, global);
 }
 
-InstanceId Engine::loadApplet(const std::string& path)
-{
-    // For now, applets get full controller privileges.
-    // TODO: permission system to restrict applet API access.
-    return loadController(path);
-}
-
-InstanceId Engine::loadController(const std::string& path)
-{
+InstanceId Engine::loadController(const std::string& path) {
     std::string src = readFile(path);
     if (src.empty()) {
-        spdlog::error("ScriptEngine: failed to read controller '{}'", path);
+        spdlog::error("ScriptEngine: failed to read '{}'", path);
         return 0;
     }
     JSContext* ctx = createContext();
     InstanceId id = nextId_++;
-    setupControllerGlobals(ctx, id);
+    setupGlobals(ctx, id);
+
+    instances_.push_back({id, ctx, path, /*contentHash=*/"", Perm::All, /*builtIn=*/true});
+    JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
 
     JSValue result = JS_Eval(ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(result)) {
         JSValue exc = JS_GetException(ctx);
         const char* str = JS_ToCString(ctx, exc);
-        spdlog::error("ScriptEngine: controller '{}' error: {}", path, str ? str : "(null)");
+        spdlog::error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
         if (str) JS_FreeCString(ctx, str);
         JS_FreeValue(ctx, exc);
         JS_FreeValue(ctx, result);
         JS_FreeContext(ctx);
+        instances_.pop_back();
         return 0;
     }
     JS_FreeValue(ctx, result);
-    instances_.push_back({id, ctx, Instance::Type::Controller});
-    spdlog::info("ScriptEngine: loaded controller '{}' (id={})", path, id);
+    spdlog::info("ScriptEngine: loaded built-in '{}' (id={})", path, id);
     return id;
 }
 
@@ -1196,6 +1244,157 @@ void Engine::unload(InstanceId id)
             instances_.erase(it);
             return;
         }
+    }
+}
+
+void Engine::setConfigDir(const std::string& dir) {
+    configDir_ = dir;
+    allowlist_.load(dir);
+}
+
+InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) {
+    std::string content = readFile(path);
+    if (content.empty()) {
+        spdlog::error("ScriptEngine: failed to read '{}'", path);
+        return 0;
+    }
+
+    std::string hash = sha256Hex(content);
+
+    if (allowlist_.isDenied(path, hash)) {
+        spdlog::info("ScriptEngine: script '{}' is permanently denied", path);
+        return 0;
+    }
+
+    auto allowed = allowlist_.check(path, hash);
+    if (allowed.has_value()) {
+        uint32_t grantedPerms = *allowed;
+        if ((requestedPerms & ~grantedPerms) == 0)
+            return loadScriptInternal(path, content, requestedPerms);
+        // Requesting new perms beyond what was granted — re-prompt
+    }
+
+    showPermissionPrompt(path, content, hash, requestedPerms);
+    return 0;
+}
+
+InstanceId Engine::loadScriptInternal(const std::string& path, const std::string& content,
+                                       uint32_t permissions) {
+    JSContext* ctx = createContext();
+    InstanceId id = nextId_++;
+    setupGlobals(ctx, id);
+
+    std::string hash = sha256Hex(content);
+    instances_.push_back({id, ctx, path, hash, permissions, false});
+    JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
+
+    JSValue result = JS_Eval(ctx, content.c_str(), content.size(), path.c_str(), JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(result)) {
+        JSValue exc = JS_GetException(ctx);
+        const char* str = JS_ToCString(ctx, exc);
+        spdlog::error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
+        if (str) JS_FreeCString(ctx, str);
+        JS_FreeValue(ctx, exc);
+        JS_FreeValue(ctx, result);
+        JS_FreeContext(ctx);
+        instances_.pop_back();
+        return 0;
+    }
+    JS_FreeValue(ctx, result);
+    spdlog::info("ScriptEngine: loaded script '{}' (id={}, perms={})", path, id, permissionsToString(permissions));
+    return id;
+}
+
+void Engine::showPermissionPrompt(const std::string& path, const std::string& content,
+                                   const std::string& hash, uint32_t requestedPerms) {
+    auto tabInfos = callbacks_.tabs();
+    PaneId activePaneId = -1;
+    for (auto& ti : tabInfos) {
+        if (ti.active && ti.focusedPane >= 0) {
+            activePaneId = ti.focusedPane;
+            break;
+        }
+    }
+    if (activePaneId < 0) {
+        spdlog::warn("ScriptEngine: no active pane for permission prompt");
+        return;
+    }
+
+    auto paneInfoVal = callbacks_.paneInfo(activePaneId);
+    std::string popupId = "__mb_perm_" + std::to_string(nextId_++);
+
+    int popW = 50, popH = 8;
+    int popX = std::max(0, (paneInfoVal.cols - popW) / 2);
+    int popY = std::max(0, (paneInfoVal.rows - popH) / 2);
+
+    PendingScript pending;
+    pending.path = path;
+    pending.content = content;
+    pending.hash = hash;
+    pending.requestedPerms = requestedPerms;
+    pending.popupId = popupId;
+    pending.promptPaneId = activePaneId;
+    pendingScripts_[popupId] = std::move(pending);
+
+    auto selfPopupId = popupId;
+    bool ok = callbacks_.createPopup(activePaneId, popupId, popX, popY, popW, popH,
+        [this, selfPopupId](const char* data, size_t len) {
+            if (len == 1)
+                handlePermissionResponse(selfPopupId, data[0]);
+        });
+
+    if (!ok) {
+        pendingScripts_.erase(popupId);
+        spdlog::error("ScriptEngine: failed to create permission prompt popup");
+        return;
+    }
+
+    // Render prompt content
+    std::string permStr = permissionsToString(requestedPerms);
+    // Extract filename from path
+    std::string filename = path;
+    auto slash = filename.rfind('/');
+    if (slash != std::string::npos) filename = filename.substr(slash + 1);
+
+    std::string display;
+    display += "\x1b[H\x1b[1;33m Script Permission Request \x1b[0m";
+    display += "\x1b[3;2H Path: \x1b[1m" + filename + "\x1b[0m";
+    display += "\x1b[4;2H Perms: \x1b[36m" + permStr + "\x1b[0m";
+    display += "\x1b[5;2H Hash: \x1b[90m" + hash.substr(0, 16) + "...\x1b[0m";
+    display += "\x1b[7;2H \x1b[1;32my\x1b[0m=allow \x1b[1;31mn\x1b[0m=deny "
+               "\x1b[1;36ma\x1b[0m=always \x1b[1;35md\x1b[0m=never";
+
+    callbacks_.injectPopupData(activePaneId, popupId, display);
+    spdlog::info("ScriptEngine: showing permission prompt for '{}'", path);
+}
+
+void Engine::handlePermissionResponse(const std::string& popupId, char response) {
+    auto it = pendingScripts_.find(popupId);
+    if (it == pendingScripts_.end()) return;
+
+    PendingScript pending = std::move(it->second);
+    pendingScripts_.erase(it);
+
+    callbacks_.destroyPopup(pending.promptPaneId, popupId);
+
+    switch (response) {
+    case 'y': case 'Y':
+        loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
+        break;
+    case 'a': case 'A':
+        allowlist_.allow(pending.path, pending.hash, pending.requestedPerms);
+        allowlist_.save();
+        loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
+        break;
+    case 'd': case 'D':
+        allowlist_.deny(pending.path, pending.hash);
+        allowlist_.save();
+        spdlog::info("ScriptEngine: permanently denied '{}'", pending.path);
+        break;
+    case 'n': case 'N':
+    default:
+        spdlog::info("ScriptEngine: denied '{}' (one-time)", pending.path);
+        break;
     }
 }
 
@@ -1253,7 +1452,7 @@ bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& da
 {
     bool modified = false;
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
@@ -1306,7 +1505,7 @@ bool Engine::runOverlayFilters(TabId tab, const char* filterProp, std::string& d
 {
     bool modified = false;
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__overlay_registry");
@@ -1363,7 +1562,7 @@ void Engine::notifyAction(const std::string& actionName)
 {
     std::string prop = std::string("__evt_action_") + actionName;
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
@@ -1377,7 +1576,7 @@ void Engine::notifyAction(const std::string& actionName)
 void Engine::notifyPaneCreated(TabId tab, PaneId pane)
 {
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr = JS_GetPropertyStr(inst.ctx, mb, "__evt_paneCreated");
@@ -1398,7 +1597,7 @@ void Engine::notifyPaneDestroyed(PaneId pane)
 void Engine::notifyTabCreated(TabId tab)
 {
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
@@ -1419,7 +1618,7 @@ void Engine::notifyTabDestroyed(TabId tab)
 void Engine::notifyOverlayCreated(TabId tab)
 {
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");
@@ -1443,7 +1642,7 @@ void Engine::notifyOverlayDestroyed(TabId tab)
 {
     // Fire overlayDestroyed listeners on tab objects
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         // Fire destroyed on overlay objects
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -1484,7 +1683,7 @@ void Engine::notifyOverlayDestroyed(TabId tab)
 void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
 {
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
@@ -1510,7 +1709,7 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
     std::string prop = "__evt_osc:" + std::to_string(oscNum);
 
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
@@ -1659,7 +1858,7 @@ void Engine::cleanupPane(PaneId pane)
     paneInputFilterCount_.erase(pane);
 
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
@@ -1691,7 +1890,7 @@ void Engine::cleanupTab(TabId tab)
     overlayInputFilterCount_.erase(tab);
 
     for (auto& inst : instances_) {
-        if (inst.type != Instance::Type::Controller) continue;
+
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");

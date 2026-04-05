@@ -49,7 +49,27 @@ public:
     const std::unordered_map<int, CellExtra>* viewportExtras(int viewRow, int viewportOffset) const;
 
     // --- Resize ---
-    void resize(int newCols, int newRows);
+    struct CursorTrack {
+        int srcX, srcY;   // input: cursor position as absolute row index (archive + history + screen)
+        int dstX, dstY;   // output: cursor position in destination absolute row index
+    };
+    void resize(int newCols, int newRows, CursorTrack* cursor = nullptr);
+
+    // --- Per-row continuation flag (soft wrap tracking) ---
+    bool isRowContinued(int screenRow) const;
+    void setRowContinued(int screenRow, bool v);
+    bool isHistoryRowContinued(int idx) const; // idx 0 = oldest (archive + tier-1)
+
+    // --- Per-row prompt kind (OSC 133 shell integration) ---
+    enum PromptKind : uint8_t {
+        UnknownPrompt = 0,
+        PromptStart = 1,      // OSC 133;A — primary prompt
+        SecondaryPrompt = 2,  // OSC 133;A;k=s — secondary/continuation prompt
+        CommandStart = 3,     // OSC 133;B — command input starts
+        OutputStart = 4       // OSC 133;C — command output starts
+    };
+    PromptKind rowPromptKind(int screenRow) const;
+    void setRowPromptKind(int screenRow, PromptKind kind);
 
 private:
     int cols_ = 0;
@@ -61,13 +81,15 @@ private:
     int historyCount_ = 0;   // tier-1 history rows in ring
     std::vector<Cell> ring_;
     std::vector<std::unordered_map<int, CellExtra>> ringExtras_;
+    std::vector<bool> continued_;  // per physical ring slot: row was soft-wrapped
+    std::vector<PromptKind> promptKind_;  // per physical ring slot: OSC 133 prompt type
 
     // Dirty tracking (screen-relative)
     std::vector<bool> dirty_;
     bool allDirty_ = true;
 
     // Tier 2: compressed archive
-    struct ArchivedRow { std::string data; };
+    struct ArchivedRow { std::string data; bool continued = false; };
     std::deque<ArchivedRow> archive_;
     int maxArchiveRows_ = 0;
     int tier1Capacity_ = 0;       // max history rows before eviction to archive

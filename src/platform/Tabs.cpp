@@ -130,14 +130,7 @@ void PlatformDawn::createTab()
     rs.dirty = true;
 
     terminal->resize(cols, rows);
-    {
-        struct winsize ws = {};
-        ws.ws_col    = static_cast<unsigned short>(cols);
-        ws.ws_row    = static_cast<unsigned short>(rows);
-        ws.ws_xpixel = static_cast<unsigned short>(fbWidth_);
-        ws.ws_ypixel = static_cast<unsigned short>(fbHeight_);
-        ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
-    }
+    terminal->flushPendingResize(); // initial size — send immediately
 
     // Set initial title from shell name
     {
@@ -443,14 +436,7 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx)
     rs.dirty = true;
 
     terminal->resize(cols, rows);
-    {
-        struct winsize ws = {};
-        ws.ws_col    = static_cast<unsigned short>(cols);
-        ws.ws_row    = static_cast<unsigned short>(rows);
-        ws.ws_xpixel = static_cast<unsigned short>(pr.w);
-        ws.ws_ypixel = static_cast<unsigned short>(pr.h);
-        ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
-    }
+    terminal->flushPendingResize(); // initial size — send immediately
 
     // Set initial title from shell name
     {
@@ -491,14 +477,8 @@ void PlatformDawn::resizeAllPanesInTab(Tab* tab)
             rs.heldTexture = nullptr;
         }
 
-        if (auto* t = dynamic_cast<Terminal*>(term); t && t->masterFD() >= 0) {
-            struct winsize ws = {};
-            ws.ws_col    = static_cast<unsigned short>(cols);
-            ws.ws_row    = static_cast<unsigned short>(rows);
-            ws.ws_xpixel = static_cast<unsigned short>(pane->rect().w);
-            ws.ws_ypixel = static_cast<unsigned short>(pane->rect().h);
-            ioctl(t->masterFD(), TIOCSWINSZ, &ws);
-        }
+        // Terminal::resize() sets mResizePending if dims changed;
+        // flushPendingResize() will send TIOCSWINSZ in the render loop.
     }
     refreshDividers(tab);
     needsRedraw_ = true;

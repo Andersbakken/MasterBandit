@@ -260,6 +260,13 @@ void PlatformDawn::renderFrame()
     Tab* currentTab = activeTab();
     if (!currentTab) return;
 
+    // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
+    // events in this frame have been coalesced.
+    for (auto& panePtr : currentTab->layout()->panes()) {
+        if (auto* t = dynamic_cast<Terminal*>(panePtr->activeTerm()))
+            t->flushPendingResize();
+    }
+
     wgpu::SurfaceTexture surfaceTexture;
     surface_.GetCurrentTexture(&surfaceTexture);
     if (surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&

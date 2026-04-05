@@ -17,6 +17,7 @@ set(TEST_SOURCES
     test_selection.cpp
     test_shaping.cpp
     test_kitty_keyboard.cpp
+    test_reflow.cpp
     ../src/Log.cpp
     ../src/text.cpp
 )

@@ -186,6 +186,42 @@ void TerminalEmulator::processStringSequence()
         if (mCallbacks.onIconChanged) mCallbacks.onIconChanged(std::string(payload));
         break;
     case 2: processOSC_Title(payload, true); break;
+    case 133: { // Shell integration (FinalTerm / semantic prompts)
+        // OSC 133;X where X is: A=prompt start, B=command start, C=output start, D=command done
+        // Optional params after X separated by ; with key=value pairs
+        if (!payload.empty()) {
+            char kind = payload[0];
+            bool isSecondary = false;
+            // Check for k=s (secondary prompt) in params
+            if (payload.size() > 1 && payload[1] == ';') {
+                auto params = payload.substr(2);
+                if (params.find("k=s") != std::string_view::npos) isSecondary = true;
+            }
+            IGrid& g = grid();
+            switch (kind) {
+            case 'A': // Prompt start
+                if (mCursorY >= 0 && mCursorY < mHeight) {
+                    mDocument.setRowPromptKind(mCursorY,
+                        isSecondary ? Document::SecondaryPrompt : Document::PromptStart);
+                }
+                break;
+            case 'B': // Command input start (after prompt)
+                if (mCursorY >= 0 && mCursorY < mHeight) {
+                    mDocument.setRowPromptKind(mCursorY, Document::CommandStart);
+                }
+                break;
+            case 'C': // Command output start
+                if (mCursorY >= 0 && mCursorY < mHeight) {
+                    mDocument.setRowPromptKind(mCursorY, Document::OutputStart);
+                }
+                break;
+            case 'D': // Command finished (with exit code)
+                // Could store exit code from params, for now just ignore
+                break;
+            }
+        }
+        break;
+    }
     case 10: // Default foreground color
     case 11: // Default background color
     case 12: // Cursor color

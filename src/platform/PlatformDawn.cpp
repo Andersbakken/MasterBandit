@@ -424,16 +424,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
 
     terminal->resize(cols, rows);
-
-    // Set pty window size
-    {
-        struct winsize ws = {};
-        ws.ws_col = static_cast<unsigned short>(cols);
-        ws.ws_row = static_cast<unsigned short>(rows);
-        ws.ws_xpixel = static_cast<unsigned short>(fbWidth_);
-        ws.ws_ypixel = static_cast<unsigned short>(fbHeight_);
-        ioctl(terminal->masterFD(), TIOCSWINSZ, &ws);
-    }
+    terminal->flushPendingResize(); // initial size — send immediately
 
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();

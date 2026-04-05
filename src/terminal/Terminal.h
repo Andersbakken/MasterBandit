@@ -23,7 +23,11 @@ public:
     int masterFD() const { return mMasterFD; }
     void readFromFD();
     void pasteText(const std::string& text);
-    void resize(int width, int height) override; // calls base + ioctl
+    void resize(int width, int height) override;
+
+    // Deferred TIOCSWINSZ: set by resize(), consumed by flushPendingResize()
+    bool hasResizePending() const { return mResizePending; }
+    void flushPendingResize();
 
 protected:
     void writeToOutput(const char* data, size_t len) override;
@@ -34,4 +38,5 @@ private:
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
     int mMasterFD { -1 };
+    bool mResizePending { false };
 };

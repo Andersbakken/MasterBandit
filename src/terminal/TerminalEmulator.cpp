@@ -101,24 +101,82 @@ void TerminalEmulator::applyColorScheme(const ColorScheme& cs)
 
 void TerminalEmulator::resize(int width, int height)
 {
+    int oldCols = mWidth;
     mWidth = width;
     mHeight = height;
-    int oldHistSize = mDocument.historySize();
-    mDocument.resize(width, height);
-    int histDelta = oldHistSize - mDocument.historySize();
-    if (histDelta > 0) {
-        // Rows pulled from history into screen — shift cursor down
-        mCursorY += histDelta;
-    } else if (histDelta < 0) {
-        // Rows pushed from screen to history — shift cursor up
-        mCursorY += histDelta;
+
+    if (oldCols != width && !mUsingAltScreen) {
+        // Column change on main screen: reflow with cursor tracking
+        // Count non-empty content lines before reflow (like kitty's
+        // num_content_lines_before). Cursor beyond this = at a prompt.
+        int contentLinesBefore = 0;
+        if (mDocument.rows() > 0) {
+            for (int r = mDocument.rows() - 1; r >= 0; --r) {
+                const Cell* row = mDocument.row(r);
+                bool empty = true;
+                for (int c = 0; c < oldCols && empty; ++c) {
+                    if (row[c].wc != 0) empty = false;
+                }
+                if (!empty) { contentLinesBefore = r + 1; break; }
+            }
+        }
+        bool cursorBeyondContent = mCursorY >= contentLinesBefore;
+        int linesAfterCursor = mHeight - mCursorY;
+
+        int oldHistSize = mDocument.historySize();
+        Document::CursorTrack ct;
+        ct.srcX = mCursorX;
+        ct.srcY = oldHistSize + mCursorY;
+        ct.dstX = 0;
+        ct.dstY = 0;
+
+        mDocument.resize(width, height, &ct);
+
+        int newHistSize = mDocument.historySize();
+
+        // Count content lines after reflow
+        int contentLinesAfter = 0;
+        if (mDocument.rows() > 0) {
+            for (int r = mDocument.rows() - 1; r >= 0; --r) {
+                const Cell* row = mDocument.row(r);
+                bool empty = true;
+                for (int c = 0; c < width && empty; ++c) {
+                    if (row[c].wc != 0) empty = false;
+                }
+                if (!empty) { contentLinesAfter = r + 1; break; }
+            }
+        }
+
+        if (cursorBeyondContent) {
+            // Cursor was at/past end of content (e.g. at a prompt with rprompt).
+            // Place cursor at end of content, not where reflow tracked it.
+            // This prevents rprompt wrapping from pushing the cursor down.
+            mCursorX = std::min(ct.dstX, width - 1);
+            mCursorY = std::min(contentLinesAfter, height - 1);
+        } else {
+            mCursorX = std::min(ct.dstX, width - 1);
+            mCursorY = std::max(0, std::min(ct.dstY - newHistSize, height - 1));
+        }
+    } else {
+        int oldHistSize = mDocument.historySize();
+        mDocument.resize(width, height);
+        if (oldCols == width) {
+            // Height-only change: adjust cursor for history push/pull
+            int histDelta = oldHistSize - mDocument.historySize();
+            mCursorY += histDelta;
+        }
+        mCursorX = std::min(mCursorX, width - 1);
+        mCursorY = std::max(0, std::min(mCursorY, height - 1));
     }
+
     mAltGrid.resize(width, height);
     mScrollTop = 0;
     mScrollBottom = height;
     mViewportOffset = std::clamp(mViewportOffset, 0, mDocument.historySize());
-    mCursorX = std::min(mCursorX, width - 1);
-    mCursorY = std::max(0, std::min(mCursorY, height - 1));
+    mWrapPending = false;
+    mSavedCursorX = std::min(mSavedCursorX, width - 1);
+    mSavedCursorY = std::min(mSavedCursorY, height - 1);
+    mSavedWrapPending = false;
     clearSelection();
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
@@ -173,6 +231,10 @@ void TerminalEmulator::resetViewport()
 
 void TerminalEmulator::advanceCursorToNewLine()
 {
+    // Mark current row as continued (soft-wrapped) — main screen only
+    if (!mUsingAltScreen && mCursorY >= 0 && mCursorY < mHeight) {
+        mDocument.setRowContinued(mCursorY, true);
+    }
     // Line wrap: move to column 0 of next line, scrolling if needed
     mCursorX = 0;
     mCursorY++;

@@ -263,6 +263,10 @@ void PlatformDawn::onFramebufferResize(int width, int height)
         TerminalEmulator* term = pane->activeTerm();
         if (!term) continue;
 
+        // resizeToRect already called terminal->resize() which sets
+        // mResizePending if dimensions changed. TIOCSWINSZ is sent
+        // later via flushPendingResize() in the render loop.
+
         int cols = term->width();
         int rows = term->height();
         if (cols < 1) cols = 1;
@@ -270,17 +274,6 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
         auto& rs = paneRenderStates_[pane->id()];
         rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
-
-        // Update PTY window size
-        Terminal* t = dynamic_cast<Terminal*>(term);
-        if (t && t->masterFD() >= 0) {
-            struct winsize ws;
-            ws.ws_col = static_cast<unsigned short>(cols);
-            ws.ws_row = static_cast<unsigned short>(rows);
-            ws.ws_xpixel = static_cast<unsigned short>(pane->rect().w);
-            ws.ws_ypixel = static_cast<unsigned short>(pane->rect().h);
-            ioctl(t->masterFD(), TIOCSWINSZ, &ws);
-        }
     }
 
     // Release all held textures — they're now the wrong size for the new framebuffer.

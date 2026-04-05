@@ -116,13 +116,21 @@ bool Terminal::init(const TerminalOptions &options)
 
 void Terminal::resize(int width, int height)
 {
+    int oldW = this->width(), oldH = this->height();
     TerminalEmulator::resize(width, height);
-    if (mMasterFD != -1) {
-        struct winsize ws = {};
-        ws.ws_col = static_cast<unsigned short>(width);
-        ws.ws_row = static_cast<unsigned short>(height);
-        ioctl(mMasterFD, TIOCSWINSZ, &ws);
+    if (this->width() != oldW || this->height() != oldH) {
+        mResizePending = true;
     }
+}
+
+void Terminal::flushPendingResize()
+{
+    if (!mResizePending || mMasterFD == -1) return;
+    mResizePending = false;
+    struct winsize ws = {};
+    ws.ws_col = static_cast<unsigned short>(this->width());
+    ws.ws_row = static_cast<unsigned short>(this->height());
+    ioctl(mMasterFD, TIOCSWINSZ, &ws);
 }
 
 void Terminal::readFromFD()

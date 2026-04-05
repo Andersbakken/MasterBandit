@@ -1,5 +1,6 @@
 #include "Document.h"
 #include "Utf8.h"
+#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -113,6 +114,8 @@ Document::Document(int cols, int screenHeight, int tier1Capacity, int maxArchive
     ringCapacity_ = roundUpPow2(initialHistory + screenHeight + 64);
     ring_.resize(static_cast<size_t>(ringCapacity_) * cols_);
     ringExtras_.resize(ringCapacity_);
+    continued_.assign(ringCapacity_, false);
+    promptKind_.assign(ringCapacity_, UnknownPrompt);
     dirty_.assign(screenHeight_, true);
     allDirty_ = true;
     ringHead_ = screenHeight_; // screen rows are [0..screenHeight_-1], head is past them
@@ -131,13 +134,16 @@ void Document::clearPhysicalRow(int physical) {
     Cell* r = &ring_[static_cast<size_t>(physical) * cols_];
     for (int c = 0; c < cols_; ++c) r[c] = Cell{};
     ringExtras_[physical].clear();
+    continued_[physical] = false;
+    promptKind_[physical] = UnknownPrompt;
 }
 
 void Document::evictToArchive() {
     if (historyCount_ <= 0) return;
     int oldest = historyTier1ToPhysical(0);
-    archive_.push_back({serializeRow(&ring_[static_cast<size_t>(oldest) * cols_], cols_)});
+    archive_.push_back({serializeRow(&ring_[static_cast<size_t>(oldest) * cols_], cols_), continued_[oldest]});
     ringExtras_[oldest].clear();
+    continued_[oldest] = false;
     if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
         archive_.pop_front();
     }
@@ -424,9 +430,40 @@ const std::unordered_map<int, CellExtra>* Document::viewportExtras(int viewRow, 
     }
 }
 
+// --- Continued flag accessors ---
+
+bool Document::isRowContinued(int screenRow) const {
+    int phys = screenRowToPhysical(screenRow);
+    return continued_[phys];
+}
+
+void Document::setRowContinued(int screenRow, bool v) {
+    int phys = screenRowToPhysical(screenRow);
+    continued_[phys] = v;
+}
+
+bool Document::isHistoryRowContinued(int idx) const {
+    int archiveSize = static_cast<int>(archive_.size());
+    if (idx < archiveSize) return archive_[idx].continued;
+    int tier1Idx = idx - archiveSize;
+    if (tier1Idx < 0 || tier1Idx >= historyCount_) return false;
+    return continued_[historyTier1ToPhysical(tier1Idx)];
+}
+
+
+Document::PromptKind Document::rowPromptKind(int screenRow) const {
+    int phys = screenRowToPhysical(screenRow);
+    return promptKind_[phys];
+}
+
+void Document::setRowPromptKind(int screenRow, PromptKind kind) {
+    int phys = screenRowToPhysical(screenRow);
+    promptKind_[phys] = kind;
+}
+
 // --- Resize ---
 
-void Document::resize(int newCols, int newRows) {
+void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
     if (newCols == cols_ && newRows == screenHeight_) return;
 
     // Handle initial construction (empty document)
@@ -436,6 +473,8 @@ void Document::resize(int newCols, int newRows) {
         ringCapacity_ = roundUpPow2(tier1Capacity_ + screenHeight_ + 64);
         ring_.resize(static_cast<size_t>(ringCapacity_) * cols_);
         ringExtras_.resize(ringCapacity_);
+        continued_.assign(ringCapacity_, false);
+        promptKind_.assign(ringCapacity_, UnknownPrompt);
         dirty_.assign(screenHeight_, true);
         allDirty_ = true;
         ringHead_ = screenHeight_;
@@ -444,65 +483,302 @@ void Document::resize(int newCols, int newRows) {
     }
 
     if (newCols != cols_) {
-        // Column change: rebuild ring rows to new width
-        int totalRows = historyCount_ + screenHeight_;
-        std::vector<Cell> newRing(static_cast<size_t>(ringCapacity_) * newCols);
-        std::vector<std::unordered_map<int, CellExtra>> newExtras(ringCapacity_);
-        int minCols = std::min(cols_, newCols);
+        // === Column change: full reflow ===
 
-        for (int i = 0; i < totalRows; ++i) {
-            int oldPhys = (ringHead_ - totalRows + i) & ringMask();
-            int newPhys = i;
-            std::memcpy(&newRing[static_cast<size_t>(newPhys) * newCols],
-                        &ring_[static_cast<size_t>(oldPhys) * cols_],
-                        minCols * sizeof(Cell));
-            if (newCols > cols_) {
-                std::memset(&newRing[static_cast<size_t>(newPhys) * newCols + cols_], 0,
-                            (newCols - cols_) * sizeof(Cell));
-            }
-            newExtras[newPhys] = std::move(ringExtras_[oldPhys]);
+        // Step 1: Collect all source rows in order (archive → tier-1 history → screen)
+        // Trim trailing empty screen rows (below cursor) — they're just padding
+        int archiveSize = static_cast<int>(archive_.size());
+        int usedScreenRows = screenHeight_;
+        if (cursor) {
+            // Keep at least up to cursor row + 1
+            int cursorScreenRow = cursor->srcY - (archiveSize + historyCount_);
+            usedScreenRows = std::max(1, std::min(screenHeight_, cursorScreenRow + 1));
         }
-        ring_ = std::move(newRing);
-        ringExtras_ = std::move(newExtras);
-        ringHead_ = totalRows & ringMask();
-        cols_ = newCols;
-    }
+        // Also trim any trailing blank rows above the cursor-based limit
+        while (usedScreenRows > 0) {
+            int phys = screenRowToPhysical(usedScreenRows - 1);
+            const Cell* r = &ring_[static_cast<size_t>(phys) * cols_];
+            bool blank = true;
+            for (int c = 0; c < cols_ && blank; ++c) {
+                if (r[c].wc != 0) blank = false;
+            }
+            if (!blank || continued_[phys]) break;
+            usedScreenRows--;
+        }
+        if (usedScreenRows < 1 && (historyCount_ > 0 || archiveSize > 0)) usedScreenRows = 0;
+        else if (usedScreenRows < 1) usedScreenRows = 1; // keep at least one row for empty terminal
+        int totalSrcRows = archiveSize + historyCount_ + usedScreenRows;
 
-    if (newRows != screenHeight_) {
+        // Helper to get source row cells + continued flag
+        struct SrcRow {
+            const Cell* cells;
+            int cols;
+            bool cont;
+            const std::unordered_map<int, CellExtra>* extras;
+        };
+
+        // We need to parse archived rows into temporary buffers
+        std::vector<std::vector<Cell>> archivedCells(archiveSize);
+        auto getSrcRow = [&](int idx) -> SrcRow {
+            if (idx < archiveSize) {
+                if (archivedCells[idx].empty()) {
+                    parseArchivedRow(archive_[idx]);
+                    archivedCells[idx].assign(parseBuffer_.begin(), parseBuffer_.end());
+                }
+                return {archivedCells[idx].data(), cols_, archive_[idx].continued, nullptr};
+            }
+            int ringIdx = idx - archiveSize;
+            int phys;
+            if (ringIdx < historyCount_) {
+                phys = historyTier1ToPhysical(ringIdx);
+            } else {
+                int screenRow = ringIdx - historyCount_;
+                phys = screenRowToPhysical(screenRow);
+            }
+            const auto& ex = ringExtras_[phys];
+            return {&ring_[static_cast<size_t>(phys) * cols_], cols_, continued_[phys],
+                    ex.empty() ? nullptr : &ex};
+        };
+
+        // Step 2 & 3: Join logical lines and re-wrap at new width, tracking cursor
+
+        // Destination rows built into flat vectors
+        std::vector<Cell> dstCells;       // flat: row0[0..newCols-1], row1[0..newCols-1], ...
+        std::vector<bool> dstContinued;
+        std::vector<std::unordered_map<int, CellExtra>> dstExtras;
+
+        int dstRow = 0;
+        int dstCol = 0;
+
+        auto startNewDstRow = [&]() {
+            dstCells.resize(static_cast<size_t>(dstRow + 1) * newCols);
+            dstExtras.resize(dstRow + 1);
+            dstContinued.resize(dstRow + 1, false);
+        };
+
+        auto finishDstRow = [&](bool cont) {
+            dstContinued[dstRow] = cont;
+            dstRow++;
+            dstCol = 0;
+        };
+
+        startNewDstRow();
+
+        int srcIdx = 0;
+        while (srcIdx < totalSrcRows) {
+            // Gather one logical line (consecutive rows where all but last are continued)
+            int logStart = srcIdx;
+            while (srcIdx < totalSrcRows - 1 && getSrcRow(srcIdx).cont) {
+                srcIdx++;
+            }
+            int logEnd = srcIdx; // inclusive
+            srcIdx++;
+
+            // Compute effective width of each source row in this logical line (trim trailing blanks)
+            for (int ri = logStart; ri <= logEnd; ++ri) {
+                SrcRow sr = getSrcRow(ri);
+                int effectiveWidth = sr.cols;
+                while (effectiveWidth > 0) {
+                    const Cell& c = sr.cells[effectiveWidth - 1];
+                    if (c.wc != 0 || c.attrs.fgMode() != CellAttrs::Default || c.attrs.bgMode() != CellAttrs::Default
+                        || c.attrs.bold() || c.attrs.italic() || c.attrs.underline()) break;
+                    effectiveWidth--;
+                }
+
+                // On the cursor row, trim content past the cursor position.
+                // Content to the right of the cursor (e.g. rprompt) is decorative
+                // and will be redrawn by the shell after SIGWINCH. Without this,
+                // the rprompt causes the line to wrap, creating extra rows.
+                if (cursor && ri == cursor->srcY && cursor->srcX < effectiveWidth) {
+                    // Check if there's a gap between cursor and the next content
+                    // (rprompt has spaces between lprompt and rprompt text)
+                    bool hasGap = false;
+                    for (int c = cursor->srcX; c < effectiveWidth; ++c) {
+                        if (sr.cells[c].wc == 0 || sr.cells[c].wc == ' ') { hasGap = true; break; }
+                    }
+                    if (hasGap) effectiveWidth = cursor->srcX;
+                }
+
+                // Copy cells from this source row
+                for (int sc = 0; sc < effectiveWidth; ++sc) {
+                    const Cell& cell = sr.cells[sc];
+
+                    // Handle wide character at destination boundary
+                    if (cell.attrs.wide() && dstCol == newCols - 1) {
+                        // Can't fit wide char starting at last column — pad and wrap
+                        dstCells[static_cast<size_t>(dstRow) * newCols + dstCol] = Cell{' ', CellAttrs{}};
+                        finishDstRow(true);
+                        startNewDstRow();
+                    }
+
+                    // Skip wide spacers — they'll be regenerated
+                    if (cell.attrs.wideSpacer()) continue;
+
+                    // Track cursor
+                    if (cursor && ri == cursor->srcY && sc == cursor->srcX) {
+                        cursor->dstY = dstRow;
+                        cursor->dstX = dstCol;
+                    }
+
+                    // Place the cell
+                    dstCells[static_cast<size_t>(dstRow) * newCols + dstCol] = cell;
+
+                    // Copy extras if present
+                    if (sr.extras) {
+                        auto eit = sr.extras->find(sc);
+                        if (eit != sr.extras->end()) {
+                            dstExtras[dstRow][dstCol] = eit->second;
+                        }
+                    }
+
+                    dstCol++;
+
+                    // Place wide spacer
+                    if (cell.attrs.wide() && dstCol < newCols) {
+                        CellAttrs spacerAttrs{};
+                        spacerAttrs.setWideSpacer(true);
+                        dstCells[static_cast<size_t>(dstRow) * newCols + dstCol] = Cell{0, spacerAttrs};
+                        dstCol++;
+                    }
+
+                    // Wrap if destination row is full
+                    if (dstCol >= newCols) {
+                        bool moreContent = (sc + 1 < effectiveWidth) || (ri < logEnd);
+                        if (moreContent) {
+                                         ri, sc, effectiveWidth, newCols, static_cast<uint32_t>(cell.wc));
+                            finishDstRow(true);
+                            startNewDstRow();
+                        } else {
+                            // Exactly at boundary, no more content — don't create empty trailing row
+                            dstCol = newCols; // will be reset when next logical line starts
+                        }
+                    }
+                }
+
+                // Track cursor if it was past the effective content on this source row
+                if (cursor && ri == cursor->srcY && cursor->srcX >= effectiveWidth) {
+                    cursor->dstY = dstRow;
+                    cursor->dstX = dstCol;
+                }
+            }
+
+            // End of logical line — finish current row (not continued)
+            if (dstCol > 0 || dstRow == 0) {
+                finishDstRow(false);
+                startNewDstRow();
+            } else if (dstCol == 0 && dstRow > 0 && !dstContinued[dstRow - 1]) {
+                // Empty logical line — emit one blank row
+                finishDstRow(false);
+                startNewDstRow();
+            } else if (dstCol >= newCols) {
+                // Row was exactly full at boundary — already finished
+                dstCol = 0;
+                finishDstRow(false);
+                startNewDstRow();
+            }
+        }
+
+        // Remove the trailing empty row from startNewDstRow
+        int totalDstRows = dstRow;
+
+        // Step 4: Install into ring
+        int newScreenRows = newRows;
+        int newHistoryCount = std::max(0, totalDstRows - newScreenRows);
+
+        // Evict excess history to archive
+        int archiveEvict = newHistoryCount - tier1Capacity_;
+        if (archiveEvict > 0) {
+            for (int i = 0; i < archiveEvict && i < newHistoryCount; ++i) {
+                Cell* rowCells = &dstCells[static_cast<size_t>(i) * newCols];
+                archive_.push_back({serializeRow(rowCells, newCols), dstContinued[i]});
+                if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
+                    archive_.pop_front();
+                }
+            }
+            // Shift cursor tracking
+            if (cursor) cursor->dstY -= archiveEvict;
+            newHistoryCount -= archiveEvict;
+            // Shift dst data: remove the evicted rows from the beginning
+            int keepStart = archiveEvict;
+            int keepCount = totalDstRows - archiveEvict;
+            std::vector<Cell> trimmedCells(static_cast<size_t>(keepCount) * newCols);
+            std::memcpy(trimmedCells.data(), &dstCells[static_cast<size_t>(keepStart) * newCols],
+                        static_cast<size_t>(keepCount) * newCols * sizeof(Cell));
+            dstCells = std::move(trimmedCells);
+            std::vector<bool> trimmedCont(dstContinued.begin() + keepStart, dstContinued.end());
+            dstContinued = std::move(trimmedCont);
+            std::vector<std::unordered_map<int, CellExtra>> trimmedExtras(
+                std::make_move_iterator(dstExtras.begin() + keepStart),
+                std::make_move_iterator(dstExtras.end()));
+            dstExtras = std::move(trimmedExtras);
+            totalDstRows = keepCount;
+        }
+
+        int ringTotal = newHistoryCount + newScreenRows;
+        int newCap = roundUpPow2(std::max(ringTotal, tier1Capacity_ + newRows) + 64);
+        ring_.assign(static_cast<size_t>(newCap) * newCols, Cell{});
+        ringExtras_.assign(newCap, {});
+        continued_.assign(newCap, false);
+        promptKind_.assign(newCap, UnknownPrompt);
+
+        for (int i = 0; i < ringTotal && i < totalDstRows; ++i) {
+            std::memcpy(&ring_[static_cast<size_t>(i) * newCols],
+                        &dstCells[static_cast<size_t>(i) * newCols],
+                        newCols * sizeof(Cell));
+            ringExtras_[i] = std::move(dstExtras[i]);
+            continued_[i] = dstContinued[i];
+        }
+
+        ringCapacity_ = newCap;
+        ringHead_ = ringTotal & (newCap - 1);
+        historyCount_ = newHistoryCount;
+        cols_ = newCols;
+        screenHeight_ = newRows;
+
+    } else if (newRows != screenHeight_) {
+        // Height-only change: no reflow needed
         if (newRows < screenHeight_) {
-            // Shrink: top screen rows become history
             int delta = screenHeight_ - newRows;
             historyCount_ += delta;
             while (historyCount_ > tier1Capacity_) {
                 evictToArchive();
             }
         } else {
-            // Grow: pull rows from history into screen
             int delta = newRows - screenHeight_;
             int pull = std::min(delta, historyCount_);
             historyCount_ -= pull;
-            // New rows beyond history are already zeroed in ring
+            // Advance ringHead so new blank rows appear at the bottom, not the top
+            int unpulled = delta - pull;
+            if (unpulled > 0) {
+                ringHead_ = (ringHead_ + unpulled) & ringMask();
+            }
         }
         screenHeight_ = newRows;
-    }
 
-    // Ensure ring capacity
-    int needed = historyCount_ + screenHeight_;
-    if (needed > ringCapacity_) {
-        int newCap = roundUpPow2(needed + 64);
-        std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
-        std::vector<std::unordered_map<int, CellExtra>> newExtras(newCap);
-        int total = historyCount_ + screenHeight_;
-        for (int i = 0; i < total; ++i) {
-            int oldPhys = (ringHead_ - total + i) & ringMask();
-            std::memcpy(&newRing[static_cast<size_t>(i) * cols_],
-                        &ring_[static_cast<size_t>(oldPhys) * cols_], cols_ * sizeof(Cell));
-            newExtras[i] = std::move(ringExtras_[oldPhys]);
+        // Ensure ring capacity
+        int needed = historyCount_ + screenHeight_;
+        if (needed > ringCapacity_) {
+            int newCap = roundUpPow2(needed + 64);
+            std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
+            std::vector<std::unordered_map<int, CellExtra>> newExtras(newCap);
+            std::vector<bool> newCont(newCap, false);
+            std::vector<PromptKind> newPK(newCap, UnknownPrompt);
+            int total = historyCount_ + screenHeight_;
+            for (int i = 0; i < total; ++i) {
+                int oldPhys = (ringHead_ - total + i) & ringMask();
+                std::memcpy(&newRing[static_cast<size_t>(i) * cols_],
+                            &ring_[static_cast<size_t>(oldPhys) * cols_], cols_ * sizeof(Cell));
+                newExtras[i] = std::move(ringExtras_[oldPhys]);
+                newCont[i] = continued_[oldPhys];
+                newPK[i] = promptKind_[oldPhys];
+            }
+            ring_ = std::move(newRing);
+            ringExtras_ = std::move(newExtras);
+            continued_ = std::move(newCont);
+            promptKind_ = std::move(newPK);
+            ringCapacity_ = newCap;
+            ringHead_ = total & (newCap - 1);
         }
-        ring_ = std::move(newRing);
-        ringExtras_ = std::move(newExtras);
-        ringCapacity_ = newCap;
-        ringHead_ = total & (newCap - 1);
     }
 
     dirty_.assign(screenHeight_, true);

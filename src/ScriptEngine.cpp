@@ -25,10 +25,34 @@ static bool checkPerm(JSContext* ctx, uint32_t required) {
     return inst && (inst->permissions & required) != 0;
 }
 
+// Schedule termination of a script that violated permissions
+static void scheduleTermination(JSContext* ctx) {
+    auto* eng = engineFromCtx(ctx);
+    auto* inst = instanceFromCtx(ctx);
+    if (!inst || inst->builtIn) return;
+    InstanceId id = inst->id;
+    spdlog::error("ScriptEngine: terminating '{}' (id={}) for permission violation",
+                  inst->path, id);
+    auto* timer = new uv_timer_t;
+    struct Data { Engine* eng; InstanceId id; };
+    timer->data = new Data{eng, id};
+    uv_timer_init(eng->loop(), timer);
+    uv_timer_start(timer, [](uv_timer_t* handle) {
+        auto* d = static_cast<Data*>(handle->data);
+        d->eng->unload(d->id);
+        delete d;
+        uv_timer_stop(handle);
+        uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
+            delete reinterpret_cast<uv_timer_t*>(h);
+        });
+    }, 0, 0);
+}
+
 #define REQUIRE_PERM(ctx, perm) \
-    do { if (!checkPerm(ctx, Script::Perm::perm)) \
+    do { if (!checkPerm(ctx, Script::Perm::perm)) { \
+        scheduleTermination(ctx); \
         return JS_ThrowTypeError(ctx, "permission denied: " #perm " not granted"); \
-    } while(0)
+    } } while(0)
 
 // ============================================================================
 // Pane JS class

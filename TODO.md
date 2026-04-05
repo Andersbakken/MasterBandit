@@ -4,7 +4,7 @@
 
 - [x] Mode 2031 — Color preference notification (light/dark mode).
 - [x] DECSCUSR (`CSI Ps SP q`) — Set cursor style: block, underline, bar, blinking variants.
-- [ ] Kitty keyboard protocol (`CSI > Ps u`) — Unambiguous key encoding. Distinguishes ESC from Alt+[, Ctrl+I from Tab, reports key release, supports non-Latin layouts. Used by Neovim, Vim, crossterm, textual, Ink.
+- [x] Kitty keyboard protocol (`CSI > Ps u`) — Unambiguous key encoding. Distinguishes ESC from Alt+[, Ctrl+I from Tab, reports key release, supports non-Latin layouts. Used by Neovim, Vim, crossterm, textual, Ink.
 - [ ] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, virtual placement, z-layering, animation.
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
 - [x] OSC 7 — Current working directory reporting. Pane stores CWD for new splits.
@@ -78,7 +78,10 @@
 
 ## Infrastructure
 
-- [ ] Split PlatformDawn.cpp — it's grown large; separate platform/event loop, font loading, cell resolution into own files.
+- [x] Split TerminalEmulator.cpp — extracted into `terminal/` directory: TerminalEmulator.cpp (core state machine + CSI + onAction), KittyKeyboard.cpp, MouseAndSelection.cpp, SGR.cpp, OSC.cpp.
+- [x] Split PlatformDawn.cpp — extracted into `platform/` directory: PlatformDawn.cpp (init), EventLoop.cpp, Input.cpp, Actions.cpp, Render.cpp, Tabs.cpp, TabBar.cpp, Debug.cpp.
+- [x] Removed Platform abstract class — Terminal uses `PlatformCallbacks` (onTerminalExited, quit) instead of virtual base. main.cpp uses PlatformDawn directly.
+- [x] Object library build — `terminal` and `platform` are CMake OBJECT libraries with their own CMakeLists.txt. Tests link `terminal` directly.
 - [ ] Log level — currently defaulting to Error; `-v` flags lower it. Debug level enables pool allocation logs.
 - [ ] macOS font fallback — CoreText two-pass strategy implemented; parity with Linux fontconfig pass needs verification.
 - [ ] Config colors as floats — tab bar colors use packed uint32 (parseHexColor), progress bar uses floats. Unify to float storage throughout so no unpacking is needed at render time.
@@ -88,3 +91,4 @@
 
 - [x] Unit test suite — doctest-based, tests `TerminalEmulator` in isolation. Covers: text output, cursor movement, SGR (all attributes, 16/256/truecolor colors, inverse), screen operations (ED, EL, SU/SD, DECSTBM, CNL/CPL/VPA, DCH/ICH, IL/DL, ECH), terminal modes (alt screen, mouse, bracketed paste, sync output, DA/XTVERSION, RIS), scrollback viewport, OSC title/icon, wide characters, SGR inverse color swap.
 - [x] shapeRun() unit tests — ASCII clusters/advances/flags, Arabic RTL detection, mixed LTR/RTL, cache behavior, multibyte UTF-8 clusters. Uses system font resolver + fallback.
+- [x] Kitty keyboard protocol tests — mode management (push/pop/set/query/stack overflow/alt screen/RIS), key encoding for all flag modes, legacy key compatibility, modifier-only keys, RIS comprehensive reset, alt screen grid reference.

@@ -8,6 +8,7 @@ from Bézier curve data — no bitmap textures.
 
 **Atlas**: `array<vec4<i32>>` storage buffer, 1M texels (4 MB) pre-allocated per
 font. Each texel holds 4 int32 values widened from the hb-gpu int16-pair encoding.
+Atlas offset 0 is reserved as a sentinel (empty glyph); `atlasUsed` starts at 1.
 
 **Glyph encoding**: Lazy. ASCII 32–126 pre-warmed at font registration; remaining
 glyphs encoded on demand during shaping. Empty glyphs (whitespace) store
@@ -114,7 +115,8 @@ Per-frame flow:
    `SlugVertex` entries into a vertex buffer. Also emits `RectVertex` for
    non-default backgrounds and cursor geometry (solid or hollow).
 4. **Render passes**: rect pass (backgrounds, cursor, selection) then Slug text
-   pass.
+   pass. Viewport is set to the full pane dimensions (including padding) so
+   NDC mapping accounts for padding offsets in glyph positioning.
 5. **Texture pool**: rendered output goes into a `PooledTexture` from
    `TexturePool`. Textures are held between frames when content is unchanged and
    re-acquired when dirty. Both pools use byte-budget LRU eviction.
@@ -163,8 +165,8 @@ PlatformDawn
 - **`TerminalEmulator`**: VT parser + cell state + selection + image registry.
   No PTY. Can be used standalone for popup panes. Callbacks via `TerminalCallbacks`.
 - **`Terminal`** extends `TerminalEmulator`: adds PTY management (fork, masterFD,
-  `readFromFD`, resize+ioctl). PTY exit calls `Platform::terminalExited()` which
-  closes the pane (or tab if last pane, or quits if last tab).
+  `readFromFD`, resize+ioctl). PTY exit calls `PlatformCallbacks::onTerminalExited`
+  which closes the pane (or tab if last pane, or quits if last tab).
 
 ### Tab bar
 
@@ -188,7 +190,7 @@ focused pane's stored title.
 `Layout::focusedPaneId()` tracks the active pane. On focus change:
 - Focus-out sequence (`CSI O`, mode 1004) sent to the outgoing pane's terminal.
 - Focus-in sequence (`CSI I`) sent to the incoming pane's terminal.
-- Both panes marked dirty so cursor type (solid → hollow or vice-versa) re-renders.
+- Both panes marked dirty so cursor type (solid/hollow) updates immediately.
 
 ### Cursor rendering
 
@@ -226,7 +228,33 @@ terminal's PTY.
 
 ---
 
-## 8. Keybindings / Actions (implemented)
+## 8. Kitty Keyboard Protocol (implemented)
+
+Progressive enhancement via flag stack. Apps push flags to enable features,
+pop on exit. Each screen (main/alt) has an independent 8-entry stack.
+
+**Flags** (bitfield):
+- `0x01` DISAMBIGUATE — functional keys use CSI u; text keys with modifiers use CSI u
+- `0x02` REPORT_EVENT_TYPES — report release/repeat events via `:event` suffix
+- `0x08` REPORT_ALL_KEYS — all keys use CSI u, including Enter/Tab/Backspace
+- `0x10` REPORT_TEXT — embed text codepoints in CSI u sequence
+
+**CSI dispatch**:
+- `CSI > flags u` — push flags
+- `CSI < count u` — pop N entries
+- `CSI = flags ; mode u` — set flags (replace/OR/AND-NOT)
+- `CSI ? u` — query current flags
+
+**Key encoding**: functional keys map to Kitty PUA codes (57344+). Legacy keys
+(arrows, F1-F4, tilde keys) use traditional CSI forms with modifier parameters.
+Modifier-only keys reported only with REPORT_ALL_KEYS.
+
+**RIS**: full reset clears both stacks and all terminal modes (cursor visibility,
+shape, mouse modes, bracketed paste, kitty flags).
+
+---
+
+## 9. Keybindings / Actions (implemented)
 
 Actions are defined as `Action::Any` (`std::variant` of all action structs) in
 `Action.h`. Key bindings map sequences of `KeyStroke` (key + modifiers) to
@@ -258,7 +286,7 @@ binding system.
 
 ---
 
-## 9. Configuration (implemented)
+## 10. Configuration (implemented)
 
 TOML config at `$XDG_CONFIG_HOME/MasterBandit/config.toml`. Parsed via glaze.
 
@@ -299,7 +327,7 @@ PTY environment: `$TERM=xterm-256color`, `$COLORTERM=truecolor`.
 
 ---
 
-## 10. Font Fallback (implemented)
+## 11. Font Fallback (implemented)
 
 Two-pass fontconfig strategy (same as WezTerm):
 - **Pass 1**: monospace fonts only (FC_MONO / FC_DUAL / FC_CHARCELL), using
@@ -314,7 +342,7 @@ other symbols.
 
 ---
 
-## 11. Debug IPC (implemented)
+## 12. Debug IPC (implemented)
 
 WebSocket server on a Unix domain socket (`/tmp/mb-<pid>.sock`). Accessed via
 `mb --ctl <command>`.
@@ -332,17 +360,63 @@ per-tab/per-pane information (dimensions, held texture size, divider buffer).
 
 ---
 
-## 12. Testing (implemented)
+## 13. Project Structure
+
+```
+src/
+  main.cpp                  — entry point, config loading
+  platform/                 — GPU rendering, windowing, event loop (OBJECT library)
+    PlatformDawn.h/cpp      — class definition, init, createTerminal, factory
+    EventLoop.cpp           — exec(), quit()
+    Input.cpp               — GLFW key/mouse/resize callbacks
+    Actions.cpp             — keybinding action dispatch
+    Render.cpp              — resolveRow, renderFrame
+    Tabs.cpp                — tab/pane lifecycle, PTY polling, dividers
+    TabBar.cpp              — tab bar init and rendering
+    Debug.cpp               — gridToJson, statsJson
+    Renderer.h/cpp          — GPU pipeline setup, render passes, compositing
+    ComputeStatePool.h/cpp  — GPU buffer pool for compute pass
+    ComputeTypes.h          — ResolvedCell, GlyphEntry, TerminalComputeParams
+    TexturePool.h/cpp       — GPU texture pool with LRU eviction
+    InputTypes.h            — Key enum, KeyEvent, MouseEvent, modifiers
+  terminal/                 — terminal emulation (OBJECT library)
+    TerminalEmulator.h/cpp  — VT parser core: state machine, CSI, onAction
+    KittyKeyboard.cpp       — kitty keyboard protocol + key encoding
+    MouseAndSelection.cpp   — mouse event handling, text selection
+    SGR.cpp                 — Select Graphic Rendition attribute parsing
+    OSC.cpp                 — OSC processing, iTerm2 images, clipboard, notifications
+    Terminal.h/cpp          — PTY management (fork, read, write, resize)
+    Document.h/cpp          — scrollback: ring buffer + compressed archive
+    CellGrid.h/cpp          — simple cols×rows cell array
+    CellTypes.h             — Cell, CellAttrs, CellExtra structs
+    IGrid.h                 — abstract grid interface
+  text.h/cpp                — HarfBuzz shaping, font atlas, glyph cache, SheenBidi
+  Layout.h/cpp              — binary split tree for pane layout
+  Pane.h/cpp                — terminal container with popup support
+  Tab.h/cpp                 — tab container with overlay support
+  Bindings.h/cpp            — keybinding parsing and sequence matching
+  Config.h/cpp              — TOML config loading
+tests/
+  TestTerminal.h            — lightweight TerminalEmulator wrapper for tests
+  test_*.cpp                — doctest test files
+```
+
+---
+
+## 14. Testing (implemented)
 
 Unit test suite using doctest (`tests/`). `TestTerminal` wraps `TerminalEmulator`
 with no PTY or GPU — feeds escape sequences via `injectData`, asserts on cell grid
-state. 4096-line scrollback enabled by default.
+state. 4096-line scrollback enabled by default. Tests link the `terminal` OBJECT
+library directly.
 
 Coverage: text output, cursor movement (CUP/CUU/CUD/CUF/CUB/CHA/CNL/CPL/VPA),
 SGR (all attributes, 16/256/truecolor fg/bg, inverse, turn-off codes), screen
 operations (ED/EL/SU/SD/DECSTBM/DCH/ICH/IL/DL/ECH), terminal modes (alt screen,
 mouse 1000/1002/1003, bracketed paste, sync output, RIS, DA/XTVERSION), scrollback
 viewport, OSC 0/1/2 title/icon, wide characters (CJK, emoji), SGR inverse
-color swap semantics.
+color swap semantics, kitty keyboard protocol (mode management, key encoding,
+all flag modes, legacy compatibility, modifier keys, comprehensive RIS reset),
+shapeRun() (ASCII, Arabic RTL, mixed LTR/RTL, cache, multibyte UTF-8).
 
 Run with: `./build/bin/mb-tests`

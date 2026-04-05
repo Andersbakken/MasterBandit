@@ -15,7 +15,7 @@ struct PaneRect {
 struct PopupPane {
     std::string id;
     int cellX = 0, cellY = 0, cellW = 0, cellH = 0;
-    std::unique_ptr<TerminalEmulator> emulator;
+    std::unique_ptr<Terminal> terminal;  // headless Terminal for script-driven popups
 };
 
 class Pane {
@@ -31,10 +31,15 @@ public:
     // Active terminal: just returns terminal_.get()
     TerminalEmulator* activeTerm();
 
-    // Popup panes (OSC 58237 driven, no PTY)
+    // Popup panes — script-driven floating cell grids
+    PopupPane* createPopup(const std::string& id, int x, int y, int w, int h,
+                           PlatformCallbacks pcbs);
+    void destroyPopup(const std::string& id);
     PopupPane* findPopup(const std::string& id);
     const std::vector<PopupPane>& popups() const { return mPopups; }
     std::string focusedPopupId() const { return mFocusedPopupId; }
+    void setFocusedPopup(const std::string& id) { mFocusedPopupId = id; }
+    void clearFocusedPopup() { mFocusedPopupId.clear(); }
     PopupPane* focusedPopup();
 
     // Title and icon set by the shell via OSC sequences

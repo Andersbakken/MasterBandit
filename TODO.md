@@ -112,11 +112,21 @@
 - [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.
 - [x] Scripting engine (QuickJS-ng) — embedded with Pane/Overlay/Tab JS classes, synchronous output/input filters (zero-copy when no listeners), async lifecycle events via microtasks, action listener system. Two script types: controller (global app control) and applet (headless terminal overlay).
 - [ ] Scripting: OSC handler routing — register JS handlers for specific OSC numbers (`pane.addEventListener("osc:7777", fn)`). Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
-- [ ] Scripting: applet launch via OSC — shell emits `OSC 7777 ; applet:/path/to/script.js ST`. Engine shows a confirmation popup (non-focusing, top-right corner via PopupPane). User must focus the popup via keybinding to respond y/n/always. Allowlist persisted in config dir.
+- [ ] Scripting: applet launch confirmation — when an untrusted script is requested via OSC 58237, show a confirmation popup (non-focusing, top-right corner via PopupPane). User must focus the popup via keybinding to respond y/n/always. Allowlist persisted in config dir. Requires popup focus cycling and permission system.
 - [ ] Scripting: command line loading — `--script <path>` for controllers, `--applet <path>` for applets.
 - [x] Scripting: `console.log` — route QuickJS console output to spdlog.
+- [x] Scripting: timers — `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` backed by libuv timers.
+- [x] Scripting: overlay creation — `tab.createOverlay()` creates headless terminal, `overlay.inject()` renders, `overlay.addEventListener("input", fn)` receives keystrokes, `overlay.close()` pops it.
+- [x] Scripting: applet loading via OSC 58237 — `printf '\e]58237;applet;path=/path/to/script.js\e\\'` triggers built-in applet-loader.js controller.
+- [ ] Scripting: `mb:fs` module — Node-style sync file API: `readFileSync`, `writeFileSync`, `readdirSync`, `statSync`, `existsSync`, `mkdirSync`, `unlinkSync`, `renameSync`. Permission-gated.
+- [ ] Scripting: `mb:http` module — async HTTP client backed by libwebsockets (already a dependency). Node-style `http.get(url, cb)` / `http.request(opts, cb)`. Permission-gated.
+- [ ] Scripting: `mb:tui` module — bundled TUI toolkit for applets. `box()`, `text()`, `input()`, `list()`, etc. Built on escape sequence generation, targets the applet overlay API directly.
+- [ ] Scripting: `Buffer` polyfill — needed for binary data in fs/http modules.
+- [ ] Scripting: WebSocket server module — backed by libwebsockets. Would allow replacing the C++ DebugIPC with a JS applet. Needs `mb:ws` module with `ws.createServer({path})` returning a server object with connection/message events.
+- [ ] Scripting: replace DebugIPC with JS applet — WebSocket server applet that exposes grid content, screenshots, stats, key injection, action dispatch. Requires `mb:ws` module and grid/screenshot APIs on `mb.*`.
 - [ ] Scripting: permission system — scripts request permissions up front (via OSC payload: `permissions=ui,panes,actions`). Permissions: `ui` (create overlays/popups), `panes` (read pane content, listen to output), `input` (filter/inject input), `actions` (invoke actions), `shell` (write to shell stdin). Engine checks permissions before every sensitive callback, throws if denied. Allowlist stores `{path, content hash, permissions}` in config dir. If script content or requested permissions change since last "always" approval, user is re-prompted. Erases the applet/controller distinction — built-in scripts (like applet-loader) are fully trusted, user scripts get approved permissions only.
 - [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
+- [ ] GPU buffer pool — divider and popup border vertex buffers are created/destroyed directly. A pool (like TexturePool/ComputeStatePool) would avoid per-frame GPU allocations.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
 ## Testing

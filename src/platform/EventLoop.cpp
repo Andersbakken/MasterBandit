@@ -170,6 +170,43 @@ int PlatformDawn::exec()
         scbs.closeTab = [this](int tabId) {
             closeTab(tabId);
         };
+        scbs.createPopup = [this](Script::PaneId paneId, const std::string& popupId,
+                                   int x, int y, int w, int h,
+                                   std::function<void(const char*, size_t)> onInput) -> bool {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    PlatformCallbacks pcbs;
+                    pcbs.onTerminalExited = [](Terminal*) {};
+                    pcbs.quit = [this]() { quit(); };
+                    pcbs.onInput = std::move(onInput);
+                    return p->createPopup(popupId, x, y, w, h, std::move(pcbs)) != nullptr;
+                }
+            }
+            return false;
+        };
+        scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    p->destroyPopup(popupId);
+                    auto it = paneRenderStates_.find(paneId);
+                    if (it != paneRenderStates_.end()) it->second.dirty = true;
+                    needsRedraw_ = true;
+                    return;
+                }
+            }
+        };
+        scbs.injectPopupData = [this](Script::PaneId paneId, const std::string& popupId,
+                                       const std::string& data) {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (PopupPane* popup = p->findPopup(popupId)) {
+                        popup->terminal->injectData(data.c_str(), data.size());
+                        needsRedraw_ = true;
+                    }
+                    return;
+                }
+            }
+        };
         scriptEngine_.setCallbacks(std::move(scbs));
     }
 

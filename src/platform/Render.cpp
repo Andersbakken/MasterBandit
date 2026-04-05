@@ -298,6 +298,7 @@ void PlatformDawn::renderFrame()
         PaneRenderState* rs;
         PaneRect rect;
         bool isFocused;
+        Pane* pane = nullptr;  // null for overlays
     };
     std::vector<RenderTarget> renderTargets;
 
@@ -346,7 +347,7 @@ void PlatformDawn::renderFrame()
             TerminalEmulator* term = pane->activeTerm();
             if (!term) continue;
             bool focused = (pane->id() == currentTab->layout()->focusedPaneId());
-            renderTargets.push_back({term, &paneRenderStates_[pane->id()], pane->rect(), focused});
+            renderTargets.push_back({term, &paneRenderStates_[pane->id()], pane->rect(), focused, pane});
         }
     }
 
@@ -403,7 +404,9 @@ void PlatformDawn::renderFrame()
             if (static_cast<int>(rs.rowShapingCache.size()) != g.rows())
                 rs.rowShapingCache.resize(g.rows());
 
-            if (viewportShifted) {
+            if (viewportShifted || (rs.dirty && !g.anyDirty())) {
+                // Full re-resolve: viewport shifted, or render state dirty without grid changes
+                // (e.g. popup added/removed)
                 for (int row = 0; row < g.rows(); ++row)
                     allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
             } else {
@@ -472,6 +475,92 @@ void PlatformDawn::renderFrame()
                 }
             }
             rs.totalGlyphs = static_cast<uint32_t>(rs.glyphBuffer.size());
+
+            // Overlay popup cells on top of the pane's resolved cells
+            if (target.pane) {
+                for (const auto& popup : target.pane->popups()) {
+                    if (!popup.terminal) continue;
+                    TerminalEmulator* pterm = popup.terminal.get();
+                    int pcols = pterm->width();
+                    int prows = pterm->height();
+                    int parentCols = g.cols();
+
+                    for (int py = 0; py < prows; ++py) {
+                        int parentRow = popup.cellY + py;
+                        if (parentRow < 0 || parentRow >= g.rows()) continue;
+                        const Cell* popupRowData = pterm->viewportRow(py);
+
+                        for (int px = 0; px < pcols; ++px) {
+                            int parentCol = popup.cellX + px;
+                            if (parentCol < 0 || parentCol >= parentCols) continue;
+
+                            int parentIdx = parentRow * parentCols + parentCol;
+                            const Cell& pcell = popupRowData[px];
+
+                            const auto& dc = pterm->defaultColors();
+                            uint32_t defFg = static_cast<uint32_t>(dc.fgR) | (static_cast<uint32_t>(dc.fgG) << 8) | (static_cast<uint32_t>(dc.fgB) << 16) | 0xFF000000u;
+                            uint32_t defBg = (dc.bgR || dc.bgG || dc.bgB)
+                                ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
+                                : 0x00000000u;
+                            uint32_t fg = (pcell.attrs.fgMode() == CellAttrs::Default) ? defFg : pcell.attrs.packFgAsU32();
+                            uint32_t bg = (pcell.attrs.bgMode() == CellAttrs::Default) ? defBg : pcell.attrs.packBgAsU32();
+                            if (pcell.attrs.inverse()) std::swap(fg, bg);
+
+                            // If popup bg is transparent, use a solid background so content is readable
+                            if ((bg & 0xFF000000u) == 0)
+                                bg = defBg != 0 ? defBg : 0xFF1a1a2e;
+
+                            ResolvedCell& rc = rs.resolvedCells[parentIdx];
+                            rc.fg_color = fg;
+                            rc.bg_color = bg;
+                            rc.underline_info = 0;
+
+                            // Resolve glyph for this popup cell
+                            rc.glyph_offset = 0;
+                            rc.glyph_count = 0;
+                            if (pcell.wc != 0 && !pcell.attrs.wideSpacer()) {
+                                std::string cellText;
+                                utf8::append(cellText, pcell.wc);
+
+                                FontStyle runStyle;
+                                runStyle.bold = pcell.attrs.bold();
+                                const ShapedRun& shaped = textSystem_.shapeRun(fontName_, cellText, fontSize_, runStyle);
+                                for (const auto& sg : shaped.glyphs) {
+                                    uint64_t glyphId = sg.glyphId;
+                                    if ((glyphId & 0xFFFFFFFF) == 0) continue;
+                                    GlyphInfo gi;
+                                    {
+                                        std::shared_lock lock(font->mutex);
+                                        auto git = font->glyphs.find(glyphId);
+                                        if (git == font->glyphs.end() || git->second.is_empty) continue;
+                                        gi = git->second;
+                                    }
+                                    GlyphEntry entry;
+                                    entry.atlas_offset = gi.atlas_offset;
+                                    entry.ext_min_x = gi.ext_min_x;
+                                    entry.ext_min_y = gi.ext_min_y;
+                                    entry.ext_max_x = gi.ext_max_x;
+                                    entry.ext_max_y = gi.ext_max_y;
+                                    entry.upem = gi.upem;
+                                    entry.x_offset = sg.xOffset;
+                                    entry.y_offset = sg.yOffset;
+
+                                    rc.glyph_offset = static_cast<uint32_t>(rs.glyphBuffer.size());
+                                    rc.glyph_count = 1;
+                                    rs.glyphBuffer.push_back(entry);
+                                    rs.totalGlyphs++;
+                                    break; // one glyph per cell for popup
+                                }
+                            }
+                        }
+                    }
+                    // Mark pane dirty if popup content changed
+                    if (pterm->grid().anyDirty()) {
+                        rs.dirty = true;
+                        const_cast<IGrid&>(pterm->grid()).clearAllDirty();
+                    }
+                }
+            }
 
             // Apply selection highlight
             bool selectionVisible = term->hasSelection();
@@ -676,6 +765,64 @@ void PlatformDawn::renderFrame()
             if (it == paneRenderStates_.end() || !it->second.dividerVB) continue;
             renderer_.drawDivider(encoder, compositeTarget,
                                    fbWidth_, fbHeight_, it->second.dividerVB);
+        }
+
+        // Draw popup borders (cached GPU buffers, rebuilt on change)
+        if (!currentTab->hasOverlay()) {
+            for (auto& panePtr : currentTab->layout()->panes()) {
+                Pane* pane = panePtr.get();
+                auto rsIt = paneRenderStates_.find(pane->id());
+                if (rsIt == paneRenderStates_.end()) continue;
+                auto& prs = rsIt->second;
+
+                // Sync cached borders with current popups
+                bool bordersChanged = prs.popupBorders.size() != pane->popups().size();
+                if (!bordersChanged) {
+                    for (size_t i = 0; i < pane->popups().size(); ++i) {
+                        if (prs.popupBorders[i].popupId != pane->popups()[i].id) {
+                            bordersChanged = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (bordersChanged) {
+                    prs.popupBorders.clear();
+                    const PaneRect& pr = pane->rect();
+                    float bw = std::max(1.0f, static_cast<float>(dividerWidth_));
+
+                    for (const auto& popup : pane->popups()) {
+                        float px = pr.x + padLeft_ + popup.cellX * charWidth_;
+                        float py = pr.y + padTop_ + popup.cellY * lineHeight_;
+                        float pw = popup.cellW * charWidth_;
+                        float ph = popup.cellH * lineHeight_;
+
+                        PaneRenderState::PopupBorder pb;
+                        pb.popupId = popup.id;
+                        renderer_.updateDividerBuffer(queue_, pb.top,
+                            px - bw, py - bw, pw + 2 * bw, bw,
+                            dividerR_, dividerG_, dividerB_, dividerA_);
+                        renderer_.updateDividerBuffer(queue_, pb.bottom,
+                            px - bw, py + ph, pw + 2 * bw, bw,
+                            dividerR_, dividerG_, dividerB_, dividerA_);
+                        renderer_.updateDividerBuffer(queue_, pb.left,
+                            px - bw, py, bw, ph,
+                            dividerR_, dividerG_, dividerB_, dividerA_);
+                        renderer_.updateDividerBuffer(queue_, pb.right,
+                            px + pw, py, bw, ph,
+                            dividerR_, dividerG_, dividerB_, dividerA_);
+                        prs.popupBorders.push_back(std::move(pb));
+                    }
+                }
+
+                // Draw cached borders
+                for (const auto& pb : prs.popupBorders) {
+                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.top);
+                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.bottom);
+                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.left);
+                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.right);
+                }
+            }
         }
 
         // Draw per-pane progress bars at top of pane

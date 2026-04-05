@@ -151,10 +151,16 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
     }
 }
 
+// Forward declarations — defined after Popup class
+static JSValue jsPaneCreatePopup(JSContext*, JSValueConst, int, JSValueConst*);
+static JSValue jsPaneDestroyPopup(JSContext*, JSValueConst, int, JSValueConst*);
+
 static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsPaneAddEventListener),
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
+    JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
+    JS_CFUNC_DEF("destroyPopup", 1, jsPaneDestroyPopup),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("cols", jsPaneGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("rows", jsPaneGetProp, nullptr, 2),
@@ -162,6 +168,184 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("cwd", jsPaneGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
 };
+
+// ============================================================================
+// Popup JS class — wraps (paneId, popupId string)
+// ============================================================================
+
+static JSClassID jsPopupClassId;
+
+struct JsPopupData {
+    PaneId paneId;
+    std::string popupId;
+    bool alive;
+};
+
+static void jsPopupFinalize(JSRuntime*, JSValue val)
+{
+    delete static_cast<JsPopupData*>(JS_GetOpaque(val, jsPopupClassId));
+}
+
+static JSClassDef jsPopupClassDef = { "Popup", jsPopupFinalize };
+
+static JSValue jsPopupNew(JSContext* ctx, PaneId paneId, const std::string& popupId)
+{
+    JSValue obj = JS_NewObjectClass(ctx, jsPopupClassId);
+    JS_SetOpaque(obj, new JsPopupData{paneId, popupId, true});
+    return obj;
+}
+
+static JsPopupData* jsPopupGet(JSContext* ctx, JSValueConst val)
+{
+    return static_cast<JsPopupData*>(JS_GetOpaque(val, jsPopupClassId));
+}
+
+// popup.inject(data)
+static JSValue jsPopupInject(JSContext* ctx, JSValueConst this_val,
+                              int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_UNDEFINED;
+    auto* popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) return JS_UNDEFINED;
+    size_t len;
+    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) return JS_EXCEPTION;
+    engineFromCtx(ctx)->callbacks().injectPopupData(popup->paneId, popup->popupId,
+                                                     std::string(str, len));
+    JS_FreeCString(ctx, str);
+    return JS_UNDEFINED;
+}
+
+// popup.destroy()
+static JSValue jsPopupDestroy(JSContext* ctx, JSValueConst this_val,
+                               int, JSValueConst*)
+{
+    auto* popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) return JS_UNDEFINED;
+    engineFromCtx(ctx)->callbacks().destroyPopup(popup->paneId, popup->popupId);
+    popup->alive = false;
+    return JS_UNDEFINED;
+}
+
+// popup.addEventListener(event, fn) — stores on the popup object
+static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
+                                        int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_UNDEFINED;
+    auto* popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) return JS_UNDEFINED;
+
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+
+    std::string prop;
+    if (strcmp(event, "input") == 0) {
+        prop = "__input_filters";
+    } else {
+        prop = std::string("__evt_") + event;
+    }
+    JS_FreeCString(ctx, event);
+
+    // Register in popup registry for input delivery
+    Engine* eng = engineFromCtx(ctx);
+    std::string regKey = std::to_string(popup->paneId) + ":" + popup->popupId;
+    // Use a string-keyed property on a global popup registry
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue registry = JS_GetPropertyStr(ctx, global, "__popup_registry");
+    if (JS_IsUndefined(registry)) {
+        registry = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, global, "__popup_registry", JS_DupValue(ctx, registry));
+    }
+    JSValue existing = JS_GetPropertyStr(ctx, registry, regKey.c_str());
+    if (JS_IsUndefined(existing))
+        JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_DupValue(ctx, this_val));
+    JS_FreeValue(ctx, existing);
+    JS_FreeValue(ctx, registry);
+    JS_FreeValue(ctx, global);
+
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    if (JS_IsUndefined(arr)) {
+        arr = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, this_val, prop.c_str(), JS_DupValue(ctx, arr));
+    }
+    JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
+    JS_Call(ctx, pushFn, arr, 1, &argv[1]);
+    JS_FreeValue(ctx, pushFn);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
+// popup.cols, popup.rows (getters)
+static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
+{
+    auto* popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) return JS_UNDEFINED;
+    switch (magic) {
+    case 0: return JS_NewInt32(ctx, popup->paneId);
+    case 1: return JS_NewString(ctx, popup->popupId.c_str());
+    default: return JS_UNDEFINED;
+    }
+}
+
+static const JSCFunctionListEntry jsPopupProto[] = {
+    JS_CFUNC_DEF("addEventListener", 2, jsPopupAddEventListener),
+    JS_CFUNC_DEF("inject", 1, jsPopupInject),
+    JS_CFUNC_DEF("destroy", 0, jsPopupDestroy),
+    JS_CGETSET_MAGIC_DEF("paneId", jsPopupGetProp, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("id", jsPopupGetProp, nullptr, 1),
+};
+
+// pane.createPopup({id, x, y, w, h}) -> Popup
+static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
+                                  int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsObject(argv[0])) return JS_UNDEFINED;
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+
+    const char* id = nullptr;
+    JSValue idVal = JS_GetPropertyStr(ctx, argv[0], "id");
+    if (JS_IsString(idVal)) id = JS_ToCString(ctx, idVal);
+    JS_FreeValue(ctx, idVal);
+    if (!id) return JS_UNDEFINED;
+
+    int32_t x = 0, y = 0, w = 20, h = 5;
+    JSValue v;
+    v = JS_GetPropertyStr(ctx, argv[0], "x"); JS_ToInt32(ctx, &x, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "y"); JS_ToInt32(ctx, &y, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "w"); JS_ToInt32(ctx, &w, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "h"); JS_ToInt32(ctx, &h, v); JS_FreeValue(ctx, v);
+
+    std::string popupId(id);
+    JS_FreeCString(ctx, id);
+
+    int paneId = pane->id;
+    bool ok = eng->callbacks().createPopup(paneId, popupId, x, y, w, h,
+        [eng, paneId, popupId](const char* data, size_t len) {
+            // Deliver input to popup listeners
+            std::string regKey = std::to_string(paneId) + ":" + popupId;
+            eng->deliverPopupInput(regKey, data, len);
+        });
+
+    if (!ok) return JS_UNDEFINED;
+    return jsPopupNew(ctx, paneId, popupId);
+}
+
+// pane.destroyPopup(id)
+static JSValue jsPaneDestroyPopup(JSContext* ctx, JSValueConst this_val,
+                                   int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_UNDEFINED;
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_UNDEFINED;
+    const char* id = JS_ToCString(ctx, argv[0]);
+    if (!id) return JS_EXCEPTION;
+    engineFromCtx(ctx)->callbacks().destroyPopup(pane->id, std::string(id));
+    JS_FreeCString(ctx, id);
+    return JS_UNDEFINED;
+}
 
 // ============================================================================
 // Overlay JS class
@@ -841,6 +1025,9 @@ Engine::Engine()
 
     JS_NewClassID(rt_, &jsTabClassId);
     JS_NewClass(rt_, jsTabClassId, &jsTabClassDef);
+
+    JS_NewClassID(rt_, &jsPopupClassId);
+    JS_NewClass(rt_, jsPopupClassId, &jsPopupClassDef);
 }
 
 Engine::~Engine()
@@ -870,6 +1057,11 @@ JSContext* Engine::createContext()
     JS_SetPropertyFunctionList(ctx, tabProto,
         jsTabProto, sizeof(jsTabProto) / sizeof(jsTabProto[0]));
     JS_SetClassProto(ctx, jsTabClassId, tabProto);
+
+    JSValue popupProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, popupProto,
+        jsPopupProto, sizeof(jsPopupProto) / sizeof(jsPopupProto[0]));
+    JS_SetClassProto(ctx, jsPopupClassId, popupProto);
 
     // Timer globals
     JSValue global = JS_GetGlobalObject(ctx);
@@ -1377,6 +1569,48 @@ void Engine::deliverInput(const char* registryName, uint32_t key,
         }
         JS_FreeValue(inst.ctx, arg);
         JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::deliverPopupInput(const std::string& regKey, const char* data, size_t len)
+{
+    for (auto& inst : instances_) {
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__popup_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
+        if (!JS_IsUndefined(obj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__input_filters");
+            if (!JS_IsUndefined(arr)) {
+                JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+                int32_t arrLen = 0;
+                JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                JS_FreeValue(inst.ctx, lenVal);
+
+                JSValue arg = JS_NewStringLen(inst.ctx, data, len);
+                for (int32_t i = 0; i < arrLen; ++i) {
+                    JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
+                    if (JS_IsFunction(inst.ctx, fn)) {
+                        JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &arg);
+                        if (JS_IsException(ret)) {
+                            JSValue exc = JS_GetException(inst.ctx);
+                            const char* s = JS_ToCString(inst.ctx, exc);
+                            spdlog::error("ScriptEngine: popup input error: {}", s ? s : "(null)");
+                            if (s) JS_FreeCString(inst.ctx, s);
+                            JS_FreeValue(inst.ctx, exc);
+                        }
+                        JS_FreeValue(inst.ctx, ret);
+                    }
+                    JS_FreeValue(inst.ctx, fn);
+                }
+                JS_FreeValue(inst.ctx, arg);
+            }
+            JS_FreeValue(inst.ctx, arr);
+        }
         JS_FreeValue(inst.ctx, obj);
         JS_FreeValue(inst.ctx, registry);
     }

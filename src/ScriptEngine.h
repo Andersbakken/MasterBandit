@@ -46,6 +46,13 @@ struct AppCallbacks {
     std::function<int()> createTab;
     // Close a tab by index.
     std::function<void(int)> closeTab;
+    // Create a popup on a pane. Returns false on failure.
+    std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h,
+                       std::function<void(const char*, size_t)> onInput)> createPopup;
+    // Destroy a popup on a pane.
+    std::function<void(PaneId, const std::string& id)> destroyPopup;
+    // Inject data into a popup's terminal.
+    std::function<void(PaneId, const std::string& id, const std::string& data)> injectPopupData;
 };
 
 class Engine {
@@ -90,6 +97,8 @@ public:
     // Deliver input to listeners on registered objects across all contexts.
     // registryName is "__pane_registry" or "__overlay_registry".
     void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);
+    // Deliver input to popup listeners (keyed by "paneId:popupId" string).
+    void deliverPopupInput(const std::string& regKey, const char* data, size_t len);
 
     // Run pending JS jobs. Call from main loop.
     void executePendingJobs();

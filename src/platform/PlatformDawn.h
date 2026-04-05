@@ -206,6 +206,12 @@ private:
         bool dirty = true;
         std::vector<PooledTexture*> pendingRelease;
         wgpu::Buffer dividerVB;
+        // Cached popup border buffers: 4 buffers (top/bottom/left/right) per popup
+        struct PopupBorder {
+            std::string popupId;
+            wgpu::Buffer top, bottom, left, right;
+        };
+        std::vector<PopupBorder> popupBorders;
         int lastViewportOffset = 0;
         int lastHistorySize = 0;
 

@@ -46,6 +46,48 @@ PopupPane* Pane::focusedPopup()
 void Pane::installOSCCallback(Terminal* t)
 {
     // No-op: OSC handling is done via the script engine's onOSC callback
-    // set in buildTerminalCallbacks. Popup management will move to JS.
+    // set in buildTerminalCallbacks.
+}
+
+PopupPane* Pane::createPopup(const std::string& id, int x, int y, int w, int h,
+                              PlatformCallbacks pcbs)
+{
+    if (findPopup(id)) {
+        spdlog::warn("Pane: popup '{}' already exists", id);
+        return findPopup(id);
+    }
+
+    TerminalCallbacks cbs;
+    cbs.event = [this](TerminalEmulator*, int, void*) {
+        if (onPopupEvent) onPopupEvent();
+    };
+
+    auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+    TerminalOptions opts;
+    opts.scrollbackLines = 0;
+    terminal->initHeadless(opts);
+    terminal->resize(w, h);
+
+    PopupPane popup;
+    popup.id = id;
+    popup.cellX = x;
+    popup.cellY = y;
+    popup.cellW = w;
+    popup.cellH = h;
+    popup.terminal = std::move(terminal);
+
+    spdlog::info("Pane: created popup '{}' at ({},{}) {}x{}", id, x, y, w, h);
+    mPopups.push_back(std::move(popup));
+    return &mPopups.back();
+}
+
+void Pane::destroyPopup(const std::string& id)
+{
+    if (mFocusedPopupId == id) mFocusedPopupId.clear();
+    auto it = std::find_if(mPopups.begin(), mPopups.end(),
+                           [&id](const PopupPane& p) { return p.id == id; });
+    if (it == mPopups.end()) return;
+    spdlog::info("Pane: destroyed popup '{}'", id);
+    mPopups.erase(it);
 }
 

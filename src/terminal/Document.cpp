@@ -316,6 +316,17 @@ void Document::deleteChars(int screenRow, int col, int count) {
     int remaining = cols_ - col - count;
     if (remaining > 0) std::memmove(&r[col], &r[col + count], remaining * sizeof(Cell));
     for (int c = cols_ - count; c < cols_; ++c) r[c] = Cell{};
+    // Shift extras entries left
+    int phys = screenRowToPhysical(screenRow);
+    auto& ex = ringExtras_[phys];
+    if (!ex.empty()) {
+        std::unordered_map<int, CellExtra> shifted;
+        for (auto& [c, e] : ex) {
+            if (c >= col + count) shifted[c - count] = std::move(e);
+            else if (c < col) shifted[c] = std::move(e);
+        }
+        ex = std::move(shifted);
+    }
     markRowDirty(screenRow);
 }
 
@@ -326,6 +337,17 @@ void Document::insertChars(int screenRow, int col, int count) {
     int remaining = cols_ - col - count;
     if (remaining > 0) std::memmove(&r[col + count], &r[col], remaining * sizeof(Cell));
     for (int c = col; c < col + count; ++c) r[c] = Cell{};
+    // Shift extras entries right
+    int phys = screenRowToPhysical(screenRow);
+    auto& ex = ringExtras_[phys];
+    if (!ex.empty()) {
+        std::unordered_map<int, CellExtra> shifted;
+        for (auto& [c, e] : ex) {
+            if (c >= col && c + count < cols_) shifted[c + count] = std::move(e);
+            else if (c < col) shifted[c] = std::move(e);
+        }
+        ex = std::move(shifted);
+    }
     markRowDirty(screenRow);
 }
 
@@ -601,7 +623,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                     // (rprompt has spaces between lprompt and rprompt text)
                     bool hasGap = false;
                     for (int c = cursor->srcX; c < effectiveWidth; ++c) {
-                        if (sr.cells[c].wc == 0 || sr.cells[c].wc == ' ') { hasGap = true; break; }
+                        if (sr.cells[c].wc == 0) { hasGap = true; break; }
                     }
                     if (hasGap) effectiveWidth = cursor->srcX;
                 }

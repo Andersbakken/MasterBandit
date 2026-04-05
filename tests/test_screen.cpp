@@ -170,6 +170,89 @@ TEST_CASE("ICH - insert blank characters at cursor")
     CHECK(t.wc(4, 0) == U'C');
 }
 
+// ── DCH/ICH extras shifting ──────────────────────────────────────────────────
+
+TEST_CASE("DCH shifts underline color extras left")
+{
+    TestTerminal t(10, 1);
+    // Write "ABCDE" with underline color on C (col 2) and E (col 4)
+    t.feed("AB");
+    t.csi("4:1m");             // underline on
+    t.csi("58;2;255;0;0m");   // underline color = red (RGB)
+    t.feed("C");
+    t.csi("59m");              // underline color off
+    t.csi("24m");              // underline off
+    t.feed("D");
+    t.csi("4:1m");
+    t.csi("58;2;0;255;0m");   // underline color = green
+    t.feed("E");
+    t.csi("24m");
+
+    // Verify extras are at col 2 and 4
+    auto* ex2 = t.term.grid().getExtra(2, 0);
+    auto* ex4 = t.term.grid().getExtra(4, 0);
+    REQUIRE(ex2 != nullptr);
+    REQUIRE(ex4 != nullptr);
+    CHECK(ex2->underlineColor != 0);
+    CHECK(ex4->underlineColor != 0);
+
+    // Delete 1 char at col 1 (B) — C shifts from 2→1, E shifts from 4→3
+    t.csi("2G");   // cursor to col 1 (1-based)
+    t.csi("1P");   // delete 1 char
+
+    CHECK(t.wc(0, 0) == U'A');
+    CHECK(t.wc(1, 0) == U'C');
+    CHECK(t.wc(2, 0) == U'D');
+    CHECK(t.wc(3, 0) == U'E');
+
+    // Extras should have shifted: col 2→1, col 4→3
+    auto* shifted1 = t.term.grid().getExtra(1, 0);
+    auto* shifted3 = t.term.grid().getExtra(3, 0);
+    CHECK(shifted1 != nullptr);
+    CHECK(shifted3 != nullptr);
+    // Old positions should be gone
+    CHECK(t.term.grid().getExtra(2, 0) == nullptr);
+    CHECK(t.term.grid().getExtra(4, 0) == nullptr);
+}
+
+TEST_CASE("ICH shifts underline color extras right")
+{
+    TestTerminal t(10, 1);
+    // Write "ABCDE" with underline color on B (col 1) and D (col 3)
+    t.feed("A");
+    t.csi("4:1m");
+    t.csi("58;2;255;0;0m");
+    t.feed("B");
+    t.csi("59m");
+    t.csi("24m");
+    t.feed("C");
+    t.csi("4:1m");
+    t.csi("58;2;0;255;0m");
+    t.feed("D");
+    t.csi("24m");
+    t.feed("E");
+
+    // Verify extras at col 1 and 3
+    REQUIRE(t.term.grid().getExtra(1, 0) != nullptr);
+    REQUIRE(t.term.grid().getExtra(3, 0) != nullptr);
+
+    // Insert 2 blanks at col 1 — B shifts from 1→3, D shifts from 3→5
+    t.csi("2G");   // cursor to col 1
+    t.csi("2@");   // insert 2 blanks
+
+    CHECK(t.wc(0, 0) == U'A');
+    CHECK(t.wc(1, 0) == 0);
+    CHECK(t.wc(2, 0) == 0);
+    CHECK(t.wc(3, 0) == U'B');
+    CHECK(t.wc(4, 0) == U'C');
+
+    // Extras should have shifted: col 1→3, col 3→5
+    CHECK(t.term.grid().getExtra(3, 0) != nullptr);
+    CHECK(t.term.grid().getExtra(5, 0) != nullptr);
+    // Old positions should be gone
+    CHECK(t.term.grid().getExtra(1, 0) == nullptr);
+}
+
 // ── IL / DL - insert / delete lines ──────────────────────────────────────────
 
 TEST_CASE("IL - insert lines")

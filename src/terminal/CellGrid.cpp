@@ -163,6 +163,17 @@ void CellGrid::deleteChars(int row, int col, int count)
     for (int c = cols_ - count; c < cols_; ++c) {
         r[c] = Cell{};
     }
+    // Shift extras map entries left
+    auto& ex = extras_[row];
+    if (!ex.empty()) {
+        std::unordered_map<int, CellExtra> shifted;
+        for (auto& [c, e] : ex) {
+            if (c >= col + count) shifted[c - count] = std::move(e);
+            else if (c < col) shifted[c] = std::move(e);
+            // entries in [col, col+count) are deleted
+        }
+        ex = std::move(shifted);
+    }
     markRowDirty(row);
 }
 
@@ -179,6 +190,17 @@ void CellGrid::insertChars(int row, int col, int count)
     // Clear inserted cells
     for (int c = col; c < col + count; ++c) {
         r[c] = Cell{};
+    }
+    // Shift extras map entries right, drop any that fall off the end
+    auto& ex = extras_[row];
+    if (!ex.empty()) {
+        std::unordered_map<int, CellExtra> shifted;
+        for (auto& [c, e] : ex) {
+            if (c >= col && c + count < cols_) shifted[c + count] = std::move(e);
+            else if (c < col) shifted[c] = std::move(e);
+            // entries shifted past cols_ are dropped
+        }
+        ex = std::move(shifted);
     }
     markRowDirty(row);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -29,7 +30,7 @@ public:
     }
 
     // Dispatch items through fn, block until all complete.
-    void dispatch(const std::vector<int>& items, const std::function<void(int)>& fn)
+    void dispatch(const std::vector<uint32_t>& items, const std::function<void(uint32_t)>& fn)
     {
         if (items.empty()) return;
 
@@ -38,7 +39,7 @@ public:
 
         {
             std::lock_guard lock(mutex_);
-            for (int item : items)
+            for (uint32_t item : items)
                 queue_.push_back(item);
         }
 
@@ -60,7 +61,7 @@ private:
             workReady_.acquire();
             if (stopping_) return;
 
-            int item;
+            uint32_t item;
             {
                 std::lock_guard lock(mutex_);
                 item = queue_.front();
@@ -76,8 +77,8 @@ private:
 
     std::vector<std::thread> threads_;
     std::mutex mutex_;
-    std::deque<int> queue_;
-    const std::function<void(int)>* work_ = nullptr;
+    std::deque<uint32_t> queue_;
+    const std::function<void(uint32_t)>* work_ = nullptr;
     std::atomic<int> remaining_{0};
     std::counting_semaphore<128> workReady_;
     std::binary_semaphore allDone_;

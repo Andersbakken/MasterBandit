@@ -350,11 +350,28 @@ void PlatformDawn::renderFrame()
         }
     }
 
-    for (auto& target : renderTargets) {
+    // --- Phase 1: Collect dirty rows across all panes and resolve in parallel ---
+
+    // Per-target state computed on main thread before parallel dispatch
+    struct TargetResolveInfo {
+        int targetIdx;
+        bool needsRender;
+        bool cursorMoved;
+        int curY;
+    };
+    std::vector<TargetResolveInfo> resolveInfos;
+
+    // Work items: packed as (targetIdx << 16) | row
+    std::vector<uint32_t> allWorkItems;
+
+    for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
+        auto& target = renderTargets[ti];
         TerminalEmulator* term = target.term;
         PaneRenderState& rs = *target.rs;
-        const PaneRect& paneRect = target.rect;
-        if (paneRect.isEmpty()) continue;
+        if (target.rect.isEmpty()) {
+            resolveInfos.push_back({ti, false, false, 0});
+            continue;
+        }
         const IGrid& g = term->grid();
 
         int curX = term->cursorX(), curY = term->cursorY();
@@ -366,53 +383,78 @@ void PlatformDawn::renderFrame()
 
         bool needsRender = rs.dirty || g.anyDirty() || cursorMoved || !rs.heldTexture;
 
-        // Synchronized output (Mode 2026): defer rendering until the app
-        // disables sync, so intermediate states (clear + redraw) aren't shown.
-        if (term->syncOutputActive() && rs.heldTexture) {
+        if (term->syncOutputActive() && rs.heldTexture)
             needsRender = false;
-        }
+
+        resolveInfos.push_back({ti, needsRender, cursorMoved, curY});
 
         if (needsRender || pngNeeded) {
-            // Ensure resolvedCells is sized correctly
             size_t needed = static_cast<size_t>(g.cols()) * g.rows();
             if (rs.resolvedCells.size() != needed)
                 rs.resolvedCells.resize(needed);
 
-            {
-                int vo = term->viewportOffset();
-                int histSize = term->document().historySize();
-                bool viewportShifted = (vo != rs.lastViewportOffset ||
-                                        (vo != 0 && histSize != rs.lastHistorySize));
-                rs.lastViewportOffset = vo;
-                rs.lastHistorySize = histSize;
+            int vo = term->viewportOffset();
+            int histSize = term->document().historySize();
+            bool viewportShifted = (vo != rs.lastViewportOffset ||
+                                    (vo != 0 && histSize != rs.lastHistorySize));
+            rs.lastViewportOffset = vo;
+            rs.lastHistorySize = histSize;
 
-                // Pre-size row shaping cache before parallel dispatch
-                if (static_cast<int>(rs.rowShapingCache.size()) != g.rows())
-                    rs.rowShapingCache.resize(g.rows());
+            if (static_cast<int>(rs.rowShapingCache.size()) != g.rows())
+                rs.rowShapingCache.resize(g.rows());
 
-                // Collect dirty rows
-                std::vector<int> dirtyRows;
-                if (viewportShifted) {
-                    dirtyRows.resize(g.rows());
-                    std::iota(dirtyRows.begin(), dirtyRows.end(), 0);
-                } else {
-                    for (int row = 0; row < g.rows(); ++row) {
-                        if (g.isRowDirty(row) || (cursorMoved && row == curY))
-                            dirtyRows.push_back(row);
-                    }
-                }
-
-                // Resolve rows — use worker pool for large batches, inline for small
-                if (dirtyRows.size() > 4) {
-                    renderWorkers_.dispatch(dirtyRows, [&](int row) {
-                        resolveRow(rs, term, row, font, scale);
-                    });
-                } else {
-                    for (int row : dirtyRows)
-                        resolveRow(rs, term, row, font, scale);
+            if (viewportShifted) {
+                for (int row = 0; row < g.rows(); ++row)
+                    allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
+            } else {
+                for (int row = 0; row < g.rows(); ++row) {
+                    if (g.isRowDirty(row) || (cursorMoved && row == curY))
+                        allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
                 }
             }
-            const_cast<IGrid&>(g).clearAllDirty();
+        }
+    }
+
+    // Parallel resolve across all panes
+    if (allWorkItems.size() > 4) {
+        renderWorkers_.dispatch(allWorkItems, [&](uint32_t packed) {
+            uint32_t ti = packed >> 16;
+            int row = static_cast<int>(packed & 0xFFFF);
+            auto& target = renderTargets[ti];
+            resolveRow(*target.rs, target.term, row, font, scale);
+        });
+    } else {
+        for (uint32_t packed : allWorkItems) {
+            uint32_t ti = packed >> 16;
+            int row = static_cast<int>(packed & 0xFFFF);
+            auto& target = renderTargets[ti];
+            resolveRow(*target.rs, target.term, row, font, scale);
+        }
+    }
+
+    // Clear dirty flags after all resolves complete
+    for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
+        auto& info = resolveInfos[ti];
+        if (info.needsRender || pngNeeded) {
+            const_cast<IGrid&>(renderTargets[ti].term->grid()).clearAllDirty();
+        }
+    }
+
+    // --- Phase 2: Per-target GPU upload and rendering ---
+
+    for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
+        auto& target = renderTargets[ti];
+        TerminalEmulator* term = target.term;
+        PaneRenderState& rs = *target.rs;
+        const PaneRect& paneRect = target.rect;
+        if (paneRect.isEmpty()) continue;
+        const IGrid& g = term->grid();
+        auto& info = resolveInfos[ti];
+        bool needsRender = info.needsRender;
+        bool cursorMoved = info.cursorMoved;
+        int curY = info.curY;
+
+        if (needsRender || pngNeeded) {
 
             // Assemble glyph buffer from per-row caches and set cell glyph_offset/glyph_count
             rs.glyphBuffer.clear();

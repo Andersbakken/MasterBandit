@@ -31,7 +31,7 @@ public:
     // Active terminal: just returns terminal_.get()
     TerminalEmulator* activeTerm();
 
-    // Popup panes (OSC 999 driven, no PTY)
+    // Popup panes (OSC 58237 driven, no PTY)
     PopupPane* findPopup(const std::string& id);
     const std::vector<PopupPane>& popups() const { return mPopups; }
     std::string focusedPopupId() const { return mFocusedPopupId; }

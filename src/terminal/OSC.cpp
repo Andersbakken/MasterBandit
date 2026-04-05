@@ -350,12 +350,13 @@ void TerminalEmulator::processStringSequence()
             }
         }
         break;
-    case 999:
+    case 58237:
         if (mCallbacks.onOSCMB) mCallbacks.onOSCMB(payload);
         break;
     case 1337: processOSC_iTerm(payload); break;
     default:
-        WARN("Ignoring OSC %d", oscNum);
+        if (mCallbacks.onOSC) mCallbacks.onOSC(oscNum, payload);
+        else WARN("Ignoring OSC %d", oscNum);
         break;
     }
 }

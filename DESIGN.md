@@ -156,7 +156,7 @@ PlatformDawn
               │     └── Pane           ← one terminal per pane
               │           ├── terminal_: Terminal  (PTY + VT parser)
               │           ├── title_: string       (per-pane OSC title)
-              │           └── popups_: Vec<PopupPane>  (OSC 999)
+              │           └── popups_: Vec<PopupPane>  (OSC 58237)
               └── overlays_: Vec<Terminal>  ← full-screen overlays (no tab bar entry)
 ```
 
@@ -212,10 +212,10 @@ adjacent divider rect. Drawn via the rect pipeline after the compositor pass.
 Divider buffers are rebuilt on layout changes and cleared on tab switch / resize.
 Color (`divider_color`) and width (`divider_width`) are configurable.
 
-### Popup panes (OSC 999)
+### Popup panes (OSC 58237)
 
 Shell-driven floating cell grids. No PTY — content written via escape sequence.
-Protocol: `OSC 999 ; create/write/focus/blur/destroy ; id=<id> ; ... ST`.
+Protocol: `OSC 58237 ; create/write/focus/blur/destroy ; id=<id> ; ... ST`.
 Keyboard routing: focused popup receives keys; responses go back via owning
 terminal's PTY.
 

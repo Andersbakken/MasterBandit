@@ -35,7 +35,9 @@
 - [ ] Pane swap/rotate — swap focused pane with another, rotate panes clockwise/counterclockwise.
 - [ ] Move pane to new tab or new window.
 - [ ] Full-screen overlays — Tab::pushOverlay / popOverlay are implemented; need a way to trigger (e.g. Cmd+Shift+Enter kitty-style).
-- [ ] Popup panes (OSC 999) — Pane::handleOSCMB and TerminalEmulator dispatch are implemented; needs end-to-end testing.
+- [ ] Popup panes (OSC 58237) — Pane::handleOSCMB and TerminalEmulator dispatch are implemented; needs end-to-end testing.
+- [ ] Popup focus cycling — popups are non-focusing by default (keystrokes go to the main terminal). A keybinding (e.g. `focus_popup` action) cycles focus between the main terminal and popups within the current pane. When a popup is focused, keystrokes route to the popup's emulator. Same keybind cycles to next popup or back to main. Needed for script-driven popup interactions (e.g. applet confirmation dialogs).
+- [ ] JS-driven popup API — `pane.createPopup({id, x, y, w, h})` returns a Popup object. `popup.inject(data)` writes to it, `popup.destroy()` removes it, `popup.addEventListener("input", fn)` receives keystrokes when focused. Popups use headless `Terminal` (not raw `TerminalEmulator`) so `writeToOutput` routes to JS via `PlatformCallbacks::onInput`. Replaces the hardcoded OSC 58237 create/write/focus/blur/destroy verb parsing in Pane.cpp — that protocol moves entirely to JS, with C++ only providing primitives.
 - [ ] Tab bar: cursor-blink optimization — re-render to held texture when only cursor changes (500 ms interval guarantees GPU completion).
 - [x] Tab bar: color packing uses BGR order (parseHexColor packs R<<16|G<<8|B but shader reads R from bits 0-7). Colors are visually incorrect (R/B swapped) — fix to match packFgAsU32 byte order.
 - [x] Tab bar: configurable keybindings for new tab (Ctrl+Shift+T) and tab close.
@@ -108,7 +110,11 @@
 - [x] Reflow strips spaces — cursor gap detection treated spaces as null cells, truncating content after cursor.
 - [x] Underlines not cleared on scroll — deleteChars/insertChars didn't shift extras map entries, leaving stale underline colors at wrong columns.
 - [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.
-- [ ] Scripting engine (QuickJS-ng) — embed QuickJS as the extension runtime. Expose: all actions (new_tab, split_pane, etc.), config read/write, pane/tab introspection, screen content, event hooks (on resize, on focus, on title change, on key). Scripts can run in an overlay pane (stdout/stdin connected to PTY for TUI rendering via escape sequences) or headless (IPC-only). Bundled scripts ship alongside the binary.
+- [x] Scripting engine (QuickJS-ng) — embedded with Pane/Overlay/Tab JS classes, synchronous output/input filters (zero-copy when no listeners), async lifecycle events via microtasks, action listener system. Two script types: controller (global app control) and applet (headless terminal overlay).
+- [ ] Scripting: OSC handler routing — register JS handlers for specific OSC numbers (`pane.addEventListener("osc:7777", fn)`). Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
+- [ ] Scripting: applet launch via OSC — shell emits `OSC 7777 ; applet:/path/to/script.js ST`. Engine shows a confirmation popup (non-focusing, top-right corner via PopupPane). User must focus the popup via keybinding to respond y/n/always. Allowlist persisted in config dir.
+- [ ] Scripting: command line loading — `--script <path>` for controllers, `--applet <path>` for applets.
+- [ ] Scripting: `console.log` — route QuickJS console output to spdlog.
 - [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 

@@ -143,6 +143,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             platformSendNotification(title, body);
         };
 
+    cbs.onOSC = [this, paneId](int oscNum, std::string_view payload) {
+        scriptEngine_.notifyOSC(paneId, oscNum, std::string(payload));
+    };
+
     return cbs;
 }
 
@@ -528,6 +532,7 @@ void PlatformDawn::resizeAllPanesInTab(Tab* tab)
 
         // Terminal::resize() sets mResizePending if dims changed;
         // flushPendingResize() will send TIOCSWINSZ in the render loop.
+        scriptEngine_.notifyPaneResized(pane->id(), cols, rows);
     }
     refreshDividers(tab);
     needsRedraw_ = true;

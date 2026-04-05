@@ -76,6 +76,7 @@ public:
     void notifyPaneResized(PaneId pane, int cols, int rows);
     void notifyOverlayCreated(TabId tab);
     void notifyOverlayDestroyed(TabId tab);
+    void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
 
     // Applet events
     void deliverAppletInput(InstanceId id, const std::string& data);

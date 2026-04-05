@@ -130,6 +130,15 @@ bool Terminal::init(const TerminalOptions &options)
     return true;
 }
 
+bool Terminal::initHeadless(const TerminalOptions& options)
+{
+    mOptions = options;
+    mHeadless = true;
+    resetScrollback(mOptions.resolvedScrollback());
+    // No PTY, no fork. mMasterFD stays -1.
+    return true;
+}
+
 void Terminal::resize(int width, int height)
 {
     int oldW = this->width(), oldH = this->height();
@@ -141,7 +150,7 @@ void Terminal::resize(int width, int height)
 
 void Terminal::flushPendingResize()
 {
-    if (!mResizePending || mMasterFD == -1) return;
+    if (!mResizePending || mMasterFD == -1 || mHeadless) return;
     mResizePending = false;
     struct winsize ws = {};
     ws.ws_col = static_cast<unsigned short>(this->width());
@@ -236,6 +245,12 @@ void Terminal::flushWriteQueue()
 
 void Terminal::writeToOutput(const char* data, size_t len)
 {
+    if (mHeadless) {
+        // No PTY — route to script via callback
+        if (mPlatformCbs.onInput)
+            mPlatformCbs.onInput(data, len);
+        return;
+    }
     if (mPlatformCbs.shouldFilterInput && mPlatformCbs.shouldFilterInput()) {
         std::string s(data, len);
         mPlatformCbs.filterInput(s);

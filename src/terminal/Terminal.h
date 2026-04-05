@@ -21,6 +21,8 @@ struct PlatformCallbacks {
     // Input filter: same pattern.
     std::function<bool()> shouldFilterInput;
     std::function<void(std::string& data)> filterInput;
+    // Headless input sink: receives keystrokes when no PTY exists (applet mode).
+    std::function<void(const char* data, size_t len)> onInput;
 };
 
 class Terminal : public TerminalEmulator {
@@ -29,8 +31,11 @@ public:
     ~Terminal() override;
 
     bool init(const TerminalOptions& options);
+    // Initialize without a PTY or child process. For script-driven applets.
+    bool initHeadless(const TerminalOptions& options);
     void setLoop(uv_loop_t* loop) { mLoop = loop; }
     int masterFD() const { return mMasterFD; }
+    bool isHeadless() const { return mHeadless; }
     void readFromFD();
     void pasteText(const std::string& text);
     void resize(int width, int height) override;
@@ -50,6 +55,7 @@ private:
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
     int mMasterFD { -1 };
+    bool mHeadless { false };
     bool mResizePending { false };
     uv_loop_t* mLoop { nullptr };
     uv_poll_t mWritePoll {};

@@ -910,19 +910,133 @@ void Engine::notifyOverlayCreated(TabId tab)
 {
     for (auto& inst : instances_) {
         if (inst.type != Instance::Type::Controller) continue;
-        // TODO: find Tab JS objects for this tab and fire overlayCreated
+
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue tabObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(tab));
+        if (!JS_IsUndefined(tabObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, tabObj, "__evt_overlayCreated");
+            JSValue overlayObj = jsOverlayNew(inst.ctx, tab);
+            enqueueListeners(inst.ctx, arr, 1, &overlayObj);
+            JS_FreeValue(inst.ctx, overlayObj);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, tabObj);
+        JS_FreeValue(inst.ctx, registry);
     }
 }
 
 void Engine::notifyOverlayDestroyed(TabId tab)
 {
+    // Fire overlayDestroyed listeners on tab objects
+    for (auto& inst : instances_) {
+        if (inst.type != Instance::Type::Controller) continue;
+
+        // Fire destroyed on overlay objects
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue oRegistry = JS_GetPropertyStr(inst.ctx, global, "__overlay_registry");
+        if (!JS_IsUndefined(oRegistry)) {
+            JSValue overlayObj = JS_GetPropertyUint32(inst.ctx, oRegistry, static_cast<uint32_t>(tab));
+            if (!JS_IsUndefined(overlayObj)) {
+                JSValue arr = JS_GetPropertyStr(inst.ctx, overlayObj, "__evt_destroyed");
+                enqueueListeners(inst.ctx, arr, 0, nullptr);
+                JS_FreeValue(inst.ctx, arr);
+                auto* data = jsOverlayGet(inst.ctx, overlayObj);
+                if (data) data->alive = false;
+                JS_SetPropertyUint32(inst.ctx, oRegistry, static_cast<uint32_t>(tab), JS_UNDEFINED);
+            }
+            JS_FreeValue(inst.ctx, overlayObj);
+        }
+        JS_FreeValue(inst.ctx, oRegistry);
+
+        // Fire overlayDestroyed on tab objects
+        JSValue tRegistry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");
+        if (!JS_IsUndefined(tRegistry)) {
+            JSValue tabObj = JS_GetPropertyUint32(inst.ctx, tRegistry, static_cast<uint32_t>(tab));
+            if (!JS_IsUndefined(tabObj)) {
+                JSValue arr = JS_GetPropertyStr(inst.ctx, tabObj, "__evt_overlayDestroyed");
+                enqueueListeners(inst.ctx, arr, 0, nullptr);
+                JS_FreeValue(inst.ctx, arr);
+            }
+            JS_FreeValue(inst.ctx, tabObj);
+        }
+        JS_FreeValue(inst.ctx, tRegistry);
+        JS_FreeValue(inst.ctx, global);
+    }
+
     overlayOutputFilterCount_.erase(tab);
     overlayInputFilterCount_.erase(tab);
 }
 
 void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
 {
-    // TODO: fire resized listeners on pane objects
+    for (auto& inst : instances_) {
+        if (inst.type != Instance::Type::Controller) continue;
+
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_resized");
+            JSValue args[] = { JS_NewInt32(inst.ctx, cols), JS_NewInt32(inst.ctx, rows) };
+            enqueueListeners(inst.ctx, arr, 2, args);
+            JS_FreeValue(inst.ctx, args[0]);
+            JS_FreeValue(inst.ctx, args[1]);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
+{
+    std::string prop = "__evt_osc:" + std::to_string(oscNum);
+
+    for (auto& inst : instances_) {
+        if (inst.type != Instance::Type::Controller) continue;
+
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, prop.c_str());
+            if (!JS_IsUndefined(arr)) {
+                JSValue arg = JS_NewStringLen(inst.ctx, payload.c_str(), payload.size());
+                enqueueListeners(inst.ctx, arr, 1, &arg);
+                JS_FreeValue(inst.ctx, arg);
+            }
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+
+        // Also check mb-level listeners
+        JSValue global2 = JS_GetGlobalObject(inst.ctx);
+        JSValue mb = JS_GetPropertyStr(inst.ctx, global2, "mb");
+        JSValue mbArr = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
+        if (!JS_IsUndefined(mbArr)) {
+            JSValue args[] = {
+                JS_NewInt32(inst.ctx, pane),
+                JS_NewStringLen(inst.ctx, payload.c_str(), payload.size())
+            };
+            enqueueListeners(inst.ctx, mbArr, 2, args);
+            JS_FreeValue(inst.ctx, args[0]);
+            JS_FreeValue(inst.ctx, args[1]);
+        }
+        JS_FreeValue(inst.ctx, mbArr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global2);
+    }
 }
 
 void Engine::deliverAppletInput(InstanceId id, const std::string& data)

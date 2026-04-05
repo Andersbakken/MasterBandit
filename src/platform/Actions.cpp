@@ -285,6 +285,21 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 });
             };
             pcbs.quit = [this]() { quit(); };
+            {
+                int tabIdx = activeTabIdx_;
+                pcbs.shouldFilterOutput = [this, tabIdx]() {
+                    return scriptEngine_.hasOverlayOutputFilters(tabIdx);
+                };
+                pcbs.filterOutput = [this, tabIdx](std::string& data) {
+                    scriptEngine_.filterOverlayOutput(tabIdx, data);
+                };
+                pcbs.shouldFilterInput = [this, tabIdx]() {
+                    return scriptEngine_.hasOverlayInputFilters(tabIdx);
+                };
+                pcbs.filterInput = [this, tabIdx](std::string& data) {
+                    scriptEngine_.filterOverlayInput(tabIdx, data);
+                };
+            }
 
             auto overlay = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
             if (!overlay->init(opts)) return;

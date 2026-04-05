@@ -603,29 +603,19 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             int logEnd = srcIdx; // inclusive
             srcIdx++;
 
-            // Compute effective width of each source row in this logical line (trim trailing blanks)
+            // Compute effective width of each source row in this logical line (trim trailing blanks).
+            // Only trim the last row — continued rows need their full width preserved
+            // so that gaps (e.g. between left prompt and rprompt) aren't collapsed.
             for (int ri = logStart; ri <= logEnd; ++ri) {
                 SrcRow sr = getSrcRow(ri);
                 int effectiveWidth = sr.cols;
-                while (effectiveWidth > 0) {
-                    const Cell& c = sr.cells[effectiveWidth - 1];
-                    if (c.wc != 0 || c.attrs.fgMode() != CellAttrs::Default || c.attrs.bgMode() != CellAttrs::Default
-                        || c.attrs.bold() || c.attrs.italic() || c.attrs.underline()) break;
-                    effectiveWidth--;
-                }
-
-                // On the cursor row, trim content past the cursor position.
-                // Content to the right of the cursor (e.g. rprompt) is decorative
-                // and will be redrawn by the shell after SIGWINCH. Without this,
-                // the rprompt causes the line to wrap, creating extra rows.
-                if (cursor && ri == cursor->srcY && cursor->srcX < effectiveWidth) {
-                    // Check if there's a gap between cursor and the next content
-                    // (rprompt has spaces between lprompt and rprompt text)
-                    bool hasGap = false;
-                    for (int c = cursor->srcX; c < effectiveWidth; ++c) {
-                        if (sr.cells[c].wc == 0) { hasGap = true; break; }
+                if (ri == logEnd) {
+                    while (effectiveWidth > 0) {
+                        const Cell& c = sr.cells[effectiveWidth - 1];
+                        if (c.wc != 0 || c.attrs.fgMode() != CellAttrs::Default || c.attrs.bgMode() != CellAttrs::Default
+                            || c.attrs.bold() || c.attrs.italic() || c.attrs.underline()) break;
+                        effectiveWidth--;
                     }
-                    if (hasGap) effectiveWidth = cursor->srcX;
                 }
 
                 // Copy cells from this source row

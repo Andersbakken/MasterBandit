@@ -219,7 +219,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             if (term) term->selectCommandOutput();
         },
         [&](const Action::ShowScrollback&) {
-            Terminal* term = activeTerm();
+            Terminal* term = dynamic_cast<Terminal*>(activeTerm());
             Tab* tab = activeTab();
             if (!term || !tab) return;
 
@@ -237,20 +237,50 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             opts.scrollbackLines = 0;
 
             TerminalCallbacks cbs;
-            cbs.event = [this](TerminalEmulator*, int, void*) { needsRedraw_ = true; };
+            cbs.event = [this](TerminalEmulator*, int, void*) {
+                overlayRenderStates_[activeTab()].dirty = true;
+                needsRedraw_ = true;
+            };
 
             PlatformCallbacks pcbs;
-            pcbs.onTerminalExited = [this, tab](Terminal*) {
-                tab->popOverlay();
-                needsRedraw_ = true;
+            pcbs.onTerminalExited = [this, tab](Terminal* t) {
+                // Defer cleanup — we're called from Terminal::readFromFD,
+                // so we can't destroy the Terminal yet.
+                int fd = t->masterFD();
+                uv_idle_t* cleanup = new uv_idle_t;
+                cleanup->data = new std::function<void()>([this, tab, fd]() {
+                    removePtyPoll(fd);
+                    tab->popOverlay();
+                    auto oit = overlayRenderStates_.find(tab);
+                    if (oit != overlayRenderStates_.end()) {
+                        if (oit->second.heldTexture) {
+                            oit->second.pendingRelease.push_back(oit->second.heldTexture);
+                        }
+                        overlayRenderStates_.erase(oit);
+                    }
+                    needsRedraw_ = true;
+                });
+                uv_idle_init(loop_, cleanup);
+                uv_idle_start(cleanup, [](uv_idle_t* handle) {
+                    auto* fn = static_cast<std::function<void()>*>(handle->data);
+                    (*fn)();
+                    delete fn;
+                    uv_idle_stop(handle);
+                    uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
+                        delete reinterpret_cast<uv_idle_t*>(h);
+                    });
+                });
             };
             pcbs.quit = [this]() { quit(); };
 
             auto overlay = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
             if (!overlay->init(opts)) return;
 
-            int cols = term->width();
-            int rows = term->height();
+            // Size overlay to full framebuffer
+            float usableW = std::max(0.0f, static_cast<float>(fbWidth_) - padLeft_ - padRight_);
+            float usableH = std::max(0.0f, static_cast<float>(fbHeight_) - padTop_ - padBottom_);
+            int cols = std::max(1, static_cast<int>(usableW / charWidth_));
+            int rows = std::max(1, static_cast<int>(usableH / lineHeight_));
             overlay->resize(cols, rows);
             overlay->flushPendingResize();
 

@@ -125,7 +125,6 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
     if (!term) return;
 
     spdlog::debug("onKey: key={} action={} mods={}", key, action, mods);
-    term->resetViewport();
 
     controlPressed_ = (mods & GLFW_MOD_CONTROL) != 0;
     lastMods_ = glfwModsToModifiers(mods);
@@ -143,6 +142,11 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
         if (result.result == SequenceMatcher::Result::Prefix) {
             return;
         }
+    }
+
+    // Reset viewport to live when typing (not on release, not for bindings)
+    if (action != GLFW_RELEASE) {
+        term->resetViewport();
     }
 
     KeyEvent ev;

@@ -28,19 +28,8 @@ static void appendUtf8(std::string& s, uint32_t cp)
 // Convenience: returns a new string (for non-hot-path callers)
 
 
-void PlatformDawn::resolveRow(int paneId, int row, FontData* font, float scale)
+void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale)
 {
-    auto paneIt = paneRenderStates_.find(paneId);
-    if (paneIt == paneRenderStates_.end()) return;
-    PaneRenderState& rs = paneIt->second;
-
-    Pane* pane = nullptr;
-    for (auto& tabPtr : tabs_) {
-        pane = tabPtr->layout()->pane(paneId);
-        if (pane) break;
-    }
-    if (!pane) return;
-    TerminalEmulator* term = pane->activeTerm();
     if (!term) return;
 
     int cols = term->width();
@@ -304,14 +293,69 @@ void PlatformDawn::renderFrame()
         lastFocusedPaneId_ = currentFocusedPaneId;
     }
 
-    for (auto& panePtr : currentTab->layout()->panes()) {
-        Pane* pane = panePtr.get();
-        if (pane->rect().isEmpty()) continue;
-        int paneId = pane->id();
-        TerminalEmulator* term = pane->activeTerm();
-        if (!term) continue;
+    // If an overlay is active, render it as a full-screen terminal instead of panes
+    struct RenderTarget {
+        TerminalEmulator* term;
+        PaneRenderState* rs;
+        PaneRect rect;
+        bool isFocused;
+    };
+    std::vector<RenderTarget> renderTargets;
 
-        PaneRenderState& rs = paneRenderStates_[paneId];
+    if (currentTab->hasOverlay()) {
+        Terminal* overlay = currentTab->topOverlay();
+        if (overlay) {
+            overlay->flushPendingResize();
+
+            // Use layout content area (excludes tab bar)
+            PaneRect tbRect = currentTab->layout()->tabBarRect(fbWidth_, fbHeight_);
+            PaneRect fullRect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
+            if (!tbRect.isEmpty()) {
+                if (tabBarConfig_.position == "top") {
+                    fullRect.y = tbRect.h;
+                    fullRect.h -= tbRect.h;
+                } else {
+                    fullRect.h -= tbRect.h;
+                }
+            }
+            // Resize overlay to match content area
+            float usableW = std::max(0.0f, static_cast<float>(fullRect.w) - padLeft_ - padRight_);
+            float usableH = std::max(0.0f, static_cast<float>(fullRect.h) - padTop_ - padBottom_);
+            int wantCols = std::max(1, static_cast<int>(usableW / charWidth_));
+            int wantRows = std::max(1, static_cast<int>(usableH / lineHeight_));
+            if (overlay->width() != wantCols || overlay->height() != wantRows) {
+                overlay->resize(wantCols, wantRows);
+            }
+
+            auto& rs = overlayRenderStates_[currentTab];
+            int cols = overlay->width();
+            int rows = overlay->height();
+            if (cols > 0 && rows > 0) {
+                size_t needed = static_cast<size_t>(cols) * rows;
+                if (rs.resolvedCells.size() != needed) {
+                    rs.resolvedCells.resize(needed);
+                    rs.rowShapingCache.resize(rows);
+                    rs.dirty = true;
+                }
+            }
+            renderTargets.push_back({overlay, &rs, fullRect, true});
+        }
+    } else {
+        for (auto& panePtr : currentTab->layout()->panes()) {
+            Pane* pane = panePtr.get();
+            if (pane->rect().isEmpty()) continue;
+            TerminalEmulator* term = pane->activeTerm();
+            if (!term) continue;
+            bool focused = (pane->id() == currentTab->layout()->focusedPaneId());
+            renderTargets.push_back({term, &paneRenderStates_[pane->id()], pane->rect(), focused});
+        }
+    }
+
+    for (auto& target : renderTargets) {
+        TerminalEmulator* term = target.term;
+        PaneRenderState& rs = *target.rs;
+        const PaneRect& paneRect = target.rect;
+        if (paneRect.isEmpty()) continue;
         const IGrid& g = term->grid();
 
         int curX = term->cursorX(), curY = term->cursorY();
@@ -322,6 +366,12 @@ void PlatformDawn::renderFrame()
         rs.lastCursorVisible = term->cursorVisible();
 
         bool needsRender = rs.dirty || g.anyDirty() || cursorMoved || !rs.heldTexture;
+
+        // Synchronized output (Mode 2026): defer rendering until the app
+        // disables sync, so intermediate states (clear + redraw) aren't shown.
+        if (term->syncOutputActive() && rs.heldTexture) {
+            needsRender = false;
+        }
 
         if (needsRender || pngNeeded) {
             // Ensure resolvedCells is sized correctly
@@ -340,14 +390,12 @@ void PlatformDawn::renderFrame()
                 rs.lastHistorySize = histSize;
 
                 if (viewportShifted) {
-                    // Content shifted — must re-resolve all rows
                     for (int row = 0; row < g.rows(); ++row)
-                        resolveRow(paneId, row, font, scale);
+                        resolveRow(rs, term, row, font, scale);
                 } else {
-                    // Stable viewport — only resolve dirty rows
                     for (int row = 0; row < g.rows(); ++row) {
                         if (g.isRowDirty(row) || (cursorMoved && row == curY))
-                            resolveRow(paneId, row, font, scale);
+                            resolveRow(rs, term, row, font, scale);
                     }
                 }
             }
@@ -387,7 +435,7 @@ void PlatformDawn::renderFrame()
             }
 
             // Cursor — passed as UBO params, no cell mutation needed
-            bool isFocused = (paneId == currentTab->layout()->focusedPaneId());
+            bool isFocused = target.isFocused;
 
             uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
             ComputeState* cs = renderer_.computePool().acquire(totalCells);
@@ -418,8 +466,8 @@ void PlatformDawn::renderFrame()
             std::vector<Renderer::ImageDrawCmd> imageCmds;
             std::unordered_set<uint32_t> seenImages;
             int vo = term->viewportOffset();
-            float vpW = static_cast<float>(pane->rect().w);
-            float vpH = static_cast<float>(pane->rect().h);
+            float vpW = static_cast<float>(paneRect.w);
+            float vpH = static_cast<float>(paneRect.h);
 
             for (int viewRow = 0; viewRow < g.rows(); ++viewRow) {
                 int absRow = histSize - vo + viewRow;
@@ -478,8 +526,8 @@ void PlatformDawn::renderFrame()
             params.rows = static_cast<uint32_t>(g.rows());
             params.cell_width = charWidth_;
             params.cell_height = lineHeight_;
-            params.viewport_w = static_cast<float>(pane->rect().w);
-            params.viewport_h = static_cast<float>(pane->rect().h);
+            params.viewport_w = static_cast<float>(paneRect.w);
+            params.viewport_h = static_cast<float>(paneRect.h);
             params.font_ascender = font->ascender * scale;
             params.font_size = fontSize_;
             params.pane_origin_x = padLeft_;
@@ -515,8 +563,8 @@ void PlatformDawn::renderFrame()
             }
 
             PooledTexture* newTexture = texturePool_.acquire(
-                static_cast<uint32_t>(pane->rect().w),
-                static_cast<uint32_t>(pane->rect().h));
+                static_cast<uint32_t>(paneRect.w),
+                static_cast<uint32_t>(paneRect.h));
 
             wgpu::CommandEncoderDescriptor encDesc = {};
             wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
@@ -534,10 +582,10 @@ void PlatformDawn::renderFrame()
         if (rs.heldTexture) {
             Renderer::CompositeEntry entry;
             entry.texture = rs.heldTexture->texture;
-            entry.srcW = static_cast<uint32_t>(pane->rect().w);
-            entry.srcH = static_cast<uint32_t>(pane->rect().h);
-            entry.dstX = static_cast<uint32_t>(pane->rect().x);
-            entry.dstY = static_cast<uint32_t>(pane->rect().y);
+            entry.srcW = static_cast<uint32_t>(paneRect.w);
+            entry.srcH = static_cast<uint32_t>(paneRect.h);
+            entry.dstX = static_cast<uint32_t>(paneRect.x);
+            entry.dstY = static_cast<uint32_t>(paneRect.y);
             compositeEntries.push_back(entry);
         }
     }

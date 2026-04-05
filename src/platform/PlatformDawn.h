@@ -87,7 +87,6 @@ public:
 
 private:
     void configureSurface(uint32_t width, uint32_t height);
-    void resolveRow(int paneId, int row, FontData* font, float scale);
 
     void addPtyPoll(int fd, Terminal* term);
     void removePtyPoll(int fd);
@@ -196,6 +195,9 @@ private:
         std::vector<RowGlyphCache> rowShapingCache;
     };
     std::unordered_map<int, PaneRenderState> paneRenderStates_;
+    std::unordered_map<Tab*, PaneRenderState> overlayRenderStates_; // per-tab overlay render state
+
+    void resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale);
 
     std::unordered_map<int, uv_poll_t*> ptyPolls_;
 

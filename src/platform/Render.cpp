@@ -174,12 +174,16 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
                 penX += sg.xAdvance;
                 continue;
             }
-            auto git = font->glyphs.find(glyphId);
-            if (git == font->glyphs.end() || git->second.is_empty) {
-                penX += sg.xAdvance;
-                continue;
+            GlyphInfo gi;
+            {
+                std::shared_lock lock(font->mutex);
+                auto git = font->glyphs.find(glyphId);
+                if (git == font->glyphs.end() || git->second.is_empty) {
+                    penX += sg.xAdvance;
+                    continue;
+                }
+                gi = git->second;
             }
-            const GlyphInfo& gi = git->second;
 
             // Glyph positioning: for substituted glyphs (ligatures, contextual forms),
             // use HarfBuzz advance-based positioning to preserve inter-glyph relationships.

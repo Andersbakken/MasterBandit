@@ -38,25 +38,38 @@ TextSystem::~TextSystem()
 void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId)
 {
     uint64_t key = glyphKey(fontIndex, glyphId);
-    if (font.glyphs.count(key)) return;
 
-    auto& entry = font.hbFonts[fontIndex];
-    hb_gpu_draw_t* g = entry.gpuDraw;
+    // Fast path: read lock check
+    {
+        std::shared_lock lock(font.mutex);
+        if (font.glyphs.count(key)) return;
+    }
 
-    unsigned int upem = hb_face_get_upem(entry.hbFace);
+    // Cache miss — extract glyph data without holding any lock.
+    // Use a thread-local hb_gpu_draw_t since the per-entry one isn't thread-safe.
+    thread_local hb_gpu_draw_t* tlGpuDraw = nullptr;
+    if (!tlGpuDraw) {
+        tlGpuDraw = hb_gpu_draw_create_or_fail();
+    }
+    hb_gpu_draw_t* g = tlGpuDraw;
+
+    hb_font_t* hbFont;
+    hb_face_t* hbFace;
+    {
+        std::shared_lock lock(font.mutex);
+        auto& entry = font.hbFonts[fontIndex];
+        hbFont = entry.hbFont;
+        hbFace = entry.hbFace;
+    }
+
+    unsigned int upem = hb_face_get_upem(hbFace);
     float pixelScale = font.baseSize / static_cast<float>(upem);
+    float adv = hb_font_get_glyph_h_advance(hbFont, glyphId) * pixelScale;
 
-    // Get advance
-    float adv = hb_font_get_glyph_h_advance(entry.hbFont, glyphId) * pixelScale;
-
-    // Reset and draw glyph
     hb_gpu_draw_reset(g);
-    hb_gpu_draw_glyph(g, entry.hbFont, glyphId);
-
-    // Encode to blob
+    hb_gpu_draw_glyph(g, hbFont, glyphId);
     hb_blob_t* blob = hb_gpu_draw_encode(g);
 
-    // Get extents
     hb_glyph_extents_t ext;
     hb_gpu_draw_get_extents(g, &ext);
 
@@ -68,53 +81,56 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
     info.advance = adv;
 
     if (blobLen == 0) {
-        // Empty glyph (whitespace, no contours)
         info.is_empty = true;
         info.atlas_offset = 0;
         info.ext_min_x = 0;
         info.ext_min_y = 0;
         info.ext_max_x = 0;
         info.ext_max_y = 0;
-        font.glyphs[key] = info;
+        std::unique_lock lock(font.mutex);
+        if (!font.glyphs.count(key))
+            font.glyphs[key] = info;
         hb_gpu_draw_recycle_blob(g, blob);
         return;
     }
 
     info.is_empty = false;
-    // ext fields are in font units; store as floats for vertex building
     info.ext_min_x = static_cast<float>(ext.x_bearing);
-    info.ext_min_y = static_cast<float>(ext.y_bearing + ext.height); // y_bearing is top, height is negative
+    info.ext_min_y = static_cast<float>(ext.y_bearing + ext.height);
     info.ext_max_x = static_cast<float>(ext.x_bearing + ext.width);
     info.ext_max_y = static_cast<float>(ext.y_bearing);
 
-    // Append blob data to atlasData as int32 (blob contains int16 pairs packed as vec4<i16>,
-    // which we widen to vec4<i32> for the storage buffer)
-    info.atlas_offset = font.atlasUsed;
-
-    // The blob is an array of int16_t values. Each vec4<i32> in the atlas = 4 int16 values widened.
-    // Actually, the blob is raw int16 data that maps to vec4<i16> texels.
-    // We need to store as vec4<i32> for the WGSL storage buffer.
     const int16_t* src = reinterpret_cast<const int16_t*>(blobData);
     uint32_t numInt16 = blobLen / sizeof(int16_t);
-    // Each texel is 4 int16 values = one vec4<i32>
     uint32_t numTexels = (numInt16 + 3) / 4;
 
-    // Ensure capacity
-    uint32_t needed = (font.atlasUsed + numTexels) * 4;
-    if (font.atlasData.size() < needed) {
-        font.atlasData.resize(needed * 2, 0);
-    }
+    // Write lock to insert into atlas and glyph map
+    {
+        std::unique_lock lock(font.mutex);
 
-    for (uint32_t i = 0; i < numInt16; i++) {
-        font.atlasData[font.atlasUsed * 4 + i] = static_cast<int32_t>(src[i]);
-    }
-    // Zero-pad remaining
-    for (uint32_t i = numInt16; i < numTexels * 4; i++) {
-        font.atlasData[font.atlasUsed * 4 + i] = 0;
-    }
-    font.atlasUsed += numTexels;
+        // Double-check: another thread may have inserted while we extracted
+        if (font.glyphs.count(key)) {
+            hb_gpu_draw_recycle_blob(g, blob);
+            return;
+        }
 
-    font.glyphs[key] = info;
+        info.atlas_offset = font.atlasUsed;
+
+        uint32_t needed = (font.atlasUsed + numTexels) * 4;
+        if (font.atlasData.size() < needed) {
+            font.atlasData.resize(needed * 2, 0);
+        }
+
+        for (uint32_t i = 0; i < numInt16; i++) {
+            font.atlasData[font.atlasUsed * 4 + i] = static_cast<int32_t>(src[i]);
+        }
+        for (uint32_t i = numInt16; i < numTexels * 4; i++) {
+            font.atlasData[font.atlasUsed * 4 + i] = 0;
+        }
+        font.atlasUsed += numTexels;
+
+        font.glyphs[key] = info;
+    }
     hb_gpu_draw_recycle_blob(g, blob);
 }
 
@@ -127,7 +143,7 @@ bool TextSystem::registerFont(const std::string& name,
         return false;
     }
 
-    FontData font;
+    FontData& font = fonts_[name];
     font.name = name;
     font.baseSize = baseSize;
 
@@ -145,6 +161,7 @@ bool TextSystem::registerFont(const std::string& name,
             hb_font_destroy(entry.hbFont);
             hb_face_destroy(entry.hbFace);
             hb_blob_destroy(entry.hbBlob);
+            fonts_.erase(name);
             return false;
         }
         font.hbFonts.push_back(entry);
@@ -186,7 +203,6 @@ bool TextSystem::registerFont(const std::string& name,
                 name, static_cast<uint32_t>(font.glyphs.size()),
                 font.atlasUsed, baseSize, font.hbFonts.size());
 
-    fonts_[name] = std::move(font);
     return true;
 }
 
@@ -197,6 +213,7 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
 
     FontData& font = it->second;
 
+    // Create HarfBuzz objects without holding lock
     FontData::HBEntry entry;
     entry.hbBlob = hb_blob_create(reinterpret_cast<const char*>(ttfData.data()),
                                    static_cast<unsigned int>(ttfData.size()),
@@ -212,6 +229,7 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
         return false;
     }
 
+    std::unique_lock lock(font.mutex);
     font.hbFonts.push_back(entry);
 
     spdlog::info("Added fallback font #{} to '{}'", font.hbFonts.size() - 1, name);
@@ -278,31 +296,56 @@ static inline uint32_t decodeUtf8(const uint8_t*& p)
 
 uint32_t TextSystem::getStyledVariant(FontData& font, uint32_t baseFi, FontStyle style)
 {
-    if (style == FontStyle{}) return baseFi;  // no styling needed
+    if (style == FontStyle{}) return baseFi;
 
-    // Check if already created
     uint64_t variantKey = (static_cast<uint64_t>(baseFi) << 8) | style.key();
-    auto it = font.styledVariants.find(variantKey);
-    if (it != font.styledVariants.end()) return it->second;
 
-    // Create synthetic variant
-    auto& base = font.hbFonts[baseFi];
+    // Fast path: read lock
+    {
+        std::shared_lock lock(font.mutex);
+        auto it = font.styledVariants.find(variantKey);
+        if (it != font.styledVariants.end()) return it->second;
+    }
+
+    // Create synthetic variant without holding lock
+    hb_blob_t* blob;
+    hb_face_t* face;
+    {
+        std::shared_lock lock(font.mutex);
+        auto& base = font.hbFonts[baseFi];
+        blob = hb_blob_reference(base.hbBlob);
+        face = hb_face_reference(base.hbFace);
+    }
+
     FontData::HBEntry entry;
-    entry.hbBlob = hb_blob_reference(base.hbBlob);
-    entry.hbFace = hb_face_reference(base.hbFace);
+    entry.hbBlob = blob;
+    entry.hbFace = face;
     entry.hbFont = hb_font_create(entry.hbFace);
     if (style.bold)
         hb_font_set_synthetic_bold(entry.hbFont, boldStrengthX_, boldStrengthY_, false);
-    // future: if (style.italic) hb_font_set_synthetic_slant(...)
     entry.gpuDraw = hb_gpu_draw_create_or_fail();
     if (!entry.gpuDraw) {
         hb_font_destroy(entry.hbFont);
         hb_face_destroy(entry.hbFace);
         hb_blob_destroy(entry.hbBlob);
-        return baseFi;  // fall back to unstyled
+        return baseFi;
     }
     entry.baseFontIndex = baseFi;
     entry.style = style;
+
+    // Write lock to insert
+    std::unique_lock lock(font.mutex);
+
+    // Double-check
+    auto it = font.styledVariants.find(variantKey);
+    if (it != font.styledVariants.end()) {
+        // Another thread created it — discard ours
+        hb_gpu_draw_destroy(entry.gpuDraw);
+        hb_font_destroy(entry.hbFont);
+        hb_face_destroy(entry.hbFace);
+        hb_blob_destroy(entry.hbBlob);
+        return it->second;
+    }
 
     uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size());
     font.hbFonts.push_back(entry);
@@ -315,13 +358,9 @@ uint32_t TextSystem::getStyledVariant(FontData& font, uint32_t baseFi, FontStyle
 
 uint32_t TextSystem::resolveSegment(FontData& font, const uint8_t* text, size_t len, FontStyle style)
 {
-    // The styled variant of the primary font always covers exactly what
-    // primary covers (same face). Per-glyph fallback handles the rest.
     uint32_t primaryFi = getStyledVariant(font, 0, style);
 
-    // Verify the styled primary covers all primary-coverable codepoints.
-    // For synthetic bold (same face), this is always true. But check in
-    // case a real bold file has different coverage.
+    std::shared_lock lock(font.mutex);
     const uint8_t* p = text;
     const uint8_t* end = p + len;
     while (p < end) {
@@ -329,7 +368,6 @@ uint32_t TextSystem::resolveSegment(FontData& font, const uint8_t* text, size_t 
         uint32_t gid;
         if (hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid) &&
             !hb_font_get_nominal_glyph(font.hbFonts[primaryFi].hbFont, cp, &gid)) {
-            // Styled primary doesn't cover something primary does — fall back
             return 0;
         }
     }
@@ -339,35 +377,19 @@ uint32_t TextSystem::resolveSegment(FontData& font, const uint8_t* text, size_t 
 TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::string& fontName,
                                                     char32_t cp, FontStyle style, uint32_t excludeFi)
 {
-    // Try each base font (skip styled variants) and return the styled version
-    for (uint32_t fi = 0; fi < font.hbFonts.size(); fi++) {
-        auto& entry = font.hbFonts[fi];
-        // Skip styled variants (they derive from a base font)
-        if (entry.style != FontStyle{}) continue;
-        if (fi == excludeFi) continue;
+    // Try existing fonts under read lock
+    {
+        std::shared_lock lock(font.mutex);
+        for (uint32_t fi = 0; fi < font.hbFonts.size(); fi++) {
+            auto& entry = font.hbFonts[fi];
+            if (entry.style != FontStyle{}) continue;
+            if (fi == excludeFi) continue;
 
-        uint32_t gid;
-        if (hb_font_get_nominal_glyph(entry.hbFont, cp, &gid)) {
-            uint32_t styledFi = getStyledVariant(font, fi, style);
-            // Re-lookup gid with styled font (should be same for synthetic bold)
-            uint32_t styledGid;
-            if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
-                styledGid = gid;  // shouldn't happen, but safe fallback
-            return {styledFi, styledGid};
-        }
-    }
-
-    // Try system font fallback
-    if (systemFallback_) {
-        auto pathIt = fontPrimaryPaths_.find(fontName);
-        std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
-        auto fallbackData = systemFallback_(primaryPath, cp);
-        if (!fallbackData.empty()) {
-            addFallbackFont(fontName, fallbackData);
-            uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
             uint32_t gid;
-            if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
-                uint32_t styledFi = getStyledVariant(font, newFi, style);
+            if (hb_font_get_nominal_glyph(entry.hbFont, cp, &gid)) {
+                lock.unlock();
+                uint32_t styledFi = getStyledVariant(font, fi, style);
+                lock.lock();
                 uint32_t styledGid;
                 if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
                     styledGid = gid;
@@ -376,7 +398,29 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
         }
     }
 
-    return {0, 0};  // not found
+    // Try system font fallback (rare — loads a new font file)
+    if (systemFallback_) {
+        auto pathIt = fontPrimaryPaths_.find(fontName);
+        std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
+        auto fallbackData = systemFallback_(primaryPath, cp);
+        if (!fallbackData.empty()) {
+            addFallbackFont(fontName, fallbackData);
+            std::shared_lock lock(font.mutex);
+            uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
+            uint32_t gid;
+            if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
+                lock.unlock();
+                uint32_t styledFi = getStyledVariant(font, newFi, style);
+                lock.lock();
+                uint32_t styledGid;
+                if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
+                    styledGid = gid;
+                return {styledFi, styledGid};
+            }
+        }
+    }
+
+    return {0, 0};
 }
 
 ShapedText TextSystem::shapeText(const std::string& fontName, const std::string& text,
@@ -466,7 +510,15 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
         uint32_t fi = resolveSegment(font,
             reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset), seg.length, style);
 
-        unsigned int fontUpem = hb_face_get_upem(font.hbFonts[fi].hbFace);
+        hb_font_t* segHbFont;
+        hb_face_t* segHbFace;
+        {
+            std::shared_lock lock(font.mutex);
+            segHbFont = font.hbFonts[fi].hbFont;
+            segHbFace = font.hbFonts[fi].hbFace;
+        }
+
+        unsigned int fontUpem = hb_face_get_upem(segHbFace);
         float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
 
         hb_buffer_t* buf = hb_buffer_create();
@@ -476,7 +528,7 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
         hb_buffer_set_script(buf, hb_script_from_iso15924_tag(
             static_cast<hb_tag_t>(SBScriptGetUnicodeTag(seg.script))));
         hb_buffer_set_language(buf, hb_language_get_default());
-        hb_shape(font.hbFonts[fi].hbFont, buf, nullptr, 0);
+        hb_shape(segHbFont, buf, nullptr, 0);
 
         unsigned int count;
         hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &count);
@@ -500,9 +552,16 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
                 if (resolved.glyphId != 0) {
                     glyphFi = resolved.fontIndex;
                     gid = resolved.glyphId;
-                    unsigned int fbUpem = hb_face_get_upem(font.hbFonts[glyphFi].hbFace);
+                    hb_font_t* fbFont;
+                    hb_face_t* fbFace;
+                    {
+                        std::shared_lock lock(font.mutex);
+                        fbFont = font.hbFonts[glyphFi].hbFont;
+                        fbFace = font.hbFonts[glyphFi].hbFace;
+                    }
+                    unsigned int fbUpem = hb_face_get_upem(fbFace);
                     float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                    float adv = hb_font_get_glyph_h_advance(font.hbFonts[glyphFi].hbFont, gid) * fbScale * scale;
+                    float adv = hb_font_get_glyph_h_advance(fbFont, gid) * fbScale * scale;
                     ensureGlyphEncoded(font, glyphFi, gid);
                     allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
                         adv, 0, 0, seg.level});
@@ -705,10 +764,17 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
         uint32_t fi = resolveSegment(font,
             reinterpret_cast<const uint8_t*>(text.c_str() + sr.offset), sr.length, style);
 
-        unsigned int fontUpem = hb_face_get_upem(font.hbFonts[fi].hbFace);
+        hb_font_t* hbFont;
+        hb_face_t* hbFace;
+        {
+            std::shared_lock lock(font.mutex);
+            hbFont = font.hbFonts[fi].hbFont;
+            hbFace = font.hbFonts[fi].hbFace;
+        }
+
+        unsigned int fontUpem = hb_face_get_upem(hbFace);
         float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
 
-        // Determine direction from BiDi levels
         bool segmentRtl = (levels[sr.offset] & 1) != 0;
 
         hb_buffer_t* buf = hb_buffer_create();
@@ -718,9 +784,8 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
         hb_buffer_set_script(buf, hb_script_from_iso15924_tag(
             static_cast<hb_tag_t>(SBScriptGetUnicodeTag(sr.script))));
         hb_buffer_set_language(buf, hb_language_get_default());
-        // Ensure base + combining marks share the same cluster value
         hb_buffer_set_cluster_level(buf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
-        hb_shape(font.hbFonts[fi].hbFont, buf, nullptr, 0);
+        hb_shape(hbFont, buf, nullptr, 0);
 
         unsigned int count;
         hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &count);
@@ -744,9 +809,16 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                 if (resolved.glyphId != 0) {
                     glyphFi = resolved.fontIndex;
                     gid = resolved.glyphId;
-                    unsigned int fbUpem = hb_face_get_upem(font.hbFonts[glyphFi].hbFace);
+                    hb_font_t* fbFont;
+                    hb_face_t* fbFace;
+                    {
+                        std::shared_lock lock(font.mutex);
+                        fbFont = font.hbFonts[glyphFi].hbFont;
+                        fbFace = font.hbFonts[glyphFi].hbFace;
+                    }
+                    unsigned int fbUpem = hb_face_get_upem(fbFace);
                     float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                    float adv = hb_font_get_glyph_h_advance(font.hbFonts[glyphFi].hbFont, gid) * fbScale * scale;
+                    float adv = hb_font_get_glyph_h_advance(fbFont, gid) * fbScale * scale;
                     ensureGlyphEncoded(font, glyphFi, gid);
                     result.glyphs.push_back({glyphKey(glyphFi, gid), infos[i].cluster, adv, 0, 0, false, segmentRtl});
                     continue;
@@ -759,7 +831,6 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
             // Normal glyph — check if HarfBuzz substituted it (ligature, contextual form)
             bool isSubstitution = false;
             {
-                // Decode codepoint from cluster position to compare against nominal glyph
                 uint32_t cluster = infos[i].cluster;
                 const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
                 uint32_t cp;
@@ -769,7 +840,7 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                 else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
 
                 uint32_t nominalGid;
-                if (hb_font_get_nominal_glyph(font.hbFonts[fi].hbFont, cp, &nominalGid)) {
+                if (hb_font_get_nominal_glyph(hbFont, cp, &nominalGid)) {
                     isSubstitution = (gid != nominalGid);
                 }
             }

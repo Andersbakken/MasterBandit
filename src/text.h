@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <functional>
-#include <list>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,6 +61,11 @@ struct FontData {
 
     // Which font index covers each codepoint (for shaping font selection)
     std::unordered_map<uint32_t, uint32_t> codepointToFontIndex;
+
+    // Protects glyphs, atlasData, atlasUsed, hbFonts, styledVariants, codepointToFontIndex.
+    // Read lock for lookups, write lock for insertions (new glyphs, fallback fonts, styled variants).
+    // Not movable — FontData must be constructed in-place in the fonts_ map.
+    mutable std::shared_mutex mutex;
 };
 
 struct ShapedGlyph { uint64_t glyphId; float x, y; };

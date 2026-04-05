@@ -2,6 +2,7 @@
 
 #include <quickjs.h>
 #include <spdlog/spdlog.h>
+#include <uv.h>
 
 #include <fstream>
 #include <sstream>
@@ -677,6 +678,113 @@ static void enqueueListeners(JSContext* ctx, JSValue arr, int extraArgc, JSValue
 }
 
 // ============================================================================
+// ============================================================================
+// setTimeout / setInterval / clearTimeout / clearInterval
+// ============================================================================
+
+struct TimerData {
+    JSContext* ctx;
+    JSValue callback;
+    uint32_t id;
+    bool interval;
+};
+
+static void timerCallback(uv_timer_t* handle)
+{
+    auto* td = static_cast<TimerData*>(handle->data);
+
+    JSValue ret = JS_Call(td->ctx, td->callback, JS_UNDEFINED, 0, nullptr);
+    if (JS_IsException(ret)) {
+        JSValue exc = JS_GetException(td->ctx);
+        const char* s = JS_ToCString(td->ctx, exc);
+        spdlog::error("ScriptEngine: timer error: {}", s ? s : "(null)");
+        if (s) JS_FreeCString(td->ctx, s);
+        JS_FreeValue(td->ctx, exc);
+    }
+    JS_FreeValue(td->ctx, ret);
+
+    if (!td->interval) {
+        uv_timer_stop(handle);
+        uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
+            auto* td = static_cast<TimerData*>(h->data);
+            JS_FreeValue(td->ctx, td->callback);
+            delete td;
+            delete reinterpret_cast<uv_timer_t*>(h);
+        });
+    }
+}
+
+// setTimeout(fn, ms) -> timerId
+static JSValue jsSetTimeout(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->loop()) return JS_UNDEFINED;
+
+    int64_t ms = 0;
+    if (argc >= 2) JS_ToInt64(ctx, &ms, argv[1]);
+    if (ms < 0) ms = 0;
+
+    uint32_t id = eng->nextTimer();
+    auto* td = new TimerData{ctx, JS_DupValue(ctx, argv[0]), id, false};
+    auto* timer = new uv_timer_t;
+    timer->data = td;
+    uv_timer_init(eng->loop(), timer);
+    uv_timer_start(timer, timerCallback, static_cast<uint64_t>(ms), 0);
+
+    return JS_NewUint32(ctx, id);
+}
+
+// setInterval(fn, ms) -> timerId
+static JSValue jsSetInterval(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsFunction(ctx, argv[0])) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->loop()) return JS_UNDEFINED;
+
+    int64_t ms = 0;
+    JS_ToInt64(ctx, &ms, argv[1]);
+    if (ms < 1) ms = 1;
+
+    uint32_t id = eng->nextTimer();
+    auto* td = new TimerData{ctx, JS_DupValue(ctx, argv[0]), id, true};
+    auto* timer = new uv_timer_t;
+    timer->data = td;
+    uv_timer_init(eng->loop(), timer);
+    uv_timer_start(timer, timerCallback, static_cast<uint64_t>(ms), static_cast<uint64_t>(ms));
+
+    return JS_NewUint32(ctx, id);
+}
+
+// clearTimeout(id) / clearInterval(id) — same implementation
+// Note: this is O(n) over active handles. Fine for reasonable timer counts.
+static JSValue jsClearTimer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->loop()) return JS_UNDEFINED;
+
+    uint32_t id;
+    JS_ToUint32(ctx, &id, argv[0]);
+
+    // Walk active handles to find the timer
+    uv_walk(eng->loop(), [](uv_handle_t* handle, void* arg) {
+        if (handle->type != UV_TIMER) return;
+        auto* td = static_cast<TimerData*>(handle->data);
+        if (!td || td->id != *static_cast<uint32_t*>(arg)) return;
+        uv_timer_stop(reinterpret_cast<uv_timer_t*>(handle));
+        uv_close(handle, [](uv_handle_t* h) {
+            auto* td = static_cast<TimerData*>(h->data);
+            JS_FreeValue(td->ctx, td->callback);
+            delete td;
+            delete reinterpret_cast<uv_timer_t*>(h);
+        });
+    }, &id);
+
+    return JS_UNDEFINED;
+}
+
+// ============================================================================
 // console.log / console.warn / console.error
 // ============================================================================
 
@@ -763,8 +871,18 @@ JSContext* Engine::createContext()
         jsTabProto, sizeof(jsTabProto) / sizeof(jsTabProto[0]));
     JS_SetClassProto(ctx, jsTabClassId, tabProto);
 
-    // console object
+    // Timer globals
     JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "setTimeout",
+        JS_NewCFunction(ctx, jsSetTimeout, "setTimeout", 2));
+    JS_SetPropertyStr(ctx, global, "setInterval",
+        JS_NewCFunction(ctx, jsSetInterval, "setInterval", 2));
+    JS_SetPropertyStr(ctx, global, "clearTimeout",
+        JS_NewCFunction(ctx, jsClearTimer, "clearTimeout", 1));
+    JS_SetPropertyStr(ctx, global, "clearInterval",
+        JS_NewCFunction(ctx, jsClearTimer, "clearInterval", 1));
+
+    // console object
     JSValue console = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, console, "log",
         JS_NewCFunction(ctx, jsConsoleLog, "log", 0));

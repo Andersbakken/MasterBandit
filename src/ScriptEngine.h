@@ -8,6 +8,8 @@
 
 struct JSRuntime;
 struct JSContext;
+struct uv_loop_s;
+typedef struct uv_loop_s uv_loop_t;
 
 namespace Script {
 
@@ -55,6 +57,8 @@ public:
     Engine& operator=(const Engine&) = delete;
 
     void setCallbacks(AppCallbacks cbs);
+    void setLoop(uv_loop_t* loop) { loop_ = loop; }
+    uv_loop_t* loop() const { return loop_; }
 
     // Load scripts
     InstanceId loadApplet(const std::string& path);
@@ -97,6 +101,8 @@ public:
     void addOverlayOutputFilter(TabId tab) { overlayOutputFilterCount_[tab]++; }
     void addOverlayInputFilter(TabId tab) { overlayInputFilterCount_[tab]++; }
 
+    uint32_t nextTimer() { return nextTimerId_++; }
+
     struct Instance {
         InstanceId id;
         JSContext* ctx;
@@ -106,8 +112,10 @@ public:
 
 private:
     JSRuntime* rt_ = nullptr;
+    uv_loop_t* loop_ = nullptr;
     std::vector<Instance> instances_;
     InstanceId nextId_ = 1;
+    uint32_t nextTimerId_ = 1;
     AppCallbacks callbacks_;
 
     std::unordered_map<PaneId, int> paneOutputFilterCount_;

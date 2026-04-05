@@ -32,6 +32,8 @@ int PlatformDawn::exec()
         debugSink_->setIPC(debugIPC_.get());
     }
 
+    scriptEngine_.setLoop(loop_);
+
     // Set up script engine callbacks
     {
         Script::AppCallbacks scbs;

@@ -192,6 +192,11 @@ std::optional<Action::Any> parseAction(const std::string& name,
     if (name == "scroll_to_next_prompt")     return Action::ScrollToPrompt{1};
     if (name == "select_command_output")     return Action::SelectCommandOutput{};
     if (name == "show_scrollback")           return Action::ShowScrollback{};
+    if (name == "reload_config")            return Action::ReloadConfig{};
+
+    // Script actions: any name containing a '.' is treated as namespace.action
+    if (name.find('.') != std::string::npos)
+        return Action::ScriptAction{name, args};
 
     spdlog::warn("Bindings: unknown action '{}'", name);
     return std::nullopt;

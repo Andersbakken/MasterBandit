@@ -1,4 +1,5 @@
 #include "PlatformDawn.h"
+#include "Config.h"
 #include "Log.h"
 #include <unistd.h>
 
@@ -346,6 +347,21 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             tab->pushOverlay(std::move(overlay));
             scriptEngine_.notifyOverlayCreated(activeTabIdx_);
             needsRedraw_ = true;
+        },
+        [&](const Action::ReloadConfig&) {
+            Config config = loadConfig();
+            bindings_ = defaultBindings();
+            auto userBindings = parseBindings(config.keybindings);
+            bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
+            sequenceMatcher_.reset();
+            spdlog::info("Config reloaded: {} user bindings", userBindings.size());
+        },
+        [&](const Action::ScriptAction& a) {
+            if (!scriptEngine_.isActionRegistered(a.name)) {
+                spdlog::debug("ScriptAction '{}' not registered, ignoring", a.name);
+                return;
+            }
+            // Notification to JS listeners happens via actionDispatcher_ below
         },
     }, action);
 

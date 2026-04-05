@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -121,10 +122,10 @@ public:
 
     // C callback trampoline access
     const AppCallbacks& callbacks() const { return callbacks_; }
-    void addPaneOutputFilter(PaneId pane) { paneOutputFilterCount_[pane]++; }
-    void addPaneInputFilter(PaneId pane) { paneInputFilterCount_[pane]++; }
-    void addOverlayOutputFilter(TabId tab) { overlayOutputFilterCount_[tab]++; }
-    void addOverlayInputFilter(TabId tab) { overlayInputFilterCount_[tab]++; }
+    void addPaneOutputFilter(PaneId pane, InstanceId instId);
+    void addPaneInputFilter(PaneId pane, InstanceId instId);
+    void addOverlayOutputFilter(TabId tab, InstanceId instId);
+    void addOverlayInputFilter(TabId tab, InstanceId instId);
 
     uint32_t nextTimer() { return nextTimerId_++; }
 
@@ -135,9 +136,24 @@ public:
         std::string contentHash;
         uint32_t permissions = Perm::All;
         bool builtIn = false;
+        std::string ns; // namespace set via mb.setNamespace()
+
+        // Resources owned by this instance (cleaned up on unload)
+        struct PopupRef { PaneId pane; std::string popupId; };
+        std::vector<PopupRef> ownedPopups;
+        std::vector<TabId> ownedOverlays;
+        std::vector<PaneId> paneOutputFilters; // panes with output filters from this instance
+        std::vector<PaneId> paneInputFilters;
+        std::vector<TabId> overlayOutputFilters;
+        std::vector<TabId> overlayInputFilters;
     };
     Instance* findInstanceByCtx(JSContext* ctx);
     Instance* findInstance(InstanceId id);
+
+    // Script action registration
+    bool setNamespace(InstanceId id, const std::string& ns);
+    bool registerAction(InstanceId id, const std::string& name);
+    bool isActionRegistered(const std::string& fullName) const;
 
 private:
     JSRuntime* rt_ = nullptr;
@@ -160,6 +176,8 @@ private:
         PaneId promptPaneId;
     };
     std::unordered_map<std::string, PendingScript> pendingScripts_;
+
+    std::set<std::string> registeredActions_; // "namespace.action" strings
 
     std::unordered_map<PaneId, int> paneOutputFilterCount_;
     std::unordered_map<PaneId, int> paneInputFilterCount_;

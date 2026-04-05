@@ -113,7 +113,7 @@
 - [x] Scripting engine (QuickJS-ng) — embedded with Pane/Overlay/Tab JS classes, synchronous output/input filters (zero-copy when no listeners), async lifecycle events via microtasks, action listener system. Two script types: controller (global app control) and applet (headless terminal overlay).
 - [ ] Scripting: OSC handler routing — register JS handlers for specific OSC numbers (`pane.addEventListener("osc:7777", fn)`). Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
 - [ ] Scripting: applet launch confirmation — when an untrusted script is requested via OSC 58237, show a confirmation popup (non-focusing, top-right corner via PopupPane). User must focus the popup via keybinding to respond y/n/always. Allowlist persisted in config dir. Requires popup focus cycling and permission system.
-- [ ] Scripting: command line loading — `--script <path>` for controllers, `--applet <path>` for applets.
+- [ ] Scripting: command line loading — `--script <path>:<permissions>` loads user scripts at startup.
 - [x] Scripting: `console.log` — route QuickJS console output to spdlog.
 - [x] Scripting: timers — `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` backed by libuv timers.
 - [x] Scripting: overlay creation — `tab.createOverlay()` creates headless terminal, `overlay.inject()` renders, `overlay.addEventListener("input", fn)` receives keystrokes, `overlay.close()` pops it.

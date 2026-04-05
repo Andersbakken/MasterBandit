@@ -238,8 +238,13 @@ int PlatformDawn::exec()
     }
 
     // Hook action dispatcher to notify script engine
-    actionDispatcher_.addListener([this](Action::TypeIndex idx, const Action::Any&) {
-        scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
+    actionDispatcher_.addListener([this](Action::TypeIndex idx, const Action::Any& action) {
+        // For ScriptAction, use the actual namespace.name instead of "ScriptAction"
+        if (auto* sa = std::get_if<Action::ScriptAction>(&action)) {
+            scriptEngine_.notifyAction(sa->name);
+        } else {
+            scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
+        }
     });
 
     // Set up script engine config dir for allowlist persistence

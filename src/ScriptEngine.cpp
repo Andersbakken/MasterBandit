@@ -91,16 +91,19 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
 
+    auto* inst = instanceFromCtx(ctx);
+    InstanceId instId = inst ? inst->id : 0;
+
     std::string prop;
     if (strcmp(event, "output") == 0) {
         if (!checkPerm(ctx, Perm::IoFilterOutput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput"); }
         prop = "__output_filters";
-        eng->addPaneOutputFilter(pane->id);
+        eng->addPaneOutputFilter(pane->id, instId);
         registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else if (strcmp(event, "input") == 0) {
         if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
-        eng->addPaneInputFilter(pane->id);
+        eng->addPaneInputFilter(pane->id, instId);
         registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else {
         prop = std::string("__evt_") + event;
@@ -368,6 +371,11 @@ static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
         });
 
     if (!ok) return JS_UNDEFINED;
+
+    // Track ownership for cleanup on unload
+    auto* inst = instanceFromCtx(ctx);
+    if (inst) inst->ownedPopups.push_back({paneId, popupId});
+
     return jsPopupNew(ctx, paneId, popupId);
 }
 
@@ -441,16 +449,19 @@ static JSValue jsOverlayAddEventListener(JSContext* ctx, JSValueConst this_val,
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
 
+    auto* inst = instanceFromCtx(ctx);
+    InstanceId instId = inst ? inst->id : 0;
+
     std::string prop;
     if (strcmp(event, "output") == 0) {
         if (!checkPerm(ctx, Perm::IoFilterOutput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput"); }
         prop = "__output_filters";
-        eng->addOverlayOutputFilter(ov->tabId);
+        eng->addOverlayOutputFilter(ov->tabId, instId);
         registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
     } else if (strcmp(event, "input") == 0) {
         if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
-        eng->addOverlayInputFilter(ov->tabId);
+        eng->addOverlayInputFilter(ov->tabId, instId);
         registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
     } else {
         prop = std::string("__evt_") + event;
@@ -659,6 +670,11 @@ static JSValue jsTabCreateOverlay(JSContext* ctx, JSValueConst this_val,
         return JS_UNDEFINED;
     }
     registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(tab->id), overlayObj);
+
+    // Track ownership for cleanup on unload
+    auto* inst = instanceFromCtx(ctx);
+    if (inst) inst->ownedOverlays.push_back(tab->id);
+
     return overlayObj;
 }
 
@@ -893,6 +909,77 @@ static JSValue jsMbUnloadScript(JSContext* ctx, JSValueConst, int argc, JSValueC
     int64_t id;
     JS_ToInt64(ctx, &id, argv[0]);
     if (id > 0) eng->unload(static_cast<uint64_t>(id));
+    return JS_UNDEFINED;
+}
+
+// mb.exit() — unload the calling script instance via a zero-delay timer
+static JSValue jsMbExit(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    Engine* eng = engineFromCtx(ctx);
+    auto* inst = instanceFromCtx(ctx);
+    if (!inst || inst->builtIn) return JS_UNDEFINED; // built-ins can't self-unload
+
+    InstanceId id = inst->id;
+    auto* timer = new uv_timer_t;
+    struct ExitData { Engine* eng; InstanceId id; };
+    timer->data = new ExitData{eng, id};
+    uv_timer_init(eng->loop(), timer);
+    uv_timer_start(timer, [](uv_timer_t* handle) {
+        auto* data = static_cast<ExitData*>(handle->data);
+        data->eng->unload(data->id);
+        delete data;
+        uv_timer_stop(handle);
+        uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
+            delete reinterpret_cast<uv_timer_t*>(h);
+        });
+    }, 0, 0);
+
+    return JS_UNDEFINED;
+}
+
+// mb.setNamespace(name) — claim a namespace for this script instance
+static JSValue jsMbSetNamespace(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "setNamespace requires a non-empty string argument");
+
+    const char* ns = JS_ToCString(ctx, argv[0]);
+    if (!ns) return JS_EXCEPTION;
+    std::string nsStr(ns);
+    JS_FreeCString(ctx, ns);
+
+    if (nsStr.empty())
+        return JS_ThrowTypeError(ctx, "namespace must not be empty");
+
+    Engine* eng = engineFromCtx(ctx);
+    auto* inst = instanceFromCtx(ctx);
+    if (!inst) return JS_UNDEFINED;
+
+    if (!eng->setNamespace(inst->id, nsStr))
+        return JS_ThrowTypeError(ctx, "namespace '%s' is already taken or already set", nsStr.c_str());
+
+    return JS_UNDEFINED;
+}
+
+// mb.registerAction(name) — register a script action as "namespace.name"
+static JSValue jsMbRegisterAction(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ActionsInvoke);
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "registerAction requires a string argument");
+
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_EXCEPTION;
+    std::string nameStr(name);
+    JS_FreeCString(ctx, name);
+
+    Engine* eng = engineFromCtx(ctx);
+    auto* inst = instanceFromCtx(ctx);
+    if (!inst) return JS_UNDEFINED;
+
+    if (!eng->registerAction(inst->id, nameStr))
+        return JS_ThrowTypeError(ctx, "registerAction failed: namespace not set or action already registered");
+
     return JS_UNDEFINED;
 }
 
@@ -1202,6 +1289,12 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, mb, "loadScript",
         JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
+    JS_SetPropertyStr(ctx, mb, "setNamespace",
+        JS_NewCFunction(ctx, jsMbSetNamespace, "setNamespace", 1));
+    JS_SetPropertyStr(ctx, mb, "registerAction",
+        JS_NewCFunction(ctx, jsMbRegisterAction, "registerAction", 1));
+    JS_SetPropertyStr(ctx, mb, "exit",
+        JS_NewCFunction(ctx, jsMbExit, "exit", 0));
     JS_SetPropertyStr(ctx, global, "mb", mb);
     JS_FreeValue(ctx, global);
 }
@@ -1239,11 +1332,72 @@ InstanceId Engine::loadController(const std::string& path) {
 void Engine::unload(InstanceId id)
 {
     for (auto it = instances_.begin(); it != instances_.end(); ++it) {
-        if (it->id == id) {
-            JS_FreeContext(it->ctx);
-            instances_.erase(it);
-            return;
+        if (it->id != id) continue;
+
+        JSContext* ctx = it->ctx;
+        spdlog::info("ScriptEngine: unloading '{}' (id={})", it->path, id);
+
+        // 1. Kill all timers belonging to this context
+        if (loop_) {
+            uv_walk(loop_, [](uv_handle_t* handle, void* arg) {
+                if (handle->type != UV_TIMER) return;
+                auto* td = static_cast<TimerData*>(handle->data);
+                if (!td || td->ctx != static_cast<JSContext*>(arg)) return;
+                uv_timer_stop(reinterpret_cast<uv_timer_t*>(handle));
+                uv_close(handle, [](uv_handle_t* h) {
+                    auto* td = static_cast<TimerData*>(h->data);
+                    JS_FreeValue(td->ctx, td->callback);
+                    delete td;
+                    delete reinterpret_cast<uv_timer_t*>(h);
+                });
+            }, ctx);
         }
+
+        // 2. Destroy owned popups
+        for (auto& ref : it->ownedPopups)
+            callbacks_.destroyPopup(ref.pane, ref.popupId);
+
+        // 3. Pop owned overlays
+        for (auto tabId : it->ownedOverlays)
+            callbacks_.popOverlay(tabId);
+
+        // 4. Decrement filter counts for this instance's registrations
+        for (auto pane : it->paneOutputFilters) {
+            auto fc = paneOutputFilterCount_.find(pane);
+            if (fc != paneOutputFilterCount_.end() && --fc->second <= 0)
+                paneOutputFilterCount_.erase(fc);
+        }
+        for (auto pane : it->paneInputFilters) {
+            auto fc = paneInputFilterCount_.find(pane);
+            if (fc != paneInputFilterCount_.end() && --fc->second <= 0)
+                paneInputFilterCount_.erase(fc);
+        }
+        for (auto tab : it->overlayOutputFilters) {
+            auto fc = overlayOutputFilterCount_.find(tab);
+            if (fc != overlayOutputFilterCount_.end() && --fc->second <= 0)
+                overlayOutputFilterCount_.erase(fc);
+        }
+        for (auto tab : it->overlayInputFilters) {
+            auto fc = overlayInputFilterCount_.find(tab);
+            if (fc != overlayInputFilterCount_.end() && --fc->second <= 0)
+                overlayInputFilterCount_.erase(fc);
+        }
+
+        // 5. Remove registered actions for this instance's namespace
+        if (!it->ns.empty()) {
+            std::string prefix = it->ns + ".";
+            for (auto ait = registeredActions_.begin(); ait != registeredActions_.end(); ) {
+                if (ait->substr(0, prefix.size()) == prefix)
+                    ait = registeredActions_.erase(ait);
+                else
+                    ++ait;
+            }
+        }
+
+        // 6. Free context and remove instance
+        JS_FreeContext(ctx);
+        instances_.erase(it);
+        return;
     }
 }
 
@@ -1280,6 +1434,15 @@ InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) 
 
 InstanceId Engine::loadScriptInternal(const std::string& path, const std::string& content,
                                        uint32_t permissions) {
+    // Unload any existing instance with the same path
+    for (auto& inst : instances_) {
+        if (inst.path == path && !inst.builtIn) {
+            spdlog::info("ScriptEngine: replacing existing instance of '{}'", path);
+            unload(inst.id);
+            break;
+        }
+    }
+
     JSContext* ctx = createContext();
     InstanceId id = nextId_++;
     setupGlobals(ctx, id);
@@ -1929,6 +2092,65 @@ Engine::Instance* Engine::findInstanceByCtx(JSContext* ctx)
     for (auto& inst : instances_)
         if (inst.ctx == ctx) return &inst;
     return nullptr;
+}
+
+void Engine::addPaneOutputFilter(PaneId pane, InstanceId instId) {
+    paneOutputFilterCount_[pane]++;
+    if (auto* inst = findInstance(instId))
+        inst->paneOutputFilters.push_back(pane);
+}
+
+void Engine::addPaneInputFilter(PaneId pane, InstanceId instId) {
+    paneInputFilterCount_[pane]++;
+    if (auto* inst = findInstance(instId))
+        inst->paneInputFilters.push_back(pane);
+}
+
+void Engine::addOverlayOutputFilter(TabId tab, InstanceId instId) {
+    overlayOutputFilterCount_[tab]++;
+    if (auto* inst = findInstance(instId))
+        inst->overlayOutputFilters.push_back(tab);
+}
+
+void Engine::addOverlayInputFilter(TabId tab, InstanceId instId) {
+    overlayInputFilterCount_[tab]++;
+    if (auto* inst = findInstance(instId))
+        inst->overlayInputFilters.push_back(tab);
+}
+
+bool Engine::setNamespace(InstanceId id, const std::string& ns)
+{
+    auto* inst = findInstance(id);
+    if (!inst) return false;
+    if (!inst->ns.empty()) return false; // already set
+
+    // Check no other instance holds this namespace
+    for (auto& other : instances_) {
+        if (other.id != id && other.ns == ns) return false;
+    }
+
+    inst->ns = ns;
+    spdlog::info("ScriptEngine: instance {} claimed namespace '{}'", id, ns);
+    return true;
+}
+
+bool Engine::registerAction(InstanceId id, const std::string& name)
+{
+    auto* inst = findInstance(id);
+    if (!inst) return false;
+    if (inst->ns.empty()) return false; // no namespace set
+
+    std::string fullName = inst->ns + "." + name;
+    if (registeredActions_.count(fullName)) return false; // already registered
+
+    registeredActions_.insert(fullName);
+    spdlog::info("ScriptEngine: registered action '{}'", fullName);
+    return true;
+}
+
+bool Engine::isActionRegistered(const std::string& fullName) const
+{
+    return registeredActions_.count(fullName) > 0;
 }
 
 std::string Engine::readFile(const std::string& path)

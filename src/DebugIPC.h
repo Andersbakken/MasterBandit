@@ -8,15 +8,17 @@
 
 #include <uv.h>
 #include <libwebsockets.h>
+#include <glaze/glaze.hpp>
 
 class Terminal;
 
 class DebugIPC {
 public:
-    using GridCallback  = std::function<std::string(int id)>;
-    using StatsCallback = std::function<std::string(int id)>;
+    using GridCallback     = std::function<std::string(int id)>;
+    using StatsCallback    = std::function<std::string(int id)>;
+    using TerminalCallback = std::function<Terminal*()>;
 
-    DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb,
+    DebugIPC(uv_loop_t* loop, TerminalCallback termCb, GridCallback gridCb,
              StatsCallback statsCb = {});
     ~DebugIPC();
 
@@ -34,6 +36,11 @@ public:
     int pngScreenshotId() const { return pngId_; }
     void markReadbackInProgress() { pngReadbackInProgress_ = true; }
 
+    // Target and cell-rect for targeted screenshots
+    const std::string& pngTarget() const { return pngTarget_; }
+    struct CellRect { int x = 0, y = 0, w = 0, h = 0; bool valid = false; };
+    const CellRect& pngCellRect() const { return pngCellRect_; }
+
     // Public because it's referenced from the static protocol table
     static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
                           void* user, void* in, size_t len);
@@ -43,7 +50,7 @@ private:
     void sendResponse(struct lws* wsi, const std::string& json);
 
     // Command handlers
-    void cmdScreenshotPng(struct lws* wsi, int id);
+    void cmdScreenshotPng(struct lws* wsi, int id, const glz::generic& j);
     void cmdScreenshotGrid(struct lws* wsi, int id);
     void cmdSendKey(struct lws* wsi, int id, const std::string& text,
                     const std::string& key, const std::vector<std::string>& mods);
@@ -53,7 +60,7 @@ private:
 
     struct lws_context* ctx_ = nullptr;
     std::string socketPath_;
-    Terminal* terminal_;
+    TerminalCallback termCb_;
     GridCallback gridCb_;
     StatsCallback statsCb_;
 
@@ -75,6 +82,8 @@ private:
     bool pngReadbackInProgress_ = false;
     int pngId_ = 0;
     struct lws* pngWsi_ = nullptr;
+    std::string pngTarget_;
+    CellRect pngCellRect_;
 
     // Thread-safe log forwarding
     uv_async_t logAsync_;

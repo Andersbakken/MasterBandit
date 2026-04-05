@@ -56,7 +56,7 @@ void platformOpenURL(const std::string& url);
 
 class PlatformDawn {
 public:
-    PlatformDawn(int argc, char** argv);
+    PlatformDawn(int argc, char** argv, bool headless = false);
     ~PlatformDawn();
 
     int exec();
@@ -68,6 +68,14 @@ public:
     wgpu::Device device() const { return device_; }
     wgpu::Queue queue() const { return queue_; }
     TexturePool& texturePool() { return texturePool_; }
+    bool isHeadless() const { return headless_; }
+
+    void setTestConfig(const std::string& fontPath, int cols, int rows, float fontSize) {
+        testFontPath_ = fontPath;
+        testCols_ = cols;
+        testRows_ = rows;
+        testFontSize_ = fontSize;
+    }
 
     const std::string& exeDir() const { return exeDir_; }
 
@@ -80,7 +88,10 @@ public:
     void onCursorPos(double x, double y);
 
     void renderFrame();
-    bool shouldClose() { return glfwWindow_ && glfwWindowShouldClose(glfwWindow_); }
+    bool shouldClose() {
+        if (headless_) return false;
+        return glfwWindow_ && glfwWindowShouldClose(glfwWindow_);
+    }
 
     std::string gridToJson(int id);
     std::string statsJson(int id);
@@ -98,6 +109,15 @@ private:
     TexturePool texturePool_;
     int exitStatus_ = 0;
     bool running_ = false;
+
+    // Headless / test mode
+    bool headless_ = false;
+    bool platformInitialized_ = false;
+    int testCols_ = 80;
+    int testRows_ = 24;
+    float testFontSize_ = 16.0f;
+    std::string testFontPath_;
+    wgpu::Texture headlessComposite_;  // offscreen composite target (headless, with CopyDst)
     uv_loop_t* loop_ = nullptr;
     uv_idle_t idleCb_ = {};
     std::string exeDir_;
@@ -261,4 +281,4 @@ private:
     void notifyPaneFocusChange(Tab* tab, int prevId, int newId);
 };
 
-std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv);
+std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, bool headless = false);

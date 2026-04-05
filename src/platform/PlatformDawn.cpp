@@ -48,7 +48,8 @@ static std::string findMonospaceFont()
     return {};
 }
 
-PlatformDawn::PlatformDawn(int argc, char** argv)
+PlatformDawn::PlatformDawn(int argc, char** argv, bool headless)
+    : headless_(headless)
 {
     try {
         auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true);
@@ -63,9 +64,11 @@ PlatformDawn::PlatformDawn(int argc, char** argv)
 
     exeDir_ = fs::weakly_canonical(fs::path(argv[0])).parent_path().string();
 
-    if (!glfwInit()) {
-        spdlog::error("glfwInit failed");
-        return;
+    if (!headless_) {
+        if (!glfwInit()) {
+            spdlog::error("glfwInit failed");
+            return;
+        }
     }
 
     nativeInstance_ = std::make_unique<dawn::native::Instance>();
@@ -123,6 +126,9 @@ PlatformDawn::~PlatformDawn()
     for (auto* t : pendingTabBarRelease_) texturePool_.release(t);
     pendingTabBarRelease_.clear();
 
+    // Release headless composite texture
+    headlessComposite_ = nullptr;
+
     // Release any pending compute states before destroying renderer
     for (auto* cs : pendingComputeRelease_) renderer_.computePool().release(cs);
     pendingComputeRelease_.clear();
@@ -142,49 +148,60 @@ PlatformDawn::~PlatformDawn()
     device_ = {};
     texturePool_.clear();
     nativeInstance_.reset();
-    glfwTerminate();
+    if (!headless_) glfwTerminate();
 }
 
 void PlatformDawn::createTerminal(const TerminalOptions& options)
 {
     if (!device_) return;
 
-    // Create the GLFW window only once
-    if (!glfwWindow_) {
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindow_ = glfwCreateWindow(800, 600, "MasterBandit", nullptr, nullptr);
-        if (!glfwWindow_) {
-            spdlog::error("glfwCreateWindow failed");
-            return;
+    // One-time platform initialization (window/surface in windowed mode, font/renderer in both)
+    if (!platformInitialized_) {
+        platformInitialized_ = true;
+
+        if (!headless_) {
+            // --- Windowed: create GLFW window and surface ---
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+            glfwWindow_ = glfwCreateWindow(800, 600, "MasterBandit", nullptr, nullptr);
+            if (!glfwWindow_) {
+                spdlog::error("glfwCreateWindow failed");
+                return;
+            }
+
+            wgpu::Instance instance(nativeInstance_->Get());
+            surface_ = createNativeSurface(glfwWindow_, instance);
+            if (!surface_) {
+                spdlog::error("Failed to create Dawn surface");
+                glfwDestroyWindow(glfwWindow_);
+                glfwWindow_ = nullptr;
+                return;
+            }
+
+            int w, h;
+            glfwGetFramebufferSize(glfwWindow_, &w, &h);
+            fbWidth_ = static_cast<uint32_t>(w);
+            fbHeight_ = static_cast<uint32_t>(h);
+
+            float xscale, yscale;
+            glfwGetWindowContentScale(glfwWindow_, &xscale, &yscale);
+            contentScaleX_ = xscale;
+            contentScaleY_ = yscale;
+            fontSize_ = options.fontSize * xscale;
+            baseFontSize_ = fontSize_;
+
+            configureSurface(fbWidth_, fbHeight_);
+        } else {
+            // --- Headless: no window, no surface ---
+            contentScaleX_ = contentScaleY_ = 1.0f;
+            fontSize_ = testFontSize_;
+            baseFontSize_ = fontSize_;
         }
-
-        wgpu::Instance instance(nativeInstance_->Get());
-        surface_ = createNativeSurface(glfwWindow_, instance);
-        if (!surface_) {
-            spdlog::error("Failed to create Dawn surface");
-            glfwDestroyWindow(glfwWindow_);
-            glfwWindow_ = nullptr;
-            return;
-        }
-
-        // Get framebuffer size and content scale
-        int w, h;
-        glfwGetFramebufferSize(glfwWindow_, &w, &h);
-        fbWidth_ = static_cast<uint32_t>(w);
-        fbHeight_ = static_cast<uint32_t>(h);
-
-        float xscale, yscale;
-        glfwGetWindowContentScale(glfwWindow_, &xscale, &yscale);
-        contentScaleX_ = xscale;
-        contentScaleY_ = yscale;
-        fontSize_ = options.fontSize * xscale;
-        baseFontSize_ = fontSize_;
-
-        configureSurface(fbWidth_, fbHeight_);
 
         // Load font
         std::string fontPath;
-        if (options.font.empty()) {
+        if (headless_ && !testFontPath_.empty()) {
+            fontPath = testFontPath_;
+        } else if (options.font.empty()) {
             fontPath = findMonospaceFont();
         } else {
             fontPath = resolveFontFamily(options.font);
@@ -208,38 +225,44 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
         std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
 
-        // Load bold variant
-        const std::string& family = options.font.empty() ? std::string{} : options.font;
-        std::string boldPath = family.empty() ? std::string{} : resolveFontFamily(family, true);
-        bool hasBoldFont = false;
-        if (!boldPath.empty() && boldPath != fontPath) {
-            auto boldData = loadFontFile(boldPath);
-            if (!boldData.empty()) {
-                spdlog::info("Using bold font: {}", boldPath);
-                fontList.push_back(std::move(boldData));
-                hasBoldFont = true;
+        if (!headless_) {
+            // Load bold variant (windowed only)
+            const std::string& family = options.font.empty() ? std::string{} : options.font;
+            std::string boldPath = family.empty() ? std::string{} : resolveFontFamily(family, true);
+            bool hasBoldFont = false;
+            if (!boldPath.empty() && boldPath != fontPath) {
+                auto boldData = loadFontFile(boldPath);
+                if (!boldData.empty()) {
+                    spdlog::info("Using bold font: {}", boldPath);
+                    fontList.push_back(std::move(boldData));
+                    hasBoldFont = true;
+                }
             }
-        }
 
-        textSystem_.registerFont(fontName_, fontList, 48.0f);
-        textSystem_.setPrimaryFontPath(fontName_, primaryFontPath_);
-        textSystem_.setSystemFallback([this](const std::string& path, char32_t cp) {
-            return fontFallback_.fontDataForCodepoint(path, cp);
-        });
+            textSystem_.registerFont(fontName_, fontList, 48.0f);
+            textSystem_.setPrimaryFontPath(fontName_, primaryFontPath_);
+            textSystem_.setSystemFallback([this](const std::string& path, char32_t cp) {
+                return fontFallback_.fontDataForCodepoint(path, cp);
+            });
 
-        if (!hasBoldFont) {
-            textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
-        }
+            if (!hasBoldFont) {
+                textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
+            }
 
-        // Load bundled Symbols Nerd Font Mono as a built-in fallback for
-        // powerline glyphs (U+E0B0-E0B3) and other symbols.
-        auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
-        auto nerdFontData = loadFontFile(nerdFontPath.string());
-        if (!nerdFontData.empty()) {
-            textSystem_.addFallbackFont(fontName_, nerdFontData);
-            spdlog::info("Loaded built-in Symbols Nerd Font Mono");
+            // Load bundled Symbols Nerd Font Mono as a built-in fallback
+            auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
+            auto nerdFontData = loadFontFile(nerdFontPath.string());
+            if (!nerdFontData.empty()) {
+                textSystem_.addFallbackFont(fontName_, nerdFontData);
+                spdlog::info("Loaded built-in Symbols Nerd Font Mono");
+            } else {
+                spdlog::warn("Built-in Symbols Nerd Font Mono not found at {}", nerdFontPath.string());
+            }
         } else {
-            spdlog::warn("Built-in Symbols Nerd Font Mono not found at {}", nerdFontPath.string());
+            // Headless: single font, no fallback
+            textSystem_.registerFont(fontName_, fontList, 48.0f);
+            textSystem_.setPrimaryFontPath(fontName_, primaryFontPath_);
+            textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
         }
 
         const FontData* font = textSystem_.getFont(fontName_);
@@ -257,6 +280,13 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
         spdlog::info("Font metrics: charWidth={:.1f}, lineHeight={:.1f}", charWidth_, lineHeight_);
 
+        // In headless mode, compute framebuffer size from target cols/rows
+        if (headless_) {
+            fbWidth_ = static_cast<uint32_t>(std::ceil(testCols_ * charWidth_));
+            fbHeight_ = static_cast<uint32_t>(std::ceil(testRows_ * lineHeight_));
+            spdlog::info("Headless framebuffer: {}x{} ({}x{} cells)", fbWidth_, fbHeight_, testCols_, testRows_);
+        }
+
         std::string shaderDir = fs::weakly_canonical(
             fs::path(exeDir_) / "shaders").string();
         if (!fs::exists(shaderDir)) {
@@ -266,51 +296,53 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         renderer_.initProgressPipeline(device_, shaderDir);
         renderer_.uploadFontAtlas(queue_, fontName_, *font);
 
-        // Wire up GLFW callbacks
-        glfwSetWindowUserPointer(glfwWindow_, this);
+        if (!headless_) {
+            // Wire up GLFW callbacks
+            glfwSetWindowUserPointer(glfwWindow_, this);
 
-        glfwSetInputMode(glfwWindow_, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
-        glfwSetKeyCallback(glfwWindow_, [](GLFWwindow* w, int key, int scancode, int action, int mods) {
-            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onKey(key, scancode, action, mods);
-        });
-
-        glfwSetCharCallback(glfwWindow_, [](GLFWwindow* w, unsigned int codepoint) {
-            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onChar(codepoint);
-        });
-
-        glfwSetFramebufferSizeCallback(glfwWindow_, [](GLFWwindow* w, int width, int height) {
-            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onFramebufferResize(width, height);
-        });
-
-        glfwSetMouseButtonCallback(glfwWindow_, [](GLFWwindow* w, int button, int action, int mods) {
-            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onMouseButton(button, action, mods);
-        });
-
-        glfwSetCursorPosCallback(glfwWindow_, [](GLFWwindow* w, double x, double y) {
-            static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onCursorPos(x, y);
-        });
-
-        glfwSetScrollCallback(glfwWindow_, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
-            auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
-            int lines = static_cast<int>(yoffset);
-            if (lines != 0) {
-                Terminal* t = self->activeTerm();
-                if (t) t->scrollViewport(lines);
-            }
-        });
-
-        glfwSetWindowFocusCallback(glfwWindow_, [](GLFWwindow* w, int focused) {
-            auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
-            Terminal* t = self->activeTerm();
-            if (t) t->focusEvent(focused != 0);
-        });
-
-        // Observe system appearance changes for mode 2031
-        platformObserveAppearanceChanges([this](bool isDark) {
-            notifyAllTerminals([isDark](TerminalEmulator* term) {
-                term->notifyColorPreference(isDark);
+            glfwSetInputMode(glfwWindow_, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
+            glfwSetKeyCallback(glfwWindow_, [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onKey(key, scancode, action, mods);
             });
-        });
+
+            glfwSetCharCallback(glfwWindow_, [](GLFWwindow* w, unsigned int codepoint) {
+                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onChar(codepoint);
+            });
+
+            glfwSetFramebufferSizeCallback(glfwWindow_, [](GLFWwindow* w, int width, int height) {
+                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onFramebufferResize(width, height);
+            });
+
+            glfwSetMouseButtonCallback(glfwWindow_, [](GLFWwindow* w, int button, int action, int mods) {
+                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onMouseButton(button, action, mods);
+            });
+
+            glfwSetCursorPosCallback(glfwWindow_, [](GLFWwindow* w, double x, double y) {
+                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onCursorPos(x, y);
+            });
+
+            glfwSetScrollCallback(glfwWindow_, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
+                auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
+                int lines = static_cast<int>(yoffset);
+                if (lines != 0) {
+                    Terminal* t = self->activeTerm();
+                    if (t) t->scrollViewport(lines);
+                }
+            });
+
+            glfwSetWindowFocusCallback(glfwWindow_, [](GLFWwindow* w, int focused) {
+                auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
+                Terminal* t = self->activeTerm();
+                if (t) t->focusEvent(focused != 0);
+            });
+
+            // Observe system appearance changes for mode 2031
+            platformObserveAppearanceChanges([this](bool isDark) {
+                notifyAllTerminals([isDark](TerminalEmulator* term) {
+                    term->notifyColorPreference(isDark);
+                });
+            });
+        }
     }
 
     // Create a layout and tab for this terminal
@@ -338,20 +370,26 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             break;
         }
     };
-    cbs.copyToClipboard = [this](const std::string& text) {
-        glfwSetClipboardString(glfwWindow_, text.c_str());
-    };
-    cbs.pasteFromClipboard = [this]() -> std::string {
-        const char* clip = glfwGetClipboardString(glfwWindow_);
-        return clip ? std::string(clip) : std::string();
-    };
+    if (!headless_) {
+        cbs.copyToClipboard = [this](const std::string& text) {
+            glfwSetClipboardString(glfwWindow_, text.c_str());
+        };
+        cbs.pasteFromClipboard = [this]() -> std::string {
+            const char* clip = glfwGetClipboardString(glfwWindow_);
+            return clip ? std::string(clip) : std::string();
+        };
+    } else {
+        cbs.copyToClipboard = [](const std::string&) {};
+        cbs.pasteFromClipboard = []() -> std::string { return {}; };
+    }
     cbs.onTitleChanged = [this, paneId, tabIdx = static_cast<int>(tabs_.size())](const std::string& title) {
         if (tabIdx >= static_cast<int>(tabs_.size())) return;
         Tab* t = tabs_[tabIdx].get();
         if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
         if (t->layout()->focusedPaneId() == paneId) {
             t->setTitle(title);
-            if (tabIdx == activeTabIdx_) glfwSetWindowTitle(glfwWindow_, title.c_str());
+            if (tabIdx == activeTabIdx_ && !headless_)
+                glfwSetWindowTitle(glfwWindow_, title.c_str());
             tabBarDirty_ = true;
             needsRedraw_ = true;
         }
@@ -378,7 +416,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     };
     cbs.cellPixelWidth = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    cbs.isDarkMode = []() { return platformIsDarkMode(); };
+    cbs.isDarkMode = headless_ ? []() { return true; } : []() { return platformIsDarkMode(); };
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
         for (auto& tab : tabs_) {
             if (Pane* p = tab->layout()->pane(paneId)) {
@@ -387,9 +425,11 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             }
         }
     };
-    cbs.onDesktopNotification = [](const std::string& title, const std::string& body, const std::string&) {
-        platformSendNotification(title, body);
-    };
+    cbs.onDesktopNotification = headless_
+        ? [](const std::string&, const std::string&, const std::string&) {}
+        : [](const std::string& title, const std::string& body, const std::string&) {
+            platformSendNotification(title, body);
+        };
 
     PlatformCallbacks pcbs;
         pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
@@ -448,7 +488,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     tab->setTitle(pane->title());
     activeTabIdx_ = static_cast<int>(tabs_.size());
     tabs_.push_back(std::move(tab));
-    glfwSetWindowTitle(glfwWindow_, pane->title().c_str());
+    if (!headless_) glfwSetWindowTitle(glfwWindow_, pane->title().c_str());
 
     // Store options for future createTab() calls
     if (tabs_.size() == 1) {
@@ -537,7 +577,7 @@ void PlatformDawn::configureSurface(uint32_t width, uint32_t height)
     surface_.Configure(&config);
 }
 
-std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv)
+std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, bool headless)
 {
-    return std::make_unique<PlatformDawn>(argc, argv);
+    return std::make_unique<PlatformDawn>(argc, argv, headless);
 }

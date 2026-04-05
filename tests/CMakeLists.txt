@@ -2,6 +2,9 @@ find_package(doctest CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(SheenBidi CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+find_package(libwebsockets CONFIG REQUIRED)
+find_package(libuv CONFIG REQUIRED)
+find_package(glaze CONFIG REQUIRED)
 
 set(TEST_SOURCES
     test_terminal.cpp
@@ -19,6 +22,8 @@ set(TEST_SOURCES
     test_kitty_keyboard.cpp
     test_reflow.cpp
     test_prompt.cpp
+    test_render.cpp
+    RenderTest.cpp
     ../src/Log.cpp
     ../src/text.cpp
 )
@@ -46,6 +51,15 @@ target_link_libraries(mb-tests PRIVATE
     harfbuzz-gpu
     SheenBidi::SheenBidi
     libunibreak::libunibreak
+    websockets
+    libuv::uv_a
+    glaze::glaze
+)
+
+target_compile_definitions(mb-tests PRIVATE
+    MB_BINARY="$<TARGET_FILE:mb>"
+    MB_TEST_FONT="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/fira/FiraCodeNerdFontMono-Regular.ttf"
+    MB_REF_DIR="${CMAKE_SOURCE_DIR}/tests/reference"
 )
 
 if(APPLE)

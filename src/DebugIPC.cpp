@@ -147,9 +147,9 @@ static const struct lws_protocols sProtocols[] = {
     LWS_PROTOCOL_LIST_TERM
 };
 
-DebugIPC::DebugIPC(uv_loop_t* loop, Terminal* terminal, GridCallback gridCb,
+DebugIPC::DebugIPC(uv_loop_t* loop, TerminalCallback termCb, GridCallback gridCb,
                    StatsCallback statsCb)
-    : terminal_(terminal)
+    : termCb_(std::move(termCb))
     , gridCb_(std::move(gridCb))
     , statsCb_(std::move(statsCb))
 {
@@ -232,7 +232,7 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
     if (cmd == "screenshot") {
         std::string format = jsonStr(j, "format", "grid");
         if (format == "png") {
-            cmdScreenshotPng(wsi, id);
+            cmdScreenshotPng(wsi, id, j);
         } else {
             cmdScreenshotGrid(wsi, id);
         }
@@ -299,7 +299,7 @@ void DebugIPC::cmdScreenshotGrid(struct lws* wsi, int id)
 // Command: screenshot (png)
 // ============================================================================
 
-void DebugIPC::cmdScreenshotPng(struct lws* wsi, int id)
+void DebugIPC::cmdScreenshotPng(struct lws* wsi, int id, const glz::generic& j)
 {
     if (pngPending_) {
         sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "screenshot already pending"}}));
@@ -309,7 +309,21 @@ void DebugIPC::cmdScreenshotPng(struct lws* wsi, int id)
     pngPending_ = true;
     pngId_ = id;
     pngWsi_ = wsi;
-    // Readback happens in TerminalWindow::renderTerminal() on next frame
+    pngTarget_ = jsonStr(j, "target");
+    pngCellRect_ = {};
+
+    // Parse optional cell rect: {"rect": {"x": 0, "y": 0, "w": 10, "h": 3}}
+    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        auto it = obj->find("rect");
+        if (it != obj->end()) {
+            pngCellRect_.x = jsonInt(it->second, "x");
+            pngCellRect_.y = jsonInt(it->second, "y");
+            pngCellRect_.w = jsonInt(it->second, "w");
+            pngCellRect_.h = jsonInt(it->second, "h");
+            pngCellRect_.valid = (pngCellRect_.w > 0 && pngCellRect_.h > 0);
+        }
+    }
+    // Readback happens in renderFrame() on next frame
 }
 
 void DebugIPC::onPngReady(const std::string& base64Png)
@@ -328,6 +342,8 @@ void DebugIPC::onPngReady(const std::string& base64Png)
     pngReadbackInProgress_ = false;
     pngWsi_ = nullptr;
     pngId_ = 0;
+    pngTarget_.clear();
+    pngCellRect_ = {};
 }
 
 // ============================================================================
@@ -369,6 +385,12 @@ static Key nameToKey(const std::string& name)
 void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
                           const std::string& key, const std::vector<std::string>& mods)
 {
+    Terminal* terminal = termCb_ ? termCb_() : nullptr;
+    if (!terminal) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no active terminal"}}));
+        return;
+    }
+
     if (!text.empty()) {
         for (char c : text) {
             KeyEvent ev;
@@ -376,7 +398,7 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
             ev.text = std::string(1, c);
             ev.count = 1;
             ev.autoRepeat = false;
-            terminal_->keyPressEvent(&ev);
+            terminal->keyPressEvent(&ev);
         }
     } else if (!key.empty()) {
         Key k = nameToKey(key);
@@ -397,13 +419,13 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
                 ev.text = std::string(1, static_cast<char>(key[0] - 'A' + 1));
             }
 
-            terminal_->keyPressEvent(&ev);
+            terminal->keyPressEvent(&ev);
         } else if (k != Key_unknown) {
             KeyEvent ev;
             ev.key = k;
             ev.count = 1;
             ev.autoRepeat = false;
-            terminal_->keyPressEvent(&ev);
+            terminal->keyPressEvent(&ev);
         }
     }
 

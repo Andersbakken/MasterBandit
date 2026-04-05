@@ -257,10 +257,26 @@ void PlatformDawn::renderFrame()
     }
 
     wgpu::SurfaceTexture surfaceTexture;
-    surface_.GetCurrentTexture(&surfaceTexture);
-    if (surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
-        surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
-        return;
+    wgpu::Texture compositeTarget;
+    if (!headless_) {
+        surface_.GetCurrentTexture(&surfaceTexture);
+        if (surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
+            surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+            return;
+        }
+        compositeTarget = surfaceTexture.texture;
+    } else {
+        // Headless: render to an offscreen texture with CopyDst for compositing
+        if (!headlessComposite_) {
+            wgpu::TextureDescriptor desc = {};
+            desc.size = {fbWidth_, fbHeight_, 1};
+            desc.format = wgpu::TextureFormat::BGRA8Unorm;
+            desc.usage = wgpu::TextureUsage::RenderAttachment
+                       | wgpu::TextureUsage::CopySrc
+                       | wgpu::TextureUsage::CopyDst;
+            headlessComposite_ = device_.CreateTexture(&desc);
+        }
+        compositeTarget = headlessComposite_;
     }
 
     FontData* font = const_cast<FontData*>(textSystem_.getFont(fontName_));
@@ -613,13 +629,13 @@ void PlatformDawn::renderFrame()
     if (!compositeEntries.empty()) {
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-        renderer_.composite(encoder, surfaceTexture.texture, compositeEntries);
+        renderer_.composite(encoder, compositeTarget, compositeEntries);
 
         // Draw per-pane dividers (pre-built vertex buffers, no allocation)
         for (auto& panePtr : currentTab->layout()->panes()) {
             auto it = paneRenderStates_.find(panePtr->id());
             if (it == paneRenderStates_.end() || !it->second.dividerVB) continue;
-            renderer_.drawDivider(encoder, surfaceTexture.texture,
+            renderer_.drawDivider(encoder, compositeTarget,
                                    fbWidth_, fbHeight_, it->second.dividerVB);
         }
 
@@ -651,7 +667,7 @@ void PlatformDawn::renderFrame()
                 pbp.r = (st == 2) ? 0.8f : progressColorR_;
                 pbp.g = (st == 2) ? 0.2f : progressColorG_;
                 pbp.b = (st == 2) ? 0.2f : progressColorB_;
-                renderer_.drawProgressBar(encoder, queue_, surfaceTexture.texture,
+                renderer_.drawProgressBar(encoder, queue_, compositeTarget,
                                            fbWidth_, fbHeight_, pbp);
             } else if (st == 3) {
                 // Indeterminate: sliding segment with gradient edges
@@ -677,73 +693,113 @@ void PlatformDawn::renderFrame()
                     pbp.r = progressColorR_;
                     pbp.g = progressColorG_;
                     pbp.b = progressColorB_;
-                    renderer_.drawProgressBar(encoder, queue_, surfaceTexture.texture,
+                    renderer_.drawProgressBar(encoder, queue_, compositeTarget,
                                                fbWidth_, fbHeight_, pbp);
                 }
             }
         }
 
         if (pngNeeded) {
-            uint32_t bytesPerRow = ((fbWidth_ * 4 + 255) / 256) * 256;
-            uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * fbHeight_;
+            // Resolve target texture based on IPC request
+            wgpu::Texture srcTexture = compositeTarget;
+            uint32_t srcW = fbWidth_, srcH = fbHeight_;
 
-            wgpu::BufferDescriptor bufDesc = {};
-            bufDesc.size = bufferSize;
-            bufDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
-            wgpu::Buffer readbackBuf = device_.CreateBuffer(&bufDesc);
+            const auto& target = debugIPC_->pngTarget();
+            if (target.starts_with("pane:")) {
+                int paneId = std::stoi(target.substr(5));
+                auto it = paneRenderStates_.find(paneId);
+                if (it != paneRenderStates_.end() && it->second.heldTexture) {
+                    srcTexture = it->second.heldTexture->texture;
+                    srcW = it->second.heldTexture->width;
+                    srcH = it->second.heldTexture->height;
+                }
+            } else if (target == "tabbar" && tabBarTexture_) {
+                srcTexture = tabBarTexture_->texture;
+                srcW = tabBarTexture_->width;
+                srcH = tabBarTexture_->height;
+            }
 
-            wgpu::TexelCopyTextureInfo src = {};
-            src.texture = surfaceTexture.texture;
-            wgpu::TexelCopyBufferInfo dst = {};
-            dst.buffer = readbackBuf;
-            dst.layout.bytesPerRow = bytesPerRow;
-            dst.layout.rowsPerImage = fbHeight_;
+            // Apply cell-rect cropping (convert cell coords to pixels)
+            uint32_t copyX = 0, copyY = 0, copyW = srcW, copyH = srcH;
+            const auto& cellRect = debugIPC_->pngCellRect();
+            if (cellRect.valid) {
+                copyX = static_cast<uint32_t>(cellRect.x * charWidth_ + padLeft_);
+                copyY = static_cast<uint32_t>(cellRect.y * lineHeight_ + padTop_);
+                copyW = static_cast<uint32_t>(cellRect.w * charWidth_);
+                copyH = static_cast<uint32_t>(cellRect.h * lineHeight_);
+                // Clamp to texture bounds
+                if (copyX + copyW > srcW) copyW = srcW > copyX ? srcW - copyX : 0;
+                if (copyY + copyH > srcH) copyH = srcH > copyY ? srcH - copyY : 0;
+            }
 
-            wgpu::Extent3D extent = {fbWidth_, fbHeight_, 1};
-            encoder.CopyTextureToBuffer(&src, &dst, &extent);
+            if (copyW == 0 || copyH == 0) {
+                // Empty region — send empty response and submit
+                debugIPC_->onPngReady("");
+                wgpu::CommandBuffer cmds = encoder.Finish();
+                queue_.Submit(1, &cmds);
+            } else {
+                uint32_t bytesPerRow = ((copyW * 4 + 255) / 256) * 256;
+                uint64_t bufferSize = static_cast<uint64_t>(bytesPerRow) * copyH;
 
-            wgpu::CommandBuffer cmds = encoder.Finish();
-            queue_.Submit(1, &cmds);
+                wgpu::BufferDescriptor bufDesc = {};
+                bufDesc.size = bufferSize;
+                bufDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
+                wgpu::Buffer readbackBuf = device_.CreateBuffer(&bufDesc);
 
-            DebugIPC* ipc = debugIPC_.get();
-            uint32_t w = fbWidth_, h = fbHeight_;
-            debugIPC_->markReadbackInProgress();
+                wgpu::TexelCopyTextureInfo src = {};
+                src.texture = srcTexture;
+                src.origin = {copyX, copyY, 0};
+                wgpu::TexelCopyBufferInfo dst = {};
+                dst.buffer = readbackBuf;
+                dst.layout.bytesPerRow = bytesPerRow;
+                dst.layout.rowsPerImage = copyH;
 
-            readbackBuf.MapAsync(wgpu::MapMode::Read, 0, bufferSize,
-                wgpu::CallbackMode::AllowSpontaneous,
-                [readbackBuf, ipc, w, h, bytesPerRow](wgpu::MapAsyncStatus status, wgpu::StringView) mutable {
-                    if (status != wgpu::MapAsyncStatus::Success) return;
-                    const uint8_t* mapped = static_cast<const uint8_t*>(
-                        readbackBuf.GetConstMappedRange(0, static_cast<size_t>(bytesPerRow) * h));
-                    if (!mapped) { readbackBuf.Unmap(); return; }
+                wgpu::Extent3D extent = {copyW, copyH, 1};
+                encoder.CopyTextureToBuffer(&src, &dst, &extent);
 
-                    std::vector<uint8_t> rgba(w * h * 4);
-                    for (uint32_t row = 0; row < h; ++row) {
-                        const uint8_t* s = mapped + row * bytesPerRow;
-                        uint8_t* d = rgba.data() + row * w * 4;
-                        for (uint32_t col = 0; col < w; ++col) {
-                            d[col*4+0] = s[col*4+2];
-                            d[col*4+1] = s[col*4+1];
-                            d[col*4+2] = s[col*4+0];
-                            d[col*4+3] = s[col*4+3];
+                wgpu::CommandBuffer cmds = encoder.Finish();
+                queue_.Submit(1, &cmds);
+
+                DebugIPC* ipc = debugIPC_.get();
+                uint32_t w = copyW, h = copyH;
+                debugIPC_->markReadbackInProgress();
+
+                readbackBuf.MapAsync(wgpu::MapMode::Read, 0, bufferSize,
+                    wgpu::CallbackMode::AllowSpontaneous,
+                    [readbackBuf, ipc, w, h, bytesPerRow](wgpu::MapAsyncStatus status, wgpu::StringView) mutable {
+                        if (status != wgpu::MapAsyncStatus::Success) return;
+                        const uint8_t* mapped = static_cast<const uint8_t*>(
+                            readbackBuf.GetConstMappedRange(0, static_cast<size_t>(bytesPerRow) * h));
+                        if (!mapped) { readbackBuf.Unmap(); return; }
+
+                        std::vector<uint8_t> rgba(w * h * 4);
+                        for (uint32_t row = 0; row < h; ++row) {
+                            const uint8_t* s = mapped + row * bytesPerRow;
+                            uint8_t* d = rgba.data() + row * w * 4;
+                            for (uint32_t col = 0; col < w; ++col) {
+                                d[col*4+0] = s[col*4+2];
+                                d[col*4+1] = s[col*4+1];
+                                d[col*4+2] = s[col*4+0];
+                                d[col*4+3] = s[col*4+3];
+                            }
                         }
-                    }
-                    readbackBuf.Unmap();
+                        readbackBuf.Unmap();
 
-                    std::vector<uint8_t> pngData;
-                    stbi_write_png_to_func(
-                        [](void* ctx, void* data, int size) {
-                            auto* vec = static_cast<std::vector<uint8_t>*>(ctx);
-                            vec->insert(vec->end(),
-                                        static_cast<uint8_t*>(data),
-                                        static_cast<uint8_t*>(data) + size);
-                        },
-                        &pngData, static_cast<int>(w), static_cast<int>(h), 4,
-                        rgba.data(), static_cast<int>(w * 4));
+                        std::vector<uint8_t> pngData;
+                        stbi_write_png_to_func(
+                            [](void* ctx, void* data, int size) {
+                                auto* vec = static_cast<std::vector<uint8_t>*>(ctx);
+                                vec->insert(vec->end(),
+                                            static_cast<uint8_t*>(data),
+                                            static_cast<uint8_t*>(data) + size);
+                            },
+                            &pngData, static_cast<int>(w), static_cast<int>(h), 4,
+                            rgba.data(), static_cast<int>(w * 4));
 
-                    std::string b64 = base64::encode(pngData.data(), pngData.size());
-                    ipc->onPngReady(b64);
-                });
+                        std::string b64 = base64::encode(pngData.data(), pngData.size());
+                        ipc->onPngReady(b64);
+                    });
+            }
         } else {
             wgpu::CommandBuffer commands = encoder.Finish();
             queue_.Submit(1, &commands);
@@ -779,7 +835,7 @@ void PlatformDawn::renderFrame()
             });
     }
 
-    surface_.Present();
+    if (!headless_) surface_.Present();
     needsRedraw_ = false;
 }
 

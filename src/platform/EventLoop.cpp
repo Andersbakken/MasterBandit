@@ -13,7 +13,8 @@ int PlatformDawn::exec()
     running_ = true;
     loop_ = uv_default_loop();
 
-    debugIPC_ = std::make_unique<DebugIPC>(loop_, nullptr,
+    debugIPC_ = std::make_unique<DebugIPC>(loop_,
+        [this]() -> Terminal* { return activeTerm(); },
         [this](int id) {
             Tab* t = activeTab();
             if (!t) return std::string{};
@@ -37,11 +38,13 @@ int PlatformDawn::exec()
     idleCb_.data = this;
     uv_idle_start(&idleCb_, [](uv_idle_t* handle) {
         auto* self = static_cast<PlatformDawn*>(handle->data);
-        glfwPollEvents();
+        if (!self->isHeadless()) {
+            glfwPollEvents();
 
-        if (self->shouldClose()) {
-            uv_stop(self->loop_);
-            return;
+            if (self->shouldClose()) {
+                uv_stop(self->loop_);
+                return;
+            }
         }
 
         // Advance progress animations

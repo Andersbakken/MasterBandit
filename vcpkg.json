@@ -10,6 +10,7 @@
         "libwebsockets",
         "glaze",
         "stb",
-        "doctest"
+        "doctest",
+        "cxxopts"
     ]
 }

@@ -8,6 +8,7 @@ find_package(libuv CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+find_package(cxxopts CONFIG REQUIRED)
 
 add_subdirectory(terminal)
 add_subdirectory(platform)
@@ -24,7 +25,7 @@ target_include_directories(mb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/platform
 )
 
-target_link_libraries(mb PRIVATE terminal platform glaze::glaze)
+target_link_libraries(mb PRIVATE terminal platform glaze::glaze cxxopts::cxxopts)
 
 # Copy shaders next to the executable
 file(GLOB SHADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")
@@ -33,11 +34,11 @@ foreach(SHADER ${SHADER_FILES})
     configure_file(${SHADER} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/${SHADER_NAME}" COPYONLY)
 endforeach()
 
-# Copy bundled fonts next to the executable
-file(GLOB NERD_FONT_FILES "${CMAKE_SOURCE_DIR}/assets/fonts/nerd/*.ttf")
-foreach(FONT ${NERD_FONT_FILES})
-    get_filename_component(FONT_NAME ${FONT} NAME)
-    configure_file(${FONT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/nerd/${FONT_NAME}" COPYONLY)
+# Copy bundled fonts next to the executable (preserving subdirectory structure)
+file(GLOB_RECURSE FONT_FILES "${CMAKE_SOURCE_DIR}/assets/fonts/**/*.ttf")
+foreach(FONT ${FONT_FILES})
+    file(RELATIVE_PATH FONT_REL "${CMAKE_SOURCE_DIR}/assets/fonts" ${FONT})
+    configure_file(${FONT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/${FONT_REL}" COPYONLY)
 endforeach()
 
 # Copy hb-gpu WGSL helper shaders from harfbuzz source

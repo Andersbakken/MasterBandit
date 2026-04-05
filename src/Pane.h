@@ -62,12 +62,6 @@ public:
 
 private:
     void installOSCCallback(Terminal* t);
-    void handleOSCMB(std::string_view payload);
-
-    PopupPane* createPopup(const std::string& id, int x, int y, int w, int h);
-    void destroyPopup(const std::string& id);
-    void focusPopup(const std::string& id);
-    void blurPopup(const std::string& id);
 
     int mId;
     std::unique_ptr<Terminal> terminal_;

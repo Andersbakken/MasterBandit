@@ -42,6 +42,13 @@ foreach(FONT ${FONT_FILES})
     configure_file(${FONT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/${FONT_REL}" COPYONLY)
 endforeach()
 
+# Copy bundled scripts next to the executable
+file(GLOB SCRIPT_FILES "${CMAKE_SOURCE_DIR}/assets/scripts/*.js")
+foreach(SCRIPT ${SCRIPT_FILES})
+    get_filename_component(SCRIPT_NAME ${SCRIPT} NAME)
+    configure_file(${SCRIPT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/${SCRIPT_NAME}" COPYONLY)
+endforeach()
+
 # Copy hb-gpu WGSL helper shaders from harfbuzz source
 configure_file("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
                "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-vertex.wgsl" COPYONLY)

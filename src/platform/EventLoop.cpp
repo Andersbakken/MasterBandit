@@ -130,6 +130,12 @@ int PlatformDawn::exec()
         scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
     });
 
+    // Load built-in scripts
+    {
+        std::string scriptsDir = exeDir_ + "/scripts/";
+        scriptEngine_.loadController(scriptsDir + "applet-loader.js");
+    }
+
     // Add PTY polls for all terminals already created
     for (auto& panePtr : tab->layout()->panes()) {
         Terminal* term = panePtr->terminal();

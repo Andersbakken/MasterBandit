@@ -545,6 +545,46 @@ static void enqueueListeners(JSContext* ctx, JSValue arr, int extraArgc, JSValue
 }
 
 // ============================================================================
+// console.log / console.warn / console.error
+// ============================================================================
+
+static JSValue jsConsoleLog(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    std::string msg;
+    for (int i = 0; i < argc; ++i) {
+        if (i > 0) msg += ' ';
+        const char* s = JS_ToCString(ctx, argv[i]);
+        if (s) { msg += s; JS_FreeCString(ctx, s); }
+    }
+    spdlog::info("JS: {}", msg);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsConsoleWarn(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    std::string msg;
+    for (int i = 0; i < argc; ++i) {
+        if (i > 0) msg += ' ';
+        const char* s = JS_ToCString(ctx, argv[i]);
+        if (s) { msg += s; JS_FreeCString(ctx, s); }
+    }
+    spdlog::warn("JS: {}", msg);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsConsoleError(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    std::string msg;
+    for (int i = 0; i < argc; ++i) {
+        if (i > 0) msg += ' ';
+        const char* s = JS_ToCString(ctx, argv[i]);
+        if (s) { msg += s; JS_FreeCString(ctx, s); }
+    }
+    spdlog::error("JS: {}", msg);
+    return JS_UNDEFINED;
+}
+
+// ============================================================================
 // Engine implementation
 // ============================================================================
 
@@ -590,6 +630,18 @@ JSContext* Engine::createContext()
     JS_SetPropertyFunctionList(ctx, tabProto,
         jsTabProto, sizeof(jsTabProto) / sizeof(jsTabProto[0]));
     JS_SetClassProto(ctx, jsTabClassId, tabProto);
+
+    // console object
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue console = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, console, "log",
+        JS_NewCFunction(ctx, jsConsoleLog, "log", 0));
+    JS_SetPropertyStr(ctx, console, "warn",
+        JS_NewCFunction(ctx, jsConsoleWarn, "warn", 0));
+    JS_SetPropertyStr(ctx, console, "error",
+        JS_NewCFunction(ctx, jsConsoleError, "error", 0));
+    JS_SetPropertyStr(ctx, global, "console", console);
+    JS_FreeValue(ctx, global);
 
     return ctx;
 }

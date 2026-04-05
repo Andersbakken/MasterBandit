@@ -25,7 +25,6 @@ struct TerminalCallbacks {
     std::function<void(const std::string&)>      onTitleChanged;
     std::function<float()>                       cellPixelWidth;
     std::function<float()>                       cellPixelHeight;
-    std::function<void(std::string_view)>        onOSCMB;  // called when OSC 58237 received
     std::function<void(int, std::string_view)>  onOSC;    // called for unhandled OSC codes
     std::function<void(const std::string&)>      onIconChanged;    // OSC 1
     std::function<void(int /*state*/, int /*pct*/)> onProgressChanged; // OSC 9;4
@@ -175,9 +174,9 @@ public:
 
     void injectData(const char* data, size_t len);
 
-    void setOSCMBCallback(std::function<void(std::string_view)> cb)
+    void setOSCCallback(std::function<void(int, std::string_view)> cb)
     {
-        mCallbacks.onOSCMB = std::move(cb);
+        mCallbacks.onOSC = std::move(cb);
     }
 
     static unsigned long long mono();

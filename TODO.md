@@ -118,6 +118,7 @@
 - [x] Scripting: timers — `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` backed by libuv timers.
 - [x] Scripting: overlay creation — `tab.createOverlay()` creates headless terminal, `overlay.inject()` renders, `overlay.addEventListener("input", fn)` receives keystrokes, `overlay.close()` pops it.
 - [x] Scripting: applet loading via OSC 58237 — `printf '\e]58237;applet;path=/path/to/script.js\e\\'` triggers built-in applet-loader.js controller.
+- [ ] Scripting: JS module imports — `JS_EVAL_TYPE_MODULE` + custom module loader. Two trusted import sources: (1) script's own directory + subdirectories (no `../` escape), (2) built-in modules directory shipped alongside the binary (e.g. `scripts/modules/tui.js`). Built-in modules always allowed regardless of script permissions. Needed before `mb:fs` and other native modules.
 - [ ] Scripting: `mb:fs` module — Node-style sync file API: `readFileSync`, `writeFileSync`, `readdirSync`, `statSync`, `existsSync`, `mkdirSync`, `unlinkSync`, `renameSync`. Permission-gated.
 - [ ] Scripting: `mb:http` module — async HTTP client backed by libwebsockets (already a dependency). Node-style `http.get(url, cb)` / `http.request(opts, cb)`. Permission-gated.
 - [ ] Scripting: `mb:tui` module — bundled TUI toolkit for applets. `box()`, `text()`, `input()`, `list()`, etc. Built on escape sequence generation, targets the applet overlay API directly.

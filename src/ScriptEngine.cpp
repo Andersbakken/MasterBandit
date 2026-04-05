@@ -957,35 +957,6 @@ static JSValue jsMbActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
     return arr;
 }
 
-// mb.loadApplet(path) -> instanceId or 0
-static JSValue jsMbLoadApplet(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_NewInt64(ctx, 0);
-    REQUIRE_PERM(ctx, ScriptsLoad);
-    Engine* eng = engineFromCtx(ctx);
-
-    const char* path = JS_ToCString(ctx, argv[0]);
-    if (!path) return JS_EXCEPTION;
-    // loadApplet with full permissions for backward compat (built-in callers are trusted)
-    uint64_t id = eng->loadScript(std::string(path), Perm::All);
-    JS_FreeCString(ctx, path);
-    return JS_NewInt64(ctx, static_cast<int64_t>(id));
-}
-
-// mb.loadController(path) -> instanceId or 0
-static JSValue jsMbLoadController(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_NewInt64(ctx, 0);
-    REQUIRE_PERM(ctx, ScriptsLoad);
-    Engine* eng = engineFromCtx(ctx);
-
-    const char* path = JS_ToCString(ctx, argv[0]);
-    if (!path) return JS_EXCEPTION;
-    uint64_t id = eng->loadController(std::string(path));
-    JS_FreeCString(ctx, path);
-    return JS_NewInt64(ctx, static_cast<int64_t>(id));
-}
-
 // mb.loadScript(path, permissionsStr) -> instanceId or 0
 static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -1415,10 +1386,6 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbActiveTab, "activeTab", 0));
     JS_SetPropertyStr(ctx, mb, "actions",
         JS_NewCFunction(ctx, jsMbActions, "actions", 0));
-    JS_SetPropertyStr(ctx, mb, "loadApplet",
-        JS_NewCFunction(ctx, jsMbLoadApplet, "loadApplet", 1));
-    JS_SetPropertyStr(ctx, mb, "loadController",
-        JS_NewCFunction(ctx, jsMbLoadController, "loadController", 1));
     JS_SetPropertyStr(ctx, mb, "createTab",
         JS_NewCFunction(ctx, jsMbCreateTab, "createTab", 0));
     JS_SetPropertyStr(ctx, mb, "closeTab",

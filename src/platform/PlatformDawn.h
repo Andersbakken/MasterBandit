@@ -12,6 +12,7 @@
 #include "Tab.h"
 #include "Action.h"
 #include "Bindings.h"
+#include "WorkerPool.h"
 
 #include <dawn/webgpu_cpp.h>
 #include <dawn/native/DawnNative.h>
@@ -273,6 +274,9 @@ private:
 
     // Action listeners
     Action::Dispatcher actionDispatcher_;
+
+    // Worker pool for parallel row resolution
+    WorkerPool renderWorkers_;
 
     // Callback/terminal helpers
     TerminalCallbacks buildTerminalCallbacks(int paneId);

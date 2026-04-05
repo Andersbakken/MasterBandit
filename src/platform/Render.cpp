@@ -2,6 +2,8 @@
 #include "Log.h"
 #include "Utils.h"
 
+#include <numeric>
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
@@ -15,10 +17,6 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
     int cols = term->width();
     int baseIdx = row * cols;
     const Cell* rowData = term->viewportRow(row);
-
-    // Ensure row shaping cache is sized
-    if (static_cast<int>(rs.rowShapingCache.size()) != term->height())
-        rs.rowShapingCache.resize(term->height());
 
     auto& rowCache = rs.rowShapingCache[row];
     rowCache.glyphs.clear();
@@ -383,21 +381,32 @@ void PlatformDawn::renderFrame()
             {
                 int vo = term->viewportOffset();
                 int histSize = term->document().historySize();
-                // Detect whether the viewport content shifted since last frame:
-                // viewport offset changed, or new output grew the history while scrolled.
                 bool viewportShifted = (vo != rs.lastViewportOffset ||
                                         (vo != 0 && histSize != rs.lastHistorySize));
                 rs.lastViewportOffset = vo;
                 rs.lastHistorySize = histSize;
 
+                // Pre-size row shaping cache before parallel dispatch
+                if (static_cast<int>(rs.rowShapingCache.size()) != g.rows())
+                    rs.rowShapingCache.resize(g.rows());
+
+                // Collect dirty rows
+                std::vector<int> dirtyRows;
                 if (viewportShifted) {
-                    for (int row = 0; row < g.rows(); ++row)
-                        resolveRow(rs, term, row, font, scale);
+                    dirtyRows.resize(g.rows());
+                    std::iota(dirtyRows.begin(), dirtyRows.end(), 0);
                 } else {
                     for (int row = 0; row < g.rows(); ++row) {
                         if (g.isRowDirty(row) || (cursorMoved && row == curY))
-                            resolveRow(rs, term, row, font, scale);
+                            dirtyRows.push_back(row);
                     }
+                }
+
+                // Dispatch to worker pool
+                if (!dirtyRows.empty()) {
+                    renderWorkers_.dispatch(dirtyRows, [&](int row) {
+                        resolveRow(rs, term, row, font, scale);
+                    });
                 }
             }
             const_cast<IGrid&>(g).clearAllDirty();

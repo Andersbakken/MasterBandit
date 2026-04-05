@@ -11,6 +11,7 @@
         "glaze",
         "stb",
         "doctest",
-        "cxxopts"
+        "cxxopts",
+        "quickjs-ng"
     ]
 }

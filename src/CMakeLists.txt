@@ -9,6 +9,7 @@ find_package(glaze CONFIG REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
+find_package(qjs CONFIG REQUIRED)
 
 add_subdirectory(terminal)
 add_subdirectory(platform)
@@ -16,7 +17,7 @@ add_subdirectory(platform)
 add_executable(mb
     main.cpp
     Pane.cpp Tab.cpp Layout.cpp Log.cpp text.cpp
-    DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp
+    DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp ScriptEngine.cpp
 )
 
 target_include_directories(mb PRIVATE
@@ -25,7 +26,7 @@ target_include_directories(mb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/platform
 )
 
-target_link_libraries(mb PRIVATE terminal platform glaze::glaze cxxopts::cxxopts)
+target_link_libraries(mb PRIVATE terminal platform glaze::glaze cxxopts::cxxopts qjs)
 
 # Copy shaders next to the executable
 file(GLOB SHADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")

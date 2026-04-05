@@ -16,7 +16,7 @@ add_subdirectory(platform)
 add_executable(mb
     main.cpp
     Pane.cpp Tab.cpp Layout.cpp Log.cpp text.cpp
-    DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp
+    DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp
 )
 
 target_include_directories(mb PRIVATE

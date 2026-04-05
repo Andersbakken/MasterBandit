@@ -97,7 +97,13 @@ std::optional<Action::Any> parseAction(const std::string& name,
                                         const std::vector<std::string>& args)
 {
     if (name == "new_tab")   return Action::NewTab{};
-    if (name == "close_tab") return Action::CloseTab{};
+    if (name == "close_tab") {
+        int idx = -1;
+        if (!args.empty()) {
+            try { idx = std::stoi(args[0]); } catch (...) {}
+        }
+        return Action::CloseTab{idx};
+    }
 
     if (name == "activate_tab_relative") {
         if (args.empty()) {

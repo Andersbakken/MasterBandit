@@ -317,9 +317,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             glfwSetScrollCallback(glfwWindow_, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
                 auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
                 int lines = static_cast<int>(yoffset);
-                if (lines != 0) {
-                    Terminal* t = self->activeTerm();
-                    if (t) t->scrollViewport(lines);
+                if (lines > 0) {
+                    self->dispatchAction(Action::ScrollUp{lines});
+                } else if (lines < 0) {
+                    self->dispatchAction(Action::ScrollDown{-lines});
                 }
             });
 

@@ -311,15 +311,9 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
                     w += 1; // separator
                     if (clickCol >= col && clickCol < col + w) {
                         if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                            clearDividers(activeTab());
-                            releaseTabTextures(activeTab());
-                            activeTabIdx_ = i;
-                            refreshDividers(activeTab());
-                            updateWindowTitle();
-                            tabBarDirty_ = true;
-                            needsRedraw_ = true;
+                            dispatchAction(Action::ActivateTab{i});
                         } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
-                            closeTab(i);
+                            dispatchAction(Action::CloseTab{i});
                         }
                         return;
                     }

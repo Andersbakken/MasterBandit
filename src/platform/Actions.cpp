@@ -7,7 +7,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 {
     std::visit(overloaded {
         [&](const Action::NewTab&)  { createTab(); },
-        [&](const Action::CloseTab&) { closeTab(activeTabIdx_); },
+        [&](const Action::CloseTab& a) { closeTab(a.index >= 0 ? a.index : activeTabIdx_); },
         [&](const Action::ActivateTabRelative& a) {
             int idx = activeTabIdx_ + a.delta;
             if (idx >= 0 && idx < static_cast<int>(tabs_.size())) {
@@ -291,5 +291,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             needsRedraw_ = true;
         },
     }, action);
+
+    actionDispatcher_.notify(action.index(), action);
 }
 

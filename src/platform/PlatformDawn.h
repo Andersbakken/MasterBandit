@@ -271,6 +271,9 @@ private:
     void dispatchAction(const Action::Any& action);
     void terminalExited(Terminal* terminal);
 
+    // Action listeners
+    Action::Dispatcher actionDispatcher_;
+
     // Callback/terminal helpers
     TerminalCallbacks buildTerminalCallbacks(int paneId);
 

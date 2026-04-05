@@ -146,12 +146,13 @@ RenderTest::~RenderTest()
     }
     uv_loop_close(&loop_);
 
-    // Kill child
+    // Kill child and clean up its socket
     if (pid_ > 0) {
         kill(pid_, SIGTERM);
         int status;
         waitpid(pid_, &status, 0);
     }
+    unlink(socketPath_.c_str());
 }
 
 // ============================================================================
@@ -254,6 +255,22 @@ void RenderTest::wait(int ms)
         uv_run(&loop_, UV_RUN_NOWAIT);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+}
+
+bool RenderTest::reset(int timeoutMs)
+{
+    // Send RIS (Reset Initial State) escape sequence via the PTY
+    return sendText("\033c", timeoutMs);
+}
+
+RenderTest& RenderTest::shared()
+{
+    static RenderTest instance({.cols = 40, .rows = 10});
+    static bool initialized = false;
+    if (!initialized) {
+        initialized = instance.connect();
+    }
+    return instance;
 }
 
 bool RenderTest::sendText(const std::string& text, int timeoutMs)

@@ -59,8 +59,14 @@ public:
     // Wait for the given duration while keeping the WebSocket alive
     void wait(int ms);
 
+    // Reset terminal state (sends RIS) for reuse between tests
+    bool reset(int timeoutMs = 2000);
+
     const std::string& socketPath() const { return socketPath_; }
     pid_t childPid() const { return pid_; }
+
+    // Shared instance for tests with default options (lazily created)
+    static RenderTest& shared();
 
     // Public because it's referenced from the static protocol table
     static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,

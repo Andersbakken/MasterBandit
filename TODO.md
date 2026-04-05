@@ -43,6 +43,10 @@
 - [ ] Per-tab color rules — color tabs based on title, active process, or index. Requires foreground process tracking and a rule matching engine in the tab bar renderer. Config via `[[tab_bar.color_rules]]` with match patterns (e.g. `title:*ssh*`, `process:python`, `index:0`).
 - [ ] Foreground process tracking — poll `tcgetpgrp()` on the master PTY fd to detect the foreground process group, then look up the process name (`proc_pidpath` on macOS, `/proc/<pid>/cmdline` on Linux). Update tab title when the foreground process changes (like iTerm2/kitty). Needed for per-tab color rules, accurate tab titles, and jump-to-tab-by-process.
 - [ ] Jump to tab by title/process — keybinding action that activates the first tab matching a title or process pattern. E.g. `action = "activate_tab_matching"`, `args = ["process:claude", "forward"]`. Repeating cycles to the next match; a second binding with `"backward"` cycles in reverse. Combined with foreground process tracking, allows quick switching to specific running apps.
+- [ ] Tab reordering — drag tabs in the tab bar to rearrange, or keybindings to move current tab left/right. Drag UX: render dragged tab at low opacity following the cursor, draw a vertical insertion bar (via rect pipeline, same as pane dividers) at the drop position.
+- [ ] Tab close confirmation — prompt when closing a tab that has a foreground process other than the shell (requires foreground process tracking). Skip prompt for idle shell.
+- [ ] New tab/pane inherits CWD — new tabs and pane splits start in the focused pane's working directory (already tracked via OSC 7).
+- [ ] Automatic tab ordering — sort rules that pin tabs to preferred positions based on title/process. E.g. `match = "process:clangd"`, `position = 1`. Multiple matches for the same position group together adjacent. Unmatched tabs fill in around pinned groups. Shares pattern matching infrastructure with color rules and jump-to-tab.
 
 ## Mouse Bindings
 

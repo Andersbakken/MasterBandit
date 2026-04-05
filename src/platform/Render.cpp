@@ -125,8 +125,9 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
         }
 
         // Shape the run
-        int boldHint = runBold ? 1 : 0;
-        const ShapedRun& shaped = textSystem_.shapeRun(fontName_, runText, fontSize_, boldHint);
+        FontStyle runStyle;
+        runStyle.bold = runBold;
+        const ShapedRun& shaped = textSystem_.shapeRun(fontName_, runText, fontSize_, runStyle);
 
         // Find contiguous RTL cell ranges for mirroring.
         // Build a map of which byteToCell indices are RTL.

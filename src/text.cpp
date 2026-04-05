@@ -256,14 +256,136 @@ bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrengt
         return false;
     }
 
+    entry.baseFontIndex = 0;
+    entry.style = {.bold = true};
+
+    uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size());
     font.hbFonts.push_back(entry);
-    spdlog::info("Added synthetic bold variant to '{}'", name);
+
+    // Register in styled variants map
+    uint64_t variantKey = (static_cast<uint64_t>(0) << 8) | entry.style.key();
+    font.styledVariants[variantKey] = newFi;
+
+    spdlog::info("Added synthetic bold variant to '{}' (fi={})", name, newFi);
     return true;
+}
+
+// --- Font registry: resolve fonts with style ---
+
+static inline uint32_t decodeUtf8(const uint8_t*& p)
+{
+    if (*p < 0x80) return *p++;
+    if ((*p & 0xE0) == 0xC0) { uint32_t cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; return cp; }
+    if ((*p & 0xF0) == 0xE0) { uint32_t cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; return cp; }
+    uint32_t cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; return cp;
+}
+
+uint32_t TextSystem::getStyledVariant(FontData& font, uint32_t baseFi, FontStyle style)
+{
+    if (style == FontStyle{}) return baseFi;  // no styling needed
+
+    // Check if already created
+    uint64_t variantKey = (static_cast<uint64_t>(baseFi) << 8) | style.key();
+    auto it = font.styledVariants.find(variantKey);
+    if (it != font.styledVariants.end()) return it->second;
+
+    // Create synthetic variant
+    auto& base = font.hbFonts[baseFi];
+    FontData::HBEntry entry;
+    entry.hbBlob = hb_blob_reference(base.hbBlob);
+    entry.hbFace = hb_face_reference(base.hbFace);
+    entry.hbFont = hb_font_create(entry.hbFace);
+    if (style.bold)
+        hb_font_set_synthetic_bold(entry.hbFont, boldStrengthX_, boldStrengthY_, false);
+    // future: if (style.italic) hb_font_set_synthetic_slant(...)
+    entry.gpuDraw = hb_gpu_draw_create_or_fail();
+    if (!entry.gpuDraw) {
+        hb_font_destroy(entry.hbFont);
+        hb_face_destroy(entry.hbFace);
+        hb_blob_destroy(entry.hbBlob);
+        return baseFi;  // fall back to unstyled
+    }
+    entry.baseFontIndex = baseFi;
+    entry.style = style;
+
+    uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size());
+    font.hbFonts.push_back(entry);
+    font.styledVariants[variantKey] = newFi;
+
+    spdlog::debug("Created styled variant fi={} (base={} bold={}) for '{}'",
+                  newFi, baseFi, style.bold, font.name);
+    return newFi;
+}
+
+uint32_t TextSystem::resolveSegment(FontData& font, const uint8_t* text, size_t len, FontStyle style)
+{
+    // The styled variant of the primary font always covers exactly what
+    // primary covers (same face). Per-glyph fallback handles the rest.
+    uint32_t primaryFi = getStyledVariant(font, 0, style);
+
+    // Verify the styled primary covers all primary-coverable codepoints.
+    // For synthetic bold (same face), this is always true. But check in
+    // case a real bold file has different coverage.
+    const uint8_t* p = text;
+    const uint8_t* end = p + len;
+    while (p < end) {
+        uint32_t cp = decodeUtf8(p);
+        uint32_t gid;
+        if (hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid) &&
+            !hb_font_get_nominal_glyph(font.hbFonts[primaryFi].hbFont, cp, &gid)) {
+            // Styled primary doesn't cover something primary does — fall back
+            return 0;
+        }
+    }
+    return primaryFi;
+}
+
+TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::string& fontName,
+                                                    char32_t cp, FontStyle style, uint32_t excludeFi)
+{
+    // Try each base font (skip styled variants) and return the styled version
+    for (uint32_t fi = 0; fi < font.hbFonts.size(); fi++) {
+        auto& entry = font.hbFonts[fi];
+        // Skip styled variants (they derive from a base font)
+        if (entry.style != FontStyle{}) continue;
+        if (fi == excludeFi) continue;
+
+        uint32_t gid;
+        if (hb_font_get_nominal_glyph(entry.hbFont, cp, &gid)) {
+            uint32_t styledFi = getStyledVariant(font, fi, style);
+            // Re-lookup gid with styled font (should be same for synthetic bold)
+            uint32_t styledGid;
+            if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
+                styledGid = gid;  // shouldn't happen, but safe fallback
+            return {styledFi, styledGid};
+        }
+    }
+
+    // Try system font fallback
+    if (systemFallback_) {
+        auto pathIt = fontPrimaryPaths_.find(fontName);
+        std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
+        auto fallbackData = systemFallback_(primaryPath, cp);
+        if (!fallbackData.empty()) {
+            addFallbackFont(fontName, fallbackData);
+            uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
+            uint32_t gid;
+            if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
+                uint32_t styledFi = getStyledVariant(font, newFi, style);
+                uint32_t styledGid;
+                if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
+                    styledGid = gid;
+                return {styledFi, styledGid};
+            }
+        }
+    }
+
+    return {0, 0};  // not found
 }
 
 const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::string& text,
                                          float fontSize, float wrapWidth, int align,
-                                         int fontIndexHint)
+                                         FontStyle style)
 {
     // Compute cache key
     size_t h = std::hash<std::string>{}(fontName);
@@ -271,7 +393,7 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
     h ^= std::hash<float>{}(fontSize) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<float>{}(wrapWidth) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<int>{}(align) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<int>{}(fontIndexHint) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(style.key()) + 0x9e3779b9 + (h << 6) + (h >> 2);
 
     // LRU lookup
     auto it = cacheMap_.find(h);
@@ -359,68 +481,6 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
     std::sort(segments.begin(), segments.end(),
               [](const auto& a, const auto& b) { return a.offset < b.offset; });
 
-    auto fontIndexForSegment = [&](const Segment& seg) -> uint32_t {
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset);
-        const uint8_t* end = p + seg.length;
-
-        // If a hint index is provided and valid, try it first
-        if (fontIndexHint > 0 && fontIndexHint < static_cast<int>(font.hbFonts.size())) {
-            p = reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset);
-            bool hintCovers = true;
-            while (p < end) {
-                uint32_t cp;
-                if (*p < 0x80) { cp = *p++; }
-                else if ((*p & 0xE0) == 0xC0) { cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; }
-                else if ((*p & 0xF0) == 0xE0) { cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; }
-                else { cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; }
-                uint32_t gid;
-                if (!hb_font_get_nominal_glyph(font.hbFonts[fontIndexHint].hbFont, cp, &gid)) {
-                    hintCovers = false;
-                    break;
-                }
-            }
-            if (hintCovers) return static_cast<uint32_t>(fontIndexHint);
-        }
-
-        p = reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset);
-        bool primaryMissesAny = false;
-        while (p < end) {
-            uint32_t cp;
-            if (*p < 0x80) { cp = *p++; }
-            else if ((*p & 0xE0) == 0xC0) { cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; }
-            else if ((*p & 0xF0) == 0xE0) { cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; }
-            else { cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; }
-
-            uint32_t gid;
-            if (!hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid))
-                primaryMissesAny = true;
-        }
-
-        if (!primaryMissesAny) return 0;
-
-        for (uint32_t fi = 1; fi < font.hbFonts.size(); fi++) {
-            p = reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset);
-            bool covers = true;
-            while (p < end) {
-                uint32_t cp;
-                if (*p < 0x80) { cp = *p++; }
-                else if ((*p & 0xE0) == 0xC0) { cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; }
-                else if ((*p & 0xF0) == 0xE0) { cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; }
-                else { cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; }
-
-                uint32_t gid;
-                if (!hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid) &&
-                    !hb_font_get_nominal_glyph(font.hbFonts[fi].hbFont, cp, &gid)) {
-                    covers = false;
-                    break;
-                }
-            }
-            if (covers) return fi;
-        }
-
-        return 0;
-    };
-
     struct GlyphEntry {
         uint64_t glyphKey;
         uint32_t cluster;
@@ -432,7 +492,8 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
     std::vector<GlyphEntry> allGlyphs;
 
     for (const auto& seg : segments) {
-        uint32_t fi = fontIndexForSegment(seg);
+        uint32_t fi = resolveSegment(font,
+            reinterpret_cast<const uint8_t*>(text.c_str() + seg.offset), seg.length, style);
 
         unsigned int fontUpem = hb_face_get_upem(font.hbFonts[fi].hbFace);
         float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
@@ -464,45 +525,17 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
                 else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
                 else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
 
-                // Try registered fallback fonts
-                for (uint32_t tryFi = 0; tryFi < font.hbFonts.size(); tryFi++) {
-                    if (tryFi == fi) continue;
-                    uint32_t fallbackGid;
-                    if (hb_font_get_nominal_glyph(font.hbFonts[tryFi].hbFont, cp, &fallbackGid)) {
-                        gid = fallbackGid;
-                        glyphFi = tryFi;
-                        unsigned int fbUpem = hb_face_get_upem(font.hbFonts[tryFi].hbFace);
-                        float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                        float adv = hb_font_get_glyph_h_advance(font.hbFonts[tryFi].hbFont, fallbackGid) * fbScale * scale;
-                        ensureGlyphEncoded(font, glyphFi, gid);
-                        allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
-                            adv, 0, 0, seg.level});
-                        return;
-                    }
-                }
-
-                // Try system font fallback
-                if (systemFallback_) {
-                    auto pathIt = fontPrimaryPaths_.find(fontName);
-                    std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
-                    auto fallbackData = systemFallback_(primaryPath, static_cast<char32_t>(cp));
-                    if (!fallbackData.empty()) {
-                        addFallbackFont(fontName, fallbackData);
-                        // The new font is now the last entry — try it
-                        uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
-                        uint32_t fallbackGid;
-                        if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &fallbackGid)) {
-                            gid = fallbackGid;
-                            glyphFi = newFi;
-                            unsigned int fbUpem = hb_face_get_upem(font.hbFonts[newFi].hbFace);
-                            float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                            float adv = hb_font_get_glyph_h_advance(font.hbFonts[newFi].hbFont, fallbackGid) * fbScale * scale;
-                            ensureGlyphEncoded(font, glyphFi, gid);
-                            allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
-                                adv, 0, 0, seg.level});
-                            return;
-                        }
-                    }
+                auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi);
+                if (resolved.glyphId != 0) {
+                    glyphFi = resolved.fontIndex;
+                    gid = resolved.glyphId;
+                    unsigned int fbUpem = hb_face_get_upem(font.hbFonts[glyphFi].hbFace);
+                    float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
+                    float adv = hb_font_get_glyph_h_advance(font.hbFonts[glyphFi].hbFont, gid) * fbScale * scale;
+                    ensureGlyphEncoded(font, glyphFi, gid);
+                    allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
+                        adv, 0, 0, seg.level});
+                    return;
                 }
             }
 
@@ -675,13 +708,13 @@ const ShapedText& TextSystem::shapeText(const std::string& fontName, const std::
 // --- Terminal-specific run shaping (no BiDi reordering, no line wrapping) ---
 
 const ShapedRun& TextSystem::shapeRun(const std::string& fontName, const std::string& text,
-                                       float fontSize, int fontIndexHint)
+                                       float fontSize, FontStyle style)
 {
     // Compute cache key
     size_t h = std::hash<std::string>{}(fontName);
     h ^= std::hash<std::string>{}(text) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<float>{}(fontSize) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<int>{}(fontIndexHint) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(style.key()) + 0x9e3779b9 + (h << 6) + (h >> 2);
 
     // LRU lookup
     auto it = runCacheMap_.find(h);
@@ -728,67 +761,11 @@ const ShapedRun& TextSystem::shapeRun(const std::string& fontName, const std::st
     }
     SBScriptLocatorRelease(scriptLoc);
 
-    // Font selection lambda (same as shapeText)
-    auto fontIndexForSegment = [&](SBUInteger offset, SBUInteger length) -> uint32_t {
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
-        const uint8_t* end = p + length;
-
-        auto decodeUtf8 = [](const uint8_t*& p) -> uint32_t {
-            if (*p < 0x80) return *p++;
-            if ((*p & 0xE0) == 0xC0) { uint32_t cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; return cp; }
-            if ((*p & 0xF0) == 0xE0) { uint32_t cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; return cp; }
-            uint32_t cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; return cp;
-        };
-
-        // Try hint font first
-        if (fontIndexHint > 0 && fontIndexHint < static_cast<int>(font.hbFonts.size())) {
-            p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
-            bool hintCovers = true;
-            while (p < end) {
-                uint32_t cp = decodeUtf8(p);
-                uint32_t gid;
-                if (!hb_font_get_nominal_glyph(font.hbFonts[fontIndexHint].hbFont, cp, &gid)) {
-                    hintCovers = false;
-                    break;
-                }
-            }
-            if (hintCovers) return static_cast<uint32_t>(fontIndexHint);
-        }
-
-        // Try primary font
-        p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
-        bool primaryMissesAny = false;
-        while (p < end) {
-            uint32_t cp = decodeUtf8(p);
-            uint32_t gid;
-            if (!hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid))
-                primaryMissesAny = true;
-        }
-        if (!primaryMissesAny) return 0;
-
-        // Try fallback fonts
-        for (uint32_t fi = 1; fi < font.hbFonts.size(); fi++) {
-            p = reinterpret_cast<const uint8_t*>(text.c_str() + offset);
-            bool covers = true;
-            while (p < end) {
-                uint32_t cp = decodeUtf8(p);
-                uint32_t gid;
-                if (!hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid) &&
-                    !hb_font_get_nominal_glyph(font.hbFonts[fi].hbFont, cp, &gid)) {
-                    covers = false;
-                    break;
-                }
-            }
-            if (covers) return fi;
-        }
-
-        return 0;
-    };
-
     ShapedRun result;
 
     for (const auto& sr : scriptRuns) {
-        uint32_t fi = fontIndexForSegment(sr.offset, sr.length);
+        uint32_t fi = resolveSegment(font,
+            reinterpret_cast<const uint8_t*>(text.c_str() + sr.offset), sr.length, style);
 
         unsigned int fontUpem = hb_face_get_upem(font.hbFonts[fi].hbFace);
         float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
@@ -816,7 +793,7 @@ const ShapedRun& TextSystem::shapeRun(const std::string& fontName, const std::st
             uint32_t glyphFi = fi;
 
             if (gid == 0) {
-                // Glyph missing — try fallback fonts
+                // Glyph missing — resolve via registry (handles style + fallback)
                 uint32_t cluster = infos[i].cluster;
                 const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
                 uint32_t cp;
@@ -825,48 +802,19 @@ const ShapedRun& TextSystem::shapeRun(const std::string& fontName, const std::st
                 else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
                 else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
 
-                // Try registered fallback fonts
-                bool found = false;
-                for (uint32_t tryFi = 0; tryFi < font.hbFonts.size(); tryFi++) {
-                    if (tryFi == fi) continue;
-                    uint32_t fallbackGid;
-                    if (hb_font_get_nominal_glyph(font.hbFonts[tryFi].hbFont, cp, &fallbackGid)) {
-                        gid = fallbackGid;
-                        glyphFi = tryFi;
-                        unsigned int fbUpem = hb_face_get_upem(font.hbFonts[tryFi].hbFace);
-                        float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                        float adv = hb_font_get_glyph_h_advance(font.hbFonts[tryFi].hbFont, fallbackGid) * fbScale * scale;
-                        ensureGlyphEncoded(font, glyphFi, gid);
-                        result.glyphs.push_back({glyphKey(glyphFi, gid), infos[i].cluster, adv, 0, 0, false, segmentRtl});
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) continue;
-
-                // Try system font fallback
-                if (systemFallback_) {
-                    auto pathIt = fontPrimaryPaths_.find(fontName);
-                    std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
-                    auto fallbackData = systemFallback_(primaryPath, static_cast<char32_t>(cp));
-                    if (!fallbackData.empty()) {
-                        addFallbackFont(fontName, fallbackData);
-                        uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
-                        uint32_t fallbackGid;
-                        if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &fallbackGid)) {
-                            gid = fallbackGid;
-                            glyphFi = newFi;
-                            unsigned int fbUpem = hb_face_get_upem(font.hbFonts[newFi].hbFace);
-                            float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                            float adv = hb_font_get_glyph_h_advance(font.hbFonts[newFi].hbFont, fallbackGid) * fbScale * scale;
-                            ensureGlyphEncoded(font, glyphFi, gid);
-                            result.glyphs.push_back({glyphKey(glyphFi, gid), infos[i].cluster, adv, 0, 0, false, segmentRtl});
-                            continue;
-                        }
-                    }
+                auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi);
+                if (resolved.glyphId != 0) {
+                    glyphFi = resolved.fontIndex;
+                    gid = resolved.glyphId;
+                    unsigned int fbUpem = hb_face_get_upem(font.hbFonts[glyphFi].hbFace);
+                    float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
+                    float adv = hb_font_get_glyph_h_advance(font.hbFonts[glyphFi].hbFont, gid) * fbScale * scale;
+                    ensureGlyphEncoded(font, glyphFi, gid);
+                    result.glyphs.push_back({glyphKey(glyphFi, gid), infos[i].cluster, adv, 0, 0, false, segmentRtl});
+                    continue;
                 }
 
-                // Still missing — push with gid=0, will be skipped during rendering
+                // Still missing — skip
                 continue;
             }
 

@@ -248,6 +248,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             if (!hasBoldFont) {
                 textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
             }
+            textSystem_.setBoldStrength(options.boldStrength, options.boldStrength);
 
             // Load bundled Symbols Nerd Font Mono as a built-in fallback
             auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
@@ -263,6 +264,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             textSystem_.registerFont(fontName_, fontList, 48.0f);
             textSystem_.setPrimaryFontPath(fontName_, primaryFontPath_);
             textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
+            textSystem_.setBoldStrength(options.boldStrength, options.boldStrength);
         }
 
         const FontData* font = textSystem_.getFont(fontName_);

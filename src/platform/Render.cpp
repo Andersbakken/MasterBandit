@@ -196,8 +196,9 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
                 float cellPxH = lineHeight_;
 
                 // Try to acquire a tile in the atlas
-                auto* tile = renderer_.colrAtlas().acquireTile(colrKey, fontSize_);
-                if (tile) {
+                auto result = renderer_.colrAtlas().acquireTile(colrKey, fontSize_);
+                if (result.tile) {
+                    auto* tile = result.tile;
                     // New tile — need to rasterize
                     const ColrGlyphData* colrData = nullptr;
                     {
@@ -286,6 +287,8 @@ void PlatformDawn::renderFrame()
     if (fbWidth_ == 0 || fbHeight_ == 0) return;
     Tab* currentTab = activeTab();
     if (!currentTab) return;
+
+    renderer_.colrAtlas().advanceGeneration();
 
     // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
     // events in this frame have been coalesced.

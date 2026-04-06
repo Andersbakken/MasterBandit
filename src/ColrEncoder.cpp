@@ -187,23 +187,24 @@ ColrGlyphData ColrEncoder::encode(hb_font_t* font, hb_codepoint_t glyph,
     state.resolver = std::move(resolver);
     state.font = font;
 
-    hb_paint_funcs_t* funcs = hb_paint_funcs_create();
-
-    hb_paint_funcs_set_push_transform_func(funcs, pushTransformCb, nullptr, nullptr);
-    hb_paint_funcs_set_pop_transform_func(funcs, popTransformCb, nullptr, nullptr);
-    hb_paint_funcs_set_push_clip_glyph_func(funcs, pushClipGlyphCb, nullptr, nullptr);
-    hb_paint_funcs_set_push_clip_rectangle_func(funcs, pushClipRectCb, nullptr, nullptr);
-    hb_paint_funcs_set_pop_clip_func(funcs, popClipCb, nullptr, nullptr);
-    hb_paint_funcs_set_color_func(funcs, colorCb, nullptr, nullptr);
-    hb_paint_funcs_set_linear_gradient_func(funcs, linearGradientCb, nullptr, nullptr);
-    hb_paint_funcs_set_radial_gradient_func(funcs, radialGradientCb, nullptr, nullptr);
-    hb_paint_funcs_set_sweep_gradient_func(funcs, sweepGradientCb, nullptr, nullptr);
-    hb_paint_funcs_set_push_group_func(funcs, pushGroupCb, nullptr, nullptr);
-    hb_paint_funcs_set_pop_group_func(funcs, popGroupCb, nullptr, nullptr);
+    static hb_paint_funcs_t* funcs = [] {
+        auto* f = hb_paint_funcs_create();
+        hb_paint_funcs_set_push_transform_func(f, pushTransformCb, nullptr, nullptr);
+        hb_paint_funcs_set_pop_transform_func(f, popTransformCb, nullptr, nullptr);
+        hb_paint_funcs_set_push_clip_glyph_func(f, pushClipGlyphCb, nullptr, nullptr);
+        hb_paint_funcs_set_push_clip_rectangle_func(f, pushClipRectCb, nullptr, nullptr);
+        hb_paint_funcs_set_pop_clip_func(f, popClipCb, nullptr, nullptr);
+        hb_paint_funcs_set_color_func(f, colorCb, nullptr, nullptr);
+        hb_paint_funcs_set_linear_gradient_func(f, linearGradientCb, nullptr, nullptr);
+        hb_paint_funcs_set_radial_gradient_func(f, radialGradientCb, nullptr, nullptr);
+        hb_paint_funcs_set_sweep_gradient_func(f, sweepGradientCb, nullptr, nullptr);
+        hb_paint_funcs_set_push_group_func(f, pushGroupCb, nullptr, nullptr);
+        hb_paint_funcs_set_pop_group_func(f, popGroupCb, nullptr, nullptr);
+        hb_paint_funcs_make_immutable(f);
+        return f;
+    }();
 
     hb_font_paint_glyph(font, glyph, funcs, &state, palette_index, foreground);
-
-    hb_paint_funcs_destroy(funcs);
 
     return ColrGlyphData{std::move(state.instructions), std::move(state.colorStops)};
 }

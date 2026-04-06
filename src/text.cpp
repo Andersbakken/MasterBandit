@@ -48,8 +48,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
             // If glyph is cached but COLR status unknown, check now
             if (font.hasColrPaint && !it->second.is_colr) {
                 hb_face_t* face = font.hbFonts[fontIndex].hbFace;
-                bool fp = hb_ot_color_has_paint(face);
-                if (fp && hb_ot_color_glyph_has_paint(face, glyphId)) {
+                if (hb_ot_color_glyph_has_paint(face, glyphId)) {
                     lock.unlock();
                     // Upgrade to write lock to set is_colr and encode paint
                     std::unique_lock wlock(font.mutex);

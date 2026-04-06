@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <filesystem>
+#include <numeric>
 #include <vector>
 #include <cstring>
 
@@ -328,6 +329,20 @@ void Renderer::destroy()
     imageVertexBuffer_   = nullptr;
     imageSampler_        = nullptr;
     imagePipelineReady_  = false;
+    colrComputePipeline_ = nullptr;
+    colrComputeBGL_      = nullptr;
+    colrPipelineReady_   = false;
+    colrGlyphInfoBuffer_ = nullptr;
+    colrInstructionBuffer_ = nullptr;
+    colrColorStopBuffer_ = nullptr;
+    colrQuadVertexBuffer_ = nullptr;
+    for (auto& bg : colrBuckets_) {
+        bg.texture = nullptr;
+        bg.view = nullptr;
+        bg.renderBindGroup = nullptr;
+        bg.atlasDim = 0;
+    }
+    colrAtlas_.clear();
 }
 
 void Renderer::setViewportSize(uint32_t width, uint32_t height)
@@ -1064,24 +1079,50 @@ void Renderer::initColrPipeline(wgpu::Device& device, const std::string& shaderD
     spdlog::info("COLR rasterizer pipeline initialized");
 }
 
-void Renderer::ensureColrBucket(wgpu::Queue& queue, uint32_t bucket)
+void Renderer::ensureColrBucket(wgpu::CommandEncoder& encoder, wgpu::Queue& queue, uint32_t bucket)
 {
     if (bucket >= ColrAtlas::NUM_BUCKETS) return;
     auto& bg = colrBuckets_[bucket];
-    if (bg.created) return;
+    uint32_t dim = colrAtlas_.bucketAtlasDim(bucket);
 
-    uint32_t dim = ColrAtlas::atlasDimension();
+    // Already created at the correct size — nothing to do
+    if (bg.atlasDim == dim && bg.atlasDim != 0) return;
+
+    uint32_t oldDim = bg.atlasDim;
+    wgpu::Texture oldTexture = bg.texture;
 
     wgpu::TextureDescriptor texDesc = {};
     texDesc.size = { dim, dim, 1 };
     texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
     texDesc.usage = wgpu::TextureUsage::StorageBinding |
-                    wgpu::TextureUsage::TextureBinding;
+                    wgpu::TextureUsage::TextureBinding |
+                    wgpu::TextureUsage::CopySrc |
+                    wgpu::TextureUsage::CopyDst;
     texDesc.dimension = wgpu::TextureDimension::e2D;
     texDesc.mipLevelCount = 1;
     texDesc.sampleCount = 1;
     bg.texture = device_.CreateTexture(&texDesc);
     bg.view = bg.texture.CreateView();
+
+    // If growing from an existing texture, copy old content into the new one
+    if (oldDim > 0 && oldTexture) {
+        wgpu::TexelCopyTextureInfo src = {};
+        src.texture = oldTexture;
+        src.origin = { 0, 0, 0 };
+
+        wgpu::TexelCopyTextureInfo dst = {};
+        dst.texture = bg.texture;
+        dst.origin = { 0, 0, 0 };
+
+        wgpu::Extent3D copySize = { oldDim, oldDim, 1 };
+        encoder.CopyTextureToTexture(&src, &dst, &copySize);
+
+        spdlog::info("COLR atlas bucket {} grew from {}x{} to {}x{}, copied old content",
+                     bucket, oldDim, oldDim, dim, dim);
+    } else {
+        spdlog::info("COLR atlas bucket {} ({}px tiles, {}x{} atlas) created",
+                     bucket, ColrAtlas::BUCKET_SIZES[bucket], dim, dim);
+    }
 
     // Create render bind group (reuses image pipeline layout: uniform, texture, sampler)
     if (imagePipelineReady_) {
@@ -1101,9 +1142,7 @@ void Renderer::ensureColrBucket(wgpu::Queue& queue, uint32_t bucket)
         bg.renderBindGroup = device_.CreateBindGroup(&bgDesc);
     }
 
-    bg.created = true;
-    spdlog::info("COLR atlas bucket {} ({}px tiles, {}x{} atlas) created",
-                 bucket, ColrAtlas::BUCKET_SIZES[bucket], dim, dim);
+    bg.atlasDim = dim;
 }
 
 void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
@@ -1135,37 +1174,45 @@ void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& q
         info.em_origin_x = cmd.em_origin_x;
         info.em_origin_y = cmd.em_origin_y;
 
-        // Adjust color stop offsets to be global
         uint32_t stopBase = static_cast<uint32_t>(allColorStops.size());
-        std::vector<uint32_t> adjustedInstr = cmd.data->instructions;
-        // Scan for gradient opcodes and adjust stop_offset fields
-        uint32_t pc = 0;
-        while (pc < adjustedInstr.size()) {
-            uint32_t header = adjustedInstr[pc];
-            uint8_t opcode = header & 0xFF;
-            uint32_t payloadLen = (header >> 8) & 0x3FF;
-            uint32_t payload = pc + 1;
-            pc = payload + payloadLen;
+        bool hasGradients = !cmd.data->colorStops.empty();
 
-            // Gradient opcodes: stop_offset is at different positions
-            switch (opcode) {
-                case 0x07: // FillLinearGrad: payload[6] = stop_offset
-                case 0x08: // FillRadialGrad: payload[6] = stop_offset
-                    if (payloadLen >= 7)
-                        adjustedInstr[payload + 6] += stopBase;
-                    break;
-                case 0x09: // FillSweepGrad: payload[4] = stop_offset
-                    if (payloadLen >= 5)
-                        adjustedInstr[payload + 4] += stopBase;
-                    break;
-                default: break;
+        if (hasGradients) {
+            // Copy instructions and adjust color stop offsets to be global
+            uint32_t instrStart = static_cast<uint32_t>(allInstructions.size());
+            allInstructions.insert(allInstructions.end(),
+                                   cmd.data->instructions.begin(),
+                                   cmd.data->instructions.end());
+            uint32_t pc = instrStart;
+            while (pc < allInstructions.size()) {
+                uint32_t header = allInstructions[pc];
+                uint8_t opcode = header & 0xFF;
+                uint32_t payloadLen = (header >> 8) & 0x3FF;
+                uint32_t payload = pc + 1;
+                pc = payload + payloadLen;
+
+                switch (opcode) {
+                    case 0x07: // FillLinearGrad: payload[6] = stop_offset
+                    case 0x08: // FillRadialGrad: payload[6] = stop_offset
+                        if (payloadLen >= 7)
+                            allInstructions[payload + 6] += stopBase;
+                        break;
+                    case 0x09: // FillSweepGrad: payload[4] = stop_offset
+                        if (payloadLen >= 5)
+                            allInstructions[payload + 4] += stopBase;
+                        break;
+                    default: break;
+                }
             }
+            allColorStops.insert(allColorStops.end(),
+                                 cmd.data->colorStops.begin(),
+                                 cmd.data->colorStops.end());
+        } else {
+            // No gradients — append instructions directly, no patching needed
+            allInstructions.insert(allInstructions.end(),
+                                   cmd.data->instructions.begin(),
+                                   cmd.data->instructions.end());
         }
-
-        allInstructions.insert(allInstructions.end(),
-                               adjustedInstr.begin(), adjustedInstr.end());
-        allColorStops.insert(allColorStops.end(),
-                             cmd.data->colorStops.begin(), cmd.data->colorStops.end());
         glyphInfos.push_back(info);
     }
 
@@ -1174,9 +1221,19 @@ void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& q
         allColorStops.push_back({0.0f, 0});
     }
 
-    // Upload glyph info buffer
+    // Sort glyph infos by bucket so each bucket is a contiguous range
+    std::vector<uint32_t> sortOrder(glyphInfos.size());
+    std::iota(sortOrder.begin(), sortOrder.end(), 0u);
+    std::sort(sortOrder.begin(), sortOrder.end(), [&](uint32_t a, uint32_t b) {
+        return cmds[a].tile.bucket < cmds[b].tile.bucket;
+    });
+    std::vector<ColrGlyphInfoGPU> sortedGlyphInfos(glyphInfos.size());
+    for (uint32_t i = 0; i < sortOrder.size(); i++)
+        sortedGlyphInfos[i] = glyphInfos[sortOrder[i]];
+
+    // Upload glyph info buffer (single upload, sorted by bucket)
     {
-        uint32_t needed = static_cast<uint32_t>(glyphInfos.size());
+        uint32_t needed = static_cast<uint32_t>(sortedGlyphInfos.size());
         if (needed > colrGlyphInfoCapacity_) {
             colrGlyphInfoCapacity_ = std::max(needed, 32u);
             wgpu::BufferDescriptor desc = {};
@@ -1184,8 +1241,8 @@ void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& q
             desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
             colrGlyphInfoBuffer_ = device_.CreateBuffer(&desc);
         }
-        queue.WriteBuffer(colrGlyphInfoBuffer_, 0, glyphInfos.data(),
-                          glyphInfos.size() * sizeof(ColrGlyphInfoGPU));
+        queue.WriteBuffer(colrGlyphInfoBuffer_, 0, sortedGlyphInfos.data(),
+                          sortedGlyphInfos.size() * sizeof(ColrGlyphInfoGPU));
     }
 
     // Upload instruction buffer
@@ -1216,28 +1273,28 @@ void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& q
                           allColorStops.size() * sizeof(ColrColorStop));
     }
 
-    // Group commands by bucket and dispatch
-    for (uint32_t bi = 0; bi < ColrAtlas::NUM_BUCKETS; bi++) {
-        // Collect glyph infos for this bucket (contiguous, indexed from 0)
-        std::vector<ColrGlyphInfoGPU> bucketGlyphs;
-        for (uint32_t i = 0; i < glyphInfos.size(); i++) {
-            if (cmds[i].tile.bucket == bi)
-                bucketGlyphs.push_back(glyphInfos[i]);
-        }
-        if (bucketGlyphs.empty()) continue;
+    // Dispatch per bucket using ranges into the sorted glyph info buffer
+    uint32_t rangeStart = 0;
+    uint32_t totalGlyphs = static_cast<uint32_t>(sortedGlyphInfos.size());
+    while (rangeStart < totalGlyphs) {
+        uint32_t bi = cmds[sortOrder[rangeStart]].tile.bucket;
+        uint32_t rangeEnd = rangeStart + 1;
+        while (rangeEnd < totalGlyphs && cmds[sortOrder[rangeEnd]].tile.bucket == bi)
+            rangeEnd++;
+        uint32_t bucketCount = rangeEnd - rangeStart;
 
-        ensureColrBucket(queue, bi);
+        ensureColrBucket(encoder, queue, bi);
         auto& bg = colrBuckets_[bi];
 
-        // Upload bucket-specific glyph info
-        queue.WriteBuffer(colrGlyphInfoBuffer_, 0, bucketGlyphs.data(),
-                          bucketGlyphs.size() * sizeof(ColrGlyphInfoGPU));
+        // Bind group with offset into the glyph info buffer for this bucket's range
+        uint64_t glyphInfoOffset = static_cast<uint64_t>(rangeStart) * sizeof(ColrGlyphInfoGPU);
+        uint64_t glyphInfoSize = static_cast<uint64_t>(bucketCount) * sizeof(ColrGlyphInfoGPU);
 
-        // Create bind group for this dispatch
         wgpu::BindGroupEntry bgEntries[5] = {};
         bgEntries[0].binding = 0;
         bgEntries[0].buffer = colrGlyphInfoBuffer_;
-        bgEntries[0].size = std::max(bucketGlyphs.size(), size_t(1)) * sizeof(ColrGlyphInfoGPU);
+        bgEntries[0].offset = glyphInfoOffset;
+        bgEntries[0].size = glyphInfoSize;
         bgEntries[1].binding = 1;
         bgEntries[1].buffer = colrInstructionBuffer_;
         bgEntries[1].size = allInstructions.size() * sizeof(uint32_t);
@@ -1266,11 +1323,10 @@ void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& q
         wgpu::ComputePassEncoder computePass = encoder.BeginComputePass(&cpDesc);
         computePass.SetPipeline(colrComputePipeline_);
         computePass.SetBindGroup(0, bindGroup);
-        // X/Y = pixel coverage in 16x16 workgroups, Z = glyph index
-        computePass.DispatchWorkgroups(
-            workgroupsX, workgroupsY,
-            static_cast<uint32_t>(bucketGlyphs.size()));
+        computePass.DispatchWorkgroups(workgroupsX, workgroupsY, bucketCount);
         computePass.End();
+
+        rangeStart = rangeEnd;
     }
 }
 
@@ -1288,7 +1344,7 @@ void Renderer::renderColrQuads(wgpu::CommandEncoder& encoder, wgpu::Queue& queue
     // Group quads by bucket
     for (uint32_t bi = 0; bi < ColrAtlas::NUM_BUCKETS; bi++) {
         auto& bg = colrBuckets_[bi];
-        if (!bg.created) continue;
+        if (bg.atlasDim == 0) continue;
 
         std::vector<ImageVertex> verts;
         for (const auto& cmd : cmds) {
@@ -1297,7 +1353,7 @@ void Renderer::renderColrQuads(wgpu::CommandEncoder& encoder, wgpu::Queue& queue
             float x0 = cmd.x, y0 = cmd.y;
             float x1 = cmd.x + cmd.w, y1 = cmd.y + cmd.h;
 
-            float atlasDim = static_cast<float>(ColrAtlas::atlasDimension());
+            float atlasDim = static_cast<float>(bg.atlasDim);
             float u0 = static_cast<float>(cmd.tile.x) / atlasDim;
             float v0 = static_cast<float>(cmd.tile.y) / atlasDim;
             float u1 = static_cast<float>(cmd.tile.x + cmd.tile.tile_w) / atlasDim;

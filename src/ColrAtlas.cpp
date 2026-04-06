@@ -1,5 +1,6 @@
 #include "ColrAtlas.h"
 #include <spdlog/spdlog.h>
+#include <limits>
 
 uint32_t ColrAtlas::bucketForSize(float font_size) {
     // Pick smallest bucket >= font_size
@@ -10,59 +11,149 @@ uint32_t ColrAtlas::bucketForSize(float font_size) {
     return NUM_BUCKETS - 1; // largest bucket
 }
 
-const ColrAtlas::TileLocation* ColrAtlas::findTile(uint64_t glyph_key, float font_size) const {
+uint32_t ColrAtlas::bucketAtlasDim(uint32_t bucket) const {
+    if (bucket >= NUM_BUCKETS) return INITIAL_ATLAS_DIM;
+    return buckets_[bucket].atlasDim;
+}
+
+ColrAtlas::TileLocation* ColrAtlas::findTile(uint64_t glyph_key, float font_size) {
     uint32_t bucket = bucketForSize(font_size);
     auto it = cache_.find({glyph_key, bucket});
-    if (it != cache_.end())
-        return &it->second;
+    if (it != cache_.end()) {
+        it->second.generation = currentGen_;
+        return &it->second.loc;
+    }
     return nullptr;
 }
 
-const ColrAtlas::TileLocation* ColrAtlas::acquireTile(uint64_t glyph_key, float font_size) {
+ColrAtlas::AcquireResult ColrAtlas::acquireTile(uint64_t glyph_key, float font_size) {
     uint32_t bucket = bucketForSize(font_size);
 
     // Already cached?
     CacheKey key{glyph_key, bucket};
     auto it = cache_.find(key);
-    if (it != cache_.end())
-        return nullptr; // no rasterization needed
+    if (it != cache_.end()) {
+        it->second.generation = currentGen_;
+        return {nullptr, false};
+    }
+
+    auto& bs = buckets_[bucket];
 
     // Initialize bucket state on first use
-    auto& bs = buckets_[bucket];
-    if (bs.maxSlots == 0) {
-        uint32_t tpr = tilesPerRow(bucket);
-        bs.maxSlots = tpr * tpr;
-    }
+    if (bs.maxSlots == 0)
+        updateBucketSlots(bucket);
 
-    // Atlas full?
+    bool grew = false;
+
+    // Bucket full?
     if (bs.nextSlot >= bs.maxSlots) {
-        spdlog::warn("COLR atlas bucket {} ({}px) is full ({} tiles)",
-                     bucket, BUCKET_SIZES[bucket], bs.maxSlots);
-        return nullptr;
+        // Try evicting the oldest tile
+        int evicted = evictOldest(bucket);
+        if (evicted < 0) {
+            // All tiles are current generation — need to grow
+            if (!growBucket(bucket)) {
+                spdlog::error("COLR atlas bucket {} ({}px) at max size {}px and all tiles in use",
+                              bucket, BUCKET_SIZES[bucket], bs.atlasDim);
+                return {nullptr, false};
+            }
+            grew = true;
+            // After growing, nextSlot is still valid — just more maxSlots available
+        }
+        // If we evicted, nextSlot was set to the evicted slot's index... but our
+        // slot allocation is linear. Instead, reuse the evicted slot directly.
+        if (!grew && evicted >= 0) {
+            uint32_t tpr = tilesPerRow(bucket, bs.atlasDim);
+            uint32_t slot = static_cast<uint32_t>(evicted);
+            uint32_t gx = slot % tpr;
+            uint32_t gy = slot / tpr;
+            uint32_t tileSize = BUCKET_SIZES[bucket];
+
+            TileEntry entry;
+            entry.loc.bucket = bucket;
+            entry.loc.x = gx * tileSize;
+            entry.loc.y = gy * tileSize;
+            entry.loc.tile_w = tileSize;
+            entry.loc.tile_h = tileSize;
+            entry.generation = currentGen_;
+
+            auto [inserted, _] = cache_.emplace(key, entry);
+            return {&inserted->second.loc, false};
+        }
     }
 
-    // Allocate grid slot
-    uint32_t tpr = tilesPerRow(bucket);
+    // Allocate next grid slot
+    uint32_t tpr = tilesPerRow(bucket, bs.atlasDim);
     uint32_t slot = bs.nextSlot++;
     uint32_t gx = slot % tpr;
     uint32_t gy = slot / tpr;
     uint32_t tileSize = BUCKET_SIZES[bucket];
 
-    TileLocation loc;
-    loc.bucket = bucket;
-    loc.x = gx * tileSize;
-    loc.y = gy * tileSize;
-    loc.tile_w = tileSize;
-    loc.tile_h = tileSize;
+    TileEntry entry;
+    entry.loc.bucket = bucket;
+    entry.loc.x = gx * tileSize;
+    entry.loc.y = gy * tileSize;
+    entry.loc.tile_w = tileSize;
+    entry.loc.tile_h = tileSize;
+    entry.generation = currentGen_;
 
-    auto [inserted, _] = cache_.emplace(key, loc);
-    lastAllocated_ = loc;
-    return &inserted->second;
+    auto [inserted, _] = cache_.emplace(key, entry);
+    return {&inserted->second.loc, grew};
+}
+
+int ColrAtlas::evictOldest(uint32_t bucket) {
+    uint32_t oldestGen = std::numeric_limits<uint32_t>::max();
+    CacheKey oldestKey{0, 0};
+    int oldestSlot = -1;
+
+    uint32_t tpr = tilesPerRow(bucket, buckets_[bucket].atlasDim);
+    uint32_t tileSize = BUCKET_SIZES[bucket];
+
+    for (auto& [ck, te] : cache_) {
+        if (ck.bucket != bucket) continue;
+        if (te.generation < oldestGen) {
+            oldestGen = te.generation;
+            oldestKey = ck;
+            // Derive slot index from position
+            oldestSlot = static_cast<int>((te.loc.y / tileSize) * tpr + (te.loc.x / tileSize));
+        }
+    }
+
+    // Don't evict current-generation tiles
+    if (oldestGen >= currentGen_)
+        return -1;
+
+    spdlog::debug("COLR: evicting tile in bucket {} (gen {} vs current {})",
+                  bucket, oldestGen, currentGen_);
+    cache_.erase(oldestKey);
+    return oldestSlot;
+}
+
+bool ColrAtlas::growBucket(uint32_t bucket) {
+    auto& bs = buckets_[bucket];
+    uint32_t newDim = bs.atlasDim * 2;
+    if (newDim > MAX_ATLAS_DIM)
+        return false;
+
+    uint32_t oldDim = bs.atlasDim;
+    bs.atlasDim = newDim;
+    updateBucketSlots(bucket);
+
+    spdlog::info("COLR atlas bucket {} ({}px tiles) grew from {}x{} to {}x{} ({} slots)",
+                 bucket, BUCKET_SIZES[bucket], oldDim, oldDim, newDim, newDim, bs.maxSlots);
+    return true;
+}
+
+void ColrAtlas::updateBucketSlots(uint32_t bucket) {
+    auto& bs = buckets_[bucket];
+    uint32_t tpr = tilesPerRow(bucket, bs.atlasDim);
+    bs.maxSlots = tpr * tpr;
 }
 
 void ColrAtlas::clear() {
     cache_.clear();
     for (auto& bs : buckets_) {
         bs.nextSlot = 0;
+        bs.maxSlots = 0;
+        bs.atlasDim = INITIAL_ATLAS_DIM;
     }
 }

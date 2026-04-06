@@ -222,7 +222,7 @@ private:
         wgpu::Texture texture;
         wgpu::TextureView view;
         wgpu::BindGroup renderBindGroup;  // for the quad render pass
-        bool created = false;
+        uint32_t atlasDim = 0;  // dimension at creation time (0 = not created)
     };
     ColrBucketGPU colrBuckets_[ColrAtlas::NUM_BUCKETS];
 
@@ -238,5 +238,5 @@ private:
     wgpu::Buffer colrQuadVertexBuffer_;
     uint32_t colrQuadVertexCapacity_ = 0;
 
-    void ensureColrBucket(wgpu::Queue& queue, uint32_t bucket);
+    void ensureColrBucket(wgpu::CommandEncoder& encoder, wgpu::Queue& queue, uint32_t bucket);
 };

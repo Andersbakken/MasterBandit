@@ -101,7 +101,8 @@ constexpr std::string_view typeName() {
     constexpr auto start = raw.find("::", teq + 4);
     static_assert(start != std::string_view::npos);
     constexpr auto nameStart = start + 2;
-    constexpr auto end = raw.find(']', nameStart);
+    // GCC appends "; alias = expanded_type" inside [with ...]; stop at ; or ]
+    constexpr auto end = raw.find_first_of("];", nameStart);
     static_assert(end != std::string_view::npos);
     return raw.substr(nameStart, end - nameStart);
 }

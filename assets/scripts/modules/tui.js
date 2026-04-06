@@ -40,6 +40,31 @@ export function signal(init) {
     };
 }
 
+// Run fn immediately and re-run whenever its signal dependencies change.
+export function effect(fn) {
+    let scheduled = false;
+    const eff = {
+        _deps: new Set(),
+        _invalidate() {
+            if (scheduled) return;
+            scheduled = true;
+            Promise.resolve().then(() => {
+                scheduled = false;
+                cleanupSub(eff);
+                const prev = _tracking;
+                _tracking = eff;
+                fn();
+                _tracking = prev;
+            });
+        },
+    };
+    cleanupSub(eff);
+    const prev = _tracking;
+    _tracking = eff;
+    fn();
+    _tracking = prev;
+}
+
 export function computed(fn) {
     const dep = new Dep();
     let _val;
@@ -167,6 +192,59 @@ const _borders = {
 };
 
 // ============================================================================
+// Theme
+// ============================================================================
+
+// Default theme — all colors are optional; null means use terminal default.
+export const defaultTheme = {
+    bg:     null,                  // popup background; null = terminal default
+    border: { color: 'gray' },
+    text:   { color: null, bg: null },
+    input:  { color: 'white.bold', bg: null },
+    list: {
+        selectedStyle: { bg: 'cyan', fg: 'black', prefix: '▌' },
+        itemColor: null,
+        bg: null,   // non-selected row background; null = inherit popup bg
+    },
+};
+
+// createTheme(overrides) — deep-merge overrides onto defaultTheme.
+export function createTheme(overrides) {
+    const o = overrides || {};
+    const ol = o.list || {};
+    return {
+        bg:     o.bg !== undefined ? o.bg : defaultTheme.bg,
+        border: { ...defaultTheme.border, ...(o.border || {}) },
+        text:   { ...defaultTheme.text,   ...(o.text   || {}) },
+        input:  { ...defaultTheme.input,  ...(o.input  || {}) },
+        list: {
+            ...defaultTheme.list,
+            ...ol,
+            selectedStyle: { ...defaultTheme.list.selectedStyle, ...(ol.selectedStyle || {}) },
+        },
+    };
+}
+
+// Pre-parse a theme into resolved SGR codes — called once per render() invocation.
+function _parseTheme(raw) {
+    const t  = createTheme(raw);
+    const ss = t.list.selectedStyle;
+    return {
+        bg:     t.bg ? _colorCode(t.bg, true) : null,
+        border: { fg: _colorCode(t.border.color, false) },
+        text:   { ...parseColor(t.text.color),  bgCode: t.text.bg  ? _colorCode(t.text.bg,  true) : null },
+        input:  { ...parseColor(t.input.color), bgCode: t.input.bg ? _colorCode(t.input.bg, true) : null },
+        list: {
+            selFg:  ss.fg            ? _colorCode(ss.fg,            false) : null,
+            selBg:  ss.bg            ? _colorCode(ss.bg,            true)  : null,
+            prefix: ss.prefix        || '▌',
+            itemFg: t.list.itemColor ? _colorCode(t.list.itemColor, false) : null,
+            itemBg: t.list.bg        ? _colorCode(t.list.bg,        true)  : null,
+        },
+    };
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -181,7 +259,11 @@ function getValue(v) {
 
 export function box(props, children) {
     if (Array.isArray(props)) { children = props; props = {}; }
-    return { type: 'box', props: props || {}, children: children || [] };
+    const p = props || {};
+    return {
+        type: 'box', props: p, children: children || [],
+        _parsed: p.borderColor ? { fg: _colorCode(p.borderColor, false) } : null,
+    };
 }
 
 export function col(props, children) {
@@ -195,15 +277,28 @@ export function row(props, children) {
 }
 
 export function text(props) {
-    return { type: 'text', props: props || {}, children: [] };
+    const p = props || {};
+    return { type: 'text', props: p, children: [], _parsed: p.color ? parseColor(p.color) : null };
 }
 
 export function input(props) {
-    return { type: 'input', props: props || {}, children: [] };
+    const p = props || {};
+    return { type: 'input', props: p, children: [], _parsed: p.color ? parseColor(p.color) : null };
 }
 
 export function list(props) {
-    return { type: 'list', props: props || {}, children: [], _scroll: 0 };
+    const p  = props || {};
+    const ss = p.selectedStyle || {};
+    return {
+        type: 'list', props: p, children: [], _scroll: 0,
+        _parsed: {
+            selFg:  ss.fg     ? _colorCode(ss.fg,  false) : null,
+            selBg:  ss.bg     ? _colorCode(ss.bg,  true)  : null,
+            prefix: ss.prefix || null,
+            itemFg: p.itemColor ? _colorCode(p.itemColor, false) : null,
+            itemBg: p.itemBg    ? _colorCode(p.itemBg,    true)  : null,
+        },
+    };
 }
 
 // ============================================================================
@@ -278,24 +373,24 @@ function layout(node, x, y, availW, availH) {
 // Rendering — write node tree into a CellBuffer
 // ============================================================================
 
-function renderNode(node, buf, focused) {
+function renderNode(node, buf, focused, theme) {
     switch (node.type) {
-    case 'box':   _renderBox(node, buf, focused);          break;
+    case 'box':   _renderBox(node, buf, focused, theme);           break;
     case 'col':
     case 'row':
-        for (const c of node.children) renderNode(c, buf, focused);
+        for (const c of node.children) renderNode(c, buf, focused, theme);
         break;
-    case 'text':  _renderText(node, buf);                  break;
-    case 'input': _renderInput(node, buf, node === focused); break;
-    case 'list':  _renderList(node, buf, node === focused);  break;
+    case 'text':  _renderText(node, buf, theme);                   break;
+    case 'input': _renderInput(node, buf, node === focused, theme); break;
+    case 'list':  _renderList(node, buf, node === focused, theme);  break;
     }
 }
 
-function _renderBox(node, buf, focused) {
+function _renderBox(node, buf, focused, theme) {
     const p  = node.props;
     const x  = node._x, y = node._y, w = node._w, h = node._h;
-    const bc = parseColor(p.borderColor);
-    const fg = bc.fgCode ?? null;
+    // Pre-parsed border color from props; fall back to theme
+    const fg = (node._parsed ? node._parsed.fg : null) ?? theme.border.fg;
 
     const full = p.border && p.border !== 'none' ? (_borders[p.border] || _borders.line) : null;
     const tS   = full || (p.borderTop    ? (_borders[p.borderTop]    || _borders.line) : null);
@@ -303,29 +398,31 @@ function _renderBox(node, buf, focused) {
     const lS   = full || (p.borderLeft   ? (_borders[p.borderLeft]   || _borders.line) : null);
     const rS   = full || (p.borderRight  ? (_borders[p.borderRight]  || _borders.line) : null);
 
+    const bbg = theme.bg;
     if (tS) {
-        buf.set(x,         y, lS ? tS.tl : tS.h, fg, null, false, false, false);
-        for (let c = x + 1; c < x + w - 1; c++) buf.set(c, y, tS.h, fg, null, false, false, false);
-        buf.set(x + w - 1, y, rS ? tS.tr : tS.h, fg, null, false, false, false);
+        buf.set(x,         y, lS ? tS.tl : tS.h, fg, bbg, false, false, false);
+        for (let c = x + 1; c < x + w - 1; c++) buf.set(c, y, tS.h, fg, bbg, false, false, false);
+        buf.set(x + w - 1, y, rS ? tS.tr : tS.h, fg, bbg, false, false, false);
     }
     if (bS) {
-        buf.set(x,         y+h-1, lS ? bS.bl : bS.h, fg, null, false, false, false);
-        for (let c = x + 1; c < x + w - 1; c++) buf.set(c, y+h-1, bS.h, fg, null, false, false, false);
-        buf.set(x + w - 1, y+h-1, rS ? bS.br : bS.h, fg, null, false, false, false);
+        buf.set(x,         y+h-1, lS ? bS.bl : bS.h, fg, bbg, false, false, false);
+        for (let c = x + 1; c < x + w - 1; c++) buf.set(c, y+h-1, bS.h, fg, bbg, false, false, false);
+        buf.set(x + w - 1, y+h-1, rS ? bS.br : bS.h, fg, bbg, false, false, false);
     }
-    if (lS) for (let r = y + (tS?1:0); r < y + h - (bS?1:0); r++) buf.set(x,         r, lS.v, fg, null, false, false, false);
-    if (rS) for (let r = y + (tS?1:0); r < y + h - (bS?1:0); r++) buf.set(x + w - 1, r, rS.v, fg, null, false, false, false);
+    if (lS) for (let r = y + (tS?1:0); r < y + h - (bS?1:0); r++) buf.set(x,         r, lS.v, fg, bbg, false, false, false);
+    if (rS) for (let r = y + (tS?1:0); r < y + h - (bS?1:0); r++) buf.set(x + w - 1, r, rS.v, fg, bbg, false, false, false);
 
-    for (const child of node.children) renderNode(child, buf, focused);
+    for (const child of node.children) renderNode(child, buf, focused, theme);
 }
 
-function _renderText(node, buf) {
-    const p    = node.props;
-    const x    = node._x, y = node._y, w = node._w;
-    const raw  = String(getValue(p.value) ?? '');
-    const col  = parseColor(p.color);
-    const fg   = col.fgCode ?? null;
-    const bg   = col.bgCode ?? null;
+function _renderText(node, buf, theme) {
+    const p     = node.props;
+    const x     = node._x, y = node._y, w = node._w;
+    const raw   = String(getValue(p.value) ?? '');
+    // Merge: theme provides defaults, node props override per-field
+    const col   = node._parsed ? { ...theme.text,  ...node._parsed } : theme.text;
+    const fg    = col.fgCode ?? null;
+    const bg    = col.bgCode ?? theme.bg;
     const align = p.align || 'left';
 
     buf.fill(x, y, w, 1, ' ', null, bg, false, false, false);
@@ -338,14 +435,15 @@ function _renderText(node, buf) {
         buf.set(startX + i, y, str[i], fg, bg, col.bold, col.italic, col.underline);
 }
 
-function _renderInput(node, buf, focused) {
+function _renderInput(node, buf, focused, theme) {
     const p      = node.props;
     const x      = node._x, y = node._y, w = node._w;
     const prompt = p.prompt || '';
     const val    = String(getValue(p.value) ?? '');
-    const col    = parseColor(p.color);
+    // Merge: theme provides defaults, node props override per-field
+    const col    = node._parsed ? { ...theme.input, ...node._parsed } : theme.input;
     const fg     = col.fgCode ?? null;
-    const bg     = col.bgCode ?? null;
+    const bg     = col.bgCode ?? theme.bg;
 
     buf.fill(x, y, w, 1, ' ', null, bg, false, false, false);
 
@@ -355,31 +453,32 @@ function _renderInput(node, buf, focused) {
     for (let i = 0; i < val.length && cx < x + w; i++, cx++)
         buf.set(cx, y, val[i], fg, bg, col.bold, col.italic, col.underline);
 
-    // Block cursor at end of value when focused
     if (focused && cx < x + w)
         buf.set(cx, y, ' ', bg || '39', fg || '49', false, false, false);
 }
 
-function _renderList(node, buf, focused) {
+function _renderList(node, buf, focused, theme) {
     const p      = node.props;
     const x      = node._x, y = node._y, w = node._w, h = node._h;
     const items  = getValue(p.items) ?? [];
     const sel    = getValue(p.selected) ?? 0;
-    const ss     = p.selectedStyle || {};
-    const prefix = ss.prefix || ' ';
-    const selFg  = ss.fg ? _colorCode(ss.fg, false) : null;
-    const selBg  = ss.bg ? _colorCode(ss.bg, true)  : null;
+    // Pre-parsed from props; fall back to theme
+    const np     = node._parsed;
+    const selFg  = (np && np.selFg  !== null ? np.selFg  : null) ?? theme.list.selFg;
+    const selBg  = (np && np.selBg  !== null ? np.selBg  : null) ?? theme.list.selBg;
+    const prefix = (np && np.prefix !== null ? np.prefix : null) ?? theme.list.prefix;
+    const itemFg = (np && np.itemFg !== null ? np.itemFg : null) ?? theme.list.itemFg;
+    const itemBg = (np && np.itemBg !== null ? np.itemBg : null) ?? theme.list.itemBg ?? theme.bg;
 
-    // Keep selected item visible
     if (sel < node._scroll) node._scroll = sel;
     if (sel >= node._scroll + h) node._scroll = sel - h + 1;
 
     for (let row = 0; row < h; row++) {
         const idx   = node._scroll + row;
         const item  = idx < items.length ? String(items[idx]) : '';
-        const isSel = focused && idx === sel;
-        const fg    = isSel ? selFg : null;
-        const bg    = isSel ? selBg : null;
+        const isSel = idx === sel;
+        const fg    = isSel ? selFg : itemFg;
+        const bg    = isSel ? selBg : itemBg;
 
         buf.fill(x, y + row, w, 1, ' ', null, bg, false, false, false);
         buf.set(x, y + row, isSel ? prefix : ' ', fg, bg, false, false, false);
@@ -455,9 +554,11 @@ function collectFocusables(node, out) {
 // ============================================================================
 
 class RenderInstance {
-    constructor(target, root) {
+    constructor(target, root, opts) {
         this._target    = target;
         this._root      = root;
+        this._onDestroy = opts && opts.onDestroy;
+        this._theme     = _parseTheme(opts && opts.theme);
         this._w         = target.cols;
         this._h         = target.rows;
         this._oldBuf    = null;
@@ -474,6 +575,7 @@ class RenderInstance {
 
         this._layout();
         this._runEffect();
+        target.inject('\x1b[?25l'); // hide terminal cursor while tui is active
 
         this._inputCb = (data) => this._handleInput(data);
         target.addEventListener('input', this._inputCb);
@@ -496,8 +598,8 @@ class RenderInstance {
 
     _doRender() {
         const buf = new CellBuffer(this._w, this._h);
-        buf.fill(0, 0, this._w, this._h, ' ', null, null, false, false, false);
-        renderNode(this._root, buf, this._focusables[this._focusIdx] ?? null);
+        buf.fill(0, 0, this._w, this._h, ' ', null, this._theme.bg, false, false, false);
+        renderNode(this._root, buf, this._focusables[this._focusIdx] ?? null, this._theme);
         const out = buildDiff(this._oldBuf, buf);
         if (out) this._target.inject(out);
         this._oldBuf = buf;
@@ -530,12 +632,32 @@ class RenderInstance {
         if (!focused) return;
 
         if (focused.type === 'input') {
-            const sig = focused.props.value;
-            if (!sig || typeof sig.value === 'undefined') return;
-            if (data === '\x7f' || data === '\x08') {
-                if (sig.value.length > 0) sig.value = sig.value.slice(0, -1);
-            } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
-                sig.value = sig.value + data;
+            const isPrintable = data.length === 1 && data.charCodeAt(0) >= 32;
+            const isBackspace = data === '\x7f' || data === '\x08';
+
+            if (isPrintable || isBackspace) {
+                const sig = focused.props.value;
+                if (!sig || typeof sig.value === 'undefined') return;
+                if (isBackspace) {
+                    if (sig.value.length > 0) sig.value = sig.value.slice(0, -1);
+                } else {
+                    sig.value = sig.value + data;
+                }
+                return;
+            }
+
+            // Any other key (arrows, Enter, etc.) — forward to first list in the tree
+            const listNode = this._focusables.find(f => f.type === 'list');
+            if (listNode) {
+                const sel   = listNode.props.selected;
+                const items = getValue(listNode.props.items) ?? [];
+                if (data === '\x1b[A') {
+                    if (sel && sel.value > 0) sel.value = sel.value - 1;
+                } else if (data === '\x1b[B') {
+                    if (sel && sel.value < items.length - 1) sel.value = sel.value + 1;
+                } else if (data === '\r' || data === '\n') {
+                    listNode.props.onSelect?.(getValue(listNode.props.selected) ?? 0);
+                }
             }
             return;
         }
@@ -557,7 +679,9 @@ class RenderInstance {
         if (this._destroyed) return;
         this._destroyed = true;
         cleanupSub(this._effect);
+        this._target.inject('\x1b[?25h'); // restore cursor before closing
         this._target.close();
+        if (this._onDestroy) this._onDestroy();
     }
 }
 
@@ -565,6 +689,6 @@ class RenderInstance {
 // Public API
 // ============================================================================
 
-export function render(target, root) {
-    return new RenderInstance(target, root);
+export function render(target, root, opts) {
+    return new RenderInstance(target, root, opts);
 }

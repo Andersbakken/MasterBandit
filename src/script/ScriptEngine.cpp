@@ -415,6 +415,17 @@ static JSValue jsPopupClose(JSContext* ctx, JSValueConst this_val,
     if (!popup || !popup->alive) return JS_UNDEFINED;
     engineFromCtx(ctx)->callbacks().destroyPopup(popup->paneId, popup->popupId);
     popup->alive = false;
+
+    // Clear popup registry so a future popup with the same id on the same pane
+    // registers fresh and input is delivered to the new popup's listeners.
+    std::string regKey = std::to_string(popup->paneId) + ":" + popup->popupId;
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue registry = JS_GetPropertyStr(ctx, global, "__popup_registry");
+    if (!JS_IsUndefined(registry))
+        JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_UNDEFINED);
+    JS_FreeValue(ctx, registry);
+    JS_FreeValue(ctx, global);
+
     return JS_UNDEFINED;
 }
 

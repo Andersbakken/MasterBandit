@@ -3,6 +3,11 @@
 #include "Utils.h"
 #include <sys/ioctl.h>
 
+#if defined(__linux__)
+#  define GLFW_EXPOSE_NATIVE_X11
+#  include <GLFW/glfw3native.h>
+#endif
+
 // --- GLFW modifier conversion ---
 
 static unsigned int glfwModsToModifiers(int mods)
@@ -366,6 +371,14 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
             ev.button = NoButton;
             ev.modifiers = lastMods_;
             term2->mouseReleaseEvent(&ev);
+#if defined(__linux__)
+            // Publish the completed selection as the X11 primary selection
+            if (term2->hasSelection()) {
+                std::string sel = term2->selectedText();
+                if (!sel.empty())
+                    glfwSetX11SelectionString(sel.c_str());
+            }
+#endif
         }
         return;
     }
@@ -504,12 +517,21 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
             }
             case Action::SelectionType::Word:
                 term->startWordSelection(col, absRow);
+#if defined(__linux__)
+                if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) glfwSetX11SelectionString(s.c_str()); }
+#endif
                 break;
             case Action::SelectionType::Line:
                 term->startLineSelection(absRow);
+#if defined(__linux__)
+                if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) glfwSetX11SelectionString(s.c_str()); }
+#endif
                 break;
             case Action::SelectionType::Extend:
                 term->extendSelection(col, absRow);
+#if defined(__linux__)
+                if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) glfwSetX11SelectionString(s.c_str()); }
+#endif
                 break;
             case Action::SelectionType::Rectangle:
                 term->startRectangleSelection(col, absRow);
@@ -534,12 +556,20 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
             return; // no hyperlink found, nothing to do
         }
 
-        // PasteSelection: same as Paste — clipboard paste
+        // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere
         if (std::holds_alternative<Action::PasteSelection>(act)) {
             auto* t = dynamic_cast<Terminal*>(term);
-            const char* clip = glfwGetClipboardString(glfwWindow_);
-            if (t && clip && clip[0])
-                t->pasteText(std::string(clip));
+            if (t) {
+#if defined(__linux__)
+                const char* sel = glfwGetX11SelectionString();
+                if (sel && sel[0])
+                    t->pasteText(std::string(sel));
+#else
+                const char* clip = glfwGetClipboardString(glfwWindow_);
+                if (clip && clip[0])
+                    t->pasteText(std::string(clip));
+#endif
+            }
             return;
         }
 

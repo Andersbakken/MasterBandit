@@ -3,6 +3,11 @@
 #include "Log.h"
 #include <unistd.h>
 
+#if defined(__linux__)
+#  define GLFW_EXPOSE_NATIVE_X11
+#  include <GLFW/glfw3native.h>
+#endif
+
 
 void PlatformDawn::dispatchAction(const Action::Any& action)
 {
@@ -361,7 +366,20 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
         },
         [&](const Action::MouseSelection&) { /* TODO: wire up in mouse binding phase */ },
         [&](const Action::OpenHyperlink&) { /* TODO: wire up in mouse binding phase */ },
-        [&](const Action::PasteSelection&) { /* TODO: wire up in mouse binding phase */ },
+        [&](const Action::PasteSelection&) {
+            Terminal* term = activeTerm();
+            if (!term) return;
+#if defined(__linux__)
+            const char* sel = glfwGetX11SelectionString();
+            if (sel && sel[0])
+                term->pasteText(std::string(sel));
+#else
+            // macOS has no primary selection convention; fall back to clipboard.
+            const char* clip = glfwGetClipboardString(glfwWindow_);
+            if (clip && clip[0])
+                term->pasteText(std::string(clip));
+#endif
+        },
         [&](const Action::ScriptAction& a) {
             if (!scriptEngine_.isActionRegistered(a.name)) {
                 spdlog::debug("ScriptAction '{}' not registered, ignoring", a.name);

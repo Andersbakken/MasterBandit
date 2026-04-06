@@ -498,16 +498,16 @@ std::vector<MouseBinding> defaultMouseBindings()
         {{MouseButton::Left, ShiftModifier, MouseEventType::TriplePress, MouseMode::Grabbed, MouseRegion::Pane},
          Action::MouseSelection{S::Line}},
 
-        // Middle-click paste
-        {{MouseButton::Middle, 0, MouseEventType::Release, MouseMode::Ungrabbed, MouseRegion::Pane},
+        // Middle-click paste (Click = single press+release without drag)
+        {{MouseButton::Middle, 0, MouseEventType::Click, MouseMode::Ungrabbed, MouseRegion::Pane},
          Action::PasteSelection{}},
 
         // Hyperlink open
 #ifdef __APPLE__
-        {{MouseButton::Left, MetaModifier, MouseEventType::Release, MouseMode::Any, MouseRegion::Pane},
+        {{MouseButton::Left, MetaModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
          Action::OpenHyperlink{}},
 #else
-        {{MouseButton::Left, CtrlModifier, MouseEventType::Release, MouseMode::Any, MouseRegion::Pane},
+        {{MouseButton::Left, CtrlModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
          Action::OpenHyperlink{}},
 #endif
 

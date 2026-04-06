@@ -27,10 +27,8 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
 
 Terminal::~Terminal()
 {
-    if (mWritePollActive) {
-        uv_poll_stop(&mWritePoll);
-        mWritePollActive = false;
-    }
+    if (mWritePollActive)
+        disableWritePoll();
     if (mMasterFD != -1) ::close(mMasterFD);
 }
 
@@ -215,23 +213,12 @@ void Terminal::writeToPTY(const char* data, size_t len)
         len -= ret;
     }
 
-    // Queue remaining data and start write poll
+    // Queue remaining data and enable writable on the pty poll
     if (len > 0) {
         mWriteQueue.insert(mWriteQueue.end(), data, data + len);
-        if (!mWritePollActive && mLoop) {
-            uv_poll_init(mLoop, &mWritePoll, mMasterFD);
-            mWritePoll.data = this;
-            uv_poll_start(&mWritePoll, UV_WRITABLE, onWritePollReady);
-            mWritePollActive = true;
-        }
+        if (!mWritePollActive)
+            enableWritePoll();
     }
-}
-
-void Terminal::onWritePollReady(uv_poll_t* handle, int status, int events)
-{
-    if (status < 0) return;
-    auto* self = static_cast<Terminal*>(handle->data);
-    if (events & UV_WRITABLE) self->flushWriteQueue();
 }
 
 void Terminal::flushWriteQueue()
@@ -247,12 +234,23 @@ void Terminal::flushWriteQueue()
         }
         mWriteQueue.erase(mWriteQueue.begin(), mWriteQueue.begin() + ret);
     }
-    // Queue drained — stop write poll
-    if (mWritePollActive) {
-        uv_poll_stop(&mWritePoll);
-        uv_close(reinterpret_cast<uv_handle_t*>(&mWritePoll), nullptr);
-        mWritePollActive = false;
-    }
+    // Queue drained — remove writable from pty poll
+    if (mWritePollActive)
+        disableWritePoll();
+}
+
+void Terminal::enableWritePoll()
+{
+    if (!mPtyPoll) return;
+    uv_poll_start(mPtyPoll, UV_READABLE | UV_WRITABLE, mPtyPoll->poll_cb);
+    mWritePollActive = true;
+}
+
+void Terminal::disableWritePoll()
+{
+    if (!mPtyPoll) return;
+    uv_poll_start(mPtyPoll, UV_READABLE, mPtyPoll->poll_cb);
+    mWritePollActive = false;
 }
 
 void Terminal::writeToOutput(const char* data, size_t len)

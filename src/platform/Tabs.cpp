@@ -296,9 +296,13 @@ void PlatformDawn::addPtyPoll(int fd, Terminal* term)
     poll->data = term;
     uv_poll_start(poll, UV_READABLE, [](uv_poll_t* handle, int status, int events) {
         if (status < 0) return;
+        auto* t = static_cast<Terminal*>(handle->data);
         if (events & UV_READABLE)
-            static_cast<Terminal*>(handle->data)->readFromFD();
+            t->readFromFD();
+        if (events & UV_WRITABLE)
+            t->flushWriteQueue();
     });
+    term->setPtyPoll(poll);
     ptyPolls_[fd] = poll;
 }
 

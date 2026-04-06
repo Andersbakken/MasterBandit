@@ -206,7 +206,6 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 
 // Forward declarations — defined after Popup class
 static JSValue jsPaneCreatePopup(JSContext*, JSValueConst, int, JSValueConst*);
-static JSValue jsPaneDestroyPopup(JSContext*, JSValueConst, int, JSValueConst*);
 static JSValue jsPaneGetPopups(JSContext*, JSValueConst);
 
 static const JSCFunctionListEntry jsPaneProto[] = {
@@ -214,7 +213,6 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
-    JS_CFUNC_DEF("destroyPopup", 1, jsPaneDestroyPopup),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("cols", jsPaneGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("rows", jsPaneGetProp, nullptr, 2),
@@ -275,8 +273,8 @@ static JSValue jsPopupInject(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// popup.destroy()
-static JSValue jsPopupDestroy(JSContext* ctx, JSValueConst this_val,
+// popup.close()
+static JSValue jsPopupClose(JSContext* ctx, JSValueConst this_val,
                                int, JSValueConst*)
 {
     REQUIRE_PERM(ctx, UiPopupDestroy);
@@ -337,18 +335,33 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// popup.paneId, popup.id, popup.focused (getters)
+// popup property getters
 static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
     auto* popup = jsPopupGet(ctx, this_val);
     if (!popup || !popup->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
     switch (magic) {
     case 0: return JS_NewInt32(ctx, popup->paneId);
     case 1: return JS_NewString(ctx, popup->popupId.c_str());
     case 2: {
-        Engine* eng = engineFromCtx(ctx);
         auto info = eng->callbacks().paneInfo(popup->paneId);
         return JS_NewBool(ctx, info.focusedPopupId == popup->popupId);
+    }
+    case 3: case 4: case 5: case 6: {
+        // cols, rows, x, y — look up from panePopups
+        auto popups = eng->callbacks().panePopups(popup->paneId);
+        for (const auto& p : popups) {
+            if (p.id == popup->popupId) {
+                switch (magic) {
+                case 3: return JS_NewInt32(ctx, p.w);
+                case 4: return JS_NewInt32(ctx, p.h);
+                case 5: return JS_NewInt32(ctx, p.x);
+                case 6: return JS_NewInt32(ctx, p.y);
+                }
+            }
+        }
+        return JS_UNDEFINED;
     }
     default: return JS_UNDEFINED;
     }
@@ -381,10 +394,14 @@ static const JSCFunctionListEntry jsPopupProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsPopupAddEventListener),
     JS_CFUNC_DEF("inject", 1, jsPopupInject),
     JS_CFUNC_DEF("resize", 1, jsPopupResize),
-    JS_CFUNC_DEF("destroy", 0, jsPopupDestroy),
+    JS_CFUNC_DEF("close", 0, jsPopupClose),
     JS_CGETSET_MAGIC_DEF("paneId", jsPopupGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("id", jsPopupGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("focused", jsPopupGetProp, nullptr, 2),
+    JS_CGETSET_MAGIC_DEF("cols", jsPopupGetProp, nullptr, 3),
+    JS_CGETSET_MAGIC_DEF("rows", jsPopupGetProp, nullptr, 4),
+    JS_CGETSET_MAGIC_DEF("x", jsPopupGetProp, nullptr, 5),
+    JS_CGETSET_MAGIC_DEF("y", jsPopupGetProp, nullptr, 6),
 };
 
 // pane.createPopup({id, x, y, w, h}) -> Popup
@@ -428,21 +445,6 @@ static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
     if (inst) inst->ownedPopups.push_back({paneId, popupId});
 
     return jsPopupNew(ctx, paneId, popupId);
-}
-
-// pane.destroyPopup(id)
-static JSValue jsPaneDestroyPopup(JSContext* ctx, JSValueConst this_val,
-                                   int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_UNDEFINED;
-    REQUIRE_PERM(ctx, UiPopupDestroy);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_UNDEFINED;
-    const char* id = JS_ToCString(ctx, argv[0]);
-    if (!id) return JS_EXCEPTION;
-    engineFromCtx(ctx)->callbacks().destroyPopup(pane->id, std::string(id));
-    JS_FreeCString(ctx, id);
-    return JS_UNDEFINED;
 }
 
 // pane.popups — returns array of Popup objects for this pane
@@ -843,7 +845,7 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbTabs(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbGetTabs(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
     Engine* eng = engineFromCtx(ctx);
     auto tabInfos = eng->callbacks().tabs();
@@ -853,7 +855,7 @@ static JSValue jsMbTabs(JSContext* ctx, JSValueConst, int, JSValueConst*)
     return arr;
 }
 
-static JSValue jsMbActivePane(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbGetActivePane(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
     Engine* eng = engineFromCtx(ctx);
     auto tabInfos = eng->callbacks().tabs();
@@ -863,7 +865,7 @@ static JSValue jsMbActivePane(JSContext* ctx, JSValueConst, int, JSValueConst*)
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbActiveTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbGetActiveTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
     Engine* eng = engineFromCtx(ctx);
     auto tabInfos = eng->callbacks().tabs();
@@ -899,8 +901,8 @@ static std::string toLabel(std::string_view name) {
     return result;
 }
 
-// mb.actions() -> array of {name, label, builtin, args?} objects
-static JSValue jsMbActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
+// mb.actions -> array of {name, label, builtin, args?} objects
+static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
     Engine* eng = engineFromCtx(ctx);
 
@@ -1380,14 +1382,18 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbInvokeAction, "invokeAction", 1));
     JS_SetPropertyStr(ctx, mb, "addEventListener",
         JS_NewCFunction(ctx, jsMbAddEventListener, "addEventListener", 2));
-    JS_SetPropertyStr(ctx, mb, "tabs",
-        JS_NewCFunction(ctx, jsMbTabs, "tabs", 0));
-    JS_SetPropertyStr(ctx, mb, "activePane",
-        JS_NewCFunction(ctx, jsMbActivePane, "activePane", 0));
-    JS_SetPropertyStr(ctx, mb, "activeTab",
-        JS_NewCFunction(ctx, jsMbActiveTab, "activeTab", 0));
-    JS_SetPropertyStr(ctx, mb, "actions",
-        JS_NewCFunction(ctx, jsMbActions, "actions", 0));
+    // Getter properties on mb object
+    auto defineGetter = [&](const char* name, JSCFunction* getter) {
+        JSAtom atom = JS_NewAtom(ctx, name);
+        JS_DefinePropertyGetSet(ctx, mb, atom,
+            JS_NewCFunction(ctx, getter, name, 0), JS_UNDEFINED,
+            JS_PROP_ENUMERABLE | JS_PROP_CONFIGURABLE);
+        JS_FreeAtom(ctx, atom);
+    };
+    defineGetter("tabs", jsMbGetTabs);
+    defineGetter("activePane", jsMbGetActivePane);
+    defineGetter("activeTab", jsMbGetActiveTab);
+    defineGetter("actions", jsMbGetActions);
     JS_SetPropertyStr(ctx, mb, "createTab",
         JS_NewCFunction(ctx, jsMbCreateTab, "createTab", 0));
     JS_SetPropertyStr(ctx, mb, "closeTab",
@@ -2028,7 +2034,7 @@ void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& proc
 
         JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
         if (!JS_IsUndefined(paneObj)) {
-            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_foregroundProcess");
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_foregroundProcessChanged");
             JSValue arg = JS_NewString(inst.ctx, processName.c_str());
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);

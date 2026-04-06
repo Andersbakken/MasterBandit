@@ -6,7 +6,7 @@
 // Press Cmd+Shift+I (macOS) or Ctrl+Shift+I (Linux) to focus the popup.
 // Press 'q' while focused to close it. Arrow keys move the cursor.
 
-const pane = mb.activePane();
+const pane = mb.activePane;
 if (!pane) throw new Error("no active pane");
 
 let W = 30, H = 7;

@@ -9,7 +9,7 @@ mb.setNamespace("palette");
 mb.registerAction("open");
 
 function buildActionList() {
-    return mb.actions();
+    return mb.actions;
 }
 
 let popup = null;
@@ -127,7 +127,7 @@ function render() {
 function open() {
     if (popup) return; // already open
 
-    const pane = mb.activePane();
+    const pane = mb.activePane;
     if (!pane) return;
 
     const cols = pane.cols;
@@ -202,13 +202,13 @@ function open() {
 
 function close() {
     if (popup) {
-        popup.destroy();
+        popup.close();
         popup = null;
     }
 }
 
 mb.addEventListener("action", "palette.open", () => {
-    const pane = mb.activePane();
+    const pane = mb.activePane;
     if (!pane) return;
 
     if (popup) {

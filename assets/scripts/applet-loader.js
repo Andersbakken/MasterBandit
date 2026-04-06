@@ -48,7 +48,7 @@ mb.addEventListener("paneCreated", (pane) => {
 });
 
 // Also register on existing panes at startup
-for (const tab of mb.tabs()) {
+for (const tab of mb.tabs) {
     for (const pane of tab.panes) {
         registerPane(pane);
     }

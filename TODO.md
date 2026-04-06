@@ -87,7 +87,8 @@
 
 ## Emoji / Color Fonts
 
-- [ ] Color emoji rendering — current pipeline is outline-only (hb-gpu/Slug encodes Bézier paths; fragment shader applies a single fg tint). Color fonts (COLR layered vector, CBDT/CBLC bitmap, sbix) silently produce empty glyphs. Options: COLRv0 via multi-pass layered outline rendering; CBDT/sbix via bitmap texture upload; or ship a monochrome outline emoji fallback font.
+- [x] COLRv1 color emoji — GPU-side paint graph interpreter rasterizes COLRv1 glyphs into a bucketed tile atlas (32–512px). Supports solid fills, linear/radial/sweep gradients, nested transforms, clip glyphs/rects, and SRC_OVER compositing. Generation-based eviction with atlas auto-grow up to 8192px.
+- [ ] COLRv1 compositing modes — only CLEAR, SRC, SRC_OVER, and DEST are implemented in the rasterizer shader. The spec defines ~13 Porter-Duff modes plus blend modes (screen, multiply, overlay, etc.). Some fonts use DEST_IN/DEST_OUT for masking.
 
 ## Observability
 

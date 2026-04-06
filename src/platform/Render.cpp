@@ -69,6 +69,22 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
     }
 
     // Pass 2: Build runs and shape
+    // Lazily-resolved replacement glyph (U+FFFD) for codepoints that exist in a
+    // font but have no renderable data (e.g. CBDT bitmap-only emoji fonts).
+    GlyphInfo replacementGlyph{};
+    bool replacementGlyphReady = false;
+    auto getReplacementGlyph = [&]() -> const GlyphInfo* {
+        if (replacementGlyphReady) return replacementGlyph.is_empty ? nullptr : &replacementGlyph;
+        replacementGlyphReady = true;
+        const ShapedRun& rep = textSystem_.shapeRun(fontName_, replacementChar_, fontSize_, {});
+        if (rep.glyphs.empty()) return nullptr;
+        std::shared_lock lock(font->mutex);
+        auto it = font->glyphs.find(rep.glyphs[0].glyphId);
+        if (it == font->glyphs.end() || it->second.is_empty) return nullptr;
+        replacementGlyph = it->second;
+        return &replacementGlyph;
+    };
+
     float cellWidthPx = charWidth_;
     int col = 0;
     while (col < cols) {
@@ -187,10 +203,23 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
                 std::shared_lock lock(font->mutex);
                 auto git = font->glyphs.find(glyphId);
                 if (git == font->glyphs.end() || git->second.is_empty) {
-                    penX += sg.xAdvance;
-                    continue;
+                    lock.unlock();
+                    // For printable non-space codepoints, show U+FFFD rather than nothing
+                    char32_t wc = (cellCol >= 0 && cellCol < cols) ? rowData[cellCol].wc : 0;
+                    bool replaced = false;
+                    if (wc > 0x20) {
+                        if (const GlyphInfo* rep = getReplacementGlyph()) {
+                            gi = *rep;
+                            replaced = true;
+                        }
+                    }
+                    if (!replaced) {
+                        penX += sg.xAdvance;
+                        continue;
+                    }
+                } else {
+                    gi = git->second;
                 }
-                gi = git->second;
             }
 
             // COLRv1 emoji: skip Slug path, emit a textured quad instead

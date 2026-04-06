@@ -162,6 +162,7 @@ struct Config {
     float inactive_pane_tint_alpha = 0.3f;
     std::string active_pane_tint = "#000000";
     float active_pane_tint_alpha = 0.0f;
+    std::string replacement_char = "\xEF\xBF\xBD"; // U+FFFD, shown for unrenderable glyphs
 
     struct glaze {
         using T = Config;
@@ -180,7 +181,8 @@ struct Config {
             "inactive_pane_tint", &T::inactive_pane_tint,
             "inactive_pane_tint_alpha", &T::inactive_pane_tint_alpha,
             "active_pane_tint", &T::active_pane_tint,
-            "active_pane_tint_alpha", &T::active_pane_tint_alpha
+            "active_pane_tint_alpha", &T::active_pane_tint_alpha,
+            "replacement_char", &T::replacement_char
         );
     };
 };

@@ -470,6 +470,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         };
         parseTint(options.activePaneTint,   options.activePaneTintAlpha,   activeTint_);
         parseTint(options.inactivePaneTint, options.inactivePaneTintAlpha, inactiveTint_);
+        if (!options.replacementChar.empty())
+            replacementChar_ = options.replacementChar;
 
         renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
         tabBarConfig_ = options.tabBar;

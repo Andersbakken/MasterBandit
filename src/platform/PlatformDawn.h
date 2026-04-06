@@ -182,6 +182,7 @@ private:
     std::string fontName_ = "mono";
     float fontSize_ = 16.0f;
     float baseFontSize_ = 0.0f;
+    std::string replacementChar_ = "\xEF\xBF\xBD";
     float charWidth_ = 0.0f;
     float lineHeight_ = 0.0f;
     float contentScaleX_ = 1.0f, contentScaleY_ = 1.0f;

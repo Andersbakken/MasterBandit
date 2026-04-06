@@ -233,6 +233,27 @@ static void registerInGlobal(JSContext* ctx, const char* registryName,
     JS_FreeValue(ctx, global);
 }
 
+// Remove a callback from a JS array by identity (indexOf + splice).
+static void removeFromJSArray(JSContext* ctx, JSValue arr, JSValueConst fn)
+{
+    if (JS_IsUndefined(arr)) return;
+    JSValue indexOfFn = JS_GetPropertyStr(ctx, arr, "indexOf");
+    JSValue idxVal    = JS_Call(ctx, indexOfFn, arr, 1, &fn);
+    JS_FreeValue(ctx, indexOfFn);
+    int32_t idx = -1;
+    JS_ToInt32(ctx, &idx, idxVal);
+    JS_FreeValue(ctx, idxVal);
+    if (idx >= 0) {
+        JSValue spliceFn = JS_GetPropertyStr(ctx, arr, "splice");
+        JSValue args[2] = { JS_NewInt32(ctx, idx), JS_NewInt32(ctx, 1) };
+        JSValue res = JS_Call(ctx, spliceFn, arr, 2, args);
+        JS_FreeValue(ctx, res);
+        JS_FreeValue(ctx, args[0]);
+        JS_FreeValue(ctx, args[1]);
+        JS_FreeValue(ctx, spliceFn);
+    }
+}
+
 static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
                                        int argc, JSValueConst* argv)
 {
@@ -278,6 +299,27 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
     JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
     JS_Call(ctx, pushFn, arr, 1, &argv[1]);
     JS_FreeValue(ctx, pushFn);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsPaneRemoveEventListener(JSContext* ctx, JSValueConst this_val,
+                                          int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_UNDEFINED;
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane) return JS_UNDEFINED;
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+    std::string prop;
+    if      (strcmp(event, "output") == 0) prop = "__output_filters";
+    else if (strcmp(event, "input")  == 0) prop = "__input_filters";
+    else if (strcmp(event, "mouse")  == 0) prop = "__mouse_listeners";
+    else                                   prop = std::string("__evt_") + event;
+    JS_FreeCString(ctx, event);
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    removeFromJSArray(ctx, arr, argv[1]);
     JS_FreeValue(ctx, arr);
     return JS_UNDEFINED;
 }
@@ -343,6 +385,7 @@ static JSValue jsPaneGetPopups(JSContext*, JSValueConst);
 
 static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsPaneAddEventListener),
+    JS_CFUNC_DEF("removeEventListener", 2, jsPaneRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
@@ -482,6 +525,26 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue jsPopupRemoveEventListener(JSContext* ctx, JSValueConst this_val,
+                                           int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_UNDEFINED;
+    auto* popup = jsPopupGet(ctx, this_val);
+    if (!popup) return JS_UNDEFINED;
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+    std::string prop;
+    if      (strcmp(event, "input") == 0) prop = "__input_filters";
+    else if (strcmp(event, "mouse") == 0) prop = "__mouse_listeners";
+    else                                  prop = std::string("__evt_") + event;
+    JS_FreeCString(ctx, event);
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    removeFromJSArray(ctx, arr, argv[1]);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
 // popup property getters
 static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
@@ -539,6 +602,7 @@ static JSValue jsPopupResize(JSContext* ctx, JSValueConst this_val,
 
 static const JSCFunctionListEntry jsPopupProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsPopupAddEventListener),
+    JS_CFUNC_DEF("removeEventListener", 2, jsPopupRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsPopupInject),
     JS_CFUNC_DEF("resize", 1, jsPopupResize),
     JS_CFUNC_DEF("close", 0, jsPopupClose),
@@ -685,6 +749,27 @@ static JSValue jsOverlayAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue jsOverlayRemoveEventListener(JSContext* ctx, JSValueConst this_val,
+                                             int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_UNDEFINED;
+    auto* ov = jsOverlayGet(ctx, this_val);
+    if (!ov) return JS_UNDEFINED;
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+    std::string prop;
+    if      (strcmp(event, "output") == 0) prop = "__output_filters";
+    else if (strcmp(event, "input")  == 0) prop = "__input_filters";
+    else if (strcmp(event, "mouse")  == 0) prop = "__mouse_listeners";
+    else                                   prop = std::string("__evt_") + event;
+    JS_FreeCString(ctx, event);
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    removeFromJSArray(ctx, arr, argv[1]);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
 static JSValue jsOverlayInject(JSContext* ctx, JSValueConst this_val,
                                 int argc, JSValueConst* argv)
 {
@@ -738,6 +823,7 @@ static JSValue jsOverlayClose(JSContext* ctx, JSValueConst this_val, int, JSValu
 
 static const JSCFunctionListEntry jsOverlayProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsOverlayAddEventListener),
+    JS_CFUNC_DEF("removeEventListener", 2, jsOverlayRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsOverlayInject),
     JS_CFUNC_DEF("write", 1, jsOverlayWrite),
     JS_CFUNC_DEF("close", 0, jsOverlayClose),
@@ -799,6 +885,23 @@ static JSValue jsTabAddEventListener(JSContext* ctx, JSValueConst this_val,
     JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
     JS_Call(ctx, pushFn, arr, 1, &argv[1]);
     JS_FreeValue(ctx, pushFn);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsTabRemoveEventListener(JSContext* ctx, JSValueConst this_val,
+                                         int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_UNDEFINED;
+    auto* tab = jsTabGet(ctx, this_val);
+    if (!tab) return JS_UNDEFINED;
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+    std::string prop = std::string("__evt_") + event;
+    JS_FreeCString(ctx, event);
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    removeFromJSArray(ctx, arr, argv[1]);
     JS_FreeValue(ctx, arr);
     return JS_UNDEFINED;
 }
@@ -907,6 +1010,7 @@ static JSValue jsTabClose(JSContext* ctx, JSValueConst this_val,
 
 static const JSCFunctionListEntry jsTabProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsTabAddEventListener),
+    JS_CFUNC_DEF("removeEventListener", 2, jsTabRemoveEventListener),
     JS_CFUNC_DEF("createOverlay", 0, jsTabCreateOverlay),
     JS_CFUNC_DEF("closeOverlay", 0, jsTabCloseOverlay),
     JS_CFUNC_DEF("close", 0, jsTabClose),
@@ -990,6 +1094,43 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
     JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
     JS_Call(ctx, pushFn, arr, 1, &callback);
     JS_FreeValue(ctx, pushFn);
+    JS_FreeValue(ctx, arr);
+    JS_FreeValue(ctx, mb);
+    JS_FreeValue(ctx, global);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
+                                        int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0])) return JS_UNDEFINED;
+
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+
+    std::string prop;
+    JSValueConst callback;
+    if (strcmp(event, "action") == 0) {
+        if (argc < 3 || !JS_IsString(argv[1]) || !JS_IsFunction(ctx, argv[2])) {
+            JS_FreeCString(ctx, event);
+            return JS_UNDEFINED;
+        }
+        const char* actionName = JS_ToCString(ctx, argv[1]);
+        if (!actionName) { JS_FreeCString(ctx, event); return JS_EXCEPTION; }
+        prop = std::string("__evt_action_") + actionName;
+        JS_FreeCString(ctx, actionName);
+        callback = argv[2];
+    } else {
+        if (!JS_IsFunction(ctx, argv[1])) { JS_FreeCString(ctx, event); return JS_UNDEFINED; }
+        prop = std::string("__evt_") + event;
+        callback = argv[1];
+    }
+    JS_FreeCString(ctx, event);
+
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue mb = JS_GetPropertyStr(ctx, global, "mb");
+    JSValue arr = JS_GetPropertyStr(ctx, mb, prop.c_str());
+    removeFromJSArray(ctx, arr, callback);
     JS_FreeValue(ctx, arr);
     JS_FreeValue(ctx, mb);
     JS_FreeValue(ctx, global);
@@ -1558,6 +1699,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbInvokeAction, "invokeAction", 1));
     JS_SetPropertyStr(ctx, mb, "addEventListener",
         JS_NewCFunction(ctx, jsMbAddEventListener, "addEventListener", 2));
+    JS_SetPropertyStr(ctx, mb, "removeEventListener",
+        JS_NewCFunction(ctx, jsMbRemoveEventListener, "removeEventListener", 2));
     // Getter properties on mb object
     auto defineGetter = [&](const char* name, JSCFunction* getter) {
         JSAtom atom = JS_NewAtom(ctx, name);

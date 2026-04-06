@@ -104,8 +104,6 @@ mb.addEventListener("action", "palette.open", () => {
     const popup = pane.createPopup({ id: "palette", x: d.x, y: d.y, w: d.w, h: d.h });
     if (!popup) return;
 
-    ui = render(popup, buildRoot(d.listH), { theme, onDestroy: () => { ui = null; } });
-
     const resizeCb = (cols, rows) => {
         if (!ui) return;
         const nd = dims(cols, rows);
@@ -113,6 +111,14 @@ mb.addEventListener("action", "palette.open", () => {
         ui.resize(nd.w, nd.h, buildRoot(nd.listH));
     };
     pane.addEventListener("resized", resizeCb);
+
+    ui = render(popup, buildRoot(d.listH), {
+        theme,
+        onDestroy: () => {
+            pane.removeEventListener("resized", resizeCb);
+            ui = null;
+        },
+    });
 
     mb.invokeAction("focus_popup");
 });

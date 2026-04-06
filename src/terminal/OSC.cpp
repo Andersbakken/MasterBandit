@@ -1,6 +1,5 @@
 #include "TerminalEmulator.h"
 #include "Utils.h"
-#include "Log.h"
 #include <spdlog/spdlog.h>
 
 #include <sys/time.h>
@@ -94,7 +93,7 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
     uint8_t* pixels = stbi_load_from_memory(
         imageBytes.data(), static_cast<int>(imageBytes.size()), &w, &h, &channels, 4);
     if (!pixels) {
-        DEBUG("OSC 1337: stbi_load_from_memory failed");
+        spdlog::debug("OSC 1337: stbi_load_from_memory failed");
         return;
     }
 
@@ -164,7 +163,7 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
 void TerminalEmulator::processStringSequence()
 {
     if (mStringSequenceType != OSX) {
-        WARN("Ignoring non-OSC string sequence type 0x%x (len=%zu)", mStringSequenceType, mStringSequence.size());
+        spdlog::warn("Ignoring non-OSC string sequence type {:#x} (len={})", mStringSequenceType, mStringSequence.size());
         return;
     }
 
@@ -353,7 +352,7 @@ void TerminalEmulator::processStringSequence()
     case 1337: processOSC_iTerm(payload); break;
     default:
         if (mCallbacks.onOSC) mCallbacks.onOSC(oscNum, payload);
-        else WARN("Ignoring OSC %d", oscNum);
+        else spdlog::warn("Ignoring OSC {}", oscNum);
         break;
     }
 }

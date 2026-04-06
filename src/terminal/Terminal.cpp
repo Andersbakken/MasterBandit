@@ -1,6 +1,5 @@
 #include "Terminal.h"
 #include "Utils.h"
-#include "Log.h"
 #include <spdlog/spdlog.h>
 
 #include <assert.h>
@@ -42,17 +41,17 @@ bool Terminal::init(const TerminalOptions &options)
 
     mMasterFD = posix_openpt(O_RDWR | O_NOCTTY);
     if (mMasterFD == -1) {
-        FATAL("Failed to posix_openpt -> %d %s", errno, strerror(errno));
+        spdlog::critical("Failed to posix_openpt -> {} {}", errno, strerror(errno)); std::abort();
         return false;
     }
 
     if (grantpt(mMasterFD) == -1) {
-        FATAL("Failed to grantpt -> %d %s", errno, strerror(errno));
+        spdlog::critical("Failed to grantpt -> {} {}", errno, strerror(errno)); std::abort();
         return false;
     }
 
     if (unlockpt(mMasterFD) == -1) {
-        FATAL("Failed to unlockpt -> %d %s", errno, strerror(errno));
+        spdlog::critical("Failed to unlockpt -> {} {}", errno, strerror(errno)); std::abort();
         return false;
     }
 
@@ -61,14 +60,14 @@ bool Terminal::init(const TerminalOptions &options)
 
     char *slaveName = ptsname(mMasterFD);
     if (!slaveName) {
-        FATAL("Failed to ptsname -> %d %s", errno, strerror(errno));
+        spdlog::critical("Failed to ptsname -> {} {}", errno, strerror(errno)); std::abort();
         return false;
     }
 
     int slaveFD;
     EINTRWRAP(slaveFD, open(slaveName, O_RDWR | O_NOCTTY));
     if (slaveFD == -1) {
-        FATAL("Failed to open slave fd -> %d %s", errno, strerror(errno));
+        spdlog::critical("Failed to open slave fd -> {} {}", errno, strerror(errno)); std::abort();
         return false;
     }
 
@@ -79,14 +78,14 @@ bool Terminal::init(const TerminalOptions &options)
         EINTRWRAP(ret, ::close(mMasterFD));
         setsid();
         if (ioctl(slaveFD, TIOCSCTTY, NULL) == -1) {
-            FATAL("Failed to ioctl slave fd in slave -> %d %s", errno, strerror(errno));
+            spdlog::critical("Failed to ioctl slave fd in slave -> {} {}", errno, strerror(errno)); std::abort();
             return false;
         }
 
         for (int i=0; i<3; ++i) {
             EINTRWRAP(ret, dup2(slaveFD, i));
             if (ret == -1) {
-                FATAL("Failed to dup2(%d) slave fd in slave -> %d %s", i, errno, strerror(errno));
+                spdlog::critical("Failed to dup2({}) slave fd in slave -> {} {}", i, errno, strerror(errno)); std::abort();
                 return false;
             }
         }
@@ -124,7 +123,7 @@ bool Terminal::init(const TerminalOptions &options)
 
         break;
     case -1:
-        FATAL("Failed to fork -> %d %s", errno, strerror(errno));
+        spdlog::critical("Failed to fork -> {} {}", errno, strerror(errno)); std::abort();
         return false;
     default:
         EINTRWRAP(ret, ::close(slaveFD));
@@ -171,7 +170,7 @@ void Terminal::readFromFD()
         if (ret == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return;
             if (errno != EIO) {
-                ERROR("Failed to read from mMasterFD %d %s", errno, strerror(errno));
+                spdlog::error("Failed to read from mMasterFD {} {}", errno, strerror(errno));
             }
             if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
             return;
@@ -207,7 +206,7 @@ void Terminal::writeToPTY(const char* data, size_t len)
         EINTRWRAP(ret, ::write(mMasterFD, data, len));
         if (ret == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-            FATAL("Failed to write to master %d %s", errno, strerror(errno));
+            spdlog::critical("Failed to write to master {} {}", errno, strerror(errno)); std::abort();
             if (mPlatformCbs.quit) mPlatformCbs.quit();
             return;
         }
@@ -241,7 +240,7 @@ void Terminal::flushWriteQueue()
         EINTRWRAP(ret, ::write(mMasterFD, mWriteQueue.data(), mWriteQueue.size()));
         if (ret == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return; // try again next poll
-            FATAL("Failed to write to master %d %s", errno, strerror(errno));
+            spdlog::critical("Failed to write to master {} {}", errno, strerror(errno)); std::abort();
             if (mPlatformCbs.quit) mPlatformCbs.quit();
             return;
         }

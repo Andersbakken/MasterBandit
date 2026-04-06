@@ -1,5 +1,4 @@
 #include "PlatformDawn.h"
-#include "Log.h"
 #include "Utils.h"
 
 #include <numeric>

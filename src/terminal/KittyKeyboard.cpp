@@ -1,5 +1,4 @@
 #include "TerminalEmulator.h"
-#include "Log.h"
 #include <spdlog/spdlog.h>
 #include <cstdio>
 

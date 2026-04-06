@@ -1,6 +1,5 @@
 #include "PlatformDawn.h"
 #include "Config.h"
-#include "Log.h"
 #include <unistd.h>
 
 #if defined(__linux__)

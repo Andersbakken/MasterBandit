@@ -25,7 +25,6 @@ set(TEST_SOURCES
     test_render.cpp
     test_cwd.cpp
     MBConnection.cpp
-    ../src/Log.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp
 )

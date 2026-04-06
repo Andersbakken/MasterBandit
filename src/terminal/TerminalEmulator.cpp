@@ -1,7 +1,6 @@
 #include "TerminalEmulator.h"
 #include "Config.h"
 #include "Utils.h"
-#include "Log.h"
 #include "Utf8.h"
 #include "Wcwidth.h"
 #include <spdlog/spdlog.h>
@@ -392,7 +391,7 @@ void TerminalEmulator::lineFeed()
 
 void TerminalEmulator::injectData(const char* buf, size_t len_)
 {
-    DEBUG("injectData: \"%s\"", toPrintable(buf, static_cast<int>(len_)).c_str());
+    spdlog::debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
     const int len = static_cast<int>(len_);
 
     auto resetToNormal = [this]() {
@@ -476,7 +475,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
             assert(mUtf8Index > 0 && mUtf8Index < 6);
             if ((buf[i] & 0xC0) != 0x80) {
                 // Not a continuation byte — bad UTF-8
-                ERROR("Bad utf8 sequence (non-continuation byte)");
+                spdlog::error("Bad utf8 sequence (non-continuation byte)");
                 mUtf8Index = 0;
 #ifndef NDEBUG
                 memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
@@ -582,7 +581,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 #endif
                 mState = Normal;
             } else if (mUtf8Index >= 6 || mUtf8Index > expected) {
-                ERROR("Bad utf8 (overlong sequence)");
+                spdlog::error("Bad utf8 (overlong sequence)");
                 mUtf8Index = 0;
 #ifndef NDEBUG
                 memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
@@ -593,14 +592,14 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
         }
         case InEscape:
             if (mEscapeIndex >= static_cast<int>(sizeof(mEscapeBuffer))) {
-                ERROR("Escape buffer overflow");
+                spdlog::error("Escape buffer overflow");
                 resetToNormal();
                 break;
             }
             mEscapeBuffer[mEscapeIndex++] = buf[i];
-            DEBUG("Adding escape byte [%d] %s %d -> %s", mEscapeIndex - 1,
-                  toPrintable(buf + i, 1).c_str(),
-                  i, toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::debug("Adding escape byte [{}] {} {} -> {}", mEscapeIndex - 1,
+                  toPrintable(buf + i, 1),
+                  i, toPrintable(mEscapeBuffer, mEscapeIndex));
             switch (mEscapeBuffer[0]) {
             case SS2:
             case SS3:
@@ -628,10 +627,10 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         processCSI();
                         assert(mState == Normal);
                     } else if (mEscapeIndex >= static_cast<int>(sizeof(mEscapeBuffer))) {
-                        ERROR("CSI sequence is too long %zu", sizeof(mEscapeBuffer));
+                        spdlog::error("CSI sequence is too long {}", sizeof(mEscapeBuffer));
                         resetToNormal();
                     } else if (buf[i] < 0x20 || buf[i] > 0x3f) {
-                        ERROR("Invalid CSI sequence 0x%0x character", buf[i]);
+                        spdlog::error("Invalid CSI sequence {:#04x} character", static_cast<unsigned char>(buf[i]));
                         resetToNormal();
                     }
                 }
@@ -734,7 +733,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 resetToNormal();
                 break;
             default:
-                ERROR("Unknown escape sequence %s\n", toPrintable(mEscapeBuffer, 1).c_str());
+                spdlog::error("Unknown escape sequence {}", toPrintable(mEscapeBuffer, 1));
                 resetToNormal();
                 break;
             }
@@ -764,7 +763,7 @@ void TerminalEmulator::processCSI()
     assert(mState == InEscape);
     assert(mEscapeIndex >= 1);
 
-    DEBUG("Processing CSI \"%s\"", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+    spdlog::debug("Processing CSI \"{}\"", toPrintable(mEscapeBuffer, mEscapeIndex));
 
     auto readCount = [this](int def) {
         if (mEscapeIndex == 2) // no digits
@@ -802,7 +801,7 @@ void TerminalEmulator::processCSI()
     case VPA: {
         const int count = readCount(1);
         if (count == -1) {
-            ERROR("Invalid parameters for CSI %s", csiSequenceName(static_cast<CSISequence>(finalByte)));
+            spdlog::error("Invalid parameters for CSI {}", csiSequenceName(static_cast<CSISequence>(finalByte)));
             break;
         }
         action.count = count;
@@ -831,7 +830,7 @@ void TerminalEmulator::processCSI()
         if (end == mEscapeBuffer + mEscapeIndex - 1) {
             if (mEscapeIndex != 2) {
                 if (!x) {
-                    ERROR("Invalid CSI CUP error 1");
+                    spdlog::error("Invalid CSI CUP error 1");
                     action.type = Action::Invalid;
                 } else {
                     action.x = x;
@@ -840,7 +839,7 @@ void TerminalEmulator::processCSI()
         } else if (*end == ';') {
             if (mEscapeBuffer[1] != ';') {
                 if (x == 0) {
-                    ERROR("Invalid CSI CUP error 2");
+                    spdlog::error("Invalid CSI CUP error 2");
                     action.type = Action::Invalid;
                     break;
                 }
@@ -849,7 +848,7 @@ void TerminalEmulator::processCSI()
             if (end + 1 < mEscapeBuffer + mEscapeIndex - 1) {
                 const unsigned long y = strtoul(end + 1, &end, 10);
                 if (end != mEscapeBuffer + mEscapeIndex - 1 || !y) {
-                    ERROR("Invalid CSI CUP error 3");
+                    spdlog::error("Invalid CSI CUP error 3");
                     action.type = Action::Invalid;
                     break;
                 } else {
@@ -867,7 +866,7 @@ void TerminalEmulator::processCSI()
             action.type = Action::ClearScreen;
             if (!mUsingAltScreen) mDocument.clearHistory();
             break;
-        default: ERROR("Invalid CSI ED %d", readCount(0)); break;
+        default: spdlog::error("Invalid CSI ED {}", readCount(0)); break;
         }
         break;
     case EL:
@@ -875,13 +874,13 @@ void TerminalEmulator::processCSI()
         case 0: action.type = Action::ClearToEndOfLine; break;
         case 1: action.type = Action::ClearToBeginningOfLine; break;
         case 2: action.type = Action::ClearLine; break;
-        default: ERROR("Invalid CSI EL %d", readCount(0)); break;
+        default: spdlog::error("Invalid CSI EL {}", readCount(0)); break;
         }
         break;
     case SU: {
         const int n = readCount(1);
         if (n <= 0) {
-            ERROR("Invalid CSI SU %d", n);
+            spdlog::error("Invalid CSI SU {}", n);
         } else {
             action.type = Action::ScrollUp;
             action.count = n;
@@ -890,7 +889,7 @@ void TerminalEmulator::processCSI()
     case SD: {
         const int n = readCount(1);
         if (n <= 0) {
-            ERROR("Invalid CSI SD %d", n);
+            spdlog::error("Invalid CSI SD {}", n);
         } else {
             action.type = Action::ScrollDown;
             action.count = n;
@@ -948,13 +947,13 @@ void TerminalEmulator::processCSI()
         break; }
     case AUX:
         if (mEscapeIndex != 3) {
-            ERROR("Invalid AUX CSI command (%d)", mEscapeIndex);
+            spdlog::error("Invalid AUX CSI command ({})", mEscapeIndex);
         } else if (mEscapeBuffer[1] == '4') {
             action.type = Action::AUXPortOff;
         } else if (mEscapeBuffer[1] == '5') {
             action.type = Action::AUXPortOn;
         } else {
-            ERROR("Invalid AUX CSI command (0x%0x)", mEscapeBuffer[1]);
+            spdlog::error("Invalid AUX CSI command ({:#04x})", static_cast<unsigned char>(mEscapeBuffer[1]));
         }
         break;
     case DSR:
@@ -970,7 +969,7 @@ void TerminalEmulator::processCSI()
                 int rlen = snprintf(response, sizeof(response), "\x1b[?997;%dn", isDark ? 1 : 2);
                 writeToOutput(response, rlen);
             } else {
-                WARN("Unhandled private DSR %d", ps);
+                spdlog::warn("Unhandled private DSR {}", ps);
             }
         } else if (mEscapeIndex == 3 && mEscapeBuffer[1] == '6') {
             // Report cursor position: ESC [ row ; col R
@@ -979,17 +978,17 @@ void TerminalEmulator::processCSI()
                                 mCursorY + 1, mCursorX + 1);
             writeToOutput(response, rlen);
         } else {
-            WARN("Unhandled DSR: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::warn("Unhandled DSR: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
         }
         break;
     case SCP:
         if (isPrivate) {
             // CSI ? Ps s — XTERM save private mode values (ignore)
-            WARN("Ignoring XTERM save private mode: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::warn("Ignoring XTERM save private mode: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
         } else if (mEscapeIndex == 2) {
             action.type = Action::SaveCursorPosition;
         } else {
-            WARN("Ignoring CSI s variant: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::warn("Ignoring CSI s variant: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
         }
         break;
     case RCP:
@@ -1023,7 +1022,7 @@ void TerminalEmulator::processCSI()
         } else if (mEscapeIndex == 2) {
             action.type = Action::RestoreCursorPosition;
         } else {
-            WARN("Ignoring CSI u variant: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::warn("Ignoring CSI u variant: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
         }
         break;
     case SM: // Set Mode
@@ -1033,7 +1032,7 @@ void TerminalEmulator::processCSI()
             char *end;
             action.count = strtoul(mEscapeBuffer + 2, &end, 10); // skip "[?"
         } else {
-            WARN("Ignoring non-private SM: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::warn("Ignoring non-private SM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
         }
         break;
     case RM: // Reset Mode
@@ -1042,7 +1041,7 @@ void TerminalEmulator::processCSI()
             char *end;
             action.count = strtoul(mEscapeBuffer + 2, &end, 10);
         } else {
-            WARN("Ignoring non-private RM: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::warn("Ignoring non-private RM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
         }
         break;
     case DECSTBM: { // Set scrolling region
@@ -1072,7 +1071,7 @@ void TerminalEmulator::processCSI()
             // CSI c or CSI 0 c — Primary DA: VT420 with common features
             writeToOutput("\x1b[?64;1;2;6;22c", 16);
         } else {
-            WARN("Ignoring DA variant: %s", toPrintable(mEscapeBuffer, mEscapeIndex).c_str());
+            spdlog::warn("Ignoring DA variant: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
         }
         break;
     case 'q':
@@ -1102,7 +1101,7 @@ void TerminalEmulator::processCSI()
         }
         break;
     default:
-        ERROR("Unknown CSI final byte 0x%x", finalByte);
+        spdlog::error("Unknown CSI final byte {:#x}", static_cast<unsigned char>(finalByte));
         break;
     }
 
@@ -1120,7 +1119,7 @@ void TerminalEmulator::onAction(const Action *action)
 {
     assert(action);
     assert(action->type != Action::Invalid);
-    DEBUG("Got action %s %d %d %d", Action::typeName(action->type), action->count, action->x, action->y);
+    spdlog::debug("Got action {} {} {} {}", Action::typeName(action->type), action->count, action->x, action->y);
 
     // Any CSI action clears pending autowrap (save old state for SCP)
     bool savedWrapPending = mWrapPending;
@@ -1257,7 +1256,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 2026: mSyncOutput = true; break;
         case 2031: mColorPreferenceReporting = true; break;
         default:
-            WARN("Ignoring private mode set %d", action->count);
+            spdlog::warn("Ignoring private mode set {}", action->count);
             break;
         }
         break;
@@ -1291,7 +1290,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 2026: mSyncOutput = false; break;
         case 2031: mColorPreferenceReporting = false; break;
         default:
-            WARN("Ignoring private mode reset %d", action->count);
+            spdlog::warn("Ignoring private mode reset {}", action->count);
             break;
         }
         break;

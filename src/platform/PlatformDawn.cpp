@@ -2,7 +2,6 @@
 #include "NativeSurface.h"
 #include "Utils.h"
 #include "FontResolver.h"
-#include "Log.h"
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sys/ioctl.h>

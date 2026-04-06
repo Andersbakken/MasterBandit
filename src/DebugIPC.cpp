@@ -1,6 +1,5 @@
 #include "DebugIPC.h"
 #include "Terminal.h"
-#include "Log.h"
 #include "Utils.h"
 
 #include <glaze/glaze.hpp>

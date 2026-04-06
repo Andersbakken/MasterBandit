@@ -4,7 +4,7 @@
 #include "Config.h"
 #include <cstring>
 #include <pwd.h>
-#include "Log.h"
+#include <spdlog/spdlog.h>
 #include "CLIClient.h"
 #include <cxxopts.hpp>
 
@@ -120,12 +120,22 @@ int main(int argc, char **argv)
     if (result.count("shell"))
         options.shell = result["shell"].as<std::string>();
 
-    int logLevel = Log::logLevel();
+    // Default level is Error (index 3); -v decrements toward Verbose (0)
+    // Verbose=0->trace, Debug=1->debug, Warn=2->warn, Error=3->err, Fatal=4->critical, Silent=5->off
+    static constexpr spdlog::level::level_enum kLevelMap[] = {
+        spdlog::level::trace,    // 0 Verbose
+        spdlog::level::debug,    // 1 Debug
+        spdlog::level::warn,     // 2 Warn
+        spdlog::level::err,      // 3 Error (default)
+        spdlog::level::critical, // 4 Fatal
+        spdlog::level::off,      // 5 Silent
+    };
+    int logLevel = 3; // Error
     int verbosity = static_cast<int>(result.count("verbose"));
     for (int i = 0; i < verbosity; i++) {
         if (logLevel > 0) --logLevel;
     }
-    Log::setLogLevel(static_cast<Log::Level>(logLevel));
+    spdlog::set_level(kLevelMap[logLevel]);
 
     signal(SIGTERM, cleanupSocketAndExit);
     signal(SIGINT, cleanupSocketAndExit);

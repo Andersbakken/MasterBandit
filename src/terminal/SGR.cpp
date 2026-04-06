@@ -1,5 +1,5 @@
 #include "TerminalEmulator.h"
-#include "Log.h"
+#include <spdlog/spdlog.h>
 #include <assert.h>
 #include <vector>
 #include <cstdlib>
@@ -188,7 +188,7 @@ void TerminalEmulator::processSGR()
         }
 
         default:
-            DEBUG("Unhandled SGR param %d", p);
+            spdlog::debug("Unhandled SGR param {}", p);
             break;
         }
     }

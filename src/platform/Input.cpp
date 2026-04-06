@@ -268,6 +268,75 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 }
 
 
+// --- Mouse binding helpers ---
+
+static MouseButton glfwButtonToMouseButton(int button) {
+    switch (button) {
+    case GLFW_MOUSE_BUTTON_LEFT:   return MouseButton::Left;
+    case GLFW_MOUSE_BUTTON_MIDDLE: return MouseButton::Middle;
+    case GLFW_MOUSE_BUTTON_RIGHT:  return MouseButton::Right;
+    default: return MouseButton::Left;
+    }
+}
+
+MouseRegion PlatformDawn::hitTest(double sx, double sy)
+{
+    Tab* tab = activeTab();
+    if (!tab) return MouseRegion::Pane;
+
+    // Check tab bar
+    if (tabBarVisible()) {
+        PaneRect tbRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
+        if (!tbRect.isEmpty() &&
+            sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
+            sy >= tbRect.y && sy < tbRect.y + tbRect.h)
+            return MouseRegion::TabBar;
+    }
+
+    // TODO: divider hit-test
+    return MouseRegion::Pane;
+}
+
+// Resolve which tab index was clicked in the tab bar, given scaled pixel coords.
+// Returns -1 if no tab was hit.
+static int resolveTabBarClickIndex(double sx, double sy,
+                                   float tabBarCharWidth,
+                                   uint32_t fbWidth, uint32_t fbHeight,
+                                   Tab* tab,
+                                   const std::vector<std::unique_ptr<Tab>>& tabs)
+{
+    if (tabBarCharWidth <= 0.0f) return -1;
+    PaneRect tbRect = tab->layout()->tabBarRect(fbWidth, fbHeight);
+    if (tbRect.isEmpty()) return -1;
+
+    int clickCol = static_cast<int>((sx - tbRect.x) / tabBarCharWidth);
+    int col = 0;
+    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
+        Tab* t = tabs[i].get();
+        std::string text = " ";
+        if (!t->icon().empty()) text += t->icon() + " ";
+        text += "[" + std::to_string(i + 1) + "] ";
+        if (!t->title().empty()) text += t->title();
+        text += " ";
+        // Count UTF-8 codepoints
+        int w = 0;
+        const char* p = text.c_str();
+        const char* end = p + text.size();
+        while (p < end) {
+            uint8_t b = static_cast<uint8_t>(*p);
+            int seqLen = (b < 0x80) ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : 4;
+            w++;
+            p += std::min(seqLen, static_cast<int>(end - p));
+        }
+        w += 1; // separator
+        if (clickCol >= col && clickCol < col + w)
+            return i;
+        col += w;
+    }
+    return -1;
+}
+
+
 void PlatformDawn::onMouseButton(int button, int action, int mods)
 {
     Tab* tab = activeTab();
@@ -280,52 +349,32 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
     double sx = x * contentScaleX_;
     double sy = y * contentScaleY_;
 
-    // Check if click is in tab bar
-    if (action == GLFW_PRESS && tabBarVisible()) {
-        PaneRect tbRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
-        if (!tbRect.isEmpty() &&
-            sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
-            sy >= tbRect.y && sy < tbRect.y + tbRect.h) {
-            // Determine which tab was clicked by accumulated widths
-            if (tabBarCharWidth_ > 0.0f) {
-                int clickCol = static_cast<int>((sx - tbRect.x) / tabBarCharWidth_);
-                int col = 0;
-                for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
-                    Tab* t = tabs_[i].get();
-                    // Compute tab display width: same as renderTabBar logic
-                    std::string text = " ";
-                    if (!t->icon().empty()) text += t->icon() + " ";
-                    text += "[" + std::to_string(i + 1) + "] ";
-                    if (!t->title().empty()) text += t->title();
-                    text += " ";
-                    // Count UTF-8 codepoints
-                    int w = 0;
-                    const char* p = text.c_str();
-                    const char* end = p + text.size();
-                    while (p < end) {
-                        uint8_t b = static_cast<uint8_t>(*p);
-                        int seqLen = (b < 0x80) ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : 4;
-                        w++;
-                        p += std::min(seqLen, static_cast<int>(end - p));
-                    }
-                    w += 1; // separator
-                    if (clickCol >= col && clickCol < col + w) {
-                        if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                            dispatchAction(Action::ActivateTab{i});
-                        } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
-                            dispatchAction(Action::CloseTab{i});
-                        }
-                        return;
-                    }
-                    col += w;
-                }
-            }
-            return;
+    // Clear selection drag on release and finalize selection
+    if (action == GLFW_RELEASE && selectionDragActive_) {
+        selectionDragActive_ = false;
+        Pane* fp2 = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
+        TerminalEmulator* term2 = tab->hasOverlay()
+            ? static_cast<TerminalEmulator*>(tab->topOverlay())
+            : (fp2 ? static_cast<TerminalEmulator*>(fp2->terminal()) : nullptr);
+        if (term2) {
+            PaneRect pr = fp2 ? fp2->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
+            MouseEvent ev;
+            ev.x = static_cast<int>((sx - pr.x) / charWidth_);
+            ev.y = static_cast<int>((sy - pr.y) / lineHeight_);
+            ev.globalX = static_cast<int>(sx);
+            ev.globalY = static_cast<int>(sy);
+            ev.button = NoButton;
+            ev.modifiers = lastMods_;
+            term2->mouseReleaseEvent(&ev);
         }
+        return;
     }
 
-    // Click on an inactive pane — switch focus before routing the event
-    if (action == GLFW_PRESS && !tab->hasOverlay()) {
+    // 1. Hit test — determine region
+    MouseRegion region = hitTest(sx, sy);
+
+    // 2. Click on inactive pane — switch focus (side effect)
+    if (action == GLFW_PRESS && region == MouseRegion::Pane && !tab->hasOverlay()) {
         int clickedId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
         if (clickedId >= 0 && clickedId != tab->layout()->focusedPaneId()) {
             int prev = tab->layout()->focusedPaneId();
@@ -335,50 +384,142 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
         }
     }
 
+    // 3. Convert GLFW button to MouseButton
+    MouseButton mb = glfwButtonToMouseButton(button);
+
+    // 4. Feed to click detector
+    ClickDetector::Result clickResult;
+    if (action == GLFW_PRESS) {
+        clickResult = clickDetector_.onPress(mb, static_cast<int>(sx), static_cast<int>(sy));
+    } else {
+        clickResult = clickDetector_.onRelease(mb, static_cast<int>(sx), static_cast<int>(sy));
+    }
+
+    // 5. Resolve focused pane and terminal
     Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
         : (fp ? static_cast<TerminalEmulator*>(fp->terminal()) : nullptr);
     if (!term) return;
 
-    // Adjust for pane origin
-    PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
-    double relX = sx - pr.x;
-    double relY = sy - pr.y;
+    // 6. Determine mouse mode
+    MouseMode mode = term->mouseReportingActive() ? MouseMode::Grabbed : MouseMode::Ungrabbed;
 
-    MouseEvent ev;
-    ev.x = static_cast<int>(relX / charWidth_);
-    ev.y = static_cast<int>(relY / lineHeight_);
-    ev.globalX = static_cast<int>(sx);
-    ev.globalY = static_cast<int>(sy);
-    ev.modifiers = lastMods_;
+    // 7. Build MouseStroke and match
+    MouseStroke stroke;
+    stroke.button = mb;
+    stroke.mods   = lastMods_;
+    stroke.event  = clickResult.type;
+    stroke.mode   = mode;
+    stroke.region = region;
 
-    switch (button) {
-    case GLFW_MOUSE_BUTTON_LEFT:  ev.button = LeftButton; break;
-    case GLFW_MOUSE_BUTTON_MIDDLE: ev.button = MidButton; break;
-    case GLFW_MOUSE_BUTTON_RIGHT: ev.button = RightButton; break;
-    default: ev.button = NoButton; break;
-    }
-    ev.buttons = ev.button;
+    auto matched = matchMouseBinding(stroke, mouseBindings_);
 
-    // Cmd/Ctrl+click on hyperlinks opens the URL
-    if (action == GLFW_RELEASE && ev.button == LeftButton &&
-        (ev.modifiers & (MetaModifier | CtrlModifier))) {
-        int col = ev.x, row = ev.y;
-        if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
-            const CellExtra* extra = term->grid().getExtra(col, row);
-            if (extra && extra->hyperlinkId) {
-                const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
-                if (uri && !uri->empty()) {
-                    platformOpenURL(*uri);
-                    return;
+    if (matched) {
+        // Compute cell coordinates relative to pane
+        PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
+        double relX = sx - pr.x;
+        double relY = sy - pr.y;
+        int cellCol = static_cast<int>(relX / charWidth_);
+        int cellRow = static_cast<int>(relY / lineHeight_);
+
+        // Populate mouseCtx_ before dispatching
+        mouseCtx_.cellCol = cellCol;
+        mouseCtx_.cellRow = cellRow;
+        mouseCtx_.pixelX  = static_cast<int>(sx);
+        mouseCtx_.pixelY  = static_cast<int>(sy);
+        mouseCtx_.button  = mb;
+        mouseCtx_.tabBarClickIndex = (region == MouseRegion::TabBar)
+            ? resolveTabBarClickIndex(sx, sy, tabBarCharWidth_, fbWidth_, fbHeight_, tab, tabs_)
+            : -1;
+
+        Action::Any act = *matched;
+
+        // Resolve ActivateTab{-1} / CloseTab{-1} using tab bar click index
+        if (auto* at = std::get_if<Action::ActivateTab>(&act)) {
+            if (at->index == -1) at->index = mouseCtx_.tabBarClickIndex;
+            if (at->index < 0) return; // no tab hit
+        }
+        if (auto* ct = std::get_if<Action::CloseTab>(&act)) {
+            if (ct->index == -1) ct->index = mouseCtx_.tabBarClickIndex;
+            if (ct->index < 0) return; // no tab hit
+        }
+
+        // MouseSelection: arm the terminal's pending selection via mousePressEvent,
+        // then set drag active so subsequent moves go through mouseMoveEvent
+        if (std::holds_alternative<Action::MouseSelection>(act)) {
+            PaneRect pr2 = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
+            double rX = sx - pr2.x;
+            double rY = sy - pr2.y;
+            MouseEvent ev;
+            ev.x = static_cast<int>(rX / charWidth_);
+            ev.y = static_cast<int>(rY / lineHeight_);
+            ev.globalX = static_cast<int>(sx);
+            ev.globalY = static_cast<int>(sy);
+            ev.modifiers = lastMods_;
+            switch (button) {
+            case GLFW_MOUSE_BUTTON_LEFT:   ev.button = LeftButton; break;
+            case GLFW_MOUSE_BUTTON_MIDDLE: ev.button = MidButton;  break;
+            case GLFW_MOUSE_BUTTON_RIGHT:  ev.button = RightButton; break;
+            default: ev.button = NoButton; break;
+            }
+            ev.buttons = ev.button;
+            term->mousePressEvent(&ev);
+            selectionDragActive_ = true;
+        }
+
+        // OpenHyperlink: resolve hyperlink at cell position
+        if (std::holds_alternative<Action::OpenHyperlink>(act)) {
+            int col = cellCol, row = cellRow;
+            if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
+                const CellExtra* extra = term->grid().getExtra(col, row);
+                if (extra && extra->hyperlinkId) {
+                    const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
+                    if (uri && !uri->empty()) {
+                        platformOpenURL(*uri);
+                        return;
+                    }
                 }
             }
+            return; // no hyperlink found, nothing to do
         }
+
+        // PasteSelection: same as Paste — clipboard paste
+        if (std::holds_alternative<Action::PasteSelection>(act)) {
+            auto* t = dynamic_cast<Terminal*>(term);
+            const char* clip = glfwGetClipboardString(glfwWindow_);
+            if (t && clip && clip[0])
+                t->pasteText(std::string(clip));
+            return;
+        }
+
+        dispatchAction(act);
+        return;
     }
 
-    if (action == GLFW_PRESS) term->mousePressEvent(&ev);
-    else term->mouseReleaseEvent(&ev);
+    // No binding match — if grabbed, forward to terminal's mouse reporting
+    if (mode == MouseMode::Grabbed) {
+        PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
+        double relX = sx - pr.x;
+        double relY = sy - pr.y;
+
+        MouseEvent ev;
+        ev.x = static_cast<int>(relX / charWidth_);
+        ev.y = static_cast<int>(relY / lineHeight_);
+        ev.globalX = static_cast<int>(sx);
+        ev.globalY = static_cast<int>(sy);
+        ev.modifiers = lastMods_;
+        switch (button) {
+        case GLFW_MOUSE_BUTTON_LEFT:   ev.button = LeftButton; break;
+        case GLFW_MOUSE_BUTTON_MIDDLE: ev.button = MidButton;  break;
+        case GLFW_MOUSE_BUTTON_RIGHT:  ev.button = RightButton; break;
+        default: ev.button = NoButton; break;
+        }
+        ev.buttons = ev.button;
+
+        if (action == GLFW_PRESS) term->mousePressEvent(&ev);
+        else term->mouseReleaseEvent(&ev);
+    }
 }
 
 
@@ -399,19 +540,84 @@ void PlatformDawn::onCursorPos(double x, double y)
     double relX = sx - pr.x;
     double relY = sy - pr.y;
 
-    MouseEvent ev;
-    ev.x = static_cast<int>(relX / charWidth_);
-    ev.y = static_cast<int>(relY / lineHeight_);
-    ev.globalX = static_cast<int>(sx);
-    ev.globalY = static_cast<int>(sy);
-    ev.button = NoButton;
-    ev.modifiers = lastMods_;
-    if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
-        ev.buttons |= LeftButton;
-    if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)
-        ev.buttons |= MidButton;
-    if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
-        ev.buttons |= RightButton;
-    term->mouseMoveEvent(&ev);
+    // Helper to build a MouseEvent from current state
+    auto buildMouseEvent = [&]() {
+        MouseEvent ev;
+        ev.x = static_cast<int>(relX / charWidth_);
+        ev.y = static_cast<int>(relY / lineHeight_);
+        ev.globalX = static_cast<int>(sx);
+        ev.globalY = static_cast<int>(sy);
+        ev.button = NoButton;
+        ev.modifiers = lastMods_;
+        if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+            ev.buttons |= LeftButton;
+        if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)
+            ev.buttons |= MidButton;
+        if (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+            ev.buttons |= RightButton;
+        return ev;
+    };
+
+    // 1. If selection drag is active, forward directly to terminal
+    if (selectionDragActive_) {
+        MouseEvent ev = buildMouseEvent();
+        term->mouseMoveEvent(&ev);
+        // Clear drag active on release (no buttons held)
+        if (ev.buttons == 0) selectionDragActive_ = false;
+        return;
+    }
+
+    // 2. Check if any button is held
+    bool buttonHeld = (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+                   || (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)
+                   || (glfwGetMouseButton(glfwWindow_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+
+    if (buttonHeld) {
+        // 3. Feed to click detector — may produce a Drag event
+        auto dragResult = clickDetector_.onMove(static_cast<int>(sx), static_cast<int>(sy));
+        if (dragResult && dragResult->type == MouseEventType::Drag) {
+            MouseMode mode = term->mouseReportingActive() ? MouseMode::Grabbed : MouseMode::Ungrabbed;
+            MouseRegion region = hitTest(sx, sy);
+
+            MouseStroke stroke;
+            stroke.button = dragResult->button;
+            stroke.mods   = lastMods_;
+            stroke.event  = MouseEventType::Drag;
+            stroke.mode   = mode;
+            stroke.region = region;
+
+            auto matched = matchMouseBinding(stroke, mouseBindings_);
+            if (matched) {
+                // For drag bindings (e.g. MouseSelection with Drag),
+                // arm selection and let terminal handle subsequent moves
+                if (std::holds_alternative<Action::MouseSelection>(*matched)) {
+                    MouseEvent ev = buildMouseEvent();
+                    term->mousePressEvent(&ev);
+                    selectionDragActive_ = true;
+                } else {
+                    dispatchAction(*matched);
+                }
+                return;
+            }
+
+            // No match and grabbed — forward to terminal for mouse tracking
+            if (mode == MouseMode::Grabbed) {
+                MouseEvent ev = buildMouseEvent();
+                term->mouseMoveEvent(&ev);
+            }
+            return;
+        }
+
+        // Click detector didn't produce drag yet (below threshold) or already produced it —
+        // if grabbed, forward motion for mouse tracking
+        if (term->mouseReportingActive()) {
+            MouseEvent ev = buildMouseEvent();
+            term->mouseMoveEvent(&ev);
+        }
+    } else {
+        // 4. No button held — forward to terminal for motion events (hover/tracking)
+        MouseEvent ev = buildMouseEvent();
+        term->mouseMoveEvent(&ev);
+    }
 }
 

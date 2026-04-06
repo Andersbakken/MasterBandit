@@ -47,6 +47,30 @@ std::vector<Binding>        parseBindings(const std::vector<BindingConfig>& conf
 // Built-in default bindings (used when no config overrides them).
 std::vector<Binding>        defaultBindings();
 
+// --- Mouse bindings ---
+
+struct MouseBindingConfig; // defined in Config.h
+
+struct MouseStroke {
+    MouseButton    button = MouseButton::Left;
+    unsigned int   mods   = 0;
+    MouseEventType event  = MouseEventType::Press;
+    MouseMode      mode   = MouseMode::Ungrabbed;
+    MouseRegion    region = MouseRegion::Any;
+
+    bool matches(const MouseStroke& incoming) const noexcept;
+};
+
+struct MouseBinding {
+    MouseStroke trigger;
+    Action::Any action;
+};
+
+std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfig>& configs);
+std::vector<MouseBinding> defaultMouseBindings();
+std::optional<Action::Any> matchMouseBinding(const MouseStroke& stroke,
+                                              const std::vector<MouseBinding>& bindings);
+
 // Sequence state machine: accumulates keypresses and matches against a binding table.
 class SequenceMatcher {
 public:

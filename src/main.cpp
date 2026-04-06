@@ -91,6 +91,7 @@ int main(int argc, char **argv)
         options.scrollbackLines = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
         options.tabBar = config.tab_bar;
         options.keybindings = config.keybindings;
+        options.mousebindings = config.mousebindings;
         options.dividerColor          = config.divider_color;
         options.dividerWidth          = config.divider_width;
         options.inactivePaneTint      = config.inactive_pane_tint;

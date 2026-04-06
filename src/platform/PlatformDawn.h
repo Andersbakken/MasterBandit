@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InputTypes.h"
+#include "ClickDetector.h"
 #include "Terminal.h"
 #include "Renderer.h"
 #include "TexturePool.h"
@@ -279,6 +280,18 @@ private:
     SequenceMatcher      sequenceMatcher_;
     void dispatchAction(const Action::Any& action);
     void terminalExited(Terminal* terminal);
+
+    // Mouse bindings
+    std::vector<MouseBinding> mouseBindings_;
+    ClickDetector clickDetector_;
+    bool selectionDragActive_ = false;
+    struct MouseContext {
+        int cellCol = 0, cellRow = 0;
+        int pixelX = 0, pixelY = 0;
+        int tabBarClickIndex = -1;
+        MouseButton button = MouseButton::Left;
+    } mouseCtx_;
+    MouseRegion hitTest(double sx, double sy);
 
     // Action listeners
     Action::Dispatcher actionDispatcher_;

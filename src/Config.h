@@ -4,6 +4,27 @@
 #include <string>
 #include <vector>
 
+struct MouseBindingConfig {
+    std::string              button;   // "left", "middle", "right"
+    std::string              event;    // "press", "release", "click", "doublepress", "triplepress", "drag"
+    std::string              mode;     // "ungrabbed", "grabbed", "any" (default: "ungrabbed")
+    std::string              region;   // "any", "tab_bar", "pane", "divider" (default: "any")
+    std::string              action;
+    std::vector<std::string> args;
+
+    struct glaze {
+        using T = MouseBindingConfig;
+        static constexpr auto value = glz::object(
+            "button", &T::button,
+            "event",  &T::event,
+            "mode",   &T::mode,
+            "region", &T::region,
+            "action", &T::action,
+            "args",   &T::args
+        );
+    };
+};
+
 struct BindingConfig {
     std::vector<std::string> keys;
     std::string              action;
@@ -134,6 +155,7 @@ struct Config {
     ColorScheme colors;
     TabBarConfig tab_bar;
     std::vector<BindingConfig> keybindings;
+    std::vector<MouseBindingConfig> mousebindings;
     std::string divider_color = "#3d3d3d";
     int   divider_width = 1;
     std::string inactive_pane_tint = "#000000";
@@ -152,6 +174,7 @@ struct Config {
             "colors", &T::colors,
             "tab_bar", &T::tab_bar,
             "keybinding", &T::keybindings,
+            "mousebinding", &T::mousebindings,
             "divider_color", &T::divider_color,
             "divider_width", &T::divider_width,
             "inactive_pane_tint", &T::inactive_pane_tint,

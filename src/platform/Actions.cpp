@@ -353,9 +353,15 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             bindings_ = defaultBindings();
             auto userBindings = parseBindings(config.keybindings);
             bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
+            mouseBindings_ = defaultMouseBindings();
+            auto userMouseBindings = parseMouseBindings(config.mousebindings);
+            mouseBindings_.insert(mouseBindings_.end(), userMouseBindings.begin(), userMouseBindings.end());
             sequenceMatcher_.reset();
             spdlog::info("Config reloaded: {} user bindings", userBindings.size());
         },
+        [&](const Action::MouseSelection&) { /* TODO: wire up in mouse binding phase */ },
+        [&](const Action::OpenHyperlink&) { /* TODO: wire up in mouse binding phase */ },
+        [&](const Action::PasteSelection&) { /* TODO: wire up in mouse binding phase */ },
         [&](const Action::ScriptAction& a) {
             if (!scriptEngine_.isActionRegistered(a.name)) {
                 spdlog::debug("ScriptAction '{}' not registered, ignoring", a.name);

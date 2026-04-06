@@ -45,6 +45,12 @@ struct FocusPopup          {}; // Cycle focus: main terminal → popup1 → popu
 struct ReloadConfig        {};
 struct ScriptAction        { std::string name; std::vector<std::string> args; };
 
+// Mouse actions
+enum class SelectionType { Normal, Word, Line, Extend, Rectangle };
+struct MouseSelection      { SelectionType type; };
+struct OpenHyperlink       {};
+struct PasteSelection      {};
+
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
     SplitPane, ClosePane, ZoomPane, FocusPane, AdjustPaneSize,
@@ -53,7 +59,8 @@ using Any = std::variant<
     PushOverlay, PopOverlay,
     IncreaseFontSize, DecreaseFontSize, ResetFontSize,
     ScrollToPrompt, SelectCommandOutput, ShowScrollback,
-    FocusPopup, ReloadConfig, ScriptAction
+    FocusPopup, ReloadConfig, ScriptAction,
+    MouseSelection, OpenHyperlink, PasteSelection
 >;
 
 // Action type identity is the variant index.

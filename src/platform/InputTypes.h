@@ -574,6 +574,12 @@ enum Modifier {
     NumLockModifier  = 0x40,
 };
 
+// Mouse binding system enums
+enum class MouseButton : uint8_t { Left, Middle, Right };
+enum class MouseEventType : uint8_t { Press, Release, Click, DoublePress, TriplePress, Drag };
+enum class MouseRegion : uint8_t { Any, TabBar, Pane, Divider };
+enum class MouseMode : uint8_t { Ungrabbed, Grabbed, Any };
+
 enum KeyAction : uint8_t {
     KeyAction_Press   = 1,
     KeyAction_Repeat  = 2,

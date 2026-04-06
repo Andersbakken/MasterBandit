@@ -64,7 +64,10 @@ mb.addEventListener("action", "FocusPane", () => render());
 // Handle input when focused
 popup.addEventListener("input", (data) => {
     if (data === "q" || data === "Q") {
-        popup.destroy();
+        popup.close();
+        return;
+    } else if (data === "t" || data === "T") {
+        mb.createTab()
         return;
     }
 

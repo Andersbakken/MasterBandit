@@ -16,6 +16,7 @@ struct TerminalOptions {
     std::optional<int> scrollbackLines; // nullopt = infinite
     TabBarConfig tabBar;
     std::vector<BindingConfig> keybindings;
+    std::vector<MouseBindingConfig> mousebindings;
     std::string dividerColor = "#3d3d3d";
     int   dividerWidth = 1;
     std::string inactivePaneTint = "#000000";

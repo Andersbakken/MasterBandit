@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <spdlog/spdlog.h>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -194,6 +195,20 @@ std::optional<Action::Any> parseAction(const std::string& name,
     if (name == "show_scrollback")           return Action::ShowScrollback{};
     if (name == "reload_config")            return Action::ReloadConfig{};
 
+    if (name == "mouse_selection") {
+        if (args.empty()) return Action::MouseSelection{Action::SelectionType::Normal};
+        std::string m = toLower(args[0]);
+        if (m == "normal")    return Action::MouseSelection{Action::SelectionType::Normal};
+        if (m == "word")      return Action::MouseSelection{Action::SelectionType::Word};
+        if (m == "line")      return Action::MouseSelection{Action::SelectionType::Line};
+        if (m == "extend")    return Action::MouseSelection{Action::SelectionType::Extend};
+        if (m == "rectangle") return Action::MouseSelection{Action::SelectionType::Rectangle};
+        spdlog::warn("Bindings: unknown mouse_selection mode '{}'", args[0]);
+        return std::nullopt;
+    }
+    if (name == "open_hyperlink")  return Action::OpenHyperlink{};
+    if (name == "paste_selection") return Action::PasteSelection{};
+
     // Script actions: any name containing a '.' is treated as namespace.action
     if (name.find('.') != std::string::npos)
         return Action::ScriptAction{name, args};
@@ -355,4 +370,161 @@ SequenceMatcher::MatchResult SequenceMatcher::advance(
 void SequenceMatcher::reset()
 {
     current_.clear();
+}
+
+// ============================================================================
+// Mouse bindings
+// ============================================================================
+
+bool MouseStroke::matches(const MouseStroke& incoming) const noexcept
+{
+    if (button != incoming.button) return false;
+    if (mods != incoming.mods) return false;
+    if (event != incoming.event) return false;
+    // Mode: Any matches both, otherwise must match exactly
+    if (mode != MouseMode::Any && incoming.mode != MouseMode::Any && mode != incoming.mode)
+        return false;
+    // Region: Any matches all, otherwise must match exactly
+    if (region != MouseRegion::Any && incoming.region != MouseRegion::Any && region != incoming.region)
+        return false;
+    return true;
+}
+
+static MouseButton parseMouseButton(const std::string& s)
+{
+    std::string b = toLower(s);
+    if (b == "middle" || b == "mid") return MouseButton::Middle;
+    if (b == "right")  return MouseButton::Right;
+    return MouseButton::Left;
+}
+
+static MouseEventType parseMouseEventType(const std::string& s)
+{
+    std::string e = toLower(s);
+    if (e == "release")     return MouseEventType::Release;
+    if (e == "click")       return MouseEventType::Click;
+    if (e == "doublepress") return MouseEventType::DoublePress;
+    if (e == "triplepress") return MouseEventType::TriplePress;
+    if (e == "drag")        return MouseEventType::Drag;
+    return MouseEventType::Press;
+}
+
+static MouseMode parseMouseMode(const std::string& s)
+{
+    std::string m = toLower(s);
+    if (m == "grabbed") return MouseMode::Grabbed;
+    if (m == "any")     return MouseMode::Any;
+    return MouseMode::Ungrabbed;
+}
+
+static MouseRegion parseMouseRegion(const std::string& s)
+{
+    std::string r = toLower(s);
+    if (r == "tab_bar" || r == "tabbar") return MouseRegion::TabBar;
+    if (r == "pane")    return MouseRegion::Pane;
+    if (r == "divider") return MouseRegion::Divider;
+    return MouseRegion::Any;
+}
+
+std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfig>& configs)
+{
+    std::vector<MouseBinding> result;
+    for (const auto& cfg : configs) {
+        if (cfg.button.empty() || cfg.action.empty()) {
+            spdlog::warn("MouseBindings: binding missing button or action, skipping");
+            continue;
+        }
+
+        // Parse modifiers from button string (e.g. "ctrl+left" → mods + button)
+        unsigned int mods = 0;
+        std::string buttonStr = cfg.button;
+        // Check for modifier prefixes
+        auto plus = buttonStr.rfind('+');
+        if (plus != std::string::npos) {
+            std::string modStr = buttonStr.substr(0, plus);
+            buttonStr = buttonStr.substr(plus + 1);
+            // Parse modifiers (same as key modifiers)
+            std::istringstream ms(modStr);
+            std::string mod;
+            while (std::getline(ms, mod, '+')) {
+                std::string m = toLower(mod);
+                if (m == "ctrl" || m == "control") mods |= CtrlModifier;
+                else if (m == "shift") mods |= ShiftModifier;
+                else if (m == "alt") mods |= AltModifier;
+                else if (m == "meta" || m == "super" || m == "cmd") mods |= MetaModifier;
+            }
+        }
+
+        auto action = parseAction(cfg.action, cfg.args);
+        if (!action) continue;
+
+        MouseStroke stroke;
+        stroke.button = parseMouseButton(buttonStr);
+        stroke.mods = mods;
+        stroke.event = parseMouseEventType(cfg.event.empty() ? "press" : cfg.event);
+        stroke.mode = parseMouseMode(cfg.mode.empty() ? "ungrabbed" : cfg.mode);
+        stroke.region = parseMouseRegion(cfg.region.empty() ? "any" : cfg.region);
+
+        result.push_back({stroke, *action});
+    }
+    return result;
+}
+
+std::vector<MouseBinding> defaultMouseBindings()
+{
+    using S = Action::SelectionType;
+    return {
+        // Character selection
+        {{MouseButton::Left, 0, MouseEventType::Press, MouseMode::Ungrabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Normal}},
+        // Word selection (double-click)
+        {{MouseButton::Left, 0, MouseEventType::DoublePress, MouseMode::Ungrabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Word}},
+        // Line selection (triple-click)
+        {{MouseButton::Left, 0, MouseEventType::TriplePress, MouseMode::Ungrabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Line}},
+        // Extend selection
+        {{MouseButton::Left, ShiftModifier, MouseEventType::Press, MouseMode::Ungrabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Extend}},
+        // Rectangle selection
+        {{MouseButton::Left, AltModifier, MouseEventType::Press, MouseMode::Ungrabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Rectangle}},
+
+        // Shift-override in grabbed mode
+        {{MouseButton::Left, ShiftModifier, MouseEventType::Press, MouseMode::Grabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Normal}},
+        {{MouseButton::Left, ShiftModifier, MouseEventType::DoublePress, MouseMode::Grabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Word}},
+        {{MouseButton::Left, ShiftModifier, MouseEventType::TriplePress, MouseMode::Grabbed, MouseRegion::Pane},
+         Action::MouseSelection{S::Line}},
+
+        // Middle-click paste
+        {{MouseButton::Middle, 0, MouseEventType::Release, MouseMode::Ungrabbed, MouseRegion::Pane},
+         Action::PasteSelection{}},
+
+        // Hyperlink open
+#ifdef __APPLE__
+        {{MouseButton::Left, MetaModifier, MouseEventType::Release, MouseMode::Any, MouseRegion::Pane},
+         Action::OpenHyperlink{}},
+#else
+        {{MouseButton::Left, CtrlModifier, MouseEventType::Release, MouseMode::Any, MouseRegion::Pane},
+         Action::OpenHyperlink{}},
+#endif
+
+        // Tab bar
+        {{MouseButton::Left, 0, MouseEventType::Press, MouseMode::Any, MouseRegion::TabBar},
+         Action::ActivateTab{-1}},
+        {{MouseButton::Middle, 0, MouseEventType::Press, MouseMode::Any, MouseRegion::TabBar},
+         Action::CloseTab{-1}},
+    };
+}
+
+std::optional<Action::Any> matchMouseBinding(const MouseStroke& stroke,
+                                              const std::vector<MouseBinding>& bindings)
+{
+    for (const auto& b : bindings) {
+        if (b.trigger.matches(stroke))
+            return b.action;
+    }
+    return std::nullopt;
 }

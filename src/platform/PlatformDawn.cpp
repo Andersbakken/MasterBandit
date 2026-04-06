@@ -430,6 +430,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         auto userBindings = parseBindings(options.keybindings);
         bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
 
+        mouseBindings_ = defaultMouseBindings();
+        auto userMouseBindings = parseMouseBindings(options.mousebindings);
+        mouseBindings_.insert(mouseBindings_.end(), userMouseBindings.begin(), userMouseBindings.end());
+
         // Divider color
         dividerWidth_ = std::max(0, options.dividerWidth);
         const std::string& dc = options.dividerColor;

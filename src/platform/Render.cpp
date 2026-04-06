@@ -206,7 +206,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
                     // For printable non-space codepoints, show U+FFFD rather than nothing
                     char32_t wc = (cellCol >= 0 && cellCol < cols) ? rowData[cellCol].wc : 0;
                     bool replaced = false;
-                    if (wc > 0x20) {
+                    if (wc != 0 && !unicode::isSpace(wc)) {
                         if (const GlyphInfo* rep = getReplacementGlyph()) {
                             gi = *rep;
                             replaced = true;

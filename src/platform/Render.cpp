@@ -36,7 +36,15 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
             : 0x00000000u; // transparent = use clear color
         uint32_t fg = (cell.attrs.fgMode() == CellAttrs::Default) ? defFg : cell.attrs.packFgAsU32();
         uint32_t bg = (cell.attrs.bgMode() == CellAttrs::Default) ? defBg : cell.attrs.packBgAsU32();
-        if (cell.attrs.inverse()) std::swap(fg, bg);
+        if (cell.attrs.inverse()) {
+            // defBg may be 0x00000000 (transparent sentinel for black bg); make it opaque before
+            // using it as a foreground color — a zero-alpha fg makes text invisible in the shader.
+            uint32_t bgOpaque = (bg == 0u)
+                ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
+                : bg;
+            std::swap(fg, bgOpaque);
+            bg = bgOpaque;
+        }
 
         uint32_t ulInfo = 0;
         {
@@ -562,7 +570,13 @@ void PlatformDawn::renderFrame()
                                 : 0x00000000u;
                             uint32_t fg = (pcell.attrs.fgMode() == CellAttrs::Default) ? defFg : pcell.attrs.packFgAsU32();
                             uint32_t bg = (pcell.attrs.bgMode() == CellAttrs::Default) ? defBg : pcell.attrs.packBgAsU32();
-                            if (pcell.attrs.inverse()) std::swap(fg, bg);
+                            if (pcell.attrs.inverse()) {
+                                uint32_t bgOpaque = (bg == 0u)
+                                    ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
+                                    : bg;
+                                std::swap(fg, bgOpaque);
+                                bg = bgOpaque;
+                            }
 
                             // If popup bg is transparent, use a solid background so content is readable
                             if ((bg & 0xFF000000u) == 0)

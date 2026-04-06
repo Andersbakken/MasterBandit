@@ -59,7 +59,7 @@
 
 - [x] Action/binding system — `Action::Any` variant, sequence-based key bindings (Kitty-style `key1 > key2`), TOML config via `[[keybinding]]`. Default bindings for all tab and pane operations.
 - [x] SGR inverse (reverse video) — correctly swaps fg/bg in cell resolution; fixes TUI app cursors (Claude Code, htop, vim selection, etc.).
-- [ ] SGR inverse bug — only the background is reversed, not the foreground. Text with green fg on default bg should render as default fg on green bg when inverse is set, but currently renders green on green (unreadable).
+- [x] SGR inverse bug — only the background is reversed, not the foreground. Text with green fg on default bg should render as default fg on green bg when inverse is set, but currently renders green on green (unreadable).
 - [x] `$COLORTERM=truecolor` — set in PTY environment so apps detect 24-bit color support.
 - [x] Platform-appropriate default bindings — `#ifdef __APPLE__` uses Cmd-based bindings (Cmd+T, Cmd+W, Cmd+C/V, Cmd+D split), Linux uses Ctrl+Shift (Ctrl+Shift+T, Ctrl+Shift+W, Ctrl+Shift+C/V).
 - [x] Jump to prompt — Cmd+Up/Down (macOS), Ctrl+Alt+Z/X (Linux). Scans history for OSC 133 PromptStart markers.

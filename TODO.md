@@ -120,6 +120,7 @@
 - [x] Scripting: `console.log` — route QuickJS console output to spdlog.
 - [x] Scripting: timers — `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` backed by libuv timers.
 - [x] Scripting: overlay creation — `tab.createOverlay()` creates headless terminal, `overlay.inject()` renders, `overlay.addEventListener("input", fn)` receives keystrokes, `overlay.close()` pops it.
+- [ ] Scripting: overlay resize event — `overlay.addEventListener("resized", (cols, rows) => {...})`. Overlays don't have a fixed pane association (panes can come and go while an overlay is active), so they need their own resize notification rather than relying on the underlying pane's `resized` event. Fire when the tab's framebuffer geometry changes.
 - [x] Scripting: applet loading via OSC 58237 — `printf '\e]58237;applet;path=/path/to/script.js\e\\'` triggers built-in applet-loader.js controller.
 - [x] Scripting: JS module imports — `JS_EVAL_TYPE_MODULE` + custom module loader. Two trusted import sources: (1) script's own directory + subdirectories (no `../` escape), (2) built-in modules directory shipped alongside the binary (e.g. `scripts/modules/tui.js`). Built-in modules always allowed regardless of script permissions. Needed before `mb:fs` and other native modules.
 - [ ] Scripting: `mb:fs` module — Node-style sync file API: `readFileSync`, `writeFileSync`, `readdirSync`, `statSync`, `existsSync`, `mkdirSync`, `unlinkSync`, `renameSync`. Permission-gated.
@@ -140,6 +141,7 @@
 - [x] Scripting: API consistency — `mb.tabs`, `mb.activePane`, `mb.activeTab`, `mb.actions` are getter properties (not functions). `popup.close()` (not destroy). `popup.cols/rows/x/y` properties. Removed `pane.destroyPopup`, `mb.loadApplet`, `mb.loadController` from JS API.
 - [x] Scripting: permission violation terminates script — scripts that try to use unpermitted APIs are scheduled for termination via zero-delay timer. Built-in scripts exempt.
 - [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
+- [ ] Built-in UI theming — expose a `[ui]` config section (colors, border style) that all built-in scripts (command palette, permission dialog, future TUI overlays) read from a single place. Implement via `mb.config` JS property populated from the loaded Config. Scripts call `createTheme(mb.config.ui)` rather than hardcoding colors. Covers command-palette.js, applet-loader.js permission prompt, and any future built-in popups/overlays.
 - [ ] GPU buffer pool — divider and popup border vertex buffers are created/destroyed directly. A pool (like TexturePool/ComputeStatePool) would avoid per-frame GPU allocations.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 

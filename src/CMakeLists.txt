@@ -49,6 +49,13 @@ foreach(SCRIPT ${SCRIPT_FILES})
     configure_file(${SCRIPT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/${SCRIPT_NAME}" COPYONLY)
 endforeach()
 
+# Copy bundled JS modules
+file(GLOB MODULE_FILES "${CMAKE_SOURCE_DIR}/assets/scripts/modules/*.js")
+foreach(MOD ${MODULE_FILES})
+    get_filename_component(MOD_NAME ${MOD} NAME)
+    configure_file(${MOD} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/modules/${MOD_NAME}" COPYONLY)
+endforeach()
+
 # Copy hb-gpu WGSL helper shaders from harfbuzz source
 configure_file("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
                "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-vertex.wgsl" COPYONLY)

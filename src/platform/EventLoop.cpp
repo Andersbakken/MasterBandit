@@ -282,6 +282,7 @@ int PlatformDawn::exec()
     // Load built-in scripts
     {
         std::string scriptsDir = exeDir_ + "/scripts/";
+        scriptEngine_.setBuiltinModulesDir(scriptsDir + "modules");
         scriptEngine_.loadController(scriptsDir + "applet-loader.js");
         scriptEngine_.loadController(scriptsDir + "command-palette.js");
     }

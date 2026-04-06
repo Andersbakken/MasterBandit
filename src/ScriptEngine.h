@@ -80,6 +80,10 @@ public:
     // Set config directory for allowlist persistence
     void setConfigDir(const std::string& dir);
 
+    // Set the directory containing built-in JS modules (mb:tui, etc.)
+    void setBuiltinModulesDir(const std::string& dir) { builtinModulesDir_ = dir; }
+    const std::string& builtinModulesDir() const { return builtinModulesDir_; }
+
     // Load a built-in script (fully trusted, all permissions)
     InstanceId loadController(const std::string& path);
 
@@ -175,6 +179,7 @@ private:
     InstanceId nextId_ = 1;
     uint32_t nextTimerId_ = 1;
     AppCallbacks callbacks_;
+    std::string builtinModulesDir_;
 
     // Permission system
     Allowlist allowlist_;

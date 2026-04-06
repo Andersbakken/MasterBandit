@@ -5,10 +5,129 @@
 #include <spdlog/spdlog.h>
 #include <uv.h>
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
+namespace fs = std::filesystem;
+
 namespace Script {
+
+// ============================================================================
+// Module loader — resolves and validates import paths
+// ============================================================================
+
+// Resolve a canonical path, rejecting symlinks that escape the sandbox.
+// Returns empty string if the path is outside the allowed directory.
+static std::string resolveAndValidate(const std::string& path, const std::string& allowedDir)
+{
+    std::error_code ec;
+
+    // Resolve the allowed directory to a canonical path
+    auto canonicalAllowed = fs::canonical(allowedDir, ec);
+    if (ec) return {};
+
+    // Check if the target exists (without following the final symlink yet)
+    if (!fs::exists(path, ec) || ec) return {};
+
+    // Resolve to canonical path (resolves all symlinks)
+    auto canonicalPath = fs::canonical(path, ec);
+    if (ec) return {};
+
+    // Verify the resolved path is under the allowed directory
+    auto rel = canonicalPath.lexically_relative(canonicalAllowed);
+    if (rel.empty() || rel.string().starts_with(".."))
+        return {};
+
+    return canonicalPath.string();
+}
+
+// Module name normalizer: resolves import specifiers to absolute paths.
+// Called by QuickJS before the module loader.
+static char* moduleNormalize(JSContext* ctx, const char* base_name,
+                             const char* name, void* opaque)
+{
+    auto* eng = static_cast<Engine*>(opaque);
+
+    // Built-in module (mb:tui, mb:fs, etc.)
+    if (strncmp(name, "mb:", 3) == 0) {
+        const auto& modulesDir = eng->builtinModulesDir();
+        if (modulesDir.empty()) {
+            JS_ThrowReferenceError(ctx, "No built-in modules directory configured");
+            return nullptr;
+        }
+        // Map "mb:foo" -> "<modulesDir>/foo.js"
+        std::string moduleName = name + 3;
+        std::string modulePath = modulesDir + "/" + moduleName + ".js";
+
+        auto resolved = resolveAndValidate(modulePath, modulesDir);
+        if (resolved.empty()) {
+            JS_ThrowReferenceError(ctx, "Built-in module '%s' not found", name);
+            return nullptr;
+        }
+        char* result = js_strdup(ctx, resolved.c_str());
+        return result;
+    }
+
+    // Relative import — resolve against the importing script's directory
+    fs::path basePath(base_name);
+    fs::path baseDir = basePath.parent_path();
+    fs::path resolved = baseDir / name;
+
+    // Add .js extension if not present
+    if (!resolved.has_extension())
+        resolved.replace_extension(".js");
+
+    std::string resolvedStr = resolved.string();
+
+    // Validate: must be under the script's directory or the built-in modules dir
+    auto* inst = eng->findInstanceByCtx(ctx);
+    if (!inst) {
+        JS_ThrowReferenceError(ctx, "Module '%s': no script context for import", name);
+        return nullptr;
+    }
+
+    fs::path scriptDir = fs::path(inst->path).parent_path();
+    auto validated = resolveAndValidate(resolvedStr, scriptDir.string());
+    if (validated.empty()) {
+        // Try built-in modules dir as fallback
+        const auto& modulesDir = eng->builtinModulesDir();
+        if (!modulesDir.empty())
+            validated = resolveAndValidate(resolvedStr, modulesDir);
+    }
+    if (validated.empty()) {
+        JS_ThrowReferenceError(ctx, "Module '%s' is outside allowed directories", name);
+        return nullptr;
+    }
+
+    char* result = js_strdup(ctx, validated.c_str());
+    return result;
+}
+
+// Module loader: reads the source file for a resolved module path.
+static JSModuleDef* moduleLoader(JSContext* ctx, const char* module_name, void* opaque)
+{
+    auto* eng = static_cast<Engine*>(opaque);
+    (void)eng;
+
+    std::ifstream f(module_name, std::ios::binary);
+    if (!f) {
+        JS_ThrowReferenceError(ctx, "Cannot open module '%s'", module_name);
+        return nullptr;
+    }
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    std::string src = ss.str();
+
+    JSValue func = JS_Eval(ctx, src.c_str(), src.size(), module_name,
+                           JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(func)) return nullptr;
+
+    JSModuleDef* m = (JSModuleDef*)JS_VALUE_GET_PTR(func);
+    JS_FreeValue(ctx, func);
+    return m;
+}
+
 
 static Engine* engineFromCtx(JSContext* ctx) {
     return static_cast<Engine*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
@@ -1337,6 +1456,8 @@ Engine::Engine()
     rt_ = JS_NewRuntime();
     JS_SetRuntimeOpaque(rt_, this);
 
+    JS_SetModuleLoaderFunc(rt_, moduleNormalize, moduleLoader, this);
+
     JS_NewClassID(rt_, &jsPaneClassId);
     JS_NewClass(rt_, jsPaneClassId, &jsPaneClassDef);
 
@@ -1461,7 +1582,7 @@ InstanceId Engine::loadController(const std::string& path) {
     instances_.push_back({id, ctx, path, /*contentHash=*/"", Perm::All, /*builtIn=*/true});
     JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
 
-    JSValue result = JS_Eval(ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_GLOBAL);
+    JSValue result = JS_Eval(ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
     if (JS_IsException(result)) {
         JSValue exc = JS_GetException(ctx);
         const char* str = JS_ToCString(ctx, exc);
@@ -1473,6 +1594,7 @@ InstanceId Engine::loadController(const std::string& path) {
         instances_.pop_back();
         return 0;
     }
+    // Module eval may return a promise (top-level await); resolved by executePendingJobs()
     JS_FreeValue(ctx, result);
     spdlog::info("ScriptEngine: loaded built-in '{}' (id={})", path, id);
     return id;
@@ -1605,7 +1727,7 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     instances_.push_back({id, ctx, path, hash, permissions, false});
     JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
 
-    JSValue result = JS_Eval(ctx, content.c_str(), content.size(), path.c_str(), JS_EVAL_TYPE_GLOBAL);
+    JSValue result = JS_Eval(ctx, content.c_str(), content.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
     if (JS_IsException(result)) {
         JSValue exc = JS_GetException(ctx);
         const char* str = JS_ToCString(ctx, exc);

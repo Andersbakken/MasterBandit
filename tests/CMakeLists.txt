@@ -27,6 +27,7 @@ set(TEST_SOURCES
     MBConnection.cpp
     ../src/Log.cpp
     ../src/text.cpp
+    ../src/ColrEncoder.cpp
 )
 
 if(APPLE)

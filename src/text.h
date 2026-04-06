@@ -12,6 +12,8 @@ struct hb_face_t;
 struct hb_font_t;
 struct hb_gpu_draw_t;
 
+#include "ColrTypes.h"
+
 struct GlyphInfo {
     uint32_t atlas_offset;               // offset into atlasData (in vec4<i32> units)
     float ext_min_x, ext_min_y;          // glyph extents in design units
@@ -19,6 +21,7 @@ struct GlyphInfo {
     uint32_t upem;                       // units per em for this glyph's font
     float advance;                       // horizontal advance (pixels at baseSize)
     bool is_empty;                       // true for whitespace/no-contour glyphs
+    bool is_colr;                        // true if this is a COLRv1 color glyph
 };
 
 struct FontStyle {
@@ -61,6 +64,10 @@ struct FontData {
 
     // Which font index covers each codepoint (for shaping font selection)
     std::unordered_map<uint32_t, uint32_t> codepointToFontIndex;
+
+    // COLRv1 glyph data: keyed by same glyphKey as glyphs map
+    std::unordered_map<uint64_t, ColrGlyphData> colrGlyphs;
+    bool hasColrPaint = false;  // cached result of hb_ot_color_has_paint()
 
     // Protects glyphs, atlasData, atlasUsed, hbFonts, styledVariants, codepointToFontIndex.
     // Read lock for lookups, write lock for insertions (new glyphs, fallback fonts, styled variants).

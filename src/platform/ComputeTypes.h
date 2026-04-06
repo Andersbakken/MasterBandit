@@ -49,6 +49,23 @@ struct TerminalComputeParams {
 };
 static_assert(sizeof(TerminalComputeParams) == 60);
 
+// Per-glyph info for the COLRv1 rasterizer compute shader (48 bytes)
+struct ColrGlyphInfoGPU {
+    uint32_t instr_offset;   // start index into instruction buffer (u32 units)
+    uint32_t instr_length;   // total u32s of instructions
+    uint32_t output_x;       // x offset in output atlas (pixels)
+    uint32_t output_y;       // y offset in output atlas (pixels)
+    uint32_t tile_w;         // tile width in pixels
+    uint32_t tile_h;         // tile height in pixels
+    float    em_width;       // glyph width in em-space
+    float    em_height;      // glyph height in em-space
+    float    em_origin_x;    // em-space origin x (left edge)
+    float    em_origin_y;    // em-space origin y (bottom edge)
+    uint32_t _pad0;
+    uint32_t _pad1;
+};
+static_assert(sizeof(ColrGlyphInfoGPU) == 48);
+
 // One set of compute buffers + bind group for a single render call
 struct ComputeState {
     wgpu::Buffer    resolvedCellBuffer;

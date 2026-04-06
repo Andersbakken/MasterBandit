@@ -21,6 +21,8 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
     auto& rowCache = rs.rowShapingCache[row];
     rowCache.glyphs.clear();
     rowCache.cellGlyphRanges.assign(cols, {0, 0});
+    rowCache.colrDrawCmds.clear();
+    rowCache.colrRasterCmds.clear();
 
     // Pass 1: Resolve per-cell decorations (fg, bg, underline)
     for (int col = 0; col < cols; ++col) {
@@ -181,6 +183,59 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
                     continue;
                 }
                 gi = git->second;
+            }
+
+            // COLRv1 emoji: skip Slug path, emit a textured quad instead
+            if (gi.is_colr) {
+                uint64_t colrKey = glyphId;
+                // Determine cell width in pixels (wide chars = 2 cells)
+                int cellSpan = 1;
+                if (cellCol + 1 < cols && rowData[cellCol + 1].attrs.wideSpacer())
+                    cellSpan = 2;
+                float cellPxW = static_cast<float>(cellSpan) * cellWidthPx;
+                float cellPxH = lineHeight_;
+
+                // Try to acquire a tile in the atlas
+                auto* tile = renderer_.colrAtlas().acquireTile(colrKey, fontSize_);
+                if (tile) {
+                    // New tile — need to rasterize
+                    const ColrGlyphData* colrData = nullptr;
+                    {
+                        std::shared_lock lock(font->mutex);
+                        auto cit = font->colrGlyphs.find(colrKey);
+                        if (cit != font->colrGlyphs.end())
+                            colrData = &cit->second;
+                    }
+                    if (colrData) {
+                        Renderer::ColrRasterCmd rcmd;
+                        rcmd.data = colrData;
+                        rcmd.tile = *tile;
+                        // Coordinates in raw design units (same space as Slug atlas data)
+                        rcmd.em_origin_x = gi.ext_min_x;
+                        rcmd.em_origin_y = gi.ext_min_y;
+                        rcmd.em_width = gi.ext_max_x - gi.ext_min_x;
+                        rcmd.em_height = gi.ext_max_y - gi.ext_min_y;
+                        rowCache.colrRasterCmds.push_back(rcmd);
+                    }
+                }
+
+                // Always add a draw command (tile may already be cached)
+                auto* cached = renderer_.colrAtlas().findTile(colrKey, fontSize_);
+                if (cached) {
+                    float px = padLeft_ + static_cast<float>(cellCol) * cellWidthPx;
+                    float py = padTop_ + static_cast<float>(row) * lineHeight_;
+
+                    Renderer::ColrDrawCmd dcmd;
+                    dcmd.x = px;
+                    dcmd.y = py;
+                    dcmd.w = cellPxW;
+                    dcmd.h = cellPxH;
+                    dcmd.tile = *cached;
+                    rowCache.colrDrawCmds.push_back(dcmd);
+                }
+
+                penX += sg.xAdvance;
+                continue;
             }
 
             // Glyph positioning: for substituted glyphs (ligatures, contextual forms),
@@ -738,10 +793,32 @@ void PlatformDawn::renderFrame()
                 static_cast<uint32_t>(paneRect.w),
                 static_cast<uint32_t>(paneRect.h));
 
+            // Gather COLR commands from all rows
+            std::vector<Renderer::ColrDrawCmd> colrDrawCmds;
+            std::vector<Renderer::ColrRasterCmd> colrRasterCmds;
+            for (const auto& rc : rs.rowShapingCache) {
+                colrDrawCmds.insert(colrDrawCmds.end(), rc.colrDrawCmds.begin(), rc.colrDrawCmds.end());
+                colrRasterCmds.insert(colrRasterCmds.end(), rc.colrRasterCmds.begin(), rc.colrRasterCmds.end());
+            }
+
             wgpu::CommandEncoderDescriptor encDesc = {};
             wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
+
+            // Rasterize any new COLRv1 glyphs before rendering the pane
+            if (!colrRasterCmds.empty()) {
+                renderer_.rasterizeColrGlyphs(encoder, queue_, fontName_, colrRasterCmds);
+            }
+
             const float* tint = isFocused ? activeTint_ : inactiveTint_;
             renderer_.renderToPane(encoder, queue_, fontName_, params, cs, newTexture->view, tint, imageCmds);
+
+            // Render COLRv1 emoji quads on top
+            if (!colrDrawCmds.empty()) {
+                renderer_.renderColrQuads(encoder, queue_, newTexture->view,
+                                          params.viewport_w, params.viewport_h,
+                                          colrDrawCmds);
+            }
+
             wgpu::CommandBuffer commands = encoder.Finish();
             queue_.Submit(1, &commands);
             pendingComputeRelease_.push_back(cs);

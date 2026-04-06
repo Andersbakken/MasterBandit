@@ -1,4 +1,5 @@
 #include "text.h"
+#include "ColrEncoder.h"
 
 #include <hb.h>
 #include <hb-ot.h>
@@ -42,7 +43,63 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
     // Fast path: read lock check
     {
         std::shared_lock lock(font.mutex);
-        if (font.glyphs.count(key)) return;
+        auto it = font.glyphs.find(key);
+        if (it != font.glyphs.end()) {
+            // If glyph is cached but COLR status unknown, check now
+            if (font.hasColrPaint && !it->second.is_colr) {
+                hb_face_t* face = font.hbFonts[fontIndex].hbFace;
+                bool fp = hb_ot_color_has_paint(face);
+                if (fp && hb_ot_color_glyph_has_paint(face, glyphId)) {
+                    lock.unlock();
+                    // Upgrade to write lock to set is_colr and encode paint
+                    std::unique_lock wlock(font.mutex);
+                    auto wit = font.glyphs.find(key);
+                    if (wit != font.glyphs.end() && !wit->second.is_colr) {
+                        wit->second.is_colr = true;
+                        spdlog::info("COLR: late-detected colr glyph gid={} fi={}", glyphId, fontIndex);
+                    }
+                    wlock.unlock();
+                    // Encode paint graph
+                    hb_font_t* hbFont;
+                    hb_face_t* hbFace;
+                    {
+                        std::shared_lock rlock(font.mutex);
+                        hbFont = font.hbFonts[fontIndex].hbFont;
+                        hbFace = font.hbFonts[fontIndex].hbFace;
+                    }
+                    ColrEncoder::GlyphResolver resolver = [this, &font, fontIndex](
+                        hb_font_t*, hb_codepoint_t clipGlyph,
+                        float* eminx, float* eminy, float* emaxx, float* emaxy) -> uint32_t
+                    {
+                        ensureGlyphEncoded(font, fontIndex, clipGlyph);
+                        uint64_t clipKey = glyphKey(fontIndex, clipGlyph);
+                        std::shared_lock lock2(font.mutex);
+                        auto cit = font.glyphs.find(clipKey);
+                        if (cit == font.glyphs.end() || cit->second.is_empty) {
+                            *eminx = *eminy = *emaxx = *emaxy = 0;
+                            return 0;
+                        }
+                        *eminx = cit->second.ext_min_x;
+                        *eminy = cit->second.ext_min_y;
+                        *emaxx = cit->second.ext_max_x;
+                        *emaxy = cit->second.ext_max_y;
+                        return cit->second.atlas_offset;
+                    };
+                    auto encoded = ColrEncoder::encode(hbFont, glyphId, 0,
+                                                       HB_COLOR(0, 0, 0, 255), resolver);
+                    if (!encoded.instructions.empty()) {
+                        std::unique_lock wlock2(font.mutex);
+                        font.colrGlyphs[key] = ColrGlyphData{
+                            std::move(encoded.instructions),
+                            std::move(encoded.colorStops)
+                        };
+                        spdlog::info("COLR: encoded paint graph for gid={} fi={} ({} instructions)",
+                                     glyphId, fontIndex, font.colrGlyphs[key].instructions.size());
+                    }
+                }
+            }
+            return;
+        }
     }
 
     // Cache miss — extract glyph data without holding any lock.
@@ -81,57 +138,119 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
     info.advance = adv;
 
     if (blobLen == 0) {
-        info.is_empty = true;
-        info.atlas_offset = 0;
-        info.ext_min_x = 0;
-        info.ext_min_y = 0;
-        info.ext_max_x = 0;
-        info.ext_max_y = 0;
-        std::unique_lock lock(font.mutex);
-        if (!font.glyphs.count(key))
-            font.glyphs[key] = info;
+        // COLRv1 glyphs have no outlines — their visuals come from the paint graph.
+        // Check for COLR paint before marking as empty.
+        bool isColr = font.hasColrPaint && hb_ot_color_glyph_has_paint(hbFace, glyphId);
+        if (isColr) {
+            // Get extents from HarfBuzz font (not gpu draw, which has no contours)
+            hb_glyph_extents_t fontExt;
+            if (hb_font_get_glyph_extents(hbFont, glyphId, &fontExt)) {
+                info.ext_min_x = static_cast<float>(fontExt.x_bearing);
+                info.ext_min_y = static_cast<float>(fontExt.y_bearing + fontExt.height);
+                info.ext_max_x = static_cast<float>(fontExt.x_bearing + fontExt.width);
+                info.ext_max_y = static_cast<float>(fontExt.y_bearing);
+            }
+            info.is_empty = false;
+            info.is_colr = true;
+            info.atlas_offset = 0; // no Slug atlas data
+            spdlog::debug("COLR: detected COLRv1 glyph gid={} fi={} extents=[{},{},{},{}]",
+                         glyphId, fontIndex, info.ext_min_x, info.ext_min_y, info.ext_max_x, info.ext_max_y);
+        } else {
+            info.is_empty = true;
+            info.atlas_offset = 0;
+            info.ext_min_x = 0;
+            info.ext_min_y = 0;
+            info.ext_max_x = 0;
+            info.ext_max_y = 0;
+        }
+        {
+            std::unique_lock lock(font.mutex);
+            if (!font.glyphs.count(key))
+                font.glyphs[key] = info;
+        }
         hb_gpu_draw_recycle_blob(g, blob);
-        return;
-    }
+        if (!isColr) return;
+    } else {
+        // Non-empty outline — store in Slug atlas
+        info.is_empty = false;
+        info.ext_min_x = static_cast<float>(ext.x_bearing);
+        info.ext_min_y = static_cast<float>(ext.y_bearing + ext.height);
+        info.ext_max_x = static_cast<float>(ext.x_bearing + ext.width);
+        info.ext_max_y = static_cast<float>(ext.y_bearing);
 
-    info.is_empty = false;
-    info.ext_min_x = static_cast<float>(ext.x_bearing);
-    info.ext_min_y = static_cast<float>(ext.y_bearing + ext.height);
-    info.ext_max_x = static_cast<float>(ext.x_bearing + ext.width);
-    info.ext_max_y = static_cast<float>(ext.y_bearing);
+        const int16_t* src = reinterpret_cast<const int16_t*>(blobData);
+        uint32_t numInt16 = blobLen / sizeof(int16_t);
+        uint32_t numTexels = (numInt16 + 3) / 4;
 
-    const int16_t* src = reinterpret_cast<const int16_t*>(blobData);
-    uint32_t numInt16 = blobLen / sizeof(int16_t);
-    uint32_t numTexels = (numInt16 + 3) / 4;
+        {
+            std::unique_lock lock(font.mutex);
+            if (font.glyphs.count(key)) {
+                hb_gpu_draw_recycle_blob(g, blob);
+                return;
+            }
 
-    // Write lock to insert into atlas and glyph map
-    {
-        std::unique_lock lock(font.mutex);
+            info.atlas_offset = font.atlasUsed;
+            uint32_t needed = (font.atlasUsed + numTexels) * 4;
+            if (font.atlasData.size() < needed)
+                font.atlasData.resize(needed * 2, 0);
 
-        // Double-check: another thread may have inserted while we extracted
-        if (font.glyphs.count(key)) {
-            hb_gpu_draw_recycle_blob(g, blob);
+            for (uint32_t i = 0; i < numInt16; i++)
+                font.atlasData[font.atlasUsed * 4 + i] = static_cast<int32_t>(src[i]);
+            for (uint32_t i = numInt16; i < numTexels * 4; i++)
+                font.atlasData[font.atlasUsed * 4 + i] = 0;
+            font.atlasUsed += numTexels;
+
+            font.glyphs[key] = info;
+        }
+        hb_gpu_draw_recycle_blob(g, blob);
+
+        // Check for COLRv1 paint data on non-empty outline glyphs
+        if (!(font.hasColrPaint &&
+              hb_ot_color_has_paint(hbFace) &&
+              hb_ot_color_glyph_has_paint(hbFace, glyphId)))
             return;
-        }
-
-        info.atlas_offset = font.atlasUsed;
-
-        uint32_t needed = (font.atlasUsed + numTexels) * 4;
-        if (font.atlasData.size() < needed) {
-            font.atlasData.resize(needed * 2, 0);
-        }
-
-        for (uint32_t i = 0; i < numInt16; i++) {
-            font.atlasData[font.atlasUsed * 4 + i] = static_cast<int32_t>(src[i]);
-        }
-        for (uint32_t i = numInt16; i < numTexels * 4; i++) {
-            font.atlasData[font.atlasUsed * 4 + i] = 0;
-        }
-        font.atlasUsed += numTexels;
-
-        font.glyphs[key] = info;
     }
-    hb_gpu_draw_recycle_blob(g, blob);
+
+    // Encode COLRv1 paint graph
+    {
+        spdlog::debug("COLR: encoding glyph {} (font index {})", glyphId, fontIndex);
+        // Encode the paint graph. The resolver callback ensures each clip glyph's
+        // outline is in the atlas (recursive call to ensureGlyphEncoded).
+        ColrEncoder::GlyphResolver resolver = [this, &font, fontIndex](
+            hb_font_t* resolverFont, hb_codepoint_t clipGlyph,
+            float* eminx, float* eminy, float* emaxx, float* emaxy) -> uint32_t
+        {
+            ensureGlyphEncoded(font, fontIndex, clipGlyph);
+            uint64_t clipKey = glyphKey(fontIndex, clipGlyph);
+            std::shared_lock lock(font.mutex);
+            auto it = font.glyphs.find(clipKey);
+            if (it == font.glyphs.end() || it->second.is_empty) {
+                *eminx = *eminy = *emaxx = *emaxy = 0;
+                return 0;
+            }
+            *eminx = it->second.ext_min_x;
+            *eminy = it->second.ext_min_y;
+            *emaxx = it->second.ext_max_x;
+            *emaxy = it->second.ext_max_y;
+            return it->second.atlas_offset;
+        };
+
+        auto encoded = ColrEncoder::encode(hbFont, glyphId, 0,
+                                           HB_COLOR(0, 0, 0, 255), resolver);
+
+        if (!encoded.instructions.empty()) {
+            std::unique_lock lock(font.mutex);
+            font.colrGlyphs[key] = ColrGlyphData{
+                std::move(encoded.instructions),
+                std::move(encoded.colorStops)
+            };
+            // Mark the glyph as COLR
+            auto git = font.glyphs.find(key);
+            if (git != font.glyphs.end()) {
+                git->second.is_colr = true;
+            }
+        }
+    }
 }
 
 bool TextSystem::registerFont(const std::string& name,
@@ -184,6 +303,15 @@ bool TextSystem::registerFont(const std::string& name,
         font.lineHeight = baseSize * 1.2f;
     }
 
+    // Check if any font in this set has COLRv1 paint data
+    for (const auto& entry : font.hbFonts) {
+        if (hb_ot_color_has_paint(entry.hbFace)) {
+            font.hasColrPaint = true;
+            spdlog::info("Font '{}': COLRv1 paint support detected", name);
+            break;
+        }
+    }
+
     // Pre-allocate atlas storage (will grow as needed)
     font.atlasData.resize(1024 * 1024, 0); // 4MB initial (1M vec4<i32>)
 
@@ -227,6 +355,15 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
         hb_face_destroy(entry.hbFace);
         hb_blob_destroy(entry.hbBlob);
         return false;
+    }
+
+    // Check for COLRv1 paint data on the new fallback
+    bool hasPaint = hb_ot_color_has_paint(entry.hbFace);
+    spdlog::info("COLR: fallback font check for '{}': hb_ot_color_has_paint={} face={} fi={}",
+                 name, hasPaint, (void*)entry.hbFace, font.hbFonts.size());
+    if (!font.hasColrPaint && hasPaint) {
+        font.hasColrPaint = true;
+        spdlog::info("COLR: fallback font for '{}' has COLRv1 paint support", name);
     }
 
     std::unique_lock lock(font.mutex);
@@ -386,7 +523,8 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
             if (fi == excludeFi) continue;
 
             uint32_t gid;
-            if (hb_font_get_nominal_glyph(entry.hbFont, cp, &gid)) {
+            bool found = hb_font_get_nominal_glyph(entry.hbFont, cp, &gid);
+            if (found) {
                 lock.unlock();
                 uint32_t styledFi = getStyledVariant(font, fi, style);
                 lock.lock();

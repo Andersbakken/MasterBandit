@@ -1,4 +1,5 @@
 #include "Renderer.h"
+#include "ColrAtlas.h"
 #include "renderer_utils.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -209,6 +210,9 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
 
     // Initialize image pipeline
     initImagePipeline(device_, shaderDir);
+
+    // Initialize COLR rasterizer pipeline
+    initColrPipeline(device_, shaderDir);
 }
 
 void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
@@ -995,4 +999,347 @@ void Renderer::drawDivider(wgpu::CommandEncoder& encoder,
     pass.SetVertexBuffer(0, vb);
     pass.Draw(6);
     pass.End();
+}
+
+// ========================================
+// COLRv1 rasterizer pipeline
+// ========================================
+
+void Renderer::initColrPipeline(wgpu::Device& device, const std::string& shaderDir)
+{
+    auto shaderModule = renderer_utils::createShaderModule(device,
+        (fs::path(shaderDir) / "colr_rasterize.wgsl").string().c_str());
+    if (!shaderModule) {
+        spdlog::error("Failed to load colr_rasterize.wgsl shader");
+        return;
+    }
+
+    // Bind group layout: 5 bindings
+    wgpu::BindGroupLayoutEntry entries[5] = {};
+
+    // b0: glyph table (read-only storage)
+    entries[0].binding = 0;
+    entries[0].visibility = wgpu::ShaderStage::Compute;
+    entries[0].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+
+    // b1: instructions (read-only storage)
+    entries[1].binding = 1;
+    entries[1].visibility = wgpu::ShaderStage::Compute;
+    entries[1].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+
+    // b2: color stops (read-only storage)
+    entries[2].binding = 2;
+    entries[2].visibility = wgpu::ShaderStage::Compute;
+    entries[2].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+
+    // b3: slug atlas (read-only storage)
+    entries[3].binding = 3;
+    entries[3].visibility = wgpu::ShaderStage::Compute;
+    entries[3].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+
+    // b4: output texture (write-only storage texture)
+    entries[4].binding = 4;
+    entries[4].visibility = wgpu::ShaderStage::Compute;
+    entries[4].storageTexture.access = wgpu::StorageTextureAccess::WriteOnly;
+    entries[4].storageTexture.format = wgpu::TextureFormat::RGBA8Unorm;
+    entries[4].storageTexture.viewDimension = wgpu::TextureViewDimension::e2D;
+
+    wgpu::BindGroupLayoutDescriptor bglDesc = {};
+    bglDesc.entryCount = 5;
+    bglDesc.entries = entries;
+    colrComputeBGL_ = device.CreateBindGroupLayout(&bglDesc);
+
+    wgpu::PipelineLayoutDescriptor plDesc = {};
+    plDesc.bindGroupLayoutCount = 1;
+    plDesc.bindGroupLayouts = &colrComputeBGL_;
+    wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&plDesc);
+
+    wgpu::ComputePipelineDescriptor cpDesc = {};
+    cpDesc.layout = pipelineLayout;
+    cpDesc.compute.module = shaderModule;
+    cpDesc.compute.entryPoint = "main";
+    colrComputePipeline_ = device.CreateComputePipeline(&cpDesc);
+
+    colrPipelineReady_ = true;
+    spdlog::info("COLR rasterizer pipeline initialized");
+}
+
+void Renderer::ensureColrBucket(wgpu::Queue& queue, uint32_t bucket)
+{
+    if (bucket >= ColrAtlas::NUM_BUCKETS) return;
+    auto& bg = colrBuckets_[bucket];
+    if (bg.created) return;
+
+    uint32_t dim = ColrAtlas::atlasDimension();
+
+    wgpu::TextureDescriptor texDesc = {};
+    texDesc.size = { dim, dim, 1 };
+    texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+    texDesc.usage = wgpu::TextureUsage::StorageBinding |
+                    wgpu::TextureUsage::TextureBinding;
+    texDesc.dimension = wgpu::TextureDimension::e2D;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount = 1;
+    bg.texture = device_.CreateTexture(&texDesc);
+    bg.view = bg.texture.CreateView();
+
+    // Create render bind group (reuses image pipeline layout: uniform, texture, sampler)
+    if (imagePipelineReady_) {
+        wgpu::BindGroupEntry bindings[3] = {};
+        bindings[0].binding = 0;
+        bindings[0].buffer = imageUniformBuffer_;
+        bindings[0].size = 16;
+        bindings[1].binding = 1;
+        bindings[1].textureView = bg.view;
+        bindings[2].binding = 2;
+        bindings[2].sampler = imageSampler_;
+
+        wgpu::BindGroupDescriptor bgDesc = {};
+        bgDesc.layout = imageBindGroupLayout_;
+        bgDesc.entryCount = 3;
+        bgDesc.entries = bindings;
+        bg.renderBindGroup = device_.CreateBindGroup(&bgDesc);
+    }
+
+    bg.created = true;
+    spdlog::info("COLR atlas bucket {} ({}px tiles, {}x{} atlas) created",
+                 bucket, ColrAtlas::BUCKET_SIZES[bucket], dim, dim);
+}
+
+void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                                    const std::string& fontName,
+                                    const std::vector<ColrRasterCmd>& cmds)
+{
+    if (!colrPipelineReady_ || cmds.empty()) return;
+
+    spdlog::debug("COLR rasterize: {} glyphs", cmds.size());
+
+    auto fontIt = fontGPU_.find(fontName);
+    if (fontIt == fontGPU_.end()) return;
+
+    // Gather all instructions and color stops into contiguous buffers
+    std::vector<ColrGlyphInfoGPU> glyphInfos;
+    std::vector<uint32_t> allInstructions;
+    std::vector<ColrColorStop> allColorStops;
+
+    for (const auto& cmd : cmds) {
+        ColrGlyphInfoGPU info{};
+        info.instr_offset = static_cast<uint32_t>(allInstructions.size());
+        info.instr_length = static_cast<uint32_t>(cmd.data->instructions.size());
+        info.output_x = cmd.tile.x;
+        info.output_y = cmd.tile.y;
+        info.tile_w = cmd.tile.tile_w;
+        info.tile_h = cmd.tile.tile_h;
+        info.em_width = cmd.em_width;
+        info.em_height = cmd.em_height;
+        info.em_origin_x = cmd.em_origin_x;
+        info.em_origin_y = cmd.em_origin_y;
+
+        // Adjust color stop offsets to be global
+        uint32_t stopBase = static_cast<uint32_t>(allColorStops.size());
+        std::vector<uint32_t> adjustedInstr = cmd.data->instructions;
+        // Scan for gradient opcodes and adjust stop_offset fields
+        uint32_t pc = 0;
+        while (pc < adjustedInstr.size()) {
+            uint32_t header = adjustedInstr[pc];
+            uint8_t opcode = header & 0xFF;
+            uint32_t payloadLen = (header >> 8) & 0x3FF;
+            uint32_t payload = pc + 1;
+            pc = payload + payloadLen;
+
+            // Gradient opcodes: stop_offset is at different positions
+            switch (opcode) {
+                case 0x07: // FillLinearGrad: payload[6] = stop_offset
+                case 0x08: // FillRadialGrad: payload[6] = stop_offset
+                    if (payloadLen >= 7)
+                        adjustedInstr[payload + 6] += stopBase;
+                    break;
+                case 0x09: // FillSweepGrad: payload[4] = stop_offset
+                    if (payloadLen >= 5)
+                        adjustedInstr[payload + 4] += stopBase;
+                    break;
+                default: break;
+            }
+        }
+
+        allInstructions.insert(allInstructions.end(),
+                               adjustedInstr.begin(), adjustedInstr.end());
+        allColorStops.insert(allColorStops.end(),
+                             cmd.data->colorStops.begin(), cmd.data->colorStops.end());
+        glyphInfos.push_back(info);
+    }
+
+    // Ensure color stops buffer has at least one entry (GPU needs valid binding)
+    if (allColorStops.empty()) {
+        allColorStops.push_back({0.0f, 0});
+    }
+
+    // Upload glyph info buffer
+    {
+        uint32_t needed = static_cast<uint32_t>(glyphInfos.size());
+        if (needed > colrGlyphInfoCapacity_) {
+            colrGlyphInfoCapacity_ = std::max(needed, 32u);
+            wgpu::BufferDescriptor desc = {};
+            desc.size = colrGlyphInfoCapacity_ * sizeof(ColrGlyphInfoGPU);
+            desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+            colrGlyphInfoBuffer_ = device_.CreateBuffer(&desc);
+        }
+        queue.WriteBuffer(colrGlyphInfoBuffer_, 0, glyphInfos.data(),
+                          glyphInfos.size() * sizeof(ColrGlyphInfoGPU));
+    }
+
+    // Upload instruction buffer
+    {
+        uint32_t needed = static_cast<uint32_t>(allInstructions.size());
+        if (needed > colrInstructionCapacity_) {
+            colrInstructionCapacity_ = std::max(needed, 4096u);
+            wgpu::BufferDescriptor desc = {};
+            desc.size = colrInstructionCapacity_ * sizeof(uint32_t);
+            desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+            colrInstructionBuffer_ = device_.CreateBuffer(&desc);
+        }
+        queue.WriteBuffer(colrInstructionBuffer_, 0, allInstructions.data(),
+                          allInstructions.size() * sizeof(uint32_t));
+    }
+
+    // Upload color stop buffer
+    {
+        uint32_t needed = static_cast<uint32_t>(allColorStops.size());
+        if (needed > colrColorStopCapacity_) {
+            colrColorStopCapacity_ = std::max(needed, 256u);
+            wgpu::BufferDescriptor desc = {};
+            desc.size = colrColorStopCapacity_ * sizeof(ColrColorStop);
+            desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+            colrColorStopBuffer_ = device_.CreateBuffer(&desc);
+        }
+        queue.WriteBuffer(colrColorStopBuffer_, 0, allColorStops.data(),
+                          allColorStops.size() * sizeof(ColrColorStop));
+    }
+
+    // Group commands by bucket and dispatch
+    for (uint32_t bi = 0; bi < ColrAtlas::NUM_BUCKETS; bi++) {
+        // Collect glyph infos for this bucket (contiguous, indexed from 0)
+        std::vector<ColrGlyphInfoGPU> bucketGlyphs;
+        for (uint32_t i = 0; i < glyphInfos.size(); i++) {
+            if (cmds[i].tile.bucket == bi)
+                bucketGlyphs.push_back(glyphInfos[i]);
+        }
+        if (bucketGlyphs.empty()) continue;
+
+        ensureColrBucket(queue, bi);
+        auto& bg = colrBuckets_[bi];
+
+        // Upload bucket-specific glyph info
+        queue.WriteBuffer(colrGlyphInfoBuffer_, 0, bucketGlyphs.data(),
+                          bucketGlyphs.size() * sizeof(ColrGlyphInfoGPU));
+
+        // Create bind group for this dispatch
+        wgpu::BindGroupEntry bgEntries[5] = {};
+        bgEntries[0].binding = 0;
+        bgEntries[0].buffer = colrGlyphInfoBuffer_;
+        bgEntries[0].size = std::max(bucketGlyphs.size(), size_t(1)) * sizeof(ColrGlyphInfoGPU);
+        bgEntries[1].binding = 1;
+        bgEntries[1].buffer = colrInstructionBuffer_;
+        bgEntries[1].size = allInstructions.size() * sizeof(uint32_t);
+        bgEntries[2].binding = 2;
+        bgEntries[2].buffer = colrColorStopBuffer_;
+        bgEntries[2].size = allColorStops.size() * sizeof(ColrColorStop);
+        bgEntries[3].binding = 3;
+        bgEntries[3].buffer = fontIt->second.storageBuffer;
+        bgEntries[3].size = fontIt->second.uploadedSize > 0 ?
+            static_cast<uint64_t>(fontIt->second.uploadedSize) * 4 * sizeof(int32_t) :
+            fontIt->second.storageCapacity * sizeof(int32_t);
+        bgEntries[4].binding = 4;
+        bgEntries[4].textureView = bg.view;
+
+        wgpu::BindGroupDescriptor bgDesc = {};
+        bgDesc.layout = colrComputeBGL_;
+        bgDesc.entryCount = 5;
+        bgDesc.entries = bgEntries;
+        wgpu::BindGroup bindGroup = device_.CreateBindGroup(&bgDesc);
+
+        uint32_t tileSize = ColrAtlas::BUCKET_SIZES[bi];
+        uint32_t workgroupsX = (tileSize + 15) / 16;
+        uint32_t workgroupsY = (tileSize + 15) / 16;
+
+        wgpu::ComputePassDescriptor cpDesc = {};
+        wgpu::ComputePassEncoder computePass = encoder.BeginComputePass(&cpDesc);
+        computePass.SetPipeline(colrComputePipeline_);
+        computePass.SetBindGroup(0, bindGroup);
+        // X/Y = pixel coverage in 16x16 workgroups, Z = glyph index
+        computePass.DispatchWorkgroups(
+            workgroupsX, workgroupsY,
+            static_cast<uint32_t>(bucketGlyphs.size()));
+        computePass.End();
+    }
+}
+
+void Renderer::renderColrQuads(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                                wgpu::TextureView target,
+                                float viewport_w, float viewport_h,
+                                const std::vector<ColrDrawCmd>& cmds)
+{
+    if (!imagePipelineReady_ || cmds.empty()) return;
+
+    // Update viewport uniform
+    float uniforms[4] = { viewport_w, viewport_h, 0, 0 };
+    queue.WriteBuffer(imageUniformBuffer_, 0, uniforms, sizeof(uniforms));
+
+    // Group quads by bucket
+    for (uint32_t bi = 0; bi < ColrAtlas::NUM_BUCKETS; bi++) {
+        auto& bg = colrBuckets_[bi];
+        if (!bg.created) continue;
+
+        std::vector<ImageVertex> verts;
+        for (const auto& cmd : cmds) {
+            if (cmd.tile.bucket != bi) continue;
+
+            float x0 = cmd.x, y0 = cmd.y;
+            float x1 = cmd.x + cmd.w, y1 = cmd.y + cmd.h;
+
+            float atlasDim = static_cast<float>(ColrAtlas::atlasDimension());
+            float u0 = static_cast<float>(cmd.tile.x) / atlasDim;
+            float v0 = static_cast<float>(cmd.tile.y) / atlasDim;
+            float u1 = static_cast<float>(cmd.tile.x + cmd.tile.tile_w) / atlasDim;
+            float v1 = static_cast<float>(cmd.tile.y + cmd.tile.tile_h) / atlasDim;
+
+            verts.push_back({{x0, y0}, {u0, v0}});
+            verts.push_back({{x1, y0}, {u1, v0}});
+            verts.push_back({{x0, y1}, {u0, v1}});
+            verts.push_back({{x1, y0}, {u1, v0}});
+            verts.push_back({{x1, y1}, {u1, v1}});
+            verts.push_back({{x0, y1}, {u0, v1}});
+        }
+
+        if (verts.empty()) continue;
+
+        // Ensure vertex buffer capacity
+        uint32_t needed = static_cast<uint32_t>(verts.size());
+        if (needed > colrQuadVertexCapacity_) {
+            colrQuadVertexCapacity_ = std::max(needed, 256u);
+            wgpu::BufferDescriptor desc = {};
+            desc.size = colrQuadVertexCapacity_ * sizeof(ImageVertex);
+            desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+            colrQuadVertexBuffer_ = device_.CreateBuffer(&desc);
+        }
+        queue.WriteBuffer(colrQuadVertexBuffer_, 0, verts.data(),
+                          verts.size() * sizeof(ImageVertex));
+
+        wgpu::RenderPassColorAttachment att = {};
+        att.view = target;
+        att.loadOp = wgpu::LoadOp::Load;
+        att.storeOp = wgpu::StoreOp::Store;
+
+        wgpu::RenderPassDescriptor rpDesc = {};
+        rpDesc.colorAttachmentCount = 1;
+        rpDesc.colorAttachments = &att;
+
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+        pass.SetViewport(0.0f, 0.0f, viewport_w, viewport_h, 0.0f, 1.0f);
+        pass.SetPipeline(imagePipeline_);
+        pass.SetBindGroup(0, bg.renderBindGroup);
+        pass.SetVertexBuffer(0, colrQuadVertexBuffer_);
+        pass.Draw(static_cast<uint32_t>(verts.size()));
+        pass.End();
+    }
 }

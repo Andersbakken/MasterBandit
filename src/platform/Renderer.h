@@ -2,6 +2,7 @@
 
 #include <dawn/webgpu_cpp.h>
 #include "text.h"
+#include "ColrAtlas.h"
 #include "ComputeTypes.h"
 #include "ComputeStatePool.h"
 #include <memory>
@@ -128,6 +129,33 @@ public:
                       wgpu::TextureView target,
                       const std::vector<ImageDrawCmd>& cmds);
 
+    // COLRv1 emoji rasterization
+    void initColrPipeline(wgpu::Device& device, const std::string& shaderDir);
+
+    // Rasterize a batch of COLRv1 glyphs into the atlas.
+    // Each entry: (glyph paint data, tile location, em-space extents).
+    struct ColrRasterCmd {
+        const ColrGlyphData* data;
+        ColrAtlas::TileLocation tile;
+        float em_origin_x, em_origin_y;
+        float em_width, em_height;
+    };
+    void rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                             const std::string& fontName,
+                             const std::vector<ColrRasterCmd>& cmds);
+
+    // Render COLR emoji as textured quads.
+    struct ColrDrawCmd {
+        float x, y, w, h;           // screen pixel rect
+        ColrAtlas::TileLocation tile; // atlas location
+    };
+    void renderColrQuads(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
+                         wgpu::TextureView target,
+                         float viewport_w, float viewport_h,
+                         const std::vector<ColrDrawCmd>& cmds);
+
+    ColrAtlas& colrAtlas() { return colrAtlas_; }
+
 private:
     wgpu::Device device_;
     uint32_t viewportW_ = 0, viewportH_ = 0;
@@ -181,4 +209,34 @@ private:
     wgpu::Sampler imageSampler_;
     std::unordered_map<uint32_t, ImageGPU> imageGPU_;
     bool imagePipelineReady_ = false;
+
+    // COLRv1 rasterizer
+    wgpu::ComputePipeline colrComputePipeline_;
+    wgpu::BindGroupLayout colrComputeBGL_;
+    bool colrPipelineReady_ = false;
+
+    ColrAtlas colrAtlas_;
+
+    // Per-bucket atlas textures (created on demand)
+    struct ColrBucketGPU {
+        wgpu::Texture texture;
+        wgpu::TextureView view;
+        wgpu::BindGroup renderBindGroup;  // for the quad render pass
+        bool created = false;
+    };
+    ColrBucketGPU colrBuckets_[ColrAtlas::NUM_BUCKETS];
+
+    // Reusable GPU buffers for rasterization dispatch
+    wgpu::Buffer colrGlyphInfoBuffer_;
+    wgpu::Buffer colrInstructionBuffer_;
+    wgpu::Buffer colrColorStopBuffer_;
+    uint32_t colrInstructionCapacity_ = 0;
+    uint32_t colrColorStopCapacity_ = 0;
+    uint32_t colrGlyphInfoCapacity_ = 0;
+
+    // Quad rendering (reuses image pipeline shader + sampler)
+    wgpu::Buffer colrQuadVertexBuffer_;
+    uint32_t colrQuadVertexCapacity_ = 0;
+
+    void ensureColrBucket(wgpu::Queue& queue, uint32_t bucket);
 };

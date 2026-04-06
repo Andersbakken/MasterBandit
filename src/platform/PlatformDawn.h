@@ -220,6 +220,8 @@ private:
         struct RowGlyphCache {
             std::vector<GlyphEntry> glyphs;
             std::vector<std::pair<uint32_t, uint32_t>> cellGlyphRanges;
+            std::vector<Renderer::ColrDrawCmd> colrDrawCmds;  // per-row COLR quads
+            std::vector<Renderer::ColrRasterCmd> colrRasterCmds;  // per-row new COLR tiles
             bool valid = false;
         };
         std::vector<RowGlyphCache> rowShapingCache;

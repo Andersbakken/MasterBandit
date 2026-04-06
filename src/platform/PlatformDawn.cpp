@@ -250,6 +250,15 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             } else {
                 spdlog::warn("Built-in Symbols Nerd Font Mono not found at {}", nerdFontPath.string());
             }
+
+            // Load Noto Color Emoji if available (COLRv1 color emoji support).
+            // Loaded before system fallback so it takes priority over Apple Color Emoji (sbix).
+            auto notoEmojiPath = std::string(getenv("HOME") ? getenv("HOME") : "") + "/Library/Fonts/NotoColorEmoji-Regular.ttf";
+            auto notoEmojiData = loadFontFile(notoEmojiPath);
+            if (!notoEmojiData.empty()) {
+                textSystem_.addFallbackFont(fontName_, notoEmojiData);
+                spdlog::info("COLR: loaded Noto Color Emoji from {}", notoEmojiPath);
+            }
         } else {
             // Headless: single font, no fallback
             textSystem_.registerFont(fontName_, fontList, 48.0f);

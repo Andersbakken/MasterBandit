@@ -14,6 +14,12 @@ namespace fs = std::filesystem;
 
 namespace Script {
 
+static spdlog::logger& sLog()
+{
+    static auto l = spdlog::get("script");
+    return l ? *l : *spdlog::default_logger();
+}
+
 // ============================================================================
 // Module loader — resolves and validates import paths
 // ============================================================================
@@ -160,7 +166,7 @@ static void scheduleTermination(JSContext* ctx) {
     auto* inst = instanceFromCtx(ctx);
     if (!inst || inst->builtIn) return;
     InstanceId id = inst->id;
-    spdlog::error("ScriptEngine: terminating '{}' (id={}) for permission violation",
+    sLog().error("ScriptEngine: terminating '{}' (id={}) for permission violation",
                   inst->path, id);
     auto* timer = new uv_timer_t;
     struct Data { Engine* eng; InstanceId id; };
@@ -1432,7 +1438,7 @@ static JSValue eventJobFunc(JSContext* ctx, int argc, JSValueConst* argv)
     if (JS_IsException(ret)) {
         JSValue exc = JS_GetException(ctx);
         const char* s = JS_ToCString(ctx, exc);
-        spdlog::error("ScriptEngine: event handler error: {}", s ? s : "(null)");
+        sLog().error("ScriptEngine: event handler error: {}", s ? s : "(null)");
         if (s) JS_FreeCString(ctx, s);
         JS_FreeValue(ctx, exc);
     }
@@ -1482,7 +1488,7 @@ static void timerCallback(uv_timer_t* handle)
     if (JS_IsException(ret)) {
         JSValue exc = JS_GetException(td->ctx);
         const char* s = JS_ToCString(td->ctx, exc);
-        spdlog::error("ScriptEngine: timer error: {}", s ? s : "(null)");
+        sLog().error("ScriptEngine: timer error: {}", s ? s : "(null)");
         if (s) JS_FreeCString(td->ctx, s);
         JS_FreeValue(td->ctx, exc);
     }
@@ -1570,42 +1576,76 @@ static JSValue jsClearTimer(JSContext* ctx, JSValueConst, int argc, JSValueConst
 }
 
 // ============================================================================
-// console.log / console.warn / console.error
+// console.*
 // ============================================================================
 
-static JSValue jsConsoleLog(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static std::shared_ptr<spdlog::logger> jsLogger()
+{
+    auto l = spdlog::get("js");
+    return l ? l : spdlog::default_logger();
+}
+
+static int sJsIndent = 0;
+
+static std::string jsConsoleMsg(JSContext* ctx, int argc, JSValueConst* argv)
 {
     std::string msg;
+    if (sJsIndent > 0) msg.append(static_cast<size_t>(sJsIndent * 2), ' ');
     for (int i = 0; i < argc; ++i) {
         if (i > 0) msg += ' ';
         const char* s = JS_ToCString(ctx, argv[i]);
         if (s) { msg += s; JS_FreeCString(ctx, s); }
     }
-    spdlog::info("JS: {}", msg);
+    return msg;
+}
+
+static JSValue jsConsoleGroup(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc > 0)
+        jsLogger()->info("{}", jsConsoleMsg(ctx, argc, argv));
+    ++sJsIndent;
+    return JS_UNDEFINED;
+}
+
+static JSValue jsConsoleGroupEnd(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    if (sJsIndent > 0) --sJsIndent;
+    return JS_UNDEFINED;
+}
+
+static JSValue jsConsoleTrace(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    jsLogger()->trace("{}", jsConsoleMsg(ctx, argc, argv));
+    return JS_UNDEFINED;
+}
+
+static JSValue jsConsoleDebug(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    jsLogger()->debug("{}", jsConsoleMsg(ctx, argc, argv));
+    return JS_UNDEFINED;
+}
+
+static JSValue jsConsoleInfo(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    jsLogger()->info("{}", jsConsoleMsg(ctx, argc, argv));
+    return JS_UNDEFINED;
+}
+
+static JSValue jsConsoleLog(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    jsLogger()->info("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
 static JSValue jsConsoleWarn(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
-    std::string msg;
-    for (int i = 0; i < argc; ++i) {
-        if (i > 0) msg += ' ';
-        const char* s = JS_ToCString(ctx, argv[i]);
-        if (s) { msg += s; JS_FreeCString(ctx, s); }
-    }
-    spdlog::warn("JS: {}", msg);
+    jsLogger()->warn("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
 static JSValue jsConsoleError(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
-    std::string msg;
-    for (int i = 0; i < argc; ++i) {
-        if (i > 0) msg += ' ';
-        const char* s = JS_ToCString(ctx, argv[i]);
-        if (s) { msg += s; JS_FreeCString(ctx, s); }
-    }
-    spdlog::error("JS: {}", msg);
+    jsLogger()->error("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
@@ -1679,6 +1719,18 @@ JSContext* Engine::createContext()
 
     // console object
     JSValue console = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, console, "group",
+        JS_NewCFunction(ctx, jsConsoleGroup, "group", 0));
+    JS_SetPropertyStr(ctx, console, "groupEnd",
+        JS_NewCFunction(ctx, jsConsoleGroupEnd, "groupEnd", 0));
+    JS_SetPropertyStr(ctx, console, "groupCollapsed",
+        JS_NewCFunction(ctx, jsConsoleGroup, "groupCollapsed", 0)); // same as group
+    JS_SetPropertyStr(ctx, console, "trace",
+        JS_NewCFunction(ctx, jsConsoleTrace, "trace", 0));
+    JS_SetPropertyStr(ctx, console, "debug",
+        JS_NewCFunction(ctx, jsConsoleDebug, "debug", 0));
+    JS_SetPropertyStr(ctx, console, "info",
+        JS_NewCFunction(ctx, jsConsoleInfo, "info", 0));
     JS_SetPropertyStr(ctx, console, "log",
         JS_NewCFunction(ctx, jsConsoleLog, "log", 0));
     JS_SetPropertyStr(ctx, console, "warn",
@@ -1736,7 +1788,7 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
 InstanceId Engine::loadController(const std::string& path) {
     std::string src = readFile(path);
     if (src.empty()) {
-        spdlog::error("ScriptEngine: failed to read '{}'", path);
+        sLog().error("ScriptEngine: failed to read '{}'", path);
         return 0;
     }
     JSContext* ctx = createContext();
@@ -1750,7 +1802,7 @@ InstanceId Engine::loadController(const std::string& path) {
     if (JS_IsException(result)) {
         JSValue exc = JS_GetException(ctx);
         const char* str = JS_ToCString(ctx, exc);
-        spdlog::error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
+        sLog().error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
         if (str) JS_FreeCString(ctx, str);
         JS_FreeValue(ctx, exc);
         JS_FreeValue(ctx, result);
@@ -1760,7 +1812,7 @@ InstanceId Engine::loadController(const std::string& path) {
     }
     // Module eval may return a promise (top-level await); resolved by executePendingJobs()
     JS_FreeValue(ctx, result);
-    spdlog::info("ScriptEngine: loaded built-in '{}' (id={})", path, id);
+    sLog().info("ScriptEngine: loaded built-in '{}' (id={})", path, id);
     return id;
 }
 
@@ -1770,7 +1822,7 @@ void Engine::unload(InstanceId id)
         if (it->id != id) continue;
 
         JSContext* ctx = it->ctx;
-        spdlog::info("ScriptEngine: unloading '{}' (id={})", it->path, id);
+        sLog().info("ScriptEngine: unloading '{}' (id={})", it->path, id);
 
         // 1. Kill all timers belonging to this context
         if (loop_) {
@@ -1844,14 +1896,14 @@ void Engine::setConfigDir(const std::string& dir) {
 InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) {
     std::string content = readFile(path);
     if (content.empty()) {
-        spdlog::error("ScriptEngine: failed to read '{}'", path);
+        sLog().error("ScriptEngine: failed to read '{}'", path);
         return 0;
     }
 
     std::string hash = sha256Hex(content);
 
     if (allowlist_.isDenied(path, hash)) {
-        spdlog::info("ScriptEngine: script '{}' is permanently denied", path);
+        sLog().info("ScriptEngine: script '{}' is permanently denied", path);
         return 0;
     }
 
@@ -1877,7 +1929,7 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     // Unload any existing instance with the same path
     for (auto& inst : instances_) {
         if (inst.path == path && !inst.builtIn) {
-            spdlog::info("ScriptEngine: replacing existing instance of '{}'", path);
+            sLog().info("ScriptEngine: replacing existing instance of '{}'", path);
             unload(inst.id);
             break;
         }
@@ -1895,7 +1947,7 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     if (JS_IsException(result)) {
         JSValue exc = JS_GetException(ctx);
         const char* str = JS_ToCString(ctx, exc);
-        spdlog::error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
+        sLog().error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
         if (str) JS_FreeCString(ctx, str);
         JS_FreeValue(ctx, exc);
         JS_FreeValue(ctx, result);
@@ -1904,14 +1956,14 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
         return 0;
     }
     JS_FreeValue(ctx, result);
-    spdlog::info("ScriptEngine: loaded script '{}' (id={}, perms={})", path, id, permissionsToString(permissions));
+    sLog().info("ScriptEngine: loaded script '{}' (id={}, perms={})", path, id, permissionsToString(permissions));
     return id;
 }
 
 void Engine::approveScript(const std::string& path, char response) {
     auto it = pendingScripts_.find(path);
     if (it == pendingScripts_.end()) {
-        spdlog::warn("ScriptEngine: no pending script for '{}'", path);
+        sLog().warn("ScriptEngine: no pending script for '{}'", path);
         return;
     }
 
@@ -1930,11 +1982,11 @@ void Engine::approveScript(const std::string& path, char response) {
     case 'd': case 'D':
         allowlist_.deny(pending.path, pending.hash);
         allowlist_.save();
-        spdlog::info("ScriptEngine: permanently denied '{}'", pending.path);
+        sLog().info("ScriptEngine: permanently denied '{}'", pending.path);
         break;
     case 'n': case 'N':
     default:
-        spdlog::info("ScriptEngine: denied '{}' (one-time)", pending.path);
+        sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
         break;
     }
 }
@@ -2021,7 +2073,7 @@ bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& da
                     if (JS_IsException(ret)) {
                         JSValue exc = JS_GetException(inst.ctx);
                         const char* s = JS_ToCString(inst.ctx, exc);
-                        spdlog::error("ScriptEngine: filter error: {}", s ? s : "(null)");
+                        sLog().error("ScriptEngine: filter error: {}", s ? s : "(null)");
                         if (s) JS_FreeCString(inst.ctx, s);
                         JS_FreeValue(inst.ctx, exc);
                     } else if (JS_IsString(ret)) {
@@ -2074,7 +2126,7 @@ bool Engine::runOverlayFilters(TabId tab, const char* filterProp, std::string& d
                     if (JS_IsException(ret)) {
                         JSValue exc = JS_GetException(inst.ctx);
                         const char* s = JS_ToCString(inst.ctx, exc);
-                        spdlog::error("ScriptEngine: overlay filter error: {}", s ? s : "(null)");
+                        sLog().error("ScriptEngine: overlay filter error: {}", s ? s : "(null)");
                         if (s) JS_FreeCString(inst.ctx, s);
                         JS_FreeValue(inst.ctx, exc);
                     } else if (JS_IsString(ret)) {
@@ -2374,7 +2426,7 @@ void Engine::deliverInput(const char* registryName, uint32_t key,
                 if (JS_IsException(ret)) {
                     JSValue exc = JS_GetException(inst.ctx);
                     const char* s = JS_ToCString(inst.ctx, exc);
-                    spdlog::error("ScriptEngine: input listener error: {}", s ? s : "(null)");
+                    sLog().error("ScriptEngine: input listener error: {}", s ? s : "(null)");
                     if (s) JS_FreeCString(inst.ctx, s);
                     JS_FreeValue(inst.ctx, exc);
                 }
@@ -2414,7 +2466,7 @@ void Engine::deliverPopupInput(const std::string& regKey, const char* data, size
                         if (JS_IsException(ret)) {
                             JSValue exc = JS_GetException(inst.ctx);
                             const char* s = JS_ToCString(inst.ctx, exc);
-                            spdlog::error("ScriptEngine: popup input error: {}", s ? s : "(null)");
+                            sLog().error("ScriptEngine: popup input error: {}", s ? s : "(null)");
                             if (s) JS_FreeCString(inst.ctx, s);
                             JS_FreeValue(inst.ctx, exc);
                         }
@@ -2468,7 +2520,7 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
                         if (JS_IsException(ret)) {
                             JSValue exc = JS_GetException(inst.ctx);
                             const char* s = JS_ToCString(inst.ctx, exc);
-                            spdlog::error("ScriptEngine: popup mouse error: {}", s ? s : "(null)");
+                            sLog().error("ScriptEngine: popup mouse error: {}", s ? s : "(null)");
                             if (s) JS_FreeCString(inst.ctx, s);
                             JS_FreeValue(inst.ctx, exc);
                         }
@@ -2519,7 +2571,7 @@ void Engine::deliverMouseToRegistry(const char* registryName,
                         if (JS_IsException(ret)) {
                             JSValue exc = JS_GetException(inst.ctx);
                             const char* s = JS_ToCString(inst.ctx, exc);
-                            spdlog::error("ScriptEngine: mouse event error: {}", s ? s : "(null)");
+                            sLog().error("ScriptEngine: mouse event error: {}", s ? s : "(null)");
                             if (s) JS_FreeCString(inst.ctx, s);
                             JS_FreeValue(inst.ctx, exc);
                         }
@@ -2675,7 +2727,7 @@ bool Engine::setNamespace(InstanceId id, const std::string& ns)
     }
 
     inst->ns = ns;
-    spdlog::info("ScriptEngine: instance {} claimed namespace '{}'", id, ns);
+    sLog().info("ScriptEngine: instance {} claimed namespace '{}'", id, ns);
     return true;
 }
 
@@ -2689,7 +2741,7 @@ bool Engine::registerAction(InstanceId id, const std::string& name)
     if (registeredActions_.count(fullName)) return false; // already registered
 
     registeredActions_.insert(fullName);
-    spdlog::info("ScriptEngine: registered action '{}'", fullName);
+    sLog().info("ScriptEngine: registered action '{}'", fullName);
     return true;
 }
 

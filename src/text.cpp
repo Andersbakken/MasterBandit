@@ -17,6 +17,12 @@
 #include <functional>
 #include <unordered_set>
 
+static spdlog::logger& sLog()
+{
+    static auto l = spdlog::get("font");
+    return l ? *l : *spdlog::default_logger();
+}
+
 // --- Helper: make combined glyph key ---
 static inline uint64_t glyphKey(uint32_t fontIndex, uint32_t glyphId)
 {
@@ -56,7 +62,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
                     auto wit = font.glyphs.find(key);
                     if (wit != font.glyphs.end() && !wit->second.is_colr) {
                         wit->second.is_colr = true;
-                        spdlog::info("COLR: late-detected colr glyph gid={} fi={}", glyphId, fontIndex);
+                        sLog().info("COLR: late-detected colr glyph gid={} fi={}", glyphId, fontIndex);
                     }
                     wlock.unlock();
                     // Encode paint graph
@@ -93,7 +99,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
                             std::move(encoded.instructions),
                             std::move(encoded.colorStops)
                         };
-                        spdlog::info("COLR: encoded paint graph for gid={} fi={} ({} instructions)",
+                        sLog().info("COLR: encoded paint graph for gid={} fi={} ({} instructions)",
                                      glyphId, fontIndex, font.colrGlyphs[key].instructions.size());
                     }
                 }
@@ -153,7 +159,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
             info.is_empty = false;
             info.is_colr = true;
             info.atlas_offset = 0; // no Slug atlas data
-            spdlog::debug("COLR: detected COLRv1 glyph gid={} fi={} extents=[{},{},{},{}]",
+            sLog().debug("COLR: detected COLRv1 glyph gid={} fi={} extents=[{},{},{},{}]",
                          glyphId, fontIndex, info.ext_min_x, info.ext_min_y, info.ext_max_x, info.ext_max_y);
         } else {
             info.is_empty = true;
@@ -213,7 +219,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
 
     // Encode COLRv1 paint graph
     {
-        spdlog::debug("COLR: encoding glyph {} (font index {})", glyphId, fontIndex);
+        sLog().debug("COLR: encoding glyph {} (font index {})", glyphId, fontIndex);
         // Encode the paint graph. The resolver callback ensures each clip glyph's
         // outline is in the atlas (recursive call to ensureGlyphEncoded).
         ColrEncoder::GlyphResolver resolver = [this, &font, fontIndex](
@@ -258,7 +264,7 @@ bool TextSystem::registerFont(const std::string& name,
                                float baseSize)
 {
     if (ttfDataList.empty()) {
-        spdlog::error("registerFont '{}': no font data provided", name);
+        sLog().error("registerFont '{}': no font data provided", name);
         return false;
     }
 
@@ -276,7 +282,7 @@ bool TextSystem::registerFont(const std::string& name,
         entry.hbFont = hb_font_create(entry.hbFace);
         entry.gpuDraw = hb_gpu_draw_create_or_fail();
         if (!entry.gpuDraw) {
-            spdlog::error("registerFont '{}': hb_gpu_draw_create_or_fail() returned null", name);
+            sLog().error("registerFont '{}': hb_gpu_draw_create_or_fail() returned null", name);
             hb_font_destroy(entry.hbFont);
             hb_face_destroy(entry.hbFace);
             hb_blob_destroy(entry.hbBlob);
@@ -307,7 +313,7 @@ bool TextSystem::registerFont(const std::string& name,
     for (const auto& entry : font.hbFonts) {
         if (hb_ot_color_has_paint(entry.hbFace)) {
             font.hasColrPaint = true;
-            spdlog::info("Font '{}': COLRv1 paint support detected", name);
+            sLog().info("Font '{}': COLRv1 paint support detected", name);
             break;
         }
     }
@@ -327,7 +333,7 @@ bool TextSystem::registerFont(const std::string& name,
         }
     }
 
-    spdlog::info("Registered font '{}': {} pre-encoded glyphs, atlas {} texels, baseSize={:.0f}, {} font(s)",
+    sLog().info("Registered font '{}': {} pre-encoded glyphs, atlas {} texels, baseSize={:.0f}, {} font(s)",
                 name, static_cast<uint32_t>(font.glyphs.size()),
                 font.atlasUsed, baseSize, font.hbFonts.size());
 
@@ -350,7 +356,7 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
     entry.hbFont = hb_font_create(entry.hbFace);
     entry.gpuDraw = hb_gpu_draw_create_or_fail();
     if (!entry.gpuDraw) {
-        spdlog::error("addFallbackFont '{}': hb_gpu_draw_create_or_fail() returned null", name);
+        sLog().error("addFallbackFont '{}': hb_gpu_draw_create_or_fail() returned null", name);
         hb_font_destroy(entry.hbFont);
         hb_face_destroy(entry.hbFace);
         hb_blob_destroy(entry.hbBlob);
@@ -359,17 +365,17 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
 
     // Check for COLRv1 paint data on the new fallback
     bool hasPaint = hb_ot_color_has_paint(entry.hbFace);
-    spdlog::info("COLR: fallback font check for '{}': hb_ot_color_has_paint={} face={} fi={}",
+    sLog().info("COLR: fallback font check for '{}': hb_ot_color_has_paint={} face={} fi={}",
                  name, hasPaint, (void*)entry.hbFace, font.hbFonts.size());
     if (!font.hasColrPaint && hasPaint) {
         font.hasColrPaint = true;
-        spdlog::info("COLR: fallback font for '{}' has COLRv1 paint support", name);
+        sLog().info("COLR: fallback font for '{}' has COLRv1 paint support", name);
     }
 
     std::unique_lock lock(font.mutex);
     font.hbFonts.push_back(entry);
 
-    spdlog::info("Added fallback font #{} to '{}'", font.hbFonts.size() - 1, name);
+    sLog().info("Added fallback font #{} to '{}'", font.hbFonts.size() - 1, name);
     return true;
 }
 
@@ -400,7 +406,7 @@ bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrengt
     hb_font_set_synthetic_bold(entry.hbFont, xStrength, yStrength, false);
     entry.gpuDraw = hb_gpu_draw_create_or_fail();
     if (!entry.gpuDraw) {
-        spdlog::error("addSyntheticBoldVariant '{}': hb_gpu_draw_create_or_fail() returned null", name);
+        sLog().error("addSyntheticBoldVariant '{}': hb_gpu_draw_create_or_fail() returned null", name);
         hb_font_destroy(entry.hbFont);
         hb_face_destroy(entry.hbFace);
         hb_blob_destroy(entry.hbBlob);
@@ -417,7 +423,7 @@ bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrengt
     uint64_t variantKey = (static_cast<uint64_t>(0) << 8) | entry.style.key();
     font.styledVariants[variantKey] = newFi;
 
-    spdlog::info("Added synthetic bold variant to '{}' (fi={})", name, newFi);
+    sLog().info("Added synthetic bold variant to '{}' (fi={})", name, newFi);
     return true;
 }
 
@@ -488,7 +494,7 @@ uint32_t TextSystem::getStyledVariant(FontData& font, uint32_t baseFi, FontStyle
     font.hbFonts.push_back(entry);
     font.styledVariants[variantKey] = newFi;
 
-    spdlog::debug("Created styled variant fi={} (base={} bold={}) for '{}'",
+    sLog().debug("Created styled variant fi={} (base={} bold={}) for '{}'",
                   newFi, baseFi, style.bold, font.name);
     return newFi;
 }

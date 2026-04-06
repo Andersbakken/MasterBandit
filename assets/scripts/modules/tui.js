@@ -675,6 +675,18 @@ class RenderInstance {
         }
     }
 
+    // Call after resizing the target popup/overlay to update layout and re-render.
+    // Pass a new root if widget structure needs to change (e.g. list height changed).
+    resize(w, h, newRoot) {
+        if (this._destroyed) return;
+        this._w = w;
+        this._h = h;
+        this._oldBuf = null; // force full redraw
+        if (newRoot) this._root = newRoot;
+        this._layout();
+        this._runEffect();
+    }
+
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;

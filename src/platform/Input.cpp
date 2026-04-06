@@ -249,6 +249,8 @@ void PlatformDawn::onFramebufferResize(int width, int height)
             if (cols < 1) cols = 1;
             if (rows < 1) rows = 1;
 
+            scriptEngine_.notifyPaneResized(pane->id(), cols, rows);
+
             auto& rs = paneRenderStates_[pane->id()];
             rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
         }

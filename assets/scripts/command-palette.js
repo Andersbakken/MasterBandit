@@ -63,34 +63,32 @@ mb.addEventListener("action", "palette.open", () => {
         selected.value = 0;
     });
 
-    const LIST_H = 12;
-    // Total height: round border (2) + input (1) + divider (1) + list + status (1)
-    const H = 2 + 1 + 1 + LIST_H + 1;
-    const W = 48;
-    const popup = pane.createPopup({
-        id: "palette",
-        x: Math.max(0, Math.floor((pane.cols - W) / 2)),
-        y: Math.max(0, Math.floor((pane.rows - H) / 2)),
-        w: W, h: H,
-    });
-    if (!popup) return;
+    function dims(cols, rows) {
+        const w      = Math.min(80, Math.max(40, Math.floor(cols * 0.6)));
+        const listH  = Math.min(20, Math.max(5,  Math.floor(rows * 0.5)));
+        const h      = 2 + 1 + 1 + listH + 1;
+        const x      = Math.max(0, Math.floor((cols - w) / 2));
+        const y      = Math.max(0, Math.floor((rows - h) / 2));
+        return { w, h, x, y, listH };
+    }
 
-    ui = render(popup,
-        box({ border: "round" }, [
+    function buildRoot(listH) {
+        return box({ border: "round" }, [
             input({ value: query, prompt: " > " }),
             box({ borderTop: "line" }),
             list({
                 items: computed(() => filtered.value.map(a => a.label)),
                 selected,
-                height: LIST_H,
+                height: listH,
                 onSelect: (idx) => {
                     const action = filtered.value[idx];
                     ui.destroy();
                     if (action) {
-                        if (action.args && action.args.length > 0)
+                        if (action.args && action.args.length > 0) {
                             mb.invokeAction(action.name, ...action.args);
-                        else
+                        } else {
                             mb.invokeAction(action.name);
+                        }
                     }
                 },
             }),
@@ -99,9 +97,22 @@ mb.addEventListener("action", "palette.open", () => {
                 align: "right",
                 color: "#5a7b9f",
             }),
-        ]),
-        { theme, onDestroy: () => { ui = null; } }
-    );
+        ]);
+    }
+
+    const d = dims(pane.cols, pane.rows);
+    const popup = pane.createPopup({ id: "palette", x: d.x, y: d.y, w: d.w, h: d.h });
+    if (!popup) return;
+
+    ui = render(popup, buildRoot(d.listH), { theme, onDestroy: () => { ui = null; } });
+
+    const resizeCb = (cols, rows) => {
+        if (!ui) return;
+        const nd = dims(cols, rows);
+        popup.resize({ x: nd.x, y: nd.y, w: nd.w, h: nd.h });
+        ui.resize(nd.w, nd.h, buildRoot(nd.listH));
+    };
+    pane.addEventListener("resized", resizeCb);
 
     mb.invokeAction("focus_popup");
 });

@@ -52,7 +52,8 @@
 
 ## Mouse Bindings
 
-- [ ] Mouse binding system — extend Action/Binding to cover mouse triggers: button, event type (press/release/click/doubleclick), modifiers. Mirror WezTerm/Kitty: location (tab bar vs pane) determined by hit-test before binding lookup, not encoded in the trigger. Tab bar bindings (left-click → switch tab, middle-click → close tab) and pane bindings resolved separately.
+- [ ] Scripting: mouse events for popups — `popup.addEventListener("mouse", fn)` receives click/move events with cell coordinates (relative to popup) and pixel coordinates (viewport-relative). Needed for interactive popup UIs (buttons, list selection, etc.). Should also consider pane-level mouse events for scripts.
+- [x] Mouse binding system — MouseStroke (button, event type, modifiers, mode, region) + MouseBinding + ClickDetector for multi-click. Default bindings: character/word/line/extend/rectangle selection, tab bar clicks, hyperlink open, middle-click paste, shift-override in grabbed mode. Configurable via `[[mousebinding]]` in TOML. Reloadable.
 
 ## Keybindings / Actions
 

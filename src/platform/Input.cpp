@@ -445,27 +445,40 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
             if (ct->index < 0) return; // no tab hit
         }
 
-        // MouseSelection: arm the terminal's pending selection via mousePressEvent,
-        // then set drag active so subsequent moves go through mouseMoveEvent
-        if (std::holds_alternative<Action::MouseSelection>(act)) {
-            PaneRect pr2 = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
-            double rX = sx - pr2.x;
-            double rY = sy - pr2.y;
-            MouseEvent ev;
-            ev.x = static_cast<int>(rX / charWidth_);
-            ev.y = static_cast<int>(rY / lineHeight_);
-            ev.globalX = static_cast<int>(sx);
-            ev.globalY = static_cast<int>(sy);
-            ev.modifiers = lastMods_;
-            switch (button) {
-            case GLFW_MOUSE_BUTTON_LEFT:   ev.button = LeftButton; break;
-            case GLFW_MOUSE_BUTTON_MIDDLE: ev.button = MidButton;  break;
-            case GLFW_MOUSE_BUTTON_RIGHT:  ev.button = RightButton; break;
-            default: ev.button = NoButton; break;
+        // MouseSelection: dispatch based on selection type
+        if (auto* ms = std::get_if<Action::MouseSelection>(&act)) {
+            int col = mouseCtx_.cellCol, row = mouseCtx_.cellRow;
+            int absRow = term->document().historySize() - term->viewportOffset() + row;
+
+            switch (ms->type) {
+            case Action::SelectionType::Normal: {
+                // Arm pending selection via mousePressEvent
+                PaneRect pr2 = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
+                MouseEvent ev;
+                ev.x = col; ev.y = row;
+                ev.globalX = static_cast<int>(sx);
+                ev.globalY = static_cast<int>(sy);
+                ev.modifiers = lastMods_;
+                ev.button = LeftButton;
+                ev.buttons = ev.button;
+                term->mousePressEvent(&ev);
+                selectionDragActive_ = true;
+                break;
             }
-            ev.buttons = ev.button;
-            term->mousePressEvent(&ev);
-            selectionDragActive_ = true;
+            case Action::SelectionType::Word:
+                term->startWordSelection(col, absRow);
+                break;
+            case Action::SelectionType::Line:
+                term->startLineSelection(absRow);
+                break;
+            case Action::SelectionType::Extend:
+                term->extendSelection(col, absRow);
+                break;
+            case Action::SelectionType::Rectangle:
+                term->startRectangleSelection(col, absRow);
+                selectionDragActive_ = true;
+                break;
+            }
         }
 
         // OpenHyperlink: resolve hyperlink at cell position

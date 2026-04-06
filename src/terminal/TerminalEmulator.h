@@ -150,13 +150,19 @@ public:
     void focusEvent(bool focused);
 
     // Selection
+    enum class SelectionMode { Normal, Word, Line, Rectangle };
     struct Selection {
         int startCol { 0 }, startAbsRow { 0 };
         int endCol { 0 }, endAbsRow { 0 };
         bool active { false };
         bool valid { false };
+        SelectionMode mode { SelectionMode::Normal };
     };
     void startSelection(int col, int absRow);
+    void startWordSelection(int col, int absRow);
+    void startLineSelection(int absRow);
+    void extendSelection(int col, int absRow);
+    void startRectangleSelection(int col, int absRow);
     void updateSelection(int col, int absRow);
     void finalizeSelection();
     void clearSelection();

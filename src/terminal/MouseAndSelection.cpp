@@ -142,6 +142,38 @@ void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
     }
 }
 
+// --- Word boundary detection ---
+
+static bool isWordChar(char32_t ch)
+{
+    if (ch == 0) return false;
+    // Alphanumeric, underscore, and common path/URL characters
+    if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.' ||
+        ch == '/' || ch == '~' || ch == ':')
+        return true;
+    // Non-ASCII: treat as word character (CJK, etc.)
+    if (ch > 127) return true;
+    return false;
+}
+
+// Get the cell at a given absolute row and column.
+// Returns null char if out of bounds.
+static char32_t cellAt(const TerminalEmulator& te, int col, int absRow)
+{
+    int histSize = te.document().historySize();
+    const Cell* row;
+    if (absRow < histSize) {
+        row = te.document().historyRow(absRow);
+    } else {
+        int gridRow = absRow - histSize;
+        if (gridRow < 0 || gridRow >= te.grid().rows()) return 0;
+        row = te.grid().row(gridRow);
+    }
+    if (!row || col < 0 || col >= te.width()) return 0;
+    return row[col].wc;
+}
+
 // Selection implementation
 void TerminalEmulator::startSelection(int col, int absRow)
 {
@@ -151,6 +183,100 @@ void TerminalEmulator::startSelection(int col, int absRow)
     mSelection.endAbsRow = absRow;
     mSelection.active = true;
     mSelection.valid = false;
+    mSelection.mode = SelectionMode::Normal;
+}
+
+void TerminalEmulator::startWordSelection(int col, int absRow)
+{
+    // Scan left and right for word boundaries
+    int left = col, right = col;
+    char32_t ch = cellAt(*this, col, absRow);
+    bool isWord = isWordChar(ch);
+
+    while (left > 0) {
+        char32_t c = cellAt(*this, left - 1, absRow);
+        if (isWordChar(c) != isWord) break;
+        left--;
+    }
+    while (right < mWidth - 1) {
+        char32_t c = cellAt(*this, right + 1, absRow);
+        if (isWordChar(c) != isWord) break;
+        right++;
+    }
+
+    mSelection.startCol = left;
+    mSelection.startAbsRow = absRow;
+    mSelection.endCol = right;
+    mSelection.endAbsRow = absRow;
+    mSelection.active = true;
+    mSelection.valid = false;
+    mSelection.mode = SelectionMode::Word;
+
+    finalizeSelection();
+    std::string text = selectedText();
+    if (!text.empty() && mCallbacks.copyToClipboard)
+        mCallbacks.copyToClipboard(text);
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+}
+
+void TerminalEmulator::startLineSelection(int absRow)
+{
+    mSelection.startCol = 0;
+    mSelection.startAbsRow = absRow;
+    mSelection.endCol = mWidth - 1;
+    mSelection.endAbsRow = absRow;
+    mSelection.active = true;
+    mSelection.valid = false;
+    mSelection.mode = SelectionMode::Line;
+
+    finalizeSelection();
+    std::string text = selectedText();
+    if (!text.empty() && mCallbacks.copyToClipboard)
+        mCallbacks.copyToClipboard(text);
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+}
+
+void TerminalEmulator::extendSelection(int col, int absRow)
+{
+    if (!mSelection.valid && !mSelection.active) {
+        // No existing selection — start a new one
+        startSelection(col, absRow);
+        return;
+    }
+
+    // Move the endpoint closest to the new position
+    int distToStart = std::abs(absRow - mSelection.startAbsRow) * mWidth +
+                      std::abs(col - mSelection.startCol);
+    int distToEnd = std::abs(absRow - mSelection.endAbsRow) * mWidth +
+                    std::abs(col - mSelection.endCol);
+
+    if (distToStart < distToEnd) {
+        mSelection.startCol = col;
+        mSelection.startAbsRow = absRow;
+    } else {
+        mSelection.endCol = col;
+        mSelection.endAbsRow = absRow;
+    }
+    mSelection.active = true;
+    mSelection.valid = false;
+    mSelection.mode = SelectionMode::Normal;
+
+    finalizeSelection();
+    std::string text = selectedText();
+    if (!text.empty() && mCallbacks.copyToClipboard)
+        mCallbacks.copyToClipboard(text);
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+}
+
+void TerminalEmulator::startRectangleSelection(int col, int absRow)
+{
+    mSelection.startCol = col;
+    mSelection.startAbsRow = absRow;
+    mSelection.endCol = col;
+    mSelection.endAbsRow = absRow;
+    mSelection.active = true;
+    mSelection.valid = false;
+    mSelection.mode = SelectionMode::Rectangle;
 }
 
 void TerminalEmulator::updateSelection(int col, int absRow)
@@ -178,7 +304,14 @@ bool TerminalEmulator::isCellSelected(int col, int absRow) const
     int r0 = mSelection.startAbsRow, c0 = mSelection.startCol;
     int r1 = mSelection.endAbsRow, c1 = mSelection.endCol;
 
-    // Normalize so (r0,c0) <= (r1,c1)
+    if (mSelection.mode == SelectionMode::Rectangle) {
+        // Rectangle: column range is independent of row
+        int minR = std::min(r0, r1), maxR = std::max(r0, r1);
+        int minC = std::min(c0, c1), maxC = std::max(c0, c1);
+        return absRow >= minR && absRow <= maxR && col >= minC && col <= maxC;
+    }
+
+    // Normal/word/line: linear selection
     if (r0 > r1 || (r0 == r1 && c0 > c1)) {
         std::swap(r0, r1);
         std::swap(c0, c1);
@@ -197,9 +330,17 @@ std::string TerminalEmulator::selectedText() const
 
     int r0 = mSelection.startAbsRow, c0 = mSelection.startCol;
     int r1 = mSelection.endAbsRow, c1 = mSelection.endCol;
-    if (r0 > r1 || (r0 == r1 && c0 > c1)) {
-        std::swap(r0, r1);
-        std::swap(c0, c1);
+
+    if (mSelection.mode == SelectionMode::Rectangle) {
+        // Rectangle: same column range on every row
+        int minR = std::min(r0, r1), maxR = std::max(r0, r1);
+        int minC = std::min(c0, c1), maxC = std::max(c0, c1);
+        r0 = minR; r1 = maxR; c0 = minC; c1 = maxC;
+    } else {
+        if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+            std::swap(r0, r1);
+            std::swap(c0, c1);
+        }
     }
 
     int histSize = mDocument.historySize();
@@ -216,8 +357,14 @@ std::string TerminalEmulator::selectedText() const
         }
         if (!row) continue;
 
-        int colStart = (absRow == r0) ? c0 : 0;
-        int colEnd = (absRow == r1) ? c1 : (mWidth - 1);
+        int colStart, colEnd;
+        if (mSelection.mode == SelectionMode::Rectangle) {
+            colStart = c0;
+            colEnd = c1;
+        } else {
+            colStart = (absRow == r0) ? c0 : 0;
+            colEnd = (absRow == r1) ? c1 : (mWidth - 1);
+        }
         colStart = std::max(0, std::min(colStart, mWidth - 1));
         colEnd = std::max(0, std::min(colEnd, mWidth - 1));
 

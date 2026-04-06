@@ -9,7 +9,6 @@
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
 - [x] OSC 7 — Current working directory reporting. Pane stores CWD for new splits.
 - [x] OSC 8 — Hyperlinks. Cmd/Ctrl+click opens URL. Auto-underlines linked text.
-- [ ] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Apps query to detect light vs dark theme.
 - [ ] OSC 22 — Set mouse cursor shape (pointer, text, etc.)
 - [x] OSC 99 — Desktop notifications (kitty). Title/body accumulation, macOS UNUserNotification.
 - [x] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Responses in `rgb:RRRR/GGGG/BBBB` format.
@@ -35,15 +34,15 @@
 - [ ] Pane swap/rotate — swap focused pane with another, rotate panes clockwise/counterclockwise.
 - [ ] Move pane to new tab or new window.
 - [ ] Full-screen overlays — Tab::pushOverlay / popOverlay are implemented; need a way to trigger (e.g. Cmd+Shift+Enter kitty-style).
-- [ ] Popup panes (OSC 58237) — Pane::handleOSCMB and TerminalEmulator dispatch are implemented; needs end-to-end testing.
+- [x] Popup panes (OSC 58237) — fully implemented with JS-driven API: `pane.createPopup({id, x, y, w, h})`, `popup.inject(data)`, `popup.close()`, `popup.resize({x, y, w, h})`, `popup.addEventListener("input"/"mouse")`. Popup properties: `cols`, `rows`, `x`, `y`, `focused`.
 - [x] Popup focus cycling — `FocusPopup` action (Cmd+Shift+I / Ctrl+Shift+I) cycles focus between main terminal and popups. When focused, keystrokes route to the popup's emulator → JS input listeners. Popup cursor renders at popup position; main cursor hidden behind popups.
-- [x] JS-driven popup API — `pane.createPopup({id, x, y, w, h})` returns a Popup object. `popup.inject(data)` writes to it, `popup.destroy()` removes it, `popup.addEventListener("input", fn)` receives keystrokes when focused. JS properties: `pane.focused`, `pane.focusedPopupId`, `pane.popups`, `popup.focused`.
+- [x] JS-driven popup API — `pane.createPopup({id, x, y, w, h})` returns a Popup object. `popup.inject(data)` writes to it, `popup.close()` removes it, `popup.addEventListener("input", fn)` receives keystrokes when focused. JS properties: `pane.focused`, `pane.focusedPopupId`, `pane.popups`, `popup.focused`.
 - [ ] Tab bar: cursor-blink optimization — re-render to held texture when only cursor changes (500 ms interval guarantees GPU completion).
 - [x] Tab bar: color packing uses BGR order (parseHexColor packs R<<16|G<<8|B but shader reads R from bits 0-7). Colors are visually incorrect (R/B swapped) — fix to match packFgAsU32 byte order.
 - [x] Tab bar: configurable keybindings for new tab (Ctrl+Shift+T) and tab close.
 - [ ] Non-powerline tab bar styles (fade, slant, separator, round) from config.
 - [ ] Per-tab color rules — color tabs based on title, active process, or index. Requires foreground process tracking and a rule matching engine in the tab bar renderer. Config via `[[tab_bar.color_rules]]` with match patterns (e.g. `title:*ssh*`, `process:python`, `index:0`).
-- [ ] Foreground process tracking — poll `tcgetpgrp()` on the master PTY fd to detect the foreground process group, then look up the process name (`proc_pidpath` on macOS, `/proc/<pid>/cmdline` on Linux). Update tab title when the foreground process changes (like iTerm2/kitty). Needed for per-tab color rules, accurate tab titles, and jump-to-tab-by-process.
+- [x] Foreground process tracking — `Terminal::foregroundProcess()` via `tcgetpgrp` on PTY fd + `proc_pidpath` (macOS) / `/proc/<pid>/comm` (Linux). Checked on each PTY read. `pane.foregroundProcess` JS property, `foregroundProcessChanged` event on change. Tab title shows foreground process name when no OSC 2 title set.
 - [ ] Jump to tab by title/process — keybinding action that activates the first tab matching a title or process pattern. E.g. `action = "activate_tab_matching"`, `args = ["process:claude", "forward"]`. Repeating cycles to the next match; a second binding with `"backward"` cycles in reverse. Combined with foreground process tracking, allows quick switching to specific running apps.
 - [ ] Tab reordering — drag tabs in the tab bar to rearrange, or keybindings to move current tab left/right. Drag UX: render dragged tab at low opacity following the cursor, draw a vertical insertion bar (via rect pipeline, same as pane dividers) at the drop position.
 - [ ] Tab close confirmation — prompt when closing a tab that has a foreground process other than the shell (requires foreground process tracking). Skip prompt for idle shell.
@@ -52,8 +51,9 @@
 
 ## Mouse Bindings
 
-- [x] Scripting: mouse events for popups — `popup.addEventListener("mouse", fn)` receives press/release events with cell coordinates (relative to popup), pixel coordinates, and button. Gated on `UiPopupCreate` permission. Click inside popup delivers to JS and doesn't propagate to terminal selection.
+- [x] Scripting: mouse events for popups, panes, and overlays — `popup.addEventListener("mouse", fn)`, `pane.addEventListener("mouse", fn)`, and `overlay.addEventListener("mouse", fn)` receive press/release events with cell coordinates, pixel coordinates, and button. Gated on `ui` group permission. Click inside popup delivers to JS and doesn't propagate to terminal selection.
 - [x] Mouse binding system — MouseStroke (button, event type, modifiers, mode, region) + MouseBinding + ClickDetector for multi-click. Default bindings: character/word/line/extend/rectangle selection, tab bar clicks, hyperlink open, middle-click paste, shift-override in grabbed mode. Configurable via `[[mousebinding]]` in TOML. Reloadable.
+- [ ] Scripting: pane-level mouse events on overlays — `overlay.addEventListener("mouse", fn)` is registered but the C++ Input.cpp overlay path doesn't deliver events yet (only pane and popup mouse events are wired up).
 
 ## Keybindings / Actions
 
@@ -112,8 +112,8 @@
 - [x] Underlines not cleared on scroll — deleteChars/insertChars didn't shift extras map entries, leaving stale underline colors at wrong columns.
 - [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.
 - [x] Scripting engine (QuickJS-ng) — embedded with Pane/Overlay/Tab JS classes, synchronous output/input filters (zero-copy when no listeners), async lifecycle events via microtasks, action listener system. Two script types: controller (global app control) and applet (headless terminal overlay).
-- [ ] Scripting: OSC handler routing — register JS handlers for specific OSC numbers (`pane.addEventListener("osc:7777", fn)`). Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
-- [ ] Scripting: applet launch confirmation — when an untrusted script is requested via OSC 58237, show a confirmation popup (non-focusing, top-right corner via PopupPane). User must focus the popup via keybinding to respond y/n/always. Allowlist persisted in config dir. Requires popup focus cycling and permission system.
+- [x] Scripting: OSC handler routing — `pane.addEventListener("osc:NNNN", fn)` registers JS handlers for specific OSC numbers. Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
+- [x] Scripting: applet launch confirmation — implemented in JS (applet-loader.js). Creates a popup with clickable [allow]/[deny]/[always]/[never] buttons. Supports both keyboard and mouse click input. Allowlist persisted in config dir.
 - [ ] Scripting: command line loading — `--script <path>:<permissions>` loads user scripts at startup.
 - [x] Scripting: `console.log` — route QuickJS console output to spdlog.
 - [x] Scripting: timers — `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` backed by libuv timers.
@@ -128,7 +128,14 @@
 - [ ] Scripting: replace DebugIPC with JS applet — WebSocket server applet that exposes grid content, screenshots, stats, key injection, action dispatch. Requires `mb:ws` module and grid/screenshot APIs on `mb.*`.
 - [ ] Scripting: internal property hardening — `__input_filters`, `__output_filters`, `__evt_*`, `__pane_registry`, `__popup_registry` etc. are regular JS properties accessible to any script. A script could bypass permission checks by directly reading/writing these. Fix by using Symbols or C-side storage instead of string-keyed JS properties.
 - [ ] Scripting: pane/tab query permissions — hierarchical access levels: `panes.current` (active pane only), `panes.tab` (all panes in active tab), `panes.all` (all tabs/panes). Currently all pane/tab queries are ungated. `ui` should imply `panes.current`. `mb.activePane()` requires `panes.current`, `mb.activeTab()` requires `panes.tab`, `mb.tabs()` requires `panes.all`. Pane property getters (title, cwd, foreground process) gated by the level that granted access to the pane object.
-- [x] Scripting: permission system — granular bitmask permissions (ui.overlay.create, io.filter.input, shell.write, actions.invoke, tabs.create, scripts.load, etc.) with group aliases for OSC brevity (ui, io, shell, actions, tabs, scripts). Built-in scripts fully trusted. User scripts checked against allowlist (`allowed-scripts.toml` with SHA-256 content hash and version field). Confirmation popup (y/n/a/d) for untrusted scripts. `actions.invoke` cross-checks action names against relevant permissions (NewTab→tabs.create, etc.). Erases applet/controller distinction.
+- [x] Scripting: permission system — granular bitmask permissions (ui.overlay.create, io.filter.input, shell.write, actions.invoke, tabs.create, scripts.load, etc.) with group aliases for OSC brevity (ui, io, shell, actions, tabs, scripts). Built-in scripts fully trusted. User scripts checked against allowlist (`allowed-scripts.toml` with SHA-256 content hash and version field). Permission prompt is fully JS-driven (applet-loader.js creates the popup, handles keyboard + mouse clicks). `mb.approveScript(path, response)` API and `scriptPermissionRequired` event. `actions.invoke` cross-checks action names against relevant permissions (NewTab→tabs.create, etc.). Erases applet/controller distinction.
+- [x] Scripting: script actions & namespaces — `mb.setNamespace(name)`, `mb.registerAction(name)` registers `namespace.action`. Config binds via `action = "namespace.action"`. `ScriptAction` variant in Action.h. `ReloadConfig` action rebuilds bindings at runtime.
+- [x] Scripting: script lifecycle — same-path replacement (unload old instance on reload), `mb.exit()` for self-unload via zero-delay timer, full cleanup on unload (timers, popups, overlays, filter counts, registered actions).
+- [x] Scripting: foreground process detection — `Terminal::foregroundProcess()` via tcgetpgrp + proc_pidpath/proc/pid/comm. `pane.foregroundProcess` JS property. `foregroundProcessChanged` event on PTY read. Tab title fallback when no OSC 2 title set.
+- [x] Scripting: `mb.actions` property — returns all built-in + registered script actions, derived from compile-time Action variant reflection. Includes arg variants for directional actions.
+- [x] Scripting: command palette — built-in JS applet (`command-palette.js`). Fuzzy search, arrow navigation, Enter to execute. Default binding Cmd+Shift+P / Ctrl+Shift+P. Uses `mb.actions` and `mb.invokeAction`.
+- [x] Scripting: API consistency — `mb.tabs`, `mb.activePane`, `mb.activeTab`, `mb.actions` are getter properties (not functions). `popup.close()` (not destroy). `popup.cols/rows/x/y` properties. Removed `pane.destroyPopup`, `mb.loadApplet`, `mb.loadController` from JS API.
+- [x] Scripting: permission violation terminates script — scripts that try to use unpermitted APIs are scheduled for termination via zero-delay timer. Built-in scripts exempt.
 - [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
 - [ ] GPU buffer pool — divider and popup border vertex buffers are created/destroyed directly. A pool (like TexturePool/ComputeStatePool) would avoid per-frame GPU allocations.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
@@ -142,4 +149,7 @@
 - [x] OSC 10/11/12 tests — query/set default colors, format parsing.
 - [x] REP tests — basic repeat, default count, no prior char, wrapping, wide chars, attribute preservation.
 - [x] Prompt tests — OSC 133 markers, jump to prompt, command output selection, scrollback serialization.
+- [ ] Script engine tests — JS-level tests loaded via `Engine::loadController` with mock callbacks. Test scripts exercise APIs and assert via console output. Covers: permission checks, popup lifecycle, action registration, event delivery, mouse events, allowlist, foreground process.
+- [ ] IPC-driven script tests — extend `mb --ctl` with `--script <path>` to load scripts via IPC. Enables end-to-end testing of script loading, permission prompts, and applet behavior. Requires IPC.
+- [ ] IPC security — debug IPC (`/tmp/mb-<pid>.sock`) is an attack vector in release builds. Options: disable by default (opt-in via `--debug-ipc` flag), restrict to same-user via socket permissions, or remove from release builds.
 - [ ] Rendering tests — pixel comparison against reference images. Launch `mb` as a child process, drive it via the existing debug IPC (`mb --ctl screenshot --format png`, `mb --ctl key`), compare PNG output against reference images. No headless device needed — uses the real render pipeline. Needs: test harness that launches/connects/drives, reference image storage, comparison with tolerance.

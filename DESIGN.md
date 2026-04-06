@@ -487,6 +487,15 @@ src/
   Tab.h/cpp                 — tab container with overlay support
   Bindings.h/cpp            — keybinding parsing and sequence matching
   Config.h/cpp              — TOML config loading
+  ScriptEngine.h/cpp        — QuickJS-ng scripting engine, JS API surface
+  ScriptPermissions.h/cpp   — permission bitmask, allowlist, hash verification
+  ClickDetector.h/cpp       — multi-click detection for mouse bindings
+assets/
+  scripts/
+    applet-loader.js        — built-in: OSC 58237 applet loading + permission prompts
+    command-palette.js      — built-in: fuzzy command palette (Cmd+Shift+P)
+examples/
+  popup-demo.js             — example popup script
 tests/
   TestTerminal.h            — lightweight TerminalEmulator wrapper for tests
   test_*.cpp                — doctest test files
@@ -511,3 +520,97 @@ all flag modes, legacy compatibility, modifier keys, comprehensive RIS reset),
 shapeRun() (ASCII, Arabic RTL, mixed LTR/RTL, cache, multibyte UTF-8).
 
 Run with: `./build/bin/mb-tests`
+
+---
+
+## 18. Scripting Engine (implemented)
+
+QuickJS-ng embedded scripting with permission system.
+
+### Architecture
+
+Built-in scripts loaded at startup via `Engine::loadController()` (fully trusted,
+all permissions). User scripts loaded via `Engine::loadScript()` (permission-checked,
+allowlist-backed). All scripts get the same `mb.*` API surface; unauthorized calls
+throw and terminate the script.
+
+### JS API surface
+
+**`mb` global object (getter properties):**
+- `mb.tabs` — array of Tab objects
+- `mb.activePane` — focused Pane or undefined
+- `mb.activeTab` — active Tab or undefined
+- `mb.actions` — array of {name, label, builtin, args?}
+
+**`mb` global object (functions):**
+- `mb.invokeAction(name, ...args)` — execute an action
+- `mb.addEventListener(event, fn)` — lifecycle/action events
+- `mb.loadScript(path, permsStr)` — load user script (permission-checked)
+- `mb.approveScript(path, response)` — approve/deny pending script (built-in only)
+- `mb.createTab()` / `mb.closeTab(id?)` — tab management
+- `mb.unloadScript(id)` — unload a script
+- `mb.setNamespace(name)` — claim action namespace
+- `mb.registerAction(name)` — register `namespace.action`
+- `mb.exit()` — self-unload via deferred timer
+
+**Pane object:**
+- Properties: `id`, `cols`, `rows`, `title`, `cwd`, `hasPty`, `focused`,
+  `focusedPopupId`, `foregroundProcess`, `popups`
+- Methods: `addEventListener(event, fn)`, `inject(data)`, `write(data)`,
+  `createPopup({id, x, y, w, h})`
+
+**Popup object:**
+- Properties: `paneId`, `id`, `focused`, `cols`, `rows`, `x`, `y`
+- Methods: `addEventListener(event, fn)`, `inject(data)`, `resize({x,y,w,h})`,
+  `close()`
+- Events: `"input"` (keyboard when focused), `"mouse"` (click with cell coords)
+
+**Tab object:**
+- Properties: `id`, `panes`, `activePane`, `overlay`
+- Methods: `addEventListener(event, fn)`, `createOverlay()`, `closeOverlay()`,
+  `close()`
+
+**Overlay object:**
+- Properties: `cols`, `rows`, `hasPty`
+- Methods: `addEventListener(event, fn)`, `inject(data)`, `write(data)`, `close()`
+
+### Permission system
+
+Granular bitmask: `ui` (overlay/popup create/destroy), `io` (filter input/output,
+inject), `shell` (write to PTY), `actions` (invoke actions, register actions),
+`tabs` (create/close), `scripts` (load/unload). Groups expand to individual bits.
+
+Allowlist at `$XDG_CONFIG_HOME/MasterBandit/allowed-scripts.toml` with SHA-256
+content hash and schema version. Hash change triggers re-prompt. Permission
+violation terminates the script.
+
+Confirmation prompt is JS-driven (applet-loader.js): popup with clickable
+[allow]/[deny]/[always]/[never] buttons. Both keyboard and mouse input supported.
+
+### Script actions
+
+Scripts claim a namespace (`mb.setNamespace("palette")`), register actions
+(`mb.registerAction("open")`), and listen via
+`mb.addEventListener("action", "palette.open", fn)`. Config binds with
+`action = "palette.open"`. Unknown dotted action names in config are parsed as
+`ScriptAction` variants.
+
+### Built-in scripts
+
+- `applet-loader.js` — handles OSC 58237 applet loading and permission prompts
+- `command-palette.js` — fuzzy command palette (Cmd+Shift+P)
+
+### Mouse binding system
+
+`MouseStroke` (button, event type, modifiers, mode, region) + `MouseBinding` +
+`ClickDetector` for multi-click detection. Selection types: normal (drag),
+word (doublepress), line (triplepress), extend (shift+click), rectangle
+(alt+drag). Configurable via `[[mousebinding]]` in TOML. Default bindings
+replace all hardcoded mouse logic.
+
+### Foreground process tracking
+
+`Terminal::foregroundProcess()` queries `tcgetpgrp()` on the PTY fd, resolves
+via `proc_pidpath` (macOS) or `/proc/<pid>/comm` (Linux). Checked on each PTY
+read; fires `foregroundProcessChanged` event on change. Tab title shows
+foreground process name when no OSC 2 title is set.

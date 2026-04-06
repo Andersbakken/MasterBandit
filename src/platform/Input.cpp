@@ -394,12 +394,16 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
             for (const auto& popup : clickPane->popups()) {
                 if (cellCol >= popup.cellX && cellCol < popup.cellX + popup.cellW &&
                     cellRow >= popup.cellY && cellRow < popup.cellY + popup.cellH) {
+                    int relCol = cellCol - popup.cellX;
+                    int relRow = cellRow - popup.cellY;
+
+                    // Deliver mouse event to JS popup listeners
                     std::string type = (action == GLFW_PRESS) ? "press" : "release";
                     int btn = (button == GLFW_MOUSE_BUTTON_LEFT) ? 0
                             : (button == GLFW_MOUSE_BUTTON_RIGHT) ? 1 : 2;
                     scriptEngine_.deliverPopupMouseEvent(
                         clickPane->id(), popup.id, type,
-                        cellCol - popup.cellX, cellRow - popup.cellY,
+                        relCol, relRow,
                         static_cast<int>(sx), static_cast<int>(sy), btn);
                     scriptEngine_.executePendingJobs();
                     return;

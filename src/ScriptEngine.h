@@ -89,8 +89,8 @@ public:
 
     void unload(InstanceId id);
 
-    // Called when user responds to permission prompt popup
-    void handlePermissionResponse(const std::string& popupId, char response);
+    // Called by JS (applet-loader) when user responds to permission prompt
+    void approveScript(const std::string& path, char response);
 
     // --- Synchronous filters (called from PTY read / input path) ---
     bool filterPaneOutput(PaneId pane, std::string& data);
@@ -202,8 +202,8 @@ private:
 
     InstanceId loadScriptInternal(const std::string& path, const std::string& content,
                                    uint32_t permissions);
-    void showPermissionPrompt(const std::string& path, const std::string& content,
-                               const std::string& hash, uint32_t requestedPerms);
+    void notifyPermissionRequired(const std::string& path, const std::string& permissions,
+                                   const std::string& hash);
 
     void deliverMouseToRegistry(const char* registryName, uint32_t key,
                                  const std::string& type, int cellX, int cellY,

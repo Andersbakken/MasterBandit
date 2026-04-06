@@ -445,7 +445,7 @@ static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
             eng->deliverPopupInput(regKey, data, len);
         });
 
-    if (!ok) return JS_UNDEFINED;
+    if (!ok) return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
 
     // Track ownership for cleanup on unload
     auto* inst = instanceFromCtx(ctx);
@@ -994,6 +994,29 @@ static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueCon
     return JS_NewInt64(ctx, static_cast<int64_t>(id));
 }
 
+// mb.approveScript(path, response) — response is "y", "n", "a", "d"
+static JSValue jsMbApproveScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 2) return JS_UNDEFINED;
+    // Only built-in scripts can approve
+    auto* inst = instanceFromCtx(ctx);
+    if (!inst || !inst->builtIn)
+        return JS_ThrowTypeError(ctx, "approveScript is only available to built-in scripts");
+
+    Engine* eng = engineFromCtx(ctx);
+    const char* path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_EXCEPTION;
+    const char* resp = JS_ToCString(ctx, argv[1]);
+    if (!resp) { JS_FreeCString(ctx, path); return JS_EXCEPTION; }
+
+    char response = resp[0];
+    JS_FreeCString(ctx, resp);
+
+    eng->approveScript(std::string(path), response);
+    JS_FreeCString(ctx, path);
+    return JS_UNDEFINED;
+}
+
 // mb.createTab() -> Tab
 static JSValue jsMbCreateTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
@@ -1413,6 +1436,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, mb, "loadScript",
         JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
+    JS_SetPropertyStr(ctx, mb, "approveScript",
+        JS_NewCFunction(ctx, jsMbApproveScript, "approveScript", 2));
     JS_SetPropertyStr(ctx, mb, "setNamespace",
         JS_NewCFunction(ctx, jsMbSetNamespace, "setNamespace", 1));
     JS_SetPropertyStr(ctx, mb, "registerAction",
@@ -1552,7 +1577,12 @@ InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) 
         // Requesting new perms beyond what was granted — re-prompt
     }
 
-    showPermissionPrompt(path, content, hash, requestedPerms);
+    // Store pending script and notify JS to show permission prompt
+    std::string pendingKey = path; // keyed by path
+    pendingScripts_[pendingKey] = {path, content, hash, requestedPerms, "", -1};
+
+    // Fire scriptPermissionRequired event on mb
+    notifyPermissionRequired(path, permissionsToString(requestedPerms), hash);
     return 0;
 }
 
@@ -1592,77 +1622,15 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     return id;
 }
 
-void Engine::showPermissionPrompt(const std::string& path, const std::string& content,
-                                   const std::string& hash, uint32_t requestedPerms) {
-    auto tabInfos = callbacks_.tabs();
-    PaneId activePaneId = -1;
-    for (auto& ti : tabInfos) {
-        if (ti.active && ti.focusedPane >= 0) {
-            activePaneId = ti.focusedPane;
-            break;
-        }
-    }
-    if (activePaneId < 0) {
-        spdlog::warn("ScriptEngine: no active pane for permission prompt");
+void Engine::approveScript(const std::string& path, char response) {
+    auto it = pendingScripts_.find(path);
+    if (it == pendingScripts_.end()) {
+        spdlog::warn("ScriptEngine: no pending script for '{}'", path);
         return;
     }
-
-    auto paneInfoVal = callbacks_.paneInfo(activePaneId);
-    std::string popupId = "__mb_perm_" + std::to_string(nextId_++);
-
-    int popW = 50, popH = 8;
-    int popX = std::max(0, (paneInfoVal.cols - popW) / 2);
-    int popY = std::max(0, (paneInfoVal.rows - popH) / 2);
-
-    PendingScript pending;
-    pending.path = path;
-    pending.content = content;
-    pending.hash = hash;
-    pending.requestedPerms = requestedPerms;
-    pending.popupId = popupId;
-    pending.promptPaneId = activePaneId;
-    pendingScripts_[popupId] = std::move(pending);
-
-    auto selfPopupId = popupId;
-    bool ok = callbacks_.createPopup(activePaneId, popupId, popX, popY, popW, popH,
-        [this, selfPopupId](const char* data, size_t len) {
-            if (len == 1)
-                handlePermissionResponse(selfPopupId, data[0]);
-        });
-
-    if (!ok) {
-        pendingScripts_.erase(popupId);
-        spdlog::error("ScriptEngine: failed to create permission prompt popup");
-        return;
-    }
-
-    // Render prompt content
-    std::string permStr = permissionsToString(requestedPerms);
-    // Extract filename from path
-    std::string filename = path;
-    auto slash = filename.rfind('/');
-    if (slash != std::string::npos) filename = filename.substr(slash + 1);
-
-    std::string display;
-    display += "\x1b[H\x1b[1;33m Script Permission Request \x1b[0m";
-    display += "\x1b[3;2H Path: \x1b[1m" + filename + "\x1b[0m";
-    display += "\x1b[4;2H Perms: \x1b[36m" + permStr + "\x1b[0m";
-    display += "\x1b[5;2H Hash: \x1b[90m" + hash.substr(0, 16) + "...\x1b[0m";
-    display += "\x1b[7;2H \x1b[1;32my\x1b[0m=allow \x1b[1;31mn\x1b[0m=deny "
-               "\x1b[1;36ma\x1b[0m=always \x1b[1;35md\x1b[0m=never";
-
-    callbacks_.injectPopupData(activePaneId, popupId, display);
-    spdlog::info("ScriptEngine: showing permission prompt for '{}'", path);
-}
-
-void Engine::handlePermissionResponse(const std::string& popupId, char response) {
-    auto it = pendingScripts_.find(popupId);
-    if (it == pendingScripts_.end()) return;
 
     PendingScript pending = std::move(it->second);
     pendingScripts_.erase(it);
-
-    callbacks_.destroyPopup(pending.promptPaneId, popupId);
 
     switch (response) {
     case 'y': case 'Y':
@@ -1854,6 +1822,33 @@ void Engine::notifyAction(const std::string& actionName)
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
         enqueueListeners(inst.ctx, arr, 0, nullptr);
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global);
+    }
+}
+
+void Engine::notifyPermissionRequired(const std::string& path,
+                                       const std::string& permissions,
+                                       const std::string& hash)
+{
+    for (auto& inst : instances_) {
+        if (!inst.builtIn) continue; // only built-in scripts see permission requests
+
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr = JS_GetPropertyStr(inst.ctx, mb, "__evt_scriptPermissionRequired");
+        if (!JS_IsUndefined(arr)) {
+            JSValue args[3] = {
+                JS_NewString(inst.ctx, path.c_str()),
+                JS_NewString(inst.ctx, permissions.c_str()),
+                JS_NewString(inst.ctx, hash.c_str())
+            };
+            enqueueListeners(inst.ctx, arr, 3, args);
+            JS_FreeValue(inst.ctx, args[0]);
+            JS_FreeValue(inst.ctx, args[1]);
+            JS_FreeValue(inst.ctx, args[2]);
+        }
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);

@@ -56,7 +56,7 @@ PopupPane* Pane::createPopup(const std::string& id, int x, int y, int w, int h,
 {
     if (findPopup(id)) {
         spdlog::warn("Pane: popup '{}' already exists", id);
-        return findPopup(id);
+        return nullptr;
     }
 
     TerminalCallbacks cbs;

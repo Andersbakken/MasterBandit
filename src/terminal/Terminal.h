@@ -34,12 +34,10 @@ public:
     // Initialize without a PTY or child process. For script-driven applets.
     bool initHeadless(const TerminalOptions& options);
     void setLoop(uv_loop_t* loop) { mLoop = loop; }
-    void setPtyPoll(uv_poll_t* poll) { mPtyPoll = poll; }
     int masterFD() const { return mMasterFD; }
     bool isHeadless() const { return mHeadless; }
     void readFromFD();
     void pasteText(const std::string& text);
-    void flushWriteQueue();
 
     // Query the foreground process name via tcgetpgrp + platform process lookup
     std::string foregroundProcess() const;
@@ -54,8 +52,8 @@ protected:
 
 private:
     void writeToPTY(const char* data, size_t len);
-    void enableWritePoll();
-    void disableWritePoll();
+    void flushWriteQueue();
+    static void onWritePollReady(uv_poll_t* handle, int status, int events);
 
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
@@ -64,7 +62,7 @@ private:
     bool mResizePending { false };
     pid_t mLastFgPgid { -1 };
     uv_loop_t* mLoop { nullptr };
-    uv_poll_t* mPtyPoll { nullptr };
+    uv_poll_t mWritePoll {};
     bool mWritePollActive { false };
     std::vector<char> mWriteQueue;
 };

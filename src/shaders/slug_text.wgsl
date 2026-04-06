@@ -18,7 +18,6 @@ struct VSOutput {
     @location(0) texcoord: vec2f,
     @location(1) @interpolate(flat) atlas_offset: u32,
     @location(2) @interpolate(flat) tint: vec4f,
-    @location(3) @interpolate(flat) emPerPos: f32,
 };
 
 struct TextUniforms {
@@ -51,7 +50,6 @@ fn vs_main(in: VSInput) -> VSOutput {
     out.position = uniforms.mvp * vec4f(dilated[0], 0.0, 1.0);
     out.texcoord = dilated[1];
     out.atlas_offset = in.atlas_offset;
-    out.emPerPos = in.emPerPos;
     return out;
 }
 
@@ -61,7 +59,7 @@ fn fs_main(in: VSOutput) -> @location(0) vec4f {
 
     if (uniforms.stem_darkening > 0.0) {
         let brightness = max(max(in.tint.r, in.tint.g), in.tint.b);
-        let ppem = 1.0 / max(in.emPerPos, 1.0 / 65536.0);
+        let ppem = hb_gpu_ppem(in.texcoord, in.atlas_offset, &hb_gpu_atlas);
         coverage = hb_gpu_darken(coverage, brightness, ppem);
     }
 

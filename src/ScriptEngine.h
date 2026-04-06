@@ -120,6 +120,15 @@ public:
     // Deliver input to popup listeners (keyed by "paneId:popupId" string).
     void deliverPopupInput(const std::string& regKey, const char* data, size_t len);
 
+    // Deliver mouse events to JS listeners.
+    void deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
+                                 const std::string& type, int cellX, int cellY,
+                                 int pixelX, int pixelY, int button);
+    void deliverPaneMouseEvent(PaneId pane, const std::string& type,
+                                int cellX, int cellY, int pixelX, int pixelY, int button);
+    void deliverOverlayMouseEvent(TabId tab, const std::string& type,
+                                   int cellX, int cellY, int pixelX, int pixelY, int button);
+
     // Run pending JS jobs. Call from main loop.
     void executePendingJobs();
 
@@ -195,6 +204,10 @@ private:
                                    uint32_t permissions);
     void showPermissionPrompt(const std::string& path, const std::string& content,
                                const std::string& hash, uint32_t requestedPerms);
+
+    void deliverMouseToRegistry(const char* registryName, uint32_t key,
+                                 const std::string& type, int cellX, int cellY,
+                                 int pixelX, int pixelY, int button);
 
     bool runPaneFilters(PaneId pane, const char* filterProp, std::string& data);
     bool runOverlayFilters(TabId tab, const char* filterProp, std::string& data);

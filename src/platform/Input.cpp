@@ -384,6 +384,39 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
         }
     }
 
+    // 2b. Check if click lands inside a popup — deliver mouse event to JS
+    if (region == MouseRegion::Pane && !tab->hasOverlay()) {
+        Pane* clickPane = tab->layout()->focusedPane();
+        if (clickPane) {
+            const PaneRect& pr = clickPane->rect();
+            int cellCol = static_cast<int>((sx - pr.x - padLeft_) / charWidth_);
+            int cellRow = static_cast<int>((sy - pr.y - padTop_) / lineHeight_);
+            for (const auto& popup : clickPane->popups()) {
+                if (cellCol >= popup.cellX && cellCol < popup.cellX + popup.cellW &&
+                    cellRow >= popup.cellY && cellRow < popup.cellY + popup.cellH) {
+                    std::string type = (action == GLFW_PRESS) ? "press" : "release";
+                    int btn = (button == GLFW_MOUSE_BUTTON_LEFT) ? 0
+                            : (button == GLFW_MOUSE_BUTTON_RIGHT) ? 1 : 2;
+                    scriptEngine_.deliverPopupMouseEvent(
+                        clickPane->id(), popup.id, type,
+                        cellCol - popup.cellX, cellRow - popup.cellY,
+                        static_cast<int>(sx), static_cast<int>(sy), btn);
+                    scriptEngine_.executePendingJobs();
+                    return;
+                }
+            }
+
+            // Deliver pane mouse event to JS (non-consuming — normal flow continues)
+            std::string paneEvtType = (action == GLFW_PRESS) ? "press" : "release";
+            int paneBtn = (button == GLFW_MOUSE_BUTTON_LEFT) ? 0
+                        : (button == GLFW_MOUSE_BUTTON_RIGHT) ? 1 : 2;
+            scriptEngine_.deliverPaneMouseEvent(
+                clickPane->id(), paneEvtType,
+                cellCol, cellRow,
+                static_cast<int>(sx), static_cast<int>(sy), paneBtn);
+        }
+    }
+
     // 3. Convert GLFW button to MouseButton
     MouseButton mb = glfwButtonToMouseButton(button);
 

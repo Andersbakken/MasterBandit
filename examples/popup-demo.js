@@ -106,5 +106,19 @@ popup.addEventListener("input", (data) => {
     }
 });
 
+// Handle mouse clicks — move cursor to clicked cell
+popup.addEventListener("mouse", (ev) => {
+    if (ev.type === "press" && ev.button === 0) {
+        // Left click: move cursor to clicked position (clamped to editable area)
+        const newCol = Math.max(minCol, Math.min(maxCol, ev.cellX));
+        const newRow = Math.max(minRow, Math.min(maxRow, ev.cellY));
+        if (newCol !== curCol || newRow !== curRow) {
+            curCol = newCol;
+            curRow = newRow;
+            render();
+        }
+    }
+});
+
 // Initial render
 render();

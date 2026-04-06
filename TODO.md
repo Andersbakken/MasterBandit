@@ -52,7 +52,7 @@
 
 ## Mouse Bindings
 
-- [ ] Scripting: mouse events for popups — `popup.addEventListener("mouse", fn)` receives click/move events with cell coordinates (relative to popup) and pixel coordinates (viewport-relative). Needed for interactive popup UIs (buttons, list selection, etc.). Should also consider pane-level mouse events for scripts.
+- [x] Scripting: mouse events for popups — `popup.addEventListener("mouse", fn)` receives press/release events with cell coordinates (relative to popup), pixel coordinates, and button. Gated on `UiPopupCreate` permission. Click inside popup delivers to JS and doesn't propagate to terminal selection.
 - [x] Mouse binding system — MouseStroke (button, event type, modifiers, mode, region) + MouseBinding + ClickDetector for multi-click. Default bindings: character/word/line/extend/rectangle selection, tab bar clicks, hyperlink open, middle-click paste, shift-override in grabbed mode. Configurable via `[[mousebinding]]` in TOML. Reloadable.
 
 ## Keybindings / Actions

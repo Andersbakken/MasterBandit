@@ -130,6 +130,10 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
         prop = "__input_filters";
         eng->addPaneInputFilter(pane->id, instId);
         registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+    } else if (strcmp(event, "mouse") == 0) {
+        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        prop = "__mouse_listeners";
+        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else {
         prop = std::string("__evt_") + event;
         // Register for lifecycle events too (so destroyed can be found)
@@ -301,12 +305,15 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
     if (strcmp(event, "input") == 0) {
         if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
+    } else if (strcmp(event, "mouse") == 0) {
+        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        prop = "__mouse_listeners";
     } else {
         prop = std::string("__evt_") + event;
     }
     JS_FreeCString(ctx, event);
 
-    // Register in popup registry for input delivery
+    // Register in popup registry for input/mouse delivery
     Engine* eng = engineFromCtx(ctx);
     std::string regKey = std::to_string(popup->paneId) + ":" + popup->popupId;
     // Use a string-keyed property on a global popup registry
@@ -515,6 +522,10 @@ static JSValue jsOverlayAddEventListener(JSContext* ctx, JSValueConst this_val,
         if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
         eng->addOverlayInputFilter(ov->tabId, instId);
+        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
+    } else if (strcmp(event, "mouse") == 0) {
+        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        prop = "__mouse_listeners";
         registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
     } else {
         prop = std::string("__evt_") + event;
@@ -2137,6 +2148,125 @@ void Engine::deliverPopupInput(const std::string& regKey, const char* data, size
         JS_FreeValue(inst.ctx, obj);
         JS_FreeValue(inst.ctx, registry);
     }
+}
+
+void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
+                                     const std::string& type, int cellX, int cellY,
+                                     int pixelX, int pixelY, int button)
+{
+    std::string regKey = std::to_string(pane) + ":" + popupId;
+
+    for (auto& inst : instances_) {
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__popup_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
+        if (!JS_IsUndefined(obj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__mouse_listeners");
+            if (!JS_IsUndefined(arr)) {
+                JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+                int32_t arrLen = 0;
+                JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                JS_FreeValue(inst.ctx, lenVal);
+
+                // Build event object: {type, cellX, cellY, pixelX, pixelY, button}
+                JSValue ev = JS_NewObject(inst.ctx);
+                JS_SetPropertyStr(inst.ctx, ev, "type", JS_NewString(inst.ctx, type.c_str()));
+                JS_SetPropertyStr(inst.ctx, ev, "cellX", JS_NewInt32(inst.ctx, cellX));
+                JS_SetPropertyStr(inst.ctx, ev, "cellY", JS_NewInt32(inst.ctx, cellY));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
+                JS_SetPropertyStr(inst.ctx, ev, "button", JS_NewInt32(inst.ctx, button));
+
+                for (int32_t i = 0; i < arrLen; ++i) {
+                    JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
+                    if (JS_IsFunction(inst.ctx, fn)) {
+                        JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &ev);
+                        if (JS_IsException(ret)) {
+                            JSValue exc = JS_GetException(inst.ctx);
+                            const char* s = JS_ToCString(inst.ctx, exc);
+                            spdlog::error("ScriptEngine: popup mouse error: {}", s ? s : "(null)");
+                            if (s) JS_FreeCString(inst.ctx, s);
+                            JS_FreeValue(inst.ctx, exc);
+                        }
+                        JS_FreeValue(inst.ctx, ret);
+                    }
+                    JS_FreeValue(inst.ctx, fn);
+                }
+                JS_FreeValue(inst.ctx, ev);
+            }
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::deliverMouseToRegistry(const char* registryName,
+                                     uint32_t key, const std::string& type,
+                                     int cellX, int cellY, int pixelX, int pixelY, int button)
+{
+    for (auto& inst : instances_) {
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, registryName);
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue obj = JS_GetPropertyUint32(inst.ctx, registry, key);
+        if (!JS_IsUndefined(obj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__mouse_listeners");
+            if (!JS_IsUndefined(arr)) {
+                JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+                int32_t arrLen = 0;
+                JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                JS_FreeValue(inst.ctx, lenVal);
+
+                JSValue ev = JS_NewObject(inst.ctx);
+                JS_SetPropertyStr(inst.ctx, ev, "type", JS_NewString(inst.ctx, type.c_str()));
+                JS_SetPropertyStr(inst.ctx, ev, "cellX", JS_NewInt32(inst.ctx, cellX));
+                JS_SetPropertyStr(inst.ctx, ev, "cellY", JS_NewInt32(inst.ctx, cellY));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
+                JS_SetPropertyStr(inst.ctx, ev, "button", JS_NewInt32(inst.ctx, button));
+
+                for (int32_t i = 0; i < arrLen; ++i) {
+                    JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
+                    if (JS_IsFunction(inst.ctx, fn)) {
+                        JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &ev);
+                        if (JS_IsException(ret)) {
+                            JSValue exc = JS_GetException(inst.ctx);
+                            const char* s = JS_ToCString(inst.ctx, exc);
+                            spdlog::error("ScriptEngine: mouse event error: {}", s ? s : "(null)");
+                            if (s) JS_FreeCString(inst.ctx, s);
+                            JS_FreeValue(inst.ctx, exc);
+                        }
+                        JS_FreeValue(inst.ctx, ret);
+                    }
+                    JS_FreeValue(inst.ctx, fn);
+                }
+                JS_FreeValue(inst.ctx, ev);
+            }
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::deliverPaneMouseEvent(PaneId pane, const std::string& type,
+                                    int cellX, int cellY, int pixelX, int pixelY, int button)
+{
+    deliverMouseToRegistry("__pane_registry", static_cast<uint32_t>(pane),
+                                 type, cellX, cellY, pixelX, pixelY, button);
+}
+
+void Engine::deliverOverlayMouseEvent(TabId tab, const std::string& type,
+                                       int cellX, int cellY, int pixelX, int pixelY, int button)
+{
+    deliverMouseToRegistry("__overlay_registry", static_cast<uint32_t>(tab),
+                                 type, cellX, cellY, pixelX, pixelY, button);
 }
 
 void Engine::executePendingJobs()

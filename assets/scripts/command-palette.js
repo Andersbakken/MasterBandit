@@ -20,7 +20,7 @@ let filtered = [];
 
 const W = 45;
 const MAX_VISIBLE = 12;
-const H = MAX_VISIBLE + 3; // border + input + border + items + border
+const H = MAX_VISIBLE + 4; // border + input + border + items + border
 
 function fuzzyMatch(str, pattern) {
     if (!pattern) return true;

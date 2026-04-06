@@ -72,6 +72,8 @@ static std::string queryFontConfig(char32_t codepoint, bool monoOnly, const std:
 
 std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& primaryFontPath, char32_t codepoint)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     // Check cache first
     auto it = codepointCache_.find(codepoint);
     if (it != codepointCache_.end()) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -13,6 +14,8 @@ public:
     std::vector<uint8_t> fontDataForCodepoint(const std::string& primaryFontPath, char32_t codepoint);
 
 private:
+    std::mutex mutex_;
+
     // Cache: codepoint → index into fallbackFonts_ (-1 = no fallback found)
     std::unordered_map<char32_t, int> codepointCache_;
 

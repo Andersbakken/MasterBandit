@@ -47,8 +47,8 @@ PlatformDawn::PlatformDawn(int argc, char** argv, bool headless)
         debugSink_ = std::make_shared<DebugIPCSink>();
         std::vector<spdlog::sink_ptr> sinks = {fileSink, stderrSink, debugSink_};
         auto logger = std::make_shared<spdlog::logger>("mb", sinks.begin(), sinks.end());
-        logger->set_level(spdlog::level::info);
-        logger->flush_on(spdlog::level::info);
+        logger->set_level(spdlog::default_logger()->level()); // inherit level set in main()
+        logger->flush_on(spdlog::level::warn);
         spdlog::set_default_logger(logger);
     } catch (...) {}
 

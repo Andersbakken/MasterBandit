@@ -71,6 +71,55 @@ int main(int argc, char **argv)
 
     bool testMode = result.count("test") > 0;
 
+    // Configure logging before anything else so no messages slip through at wrong level.
+    static constexpr spdlog::level::level_enum kLevelMap[] = {
+        spdlog::level::trace,    // 0 Verbose
+        spdlog::level::debug,    // 1 Debug
+        spdlog::level::warn,     // 2 Warn
+        spdlog::level::err,      // 3 Error (default)
+        spdlog::level::critical, // 4 Fatal
+        spdlog::level::off,      // 5 Silent
+    };
+    static auto parseSpdLevel = [](const std::string& s) -> spdlog::level::level_enum {
+        if (s == "trace" || s == "verbose") return spdlog::level::trace;
+        if (s == "debug")                   return spdlog::level::debug;
+        if (s == "info")                    return spdlog::level::info;
+        if (s == "warn" || s == "warning")  return spdlog::level::warn;
+        if (s == "error" || s == "err")     return spdlog::level::err;
+        if (s == "critical" || s == "fatal")return spdlog::level::critical;
+        if (s == "off" || s == "silent")    return spdlog::level::off;
+        return spdlog::level::err;
+    };
+
+    int logLevel = 3; // Error
+    int verbosity = static_cast<int>(result.count("verbose"));
+    for (int i = 0; i < verbosity; i++)
+        if (logLevel > 0) --logLevel;
+    const auto globalLevel = kLevelMap[logLevel];
+
+    static const char* kSubsystems[] = { "script", "render", "terminal", "input", "font", nullptr };
+    spdlog::set_level(globalLevel);
+    for (int i = 0; kSubsystems[i]; ++i)
+        spdlog::stdout_color_mt(kSubsystems[i])->set_level(globalLevel);
+    spdlog::stdout_color_mt("js")->set_level(
+        globalLevel < spdlog::level::info ? globalLevel : spdlog::level::info);
+
+    if (result.count("log")) {
+        std::string spec = result["log"].as<std::string>();
+        std::istringstream ss(spec);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+            auto eq = token.find('=');
+            if (eq == std::string::npos) continue;
+            std::string name  = token.substr(0, eq);
+            std::string level = token.substr(eq + 1);
+            if (auto logger = spdlog::get(name))
+                logger->set_level(parseSpdLevel(level));
+            else
+                fprintf(stderr, "warning: unknown log subsystem '%s'\n", name.c_str());
+        }
+    }
+
     auto platform = createPlatform(argc, argv, testMode);
     if (!platform) {
         fprintf(stderr, "Failed to create platform\n");
@@ -122,60 +171,6 @@ int main(int argc, char **argv)
 
     if (result.count("shell"))
         options.shell = result["shell"].as<std::string>();
-
-    // -v decrements log level: Error(default) → Warn → Debug → Verbose(trace)
-    static constexpr spdlog::level::level_enum kLevelMap[] = {
-        spdlog::level::trace,    // 0 Verbose
-        spdlog::level::debug,    // 1 Debug
-        spdlog::level::warn,     // 2 Warn
-        spdlog::level::err,      // 3 Error (default)
-        spdlog::level::critical, // 4 Fatal
-        spdlog::level::off,      // 5 Silent
-    };
-    static auto parseSpdLevel = [](const std::string& s) -> spdlog::level::level_enum {
-        if (s == "trace" || s == "verbose") return spdlog::level::trace;
-        if (s == "debug")                   return spdlog::level::debug;
-        if (s == "info")                    return spdlog::level::info;
-        if (s == "warn" || s == "warning")  return spdlog::level::warn;
-        if (s == "error" || s == "err")     return spdlog::level::err;
-        if (s == "critical" || s == "fatal")return spdlog::level::critical;
-        if (s == "off" || s == "silent")    return spdlog::level::off;
-        return spdlog::level::err;
-    };
-
-    int logLevel = 3; // Error
-    int verbosity = static_cast<int>(result.count("verbose"));
-    for (int i = 0; i < verbosity; i++)
-        if (logLevel > 0) --logLevel;
-    const auto globalLevel = kLevelMap[logLevel];
-
-    // Register subsystem loggers.
-    // js: console.log output from scripts — default info so it's always visible.
-    // All others default to the global level.
-    static const char* kSubsystems[] = { "script", "render", "terminal", "input", "font", nullptr };
-    spdlog::set_level(globalLevel);
-    for (int i = 0; kSubsystems[i]; ++i)
-        spdlog::stdout_color_mt(kSubsystems[i])->set_level(globalLevel);
-    // js logger: always at info unless -v lowers global below info
-    spdlog::stdout_color_mt("js")->set_level(
-        globalLevel < spdlog::level::info ? globalLevel : spdlog::level::info);
-
-    // --log subsystem=level[,subsystem=level] overrides
-    if (result.count("log")) {
-        std::string spec = result["log"].as<std::string>();
-        std::istringstream ss(spec);
-        std::string token;
-        while (std::getline(ss, token, ',')) {
-            auto eq = token.find('=');
-            if (eq == std::string::npos) continue;
-            std::string name  = token.substr(0, eq);
-            std::string level = token.substr(eq + 1);
-            if (auto logger = spdlog::get(name))
-                logger->set_level(parseSpdLevel(level));
-            else
-                fprintf(stderr, "warning: unknown log subsystem '%s'\n", name.c_str());
-        }
-    }
 
     signal(SIGTERM, cleanupSocketAndExit);
     signal(SIGINT, cleanupSocketAndExit);

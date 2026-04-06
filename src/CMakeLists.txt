@@ -17,13 +17,16 @@ add_subdirectory(platform)
 add_executable(mb
     main.cpp
     Pane.cpp Tab.cpp Layout.cpp Log.cpp text.cpp ColrEncoder.cpp ColrAtlas.cpp
-    DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp ScriptEngine.cpp ScriptPermissions.cpp ClickDetector.cpp
+    DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp
+    script/ScriptEngine.cpp script/ScriptPermissions.cpp script/ScriptFsModule.cpp
+    ClickDetector.cpp
 )
 
 target_include_directories(mb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/terminal
     ${CMAKE_CURRENT_SOURCE_DIR}/platform
+    ${CMAKE_CURRENT_SOURCE_DIR}/script
 )
 
 target_link_libraries(mb PRIVATE terminal platform glaze::glaze cxxopts::cxxopts qjs)

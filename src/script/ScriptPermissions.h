@@ -29,6 +29,9 @@ enum Perm : uint32_t {
     // scripts group
     ScriptsLoad       = 1 << 11,
     ScriptsUnload     = 1 << 12,
+    // fs group
+    FsRead            = 1 << 13,  // read from script dir and config dir
+    FsWrite           = 1 << 14,  // read+write ~/.config/MasterBandit/<scriptname>/
 
     // Group masks
     GroupUi      = UiOverlayCreate | UiOverlayClose | UiPopupCreate | UiPopupDestroy,
@@ -37,6 +40,7 @@ enum Perm : uint32_t {
     GroupActions = ActionsInvoke,
     GroupTabs    = TabsCreate | TabsClose,
     GroupScripts = ScriptsLoad | ScriptsUnload,
+    GroupFs      = FsRead | FsWrite,
 
     All          = 0xFFFFFFFF,
 };

@@ -1,4 +1,5 @@
 #include "ScriptEngine.h"
+#include "ScriptFsModule.h"
 #include "Action.h"
 
 #include <quickjs.h>
@@ -49,24 +50,29 @@ static char* moduleNormalize(JSContext* ctx, const char* base_name,
 {
     auto* eng = static_cast<Engine*>(opaque);
 
-    // Built-in module (mb:tui, mb:fs, etc.)
+    // Built-in module (mb:fs, mb:tui, etc.)
     if (strncmp(name, "mb:", 3) == 0) {
+        // Native C++ modules — returned as-is, handled in moduleLoader
+        static const char* kNativeModules[] = { "fs", nullptr };
+        std::string moduleName = name + 3;
+        for (int i = 0; kNativeModules[i]; ++i) {
+            if (moduleName == kNativeModules[i])
+                return js_strdup(ctx, name); // pass through unchanged
+        }
+
+        // JS file modules in builtinModulesDir
         const auto& modulesDir = eng->builtinModulesDir();
         if (modulesDir.empty()) {
             JS_ThrowReferenceError(ctx, "No built-in modules directory configured");
             return nullptr;
         }
-        // Map "mb:foo" -> "<modulesDir>/foo.js"
-        std::string moduleName = name + 3;
         std::string modulePath = modulesDir + "/" + moduleName + ".js";
-
         auto resolved = resolveAndValidate(modulePath, modulesDir);
         if (resolved.empty()) {
             JS_ThrowReferenceError(ctx, "Built-in module '%s' not found", name);
             return nullptr;
         }
-        char* result = js_strdup(ctx, resolved.c_str());
-        return result;
+        return js_strdup(ctx, resolved.c_str());
     }
 
     // Relative import — resolve against the importing script's directory
@@ -104,11 +110,15 @@ static char* moduleNormalize(JSContext* ctx, const char* base_name,
     return result;
 }
 
+
 // Module loader: reads the source file for a resolved module path.
 static JSModuleDef* moduleLoader(JSContext* ctx, const char* module_name, void* opaque)
 {
     auto* eng = static_cast<Engine*>(opaque);
-    (void)eng;
+
+    // Native C++ modules
+    if (strcmp(module_name, "mb:fs") == 0)
+        return createFsNativeModule(ctx, eng);
 
     std::ifstream f(module_name, std::ios::binary);
     if (!f) {

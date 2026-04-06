@@ -83,6 +83,7 @@ public:
     // Set the directory containing built-in JS modules (mb:tui, etc.)
     void setBuiltinModulesDir(const std::string& dir) { builtinModulesDir_ = dir; }
     const std::string& builtinModulesDir() const { return builtinModulesDir_; }
+    const std::string& configDir() const { return configDir_; }
 
     // Load a built-in script (fully trusted, all permissions)
     InstanceId loadController(const std::string& path);

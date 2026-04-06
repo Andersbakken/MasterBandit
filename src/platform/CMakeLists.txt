@@ -24,6 +24,7 @@ target_include_directories(platform PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/terminal
+    ${CMAKE_SOURCE_DIR}/src/script
 )
 
 target_include_directories(platform PRIVATE ${Stb_INCLUDE_DIR})

@@ -166,9 +166,12 @@ void TerminalEmulator::resize(int width, int height)
         int oldHistSize = mDocument.historySize();
         mDocument.resize(width, height);
         if (oldCols == width) {
-            // Height-only change: adjust cursor for history push/pull
+            // Height-only shrink: top rows pushed to history, adjust cursor to track content.
+            // Height-only grow: don't adjust — the shell tracks its own cursor position and
+            // the history rows reappearing at the top shouldn't shift the cursor.
             int histDelta = oldHistSize - mDocument.historySize();
-            mCursorY += histDelta;
+            if (histDelta < 0)
+                mCursorY += histDelta;
         }
         mCursorX = std::min(mCursorX, width - 1);
         mCursorY = std::max(0, std::min(mCursorY, height - 1));

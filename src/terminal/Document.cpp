@@ -544,6 +544,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             int cols;
             bool cont;
             const std::unordered_map<int, CellExtra>* extras;
+            PromptKind promptKind;
         };
 
         // We need to parse archived rows into temporary buffers
@@ -554,7 +555,8 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                     parseArchivedRow(archive_[idx]);
                     archivedCells[idx].assign(parseBuffer_.begin(), parseBuffer_.end());
                 }
-                return {archivedCells[idx].data(), cols_, archive_[idx].continued, nullptr};
+                return {archivedCells[idx].data(), cols_, archive_[idx].continued, nullptr,
+                        UnknownPrompt};
             }
             int ringIdx = idx - archiveSize;
             int phys;
@@ -566,7 +568,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             }
             const auto& ex = ringExtras_[phys];
             return {&ring_[static_cast<size_t>(phys) * cols_], cols_, continued_[phys],
-                    ex.empty() ? nullptr : &ex};
+                    ex.empty() ? nullptr : &ex, promptKind_[phys]};
         };
 
         // Step 2 & 3: Join logical lines and re-wrap at new width, tracking cursor
@@ -606,15 +608,43 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             // Compute effective width of each source row in this logical line (trim trailing blanks).
             // Only trim the last row — continued rows need their full width preserved
             // so that gaps (e.g. between left prompt and rprompt) aren't collapsed.
+            // Exception: for prompt lines (OSC 133 PromptStart), also strip the rprompt region
+            // from the last row so it doesn't wrap incorrectly on resize.
+            const bool isPromptLine = (getSrcRow(logStart).promptKind == PromptStart);
+
             for (int ri = logStart; ri <= logEnd; ++ri) {
                 SrcRow sr = getSrcRow(ri);
                 int effectiveWidth = sr.cols;
                 if (ri == logEnd) {
+                    // Standard trailing-blank trim
                     while (effectiveWidth > 0) {
                         const Cell& c = sr.cells[effectiveWidth - 1];
                         if (c.wc != 0 || c.attrs.fgMode() != CellAttrs::Default || c.attrs.bgMode() != CellAttrs::Default
                             || c.attrs.bold() || c.attrs.italic() || c.attrs.underline()) break;
                         effectiveWidth--;
+                    }
+                    // For prompt lines: detect and strip the rprompt region.
+                    // Pattern: [left-prompt-content][≥3 spaces][rprompt-content] at end of row.
+                    // The shell redraws the current prompt after SIGWINCH; for history prompts
+                    // this prevents the rprompt from wrapping into extra rows.
+                    if (isPromptLine && effectiveWidth > 0) {
+                        // Scan backwards past rprompt content (non-blank at end)
+                        int pos = effectiveWidth - 1;
+                        while (pos >= 0) {
+                            char32_t wc = sr.cells[pos].wc;
+                            if (wc == 0 || wc == ' ') break;
+                            pos--;
+                        }
+                        // pos now points to the last space/blank before the rprompt
+                        if (pos > 0 && (sr.cells[pos].wc == 0 || sr.cells[pos].wc == ' ')) {
+                            int gapEnd = pos;
+                            while (pos >= 0 && (sr.cells[pos].wc == 0 || sr.cells[pos].wc == ' ')) pos--;
+                            int gapStart = pos + 1;
+                            if (gapEnd - gapStart >= 3) {
+                                // Found a gap of ≥3 spaces — treat gapStart as the effective end
+                                effectiveWidth = gapStart;
+                            }
+                        }
                     }
                 }
 

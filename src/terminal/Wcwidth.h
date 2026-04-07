@@ -218,6 +218,34 @@ inline int wcwidth(char32_t cp) {
         (cp >= 0x1f210 && cp <= 0x1f23b) ||
         (cp >= 0x1f240 && cp <= 0x1f248) ||
         (cp >= 0x1f250 && cp <= 0x1f251) ||
+        // Widened in Unicode 9 (matches WezTerm's WIDENED_TABLE, BMP subset)
+        cp == 0x231a || cp == 0x231b ||      // Watch, hourglass
+        (cp >= 0x23e9 && cp <= 0x23ec) ||   // Fast arrows
+        cp == 0x23f0 || cp == 0x23f3 ||      // Alarm clock, hourglass
+        cp == 0x25fd || cp == 0x25fe ||      // Medium-small squares
+        cp == 0x2614 || cp == 0x2615 ||      // Umbrella with rain, hot beverage
+        (cp >= 0x2648 && cp <= 0x2653) ||   // Zodiac signs
+        cp == 0x267f ||                      // Wheelchair
+        cp == 0x2693 ||                      // Anchor
+        cp == 0x26a1 ||                      // Lightning bolt
+        cp == 0x26aa || cp == 0x26ab ||      // White/black circles
+        cp == 0x26bd || cp == 0x26be ||      // Soccer ball, baseball
+        cp == 0x26c4 || cp == 0x26c5 ||      // Snowman, sun behind cloud
+        cp == 0x26ce || cp == 0x26d4 ||      // Ophiuchus, no entry
+        cp == 0x26ea ||                      // Church
+        cp == 0x26f2 || cp == 0x26f3 ||      // Fountain, golf
+        cp == 0x26f5 || cp == 0x26fa ||      // Sailboat, tent
+        cp == 0x26fd ||                      // Fuel pump
+        cp == 0x2705 ||                      // White heavy check mark
+        cp == 0x270a || cp == 0x270b ||      // Raised fist/hand
+        cp == 0x2728 ||                      // Sparkles
+        cp == 0x274c || cp == 0x274e ||      // Cross mark
+        (cp >= 0x2753 && cp <= 0x2755) ||   // Question marks
+        cp == 0x2757 ||                      // Exclamation mark
+        (cp >= 0x2795 && cp <= 0x2797) ||   // Plus/minus/division
+        cp == 0x27b0 || cp == 0x27bf ||      // Curly loops
+        cp == 0x2b1b || cp == 0x2b1c ||      // Large squares
+        cp == 0x2b50 || cp == 0x2b55 ||      // Star, hollow red circle
         (cp >= 0x1f300 && cp <= 0x1f64f) || // Misc Symbols..Emoticons
         (cp >= 0x1f680 && cp <= 0x1f6ff) || // Transport/Map Symbols
         (cp >= 0x1f900 && cp <= 0x1f9ff) || // Supplemental Symbols

@@ -1,14 +1,16 @@
 // Simple rectangle shader (cursor, selection, underlines)
-// Vertex format: pos(2f), color(4f) = 24 bytes
+// Vertex format: pos(2f), color(4f), edge_dist(2f) = 32 bytes
 
 struct VSInput {
     @location(0) pos: vec2f,
     @location(1) color: vec4f,
+    @location(2) edge_dist: vec2f,
 };
 
 struct VSOutput {
     @builtin(position) position: vec4f,
     @location(0) color: vec4f,
+    @location(1) edge_dist: vec2f,
 };
 
 struct RectUniforms {
@@ -26,10 +28,15 @@ fn vs_main(in: VSInput) -> VSOutput {
     let ndc_y = 1.0 - in.pos.y / uniforms.viewport.y * 2.0;
     out.position = vec4f(ndc_x, ndc_y, 0.0, 1.0);
     out.color = in.color;
+    out.edge_dist = in.edge_dist;
     return out;
 }
 
 @fragment
 fn fs_main(in: VSOutput) -> @location(0) vec4f {
-    return in.color * uniforms.pane_tint;
+    let d = min(in.edge_dist.x, in.edge_dist.y);
+    let aa = smoothstep(0.0, 1.0, d);
+    var c = in.color * uniforms.pane_tint;
+    c.a *= aa;
+    return c;
 }

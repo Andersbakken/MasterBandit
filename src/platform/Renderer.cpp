@@ -132,19 +132,22 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     rectPlDesc.bindGroupLayouts = &rectBindGroupLayout_;
     wgpu::PipelineLayout rectPipelineLayout = device_.CreatePipelineLayout(&rectPlDesc);
 
-    // Vertex layout: pos(2f) + color(4f)
-    wgpu::VertexAttribute rectVertAttrs[2] = {};
+    // Vertex layout: pos(2f) + color(4f) + edge_dist(2f)
+    wgpu::VertexAttribute rectVertAttrs[3] = {};
     rectVertAttrs[0].format = wgpu::VertexFormat::Float32x2;
     rectVertAttrs[0].offset = offsetof(RectVertex, pos);
     rectVertAttrs[0].shaderLocation = 0;
     rectVertAttrs[1].format = wgpu::VertexFormat::Float32x4;
     rectVertAttrs[1].offset = offsetof(RectVertex, color);
     rectVertAttrs[1].shaderLocation = 1;
+    rectVertAttrs[2].format = wgpu::VertexFormat::Float32x2;
+    rectVertAttrs[2].offset = offsetof(RectVertex, edge_dist);
+    rectVertAttrs[2].shaderLocation = 2;
 
     wgpu::VertexBufferLayout rectVertBufLayout = {};
     rectVertBufLayout.arrayStride = sizeof(RectVertex);
     rectVertBufLayout.stepMode = wgpu::VertexStepMode::Vertex;
-    rectVertBufLayout.attributeCount = 2;
+    rectVertBufLayout.attributeCount = 3;
     rectVertBufLayout.attributes = rectVertAttrs;
 
     // Blend state for rects
@@ -995,6 +998,7 @@ void Renderer::updateDividerBuffer(wgpu::Queue& queue,
         verts[i].pos[0] = px; verts[i].pos[1] = py;
         verts[i].color[0] = r; verts[i].color[1] = g;
         verts[i].color[2] = b; verts[i].color[3] = a;
+        verts[i].edge_dist[0] = 1e3f; verts[i].edge_dist[1] = 1e3f;
     };
     set(0, x0, y0); set(1, x1, y0); set(2, x0, y1);
     set(3, x1, y0); set(4, x1, y1); set(5, x0, y1);

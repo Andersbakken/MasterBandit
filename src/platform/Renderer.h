@@ -20,10 +20,11 @@ struct SlugVertex {
     uint32_t tint;  // packed RGBA8
 };
 
-// Per-vertex data for rect rendering (24 bytes)
+// Per-vertex data for rect rendering (32 bytes)
 struct RectVertex {
     float pos[2];
     float color[4];
+    float edge_dist[2];
 };
 
 class Renderer {

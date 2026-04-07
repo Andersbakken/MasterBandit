@@ -3,9 +3,9 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
-// SlugVertex is 36 bytes, RectVertex is 24 bytes
+// SlugVertex is 36 bytes, RectVertex is 32 bytes
 static constexpr uint64_t SLUG_VERTEX_SIZE = 36;
-static constexpr uint64_t RECT_VERTEX_SIZE = 24;
+static constexpr uint64_t RECT_VERTEX_SIZE = 32;
 
 void ComputeStatePool::init(WGPUDevice device, WGPUBindGroupLayout bindGroupLayout,
                              WGPUBuffer boxDrawingTable, size_t byteLimit)

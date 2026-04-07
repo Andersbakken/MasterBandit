@@ -5,6 +5,7 @@ add_library(terminal OBJECT
     MouseAndSelection.cpp
     SGR.cpp
     OSC.cpp
+    DCS.cpp
     CellGrid.cpp
     Document.cpp
 )

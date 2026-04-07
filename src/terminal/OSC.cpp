@@ -162,6 +162,10 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
 // --- OSC processing ---
 void TerminalEmulator::processStringSequence()
 {
+    if (mStringSequenceType == DCS) {
+        processDCS();
+        return;
+    }
     if (mStringSequenceType != OSX) {
         spdlog::warn("Ignoring non-OSC string sequence type {:#x} (len={})", mStringSequenceType, mStringSequence.size());
         return;

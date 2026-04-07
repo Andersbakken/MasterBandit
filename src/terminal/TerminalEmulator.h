@@ -241,6 +241,7 @@ private:
     static constexpr size_t MAX_STRING_SEQUENCE = 16 * 1024 * 1024; // 16 MB
 
     void processStringSequence();
+    void processDCS();
     void processOSC_Title(std::string_view text, bool setTitle);
     void processOSC_Color(int oscNum, std::string_view payload);
     void processOSC_Clipboard(std::string_view payload);

@@ -903,8 +903,9 @@ void PlatformDawn::renderFrame()
     }
 
     // Add tab bar texture to composite entries
-    if (tabBarTexture_) {
-        PaneRect tbRect = activeTab()->layout()->tabBarRect(fbWidth_, fbHeight_);
+    Tab* tabBarTab = activeTab();
+    if (tabBarTexture_ && tabBarTab) {
+        PaneRect tbRect = tabBarTab->layout()->tabBarRect(fbWidth_, fbHeight_);
         if (!tbRect.isEmpty()) {
             Renderer::CompositeEntry entry;
             entry.texture = tabBarTexture_->texture;

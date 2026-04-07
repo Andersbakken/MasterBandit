@@ -82,6 +82,9 @@ int PlatformDawn::exec()
             }
             return false;
         };
+        scbs.hasActiveTab = [this]() -> bool {
+            return activeTab() != nullptr;
+        };
         scbs.invokeAction = [this](const std::string& action, const std::vector<std::string>& args) -> bool {
             auto parsed = parseAction(action, args);
             if (!parsed) return false;

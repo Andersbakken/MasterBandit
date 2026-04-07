@@ -1047,6 +1047,11 @@ static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "permission denied: action requires additional permissions");
     }
 
+    if (eng->callbacks().hasActiveTab && !eng->callbacks().hasActiveTab()) {
+        JS_FreeCString(ctx, name);
+        return JS_ThrowTypeError(ctx, "no active tab");
+    }
+
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
         const char* arg = JS_ToCString(ctx, argv[i]);

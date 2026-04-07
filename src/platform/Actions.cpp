@@ -16,10 +16,13 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
         [&](const Action::ActivateTabRelative& a) {
             int idx = activeTabIdx_ + a.delta;
             if (idx >= 0 && idx < static_cast<int>(tabs_.size())) {
-                clearDividers(activeTab());
-                releaseTabTextures(activeTab());
+                if (Tab* prev = activeTab()) {
+                    clearDividers(prev);
+                    releaseTabTextures(prev);
+                }
                 activeTabIdx_ = idx;
-                refreshDividers(activeTab());
+                if (Tab* now = activeTab())
+                    refreshDividers(now);
                 updateWindowTitle();
                 tabBarDirty_ = true;
                 needsRedraw_ = true;
@@ -27,10 +30,13 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
         },
         [&](const Action::ActivateTab& a) {
             if (a.index >= 0 && a.index < static_cast<int>(tabs_.size())) {
-                clearDividers(activeTab());
-                releaseTabTextures(activeTab());
+                if (Tab* prev = activeTab()) {
+                    clearDividers(prev);
+                    releaseTabTextures(prev);
+                }
                 activeTabIdx_ = a.index;
-                refreshDividers(activeTab());
+                if (Tab* now = activeTab())
+                    refreshDividers(now);
                 updateWindowTitle();
                 tabBarDirty_ = true;
                 needsRedraw_ = true;
@@ -279,7 +285,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             TerminalCallbacks cbs;
             cbs.event = [this](TerminalEmulator*, int, void*) {
-                overlayRenderStates_[activeTab()].dirty = true;
+                if (Tab* tab = activeTab())
+                    overlayRenderStates_[tab].dirty = true;
                 needsRedraw_ = true;
             };
 

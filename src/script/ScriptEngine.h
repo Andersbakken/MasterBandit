@@ -32,6 +32,8 @@ struct AppCallbacks {
     // Check if a PTY exists
     std::function<bool(PaneId)> paneHasPty;
     std::function<bool(TabId)> overlayHasPty;
+    // Check if there is an active tab
+    std::function<bool()> hasActiveTab;
     // Invoke an action by name
     std::function<bool(const std::string&, const std::vector<std::string>&)> invokeAction;
     // Query pane info

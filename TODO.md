@@ -152,6 +152,20 @@
 - [ ] GPU buffer pool — divider and popup border vertex buffers are created/destroyed directly. A pool (like TexturePool/ComputeStatePool) would avoid per-frame GPU allocations.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
+## Procedural Glyph Rendering
+
+- [x] Box drawing + block elements (U+2500–259F) — rect, quadrant, shade, box line types.
+- [x] Braille patterns (U+2800–28FF) — 8-dot 2×4 grid.
+- [x] Sextants (U+1FB00–1FB3B) — 2×3 grid fill.
+- [x] Octants (U+1CD00–1CDFE) — 2×4 grid fill.
+- [x] Wedge triangles (U+1FB3C–1FB6F) — smooth mosaic triangles.
+- [x] Powerline core (E0B0–E0B3) — solid triangles and thin chevrons.
+- [x] Powerline half-cell triangles and diagonals (E0B8–E0BF).
+- [x] Powerline semi-circles (E0B4–E0B7) — tessellated with 16 segments.
+- [ ] Powerline extras (E0C0–E0D4) — flame, pixel, trapezoid, and misc shapes. Need per-shape geometry.
+- [ ] Slug/bezier rendering for semi-circles (E0B4, E0B6) — generate Slug-format atlas data for the 2 filled semi-circles, route through text pipeline for analytical anti-aliased curves. Currently using tessellation fallback.
+- [ ] Shade dithering — type 3 currently renders as a semi-transparent rect. Should use a dither pattern (checkerboard / noise) for accurate ░▒▓ rendering.
+
 ## Testing
 
 - [x] Unit test suite — doctest-based, tests `TerminalEmulator` in isolation. Covers: text output, cursor movement, SGR (all attributes, 16/256/truecolor colors, inverse), screen operations (ED, EL, SU/SD, DECSTBM, CNL/CPL/VPA, DCH/ICH, IL/DL, ECH), terminal modes (alt screen, mouse, bracketed paste, sync output, DA/XTVERSION, RIS), scrollback viewport, OSC title/icon, wide characters, SGR inverse color swap.

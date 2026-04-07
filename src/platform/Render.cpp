@@ -295,7 +295,17 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
             entry.ext_max_x = gi.ext_max_x;
             entry.ext_max_y = gi.ext_max_y;
             entry.upem = gi.upem;
-            entry.x_offset = glyphX;
+            // For non-substitution glyphs: if the glyph's right edge overflows the
+            // cell boundary, shift it left so it fits — preserving the full shape.
+            float adjustedX = glyphX;
+            if (!sg.isSubstitution) {
+                float upemF = static_cast<float>(gi.upem);
+                float extMaxPx = gi.ext_max_x / upemF * fontSize_;
+                if (extMaxPx > cellWidthPx) {
+                    adjustedX -= (extMaxPx - cellWidthPx);
+                }
+            }
+            entry.x_offset = adjustedX;
             entry.y_offset = glyphY;
 
             uint32_t glyphIdx = static_cast<uint32_t>(rowCache.glyphs.size());

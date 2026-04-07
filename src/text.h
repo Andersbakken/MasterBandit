@@ -38,6 +38,7 @@ struct FontStyle {
 struct FontData {
     std::string name;
     float baseSize;                      // px size used for metric scaling
+    float charWidth;                     // advance of a reference character at baseSize (used to snap fallback glyph advances)
     float ascender, descender;           // in px at baseSize
     float lineHeight;                    // ascender - descender + gap
 

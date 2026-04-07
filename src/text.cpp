@@ -309,6 +309,15 @@ bool TextSystem::registerFont(const std::string& name,
         font.lineHeight = baseSize * 1.2f;
     }
 
+    // Measure reference character advance ('M') for snapping fallback glyph advances
+    {
+        uint32_t refGid;
+        if (hb_font_get_nominal_glyph(primary.hbFont, 'M', &refGid))
+            font.charWidth = hb_font_get_glyph_h_advance(primary.hbFont, refGid) * pixelScale;
+        else
+            font.charWidth = baseSize * 0.6f; // reasonable fallback
+    }
+
     // Check if any font in this set has COLRv1 paint data
     for (const auto& entry : font.hbFonts) {
         if (hb_ot_color_has_paint(entry.hbFace)) {
@@ -730,16 +739,8 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
                 if (resolved.glyphId != 0) {
                     glyphFi = resolved.fontIndex;
                     gid = resolved.glyphId;
-                    hb_font_t* fbFont;
-                    hb_face_t* fbFace;
-                    {
-                        std::shared_lock lock(font.mutex);
-                        fbFont = font.hbFonts[glyphFi].hbFont;
-                        fbFace = font.hbFonts[glyphFi].hbFace;
-                    }
-                    unsigned int fbUpem = hb_face_get_upem(fbFace);
-                    float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                    float adv = hb_font_get_glyph_h_advance(fbFont, gid) * fbScale * scale;
+                    int cw = wcwidth(static_cast<wchar_t>(cp));
+                    float adv = font.charWidth * scale * (cw > 1 ? 2.0f : 1.0f);
                     ensureGlyphEncoded(font, glyphFi, gid);
                     allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
                         adv, 0, 0, seg.level});
@@ -987,16 +988,8 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                 if (resolved.glyphId != 0) {
                     glyphFi = resolved.fontIndex;
                     gid = resolved.glyphId;
-                    hb_font_t* fbFont;
-                    hb_face_t* fbFace;
-                    {
-                        std::shared_lock lock(font.mutex);
-                        fbFont = font.hbFonts[glyphFi].hbFont;
-                        fbFace = font.hbFonts[glyphFi].hbFace;
-                    }
-                    unsigned int fbUpem = hb_face_get_upem(fbFace);
-                    float fbScale = static_cast<float>(font.baseSize) / static_cast<float>(fbUpem);
-                    float adv = hb_font_get_glyph_h_advance(fbFont, gid) * fbScale * scale;
+                    int cw = wcwidth(static_cast<wchar_t>(cp));
+                    float adv = font.charWidth * scale * (cw > 1 ? 2.0f : 1.0f);
                     ensureGlyphEncoded(font, glyphFi, gid);
                     result.glyphs.push_back({glyphKey(glyphFi, gid), infos[i].cluster, adv, 0, 0, false, segmentRtl});
                     continue;
@@ -1024,10 +1017,26 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
             }
 
             ensureGlyphEncoded(font, glyphFi, gid);
+            float adv;
+            if (!isSubstitution && glyphFi != 0) {
+                // Fallback font: snap advance to primary font's cell width so glyphs
+                // land on the grid regardless of what the fallback font reports.
+                uint32_t cluster = infos[i].cluster;
+                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
+                uint32_t cp2;
+                if (*p < 0x80) cp2 = *p;
+                else if ((*p & 0xE0) == 0xC0) cp2 = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
+                else if ((*p & 0xF0) == 0xE0) cp2 = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
+                else cp2 = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+                int cw = wcwidth(static_cast<wchar_t>(cp2));
+                adv = font.charWidth * scale * (cw > 1 ? 2.0f : 1.0f);
+            } else {
+                adv = positions[i].x_advance * fontPixelScale * scale;
+            }
             result.glyphs.push_back({
                 glyphKey(glyphFi, gid),
                 infos[i].cluster,
-                positions[i].x_advance * fontPixelScale * scale,
+                adv,
                 positions[i].x_offset * fontPixelScale * scale,
                 positions[i].y_offset * fontPixelScale * scale,
                 isSubstitution,

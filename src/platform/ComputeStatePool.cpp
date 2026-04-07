@@ -1,4 +1,5 @@
 #include "ComputeStatePool.h"
+#include "ProceduralGlyphTable.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
@@ -129,7 +130,7 @@ void ComputeStatePool::rebuildBindGroup(ComputeState* state)
     bgEntries[2].size    = static_cast<uint64_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE;
     bgEntries[3].binding = 3;
     bgEntries[3].buffer  = state->computeRectVertBuffer;
-    bgEntries[3].size    = (static_cast<uint64_t>(state->maxCells) * 30 + 24) * RECT_VERTEX_SIZE;
+    bgEntries[3].size    = (static_cast<uint64_t>(state->maxCells) * 54 + 24) * RECT_VERTEX_SIZE;
     bgEntries[4].binding = 4;
     bgEntries[4].buffer  = state->indirectBuffer;
     bgEntries[4].size    = 32;
@@ -138,7 +139,7 @@ void ComputeStatePool::rebuildBindGroup(ComputeState* state)
     bgEntries[5].size    = static_cast<uint64_t>(state->maxGlyphs) * sizeof(GlyphEntry);
     bgEntries[6].binding = 6;
     bgEntries[6].buffer  = wgpu::Buffer(boxDrawingTable_);
-    bgEntries[6].size    = 160 * sizeof(uint32_t);  // BoxDrawing::kTableSize
+    bgEntries[6].size    = ProceduralGlyph::kTableSize * sizeof(uint32_t);
 
     wgpu::BindGroupDescriptor bgDesc = {};
     bgDesc.layout     = wgpu::BindGroupLayout(bindGroupLayout_);
@@ -176,10 +177,10 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
         state->computeTextVertBuffer = device.CreateBuffer(&desc);
         state->maxTextVertices = initTextVerts;
     }
-    // Rect vertex buffer: backgrounds (6/cell) + procedural box drawing (up to 24/cell) + cursor (24)
+    // Rect vertex buffer: backgrounds (6/cell) + procedural glyphs (up to 48/cell for braille/octant) + cursor (24)
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size  = (static_cast<uint64_t>(cells) * 30 + 24) * RECT_VERTEX_SIZE;
+        desc.size  = (static_cast<uint64_t>(cells) * 54 + 24) * RECT_VERTEX_SIZE;
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
         state->computeRectVertBuffer = device.CreateBuffer(&desc);
     }

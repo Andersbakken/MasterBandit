@@ -1,4 +1,5 @@
 #include "PlatformDawn.h"
+#include "ProceduralGlyphTable.h"
 #include "Utils.h"
 #include "FontResolver.h"
 #include <filesystem>
@@ -277,11 +278,38 @@ void PlatformDawn::renderTabBar()
         return &it->second;
     };
 
-    auto placeChar = [&](int& col, const std::string& utf8ch, uint32_t fg, uint32_t bg, bool stretchY = false) {
+    auto placeChar = [&](int& col, const std::string& utf8ch, uint32_t fg, uint32_t bg) {
         if (col >= cols) return;
         ResolvedCell& rc = cells[static_cast<size_t>(col)];
         rc.fg_color = fg;
         rc.bg_color = bg;
+
+        // Decode UTF-8 to codepoint for procedural glyph check
+        uint32_t cp = 0;
+        const auto* p = reinterpret_cast<const uint8_t*>(utf8ch.data());
+        if ((p[0] & 0x80) == 0) cp = p[0];
+        else if ((p[0] & 0xE0) == 0xC0) cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+        else if ((p[0] & 0xF0) == 0xE0) cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+        else cp = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+
+        uint32_t tableIdx = ProceduralGlyph::codepointToTableIdx(cp);
+        if (tableIdx != ProceduralGlyph::kInvalidIndex && ProceduralGlyph::kTable[tableIdx] != 0) {
+            GlyphEntry entry;
+            entry.atlas_offset = 0x80000000u | tableIdx;
+            entry.ext_min_x = 0;
+            entry.ext_min_y = 0;
+            entry.ext_max_x = 0;
+            entry.ext_max_y = 0;
+            entry.upem = 0;
+            entry.x_offset = 0;
+            entry.y_offset = 0;
+            rc.glyph_offset = static_cast<uint32_t>(tabBarGlyphs.size());
+            rc.glyph_count = 1;
+            tabBarGlyphs.push_back(entry);
+            col++;
+            return;
+        }
+
         // System font fallback happens automatically inside shapeText
         const ShapedText& shaped = textSystem_.shapeText(tabBarFontName_, utf8ch, tabBarFontSize_);
         const GlyphInfo* gi = resolveTabBarGlyph(shaped);
@@ -294,9 +322,6 @@ void PlatformDawn::renderTabBar()
             entry.ext_max_x = gi->ext_max_x;
             entry.ext_max_y = gi->ext_max_y;
             entry.upem = gi->upem;
-            if (stretchY) {
-                entry.upem = gi->upem | 0x80000000u;
-            }
             entry.x_offset = 0.0f;
             entry.y_offset = 0.0f;
             rc.glyph_offset = static_cast<uint32_t>(tabBarGlyphs.size());
@@ -330,7 +355,7 @@ void PlatformDawn::renderTabBar()
         // Powerline separator
         uint32_t nextBg = (i + 1 < visEnd)
             ? tabInfos[i + 1].bgColor : tbBgColor_;
-        placeChar(col, SEP_RIGHT, ti.bgColor, nextBg, true);
+        placeChar(col, SEP_RIGHT, ti.bgColor, nextBg);
     }
 
     // Right overflow indicator

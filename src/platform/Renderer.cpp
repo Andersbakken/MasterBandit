@@ -1,5 +1,5 @@
 #include "Renderer.h"
-#include "BoxDrawingTable.h"
+#include "ProceduralGlyphTable.h"
 #include "ColrAtlas.h"
 #include "renderer_utils.h"
 #include <spdlog/spdlog.h>
@@ -428,10 +428,10 @@ void Renderer::initComputePipeline(wgpu::Device& device, wgpu::Queue& queue, con
     // Create and upload box drawing table buffer
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = sizeof(BoxDrawing::kTable);
+        desc.size = sizeof(ProceduralGlyph::kTable);
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
         boxDrawingTableBuffer_ = device.CreateBuffer(&desc);
-        queue.WriteBuffer(boxDrawingTableBuffer_, 0, BoxDrawing::kTable, sizeof(BoxDrawing::kTable));
+        queue.WriteBuffer(boxDrawingTableBuffer_, 0, ProceduralGlyph::kTable, sizeof(ProceduralGlyph::kTable));
     }
 
     computePool_.init(device.Get(), computeBindGroupLayout_.Get(), boxDrawingTableBuffer_.Get());

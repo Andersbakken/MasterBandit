@@ -1,5 +1,5 @@
 #include "PlatformDawn.h"
-#include "BoxDrawingTable.h"
+#include "ProceduralGlyphTable.h"
 #include "Utils.h"
 
 #include <numeric>
@@ -96,11 +96,10 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
             continue;
         }
 
-        // Procedural box/block drawing: bypass shaping entirely
-        if (cell.wc >= BoxDrawing::kBaseCodepoint &&
-            cell.wc < BoxDrawing::kBaseCodepoint + BoxDrawing::kTableSize) {
-            uint32_t tableIdx = cell.wc - BoxDrawing::kBaseCodepoint;
-            if (BoxDrawing::kTable[tableIdx] != 0) {
+        // Procedural glyph rendering: bypass shaping entirely
+        {
+            uint32_t tableIdx = ProceduralGlyph::codepointToTableIdx(cell.wc);
+            if (tableIdx != ProceduralGlyph::kInvalidIndex && ProceduralGlyph::kTable[tableIdx] != 0) {
                 GlyphEntry entry;
                 entry.atlas_offset = 0x80000000u | tableIdx;
                 entry.ext_min_x = 0;
@@ -133,9 +132,8 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
             if (next.attrs.wideSpacer()) { runEnd++; continue; } // skip spacers, keep run going
             if (next.attrs.bold() != runBold) break;
             if (next.attrs.italic() != runItalic) break;
-            // Don't include box/block drawing chars in shaping runs — they're rendered procedurally
-            if (next.wc >= BoxDrawing::kBaseCodepoint &&
-                next.wc < BoxDrawing::kBaseCodepoint + BoxDrawing::kTableSize) break;
+            // Don't include procedural glyphs in shaping runs
+            if (ProceduralGlyph::codepointToTableIdx(next.wc) != ProceduralGlyph::kInvalidIndex) break;
             runEnd++;
         }
 

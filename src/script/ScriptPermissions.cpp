@@ -274,6 +274,12 @@ void Allowlist::load(const std::string& configDir)
             if (key == "path") curAllow.path = val;
             else if (key == "sha256") curAllow.sha256 = val;
             else if (key == "permissions") curAllow.permissions = parsePermissions(val);
+            else if (key.substr(0, 7) == "module_") {
+                // "module_N = /abs/path.js|sha256hex"
+                auto sep = val.rfind('|');
+                if (sep != std::string::npos)
+                    curAllow.modules.emplace_back(val.substr(0, sep), val.substr(sep + 1));
+            }
         } else if (inDeny) {
             if (key == "path") curDeny.path = val;
             else if (key == "sha256") curDeny.sha256 = val;
@@ -306,7 +312,10 @@ void Allowlist::save() const
         f << "[[allow]]\n";
         f << "path = \"" << e.path << "\"\n";
         f << "sha256 = \"" << e.sha256 << "\"\n";
-        f << "permissions = \"" << permissionsToString(e.permissions) << "\"\n\n";
+        f << "permissions = \"" << permissionsToString(e.permissions) << "\"\n";
+        for (size_t i = 0; i < e.modules.size(); ++i)
+            f << "module_" << i << " = \"" << e.modules[i].first << "|" << e.modules[i].second << "\"\n";
+        f << "\n";
     }
     for (const auto& e : denied_) {
         f << "[[deny]]\n";
@@ -315,14 +324,14 @@ void Allowlist::save() const
     }
 }
 
-std::optional<uint32_t> Allowlist::check(const std::string& path,
-                                          const std::string& hash) const
+const Allowlist::AllowEntry* Allowlist::check(const std::string& path,
+                                               const std::string& hash) const
 {
     for (const auto& e : allowed_) {
         if (e.path == path && e.sha256 == hash)
-            return e.permissions;
+            return &e;
     }
-    return std::nullopt;
+    return nullptr;
 }
 
 bool Allowlist::isDenied(const std::string& path, const std::string& hash) const
@@ -335,17 +344,18 @@ bool Allowlist::isDenied(const std::string& path, const std::string& hash) const
 }
 
 void Allowlist::allow(const std::string& path, const std::string& hash,
-                       uint32_t permissions)
+                       uint32_t permissions,
+                       const std::vector<std::pair<std::string, std::string>>& modules)
 {
-    // Update existing entry or add new
     for (auto& e : allowed_) {
         if (e.path == path) {
             e.sha256 = hash;
             e.permissions = permissions;
+            e.modules = modules;
             return;
         }
     }
-    allowed_.push_back({path, hash, permissions});
+    allowed_.push_back({path, hash, permissions, modules});
 }
 
 void Allowlist::deny(const std::string& path, const std::string& hash)

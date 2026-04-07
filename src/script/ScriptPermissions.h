@@ -60,7 +60,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 1;
+inline constexpr int kAllowlistVersion = 2;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {
@@ -68,25 +68,25 @@ public:
     void load(const std::string& configDir);
     void save() const;
 
-    // Returns permission bitmask if path+hash match an allow entry; nullopt otherwise
-    std::optional<uint32_t> check(const std::string& path,
-                                   const std::string& hash) const;
-    bool isDenied(const std::string& path, const std::string& hash) const;
-
-    void allow(const std::string& path, const std::string& hash,
-               uint32_t permissions);
-    void deny(const std::string& path, const std::string& hash);
-
-private:
     struct AllowEntry {
         std::string path;
         std::string sha256;
         uint32_t permissions = 0;
+        // All .js files in the script's directory tree at approval time: {path, sha256}
+        std::vector<std::pair<std::string, std::string>> modules;
     };
-    struct DenyEntry {
-        std::string path;
-        std::string sha256;
-    };
+
+    // Returns the allow entry if path+hash match; nullptr otherwise.
+    const AllowEntry* check(const std::string& path, const std::string& hash) const;
+    bool isDenied(const std::string& path, const std::string& hash) const;
+
+    void allow(const std::string& path, const std::string& hash,
+               uint32_t permissions,
+               const std::vector<std::pair<std::string, std::string>>& modules = {});
+    void deny(const std::string& path, const std::string& hash);
+
+private:
+    struct DenyEntry { std::string path; std::string sha256; };
 
     std::string filePath_;
     std::vector<AllowEntry> allowed_;

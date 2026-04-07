@@ -1897,6 +1897,36 @@ void Engine::setConfigDir(const std::string& dir) {
     allowlist_.load(dir);
 }
 
+// Collect {path, sha256} for every .js file in the directory tree of scriptPath,
+// sorted for deterministic comparison.
+static std::vector<std::pair<std::string, std::string>>
+collectDirModules(const std::string& scriptPath)
+{
+    std::vector<std::pair<std::string, std::string>> result;
+    fs::path dir = fs::path(scriptPath).parent_path();
+    std::error_code ec;
+    for (auto& entry : fs::recursive_directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file(ec) || ec) continue;
+        if (entry.path().extension() != ".js") continue;
+        std::string p = entry.path().string();
+        std::string content = readFile(p);
+        if (!content.empty())
+            result.emplace_back(std::move(p), sha256Hex(content));
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+// Returns true if the modules stored in the allowlist entry match the current
+// state of the script's directory (same set of files, same hashes).
+static bool verifyModuleHashes(const Allowlist::AllowEntry& entry)
+{
+    if (entry.modules.empty()) return true; // no modules recorded — allow (old entry)
+    auto current = collectDirModules(entry.path);
+    return current == entry.modules;
+}
+
 InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) {
     std::string content = readFile(path);
     if (content.empty()) {
@@ -1911,12 +1941,14 @@ InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) 
         return 0;
     }
 
-    auto allowed = allowlist_.check(path, hash);
-    if (allowed.has_value()) {
-        uint32_t grantedPerms = *allowed;
-        if ((requestedPerms & ~grantedPerms) == 0)
-            return loadScriptInternal(path, content, requestedPerms);
-        // Requesting new perms beyond what was granted — re-prompt
+    const auto* entry = allowlist_.check(path, hash);
+    if (entry) {
+        if ((requestedPerms & ~entry->permissions) == 0) {
+            if (verifyModuleHashes(*entry))
+                return loadScriptInternal(path, content, requestedPerms);
+            sLog().info("ScriptEngine: module files changed for '{}', re-prompting", path);
+        }
+        // Requesting new perms beyond what was granted, or modules changed — re-prompt
     }
 
     // Store pending script and notify JS to show permission prompt
@@ -1978,11 +2010,13 @@ void Engine::approveScript(const std::string& path, char response) {
     case 'y': case 'Y':
         loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
         break;
-    case 'a': case 'A':
-        allowlist_.allow(pending.path, pending.hash, pending.requestedPerms);
+    case 'a': case 'A': {
+        auto modules = collectDirModules(pending.path);
+        allowlist_.allow(pending.path, pending.hash, pending.requestedPerms, modules);
         allowlist_.save();
         loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
         break;
+    }
     case 'd': case 'D':
         allowlist_.deny(pending.path, pending.hash);
         allowlist_.save();

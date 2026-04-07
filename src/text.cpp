@@ -110,11 +110,15 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
 
     // Cache miss — extract glyph data without holding any lock.
     // Use a thread-local hb_gpu_draw_t since the per-entry one isn't thread-safe.
-    thread_local hb_gpu_draw_t* tlGpuDraw = nullptr;
-    if (!tlGpuDraw) {
-        tlGpuDraw = hb_gpu_draw_create_or_fail();
+    struct GpuDrawOwner {
+        hb_gpu_draw_t* ptr = nullptr;
+        ~GpuDrawOwner() { if (ptr) hb_gpu_draw_destroy(ptr); }
+    };
+    thread_local GpuDrawOwner tlGpuDraw;
+    if (!tlGpuDraw.ptr) {
+        tlGpuDraw.ptr = hb_gpu_draw_create_or_fail();
     }
-    hb_gpu_draw_t* g = tlGpuDraw;
+    hb_gpu_draw_t* g = tlGpuDraw.ptr;
 
     hb_font_t* hbFont;
     hb_face_t* hbFace;

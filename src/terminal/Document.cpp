@@ -787,23 +787,63 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         // Height-only change: no reflow needed
         if (newRows < screenHeight_) {
             int delta = screenHeight_ - newRows;
-            historyCount_ += delta;
+            // Count trailing blank rows at the bottom — discard them instead of
+            // pushing them to history (they're padding, not content).
+            int blanksAtBottom = 0;
+            for (int r = screenHeight_ - 1; r >= 0 && blanksAtBottom < delta; --r) {
+                int phys = screenRowToPhysical(r);
+                const Cell* rp = &ring_[static_cast<size_t>(phys) * cols_];
+                bool blank = true;
+                for (int c = 0; c < cols_ && blank; ++c) {
+                    if (rp[c].wc != 0) blank = false;
+                }
+                if (!blank) break;
+                blanksAtBottom++;
+            }
+            // Discard blank rows by pulling ringHead_ back.
+            ringHead_ = (ringHead_ - blanksAtBottom + ringCapacity_) & ringMask();
+            // Push the remaining rows to history.
+            int pushToHistory = delta - blanksAtBottom;
+            historyCount_ += pushToHistory;
             while (historyCount_ > tier1Capacity_) {
                 evictToArchive();
             }
         } else {
             int delta = newRows - screenHeight_;
-            int pull = std::min(delta, historyCount_);
-            historyCount_ -= pull;
-            // Advance ringHead so new blank rows appear at the bottom, not the top
-            int unpulled = delta - pull;
-            if (unpulled > 0) {
-                ringHead_ = (ringHead_ + unpulled) & ringMask();
+            // Don't pull history back to screen — that causes old content (e.g. prompts)
+            // to briefly reappear. Add blank rows at the bottom only.
+            // Ensure ring capacity before advancing ringHead_.
+            int needed = historyCount_ + newRows;
+            if (needed > ringCapacity_) {
+                int newCap = roundUpPow2(needed + 64);
+                std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
+                std::vector<std::unordered_map<int, CellExtra>> newExtras(newCap);
+                std::vector<bool> newCont(newCap, false);
+                std::vector<PromptKind> newPK(newCap, UnknownPrompt);
+                int total = historyCount_ + screenHeight_;
+                for (int i = 0; i < total; ++i) {
+                    int oldPhys = (ringHead_ - total + i) & ringMask();
+                    std::memcpy(&newRing[static_cast<size_t>(i) * cols_],
+                                &ring_[static_cast<size_t>(oldPhys) * cols_], cols_ * sizeof(Cell));
+                    newExtras[i] = std::move(ringExtras_[oldPhys]);
+                    newCont[i] = continued_[oldPhys];
+                    newPK[i] = promptKind_[oldPhys];
+                }
+                ring_ = std::move(newRing);
+                ringExtras_ = std::move(newExtras);
+                continued_ = std::move(newCont);
+                promptKind_ = std::move(newPK);
+                ringCapacity_ = newCap;
+                ringHead_ = total & (newCap - 1);
+            }
+            for (int i = 0; i < delta; ++i) {
+                clearPhysicalRow(ringHead_);
+                ringHead_ = (ringHead_ + 1) & ringMask();
             }
         }
         screenHeight_ = newRows;
 
-        // Ensure ring capacity
+        // Ensure ring capacity (may be a no-op for grow, which already expanded above)
         int needed = historyCount_ + screenHeight_;
         if (needed > ringCapacity_) {
             int newCap = roundUpPow2(needed + 64);

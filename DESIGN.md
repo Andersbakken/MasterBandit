@@ -451,7 +451,71 @@ per-tab/per-pane information (dimensions, held texture size, divider buffer).
 
 ---
 
-## 16. Project Structure
+## 16. Terminal Capability Queries (implemented)
+
+### Device Attributes
+
+- **DA1** (`CSI c` / `CSI 0 c`): responds `ESC [ ? 64;1;2;6;22 c` (VT420, 132-col, printer, selective erase, ANSI color).
+- **DA2** (`CSI > c`): responds `ESC [ > 64;2500;0 c` (VT500-class, xterm-compatible version 2500).
+- **XTVERSION** (`CSI > q`): responds `DCS > | MasterBandit(0.1) ST`.
+
+### XTGETTCAP
+
+`DCS + q <hex-names> ST` — queries terminfo-style capabilities by name. Names are semicolon-separated and hex-encoded. Each capability gets a separate response:
+
+- Found: `DCS 1 + r <hex-name> = <hex-value> ST`
+- Not found: `DCS 0 + r <hex-name> ST`
+
+**Supported capabilities:**
+
+| Name | Meaning |
+|---|---|
+| `TN` / `name` | Terminal name (`MasterBandit`) |
+| `Tc` | True-color support (tmux extension) |
+| `Su` | Styled/colored underlines |
+| `fullkbd` | Kitty full keyboard protocol |
+| `XF` | Focus-in/out events (mode 1004) |
+| `Sync` | Synchronized output / mode 2026 (tmux/kitty extension) |
+| `Smulx` | Curly/styled underlines (`CSI 4:N m`) |
+| `Setulc` | Underline color (`CSI 58:2:...m`) |
+| `setrgbf` / `setrgbb` | RGB foreground/background (`CSI 38:2:...m` / `CSI 48:2:...m`) |
+| `BE` / `BD` / `PS` / `PE` | Bracketed paste enable/disable and delimiters |
+| `fe` / `fd` | Focus event enable/disable |
+| `XR` / `RV` | XTVERSION / DA2 query sequences |
+| `smcup` / `rmcup` | Alternate screen |
+| `smkx` / `rmkx` | Application keypad mode |
+| `Ss` / `Se` | DECSCUSR set/reset cursor style |
+| `civis` / `cnorm` / `cvvis` | Cursor visibility |
+| `cup` / `hpa` / `vpa` | Cursor positioning |
+| `cuu` / `cud` / `cuf` / `cub` (+ `1` variants) | Cursor movement |
+| `clear` / `ed` / `el` / `el1` / `ech` | Erase operations |
+| `csr` / `ind` / `ri` / `indn` / `rin` | Scroll region and scrolling |
+| `il` / `il1` / `dl` / `dl1` / `dch` / `dch1` / `ich` | Insert/delete lines and characters |
+| `bold` / `dim` / `rev` / `blink` / `sitm` / `ritm` / `smul` / `rmul` / `smso` / `rmso` / `smxx` / `rmxx` / `sgr0` | SGR attributes |
+| `setaf` / `setab` | 256-color foreground/background |
+| `rep` | REP — repeat preceding character |
+| `sc` / `rc` | Save/restore cursor |
+| `u6` / `u7` / `u8` / `u9` | CPR and DA query sequences (xterm convention) |
+| `colors` | 256 |
+| `it` | Tab stop interval (8) |
+
+**MasterBandit-specific capabilities:**
+
+| Name | Meaning |
+|---|---|
+| `mb-query-popup` | Supports OSC 58237 popup pane API |
+| `mb-query-applet` | Supports OSC 58237 JS applet loading |
+
+Shell helper:
+```sh
+xtgettcap() { printf "\eP+q$(printf '%s' "$1" | xxd -p)\e\\"; }
+xtgettcap Tc          # → 1+r5463  (found, boolean)
+xtgettcap mb-query-popup  # → 1+r6d622d71756572792d706f707570
+```
+
+---
+
+## 17. Project Structure
 
 ```
 src/
@@ -503,7 +567,7 @@ tests/
 
 ---
 
-## 17. Testing (implemented)
+## 18. Testing (implemented)
 
 Unit test suite using doctest (`tests/`). `TestTerminal` wraps `TerminalEmulator`
 with no PTY or GPU — feeds escape sequences via `injectData`, asserts on cell grid
@@ -523,7 +587,7 @@ Run with: `./build/bin/mb-tests`
 
 ---
 
-## 18. Scripting Engine (implemented)
+## 19. Scripting Engine (implemented)
 
 QuickJS-ng embedded scripting with permission system.
 

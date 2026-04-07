@@ -141,4 +141,15 @@ inline std::vector<uint8_t> loadFile(const std::string& path)
     return data;
 }
 
+inline std::string readFile(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f.is_open()) return {};
+    auto size = f.tellg();
+    f.seekg(0);
+    std::string data(static_cast<size_t>(size), '\0');
+    f.read(data.data(), size);
+    return data;
+}
+
 } // namespace io

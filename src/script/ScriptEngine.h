@@ -228,7 +228,6 @@ private:
     void cleanupPane(PaneId pane);
     void cleanupTab(TabId tab);
 
-    static std::string readFile(const std::string& path);
 };
 
 } // namespace Script

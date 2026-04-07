@@ -1,6 +1,7 @@
 #include "ScriptEngine.h"
 #include "ScriptFsModule.h"
 #include "Action.h"
+#include "Utils.h"
 
 #include <quickjs.h>
 #include <spdlog/spdlog.h>
@@ -1743,6 +1744,9 @@ JSContext* Engine::createContext()
     return ctx;
 }
 
+static JSValue jsMbRegisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
+static JSValue jsMbUnregisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
+
 void Engine::setupGlobals(JSContext* ctx, InstanceId id)
 {
     JSValue global = JS_GetGlobalObject(ctx);
@@ -1790,7 +1794,7 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
 }
 
 InstanceId Engine::loadController(const std::string& path) {
-    std::string src = readFile(path);
+    std::string src = io::readFile(path);
     if (src.empty()) {
         sLog().error("ScriptEngine: failed to read '{}'", path);
         return 0;
@@ -1910,7 +1914,7 @@ collectDirModules(const std::string& scriptPath)
         if (!entry.is_regular_file(ec) || ec) continue;
         if (entry.path().extension() != ".js") continue;
         std::string p = entry.path().string();
-        std::string content = readFile(p);
+        std::string content = io::readFile(p);
         if (!content.empty())
             result.emplace_back(std::move(p), sha256Hex(content));
     }
@@ -1928,7 +1932,7 @@ static bool verifyModuleHashes(const Allowlist::AllowEntry& entry)
 }
 
 InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) {
-    std::string content = readFile(path);
+    std::string content = io::readFile(path);
     if (content.empty()) {
         sLog().error("ScriptEngine: failed to read '{}'", path);
         return 0;
@@ -2834,15 +2838,6 @@ bool Engine::registerAction(InstanceId id, const std::string& name)
 bool Engine::isActionRegistered(const std::string& fullName) const
 {
     return registeredActions_.count(fullName) > 0;
-}
-
-std::string Engine::readFile(const std::string& path)
-{
-    std::ifstream f(path);
-    if (!f) return {};
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
 }
 
 } // namespace Script

@@ -117,6 +117,7 @@
 - [x] Scripting: OSC handler routing — `pane.addEventListener("osc:NNNN", fn)` registers JS handlers for specific OSC numbers. Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
 - [x] Scripting: applet launch confirmation — implemented in JS (applet-loader.js). Creates a popup with clickable [allow]/[deny]/[always]/[never] buttons. Supports both keyboard and mouse click input. Allowlist persisted in config dir.
 - [ ] Scripting: command line loading — `--script <path>:<permissions>` loads user scripts at startup.
+- [ ] Scripting: TypeScript definitions — generate a `.d.ts` file covering the full `mb.*` JS API surface (`mb`, `Pane`, `Popup`, `Tab`, `Overlay`, events, permissions). Serves as both documentation and enables type-checking for applet authors.
 - [x] Scripting: `console.log` — route QuickJS console output to spdlog.
 - [x] Scripting: timers — `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` backed by libuv timers.
 - [x] Scripting: overlay creation — `tab.createOverlay()` creates headless terminal, `overlay.inject()` renders, `overlay.addEventListener("input", fn)` receives keystrokes, `overlay.close()` pops it.

@@ -2346,16 +2346,15 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
             }
             JS_FreeValue(inst.ctx, arr);
         }
-        JS_FreeValue(inst.ctx, paneObj);
         JS_FreeValue(inst.ctx, registry);
 
-        // Also check mb-level listeners
+        // Also check mb-level listeners — pass pane object directly
         JSValue global2 = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global2, "mb");
         JSValue mbArr = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
-        if (!JS_IsUndefined(mbArr)) {
+        if (!JS_IsUndefined(mbArr) && !JS_IsUndefined(paneObj)) {
             JSValue args[] = {
-                JS_NewInt32(inst.ctx, pane),
+                JS_DupValue(inst.ctx, paneObj),
                 JS_NewStringLen(inst.ctx, payload.c_str(), payload.size())
             };
             enqueueListeners(inst.ctx, mbArr, 2, args);
@@ -2365,6 +2364,7 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
         JS_FreeValue(inst.ctx, mbArr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global2);
+        JS_FreeValue(inst.ctx, paneObj);
     }
 }
 

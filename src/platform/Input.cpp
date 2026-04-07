@@ -358,6 +358,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
     // Clear selection drag on release and finalize selection
     if (action == GLFW_RELEASE && selectionDragActive_) {
         selectionDragActive_ = false;
+        stopAutoScroll();
         Pane* fp2 = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
         TerminalEmulator* term2 = tab->hasOverlay()
             ? static_cast<TerminalEmulator*>(tab->topOverlay())
@@ -644,7 +645,20 @@ void PlatformDawn::onCursorPos(double x, double y)
         MouseEvent ev = buildMouseEvent();
         term->mouseMoveEvent(&ev);
         // Clear drag active on release (no buttons held)
-        if (ev.buttons == 0) selectionDragActive_ = false;
+        if (ev.buttons == 0) {
+            selectionDragActive_ = false;
+            stopAutoScroll();
+            return;
+        }
+        // Auto-scroll when mouse is outside the pane's vertical bounds
+        double paneH = pr.h;
+        if (relY < 0 && term->viewportOffset() < term->document().historySize()) {
+            startAutoScroll(+1, ev.x);
+        } else if (relY >= paneH && term->viewportOffset() > 0) {
+            startAutoScroll(-1, ev.x);
+        } else {
+            stopAutoScroll();
+        }
         return;
     }
 
@@ -700,5 +714,58 @@ void PlatformDawn::onCursorPos(double x, double y)
         MouseEvent ev = buildMouseEvent();
         term->mouseMoveEvent(&ev);
     }
+}
+
+void PlatformDawn::startAutoScroll(int dir, int col)
+{
+    autoScrollDir_ = dir;
+    autoScrollCol_ = col;
+    if (autoScrollTimerActive_) return; // already running, dir/col updated above
+    uv_timer_start(&autoScrollTimer_, [](uv_timer_t* t) {
+        static_cast<PlatformDawn*>(t->data)->doAutoScroll();
+    }, 0, 50);
+    autoScrollTimerActive_ = true;
+}
+
+void PlatformDawn::stopAutoScroll()
+{
+    if (!autoScrollTimerActive_) return;
+    uv_timer_stop(&autoScrollTimer_);
+    autoScrollTimerActive_ = false;
+}
+
+void PlatformDawn::doAutoScroll()
+{
+    if (!selectionDragActive_) { stopAutoScroll(); return; }
+
+    Tab* tab = activeTab();
+    if (!tab) { stopAutoScroll(); return; }
+    TerminalEmulator* term = tab->hasOverlay()
+        ? static_cast<TerminalEmulator*>(tab->topOverlay())
+        : [&]() -> TerminalEmulator* {
+            Pane* fp = tab->layout()->focusedPane();
+            return fp ? static_cast<TerminalEmulator*>(fp->terminal()) : nullptr;
+          }();
+    if (!term) { stopAutoScroll(); return; }
+
+    term->scrollViewport(autoScrollDir_);
+
+    // Extend selection to the boundary row now visible
+    MouseEvent ev;
+    ev.x       = autoScrollCol_;
+    ev.y       = (autoScrollDir_ > 0) ? 0 : term->height() - 1;
+    ev.globalX = 0; ev.globalY = 0;
+    ev.button  = NoButton;
+    ev.buttons = LeftButton;
+    ev.modifiers = lastMods_;
+    term->mouseMoveEvent(&ev);
+
+    // Stop if there's no more scrollback to consume
+    if (autoScrollDir_ > 0 && term->viewportOffset() >= term->document().historySize())
+        stopAutoScroll();
+    else if (autoScrollDir_ < 0 && term->viewportOffset() == 0)
+        stopAutoScroll();
+
+    needsRedraw_ = true;
 }
 

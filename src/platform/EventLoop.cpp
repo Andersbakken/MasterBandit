@@ -325,6 +325,9 @@ int PlatformDawn::exec()
         }
     }
 
+    uv_timer_init(loop_, &autoScrollTimer_);
+    autoScrollTimer_.data = this;
+
     uv_idle_init(loop_, &idleCb_);
     idleCb_.data = this;
     uv_idle_start(&idleCb_, [](uv_idle_t* handle) {
@@ -379,7 +382,9 @@ int PlatformDawn::exec()
     for (int fd : fds) removePtyPoll(fd);
 
     uv_idle_stop(&idleCb_);
+    uv_timer_stop(&autoScrollTimer_);
     uv_close(reinterpret_cast<uv_handle_t*>(&idleCb_), nullptr);
+    uv_close(reinterpret_cast<uv_handle_t*>(&autoScrollTimer_), nullptr);
     if (configWatcherActive_) {
         uv_timer_stop(&configDebounce_);
         uv_fs_event_stop(&configWatcher_);

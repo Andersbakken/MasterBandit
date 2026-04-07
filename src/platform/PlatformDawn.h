@@ -297,6 +297,13 @@ private:
     std::vector<MouseBinding> mouseBindings_;
     ClickDetector clickDetector_;
     bool selectionDragActive_ = false;
+    uv_timer_t autoScrollTimer_ = {};
+    bool autoScrollTimerActive_ = false;
+    int  autoScrollDir_ = 0;  // +1 = scroll into history (up), -1 = toward live (down)
+    int  autoScrollCol_ = 0;  // column to use when synthesizing boundary move events
+    void startAutoScroll(int dir, int col);
+    void stopAutoScroll();
+    void doAutoScroll();
     struct MouseContext {
         int cellCol = 0, cellRow = 0;
         int pixelX = 0, pixelY = 0;

@@ -399,6 +399,11 @@ void TextSystem::setSystemFallback(SystemFallbackFn fn)
     systemFallback_ = std::move(fn);
 }
 
+void TextSystem::setEmojiFallback(EmojiFallbackFn fn)
+{
+    emojiFallback_ = std::move(fn);
+}
+
 void TextSystem::setPrimaryFontPath(const std::string& name, const std::string& path)
 {
     fontPrimaryPaths_[name] = path;
@@ -528,10 +533,10 @@ uint32_t TextSystem::resolveSegment(FontData& font, const uint8_t* text, size_t 
 TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::string& fontName,
                                                     char32_t cp, FontStyle style, uint32_t excludeFi)
 {
-    // For narrow codepoints (text-presentation-by-default), defer COLR fonts
-    // so that a regular text font is preferred — matching kitty/iTerm behavior.
-    bool preferNonColr = font.hasColrPaint && (wcwidth(cp) < 2);
+    bool emojiPresentation = isWidenedEmoji(cp);
+    bool preferNonColr = font.hasColrPaint && !emojiPresentation && (wcwidth(cp) < 2);
     ResolvedGlyph colrFallback = {0, 0};
+    ResolvedGlyph nonColrFallback = {0, 0};
 
     // Try existing fonts under read lock
     {
@@ -542,16 +547,27 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
             if (fi == excludeFi) continue;
 
             uint32_t gid;
-            bool found = hb_font_get_nominal_glyph(entry.hbFont, cp, &gid);
-            if (found) {
-                // If this is a COLR font and we prefer non-COLR, remember it but keep looking
-                if (preferNonColr && hb_ot_color_has_paint(entry.hbFace) &&
-                    hb_ot_color_glyph_has_paint(entry.hbFace, gid)) {
-                    if (colrFallback.glyphId == 0) {
-                        colrFallback = {fi, gid};
-                    }
-                    continue;
+            if (!hb_font_get_nominal_glyph(entry.hbFont, cp, &gid)) continue;
+
+            bool isColr = hb_ot_color_has_paint(entry.hbFace) &&
+                          hb_ot_color_glyph_has_paint(entry.hbFace, gid);
+
+            if (emojiPresentation) {
+                // For wide emoji: prefer first COLRv1, save first non-COLR as fallback
+                if (isColr) {
+                    lock.unlock();
+                    uint32_t styledFi = getStyledVariant(font, fi, style);
+                    lock.lock();
+                    uint32_t styledGid;
+                    if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
+                        styledGid = gid;
+                    return {styledFi, styledGid};
                 }
+                if (nonColrFallback.glyphId == 0) nonColrFallback = {fi, gid};
+            } else if (preferNonColr && isColr) {
+                // Text: prefer non-COLR, save COLR as fallback
+                if (colrFallback.glyphId == 0) colrFallback = {fi, gid};
+            } else {
                 lock.unlock();
                 uint32_t styledFi = getStyledVariant(font, fi, style);
                 lock.lock();
@@ -563,8 +579,33 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
         }
     }
 
+    // For wide emoji with no COLRv1 found yet: try emoji-specific font lookup
+    if (emojiPresentation && emojiFallback_) {
+        auto fallbackData = emojiFallback_(cp);
+        if (!fallbackData.empty()) {
+            addFallbackFont(fontName, fallbackData);
+            std::shared_lock lock(font.mutex);
+            uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
+            uint32_t gid;
+            if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
+                bool isColr = hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
+                              hb_ot_color_glyph_has_paint(font.hbFonts[newFi].hbFace, gid);
+                if (isColr) {
+                    lock.unlock();
+                    uint32_t styledFi = getStyledVariant(font, newFi, style);
+                    lock.lock();
+                    uint32_t styledGid;
+                    if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
+                        styledGid = gid;
+                    return {styledFi, styledGid};
+                }
+                if (nonColrFallback.glyphId == 0) nonColrFallback = {newFi, gid};
+            }
+        }
+    }
+
     // Try system font fallback (rare — loads a new font file)
-    if (systemFallback_) {
+    if (!emojiPresentation && systemFallback_) {
         auto pathIt = fontPrimaryPaths_.find(fontName);
         std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
         auto fallbackData = systemFallback_(primaryPath, cp);
@@ -574,11 +615,10 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
             uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
             uint32_t gid;
             if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
-                // Check if the system fallback is also COLR
-                if (preferNonColr && hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
-                    hb_ot_color_glyph_has_paint(font.hbFonts[newFi].hbFace, gid)) {
-                    if (colrFallback.glyphId == 0)
-                        colrFallback = {newFi, gid};
+                bool isColr = hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
+                              hb_ot_color_glyph_has_paint(font.hbFonts[newFi].hbFace, gid);
+                if (preferNonColr && isColr) {
+                    if (colrFallback.glyphId == 0) colrFallback = {newFi, gid};
                 } else {
                     lock.unlock();
                     uint32_t styledFi = getStyledVariant(font, newFi, style);
@@ -592,11 +632,12 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
         }
     }
 
-    // No non-COLR font found — use the COLR one if available
-    if (colrFallback.glyphId != 0) {
+    // Use best available fallback
+    ResolvedGlyph fallback = emojiPresentation ? nonColrFallback : colrFallback;
+    if (fallback.glyphId != 0) {
         std::shared_lock lock(font.mutex);
-        uint32_t fi = colrFallback.fontIndex;
-        uint32_t gid = colrFallback.glyphId;
+        uint32_t fi = fallback.fontIndex;
+        uint32_t gid = fallback.glyphId;
         lock.unlock();
         uint32_t styledFi = getStyledVariant(font, fi, style);
         lock.lock();

@@ -234,6 +234,9 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             textSystem_.setSystemFallback([this](const std::string& path, char32_t cp) {
                 return fontFallback_.fontDataForCodepoint(path, cp);
             });
+            textSystem_.setEmojiFallback([this](char32_t cp) {
+                return fontFallback_.fontDataForEmoji(cp);
+            });
 
             if (!hasBoldFont) {
                 textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);

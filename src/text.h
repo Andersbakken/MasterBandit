@@ -119,7 +119,9 @@ public:
     // returns font file data for a system font covering that codepoint.
     // Empty return = no fallback available.
     using SystemFallbackFn = std::function<std::vector<uint8_t>(const std::string& primaryFontPath, char32_t codepoint)>;
+    using EmojiFallbackFn  = std::function<std::vector<uint8_t>(char32_t codepoint)>;
     void setSystemFallback(SystemFallbackFn fn);
+    void setEmojiFallback(EmojiFallbackFn fn);
 
     // Set the primary font path for a registered font (used by system fallback).
     void setPrimaryFontPath(const std::string& name, const std::string& path);
@@ -150,6 +152,7 @@ private:
     std::unordered_map<std::string, FontData> fonts_;
     std::unordered_map<std::string, std::string> fontPrimaryPaths_; // font name → primary font file path
     SystemFallbackFn systemFallback_;
+    EmojiFallbackFn  emojiFallback_;
     float boldStrengthX_ = 0.04f, boldStrengthY_ = 0.04f;
 
 };

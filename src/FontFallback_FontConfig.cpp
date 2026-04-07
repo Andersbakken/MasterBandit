@@ -70,6 +70,87 @@ static std::string queryFontConfig(char32_t codepoint, bool monoOnly, const std:
     return found;
 }
 
+static std::string queryEmojiFont(char32_t codepoint)
+{
+    FcCharSet* cs = FcCharSetCreate();
+    if (!cs) return {};
+    FcCharSetAddChar(cs, static_cast<FcChar32>(codepoint));
+
+    FcPattern* pat = FcPatternCreate();
+    FcPatternAddBool(pat, FC_COLOR, FcTrue);
+    FcPatternAddCharSet(pat, FC_CHARSET, cs);
+    FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+    FcResult result;
+    FcFontSet* fs = FcFontSort(nullptr, pat, FcTrue, nullptr, &result);
+    FcPatternDestroy(pat);
+    FcCharSetDestroy(cs);
+
+    std::string found;
+    if (fs) {
+        for (int i = 0; i < fs->nfont; ++i) {
+            FcPattern* font = fs->fonts[i];
+            FcChar8* filePath = nullptr;
+            if (FcPatternGetString(font, FC_FILE, 0, &filePath) != FcResultMatch || !filePath)
+                continue;
+            FcCharSet* fontCs = nullptr;
+            if (FcPatternGetCharSet(font, FC_CHARSET, 0, &fontCs) != FcResultMatch || !fontCs)
+                continue;
+            if (!FcCharSetHasChar(fontCs, static_cast<FcChar32>(codepoint)))
+                continue;
+            // Verify it's actually a color font
+            FcBool color = FcFalse;
+            FcPatternGetBool(font, FC_COLOR, 0, &color);
+            if (!color) continue;
+            found = reinterpret_cast<const char*>(filePath);
+            break;
+        }
+        FcFontSetDestroy(fs);
+    }
+    return found;
+}
+
+std::vector<uint8_t> FontFallback::fontDataForEmoji(char32_t codepoint)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto it = emojiCache_.find(codepoint);
+    if (it != emojiCache_.end()) {
+        if (it->second < 0) return {};
+        return fallbackFonts_[it->second].data;
+    }
+
+    std::string path = queryEmojiFont(codepoint);
+    if (path.empty()) {
+        emojiCache_[codepoint] = -1;
+        return {};
+    }
+
+    auto pathIt = pathToIndex_.find(path);
+    if (pathIt != pathToIndex_.end()) {
+        emojiCache_[codepoint] = pathIt->second;
+        return fallbackFonts_[pathIt->second].data;
+    }
+
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        emojiCache_[codepoint] = -1;
+        return {};
+    }
+    auto size = file.tellg();
+    file.seekg(0);
+    std::vector<uint8_t> data(static_cast<size_t>(size));
+    file.read(reinterpret_cast<char*>(data.data()), size);
+
+    spdlog::info("FontFallback: loaded emoji font {} for U+{:04X}", path, static_cast<uint32_t>(codepoint));
+
+    int idx = static_cast<int>(fallbackFonts_.size());
+    fallbackFonts_.push_back({path, std::move(data)});
+    pathToIndex_[path] = idx;
+    emojiCache_[codepoint] = idx;
+    return fallbackFonts_[idx].data;
+}
+
 std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& primaryFontPath, char32_t codepoint)
 {
     std::lock_guard<std::mutex> lock(mutex_);

@@ -152,6 +152,10 @@
 - [ ] GPU buffer pool — divider and popup border vertex buffers are created/destroyed directly. A pool (like TexturePool/ComputeStatePool) would avoid per-frame GPU allocations.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
+## Platform (Linux)
+
+- [ ] Notifications via D-Bus — replace `execvp notify-send` with direct libdbus calls. Wire libdbus watches/timeouts into libuv (`uv_poll_t`/`uv_timer_t`) via `dbus_connection_set_watch_functions` / `dbus_connection_set_timeout_functions`. Subscribe to `ActionInvoked`, `NotificationClosed`, `ActivationToken` signals for click-to-focus support (like kitty/wezterm). kitty's `glfw/dbus_glfw.c` + `glfw/linux_notify.c` (~500 lines, no extra deps beyond libdbus) is a useful reference for the watch integration pattern.
+
 ## Procedural Glyph Rendering
 
 - [x] Box drawing + block elements (U+2500–259F) — rect, quadrant, shade, box line types.

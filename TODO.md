@@ -165,6 +165,7 @@
 - [ ] Powerline extras (E0C0–E0D4) — flame, pixel, trapezoid, and misc shapes. Need per-shape geometry.
 - [ ] Slug/bezier rendering for semi-circles (E0B4, E0B6) — generate Slug-format atlas data for the 2 filled semi-circles, route through text pipeline for analytical anti-aliased curves. Currently using tessellation fallback.
 - [ ] Shade dithering — type 3 currently renders as a semi-transparent rect. Should use a dither pattern (checkerboard / noise) for accurate ░▒▓ rendering.
+- [ ] Compute shader split for procedural glyphs — procedural glyph logic (~560 lines of branching) increases register pressure and may reduce occupancy even when no procedural glyphs are on screen. If profiling shows this matters, split into two dispatches (text cells vs procedural cells) with a CPU-side partition.
 
 ## Testing
 

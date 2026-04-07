@@ -1,4 +1,5 @@
 #include "PlatformDawn.h"
+#include "Utf8.h"
 #include "Utils.h"
 #include <sys/ioctl.h>
 
@@ -329,10 +330,9 @@ static int resolveTabBarClickIndex(double sx, double sy,
         const char* p = text.c_str();
         const char* end = p + text.size();
         while (p < end) {
-            uint8_t b = static_cast<uint8_t>(*p);
-            int seqLen = (b < 0x80) ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : 4;
+            int sl = utf8::seqLen(static_cast<uint8_t>(*p));
             w++;
-            p += std::min(seqLen, static_cast<int>(end - p));
+            p += std::min(sl, static_cast<int>(end - p));
         }
         w += 1; // separator
         if (clickCol >= col && clickCol < col + w)

@@ -1,5 +1,6 @@
 #include "PlatformDawn.h"
 #include "ProceduralGlyphTable.h"
+#include "Utf8.h"
 #include "Utils.h"
 
 #include <numeric>

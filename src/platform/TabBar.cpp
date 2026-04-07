@@ -1,5 +1,6 @@
 #include "PlatformDawn.h"
 #include "ProceduralGlyphTable.h"
+#include "Utf8.h"
 #include "Utils.h"
 #include "FontResolver.h"
 #include <filesystem>
@@ -152,9 +153,7 @@ void PlatformDawn::renderTabBar()
         int w = 0;
         const char* p = s.c_str();
         while (*p) {
-            uint8_t b = static_cast<uint8_t>(*p);
-            if (b < 0x80) p++; else if ((b & 0xE0) == 0xC0) p += 2;
-            else if ((b & 0xF0) == 0xE0) p += 3; else p += 4;
+            p += utf8::seqLen(static_cast<uint8_t>(*p));
             w++;
         }
         return w;
@@ -166,9 +165,7 @@ void PlatformDawn::renderTabBar()
         int cp = 0;
         const char* p = s.c_str();
         while (*p && cp < maxCp) {
-            uint8_t b = static_cast<uint8_t>(*p);
-            if (b < 0x80) p++; else if ((b & 0xE0) == 0xC0) p += 2;
-            else if ((b & 0xF0) == 0xE0) p += 3; else p += 4;
+            p += utf8::seqLen(static_cast<uint8_t>(*p));
             cp++;
         }
         if (*p) return std::string(s.c_str(), p) + "\xe2\x80\xa6";
@@ -284,13 +281,8 @@ void PlatformDawn::renderTabBar()
         rc.fg_color = fg;
         rc.bg_color = bg;
 
-        // Decode UTF-8 to codepoint for procedural glyph check
-        uint32_t cp = 0;
-        const auto* p = reinterpret_cast<const uint8_t*>(utf8ch.data());
-        if ((p[0] & 0x80) == 0) cp = p[0];
-        else if ((p[0] & 0xE0) == 0xC0) cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F);
-        else if ((p[0] & 0xF0) == 0xE0) cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
-        else cp = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+        int consumed = 0;
+        uint32_t cp = utf8::decode(utf8ch.data(), static_cast<int>(utf8ch.size()), consumed);
 
         uint32_t tableIdx = ProceduralGlyph::codepointToTableIdx(cp);
         if (tableIdx != ProceduralGlyph::kInvalidIndex && ProceduralGlyph::kTable[tableIdx] != 0) {
@@ -343,11 +335,7 @@ void PlatformDawn::renderTabBar()
         auto& ti = tabInfos[i];
         const char* p = ti.text.c_str();
         while (*p && col < cols) {
-            uint8_t b = static_cast<uint8_t>(*p);
-            int len = 1;
-            if ((b & 0xE0) == 0xC0) len = 2;
-            else if ((b & 0xF0) == 0xE0) len = 3;
-            else if ((b & 0xF8) == 0xF0) len = 4;
+            int len = utf8::seqLen(static_cast<uint8_t>(*p));
             std::string ch(p, static_cast<size_t>(len));
             placeChar(col, ch, ti.fgColor, ti.bgColor);
             p += len;

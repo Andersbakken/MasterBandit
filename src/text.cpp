@@ -1,5 +1,6 @@
 #include "text.h"
 #include "ColrEncoder.h"
+#include "Utf8.h"
 #include "Wcwidth.h"
 
 #include <hb.h>
@@ -443,13 +444,6 @@ bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrengt
 
 // --- Font registry: resolve fonts with style ---
 
-static inline uint32_t decodeUtf8(const uint8_t*& p)
-{
-    if (*p < 0x80) return *p++;
-    if ((*p & 0xE0) == 0xC0) { uint32_t cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; return cp; }
-    if ((*p & 0xF0) == 0xE0) { uint32_t cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; return cp; }
-    uint32_t cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; return cp;
-}
 
 uint32_t TextSystem::getStyledVariant(FontData& font, uint32_t baseFi, FontStyle style)
 {
@@ -521,7 +515,7 @@ uint32_t TextSystem::resolveSegment(FontData& font, const uint8_t* text, size_t 
     const uint8_t* p = text;
     const uint8_t* end = p + len;
     while (p < end) {
-        uint32_t cp = decodeUtf8(p);
+        uint32_t cp = utf8::decodeAdvance(p, end);
         uint32_t gid;
         if (hb_font_get_nominal_glyph(font.hbFonts[0].hbFont, cp, &gid) &&
             !hb_font_get_nominal_glyph(font.hbFonts[primaryFi].hbFont, cp, &gid)) {
@@ -733,12 +727,8 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
             if (gid == 0) {
                 // Decode codepoint from cluster
                 uint32_t cluster = infos[idx].cluster;
-                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
-                uint32_t cp;
-                if (*p < 0x80) cp = *p;
-                else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
-                else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
-                else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+                int consumed = 0;
+                uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
 
                 auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi);
                 if (resolved.glyphId != 0) {
@@ -982,12 +972,8 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
             if (gid == 0) {
                 // Glyph missing — resolve via registry (handles style + fallback)
                 uint32_t cluster = infos[i].cluster;
-                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
-                uint32_t cp;
-                if (*p < 0x80) cp = *p;
-                else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
-                else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
-                else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+                int consumed = 0;
+                uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
 
                 auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi);
                 if (resolved.glyphId != 0) {
@@ -1009,11 +995,8 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
             uint32_t cp;
             {
                 uint32_t cluster = infos[i].cluster;
-                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
-                if (*p < 0x80) cp = *p;
-                else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
-                else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
-                else cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+                int consumed = 0;
+                cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
 
                 uint32_t nominalGid;
                 if (hb_font_get_nominal_glyph(hbFont, cp, &nominalGid)) {

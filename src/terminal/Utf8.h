@@ -47,10 +47,46 @@ inline char32_t decode(const char* s, int len, int& bytesConsumed) {
     return 0xFFFD;
 }
 
-inline std::string fromCodepoint(char32_t cp) {
+inline char32_t decode(const uint8_t* s, int len, int& bytesConsumed) {
+    return decode(reinterpret_cast<const char*>(s), len, bytesConsumed);
+}
+
+inline char32_t decodeAdvance(const uint8_t*& p, const uint8_t* end) {
+    int consumed = 0;
+    char32_t cp = decode(p, static_cast<int>(end - p), consumed);
+    p += consumed;
+    return cp;
+}
+
+inline char32_t decodeAdvance(const char*& p, const char* end) {
+    int consumed = 0;
+    char32_t cp = decode(p, static_cast<int>(end - p), consumed);
+    p += consumed;
+    return cp;
+}
+
+inline int seqLen(uint8_t leadByte) {
+    if (leadByte < 0x80) return 1;
+    if ((leadByte & 0xE0) == 0xC0) return 2;
+    if ((leadByte & 0xF0) == 0xE0) return 3;
+    if ((leadByte & 0xF8) == 0xF0) return 4;
+    return 1; // invalid lead byte
+}
+
+inline void append(std::string& s, char32_t cp) {
+    char buf[4];
+    int n = encode(cp, buf);
+    s.append(buf, n);
+}
+
+inline std::string encode(char32_t cp) {
     char buf[4];
     int n = encode(cp, buf);
     return std::string(buf, n);
+}
+
+inline std::string fromCodepoint(char32_t cp) {
+    return encode(cp);
 }
 
 } // namespace utf8

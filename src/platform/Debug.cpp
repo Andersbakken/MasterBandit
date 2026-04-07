@@ -1,4 +1,5 @@
 #include "PlatformDawn.h"
+#include "Utf8.h"
 #include "Utils.h"
 #include <glaze/glaze.hpp>
 
@@ -9,27 +10,13 @@ static std::string sanitizeUtf8(const std::string& in)
 {
     std::string out;
     out.reserve(in.size());
-    const auto* p = reinterpret_cast<const unsigned char*>(in.data());
-    const auto* end = p + in.size();
+    const char* p = in.data();
+    const char* end = p + in.size();
     while (p < end) {
-        if (*p < 0x80) {
-            out += static_cast<char>(*p++);
-        } else if ((*p & 0xE0) == 0xC0 && p + 1 < end && (p[1] & 0xC0) == 0x80) {
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-        } else if ((*p & 0xF0) == 0xE0 && p + 2 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-        } else if ((*p & 0xF8) == 0xF0 && p + 3 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-            out += static_cast<char>(*p++);
-        } else {
-            out += "\xEF\xBF\xBD"; // U+FFFD
-            ++p;
-        }
+        char32_t cp = utf8::decodeAdvance(p, end);
+        char buf[4];
+        int n = utf8::encode(cp, buf);
+        out.append(buf, n);
     }
     return out;
 }

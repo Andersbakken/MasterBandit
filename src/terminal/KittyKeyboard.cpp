@@ -1,4 +1,5 @@
 #include "TerminalEmulator.h"
+#include "Utf8.h"
 #include <spdlog/spdlog.h>
 #include <cstdio>
 
@@ -290,11 +291,8 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
         keyCode = ' ';
     } else if (!ev.text.empty()) {
         // Use codepoint from text
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(ev.text.c_str());
-        if (*p < 0x80) keyCode = *p;
-        else if ((*p & 0xE0) == 0xC0) keyCode = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
-        else if ((*p & 0xF0) == 0xE0) keyCode = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
-        else keyCode = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
+        int consumed = 0;
+        keyCode = utf8::decode(ev.text.c_str(), static_cast<int>(ev.text.size()), consumed);
     } else {
         return {}; // Can't encode
     }
@@ -390,14 +388,10 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     if (needText) {
         // Build text as codepoints
         std::string textCps;
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(ev.text.c_str());
-        const uint8_t* end = p + ev.text.size();
+        const char* p = ev.text.c_str();
+        const char* end = p + ev.text.size();
         while (p < end) {
-            uint32_t cp;
-            if (*p < 0x80) cp = *p++;
-            else if ((*p & 0xE0) == 0xC0) { cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F); p += 2; }
-            else if ((*p & 0xF0) == 0xE0) { cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F); p += 3; }
-            else { cp = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F); p += 4; }
+            uint32_t cp = utf8::decodeAdvance(p, end);
             if (!textCps.empty()) textCps += ':';
             char cpBuf[12];
             snprintf(cpBuf, sizeof(cpBuf), "%u", cp);

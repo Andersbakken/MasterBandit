@@ -495,29 +495,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
             }
             mUtf8Buffer[mUtf8Index++] = buf[i];
 
-            int expected = 0;
-            unsigned char lead = static_cast<unsigned char>(mUtf8Buffer[0]);
-            if ((lead & 0xE0) == 0xC0) expected = 2;
-            else if ((lead & 0xF0) == 0xE0) expected = 3;
-            else if ((lead & 0xF8) == 0xF0) expected = 4;
-            else expected = 1;
+            int expected = utf8::seqLen(static_cast<uint8_t>(mUtf8Buffer[0]));
 
             if (mUtf8Index == expected) {
-                // Decode the codepoint
-                char32_t cp = 0;
-                if (expected == 2) {
-                    cp = (static_cast<unsigned char>(mUtf8Buffer[0]) & 0x1F) << 6
-                       | (static_cast<unsigned char>(mUtf8Buffer[1]) & 0x3F);
-                } else if (expected == 3) {
-                    cp = (static_cast<unsigned char>(mUtf8Buffer[0]) & 0x0F) << 12
-                       | (static_cast<unsigned char>(mUtf8Buffer[1]) & 0x3F) << 6
-                       | (static_cast<unsigned char>(mUtf8Buffer[2]) & 0x3F);
-                } else if (expected == 4) {
-                    cp = (static_cast<unsigned char>(mUtf8Buffer[0]) & 0x07) << 18
-                       | (static_cast<unsigned char>(mUtf8Buffer[1]) & 0x3F) << 12
-                       | (static_cast<unsigned char>(mUtf8Buffer[2]) & 0x3F) << 6
-                       | (static_cast<unsigned char>(mUtf8Buffer[3]) & 0x3F);
-                }
+                int consumed = 0;
+                char32_t cp = utf8::decode(mUtf8Buffer, expected, consumed);
 
                 int w = wcwidth(cp);
                 if (w < 0) w = 0; // non-printable control char — skip

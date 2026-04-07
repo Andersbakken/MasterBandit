@@ -275,7 +275,19 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             char tmpPath[] = "/tmp/mb-scrollback-XXXXXX";
             int tmpFd = mkstemp(tmpPath);
             if (tmpFd < 0) return;
-            ::write(tmpFd, content.data(), content.size());
+            const char* ptr = content.data();
+            size_t remaining = content.size();
+            while (remaining > 0) {
+                ssize_t written = ::write(tmpFd, ptr, remaining);
+                if (written < 0) {
+                    if (errno == EINTR) continue;
+                    ::close(tmpFd);
+                    ::unlink(tmpPath);
+                    return;
+                }
+                ptr += written;
+                remaining -= written;
+            }
             ::close(tmpFd);
 
             // Spawn pager as overlay terminal

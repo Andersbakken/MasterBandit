@@ -1,6 +1,8 @@
-#include <cstdlib>
 #include <functional>
 #include <string>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 bool platformIsDarkMode()
 {
@@ -13,16 +15,42 @@ void platformObserveAppearanceChanges(std::function<void(bool isDark)> /*callbac
     // TODO: monitor org.freedesktop.appearance.color-scheme via D-Bus
 }
 
+static void spawnDetached(const char* path, char* const argv[])
+{
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Double-fork to avoid zombie
+        pid_t inner = fork();
+        if (inner == 0) {
+            setsid();
+            execvp(path, argv);
+            _exit(127);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+    }
+}
+
 void platformSendNotification(const std::string& title, const std::string& body)
 {
     // TODO: use libnotify or D-Bus org.freedesktop.Notifications
-    std::string cmd = "notify-send ";
-    cmd += "'" + title + "' '" + body + "' 2>/dev/null &";
-    (void)system(cmd.c_str());
+    char* argv[] = {
+        const_cast<char*>("notify-send"),
+        const_cast<char*>(title.c_str()),
+        const_cast<char*>(body.c_str()),
+        nullptr
+    };
+    spawnDetached("notify-send", argv);
 }
 
 void platformOpenURL(const std::string& url)
 {
-    std::string cmd = "xdg-open '" + url + "' 2>/dev/null &";
-    (void)system(cmd.c_str());
+    char* argv[] = {
+        const_cast<char*>("xdg-open"),
+        const_cast<char*>(url.c_str()),
+        nullptr
+    };
+    spawnDetached("xdg-open", argv);
 }

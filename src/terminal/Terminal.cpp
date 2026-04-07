@@ -93,7 +93,9 @@ bool Terminal::init(const TerminalOptions &options)
         EINTRWRAP(ret, ::close(slaveFD));
 
         if (!mOptions.cwd.empty()) {
-            chdir(mOptions.cwd.c_str());
+            if (chdir(mOptions.cwd.c_str()) == -1) {
+                spdlog::warn("Failed to chdir to '{}' -> {} {}", mOptions.cwd, errno, strerror(errno));
+            }
         }
 
         unsetenv("COLUMNS");

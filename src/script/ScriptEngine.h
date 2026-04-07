@@ -97,6 +97,12 @@ public:
     // Called by JS (applet-loader) when user responds to permission prompt
     void approveScript(const std::string& path, char response);
 
+    // Custom XTGETTCAP capabilities registered by scripts.
+    // Returns nullopt if the name is not registered.
+    std::optional<std::string> lookupCustomTcap(const std::string& name) const;
+    void registerTcap(const std::string& name, const std::string& value);
+    void unregisterTcap(const std::string& name);
+
     // --- Synchronous filters (called from PTY read / input path) ---
     bool filterPaneOutput(PaneId pane, std::string& data);
     bool filterPaneInput(PaneId pane, std::string& data);
@@ -197,6 +203,7 @@ private:
     std::unordered_map<std::string, PendingScript> pendingScripts_;
 
     std::set<std::string> registeredActions_; // "namespace.action" strings
+    std::unordered_map<std::string, std::string> customTcaps_; // XTGETTCAP name → value
 
     std::unordered_map<PaneId, int> paneOutputFilterCount_;
     std::unordered_map<PaneId, int> paneInputFilterCount_;

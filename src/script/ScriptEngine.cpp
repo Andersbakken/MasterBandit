@@ -1781,6 +1781,10 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbRegisterAction, "registerAction", 1));
     JS_SetPropertyStr(ctx, mb, "exit",
         JS_NewCFunction(ctx, jsMbExit, "exit", 0));
+    JS_SetPropertyStr(ctx, mb, "registerTcap",
+        JS_NewCFunction(ctx, jsMbRegisterTcap, "registerTcap", 2));
+    JS_SetPropertyStr(ctx, mb, "unregisterTcap",
+        JS_NewCFunction(ctx, jsMbUnregisterTcap, "unregisterTcap", 1));
     JS_SetPropertyStr(ctx, global, "mb", mb);
     JS_FreeValue(ctx, global);
 }
@@ -1989,6 +1993,54 @@ void Engine::approveScript(const std::string& path, char response) {
         sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
         break;
     }
+}
+
+// ============================================================================
+// Custom XTGETTCAP
+
+std::optional<std::string> Engine::lookupCustomTcap(const std::string& name) const
+{
+    auto it = customTcaps_.find(name);
+    if (it != customTcaps_.end())
+        return it->second;
+    return std::nullopt;
+}
+
+void Engine::registerTcap(const std::string& name, const std::string& value)
+{
+    customTcaps_[name] = value;
+}
+
+void Engine::unregisterTcap(const std::string& name)
+{
+    customTcaps_.erase(name);
+}
+
+static JSValue jsMbRegisterTcap(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ActionsInvoke);
+    if (argc < 1 || !JS_IsString(argv[0])) return JS_UNDEFINED;
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_EXCEPTION;
+    std::string value;
+    if (argc >= 2 && JS_IsString(argv[1])) {
+        const char* v = JS_ToCString(ctx, argv[1]);
+        if (v) { value = v; JS_FreeCString(ctx, v); }
+    }
+    engineFromCtx(ctx)->registerTcap(name, value);
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsMbUnregisterTcap(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ActionsInvoke);
+    if (argc < 1 || !JS_IsString(argv[0])) return JS_UNDEFINED;
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_EXCEPTION;
+    engineFromCtx(ctx)->unregisterTcap(name);
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
 }
 
 // ============================================================================

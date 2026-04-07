@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +33,9 @@ struct TerminalCallbacks {
     std::function<void(const std::string&)>      onCWDChanged;       // OSC 7
     std::function<void(const std::string&, const std::string&, const std::string&)> onDesktopNotification; // OSC 99
     std::function<void(const std::string&)>      onForegroundProcessChanged;
+    // Called for XTGETTCAP queries not found in the built-in table.
+    // Returns the capability value (may be empty for boolean caps), or nullopt if unknown.
+    std::function<std::optional<std::string>(const std::string&)> customTcapLookup;
 };
 
 class TerminalEmulator

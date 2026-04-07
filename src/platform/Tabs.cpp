@@ -146,6 +146,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         scriptEngine_.notifyOSC(paneId, oscNum, std::string(payload));
     };
 
+    cbs.customTcapLookup = [this](const std::string& name) -> std::optional<std::string> {
+        return scriptEngine_.lookupCustomTcap(name);
+    };
+
     cbs.onForegroundProcessChanged = [this, paneId](const std::string& proc) {
         scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
         // Use foreground process as tab title if pane has no OSC title

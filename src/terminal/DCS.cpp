@@ -214,6 +214,20 @@ void TerminalEmulator::processDCS()
                     resp += '=';
                     resp += hexEncode(it->second);
                 }
+            } else if (mCallbacks.customTcapLookup) {
+                auto custom = mCallbacks.customTcapLookup(name);
+                if (custom.has_value()) {
+                    resp += "1+r";
+                    resp += hexName;
+                    if (!custom->empty()) {
+                        resp += '=';
+                        resp += hexEncode(*custom);
+                    }
+                } else {
+                    spdlog::debug("XTGETTCAP: unknown cap '{}'", name);
+                    resp += "0+r";
+                    resp += hexName;
+                }
             } else {
                 spdlog::debug("XTGETTCAP: unknown cap '{}'", name);
                 resp += "0+r";

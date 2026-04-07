@@ -2,6 +2,8 @@
 #import <UserNotifications/UserNotifications.h>
 #include <functional>
 #include <string>
+#include <sys/types.h>
+#include <libproc.h>
 
 bool platformIsDarkMode()
 {
@@ -42,6 +44,14 @@ void platformOpenURL(const std::string& url)
 {
     NSString* nsUrl = [NSString stringWithUTF8String:url.c_str()];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:nsUrl]];
+}
+
+std::string platformProcessCWD(pid_t pid)
+{
+    struct proc_vnodepathinfo vpi;
+    if (proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, sizeof(vpi)) > 0)
+        return vpi.pvi_cdir.vip_path;
+    return {};
 }
 
 void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback)

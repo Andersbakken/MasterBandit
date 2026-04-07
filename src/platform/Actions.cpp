@@ -1,4 +1,5 @@
 #include "PlatformDawn.h"
+#include "PlatformUtils.h"
 #include "Config.h"
 #include <unistd.h>
 
@@ -68,7 +69,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             layout->computeRects(fbWidth_, fbHeight_);
             int tabIdx = activeTabIdx_;
             int prevId = layout->focusedPaneId();
-            spawnTerminalForPane(newPane, tabIdx, fp->cwd());
+            spawnTerminalForPane(newPane, tabIdx, paneProcessCWD(fp));
             resizeAllPanesInTab(tab);
             layout->setFocusedPane(newId);
             notifyPaneFocusChange(tab, prevId, newId);

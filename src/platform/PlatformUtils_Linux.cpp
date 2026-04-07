@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <stdio.h>
 
 bool platformIsDarkMode()
 {
@@ -53,4 +54,15 @@ void platformOpenURL(const std::string& url)
         nullptr
     };
     spawnDetached("xdg-open", argv);
+}
+
+std::string platformProcessCWD(pid_t pid)
+{
+    char link[64];
+    char path[4096];
+    snprintf(link, sizeof(link), "/proc/%d/cwd", static_cast<int>(pid));
+    ssize_t len = readlink(link, path, sizeof(path) - 1);
+    if (len < 0) return {};
+    path[len] = '\0';
+    return path;
 }

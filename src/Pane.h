@@ -27,6 +27,7 @@ public:
     // Terminal (one per pane)
     void setTerminal(std::unique_ptr<Terminal> t);
     Terminal* terminal() { return terminal_.get(); }
+    const Terminal* terminal() const { return terminal_.get(); }
 
     // Active terminal: just returns terminal_.get()
     TerminalEmulator* activeTerm();

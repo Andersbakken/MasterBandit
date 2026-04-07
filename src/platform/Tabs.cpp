@@ -1,4 +1,5 @@
 #include "PlatformDawn.h"
+#include "PlatformUtils.h"
 #include "Utils.h"
 #include <sys/ioctl.h>
 
@@ -208,7 +209,8 @@ void PlatformDawn::createTab()
     auto opts = terminalOptions_;
     if (Tab* at = activeTab()) {
         if (Pane* fp = at->layout()->focusedPane()) {
-            if (!fp->cwd().empty()) opts.cwd = fp->cwd();
+            std::string cwd = paneProcessCWD(fp);
+            if (!cwd.empty()) opts.cwd = cwd;
         }
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sys/types.h>
 #include "InputTypes.h"
 #include "ClickDetector.h"
 #include "Terminal.h"
@@ -56,6 +57,7 @@ bool platformIsDarkMode();
 void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback);
 void platformSendNotification(const std::string& title, const std::string& body);
 void platformOpenURL(const std::string& url);
+std::string platformProcessCWD(pid_t pid);
 
 class PlatformDawn {
 public:

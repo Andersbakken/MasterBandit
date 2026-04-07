@@ -512,6 +512,204 @@ void PlatformDawn::configureSurface(uint32_t width, uint32_t height)
     surface_.Configure(&config);
 }
 
+void PlatformDawn::invalidateAllRowCaches()
+{
+    for (auto& [id, rs] : paneRenderStates_) {
+        for (auto& row : rs.rowShapingCache) row.valid = false;
+        rs.dirty = true;
+    }
+    for (auto& [tab, rs] : overlayRenderStates_) {
+        for (auto& row : rs.rowShapingCache) row.valid = false;
+        rs.dirty = true;
+    }
+}
+
+static void applyTintColor(const std::string& col, float alpha, float out[4])
+{
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    if (col.size() == 7 && col[0] == '#') {
+        r = std::stoul(col.substr(1, 2), nullptr, 16) / 255.0f;
+        g = std::stoul(col.substr(3, 2), nullptr, 16) / 255.0f;
+        b = std::stoul(col.substr(5, 2), nullptr, 16) / 255.0f;
+    }
+    out[0] = r * alpha + (1.0f - alpha);
+    out[1] = g * alpha + (1.0f - alpha);
+    out[2] = b * alpha + (1.0f - alpha);
+    out[3] = 1.0f;
+}
+
+void PlatformDawn::applyFontChange(const Config& config)
+{
+    std::string fontPath = config.font.empty() ? findMonospaceFont() : resolveFontFamily(config.font);
+    if (fontPath.empty() && !config.font.empty())
+        fontPath = findMonospaceFont();
+    if (fontPath.empty()) {
+        spdlog::warn("Config reload: font '{}' not found, keeping current font", config.font);
+        return;
+    }
+
+    auto fontData = loadFontFile(fontPath);
+    if (fontData.empty()) {
+        spdlog::warn("Config reload: failed to load font '{}', keeping current font", fontPath);
+        return;
+    }
+
+    std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
+    bool hasBoldFont = false;
+    if (!config.font.empty()) {
+        std::string boldPath = resolveFontFamily(config.font, true);
+        if (!boldPath.empty() && boldPath != fontPath) {
+            auto boldData = loadFontFile(boldPath);
+            if (!boldData.empty()) {
+                fontList.push_back(std::move(boldData));
+                hasBoldFont = true;
+            }
+        }
+    }
+
+    // Tear down old font
+    textSystem_.unregisterFont(fontName_);
+    renderer_.removeFontAtlas(fontName_);
+
+    // Re-register
+    textSystem_.registerFont(fontName_, fontList, 48.0f);
+    primaryFontPath_ = fontPath;
+    textSystem_.setPrimaryFontPath(fontName_, primaryFontPath_);
+    textSystem_.setSystemFallback([this](const std::string& path, char32_t cp) {
+        return fontFallback_.fontDataForCodepoint(path, cp);
+    });
+    textSystem_.setEmojiFallback([this](char32_t cp) {
+        return fontFallback_.fontDataForEmoji(cp);
+    });
+
+    if (!hasBoldFont)
+        textSystem_.addSyntheticBoldVariant(fontName_, config.bold_strength, config.bold_strength);
+    textSystem_.setBoldStrength(config.bold_strength, config.bold_strength);
+
+    auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
+    auto nerdData = loadFontFile(nerdFontPath.string());
+    if (!nerdData.empty())
+        textSystem_.addFallbackFont(fontName_, nerdData);
+
+    terminalOptions_.font = config.font;
+
+    // Recalculate metrics
+    const FontData* font = textSystem_.getFont(fontName_);
+    if (!font) { spdlog::error("Config reload: font re-registration failed"); return; }
+
+    float scale = fontSize_ / font->baseSize;
+    lineHeight_ = font->lineHeight * scale;
+    const auto& shaped = textSystem_.shapeText(fontName_, "M", fontSize_);
+    charWidth_ = shaped.width;
+    if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
+
+    renderer_.uploadFontAtlas(queue_, fontName_, *font);
+    invalidateAllRowCaches();
+    onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+
+    spdlog::info("Config reload: font changed to '{}'", fontPath);
+}
+
+void PlatformDawn::reloadConfigNow()
+{
+    spdlog::info("Config: hot-reload triggered");
+    Config config = loadConfig();
+
+    // Keybindings
+    bindings_ = defaultBindings();
+    auto userBindings = parseBindings(config.keybindings);
+    bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
+    mouseBindings_ = defaultMouseBindings();
+    auto userMouseBindings = parseMouseBindings(config.mousebindings);
+    mouseBindings_.insert(mouseBindings_.end(), userMouseBindings.begin(), userMouseBindings.end());
+    sequenceMatcher_.reset();
+
+    // Colors
+    terminalOptions_.colors = config.colors;
+    defaultFgColor_ = color::parseHexRGBA(config.colors.foreground, 0xFFDDDDDD);
+    defaultBgColor_ = color::parseHexRGBA(config.colors.background, 0x00000000);
+    notifyAllTerminals([&config](TerminalEmulator* term) {
+        term->applyColorScheme(config.colors);
+    });
+
+    // Divider
+    dividerWidth_ = std::max(0, config.divider_width);
+    const std::string& dc = config.divider_color;
+    if (dc.size() == 7 && dc[0] == '#') {
+        auto h = [&](int i) -> float { return std::stoul(dc.substr(i, 2), nullptr, 16) / 255.0f; };
+        dividerR_ = h(1); dividerG_ = h(3); dividerB_ = h(5); dividerA_ = 1.0f;
+    }
+    for (auto& t : tabs_) t->layout()->setDividerPixels(dividerWidth_);
+    terminalOptions_.dividerWidth = config.divider_width;
+    terminalOptions_.dividerColor = config.divider_color;
+
+    // Tints
+    applyTintColor(config.active_pane_tint,   config.active_pane_tint_alpha,   activeTint_);
+    applyTintColor(config.inactive_pane_tint, config.inactive_pane_tint_alpha, inactiveTint_);
+    terminalOptions_.activePaneTint       = config.active_pane_tint;
+    terminalOptions_.activePaneTintAlpha  = config.active_pane_tint_alpha;
+    terminalOptions_.inactivePaneTint     = config.inactive_pane_tint;
+    terminalOptions_.inactivePaneTintAlpha= config.inactive_pane_tint_alpha;
+
+    // Padding
+    float newPL = config.padding.left   * contentScaleX_;
+    float newPT = config.padding.top    * contentScaleX_;
+    float newPR = config.padding.right  * contentScaleX_;
+    float newPB = config.padding.bottom * contentScaleX_;
+    bool paddingChanged = (newPL != padLeft_ || newPT != padTop_ ||
+                           newPR != padRight_ || newPB != padBottom_);
+    padLeft_ = newPL; padTop_ = newPT; padRight_ = newPR; padBottom_ = newPB;
+    terminalOptions_.padding = config.padding;
+
+    // Replacement char
+    if (!config.replacement_char.empty()) {
+        replacementChar_ = config.replacement_char;
+        terminalOptions_.replacementChar = config.replacement_char;
+    }
+
+    // Bold strength (only if font isn't changing — applyFontChange handles it otherwise)
+    bool fontNameChanged = (config.font != terminalOptions_.font);
+    if (!fontNameChanged) {
+        textSystem_.setBoldStrength(config.bold_strength, config.bold_strength);
+        terminalOptions_.boldStrength = config.bold_strength;
+    }
+
+    // Tab bar
+    tabBarConfig_ = config.tab_bar;
+    textSystem_.unregisterFont(tabBarFontName_);
+    renderer_.removeFontAtlas(tabBarFontName_);
+    initTabBar(config.tab_bar);
+
+    // Font name or size change
+    float newFontSize = config.font_size * contentScaleX_;
+    if (fontNameChanged) {
+        fontSize_ = newFontSize;
+        baseFontSize_ = fontSize_;
+        terminalOptions_.fontSize = config.font_size;
+        applyFontChange(config);
+    } else if (newFontSize != fontSize_) {
+        fontSize_ = newFontSize;
+        baseFontSize_ = fontSize_;
+        terminalOptions_.fontSize = config.font_size;
+        const FontData* font = textSystem_.getFont(fontName_);
+        if (font) {
+            float scale = fontSize_ / font->baseSize;
+            lineHeight_ = font->lineHeight * scale;
+            const auto& shaped = textSystem_.shapeText(fontName_, "M", fontSize_);
+            charWidth_ = shaped.width;
+            if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
+        }
+        invalidateAllRowCaches();
+        onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+    } else if (paddingChanged) {
+        onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+    }
+
+    tabBarDirty_ = true;
+    needsRedraw_ = true;
+    spdlog::info("Config reloaded: {} user keybindings", userBindings.size());
+}
+
 std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, bool headless)
 {
     return std::make_unique<PlatformDawn>(argc, argv, headless);

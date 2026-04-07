@@ -6,7 +6,8 @@
 #include <fstream>
 #include <string>
 
-static std::filesystem::path configPath()
+static std::filesystem::path configPath()  // internal
+
 {
     // XDG_CONFIG_HOME on Linux; on macOS fall back to ~/.config (same XDG convention)
     const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");
@@ -19,6 +20,12 @@ static std::filesystem::path configPath()
         base = std::filesystem::path(home) / ".config";
     }
     return base / "MasterBandit" / "config.toml";
+}
+
+std::string configFilePath()
+{
+    auto p = configPath();
+    return p.empty() ? std::string{} : p.string();
 }
 
 Config loadConfig()

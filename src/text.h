@@ -103,6 +103,7 @@ public:
     bool registerFont(const std::string& name,
                       const std::vector<std::vector<uint8_t>>& ttfDataList,
                       float baseSize = 48.0f);
+    void unregisterFont(const std::string& name);
     ShapedText shapeText(const std::string& fontName, const std::string& text,
                          float fontSize, float wrapWidth = 0, int align = 0,
                          FontStyle style = {});

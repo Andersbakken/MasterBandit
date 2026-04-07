@@ -308,6 +308,11 @@ void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     gpu.uploadedSize = font.atlasUsed;
 }
 
+void Renderer::removeFontAtlas(const std::string& fontName)
+{
+    fontGPU_.erase(fontName);
+}
+
 void Renderer::destroy()
 {
     // Release all WebGPU resources so they don't outlive the device/glfwTerminate.

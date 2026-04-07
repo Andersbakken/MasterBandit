@@ -45,6 +45,8 @@ public:
     void updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
                          const FontData& font);
 
+    void removeFontAtlas(const std::string& fontName);
+
     void setViewportSize(uint32_t width, uint32_t height);
 
     // Release all WebGPU resources. Call before the device is destroyed.

@@ -1,5 +1,6 @@
 #include "PlatformDawn.h"
 #include "NativeSurface.h"
+#include "Config.h"
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -297,6 +298,33 @@ int PlatformDawn::exec()
         }
     }
 
+    // Config file watcher with 300ms debounce
+    {
+        std::string watchPath = configFilePath();
+        if (!watchPath.empty()) {
+            uv_fs_event_init(loop_, &configWatcher_);
+            configWatcher_.data = this;
+            uv_timer_init(loop_, &configDebounce_);
+            configDebounce_.data = this;
+            int r = uv_fs_event_start(&configWatcher_,
+                [](uv_fs_event_t* h, const char*, int, int) {
+                    auto* self = static_cast<PlatformDawn*>(h->data);
+                    uv_timer_stop(&self->configDebounce_);
+                    uv_timer_start(&self->configDebounce_,
+                        [](uv_timer_t* t) {
+                            static_cast<PlatformDawn*>(t->data)->reloadConfigNow();
+                        }, 300, 0);
+                },
+                watchPath.c_str(), 0);
+            if (r == 0) {
+                configWatcherActive_ = true;
+                spdlog::info("Config watcher active on {}", watchPath);
+            } else {
+                spdlog::warn("Config watcher: uv_fs_event_start failed: {}", uv_strerror(r));
+            }
+        }
+    }
+
     uv_idle_init(loop_, &idleCb_);
     idleCb_.data = this;
     uv_idle_start(&idleCb_, [](uv_idle_t* handle) {
@@ -352,6 +380,13 @@ int PlatformDawn::exec()
 
     uv_idle_stop(&idleCb_);
     uv_close(reinterpret_cast<uv_handle_t*>(&idleCb_), nullptr);
+    if (configWatcherActive_) {
+        uv_timer_stop(&configDebounce_);
+        uv_fs_event_stop(&configWatcher_);
+        uv_close(reinterpret_cast<uv_handle_t*>(&configWatcher_), nullptr);
+        uv_close(reinterpret_cast<uv_handle_t*>(&configDebounce_), nullptr);
+        configWatcherActive_ = false;
+    }
     if (debugIPC_) debugIPC_->closeHandles();
     uv_run(loop_, UV_RUN_DEFAULT);
     debugIPC_.reset();

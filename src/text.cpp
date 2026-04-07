@@ -45,6 +45,24 @@ TextSystem::~TextSystem()
     }
 }
 
+void TextSystem::unregisterFont(const std::string& name)
+{
+    auto it = fonts_.find(name);
+    if (it == fonts_.end()) return;
+    FontData& font = it->second;
+    {
+        std::unique_lock lock(font.mutex);
+        for (auto& entry : font.hbFonts) {
+            if (entry.gpuDraw) hb_gpu_draw_destroy(entry.gpuDraw);
+            if (entry.hbFont)  hb_font_destroy(entry.hbFont);
+            if (entry.hbFace)  hb_face_destroy(entry.hbFace);
+            if (entry.hbBlob)  hb_blob_destroy(entry.hbBlob);
+        }
+    }
+    fonts_.erase(it);
+    fontPrimaryPaths_.erase(name);
+}
+
 void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId)
 {
     uint64_t key = glyphKey(fontIndex, glyphId);

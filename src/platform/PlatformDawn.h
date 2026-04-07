@@ -125,6 +125,9 @@ private:
     wgpu::Texture headlessComposite_;  // offscreen composite target (headless, with CopyDst)
     uv_loop_t* loop_ = nullptr;
     uv_idle_t idleCb_ = {};
+    uv_fs_event_t configWatcher_ = {};
+    uv_timer_t    configDebounce_ = {};
+    bool          configWatcherActive_ = false;
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
@@ -279,6 +282,10 @@ private:
 
     void initTabBar(const TabBarConfig& cfg);
     void renderTabBar();
+
+    void reloadConfigNow();
+    void applyFontChange(const Config& config);
+    void invalidateAllRowCaches();
 
     // Keybindings
     std::vector<Binding> bindings_;

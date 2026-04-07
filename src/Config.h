@@ -188,3 +188,4 @@ struct Config {
 };
 
 Config loadConfig();
+std::string configFilePath();

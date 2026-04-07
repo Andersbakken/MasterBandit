@@ -149,6 +149,35 @@ void Document::evictToArchive() {
     historyCount_--;
 }
 
+void Document::growRing()
+{
+    int total = historyCount_ + screenHeight_;
+    int newCap = roundUpPow2(total + 64);
+    // Cap at tier1Capacity_ + screenHeight_ + padding to avoid unbounded growth
+    int maxCap = roundUpPow2(tier1Capacity_ + screenHeight_ + 64);
+    newCap = std::min(newCap, maxCap);
+    if (newCap <= ringCapacity_) return; // already large enough
+
+    std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
+    std::vector<std::unordered_map<int, CellExtra>> newExtras(newCap);
+    std::vector<bool> newCont(newCap, false);
+    std::vector<PromptKind> newPK(newCap, UnknownPrompt);
+    for (int i = 0; i < total; ++i) {
+        int oldPhys = (ringHead_ - total + i) & ringMask();
+        std::memcpy(&newRing[static_cast<size_t>(i) * cols_],
+                    &ring_[static_cast<size_t>(oldPhys) * cols_], cols_ * sizeof(Cell));
+        newExtras[i] = std::move(ringExtras_[oldPhys]);
+        newCont[i] = continued_[oldPhys];
+        newPK[i] = promptKind_[oldPhys];
+    }
+    ring_ = std::move(newRing);
+    ringExtras_ = std::move(newExtras);
+    continued_ = std::move(newCont);
+    promptKind_ = std::move(newPK);
+    ringCapacity_ = newCap;
+    ringHead_ = total & (newCap - 1);
+}
+
 // --- IGrid implementation ---
 
 Cell& Document::cell(int col, int screenRow) {
@@ -237,6 +266,8 @@ void Document::scrollUp(int top, int bottom, int n) {
             // Ensure ring has space
             if (historyCount_ >= tier1Capacity_) {
                 evictToArchive();
+            } else if (historyCount_ + screenHeight_ >= ringCapacity_) {
+                growRing();
             }
             clearPhysicalRow(ringHead_);
             ringHead_ = (ringHead_ + 1) & ringMask();
@@ -259,6 +290,7 @@ void Document::scrollUp(int top, int bottom, int n) {
         // Advance ring head
         for (int i = 0; i < n; ++i) {
             if (historyCount_ >= tier1Capacity_) evictToArchive();
+            else if (historyCount_ + screenHeight_ >= ringCapacity_) growRing();
             clearPhysicalRow(ringHead_);
             ringHead_ = (ringHead_ + 1) & ringMask();
             historyCount_++;

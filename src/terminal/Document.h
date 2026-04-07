@@ -103,6 +103,7 @@ private:
     int historyTier1ToPhysical(int tier1Idx) const;
     void evictToArchive();
     void clearPhysicalRow(int physical);
+    void growRing();
 
     static int roundUpPow2(int v);
     static std::string serializeRow(const Cell* cells, int cols);

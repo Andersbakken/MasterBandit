@@ -816,12 +816,15 @@ void PlatformDawn::renderFrame()
                         }
                     }
                 }
+                // When scrolled back, the cursor row may still be visible in the viewport.
+                // Its view row = cursorY + viewportOffset.
+                int cursorViewRow = term->cursorY() + term->viewportOffset();
                 if (!cursorBehindPopup &&
-                    term->viewportOffset() == 0 && term->cursorVisible() &&
+                    term->cursorVisible() &&
                     term->cursorX() >= 0 && term->cursorX() < g.cols() &&
-                    term->cursorY() >= 0 && term->cursorY() < g.rows()) {
+                    cursorViewRow >= 0 && cursorViewRow < g.rows()) {
                     params.cursor_col   = static_cast<uint32_t>(term->cursorX());
-                    params.cursor_row   = static_cast<uint32_t>(term->cursorY());
+                    params.cursor_row   = static_cast<uint32_t>(cursorViewRow);
                     params.cursor_color = 0xFFCCCCCCu;
                     if (!isFocused) {
                         params.cursor_type = 2u; // hollow for unfocused

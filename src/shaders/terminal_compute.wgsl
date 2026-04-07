@@ -350,26 +350,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 let ch = params.cell_height;
                 let cx = base_x + cw * 0.5;
                 let cy = base_y + ch * 0.5;
+                // Count segments accurately: left+right collapse into 1 horizontal,
+                // up+down collapse into 1 vertical. Double lines need 2 each.
+                let has_h = (left_w != 0u || right_w != 0u);
+                let has_v = (up_w   != 0u || down_w  != 0u);
+                let max_hw = max(left_w, right_w);
+                let max_vw = max(up_w, down_w);
                 var seg_count = 0u;
-                if (left_w  != 0u && left_w  != 3u) { seg_count += 1u; }
-                if (right_w != 0u && right_w != 3u) { seg_count += 1u; }
-                if (up_w    != 0u && up_w    != 3u) { seg_count += 1u; }
-                if (down_w  != 0u && down_w  != 3u) { seg_count += 1u; }
-                if (left_w  == 3u) { seg_count += 2u; }
-                if (right_w == 3u) { seg_count += 2u; }
-                if (up_w    == 3u) { seg_count += 2u; }
-                if (down_w  == 3u) { seg_count += 2u; }
+                if (has_h) { seg_count += select(1u, 2u, max_hw == 3u); }
+                if (has_v) { seg_count += select(1u, 2u, max_vw == 3u); }
                 if (seg_count == 0u) { continue; }
                 let ri = atomicAdd(&counters[4], seg_count * 6u);
                 var si = 0u;
 
-                let has_h = (left_w != 0u || right_w != 0u);
-                let has_v = (up_w != 0u || down_w != 0u);
-
                 if (has_h) {
                     let hx0 = select(cx, base_x, left_w != 0u);
                     let hx1 = select(cx, base_x + cw, right_w != 0u);
-                    let max_hw = max(left_w, right_w);
                     let ht = select(1.0, 3.0, max_hw == 2u);
                     if (max_hw != 3u) {
                         let hy0 = cy - ht * 0.5;
@@ -410,7 +406,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 if (has_v) {
                     let vy0 = select(cy, base_y, up_w != 0u);
                     let vy1 = select(cy, base_y + ch, down_w != 0u);
-                    let max_vw = max(up_w, down_w);
                     let vt = select(1.0, 3.0, max_vw == 2u);
                     if (max_vw != 3u) {
                         let vx0 = cx - vt * 0.5;

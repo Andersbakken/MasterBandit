@@ -1,4 +1,5 @@
 #include "Renderer.h"
+#include "BoxDrawingTable.h"
 #include "ColrAtlas.h"
 #include "renderer_utils.h"
 #include <spdlog/spdlog.h>
@@ -207,7 +208,7 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     }
 
     // Initialize compute pipeline
-    initComputePipeline(device_, shaderDir);
+    initComputePipeline(device_, queue, shaderDir);
 
     // Initialize image pipeline
     initImagePipeline(device_, shaderDir);
@@ -356,7 +357,7 @@ void Renderer::setViewportSize(uint32_t width, uint32_t height)
 // Compute pipeline
 // ========================================
 
-void Renderer::initComputePipeline(wgpu::Device& device, const std::string& shaderDir)
+void Renderer::initComputePipeline(wgpu::Device& device, wgpu::Queue& queue, const std::string& shaderDir)
 {
     auto shaderModule = renderer_utils::createShaderModule(device,
         (fs::path(shaderDir) / "terminal_compute.wgsl").string().c_str());
@@ -398,9 +399,19 @@ void Renderer::initComputePipeline(wgpu::Device& device, const std::string& shad
     entries[5].visibility = wgpu::ShaderStage::Compute;
     entries[5].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
 
+    // b6: box drawing table (read-only storage)
+    wgpu::BindGroupLayoutEntry entry6 = {};
+    entry6.binding = 6;
+    entry6.visibility = wgpu::ShaderStage::Compute;
+    entry6.buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+
+    wgpu::BindGroupLayoutEntry allEntries[7];
+    for (int i = 0; i < 6; i++) allEntries[i] = entries[i];
+    allEntries[6] = entry6;
+
     wgpu::BindGroupLayoutDescriptor bglDesc = {};
-    bglDesc.entryCount = 6;
-    bglDesc.entries = entries;
+    bglDesc.entryCount = 7;
+    bglDesc.entries = allEntries;
     computeBindGroupLayout_ = device.CreateBindGroupLayout(&bglDesc);
 
     wgpu::PipelineLayoutDescriptor plDesc = {};
@@ -414,7 +425,16 @@ void Renderer::initComputePipeline(wgpu::Device& device, const std::string& shad
     cpDesc.compute.entryPoint = "main";
     computePipeline_ = device.CreateComputePipeline(&cpDesc);
 
-    computePool_.init(device.Get(), computeBindGroupLayout_.Get());
+    // Create and upload box drawing table buffer
+    {
+        wgpu::BufferDescriptor desc = {};
+        desc.size = sizeof(BoxDrawing::kTable);
+        desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+        boxDrawingTableBuffer_ = device.CreateBuffer(&desc);
+        queue.WriteBuffer(boxDrawingTableBuffer_, 0, BoxDrawing::kTable, sizeof(BoxDrawing::kTable));
+    }
+
+    computePool_.init(device.Get(), computeBindGroupLayout_.Get(), boxDrawingTableBuffer_.Get());
     computeInitialized_ = true;
     spdlog::info("Compute pipeline initialized");
 }

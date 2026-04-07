@@ -29,6 +29,7 @@ static inline uint64_t glyphKey(uint32_t fontIndex, uint32_t glyphId)
     return (static_cast<uint64_t>(fontIndex) << 32) | glyphId;
 }
 
+
 // --- TextSystem implementation ---
 
 TextSystem::~TextSystem()
@@ -1005,10 +1006,10 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
 
             // Normal glyph — check if HarfBuzz substituted it (ligature, contextual form)
             bool isSubstitution = false;
+            uint32_t cp;
             {
                 uint32_t cluster = infos[i].cluster;
                 const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
-                uint32_t cp;
                 if (*p < 0x80) cp = *p;
                 else if ((*p & 0xE0) == 0xC0) cp = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
                 else if ((*p & 0xF0) == 0xE0) cp = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
@@ -1025,14 +1026,7 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
             if (!isSubstitution && glyphFi != 0) {
                 // Fallback font: snap advance to primary font's cell width so glyphs
                 // land on the grid regardless of what the fallback font reports.
-                uint32_t cluster = infos[i].cluster;
-                const uint8_t* p = reinterpret_cast<const uint8_t*>(text.c_str() + cluster);
-                uint32_t cp2;
-                if (*p < 0x80) cp2 = *p;
-                else if ((*p & 0xE0) == 0xC0) cp2 = (*p & 0x1F) << 6 | (*(p+1) & 0x3F);
-                else if ((*p & 0xF0) == 0xE0) cp2 = (*p & 0x0F) << 12 | (*(p+1) & 0x3F) << 6 | (*(p+2) & 0x3F);
-                else cp2 = (*p & 0x07) << 18 | (*(p+1) & 0x3F) << 12 | (*(p+2) & 0x3F) << 6 | (*(p+3) & 0x3F);
-                int cw = wcwidth(static_cast<wchar_t>(cp2));
+                int cw = wcwidth(static_cast<wchar_t>(cp));
                 adv = font.charWidth * scale * (cw > 1 ? 2.0f : 1.0f);
             } else {
                 adv = positions[i].x_advance * fontPixelScale * scale;

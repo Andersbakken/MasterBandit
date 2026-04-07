@@ -50,7 +50,7 @@ public:
     void destroy();
 
     // Compute pipeline
-    void initComputePipeline(wgpu::Device& device, const std::string& shaderDir);
+    void initComputePipeline(wgpu::Device& device, wgpu::Queue& queue, const std::string& shaderDir);
 
     // Compute state pool (byte-budget eviction, logged at info level)
     ComputeStatePool& computePool() { return computePool_; }
@@ -196,6 +196,7 @@ private:
     // Compute pipeline
     wgpu::ComputePipeline computePipeline_;
     wgpu::BindGroupLayout computeBindGroupLayout_;
+    wgpu::Buffer boxDrawingTableBuffer_;
     bool computeInitialized_ = false;
 
     ComputeStatePool computePool_;

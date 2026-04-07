@@ -1,4 +1,5 @@
 #include "PlatformDawn.h"
+#include "BoxDrawingTable.h"
 #include "Utils.h"
 
 #include <numeric>
@@ -95,6 +96,30 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
             continue;
         }
 
+        // Procedural box/block drawing: bypass shaping entirely
+        if (cell.wc >= BoxDrawing::kBaseCodepoint &&
+            cell.wc < BoxDrawing::kBaseCodepoint + BoxDrawing::kTableSize) {
+            uint32_t tableIdx = cell.wc - BoxDrawing::kBaseCodepoint;
+            if (BoxDrawing::kTable[tableIdx] != 0) {
+                GlyphEntry entry;
+                entry.atlas_offset = 0x80000000u | tableIdx;
+                entry.ext_min_x = 0;
+                entry.ext_min_y = 0;
+                entry.ext_max_x = 0;
+                entry.ext_max_y = 0;
+                entry.upem = 0;
+                entry.x_offset = 0;
+                entry.y_offset = 0;
+                uint32_t glyphIdx = static_cast<uint32_t>(rowCache.glyphs.size());
+                rowCache.glyphs.push_back(entry);
+                auto& range = rowCache.cellGlyphRanges[col];
+                if (range.second == 0) range.first = glyphIdx;
+                range.second++;
+                col++;
+                continue;
+            }
+        }
+
         // Determine run-breaking attributes
         bool runBold = cell.attrs.bold();
         bool runItalic = cell.attrs.italic();
@@ -108,6 +133,9 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
             if (next.attrs.wideSpacer()) { runEnd++; continue; } // skip spacers, keep run going
             if (next.attrs.bold() != runBold) break;
             if (next.attrs.italic() != runItalic) break;
+            // Don't include box/block drawing chars in shaping runs — they're rendered procedurally
+            if (next.wc >= BoxDrawing::kBaseCodepoint &&
+                next.wc < BoxDrawing::kBaseCodepoint + BoxDrawing::kTableSize) break;
             runEnd++;
         }
 

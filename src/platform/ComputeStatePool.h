@@ -17,6 +17,7 @@ public:
     // device and bindGroupLayout are non-owning (borrowed from Renderer/PlatformDawn).
     // byteLimit: max bytes held in the free list before LRU eviction (default 32 MB).
     void init(WGPUDevice device, WGPUBindGroupLayout bindGroupLayout,
+              WGPUBuffer boxDrawingTable = nullptr,
               size_t byteLimit = 32 * 1024 * 1024);
 
     ComputeState* acquire(uint32_t minCells);
@@ -46,6 +47,7 @@ private:
 
     WGPUDevice           device_          = nullptr;
     WGPUBindGroupLayout  bindGroupLayout_ = nullptr;
+    WGPUBuffer           boxDrawingTable_ = nullptr;
     size_t               byteLimit_       = 32 * 1024 * 1024;
     size_t               freeBytes_       = 0;
 

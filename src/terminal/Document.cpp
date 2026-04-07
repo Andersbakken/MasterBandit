@@ -2,6 +2,7 @@
 #include "Utf8.h"
 #include <algorithm>
 #include <cassert>
+#include <climits>
 #include <cstring>
 
 // --- SGR helpers (copied from ScrollbackBuffer.cpp) ---
@@ -153,9 +154,12 @@ void Document::growRing()
 {
     int total = historyCount_ + screenHeight_;
     int newCap = roundUpPow2(total + 64);
-    // Cap at tier1Capacity_ + screenHeight_ + padding to avoid unbounded growth
-    int maxCap = roundUpPow2(tier1Capacity_ + screenHeight_ + 64);
-    newCap = std::min(newCap, maxCap);
+    // Cap at tier1Capacity_ + screenHeight_ + padding, but only when tier1Capacity_
+    // is finite — adding to INT_MAX overflows.
+    if (tier1Capacity_ < INT_MAX / 2) {
+        int maxCap = roundUpPow2(tier1Capacity_ + screenHeight_ + 64);
+        newCap = std::min(newCap, maxCap);
+    }
     if (newCap <= ringCapacity_) return; // already large enough
 
     std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
@@ -795,7 +799,10 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         }
 
         int ringTotal = newHistoryCount + newScreenRows;
-        int newCap = roundUpPow2(std::max(ringTotal, tier1Capacity_ + newRows) + 64);
+        // Avoid overflow when tier1Capacity_ is INT_MAX (infinite scrollback)
+        int newCap = (tier1Capacity_ < INT_MAX / 2)
+            ? roundUpPow2(std::max(ringTotal, tier1Capacity_ + newRows) + 64)
+            : roundUpPow2(ringTotal + 64);
         ring_.assign(static_cast<size_t>(newCap) * newCols, Cell{});
         ringExtras_.assign(newCap, {});
         continued_.assign(newCap, false);

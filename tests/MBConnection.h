@@ -4,7 +4,7 @@
 #include <vector>
 #include <functional>
 
-#include <uv.h>
+#include <poll.h>
 #include <libwebsockets.h>
 
 class MBConnection {
@@ -88,11 +88,14 @@ private:
     // Screenshot helper that builds the request JSON
     std::vector<uint8_t> doScreenshot(const std::string& target, int x, int y, int w, int h, bool hasRect, int timeoutMs);
 
+    // Drive the lws event loop for one poll cycle (10ms timeout)
+    void pumpOnce();
+
     pid_t pid_ = -1;
     std::string socketPath_;
 
     // WebSocket client state
-    uv_loop_t loop_ = {};
+    std::vector<struct pollfd> pollfds_;
     struct lws_context* ctx_ = nullptr;
     struct lws* wsi_ = nullptr;
     bool connected_ = false;

@@ -12,7 +12,7 @@ set(PLATFORM_SOURCES
     ComputeStatePool.cpp
 )
 if(APPLE)
-    list(APPEND PLATFORM_SOURCES MetalLayer.mm PlatformUtils_macOS.mm ../FontFallback_CoreText.mm ../FontResolver_CoreText.mm)
+    list(APPEND PLATFORM_SOURCES PlatformUtils_macOS.mm ../FontFallback_CoreText.mm ../FontResolver_CoreText.mm)
 else()
     list(APPEND PLATFORM_SOURCES PlatformUtils_Linux.cpp ../FontFallback_FontConfig.cpp ../FontResolver_FontConfig.cpp)
 endif()

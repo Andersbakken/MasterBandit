@@ -3,7 +3,6 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(SheenBidi CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
-find_package(libuv CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)
 
 set(TEST_SOURCES
@@ -53,7 +52,6 @@ target_link_libraries(mb-tests PRIVATE
     SheenBidi::SheenBidi
     libunibreak::libunibreak
     websockets
-    libuv::uv_a
     glaze::glaze
 )
 

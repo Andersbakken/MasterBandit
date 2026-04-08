@@ -11,6 +11,7 @@
 #include <fstream>
 #include <chrono>
 #include <thread>
+#include <algorithm>
 
 
 
@@ -64,10 +65,54 @@ int MBConnection::wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
         self->connected_ = false;
         break;
 
+    case LWS_CALLBACK_ADD_POLL_FD: {
+        auto* pa = static_cast<struct lws_pollargs*>(in);
+        struct pollfd pfd{ pa->fd, static_cast<short>(pa->events), 0 };
+        self->pollfds_.push_back(pfd);
+        break;
+    }
+    case LWS_CALLBACK_DEL_POLL_FD: {
+        auto* pa = static_cast<struct lws_pollargs*>(in);
+        auto it = std::find_if(self->pollfds_.begin(), self->pollfds_.end(),
+            [pa](const struct pollfd& p) { return p.fd == pa->fd; });
+        if (it != self->pollfds_.end()) self->pollfds_.erase(it);
+        break;
+    }
+    case LWS_CALLBACK_CHANGE_MODE_POLL_FD: {
+        auto* pa = static_cast<struct lws_pollargs*>(in);
+        for (auto& p : self->pollfds_)
+            if (p.fd == pa->fd) { p.events = static_cast<short>(pa->events); break; }
+        break;
+    }
+
     default:
         break;
     }
     return 0;
+}
+
+// ============================================================================
+// Event loop pump
+// ============================================================================
+
+void MBConnection::pumpOnce()
+{
+    if (pollfds_.empty()) {
+        // No fds registered yet — service lws to trigger ADD_POLL_FD
+        lws_service(ctx_, 10);
+        return;
+    }
+
+    int n = poll(pollfds_.data(), static_cast<nfds_t>(pollfds_.size()), 10);
+    if (n < 0 && errno == EINTR) return;
+
+    for (auto& pfd : pollfds_) {
+        if (pfd.revents) {
+            struct lws_pollfd lpfd{ pfd.fd, pfd.events, pfd.revents };
+            lws_service_fd(ctx_, &lpfd);
+            pfd.revents = 0;
+        }
+    }
 }
 
 // ============================================================================
@@ -102,14 +147,11 @@ MBConnection::MBConnection(const Options& opts)
 
 MBConnection::~MBConnection()
 {
-    // Disconnect WebSocket
     if (ctx_) {
         lws_context_destroy(ctx_);
         ctx_ = nullptr;
     }
-    uv_loop_close(&loop_);
 
-    // Kill child — its SIGTERM handler will clean up the socket
     if (pid_ > 0) {
         kill(pid_, SIGTERM);
         int status;
@@ -135,16 +177,11 @@ bool MBConnection::connect(int timeoutMs)
         if (stat(socketPath_.c_str(), &st) != 0) return false;
     }
 
-    // Create libuv loop and lws client context
-    uv_loop_init(&loop_);
-
-    uv_loop_t* loopPtr = &loop_;
     struct lws_context_creation_info info = {};
-    info.options = LWS_SERVER_OPTION_LIBUV;
+    info.options = 0;  // no libuv — driven by poll()
     info.port = CONTEXT_PORT_NO_LISTEN;
     info.protocols = sProtos;
     info.user = this;
-    info.foreign_loops = reinterpret_cast<void**>(&loopPtr);
 
     lws_set_log_level(0, nullptr);
     ctx_ = lws_create_context(&info);
@@ -166,11 +203,9 @@ bool MBConnection::connect(int timeoutMs)
     struct lws* wsi = lws_client_connect_via_info(&ccinfo);
     if (!wsi) return false;
 
-    // Poll the loop until connected or timeout (NOWAIT keeps handles alive between calls)
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (!connected_ && std::chrono::steady_clock::now() < deadline) {
-        uv_run(&loop_, UV_RUN_NOWAIT);
-        if (!connected_) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        pumpOnce();
     }
 
     return connected_;
@@ -193,8 +228,7 @@ std::string MBConnection::sendRequest(const std::string& json, int timeoutMs)
     // Poll until response or timeout
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (!responseReady_ && connected_ && std::chrono::steady_clock::now() < deadline) {
-        uv_run(&loop_, UV_RUN_NOWAIT);
-        if (!responseReady_) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        pumpOnce();
     }
 
     if (!responseReady_ && pid_ > 0) {
@@ -273,8 +307,7 @@ void MBConnection::wait(int ms)
 {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (connected_ && std::chrono::steady_clock::now() < deadline) {
-        uv_run(&loop_, UV_RUN_NOWAIT);
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        pumpOnce();
     }
 }
 

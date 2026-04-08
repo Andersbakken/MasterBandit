@@ -245,9 +245,11 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             const auto& popups = fp->popups();
             const std::string& curFocus = fp->focusedPopupId();
 
+            Terminal* mainTerm = fp->terminal();
             if (curFocus.empty()) {
                 // No popup focused — focus first popup
                 fp->setFocusedPopup(popups.front().id);
+                if (mainTerm) mainTerm->focusEvent(false);
             } else {
                 // Find current popup index, cycle to next or back to main
                 int cur = -1;
@@ -257,8 +259,10 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 if (cur < 0 || cur + 1 >= static_cast<int>(popups.size())) {
                     // Last popup or not found — back to main terminal
                     fp->clearFocusedPopup();
+                    if (mainTerm) mainTerm->focusEvent(true);
                 } else {
                     fp->setFocusedPopup(popups[cur + 1].id);
+                    // Focus moves between popups — main terminal stays unfocused
                 }
             }
             // Mark pane dirty so cursor position updates in the pane texture

@@ -216,9 +216,13 @@ int PlatformDawn::exec()
         scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
             for (auto& tab : tabs_) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
+                    bool wasPopupFocused = (p->focusedPopupId() == popupId);
                     p->destroyPopup(popupId);
-                    // Force re-resolve all rows so popup overlay cells are cleared
-                    if (auto* t = p->terminal()) t->grid().markAllDirty();
+                    Terminal* t = p->terminal();
+                    // If the destroyed popup had focus, restore focus to the main terminal
+                    if (wasPopupFocused && t && p->popups().empty())
+                        t->focusEvent(true);
+                    if (t) t->grid().markAllDirty();
                     auto it = paneRenderStates_.find(paneId);
                     if (it != paneRenderStates_.end()) it->second.dirty = true;
                     needsRedraw_ = true;

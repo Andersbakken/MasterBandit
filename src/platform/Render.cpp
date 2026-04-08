@@ -818,6 +818,7 @@ void PlatformDawn::renderFrame()
             // Cursor — use focused popup's cursor if one exists, otherwise main terminal's
             params.cursor_type = 0;
             PopupPane* focusedPopup = target.pane ? target.pane->focusedPopup() : nullptr;
+            bool popupHasFocus = focusedPopup != nullptr;
             if (focusedPopup && focusedPopup->terminal) {
                 // Render the focused popup's cursor at its pane-relative position
                 TerminalEmulator* pt = focusedPopup->terminal.get();
@@ -853,8 +854,8 @@ void PlatformDawn::renderFrame()
                     params.cursor_col   = static_cast<uint32_t>(term->cursorX());
                     params.cursor_row   = static_cast<uint32_t>(cursorViewRow);
                     params.cursor_color = 0xFFCCCCCCu;
-                    if (!isFocused) {
-                        params.cursor_type = 2u; // hollow for unfocused
+                    if (!isFocused || popupHasFocus) {
+                        params.cursor_type = 2u; // hollow when pane unfocused or popup has focus
                     } else {
                         switch (term->cursorShape()) {
                         case TerminalEmulator::CursorBlock:

@@ -1,12 +1,12 @@
 set(PLATFORM_SOURCES
     PlatformDawn.cpp
-    EventLoop.cpp
-    Input.cpp
-    Actions.cpp
-    Render.cpp
-    Tabs.cpp
-    TabBar.cpp
-    Debug.cpp
+    Platform_EventLoop.cpp
+    Platform_Input.cpp
+    Platform_Actions.cpp
+    Platform_Render.cpp
+    Platform_Tabs.cpp
+    Platform_TabBar.cpp
+    Platform_Debug.cpp
     Renderer.cpp
     TexturePool.cpp
     ComputeStatePool.cpp
@@ -23,6 +23,7 @@ target_include_directories(platform PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/terminal
+    ${CMAKE_SOURCE_DIR}/src/eventloop
     ${CMAKE_SOURCE_DIR}/src/script
 )
 

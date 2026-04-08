@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../eventloop/EventLoop.h"
+#include <eventloop/EventLoop.h>
 
 struct JSRuntime;
 struct JSContext;

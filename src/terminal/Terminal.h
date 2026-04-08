@@ -1,7 +1,7 @@
 #pragma once
 #include "TerminalEmulator.h"
 #include "TerminalOptions.h"
-#include "../eventloop/EventLoop.h"
+#include <eventloop/EventLoop.h>
 #include <vector>
 
 #define EINTRWRAP(ret, op) \

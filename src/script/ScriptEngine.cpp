@@ -5,7 +5,7 @@
 
 #include <quickjs.h>
 #include <spdlog/spdlog.h>
-#include "../eventloop/EventLoop.h"
+#include <eventloop/EventLoop.h>
 
 #include <algorithm>
 #include <filesystem>

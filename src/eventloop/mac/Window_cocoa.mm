@@ -1,6 +1,6 @@
 #include "Window_cocoa.h"
 
-#include "../../platform/InputTypes.h"
+#include <InputTypes.h>
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Window.h"
+#include <Window.h>
 
 #include <dawn/webgpu_cpp.h>
 

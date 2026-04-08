@@ -1,6 +1,6 @@
 #include "Window_xcb.h"
 
-#include "../../platform/InputTypes.h"
+#include <InputTypes.h>
 
 #include <dawn/webgpu_cpp.h>
 

@@ -3,11 +3,11 @@
 #include "FontResolver.h"
 
 #ifdef __APPLE__
-#  include "../eventloop/mac/EventLoop_nsapp.h"
-#  include "../eventloop/mac/Window_cocoa.h"
+#  include <mac/EventLoop_nsapp.h>
+#  include <mac/Window_cocoa.h>
 #elif defined(__linux__)
-#  include "../eventloop/linux/EventLoop_epoll.h"
-#  include "../eventloop/linux/Window_xcb.h"
+#  include <linux/EventLoop_epoll.h>
+#  include <linux/Window_xcb.h>
 #endif
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>

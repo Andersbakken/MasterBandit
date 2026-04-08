@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../Window.h"
-#include "../EventLoop.h"
+#include <Window.h>
+#include <EventLoop.h>
 
 #include <xcb/xcb.h>
 #include <xkbcommon/xkbcommon.h>

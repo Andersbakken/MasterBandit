@@ -20,8 +20,8 @@
 #include <dawn/webgpu_cpp.h>
 #include <dawn/native/DawnNative.h>
 
-#include "../eventloop/EventLoop.h"
-#include "../eventloop/Window.h"
+#include <eventloop/EventLoop.h>
+#include <eventloop/Window.h>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/base_sink.h>

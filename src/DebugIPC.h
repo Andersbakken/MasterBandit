@@ -6,7 +6,7 @@
 #include <mutex>
 #include <functional>
 
-#include "../eventloop/EventLoop.h"
+#include <eventloop/EventLoop.h>
 #include <libwebsockets.h>
 #include <glaze/glaze.hpp>
 

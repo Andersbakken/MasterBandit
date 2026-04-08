@@ -46,7 +46,7 @@ NSAppEventLoop::NSAppEventLoop()
     ctx.info = this;
     observer_ = CFRunLoopObserverCreateWithHandler(
         kCFAllocatorDefault,
-        kCFRunLoopBeforeWaiting | kCFRunLoopAfterWaiting,
+        kCFRunLoopBeforeWaiting,
         true, 0,
         ^(CFRunLoopObserverRef, CFRunLoopActivity activity) {
             if (activity == kCFRunLoopBeforeWaiting && onTick)
@@ -144,8 +144,11 @@ static void cfFdCallbackV2(CFFileDescriptorRef fdRef, CFOptionFlags callBackType
     if (callBackTypes & kCFFileDescriptorWriteCallBack)
         fired = fired | EventLoop::FdEvents::Writable;
 
+    int nativeFd = CFFileDescriptorGetNativeDescriptor(fdRef);
+    cbInfo->loop->fdReady(nativeFd, fired);
+    // Re-arm AFTER draining so new data triggers another callback
     CFFileDescriptorEnableCallBacks(fdRef, callBackTypes);
-    cbInfo->loop->fdReady(CFFileDescriptorGetNativeDescriptor(fdRef), fired);
+    cbInfo->loop->tick();
 }
 
 void NSAppEventLoop::watchFd(int fd, FdEvents events, FdCb cb)

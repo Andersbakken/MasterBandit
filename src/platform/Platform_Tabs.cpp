@@ -264,7 +264,7 @@ void PlatformDawn::closeTab(int idx)
         if (auto* t = panePtr->terminal()) {
             removePtyPoll(t->masterFD());
         }
-        // Release pane render state
+        // Release pane and popup render states
         auto it = paneRenderStates_.find(panePtr->id());
         if (it != paneRenderStates_.end()) {
             if (it->second.heldTexture)
@@ -273,6 +273,7 @@ void PlatformDawn::closeTab(int idx)
                 pendingTabBarRelease_.push_back(t2);
             paneRenderStates_.erase(it);
         }
+        releasePopupStates(panePtr.get());
         scriptEngine_.notifyPaneDestroyed(panePtr->id());
     }
 
@@ -421,6 +422,7 @@ void PlatformDawn::terminalExited(Terminal* terminal)
                     pendingTabBarRelease_.push_back(tx);
                 paneRenderStates_.erase(it);
             }
+            releasePopupStates(panePtr.get());
 
             scriptEngine_.notifyPaneDestroyed(paneId);
 

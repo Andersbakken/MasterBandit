@@ -202,11 +202,24 @@ int PlatformDawn::exec()
                     pcbs.quit = [this]() { quit(); };
                     pcbs.onInput = std::move(onInput);
                     if (p->createPopup(popupId, x, y, w, h, std::move(pcbs))) {
-                        p->onPopupEvent = [this, paneId]() {
-                            auto it = paneRenderStates_.find(paneId);
-                            if (it != paneRenderStates_.end()) it->second.dirty = true;
+                        // Initialize popup render state
+                        std::string key = popupStateKey(paneId, popupId);
+                        PaneRenderState& prs = popupRenderStates_[key];
+                        size_t needed = static_cast<size_t>(w) * h;
+                        prs.resolvedCells.resize(needed);
+                        prs.rowShapingCache.resize(h);
+                        prs.dirty = true;
+                        // Dirty popup render state on content changes
+                        p->onPopupEvent = [this, paneId, popupId]() {
+                            std::string k = popupStateKey(paneId, popupId);
+                            auto it = popupRenderStates_.find(k);
+                            if (it != popupRenderStates_.end()) it->second.dirty = true;
                             setNeedsRedraw();
                         };
+                        // Dirty parent pane so the popup composite entry is added
+                        auto it = paneRenderStates_.find(paneId);
+                        if (it != paneRenderStates_.end()) it->second.dirty = true;
+                        setNeedsRedraw();
                         return true;
                     }
                     return false;
@@ -223,6 +236,15 @@ int PlatformDawn::exec()
                     if (wasPopupFocused && t && p->popups().empty())
                         t->focusEvent(true);
                     if (t) t->grid().markAllDirty();
+                    // Release popup render state
+                    std::string key = popupStateKey(paneId, popupId);
+                    auto pit = popupRenderStates_.find(key);
+                    if (pit != popupRenderStates_.end()) {
+                        if (pit->second.heldTexture) texturePool_.release(pit->second.heldTexture);
+                        for (auto* tx : pit->second.pendingRelease) texturePool_.release(tx);
+                        popupRenderStates_.erase(pit);
+                    }
+                    // Dirty parent pane so it re-renders without the popup composite entry
                     auto it = paneRenderStates_.find(paneId);
                     if (it != paneRenderStates_.end()) it->second.dirty = true;
                     setNeedsRedraw();
@@ -236,8 +258,19 @@ int PlatformDawn::exec()
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     if (p->resizePopup(popupId, x, y, w, h)) {
                         if (auto* t = p->terminal()) t->grid().markAllDirty();
-                        auto it = paneRenderStates_.find(paneId);
-                        if (it != paneRenderStates_.end()) it->second.dirty = true;
+                        // Resize popup render state
+                        std::string key = popupStateKey(paneId, popupId);
+                        auto pit = popupRenderStates_.find(key);
+                        if (pit != popupRenderStates_.end()) {
+                            PaneRenderState& prs = pit->second;
+                            prs.resolvedCells.resize(static_cast<size_t>(w) * h);
+                            prs.rowShapingCache.assign(h, {});
+                            prs.dirty = true;
+                            if (prs.heldTexture) {
+                                prs.pendingRelease.push_back(prs.heldTexture);
+                                prs.heldTexture = nullptr;
+                            }
+                        }
                         setNeedsRedraw();
                         return true;
                     }

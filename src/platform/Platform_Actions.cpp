@@ -92,6 +92,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                     pendingTabBarRelease_.push_back(tx);
                 paneRenderStates_.erase(it);
             }
+            releasePopupStates(fp);
 
             scriptEngine_.notifyPaneDestroyed(paneId);
             layout->removePane(paneId);

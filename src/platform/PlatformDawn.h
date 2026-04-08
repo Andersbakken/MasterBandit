@@ -238,8 +238,15 @@ private:
     };
     std::unordered_map<int, PaneRenderState> paneRenderStates_;
     std::unordered_map<Tab*, PaneRenderState> overlayRenderStates_; // per-tab overlay render state
+    std::unordered_map<std::string, PaneRenderState> popupRenderStates_; // keyed by "<paneId>/<popupId>"
 
-    void resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale);
+    static std::string popupStateKey(int paneId, const std::string& popupId) {
+        return std::to_string(paneId) + "/" + popupId;
+    }
+    void releasePopupStates(Pane* pane);
+
+    void resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale,
+                    float pixelOriginX, float pixelOriginY);
 
     std::unordered_map<int, Terminal*> ptyPolls_;
 

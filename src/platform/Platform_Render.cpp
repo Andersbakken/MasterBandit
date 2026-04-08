@@ -10,8 +10,23 @@
 
 static void appendUtf8(std::string& s, uint32_t cp) { utf8::append(s, cp); }
 
+void PlatformDawn::releasePopupStates(Pane* pane)
+{
+    for (const auto& popup : pane->popups()) {
+        std::string key = popupStateKey(pane->id(), popup.id);
+        auto it = popupRenderStates_.find(key);
+        if (it != popupRenderStates_.end()) {
+            if (it->second.heldTexture)
+                texturePool_.release(it->second.heldTexture);
+            for (auto* tx : it->second.pendingRelease)
+                texturePool_.release(tx);
+            popupRenderStates_.erase(it);
+        }
+    }
+}
 
-void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale)
+void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale,
+                              float pixelOriginX, float pixelOriginY)
 {
     if (!term) return;
 
@@ -289,8 +304,8 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
                 // Always add a draw command (tile may already be cached)
                 auto* cached = renderer_.colrAtlas().findTile(colrKey, fontSize_);
                 if (cached) {
-                    float px = padLeft_ + static_cast<float>(cellCol) * cellWidthPx;
-                    float py = padTop_ + static_cast<float>(row) * lineHeight_;
+                    float px = pixelOriginX + static_cast<float>(cellCol) * cellWidthPx;
+                    float py = pixelOriginY + static_cast<float>(row) * lineHeight_;
 
                     Renderer::ColrDrawCmd dcmd;
                     dcmd.x = px;
@@ -432,7 +447,12 @@ void PlatformDawn::renderFrame()
         PaneRenderState* rs;
         PaneRect rect;
         bool isFocused;
-        Pane* pane = nullptr;  // null for overlays
+        Pane* pane = nullptr;       // null for overlays and popups
+        bool isPopup = false;
+        float pixelOriginX = 0.0f; // for resolveRow (0,0 for popups — texture-local)
+        float pixelOriginY = 0.0f;
+        int popupParentPaneId = -1;
+        std::string popupId;
     };
     std::vector<RenderTarget> renderTargets;
 
@@ -472,7 +492,10 @@ void PlatformDawn::renderFrame()
                     rs.dirty = true;
                 }
             }
-            renderTargets.push_back({overlay, &rs, fullRect, true});
+            RenderTarget ot;
+            ot.term = overlay; ot.rs = &rs; ot.rect = fullRect; ot.isFocused = true;
+            ot.pixelOriginX = padLeft_; ot.pixelOriginY = padTop_;
+            renderTargets.push_back(std::move(ot));
         }
     } else {
         for (auto& panePtr : currentTab->layout()->panes()) {
@@ -481,7 +504,41 @@ void PlatformDawn::renderFrame()
             Terminal* term = pane->terminal();
             if (!term) continue;
             bool focused = (pane->id() == currentTab->layout()->focusedPaneId());
-            renderTargets.push_back({term, &paneRenderStates_[pane->id()], pane->rect(), focused, pane});
+            RenderTarget pt;
+            pt.term = term; pt.rs = &paneRenderStates_[pane->id()];
+            pt.rect = pane->rect(); pt.isFocused = focused; pt.pane = pane;
+            pt.pixelOriginX = padLeft_; pt.pixelOriginY = padTop_;
+            renderTargets.push_back(std::move(pt));
+        }
+        // Add popup targets after all panes (composited on top)
+        for (auto& panePtr : currentTab->layout()->panes()) {
+            Pane* pane = panePtr.get();
+            for (const auto& popup : pane->popups()) {
+                if (!popup.terminal) continue;
+                TerminalEmulator* pterm = popup.terminal.get();
+                std::string key = popupStateKey(pane->id(), popup.id);
+                PaneRenderState& prs = popupRenderStates_[key];
+                int pcols = pterm->width(), prows = pterm->height();
+                size_t needed = static_cast<size_t>(pcols) * prows;
+                if (prs.resolvedCells.size() != needed) {
+                    prs.resolvedCells.resize(needed);
+                    prs.rowShapingCache.resize(prows);
+                    prs.dirty = true;
+                }
+                // Popup texture rect: screen-absolute position, popup-sized
+                PaneRect popupRect;
+                popupRect.x = pane->rect().x + static_cast<int>(padLeft_) + static_cast<int>(popup.cellX * charWidth_);
+                popupRect.y = pane->rect().y + static_cast<int>(padTop_)  + static_cast<int>(popup.cellY * lineHeight_);
+                popupRect.w = static_cast<int>(popup.cellW * charWidth_);
+                popupRect.h = static_cast<int>(popup.cellH * lineHeight_);
+                RenderTarget pop;
+                pop.term = pterm; pop.rs = &prs; pop.rect = popupRect;
+                pop.isFocused = (pane->focusedPopupId() == popup.id);
+                pop.isPopup = true;
+                pop.pixelOriginX = 0.0f; pop.pixelOriginY = 0.0f;
+                pop.popupParentPaneId = pane->id(); pop.popupId = popup.id;
+                renderTargets.push_back(std::move(pop));
+            }
         }
     }
 
@@ -558,14 +615,16 @@ void PlatformDawn::renderFrame()
             uint32_t ti = packed >> 16;
             int row = static_cast<int>(packed & 0xFFFF);
             auto& target = renderTargets[ti];
-            resolveRow(*target.rs, target.term, row, font, scale);
+            resolveRow(*target.rs, target.term, row, font, scale,
+                       target.pixelOriginX, target.pixelOriginY);
         });
     } else {
         for (uint32_t packed : allWorkItems) {
             uint32_t ti = packed >> 16;
             int row = static_cast<int>(packed & 0xFFFF);
             auto& target = renderTargets[ti];
-            resolveRow(*target.rs, target.term, row, font, scale);
+            resolveRow(*target.rs, target.term, row, font, scale,
+                       target.pixelOriginX, target.pixelOriginY);
         }
     }
 
@@ -609,98 +668,6 @@ void PlatformDawn::renderFrame()
                 }
             }
             rs.totalGlyphs = static_cast<uint32_t>(rs.glyphBuffer.size());
-
-            // Overlay popup cells on top of the pane's resolved cells
-            if (target.pane) {
-                for (const auto& popup : target.pane->popups()) {
-                    if (!popup.terminal) continue;
-                    TerminalEmulator* pterm = popup.terminal.get();
-                    int pcols = pterm->width();
-                    int prows = pterm->height();
-                    int parentCols = g.cols();
-
-                    for (int py = 0; py < prows; ++py) {
-                        int parentRow = popup.cellY + py;
-                        if (parentRow < 0 || parentRow >= g.rows()) continue;
-                        const Cell* popupRowData = pterm->viewportRow(py);
-
-                        for (int px = 0; px < pcols; ++px) {
-                            int parentCol = popup.cellX + px;
-                            if (parentCol < 0 || parentCol >= parentCols) continue;
-
-                            int parentIdx = parentRow * parentCols + parentCol;
-                            const Cell& pcell = popupRowData[px];
-
-                            const auto& dc = pterm->defaultColors();
-                            uint32_t defFg = static_cast<uint32_t>(dc.fgR) | (static_cast<uint32_t>(dc.fgG) << 8) | (static_cast<uint32_t>(dc.fgB) << 16) | 0xFF000000u;
-                            uint32_t defBg = (dc.bgR || dc.bgG || dc.bgB)
-                                ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
-                                : 0x00000000u;
-                            uint32_t fg = (pcell.attrs.fgMode() == CellAttrs::Default) ? defFg : pcell.attrs.packFgAsU32();
-                            uint32_t bg = (pcell.attrs.bgMode() == CellAttrs::Default) ? defBg : pcell.attrs.packBgAsU32();
-                            if (pcell.attrs.inverse()) {
-                                uint32_t bgOpaque = (bg == 0u)
-                                    ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
-                                    : bg;
-                                std::swap(fg, bgOpaque);
-                                bg = bgOpaque;
-                            }
-
-                            // If popup bg is transparent, use a solid background so content is readable
-                            if ((bg & 0xFF000000u) == 0)
-                                bg = defBg != 0 ? defBg : 0xFF1a1a2e;
-
-                            ResolvedCell& rc = rs.resolvedCells[parentIdx];
-                            rc.fg_color = fg;
-                            rc.bg_color = bg;
-                            rc.underline_info = 0;
-
-                            // Resolve glyph for this popup cell
-                            rc.glyph_offset = 0;
-                            rc.glyph_count = 0;
-                            if (pcell.wc != 0 && !pcell.attrs.wideSpacer()) {
-                                std::string cellText;
-                                utf8::append(cellText, pcell.wc);
-
-                                FontStyle runStyle;
-                                runStyle.bold = pcell.attrs.bold();
-                                const ShapedRun& shaped = textSystem_.shapeRun(fontName_, cellText, fontSize_, runStyle);
-                                for (const auto& sg : shaped.glyphs) {
-                                    uint64_t glyphId = sg.glyphId;
-                                    if ((glyphId & 0xFFFFFFFF) == 0) continue;
-                                    GlyphInfo gi;
-                                    {
-                                        std::shared_lock lock(font->mutex);
-                                        auto git = font->glyphs.find(glyphId);
-                                        if (git == font->glyphs.end() || git->second.is_empty) continue;
-                                        gi = git->second;
-                                    }
-                                    GlyphEntry entry;
-                                    entry.atlas_offset = gi.atlas_offset;
-                                    entry.ext_min_x = gi.ext_min_x;
-                                    entry.ext_min_y = gi.ext_min_y;
-                                    entry.ext_max_x = gi.ext_max_x;
-                                    entry.ext_max_y = gi.ext_max_y;
-                                    entry.upem = gi.upem;
-                                    entry.x_offset = sg.xOffset;
-                                    entry.y_offset = sg.yOffset;
-
-                                    rc.glyph_offset = static_cast<uint32_t>(rs.glyphBuffer.size());
-                                    rc.glyph_count = 1;
-                                    rs.glyphBuffer.push_back(entry);
-                                    rs.totalGlyphs++;
-                                    break; // one glyph per cell for popup
-                                }
-                            }
-                        }
-                    }
-                    // Mark pane dirty if popup content changed
-                    if (pterm->grid().anyDirty()) {
-                        rs.dirty = true;
-                        const_cast<IGrid&>(pterm->grid()).clearAllDirty();
-                    }
-                }
-            }
 
             // Apply selection highlight
             bool selectionVisible = term->hasSelection();
@@ -814,43 +781,28 @@ void PlatformDawn::renderFrame()
             params.viewport_h = static_cast<float>(paneRect.h);
             params.font_ascender = font->ascender * scale;
             params.font_size = fontSize_;
-            params.pane_origin_x = padLeft_;
-            params.pane_origin_y = padTop_;
+            params.pane_origin_x = target.pixelOriginX;
+            params.pane_origin_y = target.pixelOriginY;
             params.max_text_vertices = cs->maxTextVertices;
 
-            // Cursor — use focused popup's cursor if one exists, otherwise main terminal's
+            // Cursor
             params.cursor_type = 0;
-            PopupPane* focusedPopup = target.pane ? target.pane->focusedPopup() : nullptr;
-            bool popupHasFocus = focusedPopup != nullptr;
-            if (focusedPopup && focusedPopup->terminal) {
-                // Render the focused popup's cursor at its pane-relative position
-                TerminalEmulator* pt = focusedPopup->terminal.get();
-                int pcx = focusedPopup->cellX + pt->cursorX();
-                int pcy = focusedPopup->cellY + pt->cursorY();
-                if (pt->cursorVisible() &&
-                    pcx >= 0 && pcx < g.cols() && pcy >= 0 && pcy < g.rows()) {
-                    params.cursor_col   = static_cast<uint32_t>(pcx);
-                    params.cursor_row   = static_cast<uint32_t>(pcy);
+            if (target.isPopup) {
+                // Popup: render the popup terminal's own cursor in texture-local coords
+                if (term->cursorVisible() &&
+                    term->cursorX() >= 0 && term->cursorX() < g.cols() &&
+                    term->cursorY() >= 0 && term->cursorY() < g.rows()) {
+                    params.cursor_col   = static_cast<uint32_t>(term->cursorX());
+                    params.cursor_row   = static_cast<uint32_t>(term->cursorY());
                     params.cursor_color = 0xFFCCCCCCu;
-                    params.cursor_type  = 1u; // solid block
+                    params.cursor_type  = isFocused ? 1u : 2u;
                 }
             } else {
-                // Main terminal cursor — suppress if behind a popup
-                bool cursorBehindPopup = false;
-                if (target.pane) {
-                    int cx = term->cursorX(), cy = term->cursorY();
-                    for (const auto& popup : target.pane->popups()) {
-                        if (cx >= popup.cellX && cx < popup.cellX + popup.cellW &&
-                            cy >= popup.cellY && cy < popup.cellY + popup.cellH) {
-                            cursorBehindPopup = true;
-                            break;
-                        }
-                    }
-                }
-                // When scrolled back, the cursor row may still be visible in the viewport.
-                // Its view row = cursorY + viewportOffset.
+                // Main pane: suppress cursor if any popup exists (popup has its own cursor)
+                bool popupHasFocus = target.pane && target.pane->focusedPopup() != nullptr;
+                bool hasPanePopups = target.pane && !target.pane->popups().empty();
                 int cursorViewRow = term->cursorY() + term->viewportOffset();
-                if (!cursorBehindPopup &&
+                if (!hasPanePopups &&
                     term->cursorVisible() &&
                     term->cursorX() >= 0 && term->cursorX() < g.cols() &&
                     cursorViewRow >= 0 && cursorViewRow < g.rows()) {
@@ -858,21 +810,18 @@ void PlatformDawn::renderFrame()
                     params.cursor_row   = static_cast<uint32_t>(cursorViewRow);
                     params.cursor_color = 0xFFCCCCCCu;
                     if (!isFocused || popupHasFocus) {
-                        params.cursor_type = 2u; // hollow when pane unfocused or popup has focus
+                        params.cursor_type = 2u;
                     } else {
                         switch (term->cursorShape()) {
                         case TerminalEmulator::CursorBlock:
                         case TerminalEmulator::CursorSteadyBlock:
-                            params.cursor_type = 1u; // solid block
-                            break;
+                            params.cursor_type = 1u; break;
                         case TerminalEmulator::CursorUnderline:
                         case TerminalEmulator::CursorSteadyUnderline:
-                            params.cursor_type = 3u; // underline
-                            break;
+                            params.cursor_type = 3u; break;
                         case TerminalEmulator::CursorBar:
                         case TerminalEmulator::CursorSteadyBar:
-                            params.cursor_type = 4u; // bar
-                            break;
+                            params.cursor_type = 4u; break;
                         }
                     }
                 }

@@ -8,7 +8,6 @@ set(PLATFORM_SOURCES
     TabBar.cpp
     Debug.cpp
     Renderer.cpp
-    NativeSurface.cpp
     TexturePool.cpp
     ComputeStatePool.cpp
 )
@@ -31,8 +30,6 @@ target_include_directories(platform PRIVATE ${Stb_INCLUDE_DIR})
 
 target_link_libraries(platform PUBLIC
     dawn::webgpu_dawn
-    glfw
-    $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,uv>
     harfbuzz
     harfbuzz-gpu
     spdlog::spdlog

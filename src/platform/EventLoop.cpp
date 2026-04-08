@@ -1,5 +1,4 @@
 #include "PlatformDawn.h"
-#include "NativeSurface.h"
 #include "Config.h"
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -11,9 +10,11 @@ int PlatformDawn::exec()
     if (!tab || tab->layout()->panes().empty()) return 1;
 
     running_ = true;
-    loop_ = uv_default_loop();
 
-    debugIPC_ = std::make_unique<DebugIPC>(loop_,
+    // eventLoop_ and window_ were already created in createTerminal().
+    // Here we finish setup: debugIPC, scripts, PTY polls, file watcher, onTick.
+
+    debugIPC_ = std::make_unique<DebugIPC>(eventLoop_.get(),
         [this]() -> Terminal* { return activeTerm(); },
         [this](int id) {
             Tab* t = activeTab();
@@ -32,7 +33,7 @@ int PlatformDawn::exec()
         debugSink_->setIPC(debugIPC_.get());
     }
 
-    scriptEngine_.setLoop(loop_);
+    scriptEngine_.setLoop(eventLoop_.get());
 
     // Set up script engine callbacks
     {
@@ -134,15 +135,15 @@ int PlatformDawn::exec()
                                      std::function<void(const char*, size_t)> onInput) -> bool {
             if (tabId < 0 || tabId >= static_cast<int>(tabs_.size())) return false;
             Tab* tab = tabs_[tabId].get();
-            if (tab->hasOverlay()) return false; // only one overlay at a time
+            if (tab->hasOverlay()) return false;
 
             TerminalCallbacks cbs;
             cbs.event = [this](TerminalEmulator*, int, void*) {
-                needsRedraw_ = true;
+                setNeedsRedraw();
             };
 
             PlatformCallbacks pcbs;
-            pcbs.onTerminalExited = [](Terminal*) {}; // headless, no exit
+            pcbs.onTerminalExited = [](Terminal*) {};
             pcbs.quit = [this]() { quit(); };
             pcbs.onInput = std::move(onInput);
 
@@ -158,7 +159,7 @@ int PlatformDawn::exec()
             overlay->resize(cols, rows);
 
             tab->pushOverlay(std::move(overlay));
-            needsRedraw_ = true;
+            setNeedsRedraw();
             return true;
         };
         scbs.popOverlay = [this](Script::TabId tabId) {
@@ -166,7 +167,7 @@ int PlatformDawn::exec()
             Tab* tab = tabs_[tabId].get();
             if (tab->hasOverlay()) {
                 tab->popOverlay();
-                needsRedraw_ = true;
+                setNeedsRedraw();
             }
         };
         scbs.createTab = [this]() -> int {
@@ -204,7 +205,7 @@ int PlatformDawn::exec()
                         p->onPopupEvent = [this, paneId]() {
                             auto it = paneRenderStates_.find(paneId);
                             if (it != paneRenderStates_.end()) it->second.dirty = true;
-                            needsRedraw_ = true;
+                            setNeedsRedraw();
                         };
                         return true;
                     }
@@ -219,13 +220,12 @@ int PlatformDawn::exec()
                     bool wasPopupFocused = (p->focusedPopupId() == popupId);
                     p->destroyPopup(popupId);
                     Terminal* t = p->terminal();
-                    // If the destroyed popup had focus, restore focus to the main terminal
                     if (wasPopupFocused && t && p->popups().empty())
                         t->focusEvent(true);
                     if (t) t->grid().markAllDirty();
                     auto it = paneRenderStates_.find(paneId);
                     if (it != paneRenderStates_.end()) it->second.dirty = true;
-                    needsRedraw_ = true;
+                    setNeedsRedraw();
                     return;
                 }
             }
@@ -238,7 +238,7 @@ int PlatformDawn::exec()
                         if (auto* t = p->terminal()) t->grid().markAllDirty();
                         auto it = paneRenderStates_.find(paneId);
                         if (it != paneRenderStates_.end()) it->second.dirty = true;
-                        needsRedraw_ = true;
+                        setNeedsRedraw();
                         return true;
                     }
                     return false;
@@ -252,7 +252,7 @@ int PlatformDawn::exec()
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     if (PopupPane* popup = p->findPopup(popupId)) {
                         popup->terminal->injectData(data.c_str(), data.size());
-                        needsRedraw_ = true;
+                        setNeedsRedraw();
                     }
                     return;
                 }
@@ -263,7 +263,6 @@ int PlatformDawn::exec()
 
     // Hook action dispatcher to notify script engine
     actionDispatcher_.addListener([this](Action::TypeIndex idx, const Action::Any& action) {
-        // For ScriptAction, use the actual namespace.name instead of "ScriptAction"
         if (auto* sa = std::get_if<Action::ScriptAction>(&action)) {
             scriptEngine_.notifyAction(sa->name);
         } else {
@@ -271,7 +270,7 @@ int PlatformDawn::exec()
         }
     });
 
-    // Set up script engine config dir for allowlist persistence
+    // Set up script engine config dir
     {
         const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");
         std::string configDir;
@@ -294,110 +293,76 @@ int PlatformDawn::exec()
         scriptEngine_.loadController(scriptsDir + "command-palette.js");
     }
 
-    // Add PTY polls for all terminals already created
-    for (auto& panePtr : tab->layout()->panes()) {
-        Terminal* term = panePtr->terminal();
-        if (term && term->masterFD() >= 0) {
-            addPtyPoll(term->masterFD(), term);
-        }
-    }
-
     // Config file watcher with 300ms debounce
     {
         std::string watchPath = configFilePath();
-        if (!watchPath.empty()) {
-            uv_fs_event_init(loop_, &configWatcher_);
-            configWatcher_.data = this;
-            uv_timer_init(loop_, &configDebounce_);
-            configDebounce_.data = this;
-            int r = uv_fs_event_start(&configWatcher_,
-                [](uv_fs_event_t* h, const char*, int, int) {
-                    auto* self = static_cast<PlatformDawn*>(h->data);
-                    uv_timer_stop(&self->configDebounce_);
-                    uv_timer_start(&self->configDebounce_,
-                        [](uv_timer_t* t) {
-                            static_cast<PlatformDawn*>(t->data)->reloadConfigNow();
-                        }, 300, 0);
-                },
-                watchPath.c_str(), 0);
-            if (r == 0) {
-                configWatcherActive_ = true;
-                spdlog::info("Config watcher active on {}", watchPath);
-            } else {
-                spdlog::warn("Config watcher: uv_fs_event_start failed: {}", uv_strerror(r));
-            }
+        if (!watchPath.empty() && eventLoop_) {
+            eventLoop_->addFileWatch(watchPath, [this]() {
+                if (configDebounceActive_) {
+                    eventLoop_->removeTimer(configDebounceTimer_);
+                    configDebounceActive_ = false;
+                }
+                configDebounceTimer_ = eventLoop_->addTimer(300, false, [this]() {
+                    configDebounceActive_ = false;
+                    reloadConfigNow();
+                });
+                configDebounceActive_ = true;
+            });
         }
     }
 
-    uv_timer_init(loop_, &autoScrollTimer_);
-    autoScrollTimer_.data = this;
-
-    uv_idle_init(loop_, &idleCb_);
-    idleCb_.data = this;
-    uv_idle_start(&idleCb_, [](uv_idle_t* handle) {
-        auto* self = static_cast<PlatformDawn*>(handle->data);
-        if (!self->isHeadless()) {
-            glfwPollEvents();
-
-            if (self->shouldClose()) {
-                uv_stop(self->loop_);
+    // Set up the per-iteration tick
+    if (eventLoop_) {
+        eventLoop_->onTick = [this]() {
+            if (shouldClose()) {
+                eventLoop_->stop();
                 return;
             }
-        }
 
-        // Advance progress animations
-        {
-            bool hasAnim = false;
-            for (auto& tab : self->tabs_) {
-                for (auto& panePtr : tab->layout()->panes()) {
-                    if (panePtr->progressState() == 3) { hasAnim = true; break; }
+            // Advance progress animations
+            {
+                bool hasAnim = false;
+                for (auto& t : tabs_) {
+                    for (auto& panePtr : t->layout()->panes()) {
+                        if (panePtr->progressState() == 3) { hasAnim = true; break; }
+                    }
+                    if (hasAnim) break;
                 }
-                if (hasAnim) break;
-            }
-            if (hasAnim) {
-                // Indeterminate: redraw every frame for smooth animation
-                self->needsRedraw_ = true;
-                // Tab bar glyph animation at 10fps
-                auto now = TerminalEmulator::mono();
-                if (self->tabBarVisible() && now - self->lastAnimTick_ > 100) {
-                    self->lastAnimTick_ = now;
-                    self->tabBarAnimFrame_++;
-                    self->tabBarDirty_ = true;
+                if (hasAnim) {
+                    setNeedsRedraw();
+                    auto now = TerminalEmulator::mono();
+                    if (tabBarVisible() && now - lastAnimTick_ > 100) {
+                        lastAnimTick_ = now;
+                        tabBarAnimFrame_++;
+                        tabBarDirty_ = true;
+                    }
                 }
             }
-        }
 
-        // Run pending JS microtasks
-        self->scriptEngine_.executePendingJobs();
+            if (debugIPC_) debugIPC_->service();
+            scriptEngine_.executePendingJobs();
+            device_.Tick();
 
-        self->device_.Tick();
-        self->renderFrame();
-    });
-
-    uv_run(loop_, UV_RUN_DEFAULT);
-
-    if (debugSink_) {
-        debugSink_->setIPC(nullptr);
+            if (needsRedraw_) renderFrame();
+        };
     }
 
-    // Stop all PTY polls
+    if (eventLoop_) eventLoop_->run();
+
+    if (debugSink_) debugSink_->setIPC(nullptr);
+
+    // Cleanup
     std::vector<int> fds;
     for (auto& [fd, _] : ptyPolls_) fds.push_back(fd);
     for (int fd : fds) removePtyPoll(fd);
 
-    uv_idle_stop(&idleCb_);
-    uv_timer_stop(&autoScrollTimer_);
-    uv_close(reinterpret_cast<uv_handle_t*>(&idleCb_), nullptr);
-    uv_close(reinterpret_cast<uv_handle_t*>(&autoScrollTimer_), nullptr);
-    if (configWatcherActive_) {
-        uv_timer_stop(&configDebounce_);
-        uv_fs_event_stop(&configWatcher_);
-        uv_close(reinterpret_cast<uv_handle_t*>(&configWatcher_), nullptr);
-        uv_close(reinterpret_cast<uv_handle_t*>(&configDebounce_), nullptr);
-        configWatcherActive_ = false;
+    if (configDebounceActive_) {
+        eventLoop_->removeTimer(configDebounceTimer_);
+        configDebounceActive_ = false;
     }
+    eventLoop_->removeFileWatch();
+
     if (debugIPC_) debugIPC_->closeHandles();
-    uv_run(loop_, UV_RUN_DEFAULT);
     debugIPC_.reset();
 
     return exitStatus_;
@@ -407,8 +372,14 @@ int PlatformDawn::exec()
 void PlatformDawn::quit(int status)
 {
     exitStatus_ = status;
-    if (loop_) {
-        uv_stop(loop_);
+    if (eventLoop_) {
+        eventLoop_->stop();
     }
 }
 
+
+void PlatformDawn::setNeedsRedraw()
+{
+    needsRedraw_ = true;
+    if (eventLoop_) eventLoop_->wakeup();
+}

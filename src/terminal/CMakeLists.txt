@@ -14,6 +14,7 @@ target_include_directories(terminal PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/platform
+    ${CMAKE_SOURCE_DIR}/src/eventloop
 )
 
 target_link_libraries(terminal PUBLIC

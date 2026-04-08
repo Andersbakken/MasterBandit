@@ -3,10 +3,6 @@
 #include "Config.h"
 #include <unistd.h>
 
-#if defined(__linux__)
-#  define GLFW_EXPOSE_NATIVE_X11
-#  include <GLFW/glfw3native.h>
-#endif
 
 
 void PlatformDawn::dispatchAction(const Action::Any& action)
@@ -26,7 +22,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                     refreshDividers(now);
                 updateWindowTitle();
                 tabBarDirty_ = true;
-                needsRedraw_ = true;
+                setNeedsRedraw();
             }
         },
         [&](const Action::ActivateTab& a) {
@@ -40,7 +36,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                     refreshDividers(now);
                 updateWindowTitle();
                 tabBarDirty_ = true;
-                needsRedraw_ = true;
+                setNeedsRedraw();
             }
         },
         [&](const Action::SplitPane& a) {
@@ -132,7 +128,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 layout->setFocusedPane(panes[next]->id());
                 notifyPaneFocusChange(tab, prev, panes[next]->id());
                 updateTabTitleFromFocusedPane(activeTabIdx_);
-                needsRedraw_ = true;
+                setNeedsRedraw();
                 return;
             }
 
@@ -153,7 +149,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 layout->setFocusedPane(targetId);
                 notifyPaneFocusChange(tab, prev, targetId);
                 updateTabTitleFromFocusedPane(activeTabIdx_);
-                needsRedraw_ = true;
+                setNeedsRedraw();
             }
         },
         [&](const Action::AdjustPaneSize& a) {
@@ -192,14 +188,14 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             if (term && term->hasSelection()) {
                 std::string text = term->selectedText();
                 if (!text.empty())
-                    glfwSetClipboardString(glfwWindow_, text.c_str());
+                    if (window_) window_->setClipboard(text);
             }
         },
         [&](const Action::Paste&) {
             Terminal* term = activeTerm();
-            const char* clip = glfwGetClipboardString(glfwWindow_);
-            if (term && clip && clip[0])
-                term->pasteText(std::string(clip));
+            std::string clip = window_ ? window_->getClipboard() : std::string{};
+            if (term && !clip.empty())
+                term->pasteText(clip);
         },
         [&](const Action::ScrollUp& a) {
             Terminal* term = activeTerm();
@@ -268,7 +264,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             // Mark pane dirty so cursor position updates in the pane texture
             auto it = paneRenderStates_.find(fp->id());
             if (it != paneRenderStates_.end()) it->second.dirty = true;
-            needsRedraw_ = true;
+            setNeedsRedraw();
         },
         [&](const Action::ShowScrollback&) {
             Terminal* term = dynamic_cast<Terminal*>(activeTerm());
@@ -304,18 +300,16 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             cbs.event = [this](TerminalEmulator*, int, void*) {
                 if (Tab* tab = activeTab())
                     overlayRenderStates_[tab].dirty = true;
-                needsRedraw_ = true;
+                setNeedsRedraw();
             };
 
             PlatformCallbacks pcbs;
             pcbs.onTerminalExited = [this, tab](Terminal* t) {
                 // Defer cleanup — we're called from Terminal::readFromFD,
-                // so we can't destroy the Terminal yet.
+                // so we can't destroy the Terminal yet. Defer via a one-shot timer.
                 int fd = t->masterFD();
-                uv_idle_t* cleanup = new uv_idle_t;
-                cleanup->data = new std::function<void()>([this, tab, fd]() {
+                eventLoop_->addTimer(0, false, [this, tab, fd]() {
                     removePtyPoll(fd);
-                    // Find tab index for script notification
                     for (int ti = 0; ti < static_cast<int>(tabs_.size()); ++ti) {
                         if (tabs_[ti].get() == tab) {
                             scriptEngine_.notifyOverlayDestroyed(ti);
@@ -330,17 +324,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                         }
                         overlayRenderStates_.erase(oit);
                     }
-                    needsRedraw_ = true;
-                });
-                uv_idle_init(loop_, cleanup);
-                uv_idle_start(cleanup, [](uv_idle_t* handle) {
-                    auto* fn = static_cast<std::function<void()>*>(handle->data);
-                    (*fn)();
-                    delete fn;
-                    uv_idle_stop(handle);
-                    uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
-                        delete reinterpret_cast<uv_idle_t*>(h);
-                    });
+                    setNeedsRedraw();
                 });
             };
             pcbs.quit = [this]() { quit(); };
@@ -374,24 +358,17 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             addPtyPoll(overlay->masterFD(), overlay.get());
             tab->pushOverlay(std::move(overlay));
             scriptEngine_.notifyOverlayCreated(activeTabIdx_);
-            needsRedraw_ = true;
+            setNeedsRedraw();
         },
         [&](const Action::ReloadConfig&) { reloadConfigNow(); },
         [&](const Action::MouseSelection&) { /* TODO: wire up in mouse binding phase */ },
         [&](const Action::OpenHyperlink&) { /* TODO: wire up in mouse binding phase */ },
         [&](const Action::PasteSelection&) {
             Terminal* term = activeTerm();
-            if (!term) return;
-#if defined(__linux__)
-            const char* sel = glfwGetX11SelectionString();
-            if (sel && sel[0])
-                term->pasteText(std::string(sel));
-#else
-            // macOS has no primary selection convention; fall back to clipboard.
-            const char* clip = glfwGetClipboardString(glfwWindow_);
-            if (clip && clip[0])
-                term->pasteText(std::string(clip));
-#endif
+            if (!term || !window_) return;
+            std::string text = window_->getPrimarySelection();
+            if (text.empty()) text = window_->getClipboard();
+            if (!text.empty()) term->pasteText(text);
         },
         [&](const Action::ScriptAction& a) {
             if (!scriptEngine_.isActionRegistered(a.name)) {

@@ -20,10 +20,9 @@
 #include <dawn/webgpu_cpp.h>
 #include <dawn/native/DawnNative.h>
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+#include "../eventloop/EventLoop.h"
+#include "../eventloop/Window.h"
 
-#include <uv.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/base_sink.h>
 
@@ -84,7 +83,7 @@ public:
 
     const std::string& exeDir() const { return exeDir_; }
 
-    // Called from GLFW callbacks
+    // Input handlers (called from Window callbacks)
     void onKey(int key, int scancode, int action, int mods);
     void onChar(unsigned int codepoint);
     void onFramebufferResize(int width, int height);
@@ -93,9 +92,10 @@ public:
     void onCursorPos(double x, double y);
 
     void renderFrame();
+    void setNeedsRedraw();
     bool shouldClose() {
         if (headless_) return false;
-        return glfwWindow_ && glfwWindowShouldClose(glfwWindow_);
+        return window_ && window_->shouldClose();
     }
 
     std::string gridToJson(int id);
@@ -123,11 +123,10 @@ private:
     float testFontSize_ = 16.0f;
     std::string testFontPath_;
     wgpu::Texture headlessComposite_;  // offscreen composite target (headless, with CopyDst)
-    uv_loop_t* loop_ = nullptr;
-    uv_idle_t idleCb_ = {};
-    uv_fs_event_t configWatcher_ = {};
-    uv_timer_t    configDebounce_ = {};
-    bool          configWatcherActive_ = false;
+    std::unique_ptr<EventLoop> eventLoop_;
+    std::unique_ptr<Window>    window_;
+    EventLoop::TimerId         configDebounceTimer_ = 0;
+    bool                       configDebounceActive_ = false;
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
@@ -180,7 +179,6 @@ private:
     }
 
     // Shared rendering state
-    GLFWwindow* glfwWindow_ = nullptr;
     wgpu::Surface surface_;
     Renderer renderer_;
     TextSystem textSystem_;
@@ -201,6 +199,10 @@ private:
     bool needsRedraw_ = true;
     bool controlPressed_ = false;
     unsigned int lastMods_ = 0;
+
+    // Tracked by onCursorPos / onMouseButton (replaces glfwGetCursorPos / glfwGetMouseButton)
+    double lastCursorX_ = 0.0, lastCursorY_ = 0.0;
+    unsigned int heldButtons_ = 0;  // bitmask of Button values currently pressed
 
     // Per-pane render state
     struct PaneRenderState {
@@ -237,7 +239,7 @@ private:
 
     void resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale);
 
-    std::unordered_map<int, uv_poll_t*> ptyPolls_;
+    std::unordered_map<int, Terminal*> ptyPolls_;
 
     TerminalOptions terminalOptions_;
 
@@ -297,7 +299,7 @@ private:
     std::vector<MouseBinding> mouseBindings_;
     ClickDetector clickDetector_;
     bool selectionDragActive_ = false;
-    uv_timer_t autoScrollTimer_ = {};
+    EventLoop::TimerId autoScrollTimer_ = 0;
     bool autoScrollTimerActive_ = false;
     int  autoScrollDir_ = 0;  // +1 = scroll into history (up), -1 = toward live (down)
     int  autoScrollCol_ = 0;  // column to use when synthesizing boundary move events

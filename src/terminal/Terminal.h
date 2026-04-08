@@ -1,7 +1,7 @@
 #pragma once
 #include "TerminalEmulator.h"
 #include "TerminalOptions.h"
-#include <uv.h>
+#include "../eventloop/EventLoop.h"
 #include <vector>
 
 #define EINTRWRAP(ret, op) \
@@ -33,10 +33,11 @@ public:
     bool init(const TerminalOptions& options);
     // Initialize without a PTY or child process. For script-driven applets.
     bool initHeadless(const TerminalOptions& options);
-    void setLoop(uv_loop_t* loop) { mLoop = loop; }
+    void setLoop(EventLoop* loop) { mLoop = loop; }
     int masterFD() const { return mMasterFD; }
     bool isHeadless() const { return mHeadless; }
     void readFromFD();
+    void flushWriteQueue();
     void pasteText(const std::string& text);
 
     // Query the foreground process name via tcgetpgrp + platform process lookup
@@ -52,17 +53,14 @@ protected:
 
 private:
     void writeToPTY(const char* data, size_t len);
-    void flushWriteQueue();
-    static void onWritePollReady(uv_poll_t* handle, int status, int events);
-
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
     int mMasterFD { -1 };
     bool mHeadless { false };
     bool mResizePending { false };
     pid_t mLastFgPgid { -1 };
-    uv_loop_t* mLoop { nullptr };
-    uv_poll_t mWritePoll {};
+    EventLoop* mLoop { nullptr };
+    EventLoop::TimerId mWritePollId { 0 };
     bool mWritePollActive { false };
     std::vector<char> mWriteQueue;
 };

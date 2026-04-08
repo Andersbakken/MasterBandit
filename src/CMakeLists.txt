@@ -1,10 +1,9 @@
 find_package(Dawn REQUIRED)
-find_package(glfw3 REQUIRED CONFIG)
+find_package(libuv CONFIG REQUIRED)  # still needed for CLIClient.cpp
 # harfbuzz built from 3rdparty submodule (v14+)
 find_package(spdlog REQUIRED CONFIG)
 find_package(SheenBidi CONFIG REQUIRED)
 find_package(libunibreak CONFIG REQUIRED)
-find_package(libuv CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(Stb REQUIRED)
@@ -13,6 +12,7 @@ find_package(qjs CONFIG REQUIRED)
 
 add_subdirectory(terminal)
 add_subdirectory(platform)
+add_subdirectory(eventloop)
 
 add_executable(mb
     main.cpp
@@ -27,9 +27,11 @@ target_include_directories(mb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/terminal
     ${CMAKE_CURRENT_SOURCE_DIR}/platform
     ${CMAKE_CURRENT_SOURCE_DIR}/script
+    ${CMAKE_CURRENT_SOURCE_DIR}/eventloop
 )
 
-target_link_libraries(mb PRIVATE terminal platform glaze::glaze cxxopts::cxxopts qjs)
+target_link_libraries(mb PRIVATE terminal platform eventloop glaze::glaze cxxopts::cxxopts qjs
+    $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,uv>)
 
 # Copy shaders next to the executable
 file(GLOB SHADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")

@@ -26,8 +26,8 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
 
 Terminal::~Terminal()
 {
-    if (mWritePollActive) {
-        uv_poll_stop(&mWritePoll);
+    if (mWritePollActive && mLoop && mMasterFD >= 0) {
+        mLoop->updateFd(mMasterFD, EventLoop::FdEvents::Readable);
         mWritePollActive = false;
     }
     if (mMasterFD != -1) ::close(mMasterFD);
@@ -220,19 +220,11 @@ void Terminal::writeToPTY(const char* data, size_t len)
     if (len > 0) {
         mWriteQueue.insert(mWriteQueue.end(), data, data + len);
         if (!mWritePollActive && mLoop) {
-            uv_poll_init(mLoop, &mWritePoll, mMasterFD);
-            mWritePoll.data = this;
-            uv_poll_start(&mWritePoll, UV_WRITABLE, onWritePollReady);
+            mLoop->updateFd(mMasterFD,
+                EventLoop::FdEvents::Readable | EventLoop::FdEvents::Writable);
             mWritePollActive = true;
         }
     }
-}
-
-void Terminal::onWritePollReady(uv_poll_t* handle, int status, int events)
-{
-    if (status < 0) return;
-    auto* self = static_cast<Terminal*>(handle->data);
-    if (events & UV_WRITABLE) self->flushWriteQueue();
 }
 
 void Terminal::flushWriteQueue()
@@ -248,10 +240,9 @@ void Terminal::flushWriteQueue()
         }
         mWriteQueue.erase(mWriteQueue.begin(), mWriteQueue.begin() + ret);
     }
-    // Queue drained — stop write poll
-    if (mWritePollActive) {
-        uv_poll_stop(&mWritePoll);
-        uv_close(reinterpret_cast<uv_handle_t*>(&mWritePoll), nullptr);
+    // Queue drained — drop writable watch
+    if (mWritePollActive && mLoop) {
+        mLoop->updateFd(mMasterFD, EventLoop::FdEvents::Readable);
         mWritePollActive = false;
     }
 }

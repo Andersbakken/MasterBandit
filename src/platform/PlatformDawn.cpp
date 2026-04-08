@@ -1,7 +1,14 @@
 #include "PlatformDawn.h"
-#include "NativeSurface.h"
 #include "Utils.h"
 #include "FontResolver.h"
+
+#ifdef __APPLE__
+#  include "../eventloop/mac/EventLoop_nsapp.h"
+#  include "../eventloop/mac/Window_cocoa.h"
+#elif defined(__linux__)
+#  include "../eventloop/linux/EventLoop_epoll.h"
+#  include "../eventloop/linux/Window_xcb.h"
+#endif
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sys/ioctl.h>
@@ -53,13 +60,6 @@ PlatformDawn::PlatformDawn(int argc, char** argv, bool headless)
     } catch (...) {}
 
     exeDir_ = fs::weakly_canonical(fs::path(argv[0])).parent_path().string();
-
-    if (!headless_) {
-        if (!glfwInit()) {
-            spdlog::error("glfwInit failed");
-            return;
-        }
-    }
 
     nativeInstance_ = std::make_unique<dawn::native::Instance>();
     wgpu::Instance instance(nativeInstance_->Get());
@@ -128,9 +128,9 @@ PlatformDawn::~PlatformDawn()
 
     surface_ = nullptr;
 
-    if (glfwWindow_) {
-        glfwDestroyWindow(glfwWindow_);
-        glfwWindow_ = nullptr;
+    if (window_) {
+        window_->destroy();
+        window_.reset();
     }
 
     renderer_.destroy();
@@ -138,7 +138,6 @@ PlatformDawn::~PlatformDawn()
     device_ = {};
     texturePool_.clear();
     nativeInstance_.reset();
-    if (!headless_) glfwTerminate();
 }
 
 void PlatformDawn::createTerminal(const TerminalOptions& options)
@@ -150,36 +149,73 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         platformInitialized_ = true;
 
         if (!headless_) {
-            // --- Windowed: create GLFW window and surface ---
-            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-            glfwWindow_ = glfwCreateWindow(800, 600, "MasterBandit", nullptr, nullptr);
-            if (!glfwWindow_) {
-                spdlog::error("glfwCreateWindow failed");
+            // --- Windowed: create EventLoop + Window ---
+#ifdef __APPLE__
+            eventLoop_ = std::make_unique<NSAppEventLoop>();
+            window_    = std::make_unique<CocoaWindow>();
+#elif defined(__linux__)
+            eventLoop_ = std::make_unique<EpollEventLoop>();
+            window_.reset(new XCBWindow(*eventLoop_));
+#endif
+
+            // Wire up Window callbacks
+            window_->onKey = [this](int key, int scancode, int action, int mods) {
+                onKey(key, scancode, action, mods);
+            };
+            window_->onChar = [this](uint32_t cp) { onChar(cp); };
+            window_->onFramebufferResize = [this](int w, int h) { onFramebufferResize(w, h); };
+            window_->onContentScale = [this](float sx, float sy) {
+                contentScaleX_ = sx; contentScaleY_ = sy;
+            };
+            window_->onMouseButton = [this](int button, int action, int mods) {
+                onMouseButton(button, action, mods);
+            };
+            window_->onCursorPos = [this](double x, double y) { onCursorPos(x, y); };
+            window_->onScroll = [this](double /*dx*/, double dy) {
+                if (dy > 0) dispatchAction(Action::ScrollUp{});
+                else if (dy < 0) dispatchAction(Action::ScrollDown{});
+            };
+            window_->onFocus = [this](bool focused) {
+                Tab* t = activeTab();
+                if (!t) return;
+                if (t->hasOverlay()) {
+                    t->topOverlay()->focusEvent(focused);
+                } else if (Pane* fp = t->layout()->focusedPane()) {
+                    if (fp->terminal()) fp->terminal()->focusEvent(focused);
+                }
+                setNeedsRedraw();
+            };
+
+            if (!window_->create(800, 600, "MasterBandit")) {
+                spdlog::error("Failed to create window");
                 return;
             }
 
-            wgpu::Instance instance(nativeInstance_->Get());
-            surface_ = createNativeSurface(glfwWindow_, instance);
-            if (!surface_) {
-                spdlog::error("Failed to create Dawn surface");
-                glfwDestroyWindow(glfwWindow_);
-                glfwWindow_ = nullptr;
-                return;
-            }
-
-            int w, h;
-            glfwGetFramebufferSize(glfwWindow_, &w, &h);
-            fbWidth_ = static_cast<uint32_t>(w);
+            int w = 0, h = 0;
+            window_->getFramebufferSize(w, h);
+            fbWidth_  = static_cast<uint32_t>(w);
             fbHeight_ = static_cast<uint32_t>(h);
 
-            float xscale, yscale;
-            glfwGetWindowContentScale(glfwWindow_, &xscale, &yscale);
+            float xscale = 1.0f, yscale = 1.0f;
+            window_->getContentScale(xscale, yscale);
             contentScaleX_ = xscale;
             contentScaleY_ = yscale;
             fontSize_ = options.fontSize * xscale;
             baseFontSize_ = fontSize_;
 
+            surface_ = window_->createWgpuSurface(nativeInstance_->Get());
+            if (!surface_) {
+                spdlog::error("Failed to create Dawn surface");
+                return;
+            }
             configureSurface(fbWidth_, fbHeight_);
+
+            // Observe system appearance changes for mode 2031
+            platformObserveAppearanceChanges([this](bool isDark) {
+                notifyAllTerminals([isDark](TerminalEmulator* term) {
+                    term->notifyColorPreference(isDark);
+                });
+            });
         } else {
             // --- Headless: no window, no surface ---
             contentScaleX_ = contentScaleY_ = 1.0f;
@@ -300,60 +336,6 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         renderer_.initProgressPipeline(device_, shaderDir);
         renderer_.uploadFontAtlas(queue_, fontName_, *font);
 
-        if (!headless_) {
-            // Wire up GLFW callbacks
-            glfwSetWindowUserPointer(glfwWindow_, this);
-
-            glfwSetInputMode(glfwWindow_, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
-            glfwSetKeyCallback(glfwWindow_, [](GLFWwindow* w, int key, int scancode, int action, int mods) {
-                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onKey(key, scancode, action, mods);
-            });
-
-            glfwSetCharCallback(glfwWindow_, [](GLFWwindow* w, unsigned int codepoint) {
-                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onChar(codepoint);
-            });
-
-            glfwSetFramebufferSizeCallback(glfwWindow_, [](GLFWwindow* w, int width, int height) {
-                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onFramebufferResize(width, height);
-            });
-
-            glfwSetMouseButtonCallback(glfwWindow_, [](GLFWwindow* w, int button, int action, int mods) {
-                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onMouseButton(button, action, mods);
-            });
-
-            glfwSetCursorPosCallback(glfwWindow_, [](GLFWwindow* w, double x, double y) {
-                static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w))->onCursorPos(x, y);
-            });
-
-            glfwSetScrollCallback(glfwWindow_, [](GLFWwindow* w, double /*xoffset*/, double yoffset) {
-                auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
-                int lines = static_cast<int>(yoffset);
-                if (lines > 0) {
-                    self->dispatchAction(Action::ScrollUp{lines});
-                } else if (lines < 0) {
-                    self->dispatchAction(Action::ScrollDown{-lines});
-                }
-            });
-
-            glfwSetWindowFocusCallback(glfwWindow_, [](GLFWwindow* w, int focused) {
-                auto* self = static_cast<PlatformDawn*>(glfwGetWindowUserPointer(w));
-                // Window focus goes to the main pane terminal, not popup
-                Tab* tab = self->activeTab();
-                if (tab && !tab->hasOverlay()) {
-                    Pane* fp = tab->layout()->focusedPane();
-                    if (fp && fp->terminal()) fp->terminal()->focusEvent(focused != 0);
-                } else if (tab && tab->hasOverlay()) {
-                    tab->topOverlay()->focusEvent(focused != 0);
-                }
-            });
-
-            // Observe system appearance changes for mode 2031
-            platformObserveAppearanceChanges([this](bool isDark) {
-                notifyAllTerminals([isDark](TerminalEmulator* term) {
-                    term->notifyColorPreference(isDark);
-                });
-            });
-        }
     }
 
     // Create a layout and tab for this terminal
@@ -408,7 +390,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     pane->setTerminal(std::move(terminal));  // Pane owns the Terminal now
 
-    if (loop_) {
+    if (eventLoop_) {
         addPtyPoll(masterFD, termPtr);
     }
 
@@ -706,7 +688,7 @@ void PlatformDawn::reloadConfigNow()
     }
 
     tabBarDirty_ = true;
-    needsRedraw_ = true;
+    setNeedsRedraw();
     spdlog::info("Config reloaded: {} user keybindings", userBindings.size());
 }
 

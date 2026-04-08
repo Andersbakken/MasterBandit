@@ -5,7 +5,7 @@
 
 #include <quickjs.h>
 #include <spdlog/spdlog.h>
-#include <uv.h>
+#include "../eventloop/EventLoop.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -170,19 +170,8 @@ static void scheduleTermination(JSContext* ctx) {
     InstanceId id = inst->id;
     sLog().error("ScriptEngine: terminating '{}' (id={}) for permission violation",
                   inst->path, id);
-    auto* timer = new uv_timer_t;
-    struct Data { Engine* eng; InstanceId id; };
-    timer->data = new Data{eng, id};
-    uv_timer_init(eng->loop(), timer);
-    uv_timer_start(timer, [](uv_timer_t* handle) {
-        auto* d = static_cast<Data*>(handle->data);
-        d->eng->unload(d->id);
-        delete d;
-        uv_timer_stop(handle);
-        uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
-            delete reinterpret_cast<uv_timer_t*>(h);
-        });
-    }, 0, 0);
+    if (!eng->loop()) { eng->unload(id); return; }
+    eng->loop()->addTimer(0, false, [eng, id]() { eng->unload(id); });
 }
 
 #define REQUIRE_PERM(ctx, perm) \
@@ -1359,19 +1348,11 @@ static JSValue jsMbExit(JSContext* ctx, JSValueConst, int, JSValueConst*)
     if (!inst || inst->builtIn) return JS_UNDEFINED; // built-ins can't self-unload
 
     InstanceId id = inst->id;
-    auto* timer = new uv_timer_t;
-    struct ExitData { Engine* eng; InstanceId id; };
-    timer->data = new ExitData{eng, id};
-    uv_timer_init(eng->loop(), timer);
-    uv_timer_start(timer, [](uv_timer_t* handle) {
-        auto* data = static_cast<ExitData*>(handle->data);
-        data->eng->unload(data->id);
-        delete data;
-        uv_timer_stop(handle);
-        uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
-            delete reinterpret_cast<uv_timer_t*>(h);
-        });
-    }, 0, 0);
+    if (eng->loop()) {
+        eng->loop()->addTimer(0, false, [eng, id]() { eng->unload(id); });
+    } else {
+        eng->unload(id);
+    }
 
     return JS_UNDEFINED;
 }
@@ -1480,35 +1461,30 @@ static void enqueueListeners(JSContext* ctx, JSValue arr, int extraArgc, JSValue
 // setTimeout / setInterval / clearTimeout / clearInterval
 // ============================================================================
 
-struct TimerData {
-    JSContext* ctx;
-    JSValue callback;
-    uint32_t id;
-    bool interval;
-};
-
-static void timerCallback(uv_timer_t* handle)
+// Fire a JS timer by jsId. For one-shot timers, removes the entry after firing.
+static void fireJsTimer(Engine* eng, uint32_t jsId)
 {
-    auto* td = static_cast<TimerData*>(handle->data);
+    auto& timers = eng->jsTimers();
+    auto it = timers.find(jsId);
+    if (it == timers.end()) return;
 
-    JSValue ret = JS_Call(td->ctx, td->callback, JS_UNDEFINED, 0, nullptr);
+    JSContext* ctx = it->second.ctx;
+    JSValue cb     = it->second.callback;
+    bool interval  = it->second.interval;
+
+    JSValue ret = JS_Call(ctx, cb, JS_UNDEFINED, 0, nullptr);
     if (JS_IsException(ret)) {
-        JSValue exc = JS_GetException(td->ctx);
-        const char* s = JS_ToCString(td->ctx, exc);
+        JSValue exc = JS_GetException(ctx);
+        const char* s = JS_ToCString(ctx, exc);
         sLog().error("ScriptEngine: timer error: {}", s ? s : "(null)");
-        if (s) JS_FreeCString(td->ctx, s);
-        JS_FreeValue(td->ctx, exc);
+        if (s) JS_FreeCString(ctx, s);
+        JS_FreeValue(ctx, exc);
     }
-    JS_FreeValue(td->ctx, ret);
+    JS_FreeValue(ctx, ret);
 
-    if (!td->interval) {
-        uv_timer_stop(handle);
-        uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* h) {
-            auto* td = static_cast<TimerData*>(h->data);
-            JS_FreeValue(td->ctx, td->callback);
-            delete td;
-            delete reinterpret_cast<uv_timer_t*>(h);
-        });
+    if (!interval) {
+        JS_FreeValue(ctx, cb);
+        timers.erase(jsId);
     }
 }
 
@@ -1523,14 +1499,15 @@ static JSValue jsSetTimeout(JSContext* ctx, JSValueConst, int argc, JSValueConst
     if (argc >= 2) JS_ToInt64(ctx, &ms, argv[1]);
     if (ms < 0) ms = 0;
 
-    uint32_t id = eng->nextTimer();
-    auto* td = new TimerData{ctx, JS_DupValue(ctx, argv[0]), id, false};
-    auto* timer = new uv_timer_t;
-    timer->data = td;
-    uv_timer_init(eng->loop(), timer);
-    uv_timer_start(timer, timerCallback, static_cast<uint64_t>(ms), 0);
+    uint32_t jsId = eng->nextTimer();
+    EventLoop::TimerId loopId = eng->loop()->addTimer(
+        static_cast<uint64_t>(ms), false,
+        [eng, jsId]() { fireJsTimer(eng, jsId); });
 
-    return JS_NewUint32(ctx, id);
+    auto& t = eng->jsTimers()[jsId];
+    t.ctx = ctx; t.callback = JS_DupValue(ctx, argv[0]);
+    t.loopId = loopId; t.interval = false; t.ms = static_cast<uint64_t>(ms);
+    return JS_NewUint32(ctx, jsId);
 }
 
 // setInterval(fn, ms) -> timerId
@@ -1544,40 +1521,34 @@ static JSValue jsSetInterval(JSContext* ctx, JSValueConst, int argc, JSValueCons
     JS_ToInt64(ctx, &ms, argv[1]);
     if (ms < 1) ms = 1;
 
-    uint32_t id = eng->nextTimer();
-    auto* td = new TimerData{ctx, JS_DupValue(ctx, argv[0]), id, true};
-    auto* timer = new uv_timer_t;
-    timer->data = td;
-    uv_timer_init(eng->loop(), timer);
-    uv_timer_start(timer, timerCallback, static_cast<uint64_t>(ms), static_cast<uint64_t>(ms));
+    uint32_t jsId = eng->nextTimer();
+    EventLoop::TimerId loopId = eng->loop()->addTimer(
+        static_cast<uint64_t>(ms), true,
+        [eng, jsId]() { fireJsTimer(eng, jsId); });
 
-    return JS_NewUint32(ctx, id);
+    auto& t = eng->jsTimers()[jsId];
+    t.ctx = ctx; t.callback = JS_DupValue(ctx, argv[0]);
+    t.loopId = loopId; t.interval = true; t.ms = static_cast<uint64_t>(ms);
+    return JS_NewUint32(ctx, jsId);
 }
 
 // clearTimeout(id) / clearInterval(id) — same implementation
-// Note: this is O(n) over active handles. Fine for reasonable timer counts.
 static JSValue jsClearTimer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_UNDEFINED;
     Engine* eng = engineFromCtx(ctx);
     if (!eng->loop()) return JS_UNDEFINED;
 
-    uint32_t id;
-    JS_ToUint32(ctx, &id, argv[0]);
+    uint32_t jsId;
+    JS_ToUint32(ctx, &jsId, argv[0]);
 
-    // Walk active handles to find the timer
-    uv_walk(eng->loop(), [](uv_handle_t* handle, void* arg) {
-        if (handle->type != UV_TIMER) return;
-        auto* td = static_cast<TimerData*>(handle->data);
-        if (!td || td->id != *static_cast<uint32_t*>(arg)) return;
-        uv_timer_stop(reinterpret_cast<uv_timer_t*>(handle));
-        uv_close(handle, [](uv_handle_t* h) {
-            auto* td = static_cast<TimerData*>(h->data);
-            JS_FreeValue(td->ctx, td->callback);
-            delete td;
-            delete reinterpret_cast<uv_timer_t*>(h);
-        });
-    }, &id);
+    auto& timers = eng->jsTimers();
+    auto it = timers.find(jsId);
+    if (it != timers.end()) {
+        eng->loop()->removeTimer(it->second.loopId);
+        JS_FreeValue(it->second.ctx, it->second.callback);
+        timers.erase(it);
+    }
 
     return JS_UNDEFINED;
 }
@@ -1839,19 +1810,18 @@ void Engine::unload(InstanceId id)
         sLog().info("ScriptEngine: unloading '{}' (id={})", it->path, id);
 
         // 1. Kill all timers belonging to this context
-        if (loop_) {
-            uv_walk(loop_, [](uv_handle_t* handle, void* arg) {
-                if (handle->type != UV_TIMER) return;
-                auto* td = static_cast<TimerData*>(handle->data);
-                if (!td || td->ctx != static_cast<JSContext*>(arg)) return;
-                uv_timer_stop(reinterpret_cast<uv_timer_t*>(handle));
-                uv_close(handle, [](uv_handle_t* h) {
-                    auto* td = static_cast<TimerData*>(h->data);
-                    JS_FreeValue(td->ctx, td->callback);
-                    delete td;
-                    delete reinterpret_cast<uv_timer_t*>(h);
-                });
-            }, ctx);
+        {
+            std::vector<uint32_t> toRemove;
+            for (auto& [jsId, t] : jsTimers_) {
+                if (t.ctx == ctx) toRemove.push_back(jsId);
+            }
+            for (uint32_t jsId : toRemove) {
+                auto it = jsTimers_.find(jsId);
+                if (it == jsTimers_.end()) continue;
+                if (loop_) loop_->removeTimer(it->second.loopId);
+                JS_FreeValue(it->second.ctx, it->second.callback);
+                jsTimers_.erase(it);
+            }
         }
 
         // 2. Destroy owned popups

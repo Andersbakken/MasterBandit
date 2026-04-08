@@ -44,7 +44,7 @@ void PlatformDawn::updateWindowTitle()
     const std::string& title = fp->title();
     if (title.empty()) return;
     std::string windowTitle = icon.empty() ? title : icon + " " + title;
-    glfwSetWindowTitle(glfwWindow_, windowTitle.c_str());
+    if (window_) window_->setTitle(windowTitle);
 }
 
 // Helper: find which tab contains a given pane
@@ -67,7 +67,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         switch (static_cast<TerminalEmulator::Event>(ev)) {
         case TerminalEmulator::Update:
         case TerminalEmulator::ScrollbackChanged:
-            needsRedraw_ = true;
+            setNeedsRedraw();
             {
                 auto it = paneRenderStates_.find(paneId);
                 if (it != paneRenderStates_.end()) it->second.dirty = true;
@@ -80,11 +80,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
     if (!headless_) {
         cbs.copyToClipboard = [this](const std::string& text) {
-            glfwSetClipboardString(glfwWindow_, text.c_str());
+            if (window_) window_->setClipboard(text);
         };
         cbs.pasteFromClipboard = [this]() -> std::string {
-            const char* clip = glfwGetClipboardString(glfwWindow_);
-            return clip ? std::string(clip) : std::string();
+            return window_ ? window_->getClipboard() : std::string{};
         };
     } else {
         cbs.copyToClipboard = [](const std::string&) {};
@@ -100,7 +99,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             t->setTitle(title);
             if (tabIdx == activeTabIdx_) updateWindowTitle();
             tabBarDirty_ = true;
-            needsRedraw_ = true;
+            setNeedsRedraw();
         }
     };
 
@@ -113,7 +112,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             t->setIcon(icon);
             if (tabIdx == activeTabIdx_) updateWindowTitle();
             tabBarDirty_ = true;
-            needsRedraw_ = true;
+            setNeedsRedraw();
         }
     };
 
@@ -123,7 +122,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         if (Pane* p = t->layout()->pane(paneId)) {
             p->setProgress(state, pct);
             tabBarDirty_ = true;
-            needsRedraw_ = true;
+            setNeedsRedraw();
         }
     };
 
@@ -162,7 +161,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             t->setTitle(proc);
             if (tabIdx == activeTabIdx_) updateWindowTitle();
             tabBarDirty_ = true;
-            needsRedraw_ = true;
+            setNeedsRedraw();
         }
     };
 
@@ -172,7 +171,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
 void PlatformDawn::createTab()
 {
-    if (!device_ || (!glfwWindow_ && !headless_)) return;
+    if (!device_ || (!window_ && !headless_)) return;
 
     auto layout = std::make_unique<Layout>();
     layout->setDividerPixels(dividerWidth_);
@@ -244,7 +243,7 @@ void PlatformDawn::createTab()
     updateTabBarVisibility();
     updateWindowTitle();
     tabBarDirty_ = true;
-    needsRedraw_ = true;
+    setNeedsRedraw();
 
     scriptEngine_.notifyTabCreated(tabIdx);
     scriptEngine_.notifyPaneCreated(tabIdx, paneId);
@@ -288,23 +287,20 @@ void PlatformDawn::closeTab(int idx)
 
     updateTabBarVisibility();
     tabBarDirty_ = true;
-    needsRedraw_ = true;
+    setNeedsRedraw();
     spdlog::info("Closed tab {}", idx + 1);
 }
 
 
 void PlatformDawn::addPtyPoll(int fd, Terminal* term)
 {
-    term->setLoop(loop_);
-    auto* poll = new uv_poll_t{};
-    uv_poll_init(loop_, poll, fd);
-    poll->data = term;
-    uv_poll_start(poll, UV_READABLE, [](uv_poll_t* handle, int status, int events) {
-        if (status < 0) return;
-        if (events & UV_READABLE)
-            static_cast<Terminal*>(handle->data)->readFromFD();
-    });
-    ptyPolls_[fd] = poll;
+    term->setLoop(eventLoop_.get());
+    eventLoop_->watchFd(fd, EventLoop::FdEvents::Readable,
+        [term](EventLoop::FdEvents ev) {
+            if (ev & EventLoop::FdEvents::Readable) term->readFromFD();
+            if (ev & EventLoop::FdEvents::Writable) term->flushWriteQueue();
+        });
+    ptyPolls_[fd] = term;
 }
 
 
@@ -312,10 +308,7 @@ void PlatformDawn::removePtyPoll(int fd)
 {
     auto it = ptyPolls_.find(fd);
     if (it == ptyPolls_.end()) return;
-    uv_poll_stop(it->second);
-    uv_close(reinterpret_cast<uv_handle_t*>(it->second), [](uv_handle_t* h) {
-        delete reinterpret_cast<uv_poll_t*>(h);
-    });
+    if (eventLoop_) eventLoop_->removeFd(fd);
     ptyPolls_.erase(it);
 }
 
@@ -452,7 +445,7 @@ void PlatformDawn::terminalExited(Terminal* terminal)
                 updateTabTitleFromFocusedPane(tabIdx);
             }
 
-            needsRedraw_ = true;
+            setNeedsRedraw();
             return;
         }
     }
@@ -542,6 +535,6 @@ void PlatformDawn::resizeAllPanesInTab(Tab* tab)
         scriptEngine_.notifyPaneResized(pane->id(), cols, rows);
     }
     refreshDividers(tab);
-    needsRedraw_ = true;
+    setNeedsRedraw();
 }
 

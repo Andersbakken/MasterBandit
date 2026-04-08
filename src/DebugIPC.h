@@ -6,7 +6,7 @@
 #include <mutex>
 #include <functional>
 
-#include <uv.h>
+#include "../eventloop/EventLoop.h"
 #include <libwebsockets.h>
 #include <glaze/glaze.hpp>
 
@@ -19,12 +19,15 @@ public:
     using TerminalCallback = std::function<Terminal*()>;
     using ActionCallback   = std::function<bool(const std::string& action, const std::vector<std::string>& args)>;
 
-    DebugIPC(uv_loop_t* loop, TerminalCallback termCb, GridCallback gridCb,
+    DebugIPC(EventLoop* loop, TerminalCallback termCb, GridCallback gridCb,
              StatsCallback statsCb = {}, ActionCallback actionCb = {});
     ~DebugIPC();
 
-    // Issue uv_close for owned handles. Must call before final uv_run.
+    // Destroy lws context. Call before event loop stops.
     void closeHandles();
+
+    // Called from the event loop tick to service lws
+    void service();
 
     void broadcastLog(const std::string& msg);
     const std::string& socketPath() const { return socketPath_; }
@@ -91,7 +94,7 @@ private:
     CellRect pngCellRect_;
 
     // Thread-safe log forwarding
-    uv_async_t logAsync_;
+    EventLoop* loop_ = nullptr;
     std::mutex logMutex_;
     std::deque<std::string> logQueue_;
 };

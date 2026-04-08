@@ -2,6 +2,8 @@
 
 #include "ScriptPermissions.h"
 
+#include <quickjs.h>
+
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -10,11 +12,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../eventloop/EventLoop.h"
+
 struct JSRuntime;
 struct JSContext;
-struct JSValue;
-struct uv_loop_s;
-typedef struct uv_loop_s uv_loop_t;
 
 namespace Script {
 
@@ -76,8 +77,8 @@ public:
     Engine& operator=(const Engine&) = delete;
 
     void setCallbacks(AppCallbacks cbs);
-    void setLoop(uv_loop_t* loop) { loop_ = loop; }
-    uv_loop_t* loop() const { return loop_; }
+    void setLoop(EventLoop* loop) { loop_ = loop; }
+    EventLoop* loop() const { return loop_; }
 
     // Set config directory for allowlist persistence
     void setConfigDir(const std::string& dir);
@@ -154,6 +155,16 @@ public:
 
     uint32_t nextTimer() { return nextTimerId_++; }
 
+    // JS timer registry (setTimeout/setInterval → EventLoop::TimerId)
+    struct JsTimer {
+        JSContext*         ctx;
+        JSValue            callback;
+        EventLoop::TimerId loopId;
+        bool               interval;
+        uint64_t           ms;
+    };
+    std::unordered_map<uint32_t, JsTimer>& jsTimers() { return jsTimers_; }
+
     struct Instance {
         InstanceId id;
         JSContext* ctx;
@@ -183,7 +194,7 @@ public:
 
 private:
     JSRuntime* rt_ = nullptr;
-    uv_loop_t* loop_ = nullptr;
+    EventLoop* loop_ = nullptr;
     std::deque<Instance> instances_; // deque for pointer stability
     InstanceId nextId_ = 1;
     uint32_t nextTimerId_ = 1;
@@ -206,6 +217,8 @@ private:
 
     std::set<std::string> registeredActions_; // "namespace.action" strings
     std::unordered_map<std::string, std::string> customTcaps_; // XTGETTCAP name → value
+
+    std::unordered_map<uint32_t, JsTimer> jsTimers_;
 
     std::unordered_map<PaneId, int> paneOutputFilterCount_;
     std::unordered_map<PaneId, int> paneInputFilterCount_;

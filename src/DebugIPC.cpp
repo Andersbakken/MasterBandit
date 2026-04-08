@@ -147,25 +147,24 @@ static const struct lws_protocols sProtocols[] = {
     LWS_PROTOCOL_LIST_TERM
 };
 
-DebugIPC::DebugIPC(uv_loop_t* loop, TerminalCallback termCb, GridCallback gridCb,
+DebugIPC::DebugIPC(EventLoop* loop, TerminalCallback termCb, GridCallback gridCb,
                    StatsCallback statsCb, ActionCallback actionCb)
-    : termCb_(std::move(termCb))
+    : loop_(loop)
+    , termCb_(std::move(termCb))
     , gridCb_(std::move(gridCb))
     , statsCb_(std::move(statsCb))
     , actionCb_(std::move(actionCb))
 {
     socketPath_ = "/tmp/mb-" + std::to_string(getpid()) + ".sock";
 
-    // Remove stale socket if it exists
     unlink(socketPath_.c_str());
 
     struct lws_context_creation_info info = {};
-    info.options = LWS_SERVER_OPTION_LIBUV | LWS_SERVER_OPTION_UNIX_SOCK;
+    info.options = LWS_SERVER_OPTION_UNIX_SOCK;
     info.iface = socketPath_.c_str();
     info.port = 0;
     info.protocols = sProtocols;
     info.user = this;
-    info.foreign_loops = reinterpret_cast<void**>(&loop);
 
     lws_set_log_level(0, nullptr);
     ctx_ = lws_create_context(&info);
@@ -173,26 +172,6 @@ DebugIPC::DebugIPC(uv_loop_t* loop, TerminalCallback termCb, GridCallback gridCb
         spdlog::error("DebugIPC: failed to create lws context");
         return;
     }
-
-    // Set up async handle for thread-safe log forwarding
-    uv_async_init(loop, &logAsync_, [](uv_async_t* handle) {
-        auto* self = static_cast<DebugIPC*>(handle->data);
-        std::deque<std::string> msgs;
-        {
-            std::lock_guard<std::mutex> lock(self->logMutex_);
-            msgs.swap(self->logQueue_);
-        }
-        for (const auto& msg : msgs) {
-            std::string payload = dumpObj({{"type", "log"}, {"msg", msg}});
-            for (auto& p : self->connections_) {
-                if (p.second.subscribedToLogs) {
-                    p.second.txQueue.push_back(payload);
-                    lws_callback_on_writable(p.first);
-                }
-            }
-        }
-    });
-    logAsync_.data = this;
 
     spdlog::info("DebugIPC: listening on {}", socketPath_);
 }
@@ -203,7 +182,28 @@ void DebugIPC::closeHandles()
         lws_context_destroy(ctx_);
         ctx_ = nullptr;
     }
-    uv_close(reinterpret_cast<uv_handle_t*>(&logAsync_), nullptr);
+}
+
+void DebugIPC::service()
+{
+    // Drain queued log messages on main thread
+    std::deque<std::string> msgs;
+    {
+        std::lock_guard<std::mutex> lock(logMutex_);
+        msgs.swap(logQueue_);
+    }
+    for (const auto& msg : msgs) {
+        std::string payload = dumpObj({{"type", "log"}, {"msg", msg}});
+        for (auto& p : connections_) {
+            if (p.second.subscribedToLogs) {
+                p.second.txQueue.push_back(payload);
+                lws_callback_on_writable(p.first);
+            }
+        }
+    }
+
+    // Service lws without blocking
+    if (ctx_) lws_service(ctx_, 0);
 }
 
 DebugIPC::~DebugIPC()
@@ -543,5 +543,5 @@ void DebugIPC::broadcastLog(const std::string& msg)
         std::lock_guard<std::mutex> lock(logMutex_);
         logQueue_.push_back(msg);
     }
-    uv_async_send(&logAsync_);
+    if (loop_) loop_->wakeup();
 }

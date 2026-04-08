@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <sys/types.h>
 #include "InputTypes.h"
 #include "ClickDetector.h"
@@ -197,6 +198,7 @@ private:
     uint32_t defaultFgColor_ = 0xFFDDDDDD;
     uint32_t defaultBgColor_ = 0x00000000;
     bool needsRedraw_ = true;
+    std::atomic<int> pendingGpuCallbacks_ { 0 };
     bool controlPressed_ = false;
     unsigned int lastMods_ = 0;
 

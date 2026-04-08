@@ -344,6 +344,11 @@ int PlatformDawn::exec()
 
             if (needsRedraw_ || (debugIPC_ && debugIPC_->pngScreenshotPending()))
                 renderFrame();
+
+            // On Vulkan/Linux, MapAsync callbacks only fire during device_.Tick().
+            // Wakeup the event loop so it keeps ticking until all readbacks complete.
+            if (pendingGpuCallbacks_ > 0)
+                eventLoop_->wakeup();
         };
     }
 

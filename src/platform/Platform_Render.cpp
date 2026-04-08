@@ -1149,10 +1149,12 @@ void PlatformDawn::renderFrame()
                 DebugIPC* ipc = debugIPC_.get();
                 uint32_t w = copyW, h = copyH;
                 debugIPC_->markReadbackInProgress();
+                ++pendingGpuCallbacks_;
 
                 readbackBuf.MapAsync(wgpu::MapMode::Read, 0, bufferSize,
                     wgpu::CallbackMode::AllowSpontaneous,
-                    [readbackBuf, ipc, w, h, bytesPerRow](wgpu::MapAsyncStatus status, wgpu::StringView) mutable {
+                    [readbackBuf, ipc, w, h, bytesPerRow, this](wgpu::MapAsyncStatus status, wgpu::StringView) mutable {
+                        --pendingGpuCallbacks_;
                         if (status != wgpu::MapAsyncStatus::Success) return;
                         const uint8_t* mapped = static_cast<const uint8_t*>(
                             readbackBuf.GetConstMappedRange(0, static_cast<size_t>(bytesPerRow) * h));

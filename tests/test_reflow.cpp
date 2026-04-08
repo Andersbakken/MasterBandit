@@ -136,6 +136,64 @@ TEST_CASE("reflow: shrink then grow restores content")
     CHECK(t.rowText(0) == "ABCDEFGHIJ");
 }
 
+TEST_CASE("height shrink: cursor on last blank row is not treated as padding")
+{
+    // Content on rows 0-1, cursor moved to last row (blank).
+    // Shrinking by 1 should push a content row to history rather than
+    // silently discarding the blank cursor row as padding.
+    TestTerminal t(10, 5);
+    t.feed("AB\r\nCD");         // row 0: "AB", row 1: "CD", cursor at (2, 1)
+    t.csi("5;1H");              // move cursor to row 5 (0-indexed: row 4), blank
+    CHECK(t.term.cursorY() == 4);
+
+    int histBefore = t.term.document().historySize();
+    t.term.resize(10, 4);
+    int histAfter = t.term.document().historySize();
+
+    CHECK(histAfter > histBefore);        // a content row was pushed to history
+    CHECK(t.term.cursorY() == 3);         // cursor at bottom of new viewport
+    CHECK(t.rowText(0) == "CD");          // remaining content still visible
+}
+
+TEST_CASE("height shrink: blank rows below cursor are discarded as padding")
+{
+    // Cursor is mid-screen, blank rows below it should be discarded
+    // without pushing content to history.
+    TestTerminal t(10, 5);
+    t.feed("AB\r\nCD");         // cursor at (2, 1), rows 2-4 blank
+    CHECK(t.term.cursorY() == 1);
+
+    int histBefore = t.term.document().historySize();
+    t.term.resize(10, 4);
+    int histAfter = t.term.document().historySize();
+
+    CHECK(histAfter == histBefore);       // blank padding discarded, nothing pushed
+    CHECK(t.term.cursorY() == 1);
+    CHECK(t.rowText(0) == "AB");
+    CHECK(t.rowText(1) == "CD");
+}
+
+TEST_CASE("height shrink: cursor on last blank row, shrink by 2")
+{
+    // Cursor is at the very bottom (row 5, blank). Shrink by 2.
+    // The cursor row is not discardable, so blanksAtBottom=0 and
+    // all 2 required rows are pushed to history (L1, L2).
+    TestTerminal t(10, 6);
+    t.feed("L1\r\nL2\r\nL3");   // rows 0="L1", 1="L2", 2="L3", cursor at (2,2)
+    t.csi("6;1H");              // cursor to row 6 (0-indexed: row 5), blank
+    CHECK(t.term.cursorY() == 5);
+
+    t.term.resize(10, 4);       // shrink by 2: push 2 rows to history
+
+    // L1 and L2 pushed to history; L3 is now row 0
+    CHECK(t.term.cursorY() == 3);         // cursor at bottom of new viewport
+    CHECK(t.rowText(0) == "L3");
+    CHECK(t.rowText(1) == "");
+    CHECK(t.rowText(2) == "");
+    CHECK(t.rowText(3) == "");
+    CHECK(t.term.document().historySize() == 2);
+}
+
 TEST_CASE("reflow: history rows participate in reflow")
 {
     TestTerminal t(10, 2); // only 2 visible rows

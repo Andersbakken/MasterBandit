@@ -58,3 +58,56 @@ TEST_CASE("emoji wide character occupies two columns")
     CHECK(t.attrs(1, 0).wideSpacer());
     CHECK(t.term.cursorX() == 2);
 }
+
+// U+26A0 WARNING SIGN (narrow by default), UTF-8: 0xE2 0x9A 0xA0
+static const std::string WARNING_SIGN = "\xe2\x9a\xa0";
+// VS16 (U+FE0F, emoji presentation selector), UTF-8: 0xEF 0xB8 0x8F
+static const std::string VS16 = "\xef\xb8\x8f";
+
+TEST_CASE("VS16: warning sign without selector stays narrow")
+{
+    TestTerminal t;
+    t.feed(WARNING_SIGN);
+    CHECK(t.wc(0, 0) == U'\u26a0');
+    CHECK_FALSE(t.attrs(0, 0).wide());
+    CHECK_FALSE(t.attrs(1, 0).wideSpacer());
+    CHECK(t.term.cursorX() == 1);
+}
+
+TEST_CASE("VS16: warning sign with VS16 is widened to two columns")
+{
+    TestTerminal t;
+    t.feed(WARNING_SIGN + VS16);
+    CHECK(t.wc(0, 0) == U'\u26a0');
+    CHECK(t.attrs(0, 0).wide());
+    CHECK(t.attrs(1, 0).wideSpacer());
+    CHECK(t.term.cursorX() == 2);
+}
+
+TEST_CASE("VS16: combiningCp stored in cell extra")
+{
+    TestTerminal t;
+    t.feed(WARNING_SIGN + VS16);
+    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    REQUIRE(ex != nullptr);
+    CHECK(ex->combiningCp == U'\ufe0f');
+}
+
+TEST_CASE("VS16: character after emoji-with-VS16 lands at correct column")
+{
+    TestTerminal t;
+    t.feed(WARNING_SIGN + VS16 + "A");
+    CHECK(t.wc(0, 0) == U'\u26a0');
+    CHECK(t.wc(2, 0) == U'A');
+    CHECK(t.term.cursorX() == 3);
+}
+
+TEST_CASE("VS16: does not re-widen an already-wide emoji")
+{
+    TestTerminal t;
+    t.feed(EMOJI_GRIN + VS16);
+    CHECK(t.wc(0, 0) == U'\U0001f600');
+    CHECK(t.attrs(0, 0).wide());
+    CHECK(t.attrs(1, 0).wideSpacer());
+    CHECK(t.term.cursorX() == 2);
+}

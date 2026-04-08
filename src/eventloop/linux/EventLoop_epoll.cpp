@@ -28,7 +28,7 @@ uint64_t EpollEventLoop::nowNs()
 int EpollEventLoop::epollEventsFor(FdEvents ev)
 {
     int flags = 0;
-    if (ev & FdEvents::Readable) flags |= EPOLLIN;
+    if (ev & FdEvents::Readable) flags |= EPOLLIN | EPOLLHUP;
     if (ev & FdEvents::Writable) flags |= EPOLLOUT;
     return flags;
 }
@@ -111,7 +111,7 @@ void EpollEventLoop::run()
                 auto it = fds_.find(fd);
                 if (it != fds_.end()) {
                     FdEvents fired = static_cast<FdEvents>(0);
-                    if (events[i].events & EPOLLIN)  fired = fired | FdEvents::Readable;
+                    if (events[i].events & (EPOLLIN | EPOLLHUP))  fired = fired | FdEvents::Readable;
                     if (events[i].events & EPOLLOUT) fired = fired | FdEvents::Writable;
                     if (static_cast<uint8_t>(fired))
                         it->second.cb(fired);

@@ -132,6 +132,43 @@ int DebugIPC::wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
         }
         break;
     }
+
+    // Foreign event loop fd management
+    case LWS_CALLBACK_ADD_POLL_FD: {
+        if (!self->loop_) break;
+        auto* pa = static_cast<struct lws_pollargs*>(in);
+        EventLoop::FdEvents events = static_cast<EventLoop::FdEvents>(0);
+        if (pa->events & POLLIN)  events = events | EventLoop::FdEvents::Readable;
+        if (pa->events & POLLOUT) events = events | EventLoop::FdEvents::Writable;
+        if (!static_cast<uint8_t>(events)) events = EventLoop::FdEvents::Readable;
+        int fd = pa->fd;
+        self->loop_->watchFd(fd, events, [self, fd](EventLoop::FdEvents fired) {
+            self->serviceFd(fd, fired);
+        });
+        break;
+    }
+    case LWS_CALLBACK_DEL_POLL_FD: {
+        if (!self->loop_) break;
+        auto* pa = static_cast<struct lws_pollargs*>(in);
+        self->loop_->removeFd(pa->fd);
+        break;
+    }
+    case LWS_CALLBACK_CHANGE_MODE_POLL_FD: {
+        if (!self->loop_) break;
+        auto* pa = static_cast<struct lws_pollargs*>(in);
+        EventLoop::FdEvents events = static_cast<EventLoop::FdEvents>(0);
+        if (pa->events & POLLIN)  events = events | EventLoop::FdEvents::Readable;
+        if (pa->events & POLLOUT) events = events | EventLoop::FdEvents::Writable;
+        if (!static_cast<uint8_t>(events)) events = EventLoop::FdEvents::Readable;
+        self->loop_->updateFd(pa->fd, events);
+        break;
+    }
+    case LWS_CALLBACK_EVENT_WAIT_CANCELLED: {
+        // Fired when lws_cancel_service() is called (e.g. from broadcastLog)
+        self->drainLogQueue();
+        break;
+    }
+
     default:
         break;
     }
@@ -160,6 +197,8 @@ DebugIPC::DebugIPC(EventLoop* loop, TerminalCallback termCb, GridCallback gridCb
     unlink(socketPath_.c_str());
 
     struct lws_context_creation_info info = {};
+    // LWS_SERVER_OPTION_UNIX_SOCK only — no libuv, no internal poll thread.
+    // lws will call ADD/DEL/CHANGE_MODE_POLL_FD to register fds with our EventLoop.
     info.options = LWS_SERVER_OPTION_UNIX_SOCK;
     info.iface = socketPath_.c_str();
     info.port = 0;
@@ -184,9 +223,8 @@ void DebugIPC::closeHandles()
     }
 }
 
-void DebugIPC::service()
+void DebugIPC::drainLogQueue()
 {
-    // Drain queued log messages on main thread
     std::deque<std::string> msgs;
     {
         std::lock_guard<std::mutex> lock(logMutex_);
@@ -201,9 +239,17 @@ void DebugIPC::service()
             }
         }
     }
+}
 
-    // Service lws without blocking
-    if (ctx_) lws_service(ctx_, 0);
+void DebugIPC::serviceFd(int fd, EventLoop::FdEvents fired)
+{
+    struct lws_pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events  = POLLIN | POLLOUT;
+    pfd.revents = 0;
+    if (fired & EventLoop::FdEvents::Readable) pfd.revents |= POLLIN;
+    if (fired & EventLoop::FdEvents::Writable) pfd.revents |= POLLOUT;
+    lws_service_fd(ctx_, &pfd);
 }
 
 DebugIPC::~DebugIPC()
@@ -543,5 +589,7 @@ void DebugIPC::broadcastLog(const std::string& msg)
         std::lock_guard<std::mutex> lock(logMutex_);
         logQueue_.push_back(msg);
     }
-    if (loop_) loop_->wakeup();
+    // lws_cancel_service fires LWS_CALLBACK_EVENT_WAIT_CANCELLED on the next service call,
+    // which drains the queue from within the lws callback context (main thread).
+    if (ctx_) lws_cancel_service(ctx_);
 }

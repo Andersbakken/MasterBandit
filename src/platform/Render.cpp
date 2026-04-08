@@ -394,7 +394,7 @@ void PlatformDawn::renderFrame()
     }
 
     FontData* font = const_cast<FontData*>(textSystem_.getFont(fontName_));
-    if (!font) return;
+    if (!font) { spdlog::error("renderFrame: font '{}' not found", fontName_); return; }
 
     float scale = fontSize_ / font->baseSize;
 

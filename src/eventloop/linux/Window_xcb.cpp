@@ -217,6 +217,8 @@ bool XCBWindow::create(int width, int height, const std::string& title)
 
     setTitle(title);
     xcb_map_window(conn_, window_);
+    // Request keyboard focus immediately after mapping
+    xcb_set_input_focus(conn_, XCB_INPUT_FOCUS_POINTER_ROOT, window_, XCB_CURRENT_TIME);
     xcb_flush(conn_);
 
     width_  = width;

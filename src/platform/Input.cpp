@@ -51,8 +51,9 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
         if (key >= Key_Space && key <= Key_AsciiTilde) {
             std::string name = window_ ? window_->keyName(scancode) : std::string{};
             if (!name.empty()) ev.text = name;
-        } else if (controlPressed_ && key >= Key_A && key <= Key_Z) {
-            ev.text = std::string(1, static_cast<char>(key - Key_A + 1));
+        } else if (controlPressed_ && ((key >= Key_A && key <= Key_Z) || (key >= 0x61 && key <= 0x7a))) {
+            int offset = (key >= 0x61) ? (key - 0x61) : (key - Key_A);
+            ev.text = std::string(1, static_cast<char>(offset + 1));
         }
         term->keyPressEvent(&ev);
         return;
@@ -61,9 +62,10 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
     // Legacy mode: drop release events
     if (action == static_cast<int>(KeyAction_Release)) return;
 
-    // ctrl+letter: generate control character
-    if (controlPressed_ && key >= Key_A && key <= Key_Z) {
-        ev.text = std::string(1, static_cast<char>(key - Key_A + 1));
+    // ctrl+letter: generate control character (handle both upper and lower keysyms)
+    if (controlPressed_ && ((key >= Key_A && key <= Key_Z) || (key >= 0x61 && key <= 0x7a))) {
+        int offset = (key >= 0x61) ? (key - 0x61) : (key - Key_A);
+        ev.text = std::string(1, static_cast<char>(offset + 1));
         spdlog::debug("onKey: ctrl+letter, sending text=0x{:02x}", static_cast<unsigned char>(ev.text[0]));
         term->keyPressEvent(&ev);
         return;

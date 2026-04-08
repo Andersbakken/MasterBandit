@@ -339,7 +339,6 @@ int PlatformDawn::exec()
                 }
             }
 
-            if (debugIPC_) debugIPC_->service();
             scriptEngine_.executePendingJobs();
             device_.Tick();
 

@@ -23,11 +23,8 @@ public:
              StatsCallback statsCb = {}, ActionCallback actionCb = {});
     ~DebugIPC();
 
-    // Destroy lws context. Call before event loop stops.
+    // Stop lws thread and destroy lws context.
     void closeHandles();
-
-    // Called from the event loop tick to service lws
-    void service();
 
     void broadcastLog(const std::string& msg);
     const std::string& socketPath() const { return socketPath_; }
@@ -93,8 +90,14 @@ private:
     std::string pngTarget_;
     CellRect pngCellRect_;
 
-    // Thread-safe log forwarding
     EventLoop* loop_ = nullptr;
+
     std::mutex logMutex_;
     std::deque<std::string> logQueue_;
+
+    // Called from within lws callbacks to drain log queue and notify writeable
+    void drainLogQueue();
+
+    // Called when an lws-watched fd fires in the EventLoop
+    void serviceFd(int fd, EventLoop::FdEvents fired);
 };

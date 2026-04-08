@@ -73,12 +73,13 @@ int main(int argc, char **argv)
 
     // Configure logging before anything else so no messages slip through at wrong level.
     static constexpr spdlog::level::level_enum kLevelMap[] = {
-        spdlog::level::trace,    // 0 Verbose
-        spdlog::level::debug,    // 1 Debug
-        spdlog::level::warn,     // 2 Warn
-        spdlog::level::err,      // 3 Error (default)
-        spdlog::level::critical, // 4 Fatal
-        spdlog::level::off,      // 5 Silent
+        spdlog::level::trace,    // 0 (-v -v -v -v)
+        spdlog::level::debug,    // 1 (-v -v -v)
+        spdlog::level::info,     // 2 (-v -v)
+        spdlog::level::warn,     // 3 (-v)
+        spdlog::level::err,      // 4 (default)
+        spdlog::level::critical, // 5
+        spdlog::level::off,      // 6
     };
     static auto parseSpdLevel = [](const std::string& s) -> spdlog::level::level_enum {
         if (s == "trace" || s == "verbose") return spdlog::level::trace;
@@ -91,7 +92,7 @@ int main(int argc, char **argv)
         return spdlog::level::err;
     };
 
-    int logLevel = 3; // Error
+    int logLevel = 4; // Error
     int verbosity = static_cast<int>(result.count("verbose"));
     for (int i = 0; i < verbosity; i++)
         if (logLevel > 0) --logLevel;

@@ -299,6 +299,9 @@ private:
     std::vector<MouseBinding> mouseBindings_;
     ClickDetector clickDetector_;
     bool selectionDragActive_ = false;
+    bool selectionDragStarted_ = false;
+    double selectionDragOriginX_ = 0;
+    double selectionDragOriginY_ = 0;
     EventLoop::TimerId autoScrollTimer_ = 0;
     bool autoScrollTimerActive_ = false;
     int  autoScrollDir_ = 0;  // +1 = scroll into history (up), -1 = toward live (down)

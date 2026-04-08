@@ -14,17 +14,20 @@ ClickDetector::Result ClickDetector::onPress(MouseButton button, int pixelX, int
     auto now = Clock::now();
     auto& rec = lastPress_[bi];
 
+    bool wasDrag = dragStarted_;
     buttonDown_[bi] = true;
     dragStarted_ = false;
     pressX_ = pixelX;
     pressY_ = pixelY;
     activeButton_ = button;
 
-    // Check if this press continues a multi-click sequence
+    // Check if this press continues a multi-click sequence.
+    // A drag between presses breaks the sequence (e.g. press, drag, release,
+    // press should not count as double-click).
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - rec.time);
-    bool continuing = rec.count > 0 &&
-                      elapsed <= clickInterval_ &&
-                      withinRadius(pixelX, pixelY, rec.x, rec.y);
+    bool inTime = elapsed <= clickInterval_;
+    bool inRadius = withinRadius(pixelX, pixelY, rec.x, rec.y);
+    bool continuing = rec.count > 0 && inTime && inRadius && !wasDrag;
 
     if (continuing && rec.count < 3) {
         rec.count++;
@@ -67,8 +70,6 @@ std::optional<ClickDetector::Result> ClickDetector::onMove(int pixelX, int pixel
     int dx = pixelX - pressX_, dy = pixelY - pressY_;
     if (dx * dx + dy * dy > dragThreshold_ * dragThreshold_) {
         dragStarted_ = true;
-        // Reset click count — drag cancels multi-click
-        lastPress_[idx(activeButton_)].count = 0;
         return Result{MouseEventType::Drag, activeButton_};
     }
     return std::nullopt;

@@ -293,8 +293,11 @@ void TerminalEmulator::finalizeSelection()
 
 void TerminalEmulator::clearSelection()
 {
+    bool had = mSelection.active || mSelection.valid;
     mSelection.active = false;
     mSelection.valid = false;
+    if (had && mCallbacks.event)
+        mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
 bool TerminalEmulator::isCellSelected(int col, int absRow) const

@@ -431,6 +431,9 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
                 ev.buttons = ev.button;
                 term->mousePressEvent(&ev);
                 selectionDragActive_ = true;
+                selectionDragOriginX_ = sx;
+                selectionDragOriginY_ = sy;
+                selectionDragStarted_ = false;
                 break;
             }
             case Action::SelectionType::Word:
@@ -555,6 +558,15 @@ void PlatformDawn::onCursorPos(double x, double y)
 
     // 1. If selection drag is active, forward directly to terminal
     if (selectionDragActive_) {
+        // Require movement beyond a threshold before activating the pending
+        // selection, so that subpixel jitter during a click doesn't start one.
+        if (!selectionDragStarted_) {
+            double dx = sx - selectionDragOriginX_;
+            double dy = sy - selectionDragOriginY_;
+            if (dx * dx + dy * dy < 9.0) // 3px threshold
+                return;
+            selectionDragStarted_ = true;
+        }
         MouseEvent ev = buildMouseEvent();
         term->mouseMoveEvent(&ev);
         // Clear drag active on release (no buttons held)

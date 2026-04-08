@@ -828,8 +828,11 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             int delta = screenHeight_ - newRows;
             // Count trailing blank rows at the bottom — discard them instead of
             // pushing them to history (they're padding, not content).
+            // A row with the cursor is never blank (cursor anchors the line).
+            int cursorScreenRow = cursor ? (cursor->srcY - historySize()) : -1;
             int blanksAtBottom = 0;
             for (int r = screenHeight_ - 1; r >= 0 && blanksAtBottom < delta; --r) {
+                if (r == cursorScreenRow) break; // cursor row is never discardable
                 int phys = screenRowToPhysical(r);
                 const Cell* rp = &ring_[static_cast<size_t>(phys) * cols_];
                 bool blank = true;

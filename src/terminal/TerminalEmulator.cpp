@@ -164,7 +164,12 @@ void TerminalEmulator::resize(int width, int height)
         }
     } else {
         int oldHistSize = mDocument.historySize();
-        mDocument.resize(width, height);
+        Document::CursorTrack ct;
+        ct.srcX = mCursorX;
+        ct.srcY = oldHistSize + mCursorY;
+        ct.dstX = 0;
+        ct.dstY = 0;
+        mDocument.resize(width, height, &ct);
         if (oldCols == width) {
             // Height-only shrink: top rows pushed to history, adjust cursor to track content.
             // Height-only grow: don't adjust — the shell tracks its own cursor position and

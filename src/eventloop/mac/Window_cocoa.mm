@@ -289,9 +289,7 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 
 - (void)mouseDown:(NSEvent*)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect b = [self convertRectToBacking:self.bounds];
-    double scale = b.size.height / self.bounds.size.height;
-    _cppWindow->dispatchCursorPos(p.x * scale, (self.bounds.size.height - p.y) * scale);
+    _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
     _cppWindow->dispatchMouseButton(static_cast<int>(LeftButton),
                                      static_cast<int>(KeyAction_Press),
                                      static_cast<int>(nsModsToModifiers(event.modifierFlags)));
@@ -326,9 +324,7 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 }
 - (void)mouseMoved:(NSEvent*)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect b  = [self convertRectToBacking:self.bounds];
-    double scale = b.size.height / self.bounds.size.height;
-    _cppWindow->dispatchCursorPos(p.x * scale, (self.bounds.size.height - p.y) * scale);
+    _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
 }
 - (void)mouseDragged:(NSEvent*)event  { [self mouseMoved:event]; }
 - (void)rightMouseDragged:(NSEvent*)event { [self mouseMoved:event]; }

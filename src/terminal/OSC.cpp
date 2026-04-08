@@ -21,7 +21,7 @@ static inline bool gettime(timeval *time)
 #if defined(__APPLE__)
     static mach_timebase_info_data_t info;
     static bool first = true;
-    unsigned long long machtime = mach_absolute_time();
+    uint64_t machtime = mach_absolute_time();
     if (first) {
         first = false;
         mach_timebase_info(&info);
@@ -45,7 +45,7 @@ static inline bool gettime(timeval *time)
     return true;
 }
 
-unsigned long long TerminalEmulator::mono()
+uint64_t TerminalEmulator::mono()
 {
     timeval time;
     if (gettime(&time)) {
@@ -417,7 +417,7 @@ static bool parseX11Color(std::string_view spec, uint8_t& r, uint8_t& g, uint8_t
         auto s2 = rest.find('/', s1 + 1);
         if (s2 == std::string_view::npos) return false;
         auto parseComponent = [](std::string_view s) -> int {
-            unsigned int v = 0;
+            uint32_t v = 0;
             for (char c : s) {
                 int d;
                 if (c >= '0' && c <= '9') d = c - '0';

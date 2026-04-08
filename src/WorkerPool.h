@@ -11,12 +11,12 @@
 
 class WorkerPool {
 public:
-    explicit WorkerPool(unsigned int numThreads = 0)
+    explicit WorkerPool(uint32_t numThreads = 0)
         : workReady_(0), allDone_(0)
     {
         if (numThreads == 0)
             numThreads = std::max(1u, std::thread::hardware_concurrency());
-        for (unsigned int i = 0; i < numThreads; ++i)
+        for (uint32_t i = 0; i < numThreads; ++i)
             threads_.emplace_back([this] { workerLoop(); });
     }
 
@@ -49,7 +49,7 @@ public:
         allDone_.acquire();
     }
 
-    unsigned int threadCount() const { return static_cast<unsigned int>(threads_.size()); }
+    uint32_t threadCount() const { return static_cast<uint32_t>(threads_.size()); }
 
     WorkerPool(const WorkerPool&) = delete;
     WorkerPool& operator=(const WorkerPool&) = delete;

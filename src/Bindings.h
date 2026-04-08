@@ -20,8 +20,8 @@ inline Key normalizeModifierKey(Key k)
 }
 
 struct KeyStroke {
-    Key          key  = Key_unknown;
-    unsigned int mods = 0;
+    Key      key  = Key_unknown;
+    uint32_t mods = 0;
 
     bool operator==(const KeyStroke& o) const noexcept
     {
@@ -53,7 +53,7 @@ struct MouseBindingConfig; // defined in Config.h
 
 struct MouseStroke {
     MouseButton    button = MouseButton::Left;
-    unsigned int   mods   = 0;
+    uint32_t       mods   = 0;
     MouseEventType event  = MouseEventType::Press;
     MouseMode      mode   = MouseMode::Ungrabbed;
     MouseRegion    region = MouseRegion::Any;

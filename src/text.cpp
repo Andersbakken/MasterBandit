@@ -149,7 +149,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
         hbFace = entry.hbFace;
     }
 
-    unsigned int upem = hb_face_get_upem(hbFace);
+    uint32_t upem = hb_face_get_upem(hbFace);
     float pixelScale = font.baseSize / static_cast<float>(upem);
     float adv = hb_font_get_glyph_h_advance(hbFont, glyphId) * pixelScale;
 
@@ -160,7 +160,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
     hb_glyph_extents_t ext;
     hb_gpu_draw_get_extents(g, &ext);
 
-    unsigned int blobLen = 0;
+    uint32_t blobLen = 0;
     const char* blobData = hb_blob_get_data(blob, &blobLen);
 
     GlyphInfo info{};
@@ -300,7 +300,7 @@ bool TextSystem::registerFont(const std::string& name,
     for (const auto& ttfData : ttfDataList) {
         FontData::HBEntry entry;
         entry.hbBlob = hb_blob_create(reinterpret_cast<const char*>(ttfData.data()),
-                                       static_cast<unsigned int>(ttfData.size()),
+                                       static_cast<uint32_t>(ttfData.size()),
                                        HB_MEMORY_MODE_DUPLICATE, nullptr, nullptr);
         entry.hbFace = hb_face_create(entry.hbBlob, 0);
         entry.hbFont = hb_font_create(entry.hbFace);
@@ -318,7 +318,7 @@ bool TextSystem::registerFont(const std::string& name,
 
     // Use primary font for metrics
     const auto& primary = font.hbFonts[0];
-    unsigned int upem = hb_face_get_upem(primary.hbFace);
+    uint32_t upem = hb_face_get_upem(primary.hbFace);
     float pixelScale = baseSize / static_cast<float>(upem);
 
     // Get font metrics from primary
@@ -383,7 +383,7 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
     // Create HarfBuzz objects without holding lock
     FontData::HBEntry entry;
     entry.hbBlob = hb_blob_create(reinterpret_cast<const char*>(ttfData.data()),
-                                   static_cast<unsigned int>(ttfData.size()),
+                                   static_cast<uint32_t>(ttfData.size()),
                                    HB_MEMORY_MODE_DUPLICATE, nullptr, nullptr);
     entry.hbFace = hb_face_create(entry.hbBlob, 0);
     entry.hbFont = hb_font_create(entry.hbFace);
@@ -763,23 +763,23 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
             segHbFace = font.hbFonts[fi].hbFace;
         }
 
-        unsigned int fontUpem = hb_face_get_upem(segHbFace);
+        uint32_t fontUpem = hb_face_get_upem(segHbFace);
         float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
 
         hb_buffer_t* buf = hb_buffer_create();
         hb_buffer_add_utf8(buf, text.c_str(), static_cast<int>(text.size()),
-                           static_cast<unsigned int>(seg.offset), static_cast<int>(seg.length));
+                           static_cast<uint32_t>(seg.offset), static_cast<int>(seg.length));
         hb_buffer_set_direction(buf, (seg.level & 1) ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
         hb_buffer_set_script(buf, hb_script_from_iso15924_tag(
             static_cast<hb_tag_t>(SBScriptGetUnicodeTag(seg.script))));
         hb_buffer_set_language(buf, hb_language_get_default());
         hb_shape(segHbFont, buf, nullptr, 0);
 
-        unsigned int count;
+        uint32_t count;
         hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &count);
         hb_glyph_position_t* positions = hb_buffer_get_glyph_positions(buf, &count);
 
-        auto pushGlyph = [&](unsigned int idx) {
+        auto pushGlyph = [&](uint32_t idx) {
             uint32_t gid = infos[idx].codepoint;
             uint32_t glyphFi = fi;
 
@@ -814,9 +814,9 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
 
         if (seg.level & 1) {
             for (int i = static_cast<int>(count) - 1; i >= 0; i--)
-                pushGlyph(static_cast<unsigned int>(i));
+                pushGlyph(static_cast<uint32_t>(i));
         } else {
-            for (unsigned int i = 0; i < count; i++)
+            for (uint32_t i = 0; i < count; i++)
                 pushGlyph(i);
         }
 
@@ -1005,14 +1005,14 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
             hbFace = font.hbFonts[fi].hbFace;
         }
 
-        unsigned int fontUpem = hb_face_get_upem(hbFace);
+        uint32_t fontUpem = hb_face_get_upem(hbFace);
         float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
 
         bool segmentRtl = (levels[sr.offset] & 1) != 0;
 
         hb_buffer_t* buf = hb_buffer_create();
         hb_buffer_add_utf8(buf, text.c_str(), static_cast<int>(text.size()),
-                           static_cast<unsigned int>(sr.offset), static_cast<int>(sr.length));
+                           static_cast<uint32_t>(sr.offset), static_cast<int>(sr.length));
         hb_buffer_set_direction(buf, segmentRtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
         hb_buffer_set_script(buf, hb_script_from_iso15924_tag(
             static_cast<hb_tag_t>(SBScriptGetUnicodeTag(sr.script))));
@@ -1020,11 +1020,11 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
         hb_buffer_set_cluster_level(buf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
         hb_shape(hbFont, buf, nullptr, 0);
 
-        unsigned int count;
+        uint32_t count;
         hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &count);
         hb_glyph_position_t* positions = hb_buffer_get_glyph_positions(buf, &count);
 
-        for (unsigned int i = 0; i < count; i++) {
+        for (uint32_t i = 0; i < count; i++) {
             uint32_t gid = infos[i].codepoint;
             uint32_t glyphFi = fi;
 

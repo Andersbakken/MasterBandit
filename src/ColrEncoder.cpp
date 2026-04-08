@@ -91,16 +91,16 @@ void ColrEncoder::encodeColorStops(State& s, hb_color_line_t* color_line,
                                    uint32_t& extend)
 {
     // Get total count
-    unsigned int total = hb_color_line_get_color_stops(color_line, 0, nullptr, nullptr);
+    uint32_t total = hb_color_line_get_color_stops(color_line, 0, nullptr, nullptr);
     std::vector<hb_color_stop_t> stops(total);
-    unsigned int fetched = total;
+    uint32_t fetched = total;
     hb_color_line_get_color_stops(color_line, 0, &fetched, stops.data());
 
     stop_offset = static_cast<uint32_t>(s.colorStops.size());
     stop_count = fetched;
     extend = static_cast<uint32_t>(hb_color_line_get_extend(color_line));
 
-    for (unsigned int i = 0; i < fetched; i++) {
+    for (uint32_t i = 0; i < fetched; i++) {
         ColrColorStop cs;
         cs.offset = stops[i].offset;
         cs.color = packColor(stops[i].color);
@@ -179,7 +179,7 @@ void ColrEncoder::popGroupCb(hb_paint_funcs_t*, void* paint_data,
 }
 
 ColrGlyphData ColrEncoder::encode(hb_font_t* font, hb_codepoint_t glyph,
-                                     unsigned int palette_index,
+                                     uint32_t palette_index,
                                      hb_color_t foreground,
                                      GlyphResolver resolver)
 {

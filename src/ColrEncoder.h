@@ -17,7 +17,7 @@ public:
                                                   float* ext_max_x, float* ext_max_y)>;
 
     static ColrGlyphData encode(hb_font_t* font, hb_codepoint_t glyph,
-                                   unsigned int palette_index,
+                                   uint32_t palette_index,
                                    hb_color_t foreground,
                                    GlyphResolver resolver);
 

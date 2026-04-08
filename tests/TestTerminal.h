@@ -105,7 +105,7 @@ struct TestTerminal {
     void clearOutput() { term.capturedOutput.clear(); }
     const std::string& output() const { return term.capturedOutput; }
 
-    void sendKey(Key key, unsigned int mods = 0,
+    void sendKey(Key key, uint32_t mods = 0,
                  KeyAction action = KeyAction_Press,
                  const std::string& text = "")
     {

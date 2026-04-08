@@ -129,9 +129,9 @@ static Key keysymToKey(xkb_keysym_t sym)
     }
 }
 
-static unsigned int xkbStateToModifiers(xkb_state* state)
+static uint32_t xkbStateToModifiers(xkb_state* state)
 {
-    unsigned int m = 0;
+    uint32_t m = 0;
     if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_SHIFT,
                                       XKB_STATE_MODS_EFFECTIVE) > 0) m |= ShiftModifier;
     if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CTRL,
@@ -452,7 +452,7 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
 
     xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
     Key k = keysymToKey(sym);
-    unsigned int mods = xkbStateToModifiers(xkbState_);
+    uint32_t mods = xkbStateToModifiers(xkbState_);
     KeyAction action = isRepeat ? KeyAction_Repeat : KeyAction_Press;
 
     if (onKey) onKey(static_cast<int>(k), static_cast<int>(keycode), static_cast<int>(action), static_cast<int>(mods));
@@ -475,7 +475,7 @@ void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
 
     xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
     Key k = keysymToKey(sym);
-    unsigned int mods = xkbStateToModifiers(xkbState_);
+    uint32_t mods = xkbStateToModifiers(xkbState_);
 
     if (onKey) onKey(static_cast<int>(k), static_cast<int>(keycode),
                       static_cast<int>(KeyAction_Release), static_cast<int>(mods));
@@ -503,7 +503,7 @@ void XCBWindow::handleButtonPress(xcb_button_press_event_t* ev)
         return;
     default: return;
     }
-    unsigned int mods = xkbState_ ? xkbStateToModifiers(xkbState_) : 0;
+    uint32_t mods = xkbState_ ? xkbStateToModifiers(xkbState_) : 0;
     if (onMouseButton) onMouseButton(button, static_cast<int>(KeyAction_Press), static_cast<int>(mods));
     if (onCursorPos)   onCursorPos(ev->event_x, ev->event_y);
 }
@@ -517,7 +517,7 @@ void XCBWindow::handleButtonRelease(xcb_button_release_event_t* ev)
     case 3: button = static_cast<int>(RightButton); break;
     default: return;
     }
-    unsigned int mods = xkbState_ ? xkbStateToModifiers(xkbState_) : 0;
+    uint32_t mods = xkbState_ ? xkbStateToModifiers(xkbState_) : 0;
     if (onMouseButton) onMouseButton(button, static_cast<int>(KeyAction_Release), static_cast<int>(mods));
 }
 

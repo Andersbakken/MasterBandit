@@ -86,7 +86,7 @@ public:
 
     // Input handlers (called from Window callbacks)
     void onKey(int key, int scancode, int action, int mods);
-    void onChar(unsigned int codepoint);
+    void onChar(uint32_t codepoint);
     void onFramebufferResize(int width, int height);
     void adjustFontSize(float delta);
     void onMouseButton(int button, int action, int mods);
@@ -200,11 +200,11 @@ private:
     bool needsRedraw_ = true;
     std::atomic<int> pendingGpuCallbacks_ { 0 };
     bool controlPressed_ = false;
-    unsigned int lastMods_ = 0;
+    uint32_t lastMods_ = 0;
 
     // Tracked by onCursorPos / onMouseButton (replaces glfwGetCursorPos / glfwGetMouseButton)
     double lastCursorX_ = 0.0, lastCursorY_ = 0.0;
-    unsigned int heldButtons_ = 0;  // bitmask of Button values currently pressed
+    uint32_t heldButtons_ = 0;  // bitmask of Button values currently pressed
 
     // Per-pane render state
     struct PaneRenderState {

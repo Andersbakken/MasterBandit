@@ -593,7 +593,7 @@ struct MouseEvent
     int globalX { 0 };
     int globalY { 0 };
 
-    static std::string buttonName(unsigned int buttons)
+    static std::string buttonName(uint32_t buttons)
     {
         if (!buttons)
             return "NoButton";
@@ -612,8 +612,8 @@ struct MouseEvent
     }
 
     Button button { NoButton };
-    unsigned int buttons { 0 };
-    unsigned int modifiers { 0 };
+    uint32_t buttons { 0 };
+    uint32_t modifiers { 0 };
 };
 
 struct KeyEvent
@@ -622,7 +622,7 @@ struct KeyEvent
     std::string text;
     size_t count { 1 };
     bool autoRepeat { false };
-    unsigned int modifiers { 0 };
+    uint32_t modifiers { 0 };
     KeyAction action { KeyAction_Press };
 };
 

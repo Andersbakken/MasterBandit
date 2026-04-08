@@ -190,7 +190,7 @@ public:
         mCallbacks.onOSC = std::move(cb);
     }
 
-    static unsigned long long mono();
+    static uint64_t mono();
 
     // 16-color palette (standard + bright) as RGB
     uint8_t m16ColorPalette[16][3];
@@ -317,7 +317,7 @@ private:
     void lineFeed();
 
     // Mouse reporting
-    void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, unsigned int modifiers);
+    void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, uint32_t modifiers);
 
     bool mCursorKeyMode { false };  // DECCKM: true = application mode
     bool mKeypadMode { false };     // DECKPAM: true = application mode

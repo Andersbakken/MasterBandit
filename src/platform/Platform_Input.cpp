@@ -17,7 +17,7 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
     spdlog::debug("onKey: key=0x{:x} action={} mods={}", key, action, mods);
 
     controlPressed_ = (mods & CtrlModifier) != 0;
-    lastMods_ = static_cast<unsigned int>(mods);
+    lastMods_ = static_cast<uint32_t>(mods);
 
     Key k = static_cast<Key>(key);
     spdlog::debug("onKey: key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
@@ -81,7 +81,7 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
 }
 
 
-void PlatformDawn::onChar(unsigned int codepoint)
+void PlatformDawn::onChar(uint32_t codepoint)
 {
     TerminalEmulator* term = activeTerm();
     if (!term) return;
@@ -260,13 +260,13 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
     Tab* tab = activeTab();
     if (!tab) return;
 
-    lastMods_ = static_cast<unsigned int>(mods);
+    lastMods_ = static_cast<uint32_t>(mods);
 
     // Track button state for use in onCursorPos (replaces glfwGetMouseButton polling)
     if (action == static_cast<int>(KeyAction_Press))
-        heldButtons_ |= static_cast<unsigned int>(button);
+        heldButtons_ |= static_cast<uint32_t>(button);
     else
-        heldButtons_ &= ~static_cast<unsigned int>(button);
+        heldButtons_ &= ~static_cast<uint32_t>(button);
 
     double sx = lastCursorX_ * contentScaleX_;
     double sy = lastCursorY_ * contentScaleY_;

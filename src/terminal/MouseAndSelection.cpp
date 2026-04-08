@@ -19,7 +19,7 @@ void TerminalEmulator::notifyColorPreference(bool isDark)
     }
 }
 
-void TerminalEmulator::sendMouseEvent(int button, bool press, bool motion, int cx, int cy, unsigned int modifiers)
+void TerminalEmulator::sendMouseEvent(int button, bool press, bool motion, int cx, int cy, uint32_t modifiers)
 {
     // Encode modifier bits into button code
     int cb = button;

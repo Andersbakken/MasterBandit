@@ -32,7 +32,7 @@ std::optional<KeyStroke> parseKeyStroke(const std::string& s)
     std::string keyStr = parts.back();
     parts.pop_back();
 
-    unsigned int mods = 0;
+    uint32_t mods = 0;
     for (const auto& mod : parts) {
         std::string m = toLower(mod);
         if      (m == "ctrl" || m == "control")                       mods |= CtrlModifier;
@@ -436,7 +436,7 @@ std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfi
         }
 
         // Parse modifiers from button string (e.g. "ctrl+left" → mods + button)
-        unsigned int mods = 0;
+        uint32_t mods = 0;
         std::string buttonStr = cfg.button;
         // Check for modifier prefixes
         auto plus = buttonStr.rfind('+');

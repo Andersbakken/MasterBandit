@@ -41,7 +41,8 @@ void PlatformDawn::updateWindowTitle()
     Pane* fp = t->layout()->focusedPane();
     if (!fp) return;
     const std::string& icon = fp->icon();
-    const std::string& title = fp->title();
+    // Prefer the pane's OSC-set title; fall back to the tab title (e.g. foreground process name)
+    const std::string& title = fp->title().empty() ? t->title() : fp->title();
     if (title.empty()) return;
     std::string windowTitle = icon.empty() ? title : icon + " " + title;
     if (window_) window_->setTitle(windowTitle);

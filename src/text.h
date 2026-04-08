@@ -144,7 +144,8 @@ public:
         uint32_t glyphId;
     };
     ResolvedGlyph resolveGlyph(FontData& font, const std::string& fontName,
-                               char32_t cp, FontStyle style, uint32_t excludeFi);
+                               char32_t cp, FontStyle style, uint32_t excludeFi,
+                               bool forceEmojiPresentation = false);
 
     // Get or create the styled variant of a given base font index.
     uint32_t getStyledVariant(FontData& font, uint32_t baseFi, FontStyle style);

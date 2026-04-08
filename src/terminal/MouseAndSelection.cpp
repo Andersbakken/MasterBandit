@@ -351,12 +351,15 @@ std::string TerminalEmulator::selectedText() const
 
     for (int absRow = r0; absRow <= r1; ++absRow) {
         const Cell* row;
+        const std::unordered_map<int, CellExtra>* extras = nullptr;
         if (absRow < histSize) {
             row = mDocument.historyRow(absRow);
+            extras = mDocument.historyExtras(absRow);
         } else {
             int gridRow = absRow - histSize;
             if (gridRow < 0 || gridRow >= grid().rows()) continue;
             row = grid().row(gridRow);
+            extras = mDocument.viewportExtras(gridRow, 0);
         }
         if (!row) continue;
 
@@ -381,6 +384,11 @@ std::string TerminalEmulator::selectedText() const
                 line += ' ';
             } else {
                 line += utf8::fromCodepoint(cell.wc);
+                if (extras) {
+                    auto it = extras->find(col);
+                    if (it != extras->end() && it->second.combiningCp != 0)
+                        line += utf8::fromCodepoint(it->second.combiningCp);
+                }
                 lastNonSpace = static_cast<int>(line.size()) - 1;
             }
         }

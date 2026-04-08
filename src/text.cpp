@@ -24,6 +24,16 @@ static spdlog::logger& sLog()
     return l ? *l : *spdlog::default_logger();
 }
 
+// --- Helper: check if U+FE0F (VS16, emoji variation selector) follows codepoint at cluster ---
+static inline bool hasVS16(const std::string& text, uint32_t cluster, int cpConsumed)
+{
+    size_t pos = cluster + static_cast<size_t>(cpConsumed);
+    return pos + 2 < text.size() &&
+           static_cast<unsigned char>(text[pos])   == 0xEF &&
+           static_cast<unsigned char>(text[pos+1]) == 0xB8 &&
+           static_cast<unsigned char>(text[pos+2]) == 0x8F;
+}
+
 // --- Helper: make combined glyph key ---
 static inline uint64_t glyphKey(uint32_t fontIndex, uint32_t glyphId)
 {
@@ -549,9 +559,10 @@ uint32_t TextSystem::resolveSegment(FontData& font, const uint8_t* text, size_t 
 }
 
 TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::string& fontName,
-                                                    char32_t cp, FontStyle style, uint32_t excludeFi)
+                                                    char32_t cp, FontStyle style, uint32_t excludeFi,
+                                                    bool forceEmojiPresentation)
 {
-    bool emojiPresentation = isWidenedEmoji(cp);
+    bool emojiPresentation = forceEmojiPresentation || isWidenedEmoji(cp);
     bool preferNonColr = font.hasColrPaint && !emojiPresentation && (wcwidth(cp) < 2);
     ResolvedGlyph colrFallback = {0, 0};
     ResolvedGlyph nonColrFallback = {0, 0};
@@ -788,8 +799,9 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
                 uint32_t cluster = infos[idx].cluster;
                 int consumed = 0;
                 uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
+                bool vs16 = hasVS16(text, cluster, consumed);
 
-                auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi);
+                auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, vs16);
                 if (resolved.glyphId != 0) {
                     glyphFi = resolved.fontIndex;
                     gid = resolved.glyphId;
@@ -799,6 +811,24 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
                     allGlyphs.push_back({glyphKey(glyphFi, gid), infos[idx].cluster,
                         adv, 0, 0, seg.level});
                     return;
+                }
+            }
+
+            // VS16 present and glyph is not COLR: try to find a COLR version in fallback fonts
+            {
+                uint32_t cluster = infos[idx].cluster;
+                int consumed = 0;
+                uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
+                if (hasVS16(text, cluster, consumed)) {
+                    bool currentIsColr = hb_ot_color_has_paint(segHbFace) &&
+                                         hb_ot_color_glyph_has_paint(segHbFace, gid);
+                    if (!currentIsColr) {
+                        auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, true);
+                        if (resolved.glyphId != 0) {
+                            glyphFi = resolved.fontIndex;
+                            gid = resolved.glyphId;
+                        }
+                    }
                 }
             }
 
@@ -1033,8 +1063,9 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                 uint32_t cluster = infos[i].cluster;
                 int consumed = 0;
                 uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
+                bool vs16 = hasVS16(text, cluster, consumed);
 
-                auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi);
+                auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, vs16);
                 if (resolved.glyphId != 0) {
                     glyphFi = resolved.fontIndex;
                     gid = resolved.glyphId;
@@ -1051,15 +1082,30 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
 
             // Normal glyph — check if HarfBuzz substituted it (ligature, contextual form)
             bool isSubstitution = false;
+            bool vs16 = false;
             uint32_t cp;
             {
                 uint32_t cluster = infos[i].cluster;
                 int consumed = 0;
                 cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
+                vs16 = hasVS16(text, cluster, consumed);
 
                 uint32_t nominalGid;
                 if (hb_font_get_nominal_glyph(hbFont, cp, &nominalGid)) {
                     isSubstitution = (gid != nominalGid);
+                }
+            }
+
+            // VS16 present and glyph is not COLR: try to find a COLR version in fallback fonts
+            if (vs16 && !isSubstitution) {
+                bool currentIsColr = hb_ot_color_has_paint(hbFace) &&
+                                     hb_ot_color_glyph_has_paint(hbFace, gid);
+                if (!currentIsColr) {
+                    auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, true);
+                    if (resolved.glyphId != 0) {
+                        glyphFi = resolved.fontIndex;
+                        gid = resolved.glyphId;
+                    }
                 }
             }
 

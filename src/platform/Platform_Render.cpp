@@ -147,6 +147,9 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
             if (rowData[c].wc == 0) continue;
             byteToCell.push_back({static_cast<uint32_t>(runText.size()), c});
             appendUtf8(runText, rowData[c].wc);
+            const CellExtra* extra = term->grid().getExtra(c, row);
+            if (extra && extra->combiningCp != 0)
+                appendUtf8(runText, extra->combiningCp);
         }
 
         if (runText.empty()) {

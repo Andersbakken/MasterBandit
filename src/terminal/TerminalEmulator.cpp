@@ -505,7 +505,28 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 if (w < 0) w = 0; // non-printable control char — skip
                 if (w == 0) {
                     // Zero-width / combining character — attach to previous cell
-                    // (for now, just skip it)
+                    if (cp == 0xFE0F && mLastPrintedX >= 0 && mLastPrintedY >= 0 &&
+                        mLastPrintedY < mHeight && mLastPrintedX < mWidth) {
+                        CellExtra& ex = g.ensureExtra(mLastPrintedX, mLastPrintedY);
+                        ex.combiningCp = cp;
+
+                        // Widen the previous cell if it was single-width and there's room
+                        Cell& prevCell = g.cell(mLastPrintedX, mLastPrintedY);
+                        if (!prevCell.attrs.wide() && mLastPrintedY == mCursorY && !mWrapPending) {
+                            prevCell.attrs.setWide(true);
+                            CellAttrs spacerAttrs = mCurrentAttrs;
+                            spacerAttrs.setWideSpacer(true);
+                            g.cell(mCursorX, mCursorY) = Cell{0, spacerAttrs};
+                            g.clearExtra(mCursorX, mCursorY);
+                            mCursorX++;
+                            if (mCursorX >= mWidth) {
+                                mCursorX = mWidth - 1;
+                                mWrapPending = true;
+                            }
+                        }
+
+                        g.markRowDirty(mLastPrintedY);
+                    }
                 } else if (w == 2) {
                     // Wide character: needs two cells
                     mLastPrintedChar = cp;
@@ -522,6 +543,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         advanceCursorToNewLine();
                     }
                     if (mCursorX >= 0 && mCursorX + 1 < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        mLastPrintedX = mCursorX;
+                        mLastPrintedY = mCursorY;
                         CellAttrs wideAttrs = mCurrentAttrs;
                         wideAttrs.setWide(true);
                         g.cell(mCursorX, mCursorY) = Cell{cp, wideAttrs};
@@ -550,6 +573,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         mWrapPending = false;
                     }
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        mLastPrintedX = mCursorX;
+                        mLastPrintedY = mCursorY;
                         g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
                         g.clearExtra(mCursorX, mCursorY);
                         if (mActiveHyperlinkId || mCurrentUnderlineColor) {

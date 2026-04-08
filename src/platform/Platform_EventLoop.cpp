@@ -209,11 +209,14 @@ int PlatformDawn::exec()
                         prs.resolvedCells.resize(needed);
                         prs.rowShapingCache.resize(h);
                         prs.dirty = true;
-                        // Dirty popup render state on content changes
-                        p->onPopupEvent = [this, paneId, popupId]() {
-                            std::string k = popupStateKey(paneId, popupId);
-                            auto it = popupRenderStates_.find(k);
-                            if (it != popupRenderStates_.end()) it->second.dirty = true;
+                        // Dirty all popup render states for this pane on any content change.
+                        // onPopupEvent is a single slot on Pane so we can't key it per popup;
+                        // dirtying all of them is cheap and correct regardless of which fired.
+                        p->onPopupEvent = [this, paneId]() {
+                            for (auto& [key, prs] : popupRenderStates_) {
+                                if (key.substr(0, key.find('/')) == std::to_string(paneId))
+                                    prs.dirty = true;
+                            }
                             setNeedsRedraw();
                         };
                         // Dirty parent pane so the popup composite entry is added
@@ -236,12 +239,14 @@ int PlatformDawn::exec()
                     if (wasPopupFocused && t && p->popups().empty())
                         t->focusEvent(true);
                     if (t) t->grid().markAllDirty();
-                    // Release popup render state
+                    // Release popup render state (deferred — texture may still be in flight)
                     std::string key = popupStateKey(paneId, popupId);
                     auto pit = popupRenderStates_.find(key);
                     if (pit != popupRenderStates_.end()) {
-                        if (pit->second.heldTexture) texturePool_.release(pit->second.heldTexture);
-                        for (auto* tx : pit->second.pendingRelease) texturePool_.release(tx);
+                        if (pit->second.heldTexture)
+                            pendingTabBarRelease_.push_back(pit->second.heldTexture);
+                        for (auto* tx : pit->second.pendingRelease)
+                            pendingTabBarRelease_.push_back(tx);
                         popupRenderStates_.erase(pit);
                     }
                     // Dirty parent pane so it re-renders without the popup composite entry

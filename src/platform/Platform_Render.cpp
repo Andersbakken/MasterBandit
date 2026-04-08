@@ -17,9 +17,9 @@ void PlatformDawn::releasePopupStates(Pane* pane)
         auto it = popupRenderStates_.find(key);
         if (it != popupRenderStates_.end()) {
             if (it->second.heldTexture)
-                texturePool_.release(it->second.heldTexture);
+                pendingTabBarRelease_.push_back(it->second.heldTexture);
             for (auto* tx : it->second.pendingRelease)
-                texturePool_.release(tx);
+                pendingTabBarRelease_.push_back(tx);
             popupRenderStates_.erase(it);
         }
     }
@@ -1145,7 +1145,7 @@ void PlatformDawn::renderFrame()
             queue_.Submit(1, &commands);
         }
 
-        // Collect all pending releases from all panes and tab bar
+        // Collect all pending releases from all panes, popups, and tab bar
         std::vector<PooledTexture*> toRelease;
         for (auto& panePtr : currentTab->layout()->panes()) {
             auto it = paneRenderStates_.find(panePtr->id());
@@ -1154,6 +1154,15 @@ void PlatformDawn::renderFrame()
                     it->second.pendingRelease.begin(),
                     it->second.pendingRelease.end());
                 it->second.pendingRelease.clear();
+            }
+            for (const auto& popup : panePtr->popups()) {
+                auto pit = popupRenderStates_.find(popupStateKey(panePtr->id(), popup.id));
+                if (pit != popupRenderStates_.end()) {
+                    toRelease.insert(toRelease.end(),
+                        pit->second.pendingRelease.begin(),
+                        pit->second.pendingRelease.end());
+                    pit->second.pendingRelease.clear();
+                }
             }
         }
         toRelease.insert(toRelease.end(), pendingTabBarRelease_.begin(), pendingTabBarRelease_.end());

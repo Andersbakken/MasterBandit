@@ -342,7 +342,8 @@ int PlatformDawn::exec()
             scriptEngine_.executePendingJobs();
             device_.Tick();
 
-            if (needsRedraw_) renderFrame();
+            if (needsRedraw_ || (debugIPC_ && debugIPC_->pngScreenshotPending()))
+                renderFrame();
         };
     }
 

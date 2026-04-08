@@ -5,6 +5,7 @@
 #ifdef __APPLE__
 #  include <mac/EventLoop_nsapp.h>
 #  include <mac/Window_cocoa.h>
+#  include <bsd/EventLoop_kqueue.h>
 #elif defined(__linux__)
 #  include <linux/EventLoop_epoll.h>
 #  include <linux/Window_xcb.h>
@@ -217,7 +218,12 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 });
             });
         } else {
-            // --- Headless: no window, no surface ---
+            // --- Headless: event loop but no window/surface ---
+#ifdef __APPLE__
+            eventLoop_ = std::make_unique<KQueueEventLoop>();
+#elif defined(__linux__)
+            eventLoop_ = std::make_unique<EpollEventLoop>();
+#endif
             contentScaleX_ = contentScaleY_ = 1.0f;
             fontSize_ = testFontSize_;
             baseFontSize_ = fontSize_;

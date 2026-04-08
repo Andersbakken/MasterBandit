@@ -21,29 +21,6 @@
 }
 @end
 
-// ---------- CFFileDescriptor callback ----------
-
-static void cfFdCallback(CFFileDescriptorRef fdRef, CFOptionFlags callBackTypes, void* info)
-{
-    auto* entry = static_cast<NSAppEventLoop::FdEntry*>(info);
-    // FIXME: we need a pointer back to the loop to call fdReady.
-    // We store a pointer to the loop in the CFFileDescriptorContext's info,
-    // but FdEntry is what we have here. We embed a back-pointer in FdEntry.
-    auto* loop = static_cast<NSAppEventLoop*>(
-        static_cast<void**>(info)[1]);  // see watchFd for layout
-
-    EventLoop::FdEvents fired = static_cast<EventLoop::FdEvents>(0);
-    if (callBackTypes & kCFFileDescriptorReadCallBack)
-        fired = fired | EventLoop::FdEvents::Readable;
-    if (callBackTypes & kCFFileDescriptorWriteCallBack)
-        fired = fired | EventLoop::FdEvents::Writable;
-
-    // Re-enable callbacks before calling user code (edge-triggered)
-    CFFileDescriptorEnableCallBacks(fdRef, callBackTypes);
-
-    loop->fdReady(CFFileDescriptorGetNativeDescriptor(fdRef), fired);
-}
-
 // ---------- FSEvents callback ----------
 
 static void fsEventsCallback(ConstFSEventStreamRef, void* info,
@@ -185,7 +162,7 @@ void NSAppEventLoop::watchFd(int fd, FdEvents events, FdCb cb)
 
     CFFileDescriptorContext ctx{};
     ctx.info = cbInfo;
-    ctx.release = [](const void* info) { delete static_cast<const FdCallbackInfo*>(info); };
+    ctx.release = [](void* info) { delete static_cast<FdCallbackInfo*>(info); };
 
     CFFileDescriptorRef fdRef = CFFileDescriptorCreate(
         kCFAllocatorDefault, fd, false, cfFdCallbackV2, &ctx);
@@ -299,7 +276,7 @@ void NSAppEventLoop::addFileWatch(const std::string& path, WatchCb cb)
         kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagFileEvents);
     CFRelease(paths);
 
-    FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    FSEventStreamSetDispatchQueue(stream, dispatch_get_main_queue());
     FSEventStreamStart(stream);
     fsEventStream_ = stream;
 }

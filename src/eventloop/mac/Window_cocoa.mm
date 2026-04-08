@@ -3,6 +3,7 @@
 #include "../../platform/InputTypes.h"
 
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -40,8 +41,6 @@ static Key macKeyToKey(unsigned short keyCode)
     case 0x36: return Key_Super_R;
     case 0x39: return Key_CapsLock;
     case 0x6E: return Key_Menu;
-    case 0x69: return Key_Print;
-    case 0x71: return Key_ScrollLock;
     case 0x45: return Key_KP_Add;
     case 0x4E: return Key_KP_Subtract;
     case 0x43: return Key_KP_Multiply;
@@ -117,8 +116,8 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     CGFloat sx = win.backingScaleFactor;
     self.cppWindow->dispatchContentScale(static_cast<float>(sx), static_cast<float>(sx));
 }
-- (void)windowDidBecomeKey:(NSNotification*) { self.cppWindow->dispatchFocus(true); }
-- (void)windowDidResignKey:(NSNotification*) { self.cppWindow->dispatchFocus(false); }
+- (void)windowDidBecomeKey:(NSNotification*)notification { (void)notification; self.cppWindow->dispatchFocus(true); }
+- (void)windowDidResignKey:(NSNotification*)notification { (void)notification; self.cppWindow->dispatchFocus(false); }
 @end
 
 // ---------- MBView ----------

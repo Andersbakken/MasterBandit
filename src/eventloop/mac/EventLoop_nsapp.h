@@ -46,13 +46,14 @@ public:
     // Called by FSEvents
     void fileChanged();
 
-private:
+public:
     struct FdEntry {
         FdEvents events;
         FdCb     cb;
         void*    cfSource = nullptr;  // CFRunLoopSourceRef
         void*    cfFdRef  = nullptr;  // CFFileDescriptorRef
     };
+private:
     std::unordered_map<int, FdEntry> fds_;
 
     struct Timer {

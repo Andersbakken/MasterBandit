@@ -33,6 +33,7 @@ target_link_libraries(eventloop PUBLIC
 if(APPLE)
     target_link_libraries(eventloop PUBLIC
         "-framework AppKit"
+        "-framework Carbon"
         "-framework CoreFoundation"
         "-framework CoreServices"
         "-framework Metal"

@@ -232,8 +232,17 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     xcb_set_input_focus(conn_, XCB_INPUT_FOCUS_POINTER_ROOT, window_, XCB_CURRENT_TIME);
     xcb_flush(conn_);
 
-    width_  = width;
-    height_ = height;
+    // Query actual geometry — a tiling WM may have already forced a
+    // different size during mapping, without sending a ConfigureNotify.
+    auto geomCookie = xcb_get_geometry(conn_, window_);
+    if (auto* geom = xcb_get_geometry_reply(conn_, geomCookie, nullptr)) {
+        width_  = geom->width;
+        height_ = geom->height;
+        free(geom);
+    } else {
+        width_  = width;
+        height_ = height;
+    }
 
     // xkbcommon setup
     xkbCtx_ = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -270,6 +279,21 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     int fd = xcb_get_file_descriptor(conn_);
     loop_.watchFd(fd, EventLoop::FdEvents::Readable,
         [this](EventLoop::FdEvents) { processEvents(); });
+
+    // Tiling WMs may resize the window after mapping without sending a
+    // ConfigureNotify that we can observe.  Schedule a one-shot geometry
+    // check once the event loop starts so we pick up the real size.
+    loop_.addTimer(0, false, [this]() {
+        auto cookie = xcb_get_geometry(conn_, window_);
+        if (auto* geom = xcb_get_geometry_reply(conn_, cookie, nullptr)) {
+            if (geom->width != width_ || geom->height != height_) {
+                width_  = geom->width;
+                height_ = geom->height;
+                if (onFramebufferResize) onFramebufferResize(width_, height_);
+            }
+            free(geom);
+        }
+    });
 
     return true;
 }

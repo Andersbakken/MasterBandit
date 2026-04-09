@@ -58,7 +58,6 @@ private:
     void handleSelectionRequest(xcb_selection_request_event_t* ev);
     void handleSelectionNotify(xcb_selection_notify_event_t* ev);
     void handleExpose(xcb_expose_event_t* ev);
-    void resyncXkbIfNeeded();
 
     xcb_atom_t internAtom(const char* name, bool onlyIfExists = false) const;
 
@@ -78,6 +77,7 @@ private:
     xkb_keymap*  xkbKeymap_ = nullptr;
     xkb_state*   xkbState_  = nullptr;
     int32_t      xkbDeviceId_ = -1;
+    uint8_t      xkbEventBase_ = 0;  // XKB extension first event code
 
     // Window state
     int  width_  = 0;
@@ -119,8 +119,6 @@ private:
     CursorStyle  currentCursor_ = CursorStyle::Arrow;
     void createCursors();
 
-    // Deferred xkb resync: set on Expose/FocusIn, cleared on next key event
-    bool needsXkbResync_ = false;
 
     // Live resize debounce: set while a one-shot timer is pending after a resize
     EventLoop::TimerId resizeDebounceTimer_ = 0;

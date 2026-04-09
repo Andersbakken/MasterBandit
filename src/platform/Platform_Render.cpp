@@ -388,7 +388,7 @@ void PlatformDawn::renderFrame()
     // events in this frame have been coalesced.
     // During live resize, defer SIGWINCH so the shell doesn't redraw the prompt
     // on every frame — send it once when the resize settles.
-    if (!window_->inLiveResize()) {
+    if (!window_ || !window_->inLiveResize()) {
         for (auto& panePtr : currentTab->layout()->panes()) {
             if (auto* t = panePtr->terminal())
                 t->flushPendingResize();
@@ -466,7 +466,7 @@ void PlatformDawn::renderFrame()
     if (currentTab->hasOverlay()) {
         Terminal* overlay = currentTab->topOverlay();
         if (overlay) {
-            if (!window_->inLiveResize())
+            if (!window_ || !window_->inLiveResize())
                 overlay->flushPendingResize();
 
             // Use layout content area (excludes tab bar)

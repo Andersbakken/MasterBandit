@@ -21,30 +21,6 @@ namespace fs = std::filesystem;
 
 static std::vector<uint8_t> loadFontFile(const std::string& path) { return io::loadFile(path); }
 
-// --- Find a monospace font on the system ---
-static std::string findMonospaceFont()
-{
-    static const char* candidates[] = {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-        "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-        "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-        "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
-#ifdef __APPLE__
-        "/System/Library/Fonts/Monaco.ttf",
-        "/System/Library/Fonts/Menlo.ttc",
-        "/System/Library/Fonts/SFMono-Regular.otf",
-        "/Library/Fonts/Courier New.ttf",
-#endif
-        nullptr
-    };
-
-    for (const char** p = candidates; *p; ++p) {
-        if (fs::exists(*p)) return *p;
-    }
-    return {};
-}
 
 PlatformDawn::PlatformDawn(int argc, char** argv, bool headless)
     : headless_(headless)
@@ -238,12 +214,12 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         if (headless_ && !testFontPath_.empty()) {
             fontPath = testFontPath_;
         } else if (options.font.empty()) {
-            fontPath = findMonospaceFont();
+            fontPath = resolveFontFamily("monospace");
         } else {
             fontPath = resolveFontFamily(options.font);
             if (fontPath.empty()) {
                 spdlog::warn("Font family '{}' not found, falling back to system monospace", options.font);
-                fontPath = findMonospaceFont();
+                fontPath = resolveFontFamily("monospace");
             }
         }
         if (fontPath.empty()) {
@@ -551,9 +527,9 @@ static void applyTintColor(const std::string& col, float alpha, float out[4])
 
 void PlatformDawn::applyFontChange(const Config& config)
 {
-    std::string fontPath = config.font.empty() ? findMonospaceFont() : resolveFontFamily(config.font);
+    std::string fontPath = config.font.empty() ? resolveFontFamily("monospace") : resolveFontFamily(config.font);
     if (fontPath.empty() && !config.font.empty())
-        fontPath = findMonospaceFont();
+        fontPath = resolveFontFamily("monospace");
     if (fontPath.empty()) {
         spdlog::warn("Config reload: font '{}' not found, keeping current font", config.font);
         return;

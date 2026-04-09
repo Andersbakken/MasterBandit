@@ -400,7 +400,20 @@ std::string TerminalEmulator::selectedText() const
             line.clear();
         }
 
-        if (absRow > r0) result += '\n';
+        if (absRow > r0) {
+            // Don't insert a newline if the previous row was soft-wrapped
+            int prevAbsRow = absRow - 1;
+            bool prevContinued = false;
+            if (prevAbsRow < histSize)
+                prevContinued = mDocument.isHistoryRowContinued(prevAbsRow);
+            else {
+                int prevGridRow = prevAbsRow - histSize;
+                if (prevGridRow >= 0 && prevGridRow < mDocument.rows())
+                    prevContinued = mDocument.isRowContinued(prevGridRow);
+            }
+            if (!prevContinued)
+                result += '\n';
+        }
         result += line;
     }
 

@@ -386,9 +386,13 @@ void PlatformDawn::renderFrame()
 
     // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
     // events in this frame have been coalesced.
-    for (auto& panePtr : currentTab->layout()->panes()) {
-        if (auto* t = panePtr->terminal())
-            t->flushPendingResize();
+    // During live resize, defer SIGWINCH so the shell doesn't redraw the prompt
+    // on every frame — send it once when the resize settles.
+    if (!window_->inLiveResize()) {
+        for (auto& panePtr : currentTab->layout()->panes()) {
+            if (auto* t = panePtr->terminal())
+                t->flushPendingResize();
+        }
     }
 
     wgpu::SurfaceTexture surfaceTexture;
@@ -462,7 +466,8 @@ void PlatformDawn::renderFrame()
     if (currentTab->hasOverlay()) {
         Terminal* overlay = currentTab->topOverlay();
         if (overlay) {
-            overlay->flushPendingResize();
+            if (!window_->inLiveResize())
+                overlay->flushPendingResize();
 
             // Use layout content area (excludes tab bar)
             PaneRect tbRect = currentTab->layout()->tabBarRect(fbWidth_, fbHeight_);

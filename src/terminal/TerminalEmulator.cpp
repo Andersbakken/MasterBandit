@@ -112,22 +112,6 @@ void TerminalEmulator::resize(int width, int height)
 
     if (oldCols != width && !mUsingAltScreen) {
         // Column change on main screen: reflow with cursor tracking
-        // Count non-empty content lines before reflow (like kitty's
-        // num_content_lines_before). Cursor beyond this = at a prompt.
-        int contentLinesBefore = 0;
-        if (mDocument.rows() > 0) {
-            for (int r = mDocument.rows() - 1; r >= 0; --r) {
-                const Cell* row = mDocument.row(r);
-                bool empty = true;
-                for (int c = 0; c < oldCols && empty; ++c) {
-                    if (row[c].wc != 0) empty = false;
-                }
-                if (!empty) { contentLinesBefore = r + 1; break; }
-            }
-        }
-        bool cursorBeyondContent = mCursorY >= contentLinesBefore;
-        int linesAfterCursor = mHeight - mCursorY;
-
         int oldHistSize = mDocument.historySize();
         Document::CursorTrack ct;
         ct.srcX = mCursorX;
@@ -138,30 +122,8 @@ void TerminalEmulator::resize(int width, int height)
         mDocument.resize(width, height, &ct);
 
         int newHistSize = mDocument.historySize();
-
-        // Count content lines after reflow
-        int contentLinesAfter = 0;
-        if (mDocument.rows() > 0) {
-            for (int r = mDocument.rows() - 1; r >= 0; --r) {
-                const Cell* row = mDocument.row(r);
-                bool empty = true;
-                for (int c = 0; c < width && empty; ++c) {
-                    if (row[c].wc != 0) empty = false;
-                }
-                if (!empty) { contentLinesAfter = r + 1; break; }
-            }
-        }
-
-        if (cursorBeyondContent) {
-            // Cursor was at/past end of content (e.g. at a prompt with rprompt).
-            // Place cursor at end of content, not where reflow tracked it.
-            // This prevents rprompt wrapping from pushing the cursor down.
-            mCursorX = std::min(ct.dstX, width - 1);
-            mCursorY = std::min(contentLinesAfter, height - 1);
-        } else {
-            mCursorX = std::min(ct.dstX, width - 1);
-            mCursorY = std::max(0, std::min(ct.dstY - newHistSize, height - 1));
-        }
+        mCursorX = std::min(ct.dstX, width - 1);
+        mCursorY = std::max(0, std::min(ct.dstY - newHistSize, height - 1));
     } else {
         int oldHistSize = mDocument.historySize();
         Document::CursorTrack ct;

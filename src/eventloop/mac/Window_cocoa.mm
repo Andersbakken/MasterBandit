@@ -197,6 +197,29 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder { return YES; }
 
+- (void)viewWillStartLiveResize {
+    [super viewWillStartLiveResize];
+    _cppWindow->setLiveResize(true);
+}
+
+- (void)viewDidEndLiveResize {
+    [super viewDidEndLiveResize];
+    _cppWindow->setLiveResize(false);
+    // Dispatch final size so SIGWINCH goes out
+    NSRect backing = [self convertRectToBacking:self.bounds];
+    _cppWindow->dispatchResize(static_cast<int>(backing.size.width),
+                                static_cast<int>(backing.size.height));
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    if (self.window && [self.window inLiveResize]) {
+        NSRect backing = [self convertRectToBacking:self.bounds];
+        _cppWindow->dispatchResize(static_cast<int>(backing.size.width),
+                                    static_cast<int>(backing.size.height));
+    }
+}
+
 // ---------- keyboard ----------
 
 - (void)keyDown:(NSEvent*)event {

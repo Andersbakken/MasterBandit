@@ -45,6 +45,7 @@ public:
     void dispatchResize(int w, int h);
     void dispatchContentScale(float sx, float sy);
     void dispatchClose();
+    void setLiveResize(bool v) { inLiveResize_ = v; }
 
 private:
     NSWindow* nsWindow_  = nullptr;

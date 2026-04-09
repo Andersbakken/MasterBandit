@@ -54,7 +54,7 @@ NSAppEventLoop::NSAppEventLoop()
         });
     CFRunLoopAddObserver(CFRunLoopGetMain(),
                           static_cast<CFRunLoopObserverRef>(observer_),
-                          kCFRunLoopDefaultMode);
+                          kCFRunLoopCommonModes);
 }
 
 NSAppEventLoop::~NSAppEventLoop()
@@ -66,7 +66,7 @@ NSAppEventLoop::~NSAppEventLoop()
         if (entry.cfSource) {
             CFRunLoopRemoveSource(CFRunLoopGetMain(),
                                    static_cast<CFRunLoopSourceRef>(entry.cfSource),
-                                   kCFRunLoopDefaultMode);
+                                   kCFRunLoopCommonModes);
             CFRelease(static_cast<CFRunLoopSourceRef>(entry.cfSource));
         }
         if (entry.cfFdRef)
@@ -83,7 +83,7 @@ NSAppEventLoop::~NSAppEventLoop()
     if (observer_) {
         CFRunLoopRemoveObserver(CFRunLoopGetMain(),
                                  static_cast<CFRunLoopObserverRef>(observer_),
-                                 kCFRunLoopDefaultMode);
+                                 kCFRunLoopCommonModes);
         CFRelease(static_cast<CFRunLoopObserverRef>(observer_));
     }
 }
@@ -173,7 +173,7 @@ void NSAppEventLoop::watchFd(int fd, FdEvents events, FdCb cb)
 
     CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(
         kCFAllocatorDefault, fdRef, 0);
-    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopDefaultMode);
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
 
     entry.cfFdRef  = fdRef;
     entry.cfSource = source;
@@ -204,7 +204,7 @@ void NSAppEventLoop::removeFd(int fd)
     if (it->second.cfSource) {
         CFRunLoopRemoveSource(CFRunLoopGetMain(),
                                static_cast<CFRunLoopSourceRef>(it->second.cfSource),
-                               kCFRunLoopDefaultMode);
+                               kCFRunLoopCommonModes);
         CFRelease(static_cast<CFRunLoopSourceRef>(it->second.cfSource));
     }
     if (it->second.cfFdRef)

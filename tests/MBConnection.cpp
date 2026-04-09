@@ -174,10 +174,27 @@ MBConnection::~MBConnection()
 
 bool MBConnection::connect(int timeoutMs)
 {
-    // Poll for socket file existence
+    // Poll for socket file existence, checking if child is still alive
     {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
         while (std::chrono::steady_clock::now() < deadline) {
+            // Check if child process crashed
+            if (pid_ > 0) {
+                int status;
+                pid_t ret = waitpid(pid_, &status, WNOHANG);
+                if (ret == pid_) {
+                    // Child exited — report how it died
+                    if (WIFSIGNALED(status)) {
+                        fprintf(stderr, "mb --test child (pid %d) killed by signal %d\n",
+                                pid_, WTERMSIG(status));
+                    } else if (WIFEXITED(status)) {
+                        fprintf(stderr, "mb --test child (pid %d) exited with status %d\n",
+                                pid_, WEXITSTATUS(status));
+                    }
+                    pid_ = -1;
+                    return false;
+                }
+            }
             struct stat st;
             if (stat(socketPath_.c_str(), &st) == 0) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));

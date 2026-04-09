@@ -75,11 +75,15 @@ public:
     TexturePool& texturePool() { return texturePool_; }
     bool isHeadless() const { return headless_; }
 
-    void setTestConfig(const std::string& fontPath, int cols, int rows, float fontSize) {
+    void setTestConfig(const std::string& fontPath, int cols, int rows, float fontSize,
+                       const std::string& emojiFontPath = {},
+                       const std::string& fallbackFontPath = {}) {
         testFontPath_ = fontPath;
         testCols_ = cols;
         testRows_ = rows;
         testFontSize_ = fontSize;
+        testEmojiFontPath_ = emojiFontPath;
+        testFallbackFontPath_ = fallbackFontPath;
     }
 
     const std::string& exeDir() const { return exeDir_; }
@@ -123,6 +127,8 @@ private:
     int testRows_ = 24;
     float testFontSize_ = 16.0f;
     std::string testFontPath_;
+    std::string testEmojiFontPath_;
+    std::string testFallbackFontPath_;
     wgpu::Texture headlessComposite_;  // offscreen composite target (headless, with CopyDst)
     std::unique_ptr<EventLoop> eventLoop_;
     std::unique_ptr<Window>    window_;

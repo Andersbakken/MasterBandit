@@ -304,11 +304,26 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 spdlog::info("COLR: loaded Noto Color Emoji from {}", notoEmojiPath);
             }
         } else {
-            // Headless: single font, no fallback
+            // Headless: register font, optional emoji fallback for rendering tests
             textSystem_.registerFont(fontName_, fontList, 48.0f);
             textSystem_.setPrimaryFontPath(fontName_, primaryFontPath_);
             textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
             textSystem_.setBoldStrength(options.boldStrength, options.boldStrength);
+            if (!testFallbackFontPath_.empty()) {
+                auto fallbackData = loadFontFile(testFallbackFontPath_);
+                if (!fallbackData.empty()) {
+                    textSystem_.addFallbackFont(fontName_, fallbackData);
+                    spdlog::info("Test: loaded fallback font from {}", testFallbackFontPath_);
+                }
+            }
+            if (!testEmojiFontPath_.empty()) {
+                auto emojiData = loadFontFile(testEmojiFontPath_);
+                if (!emojiData.empty()) {
+                    textSystem_.addFallbackFont(fontName_, emojiData);
+                    textSystem_.setEmojiFallback([emojiData](char32_t) { return emojiData; });
+                    spdlog::info("Test: loaded emoji font from {}", testEmojiFontPath_);
+                }
+            }
         }
 
         const FontData* font = textSystem_.getFont(fontName_);

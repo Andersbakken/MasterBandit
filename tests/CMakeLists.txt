@@ -58,6 +58,9 @@ target_link_libraries(mb-tests PRIVATE
 target_compile_definitions(mb-tests PRIVATE
     MB_BINARY="$<TARGET_FILE:mb>"
     MB_TEST_FONT="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/fira/FiraCodeNerdFontMono-Regular.ttf"
+    MB_TEST_TEXT_FONT="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/inconsolata/Inconsolata-Regular.ttf"
+    MB_TEST_FALLBACK_FONT="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/test-fallback/DejaVuSansMono-subset.ttf"
+    MB_TEST_EMOJI_FONT="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/emoji/NotoColorEmoji-subset.ttf"
     MB_REF_DIR="${CMAKE_SOURCE_DIR}/tests/reference"
 )
 

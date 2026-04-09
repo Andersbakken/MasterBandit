@@ -10,7 +10,10 @@
 class MBConnection {
 public:
     struct Options {
-        std::string fontPath;   // defaults to MB_TEST_FONT
+        std::string fontPath;         // defaults to MB_TEST_FONT
+        std::string fallbackFontPath; // optional non-COLR fallback font
+        std::string emojiFontPath;    // optional COLRv1 emoji font
+        std::string shell;            // defaults to user's shell; use "/bin/cat" for stable rendering tests
         int cols = 80;
         int rows = 24;
         float fontSize = 16.0f;

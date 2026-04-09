@@ -49,6 +49,8 @@ int main(int argc, char **argv)
         ("s,shell", "Shell to use", cxxopts::value<std::string>())
         ("test", "Headless test mode (no window, no config)")
         ("font", "Font path (test mode)", cxxopts::value<std::string>())
+        ("emoji-font", "Emoji font path (test mode)", cxxopts::value<std::string>())
+        ("fallback-font", "Additional fallback font path (test mode)", cxxopts::value<std::string>())
         ("cols", "Terminal columns (test mode)", cxxopts::value<int>()->default_value("80"))
         ("rows", "Terminal rows (test mode)", cxxopts::value<int>()->default_value("24"))
         ("font-size", "Font size (test mode)", cxxopts::value<float>()->default_value("16"))
@@ -132,7 +134,9 @@ int main(int argc, char **argv)
             result.count("font") ? result["font"].as<std::string>() : std::string{},
             result["cols"].as<int>(),
             result["rows"].as<int>(),
-            result["font-size"].as<float>());
+            result["font-size"].as<float>(),
+            result.count("emoji-font") ? result["emoji-font"].as<std::string>() : std::string{},
+            result.count("fallback-font") ? result["fallback-font"].as<std::string>() : std::string{});
     }
 
     TerminalOptions options;

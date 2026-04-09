@@ -132,13 +132,22 @@ MBConnection::MBConnection(const Options& opts)
 
     pid_ = fork();
     if (pid_ == 0) {
-        // Child: exec mb --test
-        execl(mbBinary.c_str(), mbBinary.c_str(), "--test",
-              "--font", fontPath.c_str(),
-              "--cols", colsStr.c_str(),
-              "--rows", rowsStr.c_str(),
-              "--font-size", fontSizeStr.c_str(),
-              nullptr);
+        // Child: exec mb --test — build args dynamically based on options
+        std::vector<std::string> args = {
+            mbBinary, "--test",
+            "--font", fontPath,
+            "--cols", colsStr,
+            "--rows", rowsStr,
+            "--font-size", fontSizeStr,
+        };
+        if (!opts.fallbackFontPath.empty()) { args.push_back("--fallback-font"); args.push_back(opts.fallbackFontPath); }
+        if (!opts.emojiFontPath.empty())    { args.push_back("--emoji-font");   args.push_back(opts.emojiFontPath); }
+        if (!opts.shell.empty())            { args.push_back("--shell");         args.push_back(opts.shell); }
+
+        std::vector<const char*> argv;
+        for (const auto& a : args) argv.push_back(a.c_str());
+        argv.push_back(nullptr);
+        execv(mbBinary.c_str(), const_cast<char* const*>(argv.data()));
         _exit(127);
     }
 
@@ -454,7 +463,10 @@ int MBConnection::comparePng(const std::vector<uint8_t>& a, const std::vector<ui
 
 bool MBConnection::matchesReference(const std::vector<uint8_t>& png, const std::string& refName, int tolerance)
 {
-    std::string refPath = std::string(MB_REF_DIR) + "/" + refName;
+    std::string name = refName;
+    if (name.size() < 4 || name.substr(name.size() - 4) != ".png")
+        name += ".png";
+    std::string refPath = std::string(MB_REF_DIR) + "/" + name;
 
     // If MB_UPDATE_REFS=1, save the actual as the new reference
     if (const char* env = getenv("MB_UPDATE_REFS")) {

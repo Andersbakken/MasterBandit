@@ -1092,11 +1092,15 @@ void TerminalEmulator::processCSI()
             if (!mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX)
                 mTitleStack.push_back(mTitleStack.back());
         } else if (op == 23) {
-            // Pop title: restore previous
+            // Pop title: restore previous, or clear if last entry
             if (mTitleStack.size() > 1) {
                 mTitleStack.pop_back();
                 if (mCallbacks.onTitleChanged)
                     mCallbacks.onTitleChanged(mTitleStack.back());
+            } else if (!mTitleStack.empty()) {
+                mTitleStack.clear();
+                if (mCallbacks.onTitleChanged)
+                    mCallbacks.onTitleChanged(std::string{});
             }
         }
         break;

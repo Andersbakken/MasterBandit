@@ -466,7 +466,13 @@ void XCBWindow::processEvents()
             break;
         }
         case XCB_EXPOSE:
-            // Handled by render loop
+            // Resync xkb modifier state — desktop switches may not
+            // generate FocusIn but modifiers could have changed.
+            if (xkbState_ && xkbDeviceId_ >= 0) {
+                xkb_state_unref(xkbState_);
+                xkbState_ = xkb_x11_state_new_from_device(xkbKeymap_, conn_, xkbDeviceId_);
+            }
+            if (onExpose) onExpose();
             break;
         default:
             break;

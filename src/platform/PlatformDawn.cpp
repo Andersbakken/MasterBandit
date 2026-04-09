@@ -178,6 +178,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 if (dy > 0) dispatchAction(Action::ScrollUp{});
                 else if (dy < 0) dispatchAction(Action::ScrollDown{});
             };
+            window_->onExpose = [this]() { setNeedsRedraw(); };
             window_->onLiveResizeEnd = [this]() { setNeedsRedraw(); };
             window_->onFocus = [this](bool focused) {
                 Tab* t = activeTab();

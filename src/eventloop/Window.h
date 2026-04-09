@@ -43,6 +43,7 @@ public:
     std::function<void(double x, double y)> onCursorPos;
     std::function<void(double dx, double dy)> onScroll;
     std::function<void(bool focused)> onFocus;
+    std::function<void()> onExpose;        // called when window content needs redraw
     std::function<void()> onLiveResizeEnd; // called when live resize settles
     virtual void frameRendered() {}       // called after each frame; used for _NET_WM_SYNC_REQUEST
 

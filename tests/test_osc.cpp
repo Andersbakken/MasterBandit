@@ -39,6 +39,93 @@ TEST_CASE("OSC title updates on successive calls")
     CHECK(t.capturedTitle == "Second");
 }
 
+// ── Title stack (CSI 22/23 t) ────────────────────────────────────────────────
+
+TEST_CASE("CSI 22t pushes title, CSI 23t pops and restores")
+{
+    TestTerminal t;
+    t.osc("0;shell");
+    CHECK(t.capturedTitle == "shell");
+    t.csi("22t");              // push "shell"
+    t.osc("0;vim foo.txt");
+    CHECK(t.capturedTitle == "vim foo.txt");
+    t.csi("23t");              // pop → "shell"
+    CHECK(t.capturedTitle == "shell");
+}
+
+TEST_CASE("OSC 0 between push/pop does not affect saved title")
+{
+    TestTerminal t;
+    t.osc("0;original");
+    t.csi("22t");
+    t.osc("0;changed");
+    t.osc("0;changed again");
+    CHECK(t.capturedTitle == "changed again");
+    t.csi("23t");
+    CHECK(t.capturedTitle == "original");
+}
+
+TEST_CASE("Pop last title entry clears to empty string")
+{
+    TestTerminal t;
+    t.osc("0;only title");
+    CHECK(t.capturedTitle == "only title");
+    t.csi("23t");
+    CHECK(t.capturedTitle.empty());
+}
+
+TEST_CASE("Pop on empty stack is a no-op")
+{
+    TestTerminal t;
+    t.csi("23t");
+    CHECK(t.capturedTitle.empty());
+}
+
+TEST_CASE("Nested push/pop restores correctly")
+{
+    TestTerminal t;
+    t.osc("0;level0");
+    t.csi("22t");              // push level0
+    t.osc("0;level1");
+    t.csi("22t");              // push level1
+    t.osc("0;level2");
+    CHECK(t.capturedTitle == "level2");
+    t.csi("23t");              // pop → level1
+    CHECK(t.capturedTitle == "level1");
+    t.csi("23t");              // pop → level0
+    CHECK(t.capturedTitle == "level0");
+}
+
+TEST_CASE("Title stack caps at 10 entries")
+{
+    TestTerminal t;
+    t.osc("0;base");
+    for (int i = 0; i < 20; ++i)
+        t.csi("22t");
+    // Should not have grown beyond 10; pop all and verify we get back to base
+    int pops = 0;
+    while (pops < 20) {
+        t.csi("23t");
+        ++pops;
+        if (t.capturedTitle.empty()) break;
+    }
+    // Should have popped at most 10 times before emptying
+    CHECK(pops <= 10);
+}
+
+TEST_CASE("OSC 0 on empty stack creates first entry")
+{
+    TestTerminal t;
+    CHECK(t.capturedTitle.empty());
+    t.osc("0;first");
+    CHECK(t.capturedTitle == "first");
+    // Push should work now
+    t.csi("22t");
+    t.osc("0;second");
+    t.csi("23t");
+    CHECK(t.capturedTitle == "first");
+}
+
 // ── OSC 7 (CWD) ─────────────────────────────────────────────────────────────
 
 TEST_CASE("OSC 7 extracts path from file URL")

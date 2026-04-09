@@ -802,7 +802,11 @@ void PlatformDawn::renderFrame()
                     term->cursorY() >= 0 && term->cursorY() < g.rows()) {
                     params.cursor_col   = static_cast<uint32_t>(term->cursorX());
                     params.cursor_row   = static_cast<uint32_t>(term->cursorY());
-                    params.cursor_color = 0xFFCCCCCCu;
+                    { const auto& dc = term->defaultColors();
+                      params.cursor_color = static_cast<uint32_t>(dc.cursorR)
+                                          | (static_cast<uint32_t>(dc.cursorG) << 8)
+                                          | (static_cast<uint32_t>(dc.cursorB) << 16)
+                                          | 0xFF000000u; }
                     params.cursor_type  = isFocused ? 1u : 2u;
                 }
             } else {
@@ -816,7 +820,11 @@ void PlatformDawn::renderFrame()
                     cursorViewRow >= 0 && cursorViewRow < g.rows()) {
                     params.cursor_col   = static_cast<uint32_t>(term->cursorX());
                     params.cursor_row   = static_cast<uint32_t>(cursorViewRow);
-                    params.cursor_color = 0xFFCCCCCCu;
+                    { const auto& dc = term->defaultColors();
+                      params.cursor_color = static_cast<uint32_t>(dc.cursorR)
+                                          | (static_cast<uint32_t>(dc.cursorG) << 8)
+                                          | (static_cast<uint32_t>(dc.cursorB) << 16)
+                                          | 0xFF000000u; }
                     if (!isFocused || popupHasFocus) {
                         params.cursor_type = 2u;
                     } else {

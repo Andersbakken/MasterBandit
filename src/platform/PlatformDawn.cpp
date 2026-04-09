@@ -529,6 +529,10 @@ void PlatformDawn::invalidateAllRowCaches()
         for (auto& row : rs.rowShapingCache) row.valid = false;
         rs.dirty = true;
     }
+    for (auto& [key, rs] : popupRenderStates_) {
+        for (auto& row : rs.rowShapingCache) row.valid = false;
+        rs.dirty = true;
+    }
 }
 
 static void applyTintColor(const std::string& col, float alpha, float out[4])
@@ -639,8 +643,6 @@ void PlatformDawn::reloadConfigNow()
         term->applyColorScheme(config.colors);
     });
     invalidateAllRowCaches();
-    for (auto& [id, rs] : paneRenderStates_)
-        rs.dirty = true;
 
     // Divider
     dividerWidth_ = std::max(0, config.divider_width);

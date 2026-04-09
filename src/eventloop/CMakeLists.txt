@@ -6,12 +6,12 @@ if(APPLE)
     list(APPEND EVENTLOOP_SOURCES
         mac/EventLoop_nsapp.mm
         mac/Window_cocoa.mm
-        bsd/EventLoop_kqueue.cpp
+        kqueue/EventLoop_kqueue.cpp
     )
 else()
     list(APPEND EVENTLOOP_SOURCES
-        linux/EventLoop_epoll.cpp
-        linux/Window_xcb.cpp
+        epoll/EventLoop_epoll.cpp
+        xcb/Window_xcb.cpp
     )
 endif()
 

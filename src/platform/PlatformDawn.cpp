@@ -5,10 +5,10 @@
 #ifdef __APPLE__
 #  include <mac/EventLoop_nsapp.h>
 #  include <mac/Window_cocoa.h>
-#  include <bsd/EventLoop_kqueue.h>
+#  include <kqueue/EventLoop_kqueue.h>
 #elif defined(__linux__)
-#  include <linux/EventLoop_epoll.h>
-#  include <linux/Window_xcb.h>
+#  include <epoll/EventLoop_epoll.h>
+#  include <xcb/Window_xcb.h>
 #endif
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>

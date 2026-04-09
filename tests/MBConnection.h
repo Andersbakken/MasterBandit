@@ -27,7 +27,7 @@ public:
     MBConnection& operator=(const MBConnection&) = delete;
 
     // Connect to the mb --test child's IPC socket. Blocks with timeout.
-    bool connect(int timeoutMs = 5000);
+    bool connect(int timeoutMs = 15000);
 
     // Inject text into the terminal
     bool sendText(const std::string& text, int timeoutMs = 2000);

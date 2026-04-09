@@ -395,7 +395,9 @@ void XCBWindow::processEvents()
                 if (nextType == XCB_KEY_PRESS) {
                     auto* nextEv = reinterpret_cast<xcb_key_press_event_t*>(next);
                     if (nextEv->detail == ev->detail && nextEv->time == ev->time) {
-                        // Auto-repeat pair: skip the release, treat the press as repeat
+                        // Auto-repeat pair: skip the release, treat the press as repeat.
+                        // Still feed the release to xkb so modifier state stays balanced.
+                        xkb_state_update_key(xkbState_, ev->detail, XKB_KEY_UP);
                         lastPressKeycode_ = nextEv->detail;
                         lastPressTime_    = nextEv->time;
                         handleKeyPress(nextEv, true);
@@ -563,6 +565,12 @@ void XCBWindow::handleMotion(xcb_motion_notify_event_t* ev)
 
 void XCBWindow::handleFocusIn(xcb_focus_in_event_t*)
 {
+    // Resync xkb modifier state with the server — a modifier key may have
+    // been released while another window had focus.
+    if (xkbState_ && xkbDeviceId_ >= 0) {
+        xkb_state_unref(xkbState_);
+        xkbState_ = xkb_x11_state_new_from_device(xkbKeymap_, conn_, xkbDeviceId_);
+    }
     if (onFocus) onFocus(true);
 }
 

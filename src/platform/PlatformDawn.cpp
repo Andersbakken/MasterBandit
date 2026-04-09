@@ -129,16 +129,18 @@ PlatformDawn::~PlatformDawn()
 
     surface_ = nullptr;
 
-    if (window_) {
-        window_->destroy();
-        window_.reset();
-    }
-
     renderer_.destroy();
     queue_ = {};
     device_ = {};
     texturePool_.clear();
     nativeInstance_.reset();
+
+    // Destroy the window (X11 connection) last — the nvidia driver
+    // needs the display connection alive during Vulkan device teardown.
+    if (window_) {
+        window_->destroy();
+        window_.reset();
+    }
 }
 
 void PlatformDawn::createTerminal(const TerminalOptions& options)

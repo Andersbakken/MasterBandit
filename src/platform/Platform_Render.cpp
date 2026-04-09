@@ -157,14 +157,17 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
         std::string runText;
         runText.reserve(static_cast<size_t>(runEnd - runStart) * 4); // worst case: 4 bytes per codepoint
         std::vector<std::pair<uint32_t, int>> byteToCell; // (byteOffset, cellCol)
+        const auto* rowExtras = term->document().viewportExtras(row, term->viewportOffset());
         for (int c = runStart; c < runEnd; ++c) {
             if (rowData[c].attrs.wideSpacer()) continue;
             if (rowData[c].wc == 0) continue;
             byteToCell.push_back({static_cast<uint32_t>(runText.size()), c});
             appendUtf8(runText, rowData[c].wc);
-            const CellExtra* extra = term->grid().getExtra(c, row);
-            if (extra && extra->combiningCp != 0)
-                appendUtf8(runText, extra->combiningCp);
+            if (rowExtras) {
+                auto it = rowExtras->find(c);
+                if (it != rowExtras->end() && it->second.combiningCp != 0)
+                    appendUtf8(runText, it->second.combiningCp);
+            }
         }
 
         if (runText.empty()) {

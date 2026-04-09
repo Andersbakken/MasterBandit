@@ -136,6 +136,27 @@ TEST_CASE("reflow: shrink then grow restores content")
     CHECK(t.rowText(0) == "ABCDEFGHIJ");
 }
 
+TEST_CASE("reflow: width shrink wraps content that fills viewport, cursor gets blank row")
+{
+    // 4 rows of content each 20 chars wide, cursor on row 4 (blank).
+    // Shrinking to width 10 doubles each row → 8 content rows.
+    // With height=5, viewport is full; cursor must still get its own blank row.
+    TestTerminal t(20, 5);
+    t.feed("AAAAAAAAAAAAAAAAAAAA"); t.feed("\r\n"); // row 0, 20 chars
+    t.feed("BBBBBBBBBBBBBBBBBBBB"); t.feed("\r\n"); // row 1
+    t.feed("CCCCCCCCCCCCCCCCCCCC"); t.feed("\r\n"); // row 2
+    t.feed("DDDDDDDDDDDDDDDDDDDD");                // row 3, cursor ends on row 3
+    t.csi("5;1H");                                 // move cursor to row 5 (0-indexed: 4), blank
+    CHECK(t.term.cursorY() == 4);
+
+    t.term.resize(10, 5); // each row wraps to 2 → 8 content rows, viewport=5
+
+    // Cursor must be on an empty row
+    int cy = t.term.cursorY();
+    CHECK(cy == 4); // last row of viewport
+    CHECK(t.wc(0, cy) == 0); // that row must be blank (cursor's own row)
+}
+
 TEST_CASE("height shrink: cursor on last blank row is not treated as padding")
 {
     // Content on rows 0-1, cursor moved to last row (blank).

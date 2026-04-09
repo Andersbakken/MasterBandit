@@ -38,9 +38,18 @@ Config loadConfig()
         return cfg;
     }
 
+    // Create the config file (and parent dirs) if it doesn't exist,
+    // so that file watchers can observe it from startup.
+    if (!std::filesystem::exists(path)) {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        if (!ec) {
+            std::ofstream touch(path);
+        }
+    }
+
     std::ifstream f(path);
     if (!f) {
-        // No config file is normal on first run
         return cfg;
     }
 

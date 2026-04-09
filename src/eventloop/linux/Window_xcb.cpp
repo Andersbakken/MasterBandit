@@ -541,8 +541,23 @@ void XCBWindow::handleConfigureNotify(xcb_configure_notify_event_t* ev)
     if (ev->width != width_ || ev->height != height_) {
         width_  = ev->width;
         height_ = ev->height;
+        // Record time so inLiveResize() returns true for the next ~100ms
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        lastResizeMs_ = static_cast<uint64_t>(ts.tv_sec) * 1000u
+                      + static_cast<uint64_t>(ts.tv_nsec) / 1000000u;
         if (onFramebufferResize) onFramebufferResize(width_, height_);
     }
+}
+
+bool XCBWindow::inLiveResize() const
+{
+    if (lastResizeMs_ == 0) return false;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t nowMs = static_cast<uint64_t>(ts.tv_sec) * 1000u
+                   + static_cast<uint64_t>(ts.tv_nsec) / 1000000u;
+    return (nowMs - lastResizeMs_) < 100;
 }
 
 void XCBWindow::handleClientMessage(xcb_client_message_event_t* ev)

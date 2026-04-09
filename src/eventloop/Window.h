@@ -44,8 +44,9 @@ public:
     std::function<void(double dx, double dy)> onScroll;
     std::function<void(bool focused)> onFocus;
 
-    // Live resize state (macOS) — true while user is dragging a window edge
-    bool inLiveResize() const { return inLiveResize_; }
+    // Live resize state — true while user is actively dragging a window edge.
+    // macOS: set by window delegate callbacks; Linux: debounced via timestamp.
+    virtual bool inLiveResize() const { return inLiveResize_; }
 
 protected:
     bool inLiveResize_ = false;

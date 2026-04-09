@@ -209,6 +209,7 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     NSRect backing = [self convertRectToBacking:self.bounds];
     _cppWindow->dispatchResize(static_cast<int>(backing.size.width),
                                 static_cast<int>(backing.size.height));
+    if (_cppWindow->onLiveResizeEnd) _cppWindow->onLiveResizeEnd();
 }
 
 - (void)setFrameSize:(NSSize)newSize {

@@ -541,23 +541,27 @@ void XCBWindow::handleConfigureNotify(xcb_configure_notify_event_t* ev)
     if (ev->width != width_ || ev->height != height_) {
         width_  = ev->width;
         height_ = ev->height;
-        // Record time so inLiveResize() returns true for the next ~100ms
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        lastResizeMs_ = static_cast<uint64_t>(ts.tv_sec) * 1000u
-                      + static_cast<uint64_t>(ts.tv_nsec) / 1000000u;
+        // Cancel any existing debounce timer and start a fresh 100ms one-shot.
+        // While the timer is pending, inLiveResize() returns true so SIGWINCH
+        // is deferred. When the timer fires it clears the flag and wakes the
+        // event loop so renderFrame() runs and flushPendingResize() is called.
+        if (resizeDebounceTimer_) {
+            loop_.removeTimer(resizeDebounceTimer_);
+            resizeDebounceTimer_ = 0;
+        }
+        inLiveResize_ = true;
+        resizeDebounceTimer_ = loop_.addTimer(100, false, [this]() {
+            resizeDebounceTimer_ = 0;
+            inLiveResize_ = false;
+            if (onLiveResizeEnd) onLiveResizeEnd();
+        });
         if (onFramebufferResize) onFramebufferResize(width_, height_);
     }
 }
 
 bool XCBWindow::inLiveResize() const
 {
-    if (lastResizeMs_ == 0) return false;
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64_t nowMs = static_cast<uint64_t>(ts.tv_sec) * 1000u
-                   + static_cast<uint64_t>(ts.tv_nsec) / 1000000u;
-    return (nowMs - lastResizeMs_) < 100;
+    return inLiveResize_;
 }
 
 void XCBWindow::handleClientMessage(xcb_client_message_event_t* ev)

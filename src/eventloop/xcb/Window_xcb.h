@@ -102,7 +102,7 @@ private:
     xcb_keycode_t lastPressKeycode_ = 0;
     uint32_t      lastPressTime_    = 0;
 
-    // Live resize debounce: timestamp of last size-change configure notify (ms)
-    uint64_t lastResizeMs_ = 0;
+    // Live resize debounce: set while a one-shot timer is pending after a resize
+    EventLoop::TimerId resizeDebounceTimer_ = 0;
     bool inLiveResize() const override;
 };

@@ -43,6 +43,7 @@ public:
     std::function<void(double x, double y)> onCursorPos;
     std::function<void(double dx, double dy)> onScroll;
     std::function<void(bool focused)> onFocus;
+    std::function<void()> onLiveResizeEnd; // called when live resize settles
 
     // Live resize state — true while user is actively dragging a window edge.
     // macOS: set by window delegate callbacks; Linux: debounced via timestamp.

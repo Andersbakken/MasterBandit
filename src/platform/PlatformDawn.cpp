@@ -638,6 +638,9 @@ void PlatformDawn::reloadConfigNow()
     notifyAllTerminals([&config](TerminalEmulator* term) {
         term->applyColorScheme(config.colors);
     });
+    invalidateAllRowCaches();
+    for (auto& [id, rs] : paneRenderStates_)
+        rs.dirty = true;
 
     // Divider
     dividerWidth_ = std::max(0, config.divider_width);

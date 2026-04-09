@@ -466,13 +466,11 @@ void XCBWindow::processEvents()
             break;
         }
         case XCB_EXPOSE:
-            // Resync xkb modifier state — desktop switches may not
-            // generate FocusIn but modifiers could have changed.
-            if (xkbState_ && xkbDeviceId_ >= 0) {
-                xkb_state_unref(xkbState_);
-                xkbState_ = xkb_x11_state_new_from_device(xkbKeymap_, conn_, xkbDeviceId_);
-            }
+            needsXkbResync_ = true;
             if (onExpose) onExpose();
+            break;
+        case XCB_MAP_NOTIFY:
+            needsXkbResync_ = true;
             break;
         default:
             break;
@@ -484,9 +482,22 @@ void XCBWindow::processEvents()
 
 // ---------- input handlers ----------
 
+void XCBWindow::resyncXkbIfNeeded()
+{
+    // Resync xkb state from the server if flagged (e.g. after desktop switch).
+    // Done on the first input event rather than on Expose/FocusIn so we pick up
+    // the final modifier state after the user has released the desktop-switch combo.
+    if (needsXkbResync_ && xkbState_ && xkbDeviceId_ >= 0) {
+        needsXkbResync_ = false;
+        xkb_state_unref(xkbState_);
+        xkbState_ = xkb_x11_state_new_from_device(xkbKeymap_, conn_, xkbDeviceId_);
+    }
+}
+
 void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
 {
     if (!xkbState_) return;
+    resyncXkbIfNeeded();
 
     xkb_keycode_t keycode = ev->detail;
 
@@ -512,6 +523,7 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
 void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
 {
     if (!xkbState_) return;
+    resyncXkbIfNeeded();
 
     xkb_keycode_t keycode = ev->detail;
     xkb_state_update_key(xkbState_, keycode, XKB_KEY_UP);
@@ -526,6 +538,7 @@ void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
 
 void XCBWindow::handleButtonPress(xcb_button_press_event_t* ev)
 {
+    resyncXkbIfNeeded();
     // XCB buttons: 1=left, 2=middle, 3=right, 4/5=scroll
     int button = -1;
     switch (ev->detail) {
@@ -553,6 +566,7 @@ void XCBWindow::handleButtonPress(xcb_button_press_event_t* ev)
 
 void XCBWindow::handleButtonRelease(xcb_button_release_event_t* ev)
 {
+    resyncXkbIfNeeded();
     int button = -1;
     switch (ev->detail) {
     case 1: button = static_cast<int>(LeftButton); break;
@@ -571,12 +585,7 @@ void XCBWindow::handleMotion(xcb_motion_notify_event_t* ev)
 
 void XCBWindow::handleFocusIn(xcb_focus_in_event_t*)
 {
-    // Resync xkb modifier state with the server — a modifier key may have
-    // been released while another window had focus.
-    if (xkbState_ && xkbDeviceId_ >= 0) {
-        xkb_state_unref(xkbState_);
-        xkbState_ = xkb_x11_state_new_from_device(xkbKeymap_, conn_, xkbDeviceId_);
-    }
+    needsXkbResync_ = true;
     if (onFocus) onFocus(true);
 }
 

@@ -1083,6 +1083,24 @@ void TerminalEmulator::processCSI()
             }
         }
         break;
+    case 't': {
+        // XTWINOPS — only handle push/pop title (22/23)
+        char* end;
+        int op = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
+        if (op == 22) {
+            // Push title: duplicate top of stack
+            if (!mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX)
+                mTitleStack.push_back(mTitleStack.back());
+        } else if (op == 23) {
+            // Pop title: restore previous
+            if (mTitleStack.size() > 1) {
+                mTitleStack.pop_back();
+                if (mCallbacks.onTitleChanged)
+                    mCallbacks.onTitleChanged(mTitleStack.back());
+            }
+        }
+        break;
+    }
     default:
         sLog().error("Unknown CSI final byte {:#x}", static_cast<unsigned char>(finalByte));
         break;

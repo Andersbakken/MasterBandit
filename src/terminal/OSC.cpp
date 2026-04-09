@@ -364,6 +364,10 @@ void TerminalEmulator::processStringSequence()
 void TerminalEmulator::processOSC_Title(std::string_view text, bool setTitle)
 {
     if (setTitle) {
+        if (mTitleStack.empty())
+            mTitleStack.emplace_back(text);
+        else
+            mTitleStack.back() = std::string(text);
         if (mCallbacks.onTitleChanged) mCallbacks.onTitleChanged(std::string(text));
     }
 }

@@ -365,6 +365,11 @@ private:
     uint32_t mNextHyperlinkId { 1 };
     uint32_t mActiveHyperlinkId { 0 }; // 0 = no active hyperlink
 
+    // Title stack (XTWINOPS CSI 22/23 t + OSC 0/2)
+    // Stack top is always the current title. Empty = no title set.
+    std::vector<std::string> mTitleStack;
+    static constexpr size_t TITLE_STACK_MAX = 10;
+
     // Desktop notification accumulator (OSC 99)
     std::string mNotifyId;
     std::string mNotifyTitle;

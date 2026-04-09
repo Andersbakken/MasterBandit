@@ -34,6 +34,7 @@ public:
     std::string keyName(int keycode) const override;
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
+    void setCursorStyle(CursorStyle shape) override;
 
     // Called by MBView / MBWindowDelegate for input events
     void dispatchKey(int key, int scancode, int action, int mods);

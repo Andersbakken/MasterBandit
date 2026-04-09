@@ -36,6 +36,7 @@ public:
     std::string keyName(int keycode) const override;
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
+    void setCursorStyle(CursorStyle shape) override;
 
     // Called by EpollEventLoop when the XCB fd is readable
     void processEvents();
@@ -109,6 +110,14 @@ private:
     // Key repeat detection: track last key press event sequence + keycode
     xcb_keycode_t lastPressKeycode_ = 0;
     uint32_t      lastPressTime_    = 0;
+
+    // Cached X11 cursors (from cursor font)
+    xcb_cursor_t cursorArrow_ = 0;
+    xcb_cursor_t cursorIBeam_ = 0;
+    xcb_cursor_t cursorResizeH_ = 0;
+    xcb_cursor_t cursorResizeV_ = 0;
+    CursorStyle  currentCursor_ = CursorStyle::Arrow;
+    void createCursors();
 
     // Deferred xkb resync: set on Expose/FocusIn, cleared on next key event
     bool needsXkbResync_ = false;

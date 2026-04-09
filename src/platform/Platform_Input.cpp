@@ -534,6 +534,15 @@ void PlatformDawn::onCursorPos(double x, double y)
     double sx = x * contentScaleX_;
     double sy = y * contentScaleY_;
 
+    // Update mouse cursor shape based on region
+    if (window_) {
+        MouseRegion region = hitTest(sx, sy);
+        if (region == MouseRegion::TabBar)
+            window_->setCursorStyle(Window::CursorStyle::Arrow);
+        else
+            window_->setCursorStyle(Window::CursorStyle::IBeam);
+    }
+
     PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
     double relX = sx - pr.x;
     double relY = sy - pr.y;

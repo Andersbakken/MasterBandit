@@ -156,6 +156,45 @@ XCBWindow::~XCBWindow()
     destroy();
 }
 
+// ---------- cursors ----------
+
+static xcb_cursor_t createGlyphCursor(xcb_connection_t* conn, xcb_font_t font, uint16_t glyph)
+{
+    xcb_cursor_t cursor = xcb_generate_id(conn);
+    xcb_create_glyph_cursor(conn, cursor, font, font,
+        glyph, glyph + 1,
+        0xFFFF, 0xFFFF, 0xFFFF,  // fg: white
+        0, 0, 0);                // bg: black
+    return cursor;
+}
+
+void XCBWindow::createCursors()
+{
+    xcb_font_t font = xcb_generate_id(conn_);
+    xcb_open_font(conn_, font, 6, "cursor");
+    cursorArrow_   = createGlyphCursor(conn_, font, 68);  // XC_left_ptr
+    cursorIBeam_   = createGlyphCursor(conn_, font, 152); // XC_xterm
+    cursorResizeH_ = createGlyphCursor(conn_, font, 108); // XC_sb_h_double_arrow
+    cursorResizeV_ = createGlyphCursor(conn_, font, 116); // XC_sb_v_double_arrow
+    xcb_close_font(conn_, font);
+}
+
+void XCBWindow::setCursorStyle(CursorStyle shape)
+{
+    if (shape == currentCursor_ || !conn_ || !window_) return;
+    currentCursor_ = shape;
+    xcb_cursor_t c;
+    switch (shape) {
+    case CursorStyle::Arrow:   c = cursorArrow_; break;
+    case CursorStyle::IBeam:   c = cursorIBeam_; break;
+    case CursorStyle::ResizeH: c = cursorResizeH_; break;
+    case CursorStyle::ResizeV: c = cursorResizeV_; break;
+    default: return;
+    }
+    xcb_change_window_attributes(conn_, window_, XCB_CW_CURSOR, &c);
+    xcb_flush(conn_);
+}
+
 // ---------- create / destroy ----------
 
 bool XCBWindow::create(int width, int height, const std::string& title)
@@ -214,6 +253,11 @@ bool XCBWindow::create(int width, int height, const std::string& title)
         0, 0, static_cast<uint16_t>(width), static_cast<uint16_t>(height),
         0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen_->root_visual,
         mask, values);
+
+    // Create mouse cursors and set default to I-beam (terminal window)
+    createCursors();
+    currentCursor_ = CursorStyle::IBeam;
+    xcb_change_window_attributes(conn_, window_, XCB_CW_CURSOR, &cursorIBeam_);
 
     // Create XSync counter for _NET_WM_SYNC_REQUEST (eliminates resize flicker)
     syncCounter_ = xcb_generate_id(conn_);
@@ -310,6 +354,11 @@ void XCBWindow::destroy()
     if (xkbCtx_)     { xkb_context_unref(xkbCtx_);    xkbCtx_     = nullptr; }
 
     if (conn_) {
+        if (cursorArrow_)   xcb_free_cursor(conn_, cursorArrow_);
+        if (cursorIBeam_)   xcb_free_cursor(conn_, cursorIBeam_);
+        if (cursorResizeH_) xcb_free_cursor(conn_, cursorResizeH_);
+        if (cursorResizeV_) xcb_free_cursor(conn_, cursorResizeV_);
+        cursorArrow_ = cursorIBeam_ = cursorResizeH_ = cursorResizeV_ = 0;
         if (window_) xcb_destroy_window(conn_, window_);
         window_ = 0;
         conn_   = nullptr;  // owned by Xlib display, don't disconnect separately

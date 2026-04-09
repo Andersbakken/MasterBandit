@@ -45,6 +45,10 @@ public:
     std::function<void(bool focused)> onFocus;
     std::function<void()> onExpose;        // called when window content needs redraw
     std::function<void()> onLiveResizeEnd; // called when live resize settles
+    // Mouse cursor style
+    enum class CursorStyle { Arrow, IBeam, ResizeH, ResizeV };
+    virtual void setCursorStyle(CursorStyle) {}
+
     virtual void frameRendered() {}       // called after each frame; used for _NET_WM_SYNC_REQUEST
 
     // Live resize state — true while user is actively dragging a window edge.

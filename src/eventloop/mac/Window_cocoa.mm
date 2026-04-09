@@ -511,6 +511,16 @@ void CocoaWindow::dispatchContentScale(float sx, float sy)
 {
     if (onContentScale) onContentScale(sx, sy);
 }
+void CocoaWindow::setCursorStyle(CursorStyle shape)
+{
+    switch (shape) {
+    case CursorStyle::Arrow:   [[NSCursor arrowCursor] set]; break;
+    case CursorStyle::IBeam:   [[NSCursor IBeamCursor] set]; break;
+    case CursorStyle::ResizeH: [[NSCursor resizeLeftRightCursor] set]; break;
+    case CursorStyle::ResizeV: [[NSCursor resizeUpDownCursor] set]; break;
+    }
+}
+
 void CocoaWindow::dispatchClose()
 {
     shouldClose_ = true;

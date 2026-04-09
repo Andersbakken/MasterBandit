@@ -185,5 +185,5 @@
 - [x] Prompt tests — OSC 133 markers, jump to prompt, command output selection, scrollback serialization.
 - [ ] Script engine tests — JS-level tests loaded via `Engine::loadController` with mock callbacks. Test scripts exercise APIs and assert via console output. Covers: permission checks, popup lifecycle, action registration, event delivery, mouse events, allowlist, foreground process.
 - [ ] IPC-driven script tests — extend `mb --ctl` with `--script <path>` to load scripts via IPC. Enables end-to-end testing of script loading, permission prompts, and applet behavior. Requires IPC.
-- [ ] IPC security — debug IPC (`/tmp/mb-<pid>.sock`) is an attack vector in release builds. Options: disable by default (opt-in via `--debug-ipc` flag), restrict to same-user via socket permissions, or remove from release builds.
+- [x] IPC security — debug IPC socket restricted to `--test` mode only. No socket created in normal operation.
 - [ ] Rendering tests — pixel comparison against reference images. Launch `mb` as a child process, drive it via the existing debug IPC (`mb --ctl screenshot --format png`, `mb --ctl key`), compare PNG output against reference images. No headless device needed — uses the real render pipeline. Needs: test harness that launches/connects/drives, reference image storage, comparison with tolerance.

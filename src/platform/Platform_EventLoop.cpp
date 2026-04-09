@@ -14,23 +14,25 @@ int PlatformDawn::exec()
     // eventLoop_ and window_ were already created in createTerminal().
     // Here we finish setup: debugIPC, scripts, PTY polls, file watcher, onTick.
 
-    debugIPC_ = std::make_unique<DebugIPC>(eventLoop_.get(),
-        [this]() -> Terminal* { return activeTerm(); },
-        [this](int id) {
-            Tab* t = activeTab();
-            if (!t) return std::string{};
-            Pane* pane = t->layout()->focusedPane();
-            return pane ? gridToJson(pane->id()) : std::string{};
-        },
-        [this](int id) { return statsJson(id); },
-        [this](const std::string& action, const std::vector<std::string>& args) -> bool {
-            auto parsed = parseAction(action, args);
-            if (!parsed) return false;
-            dispatchAction(*parsed);
-            return true;
-        });
-    if (debugSink_) {
-        debugSink_->setIPC(debugIPC_.get());
+    if (headless_) {
+        debugIPC_ = std::make_unique<DebugIPC>(eventLoop_.get(),
+            [this]() -> Terminal* { return activeTerm(); },
+            [this](int id) {
+                Tab* t = activeTab();
+                if (!t) return std::string{};
+                Pane* pane = t->layout()->focusedPane();
+                return pane ? gridToJson(pane->id()) : std::string{};
+            },
+            [this](int id) { return statsJson(id); },
+            [this](const std::string& action, const std::vector<std::string>& args) -> bool {
+                auto parsed = parseAction(action, args);
+                if (!parsed) return false;
+                dispatchAction(*parsed);
+                return true;
+            });
+        if (debugSink_) {
+            debugSink_->setIPC(debugIPC_.get());
+        }
     }
 
     scriptEngine_.setLoop(eventLoop_.get());

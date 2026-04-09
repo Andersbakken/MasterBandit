@@ -177,11 +177,13 @@ int main(int argc, char **argv)
     if (result.count("shell"))
         options.shell = result["shell"].as<std::string>();
 
-    signal(SIGTERM, cleanupSocketAndExit);
-    signal(SIGINT, cleanupSocketAndExit);
-    signal(SIGSEGV, cleanupSocketAndExit);
-    signal(SIGBUS, cleanupSocketAndExit);
-    signal(SIGABRT, cleanupSocketAndExit);
+    if (testMode) {
+        signal(SIGTERM, cleanupSocketAndExit);
+        signal(SIGINT, cleanupSocketAndExit);
+        signal(SIGSEGV, cleanupSocketAndExit);
+        signal(SIGBUS, cleanupSocketAndExit);
+        signal(SIGABRT, cleanupSocketAndExit);
+    }
 
     platform->createTerminal(options);
     return platform->exec();

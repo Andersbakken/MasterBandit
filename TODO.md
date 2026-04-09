@@ -31,6 +31,7 @@
 - [x] Cursor rendering — solid cursor on focused pane, hollow outline on unfocused panes. Cursor type and position passed as UBO params to compute shader (no cell mutation).
 - [x] PTY exit handling — `terminalExited` closes pane, or tab if last pane, or quits if last tab.
 - [ ] Pane resize — drag split dividers with mouse (needs mouse binding system first).
+- [ ] Refactor MouseSelection and OpenHyperlink — these are mouse-input-path concepts that need mouse coordinates, not general actions. They should be removed from the `Action` variant and handled purely as mouse binding result types. Similarly, PushOverlay needs parameters (command/shell) so it can't work as a parameterless action — it's script-only.
 - [ ] Pane swap/rotate — swap focused pane with another, rotate panes clockwise/counterclockwise.
 - [ ] Move pane to new tab or new window.
 - [ ] Full-screen overlays — Tab::pushOverlay / popOverlay are implemented; need a way to trigger (e.g. Cmd+Shift+Enter kitty-style).
@@ -147,6 +148,7 @@
 - [x] Scripting: command palette — built-in JS applet (`command-palette.js`). Fuzzy search, arrow navigation, Enter to execute. Default binding Cmd+Shift+P / Ctrl+Shift+P. Uses `mb.actions` and `mb.invokeAction`.
 - [x] Scripting: API consistency — `mb.tabs`, `mb.activePane`, `mb.activeTab`, `mb.actions` are getter properties (not functions). `popup.close()` (not destroy). `popup.cols/rows/x/y` properties. Removed `pane.destroyPopup`, `mb.loadApplet`, `mb.loadController` from JS API.
 - [x] Scripting: permission violation terminates script — scripts that try to use unpermitted APIs are scheduled for termination via zero-delay timer. Built-in scripts exempt.
+- [ ] Move higher-level UI to JS — the C++ side should provide basic primitives (workspace containers with layout trees, pane creation, show/hide/stack ordering) and let JS handle the semantics. Tabs and overlays could be unified as "workspaces" — a tab is a workspace with panes and a tab bar entry, an overlay is a transient workspace with a single pane pushed on top. The tab bar itself becomes a JS script. Built-in actions like NewTab/CloseTab become JS-registered actions backed by C++ primitive API calls (`mb.createWorkspace()`, `mb.activateWorkspace(id)`, etc.). This simplifies the C++ layer and makes UI behavior fully customizable.
 - [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
 - [ ] Built-in UI theming — expose a `[ui]` config section (colors, border style) that all built-in scripts (command palette, permission dialog, future TUI overlays) read from a single place. Implement via `mb.config` JS property populated from the loaded Config. Scripts call `createTheme(mb.config.ui)` rather than hardcoding colors. Covers command-palette.js, applet-loader.js permission prompt, and any future built-in popups/overlays.
 - [ ] GPU buffer pool — divider and popup border vertex buffers are created/destroyed directly. A pool (like TexturePool/ComputeStatePool) would avoid per-frame GPU allocations.

@@ -185,19 +185,23 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     screen_ = iter.data;
 
     // Intern atoms
-    atomWmProtocols_    = internAtom("WM_PROTOCOLS");
-    atomWmDeleteWindow_ = internAtom("WM_DELETE_WINDOW");
-    atomClipboard_      = internAtom("CLIPBOARD");
-    atomPrimary_        = XCB_ATOM_PRIMARY;
-    atomTargets_        = internAtom("TARGETS");
-    atomUtf8String_     = internAtom("UTF8_STRING");
-    atomMbSelection_    = internAtom("MB_SELECTION");
+    atomWmProtocols_         = internAtom("WM_PROTOCOLS");
+    atomWmDeleteWindow_      = internAtom("WM_DELETE_WINDOW");
+    atomNetWmSyncRequest_    = internAtom("_NET_WM_SYNC_REQUEST");
+    atomNetWmSyncRequestCtr_ = internAtom("_NET_WM_SYNC_REQUEST_COUNTER");
+    atomClipboard_           = internAtom("CLIPBOARD");
+    atomPrimary_             = XCB_ATOM_PRIMARY;
+    atomTargets_             = internAtom("TARGETS");
+    atomUtf8String_          = internAtom("UTF8_STRING");
+    atomMbSelection_         = internAtom("MB_SELECTION");
 
     // Create window
     window_ = xcb_generate_id(conn_);
-    uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
+    // XCB_BACK_PIXMAP_NONE: preserve old content during swapchain transitions
+    // instead of flashing black (the default background pixel).
+    uint32_t mask = XCB_CW_BACK_PIXMAP | XCB_CW_EVENT_MASK;
     uint32_t values[] = {
-        screen_->black_pixel,
+        XCB_BACK_PIXMAP_NONE,
         XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE |
         XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
         XCB_EVENT_MASK_POINTER_MOTION |
@@ -211,9 +215,16 @@ bool XCBWindow::create(int width, int height, const std::string& title)
         0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen_->root_visual,
         mask, values);
 
-    // Set WM_DELETE_WINDOW protocol
+    // Create XSync counter for _NET_WM_SYNC_REQUEST (eliminates resize flicker)
+    syncCounter_ = xcb_generate_id(conn_);
+    xcb_sync_create_counter(conn_, syncCounter_, {0, 0});
     xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
-        atomWmProtocols_, XCB_ATOM_ATOM, 32, 1, &atomWmDeleteWindow_);
+        atomNetWmSyncRequestCtr_, XCB_ATOM_CARDINAL, 32, 1, &syncCounter_);
+
+    // Set WM_PROTOCOLS: WM_DELETE_WINDOW + _NET_WM_SYNC_REQUEST
+    xcb_atom_t protocols[] = { atomWmDeleteWindow_, atomNetWmSyncRequest_ };
+    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
+        atomWmProtocols_, XCB_ATOM_ATOM, 32, 2, protocols);
 
     setTitle(title);
     xcb_map_window(conn_, window_);
@@ -566,8 +577,25 @@ bool XCBWindow::inLiveResize() const
 
 void XCBWindow::handleClientMessage(xcb_client_message_event_t* ev)
 {
-    if (ev->type == atomWmProtocols_ && ev->data.data32[0] == atomWmDeleteWindow_)
+    if (ev->type != atomWmProtocols_) return;
+    if (ev->data.data32[0] == atomWmDeleteWindow_) {
         shouldClose_ = true;
+    } else if (ev->data.data32[0] == atomNetWmSyncRequest_) {
+        syncSerial_ = static_cast<int64_t>(
+            static_cast<uint64_t>(ev->data.data32[3]) << 32 |
+            static_cast<uint64_t>(ev->data.data32[2]));
+    }
+}
+
+void XCBWindow::frameRendered()
+{
+    if (!syncSerial_ || !syncCounter_) return;
+    xcb_sync_int64_t value;
+    value.hi = static_cast<int32_t>(syncSerial_ >> 32);
+    value.lo = static_cast<uint32_t>(syncSerial_);
+    xcb_sync_set_counter(conn_, syncCounter_, value);
+    xcb_flush(conn_);
+    syncSerial_ = 0;
 }
 
 // ---------- clipboard ----------

@@ -44,6 +44,7 @@ public:
     std::function<void(double dx, double dy)> onScroll;
     std::function<void(bool focused)> onFocus;
     std::function<void()> onLiveResizeEnd; // called when live resize settles
+    virtual void frameRendered() {}       // called after each frame; used for _NET_WM_SYNC_REQUEST
 
     // Live resize state — true while user is actively dragging a window edge.
     // macOS: set by window delegate callbacks; Linux: debounced via timestamp.

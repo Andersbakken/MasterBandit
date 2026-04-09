@@ -4,6 +4,7 @@
 #include <EventLoop.h>
 
 #include <xcb/xcb.h>
+#include <xcb/sync.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-x11.h>
 // Forward-declare Display to avoid pulling in all of Xlib
@@ -81,9 +82,15 @@ private:
     int  height_ = 0;
     bool shouldClose_ = false;
 
+    // _NET_WM_SYNC_REQUEST: signal the WM after each frame to eliminate resize flicker
+    xcb_sync_counter_t syncCounter_      = 0;
+    int64_t            syncSerial_       = 0; // serial from last _NET_WM_SYNC_REQUEST
+
     // Atoms
-    xcb_atom_t atomWmProtocols_     = 0;
-    xcb_atom_t atomWmDeleteWindow_  = 0;
+    xcb_atom_t atomWmProtocols_          = 0;
+    xcb_atom_t atomWmDeleteWindow_       = 0;
+    xcb_atom_t atomNetWmSyncRequest_     = 0;
+    xcb_atom_t atomNetWmSyncRequestCtr_  = 0;
     xcb_atom_t atomClipboard_       = 0;
     xcb_atom_t atomPrimary_         = 0;  // XA_PRIMARY
     xcb_atom_t atomTargets_         = 0;
@@ -105,4 +112,5 @@ private:
     // Live resize debounce: set while a one-shot timer is pending after a resize
     EventLoop::TimerId resizeDebounceTimer_ = 0;
     bool inLiveResize() const override;
+    void frameRendered() override;
 };

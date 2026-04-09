@@ -1193,6 +1193,7 @@ void PlatformDawn::renderFrame()
     }
 
     if (!headless_) surface_.Present();
+    if (window_) window_->frameRendered();
     needsRedraw_ = false;
 }
 

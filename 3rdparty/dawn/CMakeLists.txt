@@ -1,6 +1,6 @@
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(DAWN_VERSION "v20260219.200501")
-    set(DAWN_COMMIT "536c572abab2602db0b652eda401ebd01e046c11")
+    set(DAWN_VERSION "v20260409.162024")
+    set(DAWN_COMMIT "cbeb98c0887560232bc98c11ba582579f56557f9")
     set(DAWN_REPO "google/dawn")
     set(DAWN_PLATFORM "ubuntu-latest")
     set(DAWN_LIB_DIR "lib64")

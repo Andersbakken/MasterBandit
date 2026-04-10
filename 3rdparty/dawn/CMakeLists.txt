@@ -60,7 +60,7 @@ if(EXISTS "${_dawn_targets_cmake}")
         # Replace the bloated INTERFACE_LINK_LIBRARIES with only system deps
         string(REGEX REPLACE
             "set_target_properties\\(dawn::webgpu_dawn PROPERTIES\n  INTERFACE_LINK_LIBRARIES \"[^\"]*\"\n\\)"
-            "set_target_properties(dawn::webgpu_dawn PROPERTIES\n  INTERFACE_LINK_LIBRARIES \"dawn::dawn_public_config;\$<LINK_ONLY:Threads::Threads>;\$<LINK_ONLY:dl>;\$<LINK_ONLY:\$<\$<BOOL:/usr/lib64/librt.so>:-lrt>>\"\n) # patched by MasterBandit build"
+            "set_target_properties(dawn::webgpu_dawn PROPERTIES\n  INTERFACE_LINK_LIBRARIES \"dawn::dawn_public_config;\$<LINK_ONLY:Threads::Threads>;\$<LINK_ONLY:dl>;\$<LINK_ONLY:\$<\$<PLATFORM_ID:Linux>:-lrt>>;\$<LINK_ONLY:\$<\$<PLATFORM_ID:Darwin>:-framework IOKit>>;\$<LINK_ONLY:\$<\$<PLATFORM_ID:Darwin>:-framework IOSurface>>\"\n) # patched by MasterBandit build"
             _dawn_targets_content "${_dawn_targets_content}"
         )
         # Remove legacy single-target stub from a previous patch iteration if present

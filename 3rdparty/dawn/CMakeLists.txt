@@ -46,3 +46,31 @@ if(NOT EXISTS "${DAWN_EXTRACT_DIR}")
 endif()
 
 set(Dawn_DIR "${DAWN_EXTRACT_DIR}/${DAWN_LIB_DIR}/cmake/Dawn" CACHE PATH "Dawn CMake config directory" FORCE)
+
+# Workaround: newer Dawn binary releases leak their entire internal build graph
+# into INTERFACE_LINK_LIBRARIES (tint_*, dawn_*, SPIRV-*, absl::*, etc.) even
+# though everything is already compiled into libwebgpu_dawn.a. Only system libs
+# (pthread, dl, rt) are actually needed. Replace the property entirely and add
+# a stub for dawn::dawn_public_config's missing sibling targets so CMake's
+# CMP0028 configure-time target validation passes.
+set(_dawn_targets_cmake "${DAWN_EXTRACT_DIR}/${DAWN_LIB_DIR}/cmake/Dawn/DawnTargets.cmake")
+if(EXISTS "${_dawn_targets_cmake}")
+    file(READ "${_dawn_targets_cmake}" _dawn_targets_content)
+    if(NOT _dawn_targets_content MATCHES "# patched by MasterBandit build")
+        # Replace the bloated INTERFACE_LINK_LIBRARIES with only system deps
+        string(REGEX REPLACE
+            "set_target_properties\\(dawn::webgpu_dawn PROPERTIES\n  INTERFACE_LINK_LIBRARIES \"[^\"]*\"\n\\)"
+            "set_target_properties(dawn::webgpu_dawn PROPERTIES\n  INTERFACE_LINK_LIBRARIES \"dawn::dawn_public_config;\$<LINK_ONLY:Threads::Threads>;\$<LINK_ONLY:dl>;\$<LINK_ONLY:\$<\$<BOOL:/usr/lib64/librt.so>:-lrt>>\"\n) # patched by MasterBandit build"
+            _dawn_targets_content "${_dawn_targets_content}"
+        )
+        # Remove legacy single-target stub from a previous patch iteration if present
+        string(REPLACE
+            "# Stub target for partition_alloc (not shipped in binary release)\nadd_library(dawn::partition_alloc INTERFACE IMPORTED)\n\n"
+            ""
+            _dawn_targets_content "${_dawn_targets_content}"
+        )
+        file(WRITE "${_dawn_targets_cmake}" "${_dawn_targets_content}")
+    endif()
+    unset(_dawn_targets_content)
+endif()
+unset(_dawn_targets_cmake)

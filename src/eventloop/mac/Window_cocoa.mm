@@ -210,10 +210,12 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 }
 
 - (void)cursorUpdate:(NSEvent*)event {
-    (void)event;
-    // Let the platform's cursor style take effect via the normal hit test path.
-    NSPoint p = [self convertPoint:[self.window mouseLocationOutsideOfEventStream] fromView:nil];
-    _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (NSPointInRect(p, self.bounds)) {
+        _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
+    } else {
+        [super cursorUpdate:event];
+    }
 }
 
 - (void)viewWillStartLiveResize {
@@ -367,6 +369,10 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 }
 - (void)mouseMoved:(NSEvent*)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (!NSPointInRect(p, self.bounds)) {
+        [[NSCursor arrowCursor] set];
+        return;
+    }
     _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
 }
 - (void)mouseDragged:(NSEvent*)event  { [self mouseMoved:event]; }

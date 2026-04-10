@@ -496,8 +496,6 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         }
     }
 
-    // Terminal is owned by the Pane/Tab/Layout — terminal is owned by the Pane/Tab/Layout.
-    return;
 }
 
 void PlatformDawn::configureSurface(uint32_t width, uint32_t height)

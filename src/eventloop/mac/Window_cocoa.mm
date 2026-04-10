@@ -197,6 +197,25 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder { return YES; }
 
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea* area in self.trackingAreas)
+        [self removeTrackingArea:area];
+    NSTrackingArea* ta = [[NSTrackingArea alloc]
+        initWithRect:self.bounds
+             options:NSTrackingCursorUpdate | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+
+- (void)cursorUpdate:(NSEvent*)event {
+    (void)event;
+    // Let the platform's cursor style take effect via the normal hit test path.
+    NSPoint p = [self convertPoint:[self.window mouseLocationOutsideOfEventStream] fromView:nil];
+    _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
+}
+
 - (void)viewWillStartLiveResize {
     [super viewWillStartLiveResize];
     _cppWindow->setLiveResize(true);
@@ -392,6 +411,7 @@ bool CocoaWindow::create(int width, int height, const std::string& title)
     [nsWindow_ setContentView:mbView_];
     [nsWindow_ makeFirstResponder:mbView_];
 
+    [nsWindow_ setAcceptsMouseMovedEvents:YES];
     [nsWindow_ center];
     [nsWindow_ makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];

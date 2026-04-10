@@ -1203,7 +1203,12 @@ void PlatformDawn::renderFrame()
             });
     }
 
-    if (!isHeadless()) surface_.Present();
+    if (!isHeadless()) {
+        if (compositeEntries.empty()) {
+            spdlog::warn("renderFrame: presenting with no composite entries");
+        }
+        surface_.Present();
+    }
     if (window_) window_->frameRendered();
     needsRedraw_ = false;
 }

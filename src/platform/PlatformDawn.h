@@ -145,12 +145,29 @@ private:
 
     void updateTabBarVisibility() {
         if (tabBarConfig_.style != "auto") return;
-        int h = tabBarVisible() ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
+        bool visible = tabBarVisible();
+        int h = visible ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
         for (auto& tab : tabs_) {
             tab->layout()->setTabBar(h, tabBarConfig_.position);
             tab->layout()->computeRects(fbWidth_, fbHeight_);
             for (auto& p : tab->layout()->panes())
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
+        }
+        if (visible) {
+            // Refresh tab titles from foreground process for tabs that
+            // have no OSC title — the callback may have fired before the
+            // tab bar existed or before the tab was added to tabs_.
+            for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
+                Tab* tab = tabs_[i].get();
+                Pane* fp = tab->layout()->focusedPane();
+                if (fp && fp->title().empty() && tab->title().empty()) {
+                    if (auto* t = fp->terminal()) {
+                        std::string proc = t->foregroundProcess();
+                        if (!proc.empty())
+                            tab->setTitle(proc);
+                    }
+                }
+            }
         }
     }
 

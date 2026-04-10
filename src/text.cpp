@@ -582,7 +582,7 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
                           hb_ot_color_glyph_has_paint(entry.hbFace, gid);
 
             if (emojiPresentation) {
-                // For wide emoji: prefer first COLRv1, save first non-COLR as fallback
+                // For emoji: prefer COLR, save non-COLR as fallback
                 if (isColr) {
                     lock.unlock();
                     uint32_t styledFi = getStyledVariant(font, fi, style);
@@ -594,7 +594,6 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
                 }
                 if (nonColrFallback.glyphId == 0) nonColrFallback = {fi, gid};
             } else if (preferNonColr && isColr) {
-                // Text: prefer non-COLR, save COLR as fallback
                 if (colrFallback.glyphId == 0) colrFallback = {fi, gid};
             } else {
                 lock.unlock();
@@ -608,27 +607,28 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
         }
     }
 
-    // For wide emoji with no COLRv1 found yet: try emoji-specific font lookup
+    // For emoji with no COLRv1 found yet: try emoji-specific font lookup
     if (emojiPresentation && emojiFallback_) {
         auto fallbackData = emojiFallback_(cp);
         if (!fallbackData.empty()) {
-            addFallbackFont(fontName, fallbackData);
-            std::shared_lock lock(font.mutex);
-            uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
-            uint32_t gid;
-            if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
-                bool isColr = hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
-                              hb_ot_color_glyph_has_paint(font.hbFonts[newFi].hbFace, gid);
-                if (isColr) {
-                    lock.unlock();
-                    uint32_t styledFi = getStyledVariant(font, newFi, style);
-                    lock.lock();
-                    uint32_t styledGid;
-                    if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
-                        styledGid = gid;
-                    return {styledFi, styledGid};
+            if (addFallbackFont(fontName, fallbackData)) {
+                std::shared_lock lock(font.mutex);
+                uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
+                uint32_t gid;
+                if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
+                    bool isColr = hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
+                                  hb_ot_color_glyph_has_paint(font.hbFonts[newFi].hbFace, gid);
+                    if (isColr) {
+                        lock.unlock();
+                        uint32_t styledFi = getStyledVariant(font, newFi, style);
+                        lock.lock();
+                        uint32_t styledGid;
+                        if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
+                            styledGid = gid;
+                        return {styledFi, styledGid};
+                    }
+                    if (nonColrFallback.glyphId == 0) nonColrFallback = {newFi, gid};
                 }
-                if (nonColrFallback.glyphId == 0) nonColrFallback = {newFi, gid};
             }
         }
     }
@@ -799,6 +799,11 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
                 uint32_t cluster = infos[idx].cluster;
                 int consumed = 0;
                 uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
+
+                // Skip variation selectors — they modify the preceding character
+                // and are not independently visible.
+                if (cp >= 0xFE00 && cp <= 0xFE0F) return;
+
                 bool vs16 = hasVS16(text, cluster, consumed);
 
                 auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, vs16);
@@ -814,12 +819,17 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
                 }
             }
 
-            // VS16 present and glyph is not COLR: try to find a COLR version in fallback fonts
+            // For emoji presentation or VS16: try to find a COLR version
             {
                 uint32_t cluster = infos[idx].cluster;
                 int consumed = 0;
                 uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
-                if (hasVS16(text, cluster, consumed)) {
+
+                // Skip variation selectors — not independently visible
+                if (cp >= 0xFE00 && cp <= 0xFE0F) return;
+
+                bool emoji = isWidenedEmoji(static_cast<char32_t>(cp)) || hasVS16(text, cluster, consumed);
+                if (emoji) {
                     bool currentIsColr = hb_ot_color_has_paint(segHbFace) &&
                                          hb_ot_color_glyph_has_paint(segHbFace, gid);
                     if (!currentIsColr) {
@@ -1063,6 +1073,11 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                 uint32_t cluster = infos[i].cluster;
                 int consumed = 0;
                 uint32_t cp = utf8::decode(text.c_str() + cluster, static_cast<int>(text.size() - cluster), consumed);
+
+                // Skip variation selectors — they modify the preceding character
+                // and are not independently visible.
+                if (cp >= 0xFE00 && cp <= 0xFE0F) continue;
+
                 bool vs16 = hasVS16(text, cluster, consumed);
 
                 auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, vs16);
@@ -1096,8 +1111,12 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                 }
             }
 
-            // VS16 present and glyph is not COLR: try to find a COLR version in fallback fonts
-            if (vs16 && !isSubstitution) {
+            // Skip variation selectors — not independently visible
+            if (cp >= 0xFE00 && cp <= 0xFE0F) continue;
+
+            // For emoji presentation or VS16: try to find a COLR version
+            bool emoji = isWidenedEmoji(static_cast<char32_t>(cp)) || vs16;
+            if (emoji) {
                 bool currentIsColr = hb_ot_color_has_paint(hbFace) &&
                                      hb_ot_color_glyph_has_paint(hbFace, gid);
                 if (!currentIsColr) {

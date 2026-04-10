@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 #include <glob.h>
-#include <getopt.h>
 #include <poll.h>
 
+#include <cxxopts.hpp>
 #include <libwebsockets.h>
 #include <glaze/glaze.hpp>
 
@@ -161,56 +161,50 @@ static std::string discoverSocket(const std::string& pidStr, const std::string& 
 }
 
 // ============================================================================
-// Usage
-// ============================================================================
-
-static void cliUsage()
-{
-    fprintf(stderr,
-        "Usage: mb-cli [options] <command> [args]\n"
-        "Options:\n"
-        "  --pid <pid>       Connect to specific MasterBandit PID\n"
-        "  --socket <path>   Connect to specific socket path\n"
-        "Commands:\n"
-        "  screenshot [--target <pane|id>] [--cell x,y,w,h]  Take PNG screenshot\n"
-        "  key <key> [<mod>...]  Inject key event\n"
-        "  logs               Stream log output\n"
-        "  stats [id]         Print render stats\n"
-        "  inject <text>      Inject text into terminal\n"
-        "  action <name>      Dispatch action\n"
-    );
-}
-
-// ============================================================================
 // Entry point
 // ============================================================================
 
 int runCLI(int argc, char** argv)
 {
-    static struct option longOpts[] = {
-        {"pid",    required_argument, nullptr, 'p'},
-        {"socket", required_argument, nullptr, 's'},
-        {"target", required_argument, nullptr, 't'},
-        {"cell",   required_argument, nullptr, 'c'},
-        {"help",   no_argument,       nullptr, 'h'},
-        {nullptr, 0, nullptr, 0}
-    };
+    cxxopts::Options opts("mb --ctl", "MasterBandit IPC client");
+    opts.add_options()
+        ("ctl", "IPC client mode")
+        ("p,pid", "Connect to specific MasterBandit PID", cxxopts::value<std::string>()->default_value(""))
+        ("s,socket", "Connect to specific socket path", cxxopts::value<std::string>()->default_value(""))
+        ("t,target", "Screenshot target (pane name or id)", cxxopts::value<std::string>()->default_value(""))
+        ("c,cell", "Screenshot cell rect: x,y,w,h", cxxopts::value<std::string>()->default_value(""))
+        ("h,help", "Print usage")
+        ("command", "Command to run", cxxopts::value<std::string>())
+        ("args", "Command arguments", cxxopts::value<std::vector<std::string>>()->default_value(""));
+    opts.parse_positional({"command", "args"});
+    opts.positional_help("<command> [args...]");
 
-    std::string pidStr, sockPath, target, cellStr;
-    int opt;
-    while ((opt = getopt_long(argc, argv, "p:s:t:c:h", longOpts, nullptr)) != -1) {
-        switch (opt) {
-        case 'p': pidStr   = optarg; break;
-        case 's': sockPath = optarg; break;
-        case 't': target   = optarg; break;
-        case 'c': cellStr  = optarg; break;
-        case 'h': cliUsage(); return 0;
-        default:  cliUsage(); return 1;
-        }
+    cxxopts::ParseResult result;
+    try {
+        result = opts.parse(argc, argv);
+    } catch (const cxxopts::exceptions::exception& e) {
+        fprintf(stderr, "%s\n%s\n", e.what(), opts.help().c_str());
+        return 1;
     }
 
-    if (optind >= argc) { cliUsage(); return 1; }
-    std::string command = argv[optind++];
+    if (result.count("help") || !result.count("command")) {
+        fprintf(stderr, "%s\nCommands:\n"
+            "  screenshot [--target <pane|id>] [--cell x,y,w,h]  Take PNG screenshot\n"
+            "  key <key> [<mod>...]  Inject key event\n"
+            "  logs                  Stream log output\n"
+            "  stats                 Print render stats\n"
+            "  inject <text>         Inject text into terminal\n"
+            "  action <name> [args]  Dispatch action\n",
+            opts.help().c_str());
+        return result.count("help") ? 0 : 1;
+    }
+
+    std::string command = result["command"].as<std::string>();
+    auto positionalArgs = result["args"].as<std::vector<std::string>>();
+    std::string pidStr = result["pid"].as<std::string>();
+    std::string sockPath = result["socket"].as<std::string>();
+    std::string target = result["target"].as<std::string>();
+    std::string cellStr = result["cell"].as<std::string>();
 
     glz::generic::object_t reqObj;
     bool streaming = false;
@@ -224,22 +218,24 @@ int runCLI(int argc, char** argv)
                 reqObj["cell"] = glz::generic::object_t{{"x",x},{"y",y},{"w",w},{"h",h}};
         }
     } else if (command == "key") {
-        if (optind >= argc) { fprintf(stderr, "key requires a key name\n"); return 1; }
+        if (positionalArgs.empty()) { fprintf(stderr, "key requires a key name\n"); return 1; }
         reqObj["cmd"] = "key";
-        reqObj["key"] = argv[optind++];
+        reqObj["key"] = positionalArgs[0];
         glz::generic::array_t mods;
-        while (optind < argc) mods.push_back(std::string(argv[optind++]));
+        for (size_t i = 1; i < positionalArgs.size(); ++i)
+            mods.push_back(positionalArgs[i]);
         if (!mods.empty()) reqObj["mods"] = mods;
     } else if (command == "inject") {
-        if (optind >= argc) { fprintf(stderr, "inject requires text\n"); return 1; }
+        if (positionalArgs.empty()) { fprintf(stderr, "inject requires text\n"); return 1; }
         reqObj["cmd"] = "inject";
-        reqObj["data"] = argv[optind++];
+        reqObj["data"] = positionalArgs[0];
     } else if (command == "action") {
-        if (optind >= argc) { fprintf(stderr, "action requires a name\n"); return 1; }
+        if (positionalArgs.empty()) { fprintf(stderr, "action requires a name\n"); return 1; }
         reqObj["cmd"] = "action";
-        reqObj["action"] = argv[optind++];
+        reqObj["action"] = positionalArgs[0];
         glz::generic::array_t args;
-        while (optind < argc) args.push_back(std::string(argv[optind++]));
+        for (size_t i = 1; i < positionalArgs.size(); ++i)
+            args.push_back(positionalArgs[i]);
         if (!args.empty()) reqObj["args"] = args;
     } else if (command == "logs") {
         reqObj["cmd"] = "subscribe";
@@ -249,7 +245,6 @@ int runCLI(int argc, char** argv)
         reqObj["cmd"] = "stats";
     } else {
         fprintf(stderr, "Unknown command: %s\n", command.c_str());
-        cliUsage();
         return 1;
     }
 
@@ -328,11 +323,13 @@ int runCLI(int argc, char** argv)
         int n = poll(state.pollfds.data(), static_cast<nfds_t>(state.pollfds.size()), 50);
         if (n < 0 && errno == EINTR) continue;
 
-        for (auto& pfd : state.pollfds) {
-            if (pfd.revents) {
-                struct lws_pollfd lpfd{ pfd.fd, pfd.events, pfd.revents };
+        for (size_t i = 0; i < state.pollfds.size(); ++i) {
+            if (state.pollfds[i].revents) {
+                struct lws_pollfd lpfd{ state.pollfds[i].fd, state.pollfds[i].events, state.pollfds[i].revents };
+                // lws_service_fd may trigger ADD/DEL_POLL_FD callbacks that mutate pollfds
                 lws_service_fd(state.ctx, &lpfd);
-                pfd.revents = 0;
+                if (i < state.pollfds.size())
+                    state.pollfds[i].revents = 0;
                 if (state.done) break;
             }
         }

@@ -181,7 +181,7 @@ int main(int argc, char **argv)
     if (result.count("shell"))
         options.shell = result["shell"].as<std::string>();
 
-    if (testMode) {
+    if (platformFlags & (PlatformDawn::FlagHeadless | PlatformDawn::FlagIPC)) {
         signal(SIGTERM, cleanupSocketAndExit);
         signal(SIGINT, cleanupSocketAndExit);
         signal(SIGSEGV, cleanupSocketAndExit);

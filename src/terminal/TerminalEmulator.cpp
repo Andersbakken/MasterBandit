@@ -429,6 +429,9 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         mWrapPending = false;
                     }
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        if (mInsertMode) {
+                            g.insertChars(mCursorY, mCursorX, 1);
+                        }
                         g.cell(mCursorX, mCursorY) = Cell{static_cast<char32_t>(buf[i]), mCurrentAttrs};
                         g.clearExtra(mCursorX, mCursorY);
                         if (mActiveHyperlinkId || mCurrentUnderlineColor) {
@@ -441,7 +444,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     mCursorX++;
                     if (mCursorX >= mWidth) {
                         mCursorX = mWidth - 1;
-                        mWrapPending = true;
+                        if (mAutoWrap) mWrapPending = true;
                     }
                 }
                 break;
@@ -488,7 +491,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                             mCursorX++;
                             if (mCursorX >= mWidth) {
                                 mCursorX = mWidth - 1;
-                                mWrapPending = true;
+                                if (mAutoWrap) mWrapPending = true;
                             }
                         }
 
@@ -510,6 +513,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         advanceCursorToNewLine();
                     }
                     if (mCursorX >= 0 && mCursorX + 1 < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        if (mInsertMode) g.insertChars(mCursorY, mCursorX, 2);
                         mLastPrintedX = mCursorX;
                         mLastPrintedY = mCursorY;
                         CellAttrs wideAttrs = mCurrentAttrs;
@@ -530,7 +534,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     mCursorX += 2;
                     if (mCursorX >= mWidth) {
                         mCursorX = mWidth - 1;
-                        mWrapPending = true;
+                        if (mAutoWrap) mWrapPending = true;
                     }
                 } else {
                     // Normal single-width character
@@ -540,6 +544,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         mWrapPending = false;
                     }
                     if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
+                        if (mInsertMode) g.insertChars(mCursorY, mCursorX, 1);
                         mLastPrintedX = mCursorX;
                         mLastPrintedY = mCursorY;
                         g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
@@ -554,7 +559,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     mCursorX++;
                     if (mCursorX >= mWidth) {
                         mCursorX = mWidth - 1;
-                        mWrapPending = true;
+                        if (mAutoWrap) mWrapPending = true;
                     }
                 }
 
@@ -635,6 +640,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mMouseMode1002 = false;
                 mMouseMode1003 = false;
                 mMouseMode1006 = false;
+                mAutoWrap = true;
+                mInsertMode = false;
                 mBracketedPaste = false;
                 mFocusReporting = false;
                 mSyncOutput = false;
@@ -923,7 +930,7 @@ void TerminalEmulator::processCSI()
                 }
                 if (mCursorX >= mWidth) {
                     mCursorX = mWidth - 1;
-                    mWrapPending = true;
+                    if (mAutoWrap) mWrapPending = true;
                 }
             }
         }
@@ -1015,7 +1022,13 @@ void TerminalEmulator::processCSI()
             char *end;
             action.count = strtoul(mEscapeBuffer + 2, &end, 10); // skip "[?"
         } else {
-            sLog().warn("Ignoring non-private SM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            char *end;
+            unsigned long mode = strtoul(mEscapeBuffer + 1, &end, 10); // skip "["
+            if (mode == 4) {
+                mInsertMode = true;
+            } else {
+                sLog().warn("Ignoring non-private SM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            }
         }
         break;
     case RM: // Reset Mode
@@ -1024,7 +1037,13 @@ void TerminalEmulator::processCSI()
             char *end;
             action.count = strtoul(mEscapeBuffer + 2, &end, 10);
         } else {
-            sLog().warn("Ignoring non-private RM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            char *end;
+            unsigned long mode = strtoul(mEscapeBuffer + 1, &end, 10); // skip "["
+            if (mode == 4) {
+                mInsertMode = false;
+            } else {
+                sLog().warn("Ignoring non-private RM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            }
         }
         break;
     case DECSTBM: { // Set scrolling region
@@ -1233,6 +1252,9 @@ void TerminalEmulator::onAction(const Action *action)
         case 1: // DECCKM: application cursor keys
             mCursorKeyMode = true;
             break;
+        case 7: // DECAWM: autowrap
+            mAutoWrap = true;
+            break;
         case 25: // DECTCEM: show cursor
             mCursorVisible = true;
             break;
@@ -1269,6 +1291,9 @@ void TerminalEmulator::onAction(const Action *action)
         switch (action->count) {
         case 1: // DECCKM: normal cursor keys
             mCursorKeyMode = false;
+            break;
+        case 7: // DECAWM: no autowrap
+            mAutoWrap = false;
             break;
         case 25: // DECTCEM: hide cursor
             mCursorVisible = false;

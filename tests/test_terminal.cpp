@@ -175,3 +175,101 @@ TEST_CASE("REP uses current attributes")
     CHECK(t.attrs(1, 0).bold());
     CHECK(t.attrs(2, 0).bold());
 }
+
+// ── DECAWM (autowrap mode) ──────────────────────────────────────────────────
+
+TEST_CASE("DECAWM off: no wrap at right margin")
+{
+    TestTerminal t(5, 3);
+    t.csi("?7l"); // DECAWM off
+    t.feed("ABCDEFGH");
+    // All chars after column 4 overwrite the last cell
+    CHECK(t.rowText(0) == "ABCDH");
+    CHECK(t.term.cursorX() == 4);
+    CHECK(t.term.cursorY() == 0);
+}
+
+TEST_CASE("DECAWM on: wraps at right margin (default)")
+{
+    TestTerminal t(5, 3);
+    t.feed("ABCDEFGH");
+    CHECK(t.rowText(0) == "ABCDE");
+    CHECK(t.rowText(1) == "FGH");
+    CHECK(t.term.cursorY() == 1);
+}
+
+TEST_CASE("DECAWM off then on: re-enables wrapping")
+{
+    TestTerminal t(5, 3);
+    t.csi("?7l"); // off
+    t.csi("?7h"); // on
+    t.feed("ABCDEFGH");
+    CHECK(t.rowText(0) == "ABCDE");
+    CHECK(t.rowText(1) == "FGH");
+}
+
+TEST_CASE("DECAWM reset via RIS")
+{
+    TestTerminal t(5, 3);
+    t.csi("?7l"); // off
+    t.esc("c");   // RIS — full reset
+    t.feed("ABCDEFGH");
+    CHECK(t.rowText(0) == "ABCDE");
+    CHECK(t.rowText(1) == "FGH");
+}
+
+// ── IRM (insert mode) ───────────────────────────────────────────────────────
+
+TEST_CASE("insert mode: shifts existing text right")
+{
+    TestTerminal t(10, 3);
+    t.feed("ABCDE");
+    t.csi("1G");  // cursor to col 0
+    t.csi("4h");  // SM 4 — insert mode on
+    t.feed("XY");
+    CHECK(t.rowText(0) == "XYABCDE");
+}
+
+TEST_CASE("insert mode off: overwrites (default)")
+{
+    TestTerminal t(10, 3);
+    t.feed("ABCDE");
+    t.csi("1G");  // cursor to col 0
+    t.feed("XY");
+    CHECK(t.rowText(0) == "XYCDE");
+}
+
+TEST_CASE("insert mode: text pushed off right edge is lost")
+{
+    TestTerminal t(5, 3);
+    t.feed("ABCDE");
+    t.csi("1G");
+    t.csi("4h"); // insert mode
+    t.feed("XY");
+    CHECK(t.rowText(0) == "XYABC"); // D and E pushed off
+}
+
+TEST_CASE("insert mode: reset via RM 4")
+{
+    TestTerminal t(10, 3);
+    t.feed("ABCDE");
+    t.csi("1G");
+    t.csi("4h"); // insert on
+    t.feed("X");
+    t.csi("4l"); // insert off
+    t.feed("Y");
+    // X was inserted at col 0, shifting right → XABCDE, cursor at col 1.
+    // Y overwrites col 1 (insert off) → XYBCDE.
+    CHECK(t.rowText(0) == "XYBCDE");
+}
+
+TEST_CASE("insert mode: reset via RIS")
+{
+    TestTerminal t(10, 3);
+    t.csi("4h"); // insert on
+    t.esc("c");  // RIS
+    t.feed("ABCDE");
+    t.csi("1G");
+    t.feed("XY");
+    CHECK(t.rowText(0) == "XYCDE"); // overwrite, not insert
+}

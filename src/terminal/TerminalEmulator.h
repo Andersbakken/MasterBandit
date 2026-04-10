@@ -329,6 +329,8 @@ private:
     bool mMouseMode1006 { false };
     int mMouseButtonDown { -1 };
     int mLastMouseX { -1 }, mLastMouseY { -1 };
+    bool mAutoWrap { true };         // DECAWM (private mode 7): autowrap at right margin
+    bool mInsertMode { false };      // IRM (mode 4): insert mode
     bool mBracketedPaste { false };
     bool mFocusReporting { false };  // Mode 1004
     bool mSyncOutput { false };      // Mode 2026: synchronized output

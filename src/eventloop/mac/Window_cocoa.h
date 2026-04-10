@@ -47,6 +47,7 @@ public:
     void dispatchResize(int w, int h);
     void dispatchContentScale(float sx, float sy);
     void dispatchClose();
+    void dispatchExpose();
     void setLiveResize(bool v) { inLiveResize_ = v; }
 
 private:

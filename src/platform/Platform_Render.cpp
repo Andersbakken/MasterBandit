@@ -1204,9 +1204,6 @@ void PlatformDawn::renderFrame()
     }
 
     if (!isHeadless()) {
-        if (compositeEntries.empty()) {
-            spdlog::warn("renderFrame: presenting with no composite entries");
-        }
         surface_.Present();
     }
     if (window_) window_->frameRendered();

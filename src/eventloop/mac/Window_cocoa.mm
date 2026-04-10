@@ -171,6 +171,12 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 }
 - (void)windowDidBecomeKey:(NSNotification*)notification { (void)notification; self.cppWindow->dispatchFocus(true); }
 - (void)windowDidResignKey:(NSNotification*)notification { (void)notification; self.cppWindow->dispatchFocus(false); }
+- (void)windowDidExpose:(NSNotification*)notification { (void)notification; self.cppWindow->dispatchExpose(); }
+- (void)windowDidChangeOcclusionState:(NSNotification*)notification {
+    NSWindow* win = notification.object;
+    if (win.occlusionState & NSWindowOcclusionStateVisible)
+        self.cppWindow->dispatchExpose();
+}
 @end
 
 // ---------- MBView ----------
@@ -194,6 +200,9 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 }
 
 - (BOOL)wantsUpdateLayer { return YES; }
+- (void)updateLayer {
+    _cppWindow->dispatchExpose();
+}
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder { return YES; }
 
@@ -557,6 +566,10 @@ void CocoaWindow::setCursorStyle(CursorStyle shape)
     }
 }
 
+void CocoaWindow::dispatchExpose()
+{
+    if (onExpose) onExpose();
+}
 void CocoaWindow::dispatchClose()
 {
     shouldClose_ = true;

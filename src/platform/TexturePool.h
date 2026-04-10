@@ -28,6 +28,7 @@ public:
 
     PooledTexture* acquire(uint32_t w, uint32_t h);
     void release(PooledTexture* tex);
+    void setByteLimit(size_t limit);
 
     // Destroy all textures immediately. Call before the WebGPU device is released.
     void clear();

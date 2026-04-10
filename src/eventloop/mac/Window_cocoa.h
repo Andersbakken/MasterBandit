@@ -27,6 +27,7 @@ public:
     void setTitle(const std::string& title) override;
     void getFramebufferSize(int& w, int& h) const override;
     void getContentScale(float& x, float& y) const override;
+    void getScreenSize(int& w, int& h) const override;
 
     void        setClipboard(const std::string& text) override;
     std::string getClipboard() const override;

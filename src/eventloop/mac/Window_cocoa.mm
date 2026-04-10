@@ -429,6 +429,16 @@ void CocoaWindow::getContentScale(float& x, float& y) const
     x = y = scale;
 }
 
+void CocoaWindow::getScreenSize(int& w, int& h) const
+{
+    NSScreen* screen = nsWindow_ ? [nsWindow_ screen] : [NSScreen mainScreen];
+    if (!screen) { w = h = 0; return; }
+    NSRect frame = [screen frame];
+    float scale = static_cast<float>(screen.backingScaleFactor);
+    w = static_cast<int>(frame.size.width * scale);
+    h = static_cast<int>(frame.size.height * scale);
+}
+
 void CocoaWindow::setClipboard(const std::string& text)
 {
     NSPasteboard* pb = [NSPasteboard generalPasteboard];

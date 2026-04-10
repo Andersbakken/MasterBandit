@@ -18,6 +18,7 @@ public:
     virtual void setTitle(const std::string& title) = 0;
     virtual void getFramebufferSize(int& w, int& h) const = 0;
     virtual void getContentScale(float& x, float& y) const = 0;
+    virtual void getScreenSize(int& w, int& h) const { w = h = 0; }
 
     // Clipboard
     virtual void        setClipboard(const std::string& text) = 0;

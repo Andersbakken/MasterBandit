@@ -46,6 +46,12 @@ void TexturePool::release(PooledTexture* tex)
     evictToLimit();
 }
 
+void TexturePool::setByteLimit(size_t limit)
+{
+    byteLimit_ = limit;
+    evictToLimit();
+}
+
 void TexturePool::evictToLimit()
 {
     while (freeBytes_ > byteLimit_ && !free_.empty()) {

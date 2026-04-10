@@ -462,6 +462,16 @@ void XCBWindow::getContentScale(float& x, float& y) const
     x = y = 1.0f;
 }
 
+void XCBWindow::getScreenSize(int& w, int& h) const
+{
+    if (screen_) {
+        w = screen_->width_in_pixels;
+        h = screen_->height_in_pixels;
+    } else {
+        w = h = 0;
+    }
+}
+
 int XCBWindow::connectionFd() const
 {
     return conn_ ? xcb_get_file_descriptor(conn_) : -1;

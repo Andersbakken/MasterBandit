@@ -191,6 +191,24 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             }
             configureSurface(fbWidth_, fbHeight_);
 
+            // Scale texture pool limit based on screen resolution.
+            // A full-screen RGBA texture is w*h*4 bytes; allow 4x that for
+            // comfortable pooling during resizes and multi-pane layouts.
+            {
+                int sw = 0, sh = 0;
+                window_->getScreenSize(sw, sh);
+                constexpr size_t kMinLimit = 128 * 1024 * 1024;
+                constexpr size_t kMaxLimit = 512 * 1024 * 1024;
+                size_t limit = kMinLimit;
+                if (sw > 0 && sh > 0) {
+                    size_t screenBytes = static_cast<size_t>(sw) * sh * 4;
+                    limit = std::clamp(screenBytes * 4, kMinLimit, kMaxLimit);
+                }
+                texturePool_.setByteLimit(limit);
+                spdlog::info("TexturePool: screen {}x{}, limit set to {:.0f} MB",
+                             sw, sh, limit / (1024.0 * 1024.0));
+            }
+
             // Observe system appearance changes for mode 2031
             platformObserveAppearanceChanges([this](bool isDark) {
                 notifyAllTerminals([isDark](TerminalEmulator* term) {

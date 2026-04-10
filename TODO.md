@@ -12,9 +12,12 @@
 - [ ] OSC 22 — Set mouse cursor shape (pointer, text, etc.)
 - [x] OSC 99 — Desktop notifications (kitty). Title/body accumulation, macOS UNUserNotification.
 - [x] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Responses in `rgb:RRRR/GGGG/BBBB` format.
+- [ ] OSC 4/104 — Set/query individual ANSI palette entries at runtime (`OSC 4 ; index ; color` to set, `OSC 4 ; index ; ?` to query, `OSC 104` to reset). Used by Neovim, Vim, and tmux to detect or adapt to the terminal's color scheme.
+- [ ] OSC 110/111/112 — Reset default fg/bg/cursor colors to built-in defaults. Complement to the already-implemented OSC 10/11/12 set/query.
 - [x] OSC 133 — Shell integration prompt/command/output markers. Stored per-row. Used for jump-to-prompt and command output selection.
 - [x] REP (`CSI b`) — Repeat preceding character N times.
 - [x] Mode 2026 — Synchronized output. Defers rendering while active so intermediate states aren't shown.
+- [ ] DECRQSS (`DCS $ q ... ST`) — Query current terminal state. Supports `" q"` (cursor shape), `m` (current SGR), `r` (scroll margins / DECSTBM). Used by Vim/Neovim to restore cursor shape on exit.
 - [ ] Color stack (OSC 30001/30101) — Push/pop entire color state. Apps can safely change colors and restore.
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
 - [ ] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking.
@@ -129,7 +132,7 @@
 - [ ] Scripting: `mb:fs` module — Node-style sync file API: `readFileSync`, `writeFileSync`, `readdirSync`, `statSync`, `existsSync`, `mkdirSync`, `unlinkSync`, `renameSync`. Permission-gated.
 - [ ] Scripting: `mb:http` module — async HTTP client backed by libwebsockets (already a dependency). Node-style `http.get(url, cb)` / `http.request(opts, cb)`. Permission-gated. Requires `net` permission with declared host allowlist (see below).
 - [ ] Scripting: network permission with host scoping — when `mb:http` (and future net modules) land, introduce a `net` permission where scripts declare allowed hosts upfront (e.g. `net:api.example.com,cdn.example.com`). Enforced at connection time; redirects to undeclared hosts are blocked. Post-DNS resolution, connections to RFC1918/loopback addresses are blocked unless a separate `net.local` permission is granted (prevents DNS rebinding). The host list must be declared in a structured script header comment so it is covered by the content hash and cannot be changed post-approval. The combination `io.filter.input + net` should trigger a distinct high-risk warning in the permission prompt.
-- [ ] Scripting: `mb:tui` module — bundled TUI toolkit for applets. `box()`, `text()`, `input()`, `list()`, etc. Built on escape sequence generation, targets the applet overlay API directly.
+- [x] Scripting: `mb:tui` module — bundled TUI toolkit for applets. `box()`, `text()`, `input()`, `list()`, etc. Built on escape sequence generation, targets the applet overlay API directly.
 - [ ] Scripting: `Buffer` polyfill — needed for binary data in fs/http modules.
 - [ ] Scripting: WebSocket server module — backed by libwebsockets. Would allow replacing the C++ DebugIPC with a JS applet. Needs `mb:ws` module with `ws.createServer({path})` returning a server object with connection/message events.
 - [ ] Scripting: replace DebugIPC with JS applet — WebSocket server applet that exposes grid content, screenshots, stats, key injection, action dispatch. Requires `mb:ws` module and grid/screenshot APIs on `mb.*`.

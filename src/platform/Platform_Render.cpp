@@ -251,10 +251,13 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
                 auto git = font->glyphs.find(glyphId);
                 if (git == font->glyphs.end() || git->second.is_empty) {
                     lock.unlock();
-                    // For printable non-space codepoints, show U+FFFD rather than nothing
+                    // For printable non-space codepoints, show U+FFFD rather than nothing.
+                    // But skip substitution glyphs (ligature/contextual forms) — those
+                    // are intentionally empty spacer components whose visual is carried
+                    // by another glyph in the same substitution.
                     char32_t wc = (cellCol >= 0 && cellCol < cols) ? rowData[cellCol].wc : 0;
                     bool replaced = false;
-                    if (wc != 0 && !unicode::isSpace(wc)) {
+                    if (!sg.isSubstitution && wc != 0 && !unicode::isSpace(wc)) {
                         if (const GlyphInfo* rep = getReplacementGlyph()) {
                             gi = *rep;
                             replaced = true;

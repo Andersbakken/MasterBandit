@@ -79,6 +79,21 @@ private:
     int32_t      xkbDeviceId_ = -1;
     uint8_t      xkbEventBase_ = 0;  // XKB extension first event code
 
+    // XKB mod indices (for mapping X11 ev->state to xkb mod mask)
+    struct {
+        xkb_mod_index_t shift   = XKB_MOD_INVALID;
+        xkb_mod_index_t lock    = XKB_MOD_INVALID;
+        xkb_mod_index_t control = XKB_MOD_INVALID;
+        xkb_mod_index_t mod1    = XKB_MOD_INVALID; // Alt
+        xkb_mod_index_t mod2    = XKB_MOD_INVALID; // NumLock
+        xkb_mod_index_t mod3    = XKB_MOD_INVALID;
+        xkb_mod_index_t mod4    = XKB_MOD_INVALID; // Super/Meta
+        xkb_mod_index_t mod5    = XKB_MOD_INVALID;
+    } xkbMods_;
+
+    void updateXKBMods();
+    void updateXKBStateFromCore(uint16_t state);
+
     // Window state
     int  width_  = 0;
     int  height_ = 0;

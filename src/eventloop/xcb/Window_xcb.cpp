@@ -151,6 +151,50 @@ static uint32_t xkbStateToModifiers(xkb_state* state)
     return m;
 }
 
+void XCBWindow::updateXKBMods()
+{
+    xkbMods_.shift   = xkb_keymap_mod_get_index(xkbKeymap_, XKB_MOD_NAME_SHIFT);
+    xkbMods_.lock    = xkb_keymap_mod_get_index(xkbKeymap_, XKB_MOD_NAME_CAPS);
+    xkbMods_.control = xkb_keymap_mod_get_index(xkbKeymap_, XKB_MOD_NAME_CTRL);
+    xkbMods_.mod1    = xkb_keymap_mod_get_index(xkbKeymap_, "Mod1");
+    xkbMods_.mod2    = xkb_keymap_mod_get_index(xkbKeymap_, "Mod2");
+    xkbMods_.mod3    = xkb_keymap_mod_get_index(xkbKeymap_, "Mod3");
+    xkbMods_.mod4    = xkb_keymap_mod_get_index(xkbKeymap_, "Mod4");
+    xkbMods_.mod5    = xkb_keymap_mod_get_index(xkbKeymap_, "Mod5");
+}
+
+void XCBWindow::updateXKBStateFromCore(uint16_t state)
+{
+    if (!xkbState_) return;
+
+    // Map X11 modifier mask bits to xkb mod index bitmask
+    xkb_mod_mask_t xkbMask = 0;
+    if ((state & XCB_MOD_MASK_SHIFT)   && xkbMods_.shift   != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.shift);
+    if ((state & XCB_MOD_MASK_LOCK)    && xkbMods_.lock    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.lock);
+    if ((state & XCB_MOD_MASK_CONTROL) && xkbMods_.control != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.control);
+    if ((state & XCB_MOD_MASK_1)       && xkbMods_.mod1    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod1);
+    if ((state & XCB_MOD_MASK_2)       && xkbMods_.mod2    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod2);
+    if ((state & XCB_MOD_MASK_3)       && xkbMods_.mod3    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod3);
+    if ((state & XCB_MOD_MASK_4)       && xkbMods_.mod4    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod4);
+    if ((state & XCB_MOD_MASK_5)       && xkbMods_.mod5    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod5);
+
+    // Preserve latched/locked from current state, put the rest in depressed
+    xkb_mod_mask_t depressed = xkb_state_serialize_mods(xkbState_, XKB_STATE_MODS_DEPRESSED);
+    xkb_mod_mask_t latched   = xkb_state_serialize_mods(xkbState_, XKB_STATE_MODS_LATCHED);
+    xkb_mod_mask_t locked    = xkb_state_serialize_mods(xkbState_, XKB_STATE_MODS_LOCKED);
+
+    latched   &= xkbMask;
+    locked    &= xkbMask;
+    depressed &= xkbMask;
+    // Any bits in xkbMask not accounted for go into depressed
+    depressed |= ~(depressed | latched | locked) & xkbMask;
+
+    // Group from bits 13-14 of X11 state
+    xkb_layout_index_t group = (state >> 13) & 3;
+
+    xkb_state_update_mask(xkbState_, depressed, latched, locked, 0, 0, group);
+}
+
 // ---------- constructor / destructor ----------
 
 XCBWindow::XCBWindow(EventLoop& loop) : loop_(loop) {}
@@ -313,15 +357,6 @@ bool XCBWindow::create(int width, int height, const std::string& title)
         xkbKeymap_   = xkb_x11_keymap_new_from_device(xkbCtx_, conn_, xkbDeviceId_,
                                                         XKB_KEYMAP_COMPILE_NO_FLAGS);
 
-        // Subscribe to XKB state change events so modifier state stays in
-        // sync even when key releases are consumed by the WM (e.g. during
-        // keyboard grabs for desktop switching).
-        xcb_xkb_select_events(conn_,
-            XCB_XKB_ID_USE_CORE_KBD,
-            XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
-            0,
-            XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
-            0, 0, nullptr);
     }
 
     if (!xkbKeymap_) {
@@ -329,10 +364,22 @@ bool XCBWindow::create(int width, int height, const std::string& title)
         return false;
     }
 
-    xkbState_ = xkb_state_new(xkbKeymap_);
+    updateXKBMods();
+
+    xkbState_ = xkb_x11_state_new_from_device(xkbKeymap_, conn_, xkbDeviceId_);
     if (!xkbState_) {
-        spdlog::error("XCBWindow: xkb_state_new failed");
+        spdlog::error("XCBWindow: xkb_x11_state_new_from_device failed");
         return false;
+    }
+
+    // Subscribe to XKB state change events for modifier tracking.
+    if (xkbEventBase_) {
+        xcb_xkb_select_events(conn_,
+            XCB_XKB_ID_USE_CORE_KBD,
+            XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
+            0,
+            XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
+            0, 0, nullptr);
     }
 
     // Register the XCB fd with the event loop
@@ -461,8 +508,6 @@ void XCBWindow::processEvents()
                     auto* nextEv = reinterpret_cast<xcb_key_press_event_t*>(next);
                     if (nextEv->detail == ev->detail && nextEv->time == ev->time) {
                         // Auto-repeat pair: skip the release, treat the press as repeat.
-                        // Still feed the release to xkb so modifier state stays balanced.
-                        xkb_state_update_key(xkbState_, ev->detail, XKB_KEY_UP);
                         lastPressKeycode_ = nextEv->detail;
                         lastPressTime_    = nextEv->time;
                         handleKeyPress(nextEv, true);
@@ -534,7 +579,6 @@ void XCBWindow::processEvents()
             if (onExpose) onExpose();
             break;
         default:
-            // XKB extension events arrive with type == xkbEventBase_
             if (xkbEventBase_ && type == xkbEventBase_) {
                 auto* xkbEvent = reinterpret_cast<xcb_xkb_state_notify_event_t*>(event);
                 if (xkbEvent->xkbType == XCB_XKB_STATE_NOTIFY && xkbState_) {
@@ -558,8 +602,8 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
 
     xkb_keycode_t keycode = ev->detail;
 
-    // Update xkb state
-    xkb_state_update_key(xkbState_, keycode, XKB_KEY_DOWN);
+    // Sync modifier state from the server's mask embedded in the event.
+    updateXKBStateFromCore(ev->state);
 
     xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
     Key k = keysymToKey(sym);
@@ -582,7 +626,8 @@ void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
     if (!xkbState_) return;
 
     xkb_keycode_t keycode = ev->detail;
-    xkb_state_update_key(xkbState_, keycode, XKB_KEY_UP);
+
+    updateXKBStateFromCore(ev->state);
 
     xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
     Key k = keysymToKey(sym);

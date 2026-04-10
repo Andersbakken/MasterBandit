@@ -11,6 +11,14 @@ Set `VCPKG_ROOT` to your vcpkg installation:
 export VCPKG_ROOT=/path/to/vcpkg
 ```
 
+### Linux (Debian/Ubuntu) prerequisites
+
+```sh
+sudo apt install pkg-config libxcb1-dev libxcb-util-dev libxcb-sync-dev \
+    libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev \
+    libx11-xcb-dev libfontconfig-dev
+```
+
 ### Debug build
 
 ```sh

@@ -35,7 +35,7 @@ static void collectFirstPaneDividers(const LayoutNode* node, int divPx,
 // Helper: update the macOS window title from the active tab's focused pane
 void PlatformDawn::updateWindowTitle()
 {
-    if (headless_) return;
+    if (isHeadless()) return;
     Tab* t = activeTab();
     if (!t) return;
     Pane* fp = t->layout()->focusedPane();
@@ -79,7 +79,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         }
     };
 
-    if (!headless_) {
+    if (!isHeadless()) {
         cbs.copyToClipboard = [this](const std::string& text) {
             if (window_) window_->setClipboard(text);
         };
@@ -129,7 +129,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    cbs.isDarkMode = headless_ ? []() { return true; } : []() { return platformIsDarkMode(); };
+    cbs.isDarkMode = isHeadless() ? []() { return true; } : []() { return platformIsDarkMode(); };
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
         Tab* t = findTabForPane(tabs_, paneId);
@@ -137,7 +137,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         if (Pane* p = t->layout()->pane(paneId)) p->setCWD(dir);
     };
 
-    cbs.onDesktopNotification = headless_
+    cbs.onDesktopNotification = isHeadless()
         ? [](const std::string&, const std::string&, const std::string&) {}
         : [](const std::string& title, const std::string& body, const std::string&) {
             platformSendNotification(title, body);
@@ -172,7 +172,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
 void PlatformDawn::createTab()
 {
-    if (!device_ || (!window_ && !headless_)) return;
+    if (!device_ || (!window_ && !isHeadless())) return;
 
     auto layout = std::make_unique<Layout>();
     layout->setDividerPixels(dividerWidth_);

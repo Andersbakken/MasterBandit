@@ -61,7 +61,13 @@ std::string platformProcessCWD(pid_t pid);
 
 class PlatformDawn {
 public:
-    PlatformDawn(int argc, char** argv, bool headless = false);
+    enum Flag : uint32_t {
+        FlagNone     = 0,
+        FlagHeadless = 1 << 0,
+        FlagIPC      = 1 << 1,
+    };
+
+    PlatformDawn(int argc, char** argv, uint32_t flags = FlagNone);
     ~PlatformDawn();
 
     int exec();
@@ -73,7 +79,8 @@ public:
     wgpu::Device device() const { return device_; }
     wgpu::Queue queue() const { return queue_; }
     TexturePool& texturePool() { return texturePool_; }
-    bool isHeadless() const { return headless_; }
+    bool isHeadless() const { return flags_ & FlagHeadless; }
+    bool hasFlag(Flag f) const { return flags_ & f; }
 
     void setTestConfig(const std::string& fontPath, int cols, int rows, float fontSize,
                        const std::string& emojiFontPath = {},
@@ -99,7 +106,7 @@ public:
     void renderFrame();
     void setNeedsRedraw();
     bool shouldClose() {
-        if (headless_) return false;
+        if (isHeadless()) return false;
         return window_ && window_->shouldClose();
     }
 
@@ -120,8 +127,7 @@ private:
     int exitStatus_ = 0;
     bool running_ = false;
 
-    // Headless / test mode
-    bool headless_ = false;
+    uint32_t flags_ = FlagNone;
     bool platformInitialized_ = false;
     int testCols_ = 80;
     int testRows_ = 24;
@@ -372,4 +378,4 @@ private:
     void notifyPaneFocusChange(Tab* tab, int prevId, int newId);
 };
 
-std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, bool headless = false);
+std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, uint32_t flags = PlatformDawn::FlagNone);

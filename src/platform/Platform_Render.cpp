@@ -400,7 +400,7 @@ void PlatformDawn::renderFrame()
 
     wgpu::SurfaceTexture surfaceTexture;
     wgpu::Texture compositeTarget;
-    if (!headless_) {
+    if (!isHeadless()) {
         surface_.GetCurrentTexture(&surfaceTexture);
         if (surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
             surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
@@ -1203,7 +1203,7 @@ void PlatformDawn::renderFrame()
             });
     }
 
-    if (!headless_) surface_.Present();
+    if (!isHeadless()) surface_.Present();
     if (window_) window_->frameRendered();
     needsRedraw_ = false;
 }

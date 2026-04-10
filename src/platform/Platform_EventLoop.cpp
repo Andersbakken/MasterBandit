@@ -14,7 +14,7 @@ int PlatformDawn::exec()
     // eventLoop_ and window_ were already created in createTerminal().
     // Here we finish setup: debugIPC, scripts, PTY polls, file watcher, onTick.
 
-    if (headless_) {
+    if (hasFlag(FlagHeadless) || hasFlag(FlagIPC)) {
         debugIPC_ = std::make_unique<DebugIPC>(eventLoop_.get(),
             [this]() -> Terminal* { return activeTerm(); },
             [this](int id) {

@@ -48,6 +48,7 @@ int main(int argc, char **argv)
         ("log", "Set subsystem log level: name=level[,name=level] (subsystems: script,js,render,terminal,input,font)", cxxopts::value<std::string>())
         ("s,shell", "Shell to use", cxxopts::value<std::string>())
         ("test", "Headless test mode (no window, no config)")
+        ("ipc", "Enable debug IPC socket")
         ("font", "Font path (test mode)", cxxopts::value<std::string>())
         ("emoji-font", "Emoji font path (test mode)", cxxopts::value<std::string>())
         ("fallback-font", "Additional fallback font path (test mode)", cxxopts::value<std::string>())
@@ -72,6 +73,9 @@ int main(int argc, char **argv)
     }
 
     bool testMode = result.count("test") > 0;
+    uint32_t platformFlags = PlatformDawn::FlagNone;
+    if (testMode) platformFlags |= PlatformDawn::FlagHeadless;
+    if (result.count("ipc")) platformFlags |= PlatformDawn::FlagIPC;
 
     // Configure logging before anything else so no messages slip through at wrong level.
     static constexpr spdlog::level::level_enum kLevelMap[] = {
@@ -123,7 +127,7 @@ int main(int argc, char **argv)
         }
     }
 
-    auto platform = createPlatform(argc, argv, testMode);
+    auto platform = createPlatform(argc, argv, platformFlags);
     if (!platform) {
         fprintf(stderr, "Failed to create platform\n");
         return 1;

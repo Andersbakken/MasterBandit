@@ -22,8 +22,8 @@ namespace fs = std::filesystem;
 static std::vector<uint8_t> loadFontFile(const std::string& path) { return io::loadFile(path); }
 
 
-PlatformDawn::PlatformDawn(int argc, char** argv, bool headless)
-    : headless_(headless)
+PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
+    : flags_(flags)
 {
     try {
         auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true);
@@ -127,7 +127,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     if (!platformInitialized_) {
         platformInitialized_ = true;
 
-        if (!headless_) {
+        if (!isHeadless()) {
             // --- Windowed: create EventLoop + Window ---
 #ifdef __APPLE__
             eventLoop_ = std::make_unique<NSAppEventLoop>();
@@ -211,7 +211,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
         // Load font
         std::string fontPath;
-        if (headless_ && !testFontPath_.empty()) {
+        if (isHeadless() && !testFontPath_.empty()) {
             fontPath = testFontPath_;
         } else if (options.font.empty()) {
             fontPath = resolveFontFamily("monospace");
@@ -237,7 +237,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
         std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
 
-        if (!headless_) {
+        if (!isHeadless()) {
             // Load bold variant (windowed only)
             const std::string& family = options.font.empty() ? std::string{} : options.font;
             std::string boldPath = family.empty() ? std::string{} : resolveFontFamily(family, true);
@@ -322,7 +322,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         spdlog::info("Font metrics: charWidth={:.1f}, lineHeight={:.1f}", charWidth_, lineHeight_);
 
         // In headless mode, compute framebuffer size from target cols/rows
-        if (headless_) {
+        if (isHeadless()) {
             fbWidth_ = static_cast<uint32_t>(std::ceil(testCols_ * charWidth_));
             fbHeight_ = static_cast<uint32_t>(std::ceil(testRows_ * lineHeight_));
             spdlog::info("Headless framebuffer: {}x{} ({}x{} cells)", fbWidth_, fbHeight_, testCols_, testRows_);
@@ -698,7 +698,7 @@ void PlatformDawn::reloadConfigNow()
     spdlog::info("Config reloaded: {} user keybindings", userBindings.size());
 }
 
-std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, bool headless)
+std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, uint32_t flags)
 {
-    return std::make_unique<PlatformDawn>(argc, argv, headless);
+    return std::make_unique<PlatformDawn>(argc, argv, flags);
 }

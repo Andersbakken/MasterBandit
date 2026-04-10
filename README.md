@@ -1,8 +1,26 @@
 # MasterBandit
 A terminal emulator
 
-To build on mac:
+## Building
 
-Do something like this:
+Requires [vcpkg](https://github.com/microsoft/vcpkg) for dependency management.
 
-cmake -DQt5Widgets_DIR=/usr/local/Cellar/qt/5.9.2/lib/cmake/Qt5Widgets/ ...
+Set `VCPKG_ROOT` to your vcpkg installation:
+
+```sh
+export VCPKG_ROOT=/path/to/vcpkg
+```
+
+### Debug build
+
+```sh
+cmake --preset default
+cmake --build --preset default
+```
+
+### Release build
+
+```sh
+cmake --preset release
+cmake --build --preset release
+```

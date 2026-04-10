@@ -1,10 +1,14 @@
-set(DAWN_VERSION "v20260219.200501")
-set(DAWN_COMMIT "536c572abab2602db0b652eda401ebd01e046c11")
-
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(DAWN_VERSION "v20260219.200501")
+    set(DAWN_COMMIT "536c572abab2602db0b652eda401ebd01e046c11")
+    set(DAWN_REPO "google/dawn")
     set(DAWN_PLATFORM "ubuntu-latest")
     set(DAWN_LIB_DIR "lib64")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # Patched Dawn: uses presentDrawable: instead of [drawable present] on Metal
+    set(DAWN_VERSION "v20260410-presentDrawable-fix")
+    set(DAWN_COMMIT "dbecffe5b105a638907d5c88e0973f6f24f91411")
+    set(DAWN_REPO "jhanssen/dawn")
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
         set(DAWN_PLATFORM "macos-15-intel")
     else()
@@ -17,7 +21,7 @@ endif()
 
 set(DAWN_BUILD_TYPE "Release")
 set(DAWN_TARBALL_NAME "Dawn-${DAWN_COMMIT}-${DAWN_PLATFORM}-${DAWN_BUILD_TYPE}.tar.gz")
-set(DAWN_URL "https://github.com/google/dawn/releases/download/${DAWN_VERSION}/${DAWN_TARBALL_NAME}")
+set(DAWN_URL "https://github.com/${DAWN_REPO}/releases/download/${DAWN_VERSION}/${DAWN_TARBALL_NAME}")
 set(DAWN_EXTRACT_DIR "${CMAKE_CURRENT_BINARY_DIR}/Dawn-${DAWN_COMMIT}-${DAWN_PLATFORM}-${DAWN_BUILD_TYPE}")
 
 if(NOT EXISTS "${DAWN_EXTRACT_DIR}")

@@ -25,6 +25,7 @@ set(TEST_SOURCES
     test_cwd.cpp
     test_osc_palette.cpp
     test_decrqss.cpp
+    test_kitty_graphics.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp

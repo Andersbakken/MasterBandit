@@ -22,6 +22,7 @@ struct TestTerminal {
         // Expose protected accessors as public for tests.
         using TerminalEmulator::bracketedPaste;
         using TerminalEmulator::resetScrollback;
+        using TerminalEmulator::callbacks;
     };
 
     // Declared before `term` so they are initialized first and can be

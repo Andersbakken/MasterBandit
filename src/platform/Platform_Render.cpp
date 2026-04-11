@@ -767,8 +767,6 @@ void PlatformDawn::renderFrame()
                     : static_cast<float>(img.pixelHeight);
                 float imgX = padLeft_;
                 float imgY = padTop_ + (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
-                spdlog::error("image id={} cellW={} cellH={} pixW={} pixH={} dispW={:.0f} dispH={:.0f} charW={:.1f} lineH={:.1f}",
-                    ex->imageId, img.cellWidth, img.cellHeight, img.pixelWidth, img.pixelHeight, imgW, imgH, charWidth_, lineHeight_);
 
                 float x0 = std::max(imgX, 0.0f);
                 float y0 = std::max(imgY, 0.0f);

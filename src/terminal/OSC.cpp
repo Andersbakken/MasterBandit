@@ -143,7 +143,7 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
         for (int c = 0; c < fillCols; ++c) {
             Cell& cell = g.cell(c, mCursorY);
             cell.wc = 0;
-            cell.attrs.setWideSpacer(true);
+            cell.attrs = CellAttrs{};
         }
 
         // Place one extra at column 0 with image ID and row offset

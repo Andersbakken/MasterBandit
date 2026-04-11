@@ -130,6 +130,7 @@ public:
                         const uint8_t* rgba, uint32_t width, uint32_t height);
     void renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       wgpu::TextureView target,
+                      float paneWidth, float paneHeight,
                       const std::vector<ImageDrawCmd>& cmds);
 
     // COLRv1 emoji rasterization

@@ -768,12 +768,13 @@ void Renderer::ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
 
 void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              wgpu::TextureView target,
+                             float paneWidth, float paneHeight,
                              const std::vector<ImageDrawCmd>& cmds)
 {
     if (!imagePipelineReady_ || cmds.empty()) return;
 
-    // Update viewport uniform
-    float uniforms[4] = { static_cast<float>(viewportW_), static_cast<float>(viewportH_), 0, 0 };
+    // Update viewport uniform — use pane dimensions, not global framebuffer
+    float uniforms[4] = { paneWidth, paneHeight, 0, 0 };
     queue.WriteBuffer(imageUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
     wgpu::RenderPassColorAttachment att = {};
@@ -804,6 +805,7 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         queue.WriteBuffer(imageVertexBuffer_, 0, verts, sizeof(verts));
 
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+        pass.SetViewport(0.0f, 0.0f, paneWidth, paneHeight, 0.0f, 1.0f);
         pass.SetPipeline(imagePipeline_);
         pass.SetBindGroup(0, it->second.bindGroup);
         pass.SetVertexBuffer(0, imageVertexBuffer_);
@@ -902,7 +904,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 
     // Image pass
     if (!imageCmds.empty())
-        renderImages(encoder, queue, target, imageCmds);
+        renderImages(encoder, queue, target, contentW, contentH, imageCmds);
 
     // Text pass
     {

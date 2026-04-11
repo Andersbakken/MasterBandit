@@ -649,12 +649,21 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                 SrcRow sr = getSrcRow(ri);
                 int effectiveWidth = sr.cols;
                 if (ri == logEnd) {
-                    // Standard trailing-blank trim
-                    while (effectiveWidth > 0) {
-                        const Cell& c = sr.cells[effectiveWidth - 1];
-                        if (c.wc != 0 || c.attrs.fgMode() != CellAttrs::Default || c.attrs.bgMode() != CellAttrs::Default
-                            || c.attrs.bold() || c.attrs.italic() || c.attrs.underline()) break;
-                        effectiveWidth--;
+                    // Don't trim rows that contain image placements
+                    bool hasImageExtra = false;
+                    if (sr.extras) {
+                        for (auto& [col, ex] : *sr.extras) {
+                            if (ex.imageId != 0) { hasImageExtra = true; break; }
+                        }
+                    }
+                    if (!hasImageExtra) {
+                        // Standard trailing-blank trim
+                        while (effectiveWidth > 0) {
+                            const Cell& c = sr.cells[effectiveWidth - 1];
+                            if (c.wc != 0 || c.attrs.fgMode() != CellAttrs::Default || c.attrs.bgMode() != CellAttrs::Default
+                                || c.attrs.bold() || c.attrs.italic() || c.attrs.underline()) break;
+                            effectiveWidth--;
+                        }
                     }
                 }
 

@@ -854,12 +854,120 @@ void TerminalEmulator::processAPC()
             }
         }
 
+        // c= (cellCols) sets current frame (1-based)
+        if (cmd.cellCols > 0) {
+            uint32_t totalFrames = 1 + static_cast<uint32_t>(img.extraFrames.size());
+            uint32_t idx = cmd.cellCols - 1; // convert to 0-based
+            if (idx < totalFrames) {
+                img.currentFrameIndex = idx;
+                img.frameGeneration++;
+                // Dirty grid rows containing this image so the render loop re-uploads
+                IGrid& ag = grid();
+                for (int r = 0; r < mHeight; r++) {
+                    for (int c = 0; c < mWidth; c++) {
+                        const CellExtra* ce = ag.getExtra(c, r);
+                        if (ce && ce->imageId == targetId) {
+                            ag.markRowDirty(r);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // kitty sends no response for a=a (animation control)
         return;
     }
-    case 'c': // frame composition (not yet supported)
-        // Silently consume
+    case 'c': // frame composition — blit rectangle from one frame to another
+    {
+        uint32_t targetId = resolveId();
+        auto it = mImageRegistry.find(targetId);
+        if (it == mImageRegistry.end()) {
+            sendResponse(targetId, "ENOENT:image not found");
+            return;
+        }
+        auto& img = it->second;
+        uint32_t totalFrames = 1 + static_cast<uint32_t>(img.extraFrames.size());
+
+        // r= source frame, c= dest frame (1-based; reused as cellRows/cellCols)
+        uint32_t srcFrameNum = cmd.cellRows;  // r=
+        uint32_t dstFrameNum = cmd.cellCols;  // c=
+        if (srcFrameNum == 0 || srcFrameNum > totalFrames ||
+            dstFrameNum == 0 || dstFrameNum > totalFrames) {
+            sendResponse(targetId, "ENOENT:frame not found");
+            return;
+        }
+
+        // Get frame data pointers
+        auto frameData = [&](uint32_t num) -> std::vector<uint8_t>& {
+            if (num == 1) return img.rgba;
+            return img.extraFrames[num - 2].rgba;
+        };
+        const std::vector<uint8_t>& srcData = frameData(srcFrameNum);
+        std::vector<uint8_t>& dstData = frameData(dstFrameNum);
+
+        int imgW = static_cast<int>(img.pixelWidth);
+        int imgH = static_cast<int>(img.pixelHeight);
+
+        // Rectangle size (default: full image)
+        int rectW = cmd.width > 0 ? static_cast<int>(cmd.width) : imgW;
+        int rectH = cmd.height > 0 ? static_cast<int>(cmd.height) : imgH;
+
+        // Kitty maps: x=/y= → destination offset, X=/Y= → source offset
+        int srcX = static_cast<int>(cmd.cellXOffset);
+        int srcY = static_cast<int>(cmd.cellYOffset);
+        int dstX = static_cast<int>(cmd.xOffset);
+        int dstY = static_cast<int>(cmd.yOffset);
+
+        // Bounds check
+        if (srcX + rectW > imgW || srcY + rectH > imgH ||
+            dstX + rectW > imgW || dstY + rectH > imgH ||
+            srcX < 0 || srcY < 0 || dstX < 0 || dstY < 0) {
+            sendResponse(targetId, "EINVAL:rectangle out of bounds");
+            return;
+        }
+
+        // Overlap check for same frame
+        if (srcFrameNum == dstFrameNum) {
+            bool overlapX = srcX < dstX + rectW && dstX < srcX + rectW;
+            bool overlapY = srcY < dstY + rectH && dstY < srcY + rectH;
+            if (overlapX && overlapY) {
+                sendResponse(targetId, "EINVAL:overlapping rectangles on same frame");
+                return;
+            }
+        }
+
+        bool overwrite = (cmd.cursorMovement == 1); // C=1 means overwrite
+
+        for (int y = 0; y < rectH; y++) {
+            for (int x = 0; x < rectW; x++) {
+                size_t si = (static_cast<size_t>(srcY + y) * imgW + srcX + x) * 4;
+                size_t di = (static_cast<size_t>(dstY + y) * imgW + dstX + x) * 4;
+                if (overwrite) {
+                    std::memcpy(&dstData[di], &srcData[si], 4);
+                } else {
+                    uint8_t sa = srcData[si + 3];
+                    if (sa == 255) {
+                        std::memcpy(&dstData[di], &srcData[si], 4);
+                    } else if (sa > 0) {
+                        for (int ch = 0; ch < 3; ch++) {
+                            uint8_t sc = srcData[si + ch];
+                            uint8_t dc = dstData[di + ch];
+                            dstData[di + ch] = static_cast<uint8_t>(
+                                (sc * sa + dc * (255 - sa)) / 255);
+                        }
+                        uint8_t da = dstData[di + 3];
+                        dstData[di + 3] = static_cast<uint8_t>(
+                            sa + da * (255 - sa) / 255);
+                    }
+                }
+            }
+        }
+
+        img.frameGeneration++;
+        sendResponse(targetId, "OK");
         return;
+    }
     default:
         // Unrecognized action — silently consume
         spdlog::debug("kitty graphics: unhandled action '{}'", cmd.action);

@@ -11,7 +11,7 @@
 - [x] Kitty graphics: multiple placements — one image displayed at multiple positions via `a=p` with placement IDs (`p=`). Per-placement cell dimensions and crop. Re-placing with same `p=` replaces old placement. Delete by placement ID via `d=i`/`d=n` with `p=`.
 - [x] Kitty graphics: sub-cell pixel offsets — `X=` and `Y=` offset image within the starting cell. Per-placement.
 - [x] Kitty graphics: position-based delete — `d=c`/`d=C` (cursor), `d=p`/`d=P` (cell position), `d=x`/`d=X` (column), `d=y`/`d=Y` (row), `d=r`/`d=R` (ID range). Uppercase frees image data.
-- [ ] Kitty graphics: frame composition (`a=c`) — explicit pixel-level blit between frames.
+- [x] Kitty graphics: frame composition (`a=c`) — explicit pixel-level blit between animation frames. Source/dest frame selection, rectangle region, alpha blend or overwrite.
 - [ ] Kitty graphics: z-layering — `z=` index, negative = under text. Requires render pass restructuring.
 - [ ] Kitty graphics: Unicode placeholders — `U+10EEEE` virtual placements.
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).

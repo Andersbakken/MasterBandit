@@ -908,6 +908,135 @@ TEST_CASE("kitty graphics: delete by ID range (d=r)")
     CHECK(t.term.imageRegistry().count(15));
 }
 
+// ── Frame composition (a=c) ─────────────────────────────────────────────────
+
+TEST_CASE("kitty graphics: animation control c= sets current frame")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=2,v=2,q=2", px);
+
+    auto f1 = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
+    t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", f1);
+
+    auto f2 = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
+    t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", f2);
+
+    auto& img = t.term.imageRegistry().at(1);
+    CHECK(img.currentFrameIndex == 0);
+
+    // Switch to frame 2 (1-based)
+    t.gfx("a=a,i=1,c=2");
+    CHECK(img.currentFrameIndex == 1);
+
+    // Switch to frame 3
+    t.gfx("a=a,i=1,c=3");
+    CHECK(img.currentFrameIndex == 2);
+
+    // Frame data should be blue (frame 3)
+    const auto& data = img.currentFrameRGBA();
+    CHECK(data[0] == 0);
+    CHECK(data[2] == 255);
+}
+
+TEST_CASE("kitty graphics: frame composition copies rectangle between frames")
+{
+    GraphicsTerminal t;
+    // 4x4 red base
+    auto base = GraphicsTerminal::solidRGBA(4, 4, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=4,v=4,q=2", base);
+
+    // Add a 4x4 blue second frame
+    auto frame2 = GraphicsTerminal::solidRGBA(4, 4, 0, 0, 255);
+    t.gfx("a=f,i=1,f=32,s=4,v=4,z=40,q=2", frame2);
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.extraFrames.size() == 1);
+
+    // Compose: copy 2x2 from frame 1 (red) at src (0,0) to frame 2 (blue) at dst (1,1)
+    // r=1 (source=root), c=2 (dest=frame2), w=2, h=2, X=0, Y=0 (src offset), x=1, y=1 (dst offset)
+    t.clearOutput();
+    t.gfx("a=c,i=1,r=1,c=2,w=2,h=2,X=0,Y=0,x=1,y=1,C=1");
+    CHECK(t.output().find("OK") != std::string::npos);
+
+    // Frame 2 pixel at (0,0) should still be blue (untouched)
+    auto& f2 = img.extraFrames[0];
+    CHECK(f2.rgba[0] == 0);     // R
+    CHECK(f2.rgba[2] == 255);   // B
+
+    // Frame 2 pixel at (1,1) should now be red (copied from frame 1)
+    size_t idx = (1 * 4 + 1) * 4;
+    CHECK(f2.rgba[idx] == 255);     // R
+    CHECK(f2.rgba[idx + 2] == 0);   // B
+}
+
+TEST_CASE("kitty graphics: frame composition alpha blends by default")
+{
+    GraphicsTerminal t;
+    // 2x2 white base (opaque)
+    auto base = GraphicsTerminal::solidRGBA(2, 2, 255, 255, 255);
+    t.gfx("a=T,i=1,f=32,s=2,v=2,q=2", base);
+
+    // Add a 2x2 half-transparent red frame (alpha=128)
+    auto frame2 = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0, 128);
+    t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame2);
+
+    // Add a 2x2 blue destination frame
+    auto frame3 = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
+    t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame3);
+
+    // Compose frame 2 (semi-transparent red) onto frame 3 (blue), default blend (C=0)
+    t.clearOutput();
+    t.gfx("a=c,i=1,r=2,c=3");
+    CHECK(t.output().find("OK") != std::string::npos);
+
+    // Frame 3 pixel (0,0): should be blended red over blue
+    auto& img = t.term.imageRegistry().at(1);
+    auto& f3 = img.extraFrames[1];
+    // Red channel: (255 * 128 + 0 * 127) / 255 ≈ 128
+    CHECK(f3.rgba[0] > 100); // R should be significant
+    // Blue channel: reduced from 255
+    CHECK(f3.rgba[2] < 200); // B should be reduced
+}
+
+TEST_CASE("kitty graphics: frame composition rejects out of bounds")
+{
+    GraphicsTerminal t;
+    auto base = GraphicsTerminal::solidRGBA(4, 4, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=4,v=4,q=2", base);
+
+    auto frame2 = GraphicsTerminal::solidRGBA(4, 4, 0, 0, 255);
+    t.gfx("a=f,i=1,f=32,s=4,v=4,z=40,q=2", frame2);
+
+    // Try to compose a 3x3 rect at dst offset (2,2) on a 4x4 image — goes out of bounds
+    t.clearOutput();
+    t.gfx("a=c,i=1,r=1,c=2,w=3,h=3,x=2,y=2");
+    CHECK(t.output().find("EINVAL") != std::string::npos);
+}
+
+TEST_CASE("kitty graphics: frame composition rejects overlapping same-frame")
+{
+    GraphicsTerminal t;
+    auto base = GraphicsTerminal::solidRGBA(4, 4, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=4,v=4,q=2", base);
+
+    // Compose frame 1 onto itself with overlapping rectangles
+    t.clearOutput();
+    t.gfx("a=c,i=1,r=1,c=1,w=3,h=3,X=0,Y=0,x=1,y=1");
+    CHECK(t.output().find("EINVAL") != std::string::npos);
+}
+
+TEST_CASE("kitty graphics: frame composition nonexistent frame returns ENOENT")
+{
+    GraphicsTerminal t;
+    auto base = GraphicsTerminal::solidRGBA(4, 4, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=4,v=4,q=2", base);
+
+    t.clearOutput();
+    t.gfx("a=c,i=1,r=1,c=5"); // frame 5 doesn't exist
+    CHECK(t.output().find("ENOENT") != std::string::npos);
+}
+
 TEST_CASE("kitty graphics: sub-cell pixel offsets stored on placement")
 {
     GraphicsTerminal t(40, 20);

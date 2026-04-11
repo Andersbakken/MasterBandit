@@ -819,13 +819,30 @@ void PlatformDawn::renderFrame()
 
                     if (x1 <= x0 || y1 <= y0) continue;
 
-                    // Source rect crop: map UVs to the crop sub-rectangle
-                    float texW = static_cast<float>(img.pixelWidth);
-                    float texH = static_cast<float>(img.pixelHeight);
-                    float cropU0 = dispCropW > 0 ? static_cast<float>(dispCropX) / texW : 0.0f;
-                    float cropV0 = dispCropH > 0 ? static_cast<float>(dispCropY) / texH : 0.0f;
-                    float cropU1 = dispCropW > 0 ? static_cast<float>(dispCropX + dispCropW) / texW : 1.0f;
-                    float cropV1 = dispCropH > 0 ? static_cast<float>(dispCropY + dispCropH) / texH : 1.0f;
+                    // Source rect crop: map UVs to the crop sub-rectangle.
+                    // GPU texture has a 1px transparent border, so image data
+                    // occupies [1, width+1] x [1, height+1] in texel coords.
+                    float texW = static_cast<float>(img.pixelWidth + 2);
+                    float texH = static_cast<float>(img.pixelHeight + 2);
+                    float borderU = 1.0f / texW;
+                    float borderV = 1.0f / texH;
+                    float imgU = static_cast<float>(img.pixelWidth) / texW;
+                    float imgV = static_cast<float>(img.pixelHeight) / texH;
+                    float cropU0, cropV0, cropU1, cropV1;
+                    if (dispCropW > 0) {
+                        cropU0 = borderU + static_cast<float>(dispCropX) / texW;
+                        cropU1 = borderU + static_cast<float>(dispCropX + dispCropW) / texW;
+                    } else {
+                        cropU0 = borderU;
+                        cropU1 = borderU + imgU;
+                    }
+                    if (dispCropH > 0) {
+                        cropV0 = borderV + static_cast<float>(dispCropY) / texH;
+                        cropV1 = borderV + static_cast<float>(dispCropY + dispCropH) / texH;
+                    } else {
+                        cropV0 = borderV;
+                        cropV1 = borderV + imgV;
+                    }
 
                     Renderer::ImageDrawCmd cmd;
                     cmd.imageId = ex->imageId;

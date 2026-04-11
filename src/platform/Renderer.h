@@ -122,7 +122,8 @@ public:
         wgpu::Texture texture;
         wgpu::TextureView view;
         wgpu::BindGroup bindGroup;
-        uint32_t width, height;
+        uint32_t width, height;       // logical image size
+        uint32_t texWidth, texHeight; // GPU texture size (image + 2px border)
         uint32_t frameGeneration { 0 };
     };
 

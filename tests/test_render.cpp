@@ -423,6 +423,43 @@ TEST_CASE("render: kitty graphics delete at cursor removes image" * doctest::tes
     CHECK(rt.matchesReference(png, "kitty_delete_at_cursor"));
 }
 
+TEST_CASE("render: kitty graphics frame composition" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    rt.injectData("\x1b[?25l"); // hide cursor
+
+    // Transmit+display a 4x4 solid red image (root frame), scaled to 4x2 cells
+    auto px = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=4,r=2,q=2", px));
+    rt.wait(200);
+
+    // Add frame 2: 4x4 solid blue
+    auto frame2 = solidRGBA(4, 4, 0, 0, 255);
+    rt.injectData(kittyGfxEscape("a=f,i=1,f=32,s=4,v=4,z=5000,q=2", frame2));
+    rt.wait(100);
+
+    // Compose: copy 2x2 from frame 1 (red) at src (0,0) onto frame 2 (blue) at dst (1,1)
+    // Result: frame 2 is blue with a red 2x2 patch at (1,1)
+    rt.injectData(kittyGfxEscape("a=c,i=1,r=1,c=2,w=2,h=2,X=0,Y=0,x=1,y=1,C=1,q=2", {}));
+    rt.wait(100);
+
+    // Jump to frame 2 via animation control: c= sets current frame (1-based)
+    rt.injectData(kittyGfxEscape("a=a,i=1,c=2", {}));
+    rt.wait(500);
+
+    // Screenshot: should show the composed frame — mostly blue with a red patch
+    auto png = rt.screenshotPaneRect(0, 0, 0, 6, 3);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_frame_composition"));
+}
+
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;

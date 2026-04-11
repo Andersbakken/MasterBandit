@@ -727,9 +727,15 @@ void Renderer::ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
     gpu.width = width;
     gpu.height = height;
 
-    // Create texture
+    // Create texture with 1px transparent border on each side to match
+    // kitty's GL_CLAMP_TO_BORDER behavior — linear filtering at the edge
+    // blends toward transparent black, producing a soft edge.
+    uint32_t texW = width + 2, texH = height + 2;
+    gpu.texWidth = texW;
+    gpu.texHeight = texH;
+
     wgpu::TextureDescriptor texDesc = {};
-    texDesc.size = {width, height, 1};
+    texDesc.size = {texW, texH, 1};
     texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
     texDesc.dimension = wgpu::TextureDimension::e2D;
@@ -738,9 +744,10 @@ void Renderer::ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
     gpu.texture = device_.CreateTexture(&texDesc);
     gpu.view = gpu.texture.CreateView();
 
-    // Upload pixel data
+    // Upload image data at offset (1,1), leaving the border as zero (transparent black)
     wgpu::TexelCopyTextureInfo dst = {};
     dst.texture = gpu.texture;
+    dst.origin = {1, 1, 0};
     wgpu::TexelCopyBufferLayout layout = {};
     layout.bytesPerRow = width * 4;
     layout.rowsPerImage = height;
@@ -778,6 +785,7 @@ void Renderer::updateImageGPU(wgpu::Queue& queue, uint32_t imageId,
 
     wgpu::TexelCopyTextureInfo dst = {};
     dst.texture = gpu.texture;
+    dst.origin = {1, 1, 0}; // upload inside the 1px border
     wgpu::TexelCopyBufferLayout layout = {};
     layout.bytesPerRow = width * 4;
     layout.rowsPerImage = height;

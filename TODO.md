@@ -9,6 +9,8 @@
 - [x] Kitty graphics: animation — frame load (`a=f`), animation control (`a=a`), delta compositing with base frame references, render-loop driven frame advancement.
 - [x] Kitty graphics: file/shm transmission — `t=f` (file), `t=t` (temp file), `t=s` (shared memory).
 - [x] Kitty graphics: multiple placements — one image displayed at multiple positions via `a=p` with placement IDs (`p=`). Per-placement cell dimensions and crop. Re-placing with same `p=` replaces old placement. Delete by placement ID via `d=i`/`d=n` with `p=`.
+- [x] Kitty graphics: sub-cell pixel offsets — `X=` and `Y=` offset image within the starting cell. Per-placement.
+- [x] Kitty graphics: position-based delete — `d=c`/`d=C` (cursor), `d=p`/`d=P` (cell position), `d=x`/`d=X` (column), `d=y`/`d=Y` (row), `d=r`/`d=R` (ID range). Uppercase frees image data.
 - [ ] Kitty graphics: frame composition (`a=c`) — explicit pixel-level blit between frames.
 - [ ] Kitty graphics: z-layering — `z=` index, negative = under text. Requires render pass restructuring.
 - [ ] Kitty graphics: Unicode placeholders — `U+10EEEE` virtual placements.

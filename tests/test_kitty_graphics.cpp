@@ -785,6 +785,129 @@ TEST_CASE("kitty graphics: placement stores per-placement display params")
     CHECK(pl.cellHeight == 3);
 }
 
+// ── Position-based delete modes ──────────────────────────���──────────────────
+
+TEST_CASE("kitty graphics: delete at cursor position (d=c)")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0); // 1x1 cells
+    // Place image at (0, 0)
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
+
+    const CellExtra* ex = t.extra(0, 0);
+    REQUIRE(ex);
+    CHECK(ex->imageId == 1);
+
+    // Move cursor to (0, 0) and delete at cursor
+    t.feed("\x1b[H"); // cursor home
+    t.gfx("a=d,d=c");
+
+    ex = t.extra(0, 0);
+    CHECK((!ex || ex->imageId == 0));
+    // Lowercase: image data preserved
+    CHECK(t.term.imageRegistry().count(1));
+}
+
+TEST_CASE("kitty graphics: delete at cursor with uppercase frees image (d=C)")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
+    t.feed("\x1b[H");
+    t.gfx("a=d,d=C");
+    CHECK(t.term.imageRegistry().empty());
+}
+
+TEST_CASE("kitty graphics: delete at cursor misses non-intersecting image")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
+
+    // Move cursor away from the image
+    t.feed("\x1b[5;5H"); // row 5, col 5 (1-based)
+    t.gfx("a=d,d=c");
+
+    // Image should still be there
+    const CellExtra* ex = t.extra(0, 0);
+    REQUIRE(ex);
+    CHECK(ex->imageId == 1);
+}
+
+TEST_CASE("kitty graphics: delete by cell position (d=p)")
+{
+    GraphicsTerminal t(40, 20);
+    // 20x40 image = 2x2 cells at 10x20
+    auto px = GraphicsTerminal::solidRGBA(20, 40, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=20,v=40,q=2", px);
+
+    // Delete at cell (2, 1) — 1-based, so (1, 0) 0-based, which is within the 2x2 image
+    t.gfx("a=d,d=p,x=2,y=1");
+
+    // Image cells should be cleared
+    const CellExtra* ex = t.extra(0, 0);
+    CHECK((!ex || ex->imageId == 0));
+}
+
+TEST_CASE("kitty graphics: delete by column (d=x)")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(20, 40, 255, 0, 0); // 2x2 cells
+    t.gfx("a=T,i=1,f=32,s=20,v=40,q=2", px);
+
+    // Place second image at col 10
+    t.feed("\x1b[1;11H"); // row 1 col 11 (1-based)
+    auto px2 = GraphicsTerminal::solidRGBA(10, 20, 0, 255, 0); // 1x1 cells
+    t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px2);
+    CHECK(t.term.imageRegistry().size() == 2);
+
+    // Delete column 1 (1-based = col 0) — should hit image 1 only
+    t.gfx("a=d,d=x,x=1");
+
+    const CellExtra* ex0 = t.extra(0, 0);
+    CHECK((!ex0 || ex0->imageId == 0));
+
+    // Image 2 at col 10 should survive
+    const CellExtra* ex10 = t.extra(10, 0);
+    REQUIRE(ex10);
+    CHECK(ex10->imageId == 2);
+}
+
+TEST_CASE("kitty graphics: delete by row (d=y)")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0); // 1x1 cells
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
+    t.feed("\r\n\n");
+    t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px);
+    CHECK(t.term.imageRegistry().size() == 2);
+
+    // Delete row 1 (1-based = row 0) — should hit image 1 only
+    t.gfx("a=d,d=y,y=1");
+
+    const CellExtra* ex0 = t.extra(0, 0);
+    CHECK((!ex0 || ex0->imageId == 0));
+
+    const CellExtra* ex2 = t.extra(0, 2);
+    REQUIRE(ex2);
+    CHECK(ex2->imageId == 2);
+}
+
+TEST_CASE("kitty graphics: delete by ID range (d=r)")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=5,f=32,s=10,v=20,q=2", px);
+    t.gfx("a=t,i=10,f=32,s=10,v=20,q=2", px);
+    t.gfx("a=t,i=15,f=32,s=10,v=20,q=2", px);
+    CHECK(t.term.imageRegistry().size() == 3);
+
+    // Delete range [5, 10] with uppercase (free data)
+    t.gfx("a=d,d=R,x=5,y=10");
+    CHECK(t.term.imageRegistry().size() == 1);
+    CHECK(t.term.imageRegistry().count(15));
+}
+
 TEST_CASE("kitty graphics: sub-cell pixel offsets stored on placement")
 {
     GraphicsTerminal t(40, 20);

@@ -561,14 +561,168 @@ void TerminalEmulator::processAPC()
             }
             break;
         }
-        case 'p': case 'P': // delete by placement position (needs placement tracking)
-        case 'q': case 'Q': // delete by position + z-index
         case 'c': case 'C': // delete at cursor position
+        case 'p': case 'P': // delete at cell position (x=, y=)
+        {
+            int targetCol, targetRow;
+            if (da == 'c' || da == 'C') {
+                targetCol = mCursorX;
+                targetRow = mCursorY;
+            } else {
+                // x= and y= are 1-based
+                targetCol = cmd.xOffset > 0 ? static_cast<int>(cmd.xOffset) - 1 : 0;
+                targetRow = cmd.yOffset > 0 ? static_cast<int>(cmd.yOffset) - 1 : 0;
+            }
+            // Find all images that intersect (targetCol, targetRow)
+            IGrid& dg = grid();
+            std::unordered_set<uint64_t> toDelete; // (imageId << 32) | placementId
+            const CellExtra* cex = dg.getExtra(0, targetRow);
+            for (int c = 0; c < mWidth; c++) {
+                cex = dg.getExtra(c, targetRow);
+                if (!cex || cex->imageId == 0) continue;
+                // Check if targetCol falls within this image's column range
+                auto imgIt = mImageRegistry.find(cex->imageId);
+                if (imgIt == mImageRegistry.end()) continue;
+                uint32_t cw = imgIt->second.cellWidth;
+                auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
+                if (plIt != imgIt->second.placements.end() && plIt->second.cellWidth > 0)
+                    cw = plIt->second.cellWidth;
+                if (targetCol >= static_cast<int>(cex->imageStartCol) &&
+                    targetCol < static_cast<int>(cex->imageStartCol + cw)) {
+                    toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
+                }
+            }
+            // Clear cells and optionally free images
+            for (uint64_t key : toDelete) {
+                uint32_t imgId = static_cast<uint32_t>(key >> 32);
+                uint32_t plId = static_cast<uint32_t>(key & 0xFFFFFFFF);
+                for (int r = 0; r < mHeight; r++) {
+                    for (int c = 0; c < mWidth; c++) {
+                        const CellExtra* ce = dg.getExtra(c, r);
+                        if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
+                            dg.clearExtra(c, r);
+                            dg.markRowDirty(r);
+                        }
+                    }
+                }
+                if (da >= 'A' && da <= 'Z') {
+                    auto it = mImageRegistry.find(imgId);
+                    if (it != mImageRegistry.end()) {
+                        it->second.placements.erase(plId);
+                        if (it->second.placements.empty())
+                            mImageRegistry.erase(it);
+                    }
+                }
+            }
+            break;
+        }
         case 'x': case 'X': // delete by column
+        {
+            int targetCol = cmd.xOffset > 0 ? static_cast<int>(cmd.xOffset) - 1 : 0;
+            IGrid& dg = grid();
+            std::unordered_set<uint64_t> toDelete;
+            for (int r = 0; r < mHeight; r++) {
+                for (int c = 0; c < mWidth; c++) {
+                    const CellExtra* cex = dg.getExtra(c, r);
+                    if (!cex || cex->imageId == 0) continue;
+                    auto imgIt = mImageRegistry.find(cex->imageId);
+                    if (imgIt == mImageRegistry.end()) continue;
+                    uint32_t cw = imgIt->second.cellWidth;
+                    auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
+                    if (plIt != imgIt->second.placements.end() && plIt->second.cellWidth > 0)
+                        cw = plIt->second.cellWidth;
+                    if (targetCol >= static_cast<int>(cex->imageStartCol) &&
+                        targetCol < static_cast<int>(cex->imageStartCol + cw)) {
+                        toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
+                    }
+                }
+            }
+            for (uint64_t key : toDelete) {
+                uint32_t imgId = static_cast<uint32_t>(key >> 32);
+                uint32_t plId = static_cast<uint32_t>(key & 0xFFFFFFFF);
+                for (int r = 0; r < mHeight; r++) {
+                    for (int c = 0; c < mWidth; c++) {
+                        const CellExtra* ce = dg.getExtra(c, r);
+                        if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
+                            dg.clearExtra(c, r);
+                            dg.markRowDirty(r);
+                        }
+                    }
+                }
+                if (da >= 'A' && da <= 'Z') {
+                    auto it = mImageRegistry.find(imgId);
+                    if (it != mImageRegistry.end()) {
+                        it->second.placements.erase(plId);
+                        if (it->second.placements.empty())
+                            mImageRegistry.erase(it);
+                    }
+                }
+            }
+            break;
+        }
         case 'y': case 'Y': // delete by row
-        case 'z': case 'Z': // delete by z-index
-        case 'r': case 'R': // delete by ID range
-            spdlog::debug("kitty graphics: unhandled delete action '{}'", da);
+        {
+            int targetRow = cmd.yOffset > 0 ? static_cast<int>(cmd.yOffset) - 1 : 0;
+            IGrid& dg = grid();
+            std::unordered_set<uint64_t> toDelete;
+            for (int c = 0; c < mWidth; c++) {
+                const CellExtra* cex = dg.getExtra(c, targetRow);
+                if (cex && cex->imageId != 0)
+                    toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
+            }
+            for (uint64_t key : toDelete) {
+                uint32_t imgId = static_cast<uint32_t>(key >> 32);
+                uint32_t plId = static_cast<uint32_t>(key & 0xFFFFFFFF);
+                for (int r = 0; r < mHeight; r++) {
+                    for (int c = 0; c < mWidth; c++) {
+                        const CellExtra* ce = dg.getExtra(c, r);
+                        if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
+                            dg.clearExtra(c, r);
+                            dg.markRowDirty(r);
+                        }
+                    }
+                }
+                if (da >= 'A' && da <= 'Z') {
+                    auto it = mImageRegistry.find(imgId);
+                    if (it != mImageRegistry.end()) {
+                        it->second.placements.erase(plId);
+                        if (it->second.placements.empty())
+                            mImageRegistry.erase(it);
+                    }
+                }
+            }
+            break;
+        }
+        case 'r': case 'R': // delete by ID range [x, y]
+        {
+            uint32_t minId = cmd.xOffset;
+            uint32_t maxId = cmd.yOffset;
+            if (maxId < minId) break;
+            IGrid& dg = grid();
+            std::vector<uint32_t> idsToDelete;
+            for (auto& [id, entry] : mImageRegistry) {
+                if (id >= minId && id <= maxId)
+                    idsToDelete.push_back(id);
+            }
+            for (uint32_t imgId : idsToDelete) {
+                // Clear cells
+                for (int r = 0; r < mHeight; r++) {
+                    for (int c = 0; c < mWidth; c++) {
+                        const CellExtra* ce = dg.getExtra(c, r);
+                        if (ce && ce->imageId == imgId) {
+                            dg.clearExtra(c, r);
+                            dg.markRowDirty(r);
+                        }
+                    }
+                }
+                if (da == 'R')
+                    mImageRegistry.erase(imgId);
+            }
+            break;
+        }
+        case 'z': case 'Z': // delete by z-index (z-layering not yet implemented)
+        case 'q': case 'Q': // delete by position + z-index
+            spdlog::debug("kitty graphics: unhandled delete action '{}' (needs z-index)", da);
             break;
         default:
             spdlog::debug("kitty graphics: unknown delete action '{}'", da);

@@ -389,6 +389,40 @@ TEST_CASE("render: kitty graphics sub-cell pixel offset" * doctest::test_suite("
     CHECK(rt.matchesReference(png, "kitty_subcell_offset"));
 }
 
+TEST_CASE("render: kitty graphics delete at cursor removes image" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    rt.injectData("\x1b[?25l"); // hide cursor
+
+    // Place a red image at row 0 (2x1 cells)
+    auto px1 = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=2,r=1,q=2", px1));
+    rt.wait(100);
+
+    // Move down and place a blue image at row 2 (2x1 cells)
+    rt.injectData("\r\n\n");
+    auto px2 = solidRGBA(4, 4, 0, 0, 255);
+    rt.injectData(kittyGfxEscape("a=T,i=2,f=32,s=4,v=4,c=2,r=1,q=2", px2));
+    rt.wait(100);
+
+    // Move cursor to row 0 and delete at cursor (should remove red image)
+    rt.injectData("\x1b[H");
+    rt.injectData(kittyGfxEscape("a=d,d=c", {}));
+    rt.wait(300);
+
+    // Screenshot: red should be gone, blue should remain at row 2
+    auto png = rt.screenshotPaneRect(0, 0, 0, 4, 4);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_delete_at_cursor"));
+}
+
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;

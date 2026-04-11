@@ -766,6 +766,27 @@ void Renderer::ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
     imageGPU_[imageId] = std::move(gpu);
 }
 
+void Renderer::updateImageGPU(wgpu::Queue& queue, uint32_t imageId,
+                                const uint8_t* rgba, uint32_t width, uint32_t height,
+                                uint32_t generation)
+{
+    auto it = imageGPU_.find(imageId);
+    if (it == imageGPU_.end()) return;
+    auto& gpu = it->second;
+    if (gpu.frameGeneration == generation) return; // already up to date
+    if (gpu.width != width || gpu.height != height) return; // dimensions changed, need full recreate
+
+    wgpu::TexelCopyTextureInfo dst = {};
+    dst.texture = gpu.texture;
+    wgpu::TexelCopyBufferLayout layout = {};
+    layout.bytesPerRow = width * 4;
+    layout.rowsPerImage = height;
+    wgpu::Extent3D extent = {width, height, 1};
+    queue.WriteTexture(&dst, rgba, width * height * 4, &layout, &extent);
+
+    gpu.frameGeneration = generation;
+}
+
 void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              wgpu::TextureView target,
                              float paneWidth, float paneHeight,

@@ -123,11 +123,15 @@ public:
         wgpu::TextureView view;
         wgpu::BindGroup bindGroup;
         uint32_t width, height;
+        uint32_t frameGeneration { 0 };
     };
 
     void initImagePipeline(wgpu::Device& device, const std::string& shaderDir);
     void ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
                         const uint8_t* rgba, uint32_t width, uint32_t height);
+    void updateImageGPU(wgpu::Queue& queue, uint32_t imageId,
+                        const uint8_t* rgba, uint32_t width, uint32_t height,
+                        uint32_t generation);
     void renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       wgpu::TextureView target,
                       float paneWidth, float paneHeight,

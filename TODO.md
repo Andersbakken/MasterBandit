@@ -5,7 +5,11 @@
 - [x] Mode 2031 — Color preference notification (light/dark mode).
 - [x] DECSCUSR (`CSI Ps SP q`) — Set cursor style: block, underline, bar, blinking variants.
 - [x] Kitty keyboard protocol (`CSI > Ps u`) — Unambiguous key encoding. Distinguishes ESC from Alt+[, Ctrl+I from Tab, reports key release, supports non-Latin layouts. Used by Neovim, Vim, crossterm, textual, Ink.
-- [ ] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, virtual placement, z-layering, animation.
+- [x] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, PNG/RGB/RGBA formats, zlib decompression, query/delete, response messages.
+- [ ] Kitty graphics: animation — frame load (`a=f`), animation control (`a=a`), frame composition (`a=c`).
+- [ ] Kitty graphics: file/shm transmission — `t=f` (file), `t=t` (temp file), `t=s` (shared memory).
+- [ ] Kitty graphics: z-layering — `z=` index, negative = under text. Requires render pass restructuring.
+- [ ] Kitty graphics: Unicode placeholders — `U+10EEEE` virtual placements.
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
 - [x] OSC 7 — Current working directory reporting. Pane stores CWD for new splits.
 - [x] OSC 8 — Hyperlinks. Cmd/Ctrl+click opens URL. Auto-underlines linked text.

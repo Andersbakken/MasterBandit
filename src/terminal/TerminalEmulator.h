@@ -180,9 +180,41 @@ public:
         uint32_t id { 0 };
         uint32_t pixelWidth { 0 }, pixelHeight { 0 };
         uint32_t cellWidth { 0 }, cellHeight { 0 };
-        std::vector<uint8_t> rgba;
+        std::vector<uint8_t> rgba;  // root frame (frame 0)
+
+        // Animation
+        struct Frame {
+            std::vector<uint8_t> rgba;  // full frame RGBA data (same dimensions as image)
+            uint32_t gap { 40 };        // ms before advancing to next frame
+        };
+        std::vector<Frame> extraFrames;
+        uint32_t currentFrameIndex { 0 };  // 0 = root, 1+ = extraFrames[i-1]
+        uint32_t frameGeneration { 0 };    // bumped on frame change, for GPU staleness detection
+        uint32_t currentLoop { 0 };
+        uint32_t maxLoops { 0 };           // 0 = infinite
+        uint64_t frameShownAt { 0 };       // monotonic time current frame was first displayed
+        enum AnimState : uint8_t { Stopped = 0, Loading = 1, Running = 2 };
+        AnimState animationState { Stopped };
+        uint32_t rootFrameGap { 40 };
+
+        const std::vector<uint8_t>& currentFrameRGBA() const {
+            if (currentFrameIndex == 0 || extraFrames.empty()) return rgba;
+            uint32_t idx = currentFrameIndex - 1;
+            if (idx < extraFrames.size()) return extraFrames[idx].rgba;
+            return rgba;
+        }
+        uint32_t currentFrameGap() const {
+            if (currentFrameIndex == 0 || extraFrames.empty()) return rootFrameGap;
+            uint32_t idx = currentFrameIndex - 1;
+            if (idx < extraFrames.size()) return extraFrames[idx].gap;
+            return rootFrameGap;
+        }
+        bool hasAnimation() const { return !extraFrames.empty() && animationState == Running; }
     };
     const std::unordered_map<uint32_t, ImageEntry>& imageRegistry() const { return mImageRegistry; }
+
+    // Advance all running animations based on current time. Returns true if any animation is active.
+    bool tickAnimations();
 
     void injectData(const char* data, size_t len);
 
@@ -280,6 +312,7 @@ private:
         bool active = false;
     };
     KittyLoadState mKittyLoading;
+    uint32_t mLastKittyImageId { 0 }; // for a=f/a=a when i=0
 
     // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {

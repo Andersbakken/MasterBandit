@@ -385,6 +385,7 @@ void PlatformDawn::renderFrame()
     Tab* currentTab = activeTab();
     if (!currentTab) return;
 
+    needsRedraw_ = false;
     renderer_.colrAtlas().advanceGeneration();
 
     // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
@@ -724,6 +725,10 @@ void PlatformDawn::renderFrame()
 
             renderer_.updateFontAtlas(queue_, fontName_, *font);
 
+            // Tick animations before collecting image commands
+            bool hasVisibleAnimations = false;
+            term->tickAnimations();
+
             // Collect image draw commands
             std::vector<Renderer::ImageDrawCmd> imageCmds;
             std::unordered_set<uint32_t> seenImages;
@@ -755,8 +760,14 @@ void PlatformDawn::renderFrame()
                 if (it == term->imageRegistry().end()) continue;
                 const auto& img = it->second;
 
+                const auto& frameData = img.currentFrameRGBA();
                 renderer_.ensureImageGPU(queue_, ex->imageId,
-                    img.rgba.data(), img.pixelWidth, img.pixelHeight);
+                    frameData.data(), img.pixelWidth, img.pixelHeight);
+                renderer_.updateImageGPU(queue_, ex->imageId,
+                    frameData.data(), img.pixelWidth, img.pixelHeight,
+                    img.frameGeneration);
+
+                if (img.hasAnimation()) hasVisibleAnimations = true;
 
                 // Display size: use cell dimensions (scaled) if available, otherwise original pixels
                 float imgW = img.cellWidth > 0
@@ -787,6 +798,9 @@ void PlatformDawn::renderFrame()
                 cmd.v1 = (y1 - imgY) / imgH;
                 imageCmds.push_back(cmd);
             }
+
+            // Keep render loop alive for visible animations
+            if (hasVisibleAnimations) setNeedsRedraw();
 
             TerminalComputeParams params = {};
             params.cols = static_cast<uint32_t>(g.cols());
@@ -887,7 +901,7 @@ void PlatformDawn::renderFrame()
 
             if (rs.heldTexture) rs.pendingRelease.push_back(rs.heldTexture);
             rs.heldTexture = newTexture;
-            rs.dirty = false;
+            rs.dirty = hasVisibleAnimations; // stay dirty if animating
         }
 
         if (rs.heldTexture) {
@@ -1212,6 +1226,5 @@ void PlatformDawn::renderFrame()
         surface_.Present();
     }
     if (window_) window_->frameRendered();
-    needsRedraw_ = false;
 }
 

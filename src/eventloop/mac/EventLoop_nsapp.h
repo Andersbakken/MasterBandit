@@ -70,4 +70,5 @@ private:
     void*   fsEventStream_ = nullptr;  // FSEventStreamRef
 
     void* observer_ = nullptr;  // CFRunLoopObserverRef
+    bool wakeupPending_ = false;
 };

@@ -35,8 +35,11 @@ struct KittyGraphicsCommand {
     uint32_t cellRows = 0;       // r= (display rows)
     uint32_t cellXOffset = 0;    // X= (pixel offset within cell)
     uint32_t cellYOffset = 0;    // Y= (pixel offset within cell)
-    int32_t zIndex = 0;          // z=
+    int32_t zIndex = 0;          // z= (also gap in ms for a=f)
     uint32_t cursorMovement = 0; // C= (0=move, 1=don't move)
+    // Note: for animation commands, keys are reused contextually:
+    //   a=f: z=gap(ms), r=frame_number, s=data_width, v=data_height
+    //   a=a: s=animation_state(1/2/3), v=loop_count, r=frame_number, z=gap
 };
 
 bool parseCommand(std::string_view control, KittyGraphicsCommand& cmd)
@@ -141,6 +144,76 @@ std::vector<uint8_t> zlibDecompress(const uint8_t* data, size_t len)
     return out;
 }
 
+// Decode raw/compressed image data to RGBA. Returns empty on failure.
+struct DecodeResult {
+    std::vector<uint8_t> rgba;
+    int width = 0, height = 0;
+    std::string error;
+};
+
+DecodeResult decodeImageData(std::vector<uint8_t>& data, char compressed,
+                              uint32_t format, uint32_t dataWidth, uint32_t dataHeight)
+{
+    DecodeResult result;
+
+    // Decompress if needed
+    if (compressed == 'z') {
+        auto decompressed = zlibDecompress(data.data(), data.size());
+        if (decompressed.empty()) {
+            result.error = "EINVAL:zlib decompression failed";
+            return result;
+        }
+        data = std::move(decompressed);
+    }
+
+    if (format == 100) {
+        int channels;
+        uint8_t* pixels = stbi_load_from_memory(
+            data.data(), static_cast<int>(data.size()), &result.width, &result.height, &channels, 4);
+        if (!pixels) {
+            result.error = "EINVAL:PNG decode failed";
+            return result;
+        }
+        result.rgba.assign(pixels, pixels + result.width * result.height * 4);
+        stbi_image_free(pixels);
+    } else if (format == 32) {
+        result.width = static_cast<int>(dataWidth);
+        result.height = static_cast<int>(dataHeight);
+        if (result.width <= 0 || result.height <= 0) {
+            result.error = "EINVAL:missing s= or v= for raw format";
+            return result;
+        }
+        size_t expected = static_cast<size_t>(result.width) * result.height * 4;
+        if (data.size() != expected) {
+            result.error = "EINVAL:data size mismatch";
+            return result;
+        }
+        result.rgba = std::move(data);
+    } else if (format == 24) {
+        result.width = static_cast<int>(dataWidth);
+        result.height = static_cast<int>(dataHeight);
+        if (result.width <= 0 || result.height <= 0) {
+            result.error = "EINVAL:missing s= or v= for raw format";
+            return result;
+        }
+        size_t expected = static_cast<size_t>(result.width) * result.height * 3;
+        if (data.size() != expected) {
+            result.error = "EINVAL:data size mismatch";
+            return result;
+        }
+        result.rgba.resize(static_cast<size_t>(result.width) * result.height * 4);
+        for (size_t i = 0, j = 0; i < data.size(); i += 3, j += 4) {
+            result.rgba[j]     = data[i];
+            result.rgba[j + 1] = data[i + 1];
+            result.rgba[j + 2] = data[i + 2];
+            result.rgba[j + 3] = 255;
+        }
+    } else {
+        result.error = "EINVAL:unsupported format";
+    }
+    return result;
+}
+
 } // anonymous namespace
 
 void TerminalEmulator::processAPC()
@@ -180,9 +253,17 @@ void TerminalEmulator::processAPC()
     }
 
     // Helper to send a response back to the application
-    auto sendResponse = [&](uint32_t imgId, const char* msg) {
-        if (cmd.quiet == 2) return;
-        if (cmd.quiet == 1 && std::strncmp(msg, "OK", 2) == 0) return;
+    // Response logic matching kitty's finish_command_response():
+    // - No id → no response
+    // - q>=1: suppress OK responses
+    // - q>=2: suppress all responses
+    // - OK only sent if dataLoaded is true (a=a doesn't load data → no OK)
+    auto sendResponse = [&](uint32_t imgId, const char* msg, bool dataLoaded = true) {
+        if (imgId == 0) return;
+        bool isOk = std::strncmp(msg, "OK", 2) == 0;
+        if (cmd.quiet >= 2) return;
+        if (cmd.quiet >= 1 && isOk) return;
+        if (isOk && !dataLoaded) return;
         char buf[256];
         int n = snprintf(buf, sizeof(buf), "\x1b_Gi=%u;%s\x1b\\", imgId, msg);
         if (n > 0) writeToOutput(buf, static_cast<size_t>(n));
@@ -277,13 +358,137 @@ void TerminalEmulator::processAPC()
             spdlog::debug("kitty graphics: unhandled delete action '{}'", da);
             break;
         }
-        sendResponse(cmd.id, "OK");
+        // kitty sends no response for a=d (delete)
         return;
     }
-    case 'f': // animation frame load (not yet supported)
-    case 'a': // animation control (not yet supported)
+    case 'f': // animation frame load
+    {
+        uint32_t targetId = cmd.id > 0 ? cmd.id : mLastKittyImageId;
+        auto it = mImageRegistry.find(targetId);
+        if (it == mImageRegistry.end()) {
+            sendResponse(targetId, "ENOENT:image not found");
+            return;
+        }
+        auto& img = it->second;
+
+        auto decoded = decodeImageData(chunkData, cmd.compressed,
+                                        cmd.format, cmd.dataWidth, cmd.dataHeight);
+        if (!decoded.error.empty()) {
+            sendResponse(cmd.id, decoded.error.c_str());
+            return;
+        }
+
+        uint32_t gap = cmd.zIndex > 0 ? static_cast<uint32_t>(cmd.zIndex) : 40;
+        bool overwrite = (cmd.cursorMovement == 1); // C=1 means overwrite for a=f
+
+        // Determine base frame for compositing:
+        // c= (cellCols) specifies compose_onto frame (1-based). 0 = previous frame.
+        uint32_t composeOnto = cmd.cellCols; // c= reused as compose_onto for a=f
+
+        ImageEntry::Frame frame;
+        frame.gap = gap;
+        if (static_cast<uint32_t>(decoded.width) == img.pixelWidth &&
+            static_cast<uint32_t>(decoded.height) == img.pixelHeight &&
+            cmd.xOffset == 0 && cmd.yOffset == 0) {
+            // Full-size frame at origin — store directly
+            frame.rgba = std::move(decoded.rgba);
+        } else {
+            // Get the base frame to composite onto
+            if (composeOnto == 0 && !img.extraFrames.empty()) {
+                // Default: use previous frame
+                frame.rgba = img.extraFrames.back().rgba;
+            } else if (composeOnto == 1) {
+                // Frame 1 = root frame
+                frame.rgba = img.rgba;
+            } else if (composeOnto >= 2 && composeOnto - 2 < img.extraFrames.size()) {
+                frame.rgba = img.extraFrames[composeOnto - 2].rgba;
+            } else {
+                // Fallback to root
+                frame.rgba = img.rgba;
+            }
+
+            int srcW = decoded.width, srcH = decoded.height;
+            int dstW = static_cast<int>(img.pixelWidth);
+            int ox = static_cast<int>(cmd.xOffset);
+            int oy = static_cast<int>(cmd.yOffset);
+            for (int y = 0; y < srcH; y++) {
+                int dy = oy + y;
+                if (dy < 0 || dy >= static_cast<int>(img.pixelHeight)) continue;
+                for (int x = 0; x < srcW; x++) {
+                    int dx = ox + x;
+                    if (dx < 0 || dx >= dstW) continue;
+                    size_t si = (static_cast<size_t>(y) * srcW + x) * 4;
+                    size_t di = (static_cast<size_t>(dy) * dstW + dx) * 4;
+                    if (overwrite) {
+                        std::memcpy(&frame.rgba[di], &decoded.rgba[si], 4);
+                    } else {
+                        // Alpha-over compositing
+                        uint8_t sa = decoded.rgba[si + 3];
+                        if (sa == 255) {
+                            std::memcpy(&frame.rgba[di], &decoded.rgba[si], 4);
+                        } else if (sa > 0) {
+                            for (int c = 0; c < 3; c++) {
+                                uint8_t sc = decoded.rgba[si + c];
+                                uint8_t dc = frame.rgba[di + c];
+                                frame.rgba[di + c] = static_cast<uint8_t>(
+                                    (sc * sa + dc * (255 - sa)) / 255);
+                            }
+                            uint8_t da = frame.rgba[di + 3];
+                            frame.rgba[di + 3] = static_cast<uint8_t>(
+                                sa + da * (255 - sa) / 255);
+                        }
+                    }
+                }
+            }
+        }
+
+        img.extraFrames.push_back(std::move(frame));
+        sendResponse(targetId, "OK");
+        return;
+    }
+    case 'a': // animation control
+    {
+        uint32_t targetId = cmd.id > 0 ? cmd.id : mLastKittyImageId;
+        auto it = mImageRegistry.find(targetId);
+        if (it == mImageRegistry.end()) {
+            // Silently ignore — client may have exited
+            return;
+        }
+        auto& img = it->second;
+
+        // s= (dataWidth) is animation_state: 1=stop, 2=loading, 3=running
+        if (cmd.dataWidth >= 1 && cmd.dataWidth <= 3) {
+            auto newState = static_cast<ImageEntry::AnimState>(cmd.dataWidth - 1);
+            if (newState == ImageEntry::Running && img.animationState != ImageEntry::Running) {
+                img.currentFrameIndex = 0;
+                img.currentLoop = 0;
+                img.frameShownAt = mono();
+            }
+            img.animationState = newState;
+        }
+
+        // v= (dataHeight) is loop_count
+        if (cmd.dataHeight > 0) {
+            img.maxLoops = cmd.dataHeight - 1;
+        }
+
+        // z= (zIndex) is gap override for a specific frame
+        if (cmd.zIndex > 0 && cmd.cellRows > 0) {
+            // r= is frame_number (1-based), z= is new gap
+            uint32_t frameNum = cmd.cellRows;
+            uint32_t newGap = static_cast<uint32_t>(cmd.zIndex);
+            if (frameNum == 1) {
+                img.rootFrameGap = newGap;
+            } else if (frameNum - 2 < img.extraFrames.size()) {
+                img.extraFrames[frameNum - 2].gap = newGap;
+            }
+        }
+
+        // kitty sends no response for a=a (animation control)
+        return;
+    }
     case 'c': // frame composition (not yet supported)
-        // Silently consume — no response to avoid garbage after client exits
+        // Silently consume
         return;
     default:
         // Unrecognized action — silently consume
@@ -294,81 +499,25 @@ void TerminalEmulator::processAPC()
     // --- Image transmission (a=T, a=t, a=q) ---
 
     if (cmd.transmissionType != 'd') {
-        // Only direct transmission supported for now
         spdlog::debug("kitty graphics: unsupported transmission type '{}'", cmd.transmissionType);
         sendResponse(cmd.id, "EINVAL:unsupported transmission type");
         return;
     }
 
-    // Decompress if needed
-    if (cmd.compressed == 'z') {
-        auto decompressed = zlibDecompress(chunkData.data(), chunkData.size());
-        if (decompressed.empty()) {
-            sendResponse(cmd.id, "EINVAL:zlib decompression failed");
-            return;
-        }
-        chunkData = std::move(decompressed);
-    }
-
-    // Decode to RGBA
-    int imgW = 0, imgH = 0;
-    std::vector<uint8_t> rgba;
-
-    if (cmd.format == 100) {
-        // PNG
-        int channels;
-        uint8_t* pixels = stbi_load_from_memory(
-            chunkData.data(), static_cast<int>(chunkData.size()), &imgW, &imgH, &channels, 4);
-        if (!pixels) {
-            sendResponse(cmd.id, "EINVAL:PNG decode failed");
-            return;
-        }
-        rgba.assign(pixels, pixels + imgW * imgH * 4);
-        stbi_image_free(pixels);
-    } else if (cmd.format == 32) {
-        // RGBA
-        imgW = static_cast<int>(cmd.dataWidth);
-        imgH = static_cast<int>(cmd.dataHeight);
-        if (imgW <= 0 || imgH <= 0) {
-            sendResponse(cmd.id, "EINVAL:missing s= or v= for raw format");
-            return;
-        }
-        size_t expected = static_cast<size_t>(imgW) * imgH * 4;
-        if (chunkData.size() != expected) {
-            sendResponse(cmd.id, "EINVAL:data size mismatch");
-            return;
-        }
-        rgba = std::move(chunkData);
-    } else if (cmd.format == 24) {
-        // RGB -> RGBA
-        imgW = static_cast<int>(cmd.dataWidth);
-        imgH = static_cast<int>(cmd.dataHeight);
-        if (imgW <= 0 || imgH <= 0) {
-            sendResponse(cmd.id, "EINVAL:missing s= or v= for raw format");
-            return;
-        }
-        size_t expected = static_cast<size_t>(imgW) * imgH * 3;
-        if (chunkData.size() != expected) {
-            sendResponse(cmd.id, "EINVAL:data size mismatch");
-            return;
-        }
-        rgba.resize(static_cast<size_t>(imgW) * imgH * 4);
-        for (size_t i = 0, j = 0; i < chunkData.size(); i += 3, j += 4) {
-            rgba[j]     = chunkData[i];
-            rgba[j + 1] = chunkData[i + 1];
-            rgba[j + 2] = chunkData[i + 2];
-            rgba[j + 3] = 255;
-        }
-    } else {
-        sendResponse(cmd.id, "EINVAL:unsupported format");
+    auto decoded = decodeImageData(chunkData, cmd.compressed,
+                                    cmd.format, cmd.dataWidth, cmd.dataHeight);
+    if (!decoded.error.empty()) {
+        sendResponse(cmd.id, decoded.error.c_str());
         return;
     }
 
-    // Query mode: just validate and respond, don't store
     if (cmd.action == 'q') {
         sendResponse(cmd.id, "OK");
         return;
     }
+
+    int imgW = decoded.width, imgH = decoded.height;
+    std::vector<uint8_t> rgba = std::move(decoded.rgba);
 
     // Calculate cell dimensions
     float cw = mCallbacks.cellPixelWidth ? mCallbacks.cellPixelWidth() : 0.0f;
@@ -408,6 +557,7 @@ void TerminalEmulator::processAPC()
     spdlog::debug("kitty graphics: image id={} {}x{} px, {}x{} cells, action={}",
                   imageId, imgW, imgH, cellCols, cellRows, cmd.action);
     mImageRegistry[imageId] = std::move(entry);
+    mLastKittyImageId = imageId;
 
     // Place in grid if action is transmit+display
     if (cmd.action == 'T') {
@@ -416,3 +566,48 @@ void TerminalEmulator::processAPC()
 
     sendResponse(imageId, "OK");
 }
+
+bool TerminalEmulator::tickAnimations()
+{
+    uint64_t now = mono();
+    bool anyActive = false;
+
+    for (auto& [id, img] : mImageRegistry) {
+        if (!img.hasAnimation()) continue;
+        anyActive = true;
+
+        uint32_t gap = img.currentFrameGap();
+        if (gap == 0) gap = 40; // default 40ms
+
+        uint64_t elapsed = now - img.frameShownAt;
+
+        if (elapsed < gap) continue;
+
+        // Advance frame(s), potentially skipping if multiple gaps elapsed
+        uint32_t totalFrames = 1 + static_cast<uint32_t>(img.extraFrames.size());
+        bool stopped = false;
+
+        while (elapsed >= gap && !stopped) {
+            elapsed -= gap;
+
+            uint32_t next = (img.currentFrameIndex + 1) % totalFrames;
+            if (next == 0) {
+                // Wrapped around
+                if (img.maxLoops > 0 && ++img.currentLoop >= img.maxLoops) {
+                    img.animationState = ImageEntry::Stopped;
+                    stopped = true;
+                    break;
+                }
+            }
+            img.currentFrameIndex = next;
+            gap = img.currentFrameGap();
+            if (gap == 0) gap = 40;
+        }
+
+        img.frameShownAt = now;
+        img.frameGeneration++;
+    }
+
+    return anyActive;
+}
+

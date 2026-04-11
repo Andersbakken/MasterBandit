@@ -41,16 +41,23 @@ NSAppEventLoop::NSAppEventLoop()
     id delegate = [[MBAppDelegate alloc] init];
     [NSApp setDelegate:delegate];
 
-    // CFRunLoop observer: fires before the run loop sleeps, calls onTick
+    // CFRunLoop observer: fires before sleeping and after waking, calls onTick
     CFRunLoopObserverContext ctx{};
     ctx.info = this;
     observer_ = CFRunLoopObserverCreateWithHandler(
         kCFAllocatorDefault,
-        kCFRunLoopBeforeWaiting,
+        kCFRunLoopBeforeWaiting | kCFRunLoopAfterWaiting,
         true, 0,
         ^(CFRunLoopObserverRef, CFRunLoopActivity activity) {
-            if (activity == kCFRunLoopBeforeWaiting && onTick)
-                onTick();
+            if (activity == kCFRunLoopBeforeWaiting) {
+                if (onTick) onTick();
+                if (wakeupPending_) {
+                    wakeupPending_ = false;
+                    CFRunLoopWakeUp(CFRunLoopGetMain());
+                }
+            } else if (activity == kCFRunLoopAfterWaiting) {
+                if (onTick) onTick();
+            }
         });
     CFRunLoopAddObserver(CFRunLoopGetMain(),
                           static_cast<CFRunLoopObserverRef>(observer_),
@@ -103,6 +110,7 @@ void NSAppEventLoop::stop()
 
 void NSAppEventLoop::wakeup()
 {
+    wakeupPending_ = true;
     CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 

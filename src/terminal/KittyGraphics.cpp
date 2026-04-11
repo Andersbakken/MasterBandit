@@ -13,6 +13,11 @@
 #include <string>
 #include <string_view>
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
 namespace {
 
 struct KittyGraphicsCommand {
@@ -322,6 +327,54 @@ void TerminalEmulator::processAPC()
         mKittyLoading.active = false;
     }
 
+    // --- Resolve payload for file/shm transmission types ---
+    if (cmd.transmissionType == 'f' || cmd.transmissionType == 't') {
+        std::string path(chunkData.begin(), chunkData.end());
+        int fd = open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            sendResponse(cmd.id, "ENOENT:cannot open file");
+            return;
+        }
+        struct stat st;
+        if (fstat(fd, &st) < 0 || st.st_size <= 0) {
+            close(fd);
+            sendResponse(cmd.id, "EINVAL:cannot stat file");
+            return;
+        }
+        chunkData.resize(static_cast<size_t>(st.st_size));
+        ssize_t n = read(fd, chunkData.data(), chunkData.size());
+        close(fd);
+        if (cmd.transmissionType == 't') unlink(path.c_str());
+        if (n <= 0) {
+            sendResponse(cmd.id, "EINVAL:cannot read file");
+            return;
+        }
+        chunkData.resize(static_cast<size_t>(n));
+    } else if (cmd.transmissionType == 's') {
+        std::string name(chunkData.begin(), chunkData.end());
+        int fd = shm_open(name.c_str(), O_RDONLY, 0);
+        if (fd < 0) {
+            sendResponse(cmd.id, "ENOENT:cannot open shared memory");
+            return;
+        }
+        struct stat st;
+        if (fstat(fd, &st) < 0 || st.st_size <= 0) {
+            close(fd);
+            sendResponse(cmd.id, "EINVAL:cannot stat shared memory");
+            return;
+        }
+        size_t mapSize = static_cast<size_t>(st.st_size);
+        void* ptr = mmap(nullptr, mapSize, PROT_READ, MAP_SHARED, fd, 0);
+        close(fd);
+        shm_unlink(name.c_str());
+        if (ptr == MAP_FAILED) {
+            sendResponse(cmd.id, "EINVAL:mmap failed");
+            return;
+        }
+        chunkData.assign(static_cast<uint8_t*>(ptr), static_cast<uint8_t*>(ptr) + mapSize);
+        munmap(ptr, mapSize);
+    }
+
     // --- Dispatch on action ---
     switch (cmd.action) {
     case 'T': // transmit + display
@@ -497,12 +550,6 @@ void TerminalEmulator::processAPC()
     }
 
     // --- Image transmission (a=T, a=t, a=q) ---
-
-    if (cmd.transmissionType != 'd') {
-        spdlog::debug("kitty graphics: unsupported transmission type '{}'", cmd.transmissionType);
-        sendResponse(cmd.id, "EINVAL:unsupported transmission type");
-        return;
-    }
 
     auto decoded = decodeImageData(chunkData, cmd.compressed,
                                     cmd.format, cmd.dataWidth, cmd.dataHeight);

@@ -214,7 +214,7 @@ void Terminal::writeToPTY(const char* data, size_t len)
         int ret;
         EINTRWRAP(ret, ::write(mMasterFD, data, len));
         if (ret == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
             spdlog::critical("Failed to write to master {} {}", errno, strerror(errno)); std::abort();
             if (mPlatformCbs.quit) mPlatformCbs.quit();
             return;

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <unordered_set>
 
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -130,6 +131,8 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
     int startCol = mCursorX;
     int fillCols = std::min(cellCols, mWidth - startCol);
 
+    // Collect old image IDs being overwritten so we can clean them up
+    std::unordered_set<uint32_t> overwrittenIds;
     int savedX = mCursorX, savedY = mCursorY;
 
     for (int r = 0; r < cellRows; ++r) {
@@ -147,6 +150,11 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
             cell.attrs = CellAttrs{};
         }
 
+        // Track old image being overwritten
+        const CellExtra* oldEx = g.getExtra(startCol, mCursorY);
+        if (oldEx && oldEx->imageId != 0 && oldEx->imageId != imageId)
+            overwrittenIds.insert(oldEx->imageId);
+
         // Place extra at startCol with image ID, start column, and row offset
         CellExtra& ex = g.ensureExtra(startCol, mCursorY);
         ex.imageId = imageId;
@@ -155,6 +163,11 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
 
         g.markRowDirty(mCursorY);
         mCursorY++;
+    }
+
+    // Clean up overwritten images that are no longer referenced
+    for (uint32_t oldId : overwrittenIds) {
+        mImageRegistry.erase(oldId);
     }
 
     if (!moveCursor) {

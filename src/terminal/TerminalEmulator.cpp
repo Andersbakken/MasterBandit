@@ -374,7 +374,8 @@ void TerminalEmulator::lineFeed()
 
 void TerminalEmulator::injectData(const char* buf, size_t len_)
 {
-    sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
+    if (sLog().should_log(spdlog::level::debug))
+        sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
     const int len = static_cast<int>(len_);
 
     auto resetToNormal = [this]() {
@@ -592,9 +593,10 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 break;
             }
             mEscapeBuffer[mEscapeIndex++] = buf[i];
-            sLog().debug("Adding escape byte [{}] {} {} -> {}", mEscapeIndex - 1,
-                  toPrintable(buf + i, 1),
-                  i, toPrintable(mEscapeBuffer, mEscapeIndex));
+            if (sLog().should_log(spdlog::level::debug))
+                sLog().debug("Adding escape byte [{}] {} {} -> {}", mEscapeIndex - 1,
+                      toPrintable(buf + i, 1),
+                      i, toPrintable(mEscapeBuffer, mEscapeIndex));
             switch (mEscapeBuffer[0]) {
             case SS2:
             case SS3:
@@ -752,7 +754,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
         }
     }
 
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    // Suppress render updates during chunked image transfer to avoid
+    // vsync-blocking the event loop while the PTY still has data to deliver.
+    if (!mKittyLoading.active) {
+        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    }
 }
 
 void TerminalEmulator::processCSI()
@@ -760,7 +766,8 @@ void TerminalEmulator::processCSI()
     assert(mState == InEscape);
     assert(mEscapeIndex >= 1);
 
-    sLog().debug("Processing CSI \"{}\"", toPrintable(mEscapeBuffer, mEscapeIndex));
+    if (sLog().should_log(spdlog::level::debug))
+        sLog().debug("Processing CSI \"{}\"", toPrintable(mEscapeBuffer, mEscapeIndex));
 
     auto readCount = [this](int def) {
         if (mEscapeIndex == 2) // no digits
@@ -968,6 +975,9 @@ void TerminalEmulator::processCSI()
             } else {
                 sLog().warn("Unhandled private DSR {}", ps);
             }
+        } else if (mEscapeIndex == 3 && mEscapeBuffer[1] == '5') {
+            // Device status report: respond "OK"
+            writeToOutput("\x1b[0n", 4);
         } else if (mEscapeIndex == 3 && mEscapeBuffer[1] == '6') {
             // Report cursor position: ESC [ row ; col R
             char response[32];
@@ -1150,7 +1160,8 @@ void TerminalEmulator::onAction(const Action *action)
 {
     assert(action);
     assert(action->type != Action::Invalid);
-    sLog().debug("Got action {} {} {} {}", Action::typeName(action->type), action->count, action->x, action->y);
+    if (sLog().should_log(spdlog::level::debug))
+        sLog().debug("Got action {} {} {} {}", Action::typeName(action->type), action->count, action->x, action->y);
 
     // Any CSI action clears pending autowrap (save old state for SCP)
     bool savedWrapPending = mWrapPending;

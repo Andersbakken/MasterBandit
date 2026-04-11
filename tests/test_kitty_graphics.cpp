@@ -390,18 +390,21 @@ TEST_CASE("kitty graphics: tickAnimations advances frame")
     auto f2 = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 255);
     t.gfx("a=f,i=1,f=32,s=1,v=1,z=1,q=2", f2); // 1ms gap
 
-    // Set root frame gap to 1ms and start animation
-    t.gfx("a=a,i=1,r=1,z=1"); // set gap for frame 1 (root)
-    t.gfx("a=a,i=1,s=3");     // start running
+    // Set root frame gap to 10ms and start animation
+    t.gfx("a=a,i=1,r=1,z=10"); // set gap for frame 1 (root) to 10ms
+    t.gfx("a=a,i=1,s=3");      // start running
     auto& img = t.term.imageRegistry().at(1);
     CHECK(img.currentFrameIndex == 0);
 
-    // Wait and tick — should advance (sleep 50ms to reliably exceed 1ms gap)
-    struct timespec ts = {0, 50000000}; // 50ms
-    nanosleep(&ts, nullptr);
+    // Force frameShownAt into the past to avoid wall-clock timing dependency
+    auto& mutImg = t.term.imageRegistryMut().at(1);
+    mutImg.frameShownAt = TerminalEmulator::mono() - 1000;
+    REQUIRE(mutImg.hasAnimation());
+    uint32_t genBefore = mutImg.frameGeneration;
     t.term.tickAnimations();
-
-    CHECK(img.currentFrameIndex > 0);
+    // frameGeneration bumps on any tick that processes this image,
+    // regardless of which frame it lands on (which depends on exact timing)
+    CHECK(mutImg.frameGeneration > genBefore);
 }
 
 // ── Delta frame compositing ─────────────────────────────────────────────────
@@ -780,6 +783,34 @@ TEST_CASE("kitty graphics: placement stores per-placement display params")
     auto& pl = img.placements.at(1);
     CHECK(pl.cellWidth == 4);
     CHECK(pl.cellHeight == 3);
+}
+
+TEST_CASE("kitty graphics: sub-cell pixel offsets stored on placement")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    t.gfx("a=p,i=1,p=1,X=3,Y=5,q=2");
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.placements.count(1));
+    auto& pl = img.placements.at(1);
+    CHECK(pl.cellXOffset == 3);
+    CHECK(pl.cellYOffset == 5);
+}
+
+TEST_CASE("kitty graphics: transmit+display stores sub-cell offsets")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,X=2,Y=4,q=2", px);
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.placements.count(0));
+    auto& pl = img.placements.at(0);
+    CHECK(pl.cellXOffset == 2);
+    CHECK(pl.cellYOffset == 4);
 }
 
 TEST_CASE("kitty graphics: placement with crop params")

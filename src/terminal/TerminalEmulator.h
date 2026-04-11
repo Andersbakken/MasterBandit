@@ -189,6 +189,7 @@ public:
         struct Placement {
             uint32_t cellWidth { 0 }, cellHeight { 0 };
             uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
+            uint32_t cellXOffset { 0 }, cellYOffset { 0 }; // X=, Y= sub-cell pixel offsets
         };
         std::unordered_map<uint32_t, Placement> placements; // placementId → params
 
@@ -222,6 +223,7 @@ public:
         bool hasAnimation() const { return !extraFrames.empty() && animationState == Running; }
     };
     const std::unordered_map<uint32_t, ImageEntry>& imageRegistry() const { return mImageRegistry; }
+    std::unordered_map<uint32_t, ImageEntry>& imageRegistryMut() { return mImageRegistry; }
     uint32_t findImageByNumber(uint32_t number) const;
 
     // Advance all running animations based on current time.

@@ -426,6 +426,8 @@ void TerminalEmulator::processAPC()
         pl.cellHeight = static_cast<uint32_t>(rows);
         pl.cropX = cmd.xOffset; pl.cropY = cmd.yOffset;
         pl.cropW = cmd.width;   pl.cropH = cmd.height;
+        pl.cellXOffset = cmd.cellXOffset;
+        pl.cellYOffset = cmd.cellYOffset;
         img.placements[cmd.placementId] = pl;
 
         placeImageInGrid(targetId, cmd.placementId, cols, rows, cmd.cursorMovement == 0);
@@ -784,6 +786,8 @@ void TerminalEmulator::processAPC()
         pl.cellHeight = static_cast<uint32_t>(cellRows);
         pl.cropX = cmd.xOffset; pl.cropY = cmd.yOffset;
         pl.cropW = cmd.width;   pl.cropH = cmd.height;
+        pl.cellXOffset = cmd.cellXOffset;
+        pl.cellYOffset = cmd.cellYOffset;
         mImageRegistry[imageId].placements[cmd.placementId] = pl;
         placeImageInGrid(imageId, cmd.placementId, cellCols, cellRows, cmd.cursorMovement == 0);
     }

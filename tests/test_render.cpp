@@ -353,6 +353,42 @@ TEST_CASE("render: kitty graphics placement replacement" * doctest::test_suite("
     CHECK(rt.matchesReference(png, "kitty_placement_replace"));
 }
 
+TEST_CASE("render: kitty graphics sub-cell pixel offset" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    // Hide cursor so it doesn't affect the reference image
+    rt.injectData("\x1b[?25l");
+
+    // Place two copies of the same image: one without offset, one with.
+    // Transmit a solid red 4x4 image
+    auto px = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=t,i=1,f=32,s=4,v=4,q=2", px));
+    rt.wait(200);
+
+    // Place at row 0 with no sub-cell offset (placement 1)
+    rt.injectData(kittyGfxEscape("a=p,i=1,p=1,c=3,r=2,q=2", {}));
+    rt.wait(100);
+
+    // Move to row 3
+    rt.injectData("\r\n\n");
+
+    // Place at row 3 with X=10 Y=10 sub-cell offset (placement 2)
+    rt.injectData(kittyGfxEscape("a=p,i=1,p=2,c=3,r=2,X=10,Y=10,q=2", {}));
+    rt.wait(300);
+
+    // Screenshot: two red rectangles, second one visibly shifted right and down
+    auto png = rt.screenshotPaneRect(0, 0, 0, 5, 6);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_subcell_offset"));
+}
+
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;

@@ -789,6 +789,7 @@ void PlatformDawn::renderFrame()
                     uint32_t dispCellW = img.cellWidth, dispCellH = img.cellHeight;
                     uint32_t dispCropX = img.cropX, dispCropY = img.cropY;
                     uint32_t dispCropW = img.cropW, dispCropH = img.cropH;
+                    float subCellX = 0.0f, subCellY = 0.0f;
                     auto plIt = img.placements.find(ex->imagePlacementId);
                     if (plIt != img.placements.end()) {
                         const auto& pl = plIt->second;
@@ -798,6 +799,8 @@ void PlatformDawn::renderFrame()
                             dispCropX = pl.cropX; dispCropY = pl.cropY;
                             dispCropW = pl.cropW; dispCropH = pl.cropH;
                         }
+                        subCellX = static_cast<float>(pl.cellXOffset);
+                        subCellY = static_cast<float>(pl.cellYOffset);
                     }
 
                     float imgW = dispCellW > 0
@@ -806,8 +809,8 @@ void PlatformDawn::renderFrame()
                     float imgH = dispCellH > 0
                         ? static_cast<float>(dispCellH) * lineHeight_
                         : static_cast<float>(img.pixelHeight);
-                    float imgX = padLeft_ + static_cast<float>(ex->imageStartCol) * charWidth_;
-                    float imgY = padTop_ + (static_cast<float>(re.viewRow) - ex->imageOffsetRow) * lineHeight_;
+                    float imgX = padLeft_ + static_cast<float>(ex->imageStartCol) * charWidth_ + subCellX;
+                    float imgY = padTop_ + (static_cast<float>(re.viewRow) - ex->imageOffsetRow) * lineHeight_ + subCellY;
 
                     float x0 = std::max(imgX, 0.0f);
                     float y0 = std::max(imgY, 0.0f);

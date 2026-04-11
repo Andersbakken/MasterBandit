@@ -5,9 +5,11 @@
 - [x] Mode 2031 — Color preference notification (light/dark mode).
 - [x] DECSCUSR (`CSI Ps SP q`) — Set cursor style: block, underline, bar, blinking variants.
 - [x] Kitty keyboard protocol (`CSI > Ps u`) — Unambiguous key encoding. Distinguishes ESC from Alt+[, Ctrl+I from Tab, reports key release, supports non-Latin layouts. Used by Neovim, Vim, crossterm, textual, Ink.
-- [x] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, PNG/RGB/RGBA formats, zlib decompression, query/delete, response messages.
-- [ ] Kitty graphics: animation — frame load (`a=f`), animation control (`a=a`), frame composition (`a=c`).
-- [ ] Kitty graphics: file/shm transmission — `t=f` (file), `t=t` (temp file), `t=s` (shared memory).
+- [x] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, PNG/RGB/RGBA formats, zlib decompression, query/delete, response messages, image numbers (`I=`), source rect cropping.
+- [x] Kitty graphics: animation — frame load (`a=f`), animation control (`a=a`), delta compositing with base frame references, render-loop driven frame advancement.
+- [x] Kitty graphics: file/shm transmission — `t=f` (file), `t=t` (temp file), `t=s` (shared memory).
+- [ ] Kitty graphics: multiple placements — one image displayed at multiple positions via `a=p` with placement IDs (`p=`). Needed by TUI apps (neovim image plugins).
+- [ ] Kitty graphics: frame composition (`a=c`) — explicit pixel-level blit between frames.
 - [ ] Kitty graphics: z-layering — `z=` index, negative = under text. Requires render pass restructuring.
 - [ ] Kitty graphics: Unicode placeholders — `U+10EEEE` virtual placements.
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
@@ -161,6 +163,7 @@
 - [ ] Configuration UI — first bundled script. QuickJS script that reads config, draws a TUI form in an overlay pane via escape sequences, writes changes back. Replaces manual TOML editing.
 - [ ] Built-in UI theming — expose a `[ui]` config section (colors, border style) that all built-in scripts (command palette, permission dialog, future TUI overlays) read from a single place. Implement via `mb.config` JS property populated from the loaded Config. Scripts call `createTheme(mb.config.ui)` rather than hardcoding colors. Covers command-palette.js, applet-loader.js permission prompt, and any future built-in popups/overlays.
 - [ ] GPU buffer pool — divider and popup border vertex buffers are created/destroyed directly. A pool (like TexturePool/ComputeStatePool) would avoid per-frame GPU allocations.
+- [ ] Image vertex buffer growth — `imageVertexBuffer_` is fixed at 256 image slots. Should grow dynamically or guard against overflow when >256 images are visible in one frame.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
 ## Platform (Linux)

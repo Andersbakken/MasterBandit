@@ -699,7 +699,7 @@ void Renderer::initImagePipeline(wgpu::Device& device, const std::string& shader
     // Vertex buffer (dynamic, 6 verts per image)
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = 256 * 6 * sizeof(ImageVertex); // up to 256 images per frame
+        desc.size = MaxImageSlots * 6 * sizeof(ImageVertex);
         desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
         imageVertexBuffer_ = device.CreateBuffer(&desc);
     }
@@ -807,10 +807,18 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &att;
 
-    // Draw each image as a separate draw call (different bind group per image)
+    // Upload all image vertices into the shared vertex buffer at different offsets,
+    // then record draw calls. This avoids WriteBuffer overwriting previous vertices
+    // before the GPU executes the draws (all passes share one command encoder).
+    size_t vertexStride = 6 * sizeof(ImageVertex);
+    size_t count = 0;
+
     for (const auto& cmd : cmds) {
-        auto it = imageGPU_.find(cmd.imageId);
-        if (it == imageGPU_.end()) continue;
+        if (!imageGPU_.count(cmd.imageId)) continue;
+        if (count >= MaxImageSlots) {
+            spdlog::error("image render: exceeded {} image slots, dropping remaining images", MaxImageSlots);
+            break;
+        }
 
         float x0 = cmd.x, y0 = cmd.y;
         float x1 = cmd.x + cmd.w, y1 = cmd.y + cmd.h;
@@ -823,15 +831,24 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
             {{x1, y1}, {cmd.u1, cmd.v1}},
             {{x0, y1}, {cmd.u0, cmd.v1}},
         };
-        queue.WriteBuffer(imageVertexBuffer_, 0, verts, sizeof(verts));
+        queue.WriteBuffer(imageVertexBuffer_, count * vertexStride, verts, sizeof(verts));
+        count++;
+    }
+
+    size_t idx = 0;
+    for (const auto& cmd : cmds) {
+        auto it = imageGPU_.find(cmd.imageId);
+        if (it == imageGPU_.end()) continue;
+        if (idx >= count) break;
 
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetViewport(0.0f, 0.0f, paneWidth, paneHeight, 0.0f, 1.0f);
         pass.SetPipeline(imagePipeline_);
         pass.SetBindGroup(0, it->second.bindGroup);
-        pass.SetVertexBuffer(0, imageVertexBuffer_);
+        pass.SetVertexBuffer(0, imageVertexBuffer_, idx * vertexStride, vertexStride);
         pass.Draw(6);
         pass.End();
+        idx++;
     }
 }
 

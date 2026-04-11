@@ -218,6 +218,7 @@ private:
     wgpu::Sampler imageSampler_;
     std::unordered_map<uint32_t, ImageGPU> imageGPU_;
     bool imagePipelineReady_ = false;
+    static constexpr size_t MaxImageSlots = 256;
 
     // COLRv1 rasterizer
     wgpu::ComputePipeline colrComputePipeline_;

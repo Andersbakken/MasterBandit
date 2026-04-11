@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -42,6 +43,7 @@ struct KittyGraphicsCommand {
     uint32_t cellYOffset = 0;    // Y= (pixel offset within cell)
     int32_t zIndex = 0;          // z= (also gap in ms for a=f)
     uint32_t cursorMovement = 0; // C= (0=move, 1=don't move)
+    uint32_t imageNumber = 0;    // I= (non-unique image number)
     // Note: for animation commands, keys are reused contextually:
     //   a=f: z=gap(ms), r=frame_number, s=data_width, v=data_height
     //   a=a: s=animation_state(1/2/3), v=loop_count, r=frame_number, z=gap
@@ -110,7 +112,8 @@ bool parseCommand(std::string_view control, KittyGraphicsCommand& cmd)
         case 'Y': cmd.cellYOffset = parseUint(val); break;
         case 'z': cmd.zIndex = parseInt(val); break;
         case 'C': cmd.cursorMovement = parseUint(val); break;
-        // Ignored keys: I, U, P, Q, H, V, S, O — deferred features
+        case 'I': cmd.imageNumber = parseUint(val); break;
+        // Ignored keys: U, P, Q, H, V, S, O — deferred features
         default: break;
         }
     }
@@ -220,6 +223,17 @@ DecodeResult decodeImageData(std::vector<uint8_t>& data, char compressed,
 }
 
 } // anonymous namespace
+
+// Find an image by image number (I=). Returns the most recently created match.
+uint32_t TerminalEmulator::findImageByNumber(uint32_t number) const
+{
+    uint32_t bestId = 0;
+    for (const auto& [id, img] : mImageRegistry) {
+        if (img.imageNumber == number && id > bestId)
+            bestId = id;
+    }
+    return bestId;
+}
 
 void TerminalEmulator::processAPC()
 {
@@ -375,6 +389,19 @@ void TerminalEmulator::processAPC()
         munmap(ptr, mapSize);
     }
 
+    // Reject if both i= and I= are set (kitty does the same)
+    if (cmd.id > 0 && cmd.imageNumber > 0) {
+        sendResponse(cmd.id, "EINVAL:must not specify both i and I");
+        return;
+    }
+
+    // Resolve image ID: i= takes priority, then I= (by number lookup), then last image
+    auto resolveId = [&]() -> uint32_t {
+        if (cmd.id > 0) return cmd.id;
+        if (cmd.imageNumber > 0) return findImageByNumber(cmd.imageNumber);
+        return mLastKittyImageId;
+    };
+
     // --- Dispatch on action ---
     switch (cmd.action) {
     case 'T': // transmit + display
@@ -383,32 +410,82 @@ void TerminalEmulator::processAPC()
         break;
     case 'p': {
         // Put (display a previously transmitted image)
-        auto it = mImageRegistry.find(cmd.id);
+        uint32_t targetId = resolveId();
+        auto it = mImageRegistry.find(targetId);
         if (it == mImageRegistry.end()) {
-            sendResponse(cmd.id, "ENOENT:image not found");
+            sendResponse(targetId, "ENOENT:image not found");
             return;
         }
         const auto& img = it->second;
         int cols = cmd.cellCols > 0 ? static_cast<int>(cmd.cellCols) : static_cast<int>(img.cellWidth);
         int rows = cmd.cellRows > 0 ? static_cast<int>(cmd.cellRows) : static_cast<int>(img.cellHeight);
-        placeImageInGrid(cmd.id, cols, rows, cmd.cursorMovement == 0);
-        sendResponse(cmd.id, "OK");
+        placeImageInGrid(targetId, cols, rows, cmd.cursorMovement == 0);
+        sendResponse(targetId, "OK");
         return;
     }
     case 'd': // delete
     {
         char da = cmd.deleteAction ? cmd.deleteAction : 'a';
         switch (da) {
-        case 'a': // delete all
+        case 'a': // delete all visible placements
         case 'A':
-            mImageRegistry.clear();
+        {
+            // Collect image IDs that are visible in the current grid
+            std::unordered_set<uint32_t> visibleIds;
+            IGrid& dg = grid();
+            for (int r = 0; r < mHeight; r++) {
+                const CellExtra* cex = dg.getExtra(0, r);
+                if (cex && cex->imageId > 0)
+                    visibleIds.insert(cex->imageId);
+            }
+            // Clear cell extras for visible images
+            for (int r = 0; r < mHeight; r++) {
+                const CellExtra* cex = dg.getExtra(0, r);
+                if (cex && cex->imageId > 0)
+                    dg.clearRowExtras(r);
+            }
+            // For uppercase (free), also delete the image data
+            if (da == 'A') {
+                for (uint32_t vid : visibleIds)
+                    mImageRegistry.erase(vid);
+            }
             break;
+        }
         case 'i': // delete by image id
         case 'I':
             if (cmd.id > 0) mImageRegistry.erase(cmd.id);
             break;
-        default:
+        case 'n': // delete by image number (most recent match)
+        case 'N':
+            if (cmd.imageNumber > 0) {
+                uint32_t found = findImageByNumber(cmd.imageNumber);
+                if (found > 0) mImageRegistry.erase(found);
+            }
+            break;
+        case 'f': // delete animation frames for an image
+        case 'F':
+        {
+            uint32_t targetId = resolveId();
+            auto fit = mImageRegistry.find(targetId);
+            if (fit != mImageRegistry.end()) {
+                fit->second.extraFrames.clear();
+                fit->second.currentFrameIndex = 0;
+                fit->second.animationState = ImageEntry::Stopped;
+                fit->second.frameGeneration++;
+            }
+            break;
+        }
+        case 'p': case 'P': // delete by placement position (needs placement tracking)
+        case 'q': case 'Q': // delete by position + z-index
+        case 'c': case 'C': // delete at cursor position
+        case 'x': case 'X': // delete by column
+        case 'y': case 'Y': // delete by row
+        case 'z': case 'Z': // delete by z-index
+        case 'r': case 'R': // delete by ID range
             spdlog::debug("kitty graphics: unhandled delete action '{}'", da);
+            break;
+        default:
+            spdlog::debug("kitty graphics: unknown delete action '{}'", da);
             break;
         }
         // kitty sends no response for a=d (delete)
@@ -416,7 +493,7 @@ void TerminalEmulator::processAPC()
     }
     case 'f': // animation frame load
     {
-        uint32_t targetId = cmd.id > 0 ? cmd.id : mLastKittyImageId;
+        uint32_t targetId = resolveId();
         auto it = mImageRegistry.find(targetId);
         if (it == mImageRegistry.end()) {
             sendResponse(targetId, "ENOENT:image not found");
@@ -501,7 +578,7 @@ void TerminalEmulator::processAPC()
     }
     case 'a': // animation control
     {
-        uint32_t targetId = cmd.id > 0 ? cmd.id : mLastKittyImageId;
+        uint32_t targetId = resolveId();
         auto it = mImageRegistry.find(targetId);
         if (it == mImageRegistry.end()) {
             // Silently ignore — client may have exited
@@ -589,16 +666,26 @@ void TerminalEmulator::processAPC()
     // Assign image ID if client didn't provide one
     uint32_t imageId = cmd.id;
     if (imageId == 0) {
-        imageId = mNextImageId++;
+        if (cmd.imageNumber > 0) {
+            // I= without i= — auto-assign an id
+            imageId = mNextImageId++;
+        } else {
+            imageId = mNextImageId++;
+        }
     }
 
     // Store in registry
     ImageEntry entry;
     entry.id = imageId;
+    entry.imageNumber = cmd.imageNumber;
     entry.pixelWidth = static_cast<uint32_t>(imgW);
     entry.pixelHeight = static_cast<uint32_t>(imgH);
     entry.cellWidth = static_cast<uint32_t>(cellCols);
     entry.cellHeight = static_cast<uint32_t>(cellRows);
+    entry.cropX = cmd.xOffset;
+    entry.cropY = cmd.yOffset;
+    entry.cropW = cmd.width;
+    entry.cropH = cmd.height;
     entry.rgba = std::move(rgba);
 
     spdlog::debug("kitty graphics: image id={} {}x{} px, {}x{} cells, action={}",

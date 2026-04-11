@@ -178,8 +178,11 @@ public:
     // Image registry
     struct ImageEntry {
         uint32_t id { 0 };
+        uint32_t imageNumber { 0 };  // I= (non-unique)
         uint32_t pixelWidth { 0 }, pixelHeight { 0 };
         uint32_t cellWidth { 0 }, cellHeight { 0 };
+        // Source rect crop (0 = use full image)
+        uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
         std::vector<uint8_t> rgba;  // root frame (frame 0)
 
         // Animation
@@ -212,6 +215,7 @@ public:
         bool hasAnimation() const { return !extraFrames.empty() && animationState == Running; }
     };
     const std::unordered_map<uint32_t, ImageEntry>& imageRegistry() const { return mImageRegistry; }
+    uint32_t findImageByNumber(uint32_t number) const;
 
     // Advance all running animations based on current time. Returns true if any animation is active.
     bool tickAnimations();

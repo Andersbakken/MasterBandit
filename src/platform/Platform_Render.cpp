@@ -786,16 +786,29 @@ void PlatformDawn::renderFrame()
 
                 if (x1 <= x0 || y1 <= y0) continue;
 
+                // Source rect crop: map UVs to the crop sub-rectangle
+                float texW = static_cast<float>(img.pixelWidth);
+                float texH = static_cast<float>(img.pixelHeight);
+                float cropU0 = img.cropW > 0 ? static_cast<float>(img.cropX) / texW : 0.0f;
+                float cropV0 = img.cropH > 0 ? static_cast<float>(img.cropY) / texH : 0.0f;
+                float cropU1 = img.cropW > 0 ? static_cast<float>(img.cropX + img.cropW) / texW : 1.0f;
+                float cropV1 = img.cropH > 0 ? static_cast<float>(img.cropY + img.cropH) / texH : 1.0f;
+
                 Renderer::ImageDrawCmd cmd;
                 cmd.imageId = ex->imageId;
                 cmd.x = x0;
                 cmd.y = y0;
                 cmd.w = x1 - x0;
                 cmd.h = y1 - y0;
-                cmd.u0 = (x0 - imgX) / imgW;
-                cmd.v0 = (y0 - imgY) / imgH;
-                cmd.u1 = (x1 - imgX) / imgW;
-                cmd.v1 = (y1 - imgY) / imgH;
+                // Lerp viewport clipping into crop UV range
+                float fracX0 = (x0 - imgX) / imgW;
+                float fracY0 = (y0 - imgY) / imgH;
+                float fracX1 = (x1 - imgX) / imgW;
+                float fracY1 = (y1 - imgY) / imgH;
+                cmd.u0 = cropU0 + fracX0 * (cropU1 - cropU0);
+                cmd.v0 = cropV0 + fracY0 * (cropV1 - cropV0);
+                cmd.u1 = cropU0 + fracX1 * (cropU1 - cropU0);
+                cmd.v1 = cropV0 + fracY1 * (cropV1 - cropV0);
                 imageCmds.push_back(cmd);
             }
 

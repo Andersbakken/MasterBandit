@@ -236,6 +236,58 @@ TEST_CASE("render: kitty graphics image with cell scaling" * doctest::test_suite
     CHECK(rt.matchesReference(png, "kitty_scaled_green"));
 }
 
+TEST_CASE("render: kitty graphics source rect crop" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    // 4x4 image: top-left red, top-right green, bottom-left blue, bottom-right white
+    std::vector<uint8_t> px = {
+        255,0,0,255, 255,0,0,255, 0,255,0,255, 0,255,0,255,
+        255,0,0,255, 255,0,0,255, 0,255,0,255, 0,255,0,255,
+        0,0,255,255, 0,0,255,255, 255,255,255,255, 255,255,255,255,
+        0,0,255,255, 0,0,255,255, 255,255,255,255, 255,255,255,255,
+    };
+    // Crop to the top-right 2x2 (green quadrant): x=2,y=0,w=2,h=2
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,x=2,y=0,w=2,h=2,c=4,r=2,q=2", px));
+    rt.wait(300);
+
+    auto png = rt.screenshotPaneRect(0, 0, 0, 6, 3);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_crop_green"));
+}
+
+TEST_CASE("render: kitty graphics two images vertically" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    // First image: 4x4 solid red, scaled to 4x2 cells
+    auto px1 = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=4,r=2,q=2", px1));
+    rt.wait(200);
+
+    // Second image: 4x4 solid blue, scaled to 4x2 cells (placed below first)
+    auto px2 = solidRGBA(4, 4, 0, 0, 255);
+    rt.injectData(kittyGfxEscape("a=T,i=2,f=32,s=4,v=4,c=4,r=2,q=2", px2));
+    rt.wait(300);
+
+    // Screenshot: 6 cols x 5 rows — should show red on top, blue below
+    auto png = rt.screenshotPaneRect(0, 0, 0, 6, 5);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_two_vertical"));
+}
+
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;

@@ -189,16 +189,31 @@ TEST_CASE("kitty graphics: chunked transfer reassembles correctly")
 
 // ── Delete ──────────────────────────────────────────────────────────────────
 
-TEST_CASE("kitty graphics: delete all images")
+TEST_CASE("kitty graphics: delete all visible images")
 {
-    GraphicsTerminal t;
+    GraphicsTerminal t(40, 20);
     auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
-    t.gfx("a=t,i=1,f=32,s=1,v=1,q=2", px);
-    t.gfx("a=t,i=2,f=32,s=1,v=1,q=2", px);
+    // Use a=T so images are placed in the grid (visible)
+    t.gfx("a=T,i=1,f=32,s=1,v=1,q=2", px);
+    t.gfx("a=T,i=2,f=32,s=1,v=1,q=2", px);
     CHECK(t.term.imageRegistry().size() == 2);
 
-    t.gfx("a=d,d=a");
+    // d=A frees visible image data
+    t.gfx("a=d,d=A");
     CHECK(t.term.imageRegistry().empty());
+}
+
+TEST_CASE("kitty graphics: delete visible does not remove non-visible images")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=1,v=1,q=2", px); // visible (placed in grid)
+    t.gfx("a=t,i=2,f=32,s=1,v=1,q=2", px); // not visible (transmit only)
+    CHECK(t.term.imageRegistry().size() == 2);
+
+    t.gfx("a=d,d=A");
+    CHECK(t.term.imageRegistry().size() == 1);
+    CHECK(t.term.imageRegistry().count(2));
 }
 
 TEST_CASE("kitty graphics: delete by image ID")
@@ -212,6 +227,28 @@ TEST_CASE("kitty graphics: delete by image ID")
     t.gfx("a=d,d=i,i=1");
     CHECK(t.term.imageRegistry().size() == 1);
     CHECK(t.term.imageRegistry().count(2));
+}
+
+TEST_CASE("kitty graphics: delete animation frames")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=2,v=2,q=2", px);
+
+    auto frame = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
+    t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
+    t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
+
+    auto& img = t.term.imageRegistry().at(1);
+    CHECK(img.extraFrames.size() == 2);
+
+    // Delete frames
+    t.gfx("a=d,d=f,i=1");
+    CHECK(img.extraFrames.empty());
+    CHECK(img.animationState == TerminalEmulator::ImageEntry::Stopped);
+    CHECK(img.currentFrameIndex == 0);
+    // Image itself still exists
+    CHECK(t.term.imageRegistry().count(1));
 }
 
 // ── Put (display previously transmitted image) ──────────────────────────────
@@ -395,6 +432,175 @@ TEST_CASE("kitty graphics: partial frame composites onto previous frame")
     size_t idx2 = (3 * 4 + 3) * 4;
     CHECK(frame.rgba[idx2] == 255);    // R
     CHECK(frame.rgba[idx2 + 1] == 0);  // G
+}
+
+// ── Image number (I=) ───────────────────────────────────────────────────────
+
+TEST_CASE("kitty graphics: image number stores and retrieves")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
+    t.gfx("a=t,I=42,f=32,s=1,v=1,q=2", px);
+
+    auto& reg = t.term.imageRegistry();
+    CHECK(reg.size() == 1);
+    auto& img = reg.begin()->second;
+    CHECK(img.imageNumber == 42);
+}
+
+TEST_CASE("kitty graphics: put by image number")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 10, 0, 0, 255);
+    t.gfx("a=t,I=99,f=32,s=10,v=10,q=2", px);
+
+    uint32_t imgId = t.term.imageRegistry().begin()->second.id;
+
+    t.clearOutput();
+    t.gfx("a=p,I=99");
+    CHECK(t.output().find("OK") != std::string::npos);
+
+    const CellExtra* ex = t.extra(0, 0);
+    REQUIRE(ex);
+    CHECK(ex->imageId == imgId);
+}
+
+TEST_CASE("kitty graphics: image number lookup returns most recent")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
+    t.gfx("a=t,I=7,f=32,s=1,v=1,q=2", px); // first
+    t.gfx("a=t,I=7,f=32,s=1,v=1,q=2", px); // second (same number, different auto ID)
+
+    auto& reg = t.term.imageRegistry();
+    CHECK(reg.size() == 2);
+
+    // Both have I=7; findImageByNumber should return the higher ID (most recent)
+    uint32_t maxId = 0;
+    for (auto& [id, img] : reg) {
+        CHECK(img.imageNumber == 7);
+        maxId = std::max(maxId, id);
+    }
+    CHECK(t.term.findImageByNumber(7) == maxId);
+}
+
+TEST_CASE("kitty graphics: i= and I= together is EINVAL")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
+    t.gfx("a=t,i=1,I=2,f=32,s=1,v=1", px);
+    CHECK(t.output().find("EINVAL") != std::string::npos);
+    CHECK(t.term.imageRegistry().empty());
+}
+
+TEST_CASE("kitty graphics: delete by image number")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
+    t.gfx("a=t,I=10,f=32,s=1,v=1,q=2", px);
+    t.gfx("a=t,i=5,f=32,s=1,v=1,q=2", px);
+    CHECK(t.term.imageRegistry().size() == 2);
+
+    t.gfx("a=d,d=n,I=10");
+    CHECK(t.term.imageRegistry().size() == 1);
+    CHECK(t.term.imageRegistry().count(5));
+}
+
+TEST_CASE("kitty graphics: animation frame load by image number")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    t.gfx("a=T,I=50,f=32,s=2,v=2,q=2", px);
+
+    auto frame = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
+    t.gfx("a=f,I=50,f=32,s=2,v=2,z=80,q=2", frame);
+
+    auto& reg = t.term.imageRegistry();
+    CHECK(reg.size() == 1);
+    auto& img = reg.begin()->second;
+    CHECK(img.extraFrames.size() == 1);
+}
+
+// ── Source rect cropping ────────────────────────────────────────────────────
+
+TEST_CASE("kitty graphics: crop parameters stored on image")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(10, 10, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=10,x=2,y=3,w=5,h=4,q=2", px);
+
+    auto& img = t.term.imageRegistry().at(1);
+    CHECK(img.cropX == 2);
+    CHECK(img.cropY == 3);
+    CHECK(img.cropW == 5);
+    CHECK(img.cropH == 4);
+}
+
+TEST_CASE("kitty graphics: no crop when w=0 h=0")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(10, 10, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=10,q=2", px);
+
+    auto& img = t.term.imageRegistry().at(1);
+    CHECK(img.cropW == 0);
+    CHECK(img.cropH == 0);
+}
+
+// ── Multiple images coexist ─────────────────────────────────────────────────
+
+TEST_CASE("kitty graphics: two images coexist in grid")
+{
+    GraphicsTerminal t(40, 20);
+    // First image: 10x20 red (1 col x 1 row)
+    auto px1 = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px1);
+
+    CHECK(t.term.cursorY() == 1); // cursor moved past first image
+
+    // Second image: 10x20 green (1 col x 1 row)
+    auto px2 = GraphicsTerminal::solidRGBA(10, 20, 0, 255, 0);
+    t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px2);
+
+    CHECK(t.term.cursorY() == 2); // cursor moved past second image
+
+    // Both images should be in registry
+    CHECK(t.term.imageRegistry().size() == 2);
+    CHECK(t.term.imageRegistry().count(1));
+    CHECK(t.term.imageRegistry().count(2));
+
+    // First image at row 0
+    const CellExtra* ex0 = t.extra(0, 0);
+    REQUIRE(ex0);
+    CHECK(ex0->imageId == 1);
+
+    // Second image at row 1
+    const CellExtra* ex1 = t.extra(0, 1);
+    REQUIRE(ex1);
+    CHECK(ex1->imageId == 2);
+}
+
+TEST_CASE("kitty graphics: delete visible preserves non-visible image")
+{
+    GraphicsTerminal t(40, 10);
+    // Place image 1 at top, then image 2 below
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
+    t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px);
+
+    CHECK(t.term.imageRegistry().size() == 2);
+
+    // Both should have grid placements
+    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra* ex1 = t.extra(0, 1);
+    REQUIRE(ex0);
+    REQUIRE(ex1);
+    CHECK(ex0->imageId == 1);
+    CHECK(ex1->imageId == 2);
+
+    // Delete visible with d=A — both are visible, both should be freed
+    t.gfx("a=d,d=A");
+    CHECK(t.term.imageRegistry().empty());
 }
 
 // ── APC non-graphics silently ignored ───────────────────────────────────────

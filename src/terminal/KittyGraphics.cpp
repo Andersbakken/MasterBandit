@@ -698,7 +698,9 @@ void TerminalEmulator::processAPC()
         placeImageInGrid(imageId, cellCols, cellRows, cmd.cursorMovement == 0);
     }
 
-    sendResponse(imageId, "OK");
+    // Use cmd.id for response — if client didn't set i= (cmd.id==0), no response
+    // (matches kitty: finish_command_response checks g->id || g->image_number)
+    sendResponse(cmd.id, "OK");
 }
 
 bool TerminalEmulator::tickAnimations()

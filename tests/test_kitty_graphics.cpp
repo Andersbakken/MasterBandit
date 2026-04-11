@@ -195,6 +195,7 @@ TEST_CASE("kitty graphics: delete all visible images")
     auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
     // Use a=T so images are placed in the grid (visible)
     t.gfx("a=T,i=1,f=32,s=1,v=1,q=2", px);
+    t.feed("\n");
     t.gfx("a=T,i=2,f=32,s=1,v=1,q=2", px);
     CHECK(t.term.imageRegistry().size() == 2);
 
@@ -285,13 +286,15 @@ TEST_CASE("kitty graphics: C=1 does not move cursor")
     CHECK(t.term.cursorY() == 0);
 }
 
-TEST_CASE("kitty graphics: C=0 moves cursor past image")
+TEST_CASE("kitty graphics: C=0 moves cursor to last row of image")
 {
     GraphicsTerminal t(40, 20);
     auto px = GraphicsTerminal::solidRGBA(10, 40, 0, 255, 0); // 1x2 cells
     t.gfx("a=T,i=1,f=32,s=10,v=40,C=0,q=2", px);
 
-    CHECK(t.term.cursorY() == 2);
+    // Cursor on last row of image (row 1), column past right edge
+    CHECK(t.term.cursorY() == 1);
+    CHECK(t.term.cursorX() == 1); // ceil(10/10) = 1 col
 }
 
 // ── Response suppression ────────────────────────────────────────────────────
@@ -556,13 +559,16 @@ TEST_CASE("kitty graphics: two images coexist in grid")
     auto px1 = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px1);
 
-    CHECK(t.term.cursorY() == 1); // cursor moved past first image
+    CHECK(t.term.cursorY() == 0); // cursor on last row of image (row 0)
+
+    // Advance cursor past first image (like viuer's print_newline)
+    t.feed("\n");
 
     // Second image: 10x20 green (1 col x 1 row)
     auto px2 = GraphicsTerminal::solidRGBA(10, 20, 0, 255, 0);
     t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px2);
 
-    CHECK(t.term.cursorY() == 2); // cursor moved past second image
+    CHECK(t.term.cursorY() == 1); // cursor on last row of second image
 
     // Both images should be in registry
     CHECK(t.term.imageRegistry().size() == 2);
@@ -586,6 +592,7 @@ TEST_CASE("kitty graphics: delete visible preserves non-visible image")
     // Place image 1 at top, then image 2 below
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
+    t.feed("\n");
     t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px);
 
     CHECK(t.term.imageRegistry().size() == 2);

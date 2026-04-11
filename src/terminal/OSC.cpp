@@ -160,10 +160,13 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
         mCursorX = std::max(0, savedX);
         mCursorY = std::max(0, savedY);
     } else {
+        // Match kitty: cursor goes to last row of image, column past right edge.
+        // The caller (or newline from the app) handles advancing to the next row.
+        mCursorY--;
         if (mCursorY >= mHeight) {
             mCursorY = mHeight - 1;
         }
-        mCursorX = 0;
+        mCursorX = std::min(fillCols, mWidth - 1);
     }
 }
 

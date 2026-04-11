@@ -23,6 +23,8 @@ set(TEST_SOURCES
     test_prompt.cpp
     test_render.cpp
     test_cwd.cpp
+    test_osc_palette.cpp
+    test_decrqss.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp

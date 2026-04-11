@@ -171,17 +171,24 @@ void TerminalEmulator::processStringSequence()
         return;
     }
 
-    // mStringSequence format: "<number>;<payload>" or just "<number>"
+    // mStringSequence format: "<number>;<payload>" or just "<number>" (no-payload form)
     size_t semi = mStringSequence.find(';');
-    if (semi == std::string::npos) return;
-
     int oscNum = 0;
-    for (size_t i = 0; i < semi; ++i) {
-        char c = mStringSequence[i];
-        if (c < '0' || c > '9') return;
-        oscNum = oscNum * 10 + (c - '0');
+    std::string_view payload;
+    if (semi == std::string::npos) {
+        // No semicolon: number-only form (e.g. OSC 104 ST for palette reset-all)
+        for (char c : mStringSequence) {
+            if (c < '0' || c > '9') return;
+            oscNum = oscNum * 10 + (c - '0');
+        }
+    } else {
+        for (size_t i = 0; i < semi; ++i) {
+            char c = mStringSequence[i];
+            if (c < '0' || c > '9') return;
+            oscNum = oscNum * 10 + (c - '0');
+        }
+        payload = std::string_view(mStringSequence.data() + semi + 1, mStringSequence.size() - semi - 1);
     }
-    std::string_view payload(mStringSequence.data() + semi + 1, mStringSequence.size() - semi - 1);
 
     switch (oscNum) {
     case 0: processOSC_Title(payload, true); break;
@@ -225,10 +232,19 @@ void TerminalEmulator::processStringSequence()
         }
         break;
     }
+    case 4:  // Set/query individual ANSI palette entry
+        processOSC_Palette(payload);
+        break;
     case 10: // Default foreground color
     case 11: // Default background color
     case 12: // Cursor color
+    case 110: // Reset fg to config default
+    case 111: // Reset bg to config default
+    case 112: // Reset cursor to config default
         processOSC_Color(oscNum, payload);
+        break;
+    case 104: // Reset palette entries (no args = all; arg = specific index)
+        processOSC_PaletteReset(payload);
         break;
     case 9: {
         // OSC 9;4 progress: "9;4;state" or "9;4;state;pct"
@@ -451,6 +467,26 @@ static bool parseX11Color(std::string_view spec, uint8_t& r, uint8_t& g, uint8_t
 
 void TerminalEmulator::processOSC_Color(int oscNum, std::string_view payload)
 {
+    // OSC 110/111/112: reset to config-loaded defaults (payload ignored)
+    if (oscNum == 110) {
+        mDefaultColors.fgR = mConfigDefaultColors.fgR;
+        mDefaultColors.fgG = mConfigDefaultColors.fgG;
+        mDefaultColors.fgB = mConfigDefaultColors.fgB;
+        return;
+    }
+    if (oscNum == 111) {
+        mDefaultColors.bgR = mConfigDefaultColors.bgR;
+        mDefaultColors.bgG = mConfigDefaultColors.bgG;
+        mDefaultColors.bgB = mConfigDefaultColors.bgB;
+        return;
+    }
+    if (oscNum == 112) {
+        mDefaultColors.cursorR = mConfigDefaultColors.cursorR;
+        mDefaultColors.cursorG = mConfigDefaultColors.cursorG;
+        mDefaultColors.cursorB = mConfigDefaultColors.cursorB;
+        return;
+    }
+
     uint8_t* r; uint8_t* g; uint8_t* b;
     switch (oscNum) {
     case 10: r = &mDefaultColors.fgR; g = &mDefaultColors.fgG; b = &mDefaultColors.fgB; break;
@@ -474,6 +510,88 @@ void TerminalEmulator::processOSC_Color(int oscNum, std::string_view payload)
         uint8_t nr, ng, nb;
         if (parseX11Color(payload, nr, ng, nb)) {
             *r = nr; *g = ng; *b = nb;
+        }
+    }
+}
+
+// OSC 4: set/query individual palette entries.
+// Payload format: "index;colorspec[;index;colorspec...]"
+// colorspec "?" = query, otherwise an X11 color spec.
+void TerminalEmulator::processOSC_Palette(std::string_view payload)
+{
+    // Split payload into tokens on ';'
+    std::vector<std::string_view> tokens;
+    size_t pos = 0;
+    while (pos <= payload.size()) {
+        size_t sep = payload.find(';', pos);
+        if (sep == std::string_view::npos) {
+            tokens.push_back(payload.substr(pos));
+            break;
+        }
+        tokens.push_back(payload.substr(pos, sep - pos));
+        pos = sep + 1;
+    }
+
+    // Process pairs: tokens[0]=index, tokens[1]=colorspec, tokens[2]=index, ...
+    for (size_t i = 0; i + 1 < tokens.size(); i += 2) {
+        // Parse index
+        int idx = 0;
+        for (char c : tokens[i]) {
+            if (c < '0' || c > '9') { idx = -1; break; }
+            idx = idx * 10 + (c - '0');
+        }
+        if (idx < 0 || idx > 255) continue;
+
+        std::string_view spec = tokens[i + 1];
+        if (spec == "?") {
+            // Query: respond with current color for this index
+            uint8_t r, g, b;
+            color256ToRGB(idx, r, g, b);
+            char response[64];
+            int len = snprintf(response, sizeof(response),
+                "\x1b]4;%d;rgb:%04x/%04x/%04x\x1b\\",
+                idx,
+                static_cast<unsigned>(r) * 257,
+                static_cast<unsigned>(g) * 257,
+                static_cast<unsigned>(b) * 257);
+            writeToOutput(response, len);
+        } else {
+            // Set: parse and store override
+            uint8_t r, g, b;
+            if (parseX11Color(spec, r, g, b)) {
+                m256PaletteOverrides[idx] = { r, g, b };
+                if (idx < 16) {
+                    // Also update m16ColorPalette so direct palette reads stay consistent
+                    m16ColorPalette[idx][0] = r;
+                    m16ColorPalette[idx][1] = g;
+                    m16ColorPalette[idx][2] = b;
+                }
+            }
+        }
+    }
+}
+
+// OSC 104: reset palette entries to config defaults.
+// Empty payload = reset all; otherwise payload is a single index.
+void TerminalEmulator::processOSC_PaletteReset(std::string_view payload)
+{
+    if (payload.empty()) {
+        // Reset all overrides
+        m256PaletteOverrides.clear();
+        memcpy(m16ColorPalette, m16PaletteDefaults, sizeof(m16ColorPalette));
+    } else {
+        // Parse a single index
+        int idx = 0;
+        for (char c : payload) {
+            if (c < '0' || c > '9') return; // invalid
+            idx = idx * 10 + (c - '0');
+        }
+        if (idx < 0 || idx > 255) return;
+        m256PaletteOverrides.erase(idx);
+        if (idx < 16) {
+            m16ColorPalette[idx][0] = m16PaletteDefaults[idx][0];
+            m16ColorPalette[idx][1] = m16PaletteDefaults[idx][1];
+            m16ColorPalette[idx][2] = m16PaletteDefaults[idx][2];
         }
     }
 }

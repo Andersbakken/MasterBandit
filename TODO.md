@@ -12,12 +12,12 @@
 - [ ] OSC 22 — Set mouse cursor shape (pointer, text, etc.)
 - [x] OSC 99 — Desktop notifications (kitty). Title/body accumulation, macOS UNUserNotification.
 - [x] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Responses in `rgb:RRRR/GGGG/BBBB` format.
-- [ ] OSC 4/104 — Set/query individual ANSI palette entries at runtime (`OSC 4 ; index ; color` to set, `OSC 4 ; index ; ?` to query, `OSC 104` to reset). Used by Neovim, Vim, and tmux to detect or adapt to the terminal's color scheme.
-- [ ] OSC 110/111/112 — Reset default fg/bg/cursor colors to built-in defaults. Complement to the already-implemented OSC 10/11/12 set/query.
+- [x] OSC 4/104 — Set/query individual ANSI palette entries at runtime (`OSC 4 ; index ; color` to set, `OSC 4 ; index ; ?` to query, `OSC 104` to reset). Used by Neovim, Vim, and tmux to detect or adapt to the terminal's color scheme.
+- [x] OSC 110/111/112 — Reset default fg/bg/cursor colors to built-in defaults. Complement to the already-implemented OSC 10/11/12 set/query.
 - [x] OSC 133 — Shell integration prompt/command/output markers. Stored per-row. Used for jump-to-prompt and command output selection.
 - [x] REP (`CSI b`) — Repeat preceding character N times.
 - [x] Mode 2026 — Synchronized output. Defers rendering while active so intermediate states aren't shown.
-- [ ] DECRQSS (`DCS $ q ... ST`) — Query current terminal state. Supports `" q"` (cursor shape), `m` (current SGR), `r` (scroll margins / DECSTBM). Used by Vim/Neovim to restore cursor shape on exit.
+- [x] DECRQSS (`DCS $ q ... ST`) — Query current terminal state. Supports `" q"` (cursor shape), `m` (current SGR), `r` (scroll margins / DECSTBM). Used by Vim/Neovim to restore cursor shape on exit.
 - [ ] Color stack (OSC 30001/30101) — Push/pop entire color state. Apps can safely change colors and restore.
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
 - [ ] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking.
@@ -86,6 +86,7 @@
 - [x] Indirect glyph list — ResolvedCell stores offset+count into GlyphEntry buffer. Supports multiple glyphs per cell (combining marks) and zero glyphs (ligature trailing cells).
 - [x] Substitution detection — shaped glyph ID compared against nominal lookup. Substituted glyphs use HarfBuzz advance positioning; normal glyphs anchor at cell origin.
 - [x] Per-row shaping cache — only dirty rows re-shaped. Clean rows reuse cached glyph data.
+- [ ] Italic font rendering — SGR italic bit is tracked correctly but the text system never selects a real italic font variant nor synthesizes via `hb_font_set_synthetic_slant`. Parity with bold: try italic variant via fontconfig/CoreText first, fall back to synthetic slant.
 - [ ] Ligature verification — test with ligature fonts (Fira Code, JetBrains Mono).
 - [ ] Arabic cursive connection verification — test with proper Arabic fonts (GSUB contextual forms).
 

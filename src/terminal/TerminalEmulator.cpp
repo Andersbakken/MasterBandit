@@ -51,6 +51,10 @@ std::string toPrintable(const char *bytes, int len)
 
 void TerminalEmulator::color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const
 {
+    auto it = m256PaletteOverrides.find(idx);
+    if (it != m256PaletteOverrides.end()) {
+        r = it->second[0]; g = it->second[1]; b = it->second[2]; return;
+    }
     if (idx < 16) {
         r = m16ColorPalette[idx][0];
         g = m16ColorPalette[idx][1];
@@ -102,6 +106,9 @@ void TerminalEmulator::applyColorScheme(const ColorScheme& cs)
     color::parseHex(cs.foreground, mDefaultColors.fgR, mDefaultColors.fgG, mDefaultColors.fgB);
     color::parseHex(cs.background, mDefaultColors.bgR, mDefaultColors.bgG, mDefaultColors.bgB);
     color::parseHex(cs.cursor, mDefaultColors.cursorR, mDefaultColors.cursorG, mDefaultColors.cursorB);
+    // Save config-loaded values for OSC 104/110/111/112 reset
+    memcpy(m16PaletteDefaults, m16ColorPalette, sizeof(m16ColorPalette));
+    mConfigDefaultColors = mDefaultColors;
 }
 
 void TerminalEmulator::resize(int width, int height)

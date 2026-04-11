@@ -59,6 +59,7 @@ struct TestTerminal {
     void esc(const std::string& s) { feed("\x1b" + s); }
     void csi(const std::string& s) { feed("\x1b[" + s); }
     void osc(const std::string& s) { feed("\x1b]" + s + "\x07"); } // BEL-terminated
+    void dcs(const std::string& s) { feed("\x1bP" + s + "\x1b\\"); } // ST-terminated
 
     const Cell& cell(int col, int row) const
     {

@@ -145,6 +145,7 @@ public:
         uint8_t cursorR { 0xCC }, cursorG { 0xCC }, cursorB { 0xCC };
     };
     const DefaultColors& defaultColors() const { return mDefaultColors; }
+    const DefaultColors& configDefaultColors() const { return mConfigDefaultColors; }
 
     const std::string* hyperlinkURI(uint32_t id) const {
         auto it = mHyperlinkRegistry.find(id);
@@ -192,8 +193,12 @@ public:
 
     static uint64_t mono();
 
-    // 16-color palette (standard + bright) as RGB
+    // 16-color palette (standard + bright) as RGB — current runtime values
     uint8_t m16ColorPalette[16][3];
+    // Config-loaded defaults for OSC 104 reset (indices 0-15)
+    uint8_t m16PaletteDefaults[16][3];
+    // Runtime overrides for any of the 256 palette entries (set via OSC 4)
+    std::unordered_map<int, std::array<uint8_t,3>> m256PaletteOverrides;
     // 256-color palette lookup
     void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const;
 
@@ -249,9 +254,12 @@ private:
     void processDCS();
     void processOSC_Title(std::string_view text, bool setTitle);
     void processOSC_Color(int oscNum, std::string_view payload);
+    void processOSC_Palette(std::string_view payload);
+    void processOSC_PaletteReset(std::string_view payload);
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
     void placeImageInGrid(uint32_t imageId, int cellCols, int cellRows);
+    std::string buildCurrentSGR() const;
 
     // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {
@@ -379,4 +387,5 @@ private:
 
     // Default colors (OSC 10/11/12)
     DefaultColors mDefaultColors;
+    DefaultColors mConfigDefaultColors; // config-loaded originals for OSC 110/111/112 reset
 };

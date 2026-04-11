@@ -760,8 +760,8 @@ void PlatformDawn::renderFrame()
 
                 float imgW = static_cast<float>(img.pixelWidth);
                 float imgH = static_cast<float>(img.pixelHeight);
-                float imgX = 0.0f;
-                float imgY = (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
+                float imgX = padLeft_;
+                float imgY = padTop_ + (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
 
                 float x0 = std::max(imgX, 0.0f);
                 float y0 = std::max(imgY, 0.0f);

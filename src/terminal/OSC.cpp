@@ -124,16 +124,19 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
     placeImageInGrid(imageId, cellCols, cellRows);
 }
 
-void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cellRows)
+void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cellRows, bool moveCursor)
 {
     IGrid& g = grid();
     int fillCols = std::min(cellCols, mWidth);
+
+    int savedX = mCursorX, savedY = mCursorY;
 
     for (int r = 0; r < cellRows; ++r) {
         // Scroll if cursor is at the bottom
         if (mCursorY >= mHeight) {
             scrollUpInRegion(1);
             mCursorY = mHeight - 1;
+            savedY--;  // track scroll for restore
         }
 
         // Fill cells with blanks to reserve visual space
@@ -153,10 +156,15 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
         mCursorY++;
     }
 
-    if (mCursorY >= mHeight) {
-        mCursorY = mHeight - 1;
+    if (!moveCursor) {
+        mCursorX = std::max(0, savedX);
+        mCursorY = std::max(0, savedY);
+    } else {
+        if (mCursorY >= mHeight) {
+            mCursorY = mHeight - 1;
+        }
+        mCursorX = 0;
     }
-    mCursorX = 0;
 }
 
 // --- OSC processing ---
@@ -164,6 +172,10 @@ void TerminalEmulator::processStringSequence()
 {
     if (mStringSequenceType == DCS) {
         processDCS();
+        return;
+    }
+    if (mStringSequenceType == APC) {
+        processAPC();
         return;
     }
     if (mStringSequenceType != OSX) {

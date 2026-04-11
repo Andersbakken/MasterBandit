@@ -5,6 +5,7 @@ add_library(terminal OBJECT
     MouseAndSelection.cpp
     SGR.cpp
     OSC.cpp
+    KittyGraphics.cpp
     DCS.cpp
     CellGrid.cpp
     Document.cpp
@@ -17,8 +18,11 @@ target_include_directories(terminal PUBLIC
     ${CMAKE_SOURCE_DIR}/src/eventloop
 )
 
+find_package(ZLIB REQUIRED)
+
 target_link_libraries(terminal PUBLIC
     spdlog::spdlog
+    ZLIB::ZLIB
 )
 
 target_include_directories(terminal PRIVATE ${Stb_INCLUDE_DIR})

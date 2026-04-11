@@ -258,8 +258,28 @@ private:
     void processOSC_PaletteReset(std::string_view payload);
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
-    void placeImageInGrid(uint32_t imageId, int cellCols, int cellRows);
+    void processAPC();
+    void placeImageInGrid(uint32_t imageId, int cellCols, int cellRows, bool moveCursor = true);
     std::string buildCurrentSGR() const;
+
+    // Kitty graphics protocol: chunked transfer accumulation
+    struct KittyLoadState {
+        std::vector<uint8_t> data;   // accumulated decoded payload
+        uint32_t id = 0;             // client image ID (i=)
+        uint32_t placementId = 0;    // placement ID (p=)
+        uint32_t format = 32;        // f= (24=RGB, 32=RGBA, 100=PNG)
+        uint32_t width = 0, height = 0; // s=, v= (source data dimensions)
+        uint32_t cellCols = 0, cellRows = 0; // c=, r=
+        uint32_t xOffset = 0, yOffset = 0;   // x=, y= (source rect offset)
+        uint32_t cropWidth = 0, cropHeight = 0; // w=, h= (source rect size)
+        uint32_t quiet = 0;          // q=
+        int32_t zIndex = 0;          // z=
+        uint32_t cursorMovement = 0; // C=
+        char action = 'T';           // a=
+        char compressed = 0;         // o=
+        bool active = false;
+    };
+    KittyLoadState mKittyLoading;
 
     // https://ttssh2.osdn.jp/manual/en/about/ctrlseq.html
     enum EscapeSequence {

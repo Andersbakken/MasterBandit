@@ -39,22 +39,25 @@ public:
 
     // Called by the run loop observer / tick selector
     void tick();
-    // Called by a CFRunLoop source when a fd becomes ready
-    void fdReady(int fd, FdEvents events);
+    // Called when the kqueue fd becomes readable — drains all pending events
+    void drainKqueue();
     // Called by an NSTimer
     void timerFired(TimerId id);
     // Called by FSEvents
     void fileChanged();
 
-public:
+private:
     struct FdEntry {
         FdEvents events;
         FdCb     cb;
-        void*    cfSource = nullptr;  // CFRunLoopSourceRef
-        void*    cfFdRef  = nullptr;  // CFFileDescriptorRef
     };
-private:
     std::unordered_map<int, FdEntry> fds_;
+
+    // kqueue fd — all watched fds are registered here
+    int kqFd_ = -1;
+    // Single CFFileDescriptor wrapping kqFd_
+    void* kqCfFdRef_  = nullptr;  // CFFileDescriptorRef
+    void* kqCfSource_ = nullptr;  // CFRunLoopSourceRef
 
     struct Timer {
         TimerId  id;

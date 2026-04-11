@@ -748,7 +748,17 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mState = InEscape;
                 mEscapeIndex = 0;
             } else if (mStringSequence.size() < MAX_STRING_SEQUENCE) {
-                mStringSequence += buf[i];
+                // Scan ahead for a contiguous run of payload bytes to avoid
+                // per-byte std::string append (major perf win for large payloads
+                // like kitty graphics base64 data).
+                int runStart = i;
+                size_t remaining = MAX_STRING_SEQUENCE - mStringSequence.size();
+                int limit = std::min(len, static_cast<int>(runStart + remaining));
+                while (i + 1 < limit &&
+                       buf[i + 1] != '\x07' && buf[i + 1] != 0x1b) {
+                    ++i;
+                }
+                mStringSequence.append(buf + runStart, i - runStart + 1);
             }
             break;
         }

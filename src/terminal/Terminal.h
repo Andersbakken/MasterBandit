@@ -37,6 +37,7 @@ public:
     int masterFD() const { return mMasterFD; }
     bool isHeadless() const { return mHeadless; }
     void readFromFD();
+    void flushReadBuffer();
     void flushWriteQueue();
     void pasteText(const std::string& text);
 
@@ -63,4 +64,5 @@ private:
     EventLoop::TimerId mWritePollId { 0 };
     bool mWritePollActive { false };
     std::vector<char> mWriteQueue;
+    std::vector<char> mReadCoalesceBuffer;
 };

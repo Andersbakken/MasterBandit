@@ -379,6 +379,11 @@ int PlatformDawn::exec()
                 }
             }
 
+            // Flush coalesced PTY reads before rendering — on macOS, many
+            // tiny reads accumulate between ticks due to small PTY buffers.
+            for (auto& [fd, term] : ptyPolls_)
+                term->flushReadBuffer();
+
             scriptEngine_.executePendingJobs();
             device_.Tick();
 
@@ -426,5 +431,4 @@ void PlatformDawn::quit(int status)
 void PlatformDawn::setNeedsRedraw()
 {
     needsRedraw_ = true;
-    if (eventLoop_) eventLoop_->wakeup();
 }

@@ -6,8 +6,13 @@
 
 #include <spdlog/spdlog.h>
 
+#include <sys/event.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <stdexcept>
+
+static constexpr int MaxKqEvents = 64;
 
 // ---------- Objective-C glue ----------
 
@@ -31,6 +36,16 @@ static void fsEventsCallback(ConstFSEventStreamRef, void* info,
     loop->fileChanged();
 }
 
+// ---------- CFFileDescriptor callback for kqueue ----------
+
+static void kqueueCfCallback(CFFileDescriptorRef fdRef, CFOptionFlags, void* info)
+{
+    auto* loop = static_cast<NSAppEventLoop*>(info);
+    loop->drainKqueue();
+    // Re-arm the CFFileDescriptor so we get notified again
+    CFFileDescriptorEnableCallBacks(fdRef, kCFFileDescriptorReadCallBack);
+}
+
 // ---------- NSAppEventLoop ----------
 
 NSAppEventLoop::NSAppEventLoop()
@@ -41,9 +56,28 @@ NSAppEventLoop::NSAppEventLoop()
     id delegate = [[MBAppDelegate alloc] init];
     [NSApp setDelegate:delegate];
 
-    // CFRunLoop observer: fires before sleeping and after waking, calls onTick
-    CFRunLoopObserverContext ctx{};
+    // Create kqueue
+    kqFd_ = kqueue();
+    if (kqFd_ < 0)
+        throw std::runtime_error(std::string("kqueue: ") + strerror(errno));
+
+    // Wrap the kqueue fd in a single CFFileDescriptor
+    CFFileDescriptorContext ctx{};
     ctx.info = this;
+    CFFileDescriptorRef cfFd = CFFileDescriptorCreate(
+        kCFAllocatorDefault, kqFd_, false, kqueueCfCallback, &ctx);
+    CFFileDescriptorEnableCallBacks(cfFd, kCFFileDescriptorReadCallBack);
+
+    CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(
+        kCFAllocatorDefault, cfFd, 0);
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+
+    kqCfFdRef_  = cfFd;
+    kqCfSource_ = source;
+
+    // CFRunLoop observer: fires before sleeping and after waking, calls onTick
+    CFRunLoopObserverContext obsCtx{};
+    obsCtx.info = this;
     observer_ = CFRunLoopObserverCreateWithHandler(
         kCFAllocatorDefault,
         kCFRunLoopBeforeWaiting | kCFRunLoopAfterWaiting,
@@ -68,17 +102,17 @@ NSAppEventLoop::~NSAppEventLoop()
 {
     removeFileWatch();
 
-    // Remove all fd sources
-    for (auto& [fd, entry] : fds_) {
-        if (entry.cfSource) {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(),
-                                   static_cast<CFRunLoopSourceRef>(entry.cfSource),
-                                   kCFRunLoopCommonModes);
-            CFRelease(static_cast<CFRunLoopSourceRef>(entry.cfSource));
-        }
-        if (entry.cfFdRef)
-            CFRelease(static_cast<CFFileDescriptorRef>(entry.cfFdRef));
+    // Remove kqueue CFFileDescriptor
+    if (kqCfSource_) {
+        CFRunLoopRemoveSource(CFRunLoopGetMain(),
+                               static_cast<CFRunLoopSourceRef>(kqCfSource_),
+                               kCFRunLoopCommonModes);
+        CFRelease(static_cast<CFRunLoopSourceRef>(kqCfSource_));
     }
+    if (kqCfFdRef_)
+        CFRelease(static_cast<CFFileDescriptorRef>(kqCfFdRef_));
+
+    if (kqFd_ >= 0) close(kqFd_);
 
     // Cancel all timers
     for (auto& t : timers_) {
@@ -119,11 +153,35 @@ void NSAppEventLoop::tick()
     if (onTick) onTick();
 }
 
-void NSAppEventLoop::fdReady(int fd, FdEvents events)
+void NSAppEventLoop::drainKqueue()
 {
-    auto it = fds_.find(fd);
-    if (it != fds_.end())
-        it->second.cb(events);
+    struct kevent events[MaxKqEvents];
+    struct timespec zero = { 0, 0 };
+
+    for (;;) {
+        int n = kevent(kqFd_, nullptr, 0, events, MaxKqEvents, &zero);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            spdlog::error("NSAppEventLoop: kevent drain: {}", strerror(errno));
+            break;
+        }
+        if (n == 0) break;
+
+        for (int i = 0; i < n; ++i) {
+            int fd = static_cast<int>(events[i].ident);
+            auto it = fds_.find(fd);
+            if (it == fds_.end()) continue;
+
+            FdEvents fired = static_cast<FdEvents>(0);
+            if (events[i].filter == EVFILT_READ)  fired = fired | FdEvents::Readable;
+            if (events[i].filter == EVFILT_WRITE) fired = fired | FdEvents::Writable;
+            if (static_cast<uint8_t>(fired))
+                it->second.cb(fired);
+        }
+
+        // If we got a full batch, there may be more
+        if (n < MaxKqEvents) break;
+    }
 }
 
 void NSAppEventLoop::fileChanged()
@@ -133,61 +191,19 @@ void NSAppEventLoop::fileChanged()
 
 // ---------- fd watching ----------
 
-// We store two pointers in the CFFileDescriptorContext.info:
-//   [0] = &FdEntry (for the callback to find the cb)
-//   [1] = NSAppEventLoop* (for fdReady dispatch)
-// We achieve this by embedding them in a small heap struct.
-struct FdCallbackInfo {
-    NSAppEventLoop*          loop;
-    NSAppEventLoop::FdEntry* entry;
-};
-
-static void cfFdCallbackV2(CFFileDescriptorRef fdRef, CFOptionFlags callBackTypes, void* info)
-{
-    auto* cbInfo = static_cast<FdCallbackInfo*>(info);
-
-    EventLoop::FdEvents fired = static_cast<EventLoop::FdEvents>(0);
-    if (callBackTypes & kCFFileDescriptorReadCallBack)
-        fired = fired | EventLoop::FdEvents::Readable;
-    if (callBackTypes & kCFFileDescriptorWriteCallBack)
-        fired = fired | EventLoop::FdEvents::Writable;
-
-    int nativeFd = CFFileDescriptorGetNativeDescriptor(fdRef);
-    cbInfo->loop->fdReady(nativeFd, fired);
-    // Re-arm AFTER draining so new data triggers another callback
-    CFFileDescriptorEnableCallBacks(fdRef, callBackTypes);
-    cbInfo->loop->tick();
-}
-
 void NSAppEventLoop::watchFd(int fd, FdEvents events, FdCb cb)
 {
-    FdEntry entry;
-    entry.events = events;
-    entry.cb     = std::move(cb);
-
-    auto* cbInfo = new FdCallbackInfo{ this, nullptr };
-
-    CFOptionFlags cfEvents = 0;
-    if (events & FdEvents::Readable) cfEvents |= kCFFileDescriptorReadCallBack;
-    if (events & FdEvents::Writable) cfEvents |= kCFFileDescriptorWriteCallBack;
-
-    CFFileDescriptorContext ctx{};
-    ctx.info = cbInfo;
-    ctx.release = [](void* info) { delete static_cast<FdCallbackInfo*>(info); };
-
-    CFFileDescriptorRef fdRef = CFFileDescriptorCreate(
-        kCFAllocatorDefault, fd, false, cfFdCallbackV2, &ctx);
-    CFFileDescriptorEnableCallBacks(fdRef, cfEvents);
-
-    CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(
-        kCFAllocatorDefault, fdRef, 0);
-    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
-
-    entry.cfFdRef  = fdRef;
-    entry.cfSource = source;
-
-    auto [it, ok] = fds_.emplace(fd, std::move(entry));
-    cbInfo->entry = &it->second;
+    struct kevent evs[2];
+    int n = 0;
+    if (events & FdEvents::Readable)
+        EV_SET(&evs[n++], fd, EVFILT_READ,  EV_ADD | EV_ENABLE, 0, 0, nullptr);
+    if (events & FdEvents::Writable)
+        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+    if (n) {
+        if (kevent(kqFd_, evs, n, nullptr, 0, nullptr) < 0)
+            spdlog::error("NSAppEventLoop: watchFd kevent fd={}: {}", fd, strerror(errno));
+    }
+    fds_[fd] = { events, std::move(cb) };
 }
 
 void NSAppEventLoop::updateFd(int fd, FdEvents events)
@@ -195,13 +211,25 @@ void NSAppEventLoop::updateFd(int fd, FdEvents events)
     auto it = fds_.find(fd);
     if (it == fds_.end()) return;
 
-    it->second.events = events;
-    CFFileDescriptorRef fdRef = static_cast<CFFileDescriptorRef>(it->second.cfFdRef);
+    FdEvents old = it->second.events;
+    struct kevent evs[4];
+    int n = 0;
 
-    CFOptionFlags cfEvents = 0;
-    if (events & FdEvents::Readable) cfEvents |= kCFFileDescriptorReadCallBack;
-    if (events & FdEvents::Writable) cfEvents |= kCFFileDescriptorWriteCallBack;
-    CFFileDescriptorEnableCallBacks(fdRef, cfEvents);
+    if ((events & FdEvents::Readable) && !(old & FdEvents::Readable))
+        EV_SET(&evs[n++], fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+    else if (!(events & FdEvents::Readable) && (old & FdEvents::Readable))
+        EV_SET(&evs[n++], fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
+
+    if ((events & FdEvents::Writable) && !(old & FdEvents::Writable))
+        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+    else if (!(events & FdEvents::Writable) && (old & FdEvents::Writable))
+        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
+
+    if (n) {
+        if (kevent(kqFd_, evs, n, nullptr, 0, nullptr) < 0)
+            spdlog::error("NSAppEventLoop: updateFd kevent fd={}: {}", fd, strerror(errno));
+    }
+    it->second.events = events;
 }
 
 void NSAppEventLoop::removeFd(int fd)
@@ -209,15 +237,13 @@ void NSAppEventLoop::removeFd(int fd)
     auto it = fds_.find(fd);
     if (it == fds_.end()) return;
 
-    if (it->second.cfSource) {
-        CFRunLoopRemoveSource(CFRunLoopGetMain(),
-                               static_cast<CFRunLoopSourceRef>(it->second.cfSource),
-                               kCFRunLoopCommonModes);
-        CFRelease(static_cast<CFRunLoopSourceRef>(it->second.cfSource));
-    }
-    if (it->second.cfFdRef)
-        CFRelease(static_cast<CFFileDescriptorRef>(it->second.cfFdRef));
-
+    struct kevent evs[2];
+    int n = 0;
+    if (it->second.events & FdEvents::Readable)
+        EV_SET(&evs[n++], fd, EVFILT_READ,  EV_DELETE, 0, 0, nullptr);
+    if (it->second.events & FdEvents::Writable)
+        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
+    if (n) kevent(kqFd_, evs, n, nullptr, 0, nullptr);
     fds_.erase(it);
 }
 

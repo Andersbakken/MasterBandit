@@ -171,38 +171,48 @@ void Terminal::flushPendingResize()
 
 void Terminal::readFromFD()
 {
-    // Drain all available data to avoid rendering intermediate states.
+    // Accumulate data into coalesce buffer without injecting.
+    // On macOS, PTY buffers are small (4-16KB) so each kqueue event
+    // only delivers ~1KB. We buffer across events and inject all at
+    // once via flushReadBuffer() before rendering.
     char buf[65536];
     for (;;) {
         int ret;
         EINTRWRAP(ret, ::read(mMasterFD, buf, sizeof(buf)));
         if (ret == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return;
-            if (errno != EIO) {
+            if (errno != EIO)
                 spdlog::error("Failed to read from mMasterFD {} {}", errno, strerror(errno));
-            }
             if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
             return;
         } else if (ret == 0) {
             if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
             return;
         }
-        if (mPlatformCbs.shouldFilterOutput && mPlatformCbs.shouldFilterOutput()) {
-            std::string s(buf, static_cast<size_t>(ret));
-            mPlatformCbs.filterOutput(s);
-            if (!s.empty())
-                injectData(s.data(), s.size());
-        } else {
-            injectData(buf, static_cast<size_t>(ret));
-        }
+        mReadCoalesceBuffer.insert(mReadCoalesceBuffer.end(), buf, buf + ret);
+    }
+}
 
-        // Check for foreground process change after each read batch
-        if (callbacks().onForegroundProcessChanged) {
-            pid_t pgid = tcgetpgrp(mMasterFD);
-            if (pgid > 0 && pgid != mLastFgPgid) {
-                mLastFgPgid = pgid;
-                callbacks().onForegroundProcessChanged(foregroundProcess());
-            }
+void Terminal::flushReadBuffer()
+{
+    if (mReadCoalesceBuffer.empty()) return;
+
+    if (mPlatformCbs.shouldFilterOutput && mPlatformCbs.shouldFilterOutput()) {
+        std::string s(mReadCoalesceBuffer.begin(), mReadCoalesceBuffer.end());
+        mPlatformCbs.filterOutput(s);
+        if (!s.empty())
+            injectData(s.data(), s.size());
+    } else {
+        injectData(mReadCoalesceBuffer.data(), mReadCoalesceBuffer.size());
+    }
+    mReadCoalesceBuffer.clear();
+
+    // Check for foreground process change
+    if (callbacks().onForegroundProcessChanged) {
+        pid_t pgid = tcgetpgrp(mMasterFD);
+        if (pgid > 0 && pgid != mLastFgPgid) {
+            mLastFgPgid = pgid;
+            callbacks().onForegroundProcessChanged(foregroundProcess());
         }
     }
 }

@@ -696,8 +696,8 @@ void TerminalEmulator::processAPC()
     entry.cropH = cmd.height;
     entry.rgba = std::move(rgba);
 
-    spdlog::debug("kitty graphics: image id={} {}x{} px, {}x{} cells, action={}",
-                  imageId, imgW, imgH, cellCols, cellRows, cmd.action);
+    spdlog::debug("kitty graphics: image id={} {}x{} px, {}x{} cells, action={}, t={}",
+                  imageId, imgW, imgH, cellCols, cellRows, cmd.action, cmd.transmissionType);
     mImageRegistry[imageId] = std::move(entry);
     mLastKittyImageId = imageId;
 
@@ -711,14 +711,12 @@ void TerminalEmulator::processAPC()
     sendResponse(cmd.id, "OK");
 }
 
-bool TerminalEmulator::tickAnimations()
+void TerminalEmulator::tickAnimations()
 {
     uint64_t now = mono();
-    bool anyActive = false;
 
     for (auto& [id, img] : mImageRegistry) {
         if (!img.hasAnimation()) continue;
-        anyActive = true;
 
         uint32_t gap = img.currentFrameGap();
         if (gap == 0) gap = 40; // default 40ms
@@ -751,7 +749,5 @@ bool TerminalEmulator::tickAnimations()
         img.frameShownAt = now;
         img.frameGeneration++;
     }
-
-    return anyActive;
 }
 

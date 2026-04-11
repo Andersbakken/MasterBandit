@@ -217,8 +217,8 @@ public:
     const std::unordered_map<uint32_t, ImageEntry>& imageRegistry() const { return mImageRegistry; }
     uint32_t findImageByNumber(uint32_t number) const;
 
-    // Advance all running animations based on current time. Returns true if any animation is active.
-    bool tickAnimations();
+    // Advance all running animations based on current time.
+    void tickAnimations();
 
     void injectData(const char* data, size_t len);
 

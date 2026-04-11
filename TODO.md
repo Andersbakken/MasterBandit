@@ -33,6 +33,7 @@
 - [x] Per-pane title tracking — each pane stores its own OSC title/icon; tab bar shows the focused pane's title and updates on focus change.
 - [x] Cursor rendering — solid cursor on focused pane, hollow outline on unfocused panes. Cursor type and position passed as UBO params to compute shader (no cell mutation).
 - [x] PTY exit handling — `terminalExited` closes pane, or tab if last pane, or quits if last tab.
+- [ ] Mouse selection on macOS — drag-to-select doesn't work (single and double-line click selection works).
 - [ ] Pane resize — drag split dividers with mouse (needs mouse binding system first).
 - [ ] Refactor MouseSelection and OpenHyperlink — these are mouse-input-path concepts that need mouse coordinates, not general actions. They should be removed from the `Action` variant and handled purely as mouse binding result types. Similarly, PushOverlay needs parameters (command/shell) so it can't work as a parameterless action — it's script-only.
 - [ ] Pane swap/rotate — swap focused pane with another, rotate panes clockwise/counterclockwise.

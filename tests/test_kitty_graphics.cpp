@@ -396,8 +396,8 @@ TEST_CASE("kitty graphics: tickAnimations advances frame")
     auto& img = t.term.imageRegistry().at(1);
     CHECK(img.currentFrameIndex == 0);
 
-    // Wait and tick — should advance (sleep 20ms to reliably exceed 1ms gap)
-    struct timespec ts = {0, 20000000}; // 20ms
+    // Wait and tick — should advance (sleep 50ms to reliably exceed 1ms gap)
+    struct timespec ts = {0, 50000000}; // 50ms
     nanosleep(&ts, nullptr);
     t.term.tickAnimations();
 
@@ -639,4 +639,163 @@ TEST_CASE("kitty graphics: image persists through column resize")
 
     // Image should still be in registry
     CHECK(t.term.imageRegistry().count(1));
+}
+
+// ── Multiple placements ────────────────────────────────────────────────────
+
+TEST_CASE("kitty graphics: put with placement ID creates separate placement")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0); // 1x1 cells
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    // Place at row 0
+    t.gfx("a=p,i=1,p=1,q=2");
+    const CellExtra* ex0 = t.extra(0, 0);
+    REQUIRE(ex0);
+    CHECK(ex0->imageId == 1);
+    CHECK(ex0->imagePlacementId == 1);
+
+    // Move cursor down and place again with different placement ID
+    t.feed("\r\n\n");
+    t.gfx("a=p,i=1,p=2,q=2");
+    const CellExtra* ex2 = t.extra(0, 2);
+    REQUIRE(ex2);
+    CHECK(ex2->imageId == 1);
+    CHECK(ex2->imagePlacementId == 2);
+
+    // First placement should still be there
+    const CellExtra* ex0b = t.extra(0, 0);
+    REQUIRE(ex0b);
+    CHECK(ex0b->imageId == 1);
+    CHECK(ex0b->imagePlacementId == 1);
+
+    // Image has two placements
+    auto& img = t.term.imageRegistry().at(1);
+    CHECK(img.placements.size() == 2);
+    CHECK(img.placements.count(1));
+    CHECK(img.placements.count(2));
+}
+
+TEST_CASE("kitty graphics: put with same placement ID replaces old placement")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    // Place at row 0
+    t.gfx("a=p,i=1,p=5,q=2");
+    const CellExtra* ex0 = t.extra(0, 0);
+    REQUIRE(ex0);
+    CHECK(ex0->imageId == 1);
+
+    // Move down and place again with SAME placement ID — old cells should be cleared
+    t.feed("\r\n\n\n");
+    t.gfx("a=p,i=1,p=5,q=2");
+
+    // Old position (row 0) should be cleared
+    const CellExtra* exOld = t.extra(0, 0);
+    CHECK((!exOld || exOld->imageId == 0));
+
+    // New position (row 3) should have the placement
+    const CellExtra* exNew = t.extra(0, 3);
+    REQUIRE(exNew);
+    CHECK(exNew->imageId == 1);
+    CHECK(exNew->imagePlacementId == 5);
+}
+
+TEST_CASE("kitty graphics: delete specific placement by ID")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    // Create two placements
+    t.gfx("a=p,i=1,p=1,q=2");
+    t.feed("\r\n\n");
+    t.gfx("a=p,i=1,p=2,q=2");
+
+    // Delete only placement 1
+    t.gfx("a=d,d=i,i=1,p=1");
+
+    // Placement 1 cells should be gone
+    const CellExtra* ex0 = t.extra(0, 0);
+    CHECK((!ex0 || ex0->imageId == 0));
+
+    // Placement 2 cells should still exist
+    const CellExtra* ex2 = t.extra(0, 2);
+    REQUIRE(ex2);
+    CHECK(ex2->imageId == 1);
+    CHECK(ex2->imagePlacementId == 2);
+
+    // Image still in registry (has remaining placement)
+    CHECK(t.term.imageRegistry().count(1));
+    auto& img = t.term.imageRegistry().at(1);
+    CHECK(img.placements.size() == 1);
+    CHECK(img.placements.count(2));
+}
+
+TEST_CASE("kitty graphics: delete all placements removes image with uppercase")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    t.gfx("a=p,i=1,p=1,q=2");
+    t.feed("\r\n\n");
+    t.gfx("a=p,i=1,p=2,q=2");
+
+    // Delete placement 1 with uppercase I (free when empty)
+    t.gfx("a=d,d=I,i=1,p=1");
+    CHECK(t.term.imageRegistry().count(1)); // still has placement 2
+
+    // Delete placement 2 with uppercase I
+    t.gfx("a=d,d=I,i=1,p=2");
+    CHECK(t.term.imageRegistry().empty()); // no placements left, image freed
+}
+
+TEST_CASE("kitty graphics: transmit+display stores placement ID in cells")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,p=7,f=32,s=10,v=20,q=2", px);
+
+    const CellExtra* ex = t.extra(0, 0);
+    REQUIRE(ex);
+    CHECK(ex->imageId == 1);
+    CHECK(ex->imagePlacementId == 7);
+}
+
+TEST_CASE("kitty graphics: placement stores per-placement display params")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(20, 20, 255, 0, 0); // 2x1 cells at 10x20
+    t.gfx("a=t,i=1,f=32,s=20,v=20,q=2", px);
+
+    // Place with custom cell dimensions
+    t.gfx("a=p,i=1,p=1,c=4,r=3,q=2");
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.placements.count(1));
+    auto& pl = img.placements.at(1);
+    CHECK(pl.cellWidth == 4);
+    CHECK(pl.cellHeight == 3);
+}
+
+TEST_CASE("kitty graphics: placement with crop params")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(20, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=20,v=20,q=2", px);
+
+    // Place with crop
+    t.gfx("a=p,i=1,p=1,x=2,y=3,w=10,h=8,q=2");
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.placements.count(1));
+    auto& pl = img.placements.at(1);
+    CHECK(pl.cropX == 2);
+    CHECK(pl.cropY == 3);
+    CHECK(pl.cropW == 10);
+    CHECK(pl.cropH == 8);
 }

@@ -122,14 +122,28 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
                  imageId, w, h, cellCols, cellRows);
     mImageRegistry[imageId] = std::move(entry);
 
-    placeImageInGrid(imageId, cellCols, cellRows);
+    placeImageInGrid(imageId, 0, cellCols, cellRows);
 }
 
-void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cellRows, bool moveCursor)
+void TerminalEmulator::placeImageInGrid(uint32_t imageId, uint32_t placementId,
+                                         int cellCols, int cellRows, bool moveCursor)
 {
     IGrid& g = grid();
     int startCol = mCursorX;
     int fillCols = std::min(cellCols, mWidth - startCol);
+
+    // If this placement ID already has cells on screen, clear them first
+    if (placementId > 0) {
+        for (int r = 0; r < mHeight; ++r) {
+            for (int c = 0; c < mWidth; ++c) {
+                const CellExtra* cex = g.getExtra(c, r);
+                if (cex && cex->imageId == imageId && cex->imagePlacementId == placementId) {
+                    g.clearExtra(c, r);
+                    g.markRowDirty(r);
+                }
+            }
+        }
+    }
 
     // Collect old image IDs being overwritten so we can clean them up
     std::unordered_set<uint32_t> overwrittenIds;
@@ -155,9 +169,10 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
         if (oldEx && oldEx->imageId != 0 && oldEx->imageId != imageId)
             overwrittenIds.insert(oldEx->imageId);
 
-        // Place extra at startCol with image ID, start column, and row offset
+        // Place extra at startCol with image ID, placement ID, start column, and row offset
         CellExtra& ex = g.ensureExtra(startCol, mCursorY);
         ex.imageId = imageId;
+        ex.imagePlacementId = placementId;
         ex.imageStartCol = static_cast<uint32_t>(startCol);
         ex.imageOffsetRow = r;
 
@@ -165,9 +180,16 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
         mCursorY++;
     }
 
-    // Clean up overwritten images that are no longer referenced
+    // Clean up overwritten images that have no remaining placements on screen
     for (uint32_t oldId : overwrittenIds) {
-        mImageRegistry.erase(oldId);
+        bool stillReferenced = false;
+        for (int r = 0; r < mHeight && !stillReferenced; ++r) {
+            for (int c = 0; c < mWidth && !stillReferenced; ++c) {
+                const CellExtra* cex = g.getExtra(c, r);
+                if (cex && cex->imageId == oldId) stillReferenced = true;
+            }
+        }
+        if (!stillReferenced) mImageRegistry.erase(oldId);
     }
 
     if (!moveCursor) {

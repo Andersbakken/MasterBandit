@@ -729,9 +729,10 @@ void PlatformDawn::renderFrame()
             bool hasVisibleAnimations = false;
             term->tickAnimations();
 
-            // Collect image draw commands
+            // Collect image draw commands — one per (imageId, placementId) pair
             std::vector<Renderer::ImageDrawCmd> imageCmds;
-            std::unordered_set<uint32_t> seenImages;
+            std::unordered_set<uint64_t> seenPlacements; // (imageId << 32) | placementId
+            std::unordered_set<uint32_t> seenImageGPU;   // GPU upload dedup
             int vo = term->viewportOffset();
             float vpW = static_cast<float>(paneRect.w);
             float vpH = static_cast<float>(paneRect.h);
@@ -739,87 +740,106 @@ void PlatformDawn::renderFrame()
             for (int viewRow = 0; viewRow < g.rows(); ++viewRow) {
                 int absRow = histSize - vo + viewRow;
 
-                const CellExtra* ex = nullptr;
+                // Collect all image extras in this row (may have multiple placements)
+                struct RowExtra { const CellExtra* ex; int viewRow; };
+                std::vector<RowExtra> rowExtras;
+
                 if (absRow >= histSize) {
                     int gridRow = absRow - histSize;
                     if (gridRow >= 0 && gridRow < g.rows()) {
-                        // Check column 0 first (common case), then scan
-                        ex = g.getExtra(0, gridRow);
-                        if (!ex || ex->imageId == 0) {
-                            ex = nullptr;
-                            for (int c = 1; c < g.cols(); ++c) {
-                                auto* ce = g.getExtra(c, gridRow);
-                                if (ce && ce->imageId != 0) { ex = ce; break; }
-                            }
+                        for (int c = 0; c < g.cols(); ++c) {
+                            auto* ce = g.getExtra(c, gridRow);
+                            if (ce && ce->imageId != 0)
+                                rowExtras.push_back({ce, viewRow});
                         }
                     }
                 } else {
                     auto* extrasMap = term->document().historyExtras(absRow);
                     if (extrasMap) {
                         for (auto& [col, ce] : *extrasMap) {
-                            if (ce.imageId != 0) { ex = &ce; break; }
+                            if (ce.imageId != 0)
+                                rowExtras.push_back({&ce, viewRow});
                         }
                     }
                 }
 
-                if (!ex || ex->imageId == 0) continue;
-                if (seenImages.count(ex->imageId)) continue;
-                seenImages.insert(ex->imageId);
+                for (const auto& re : rowExtras) {
+                    const CellExtra* ex = re.ex;
+                    uint64_t key = (static_cast<uint64_t>(ex->imageId) << 32) | ex->imagePlacementId;
+                    if (seenPlacements.count(key)) continue;
+                    seenPlacements.insert(key);
 
-                auto it = term->imageRegistry().find(ex->imageId);
-                if (it == term->imageRegistry().end()) continue;
-                const auto& img = it->second;
+                    auto it = term->imageRegistry().find(ex->imageId);
+                    if (it == term->imageRegistry().end()) continue;
+                    const auto& img = it->second;
 
-                const auto& frameData = img.currentFrameRGBA();
-                renderer_.ensureImageGPU(queue_, ex->imageId,
-                    frameData.data(), img.pixelWidth, img.pixelHeight);
-                renderer_.updateImageGPU(queue_, ex->imageId,
-                    frameData.data(), img.pixelWidth, img.pixelHeight,
-                    img.frameGeneration);
+                    // GPU upload — once per image, not per placement
+                    if (!seenImageGPU.count(ex->imageId)) {
+                        seenImageGPU.insert(ex->imageId);
+                        const auto& frameData = img.currentFrameRGBA();
+                        renderer_.ensureImageGPU(queue_, ex->imageId,
+                            frameData.data(), img.pixelWidth, img.pixelHeight);
+                        renderer_.updateImageGPU(queue_, ex->imageId,
+                            frameData.data(), img.pixelWidth, img.pixelHeight,
+                            img.frameGeneration);
+                        if (img.hasAnimation()) hasVisibleAnimations = true;
+                    }
 
-                if (img.hasAnimation()) hasVisibleAnimations = true;
+                    // Use per-placement display params if available, else image defaults
+                    uint32_t dispCellW = img.cellWidth, dispCellH = img.cellHeight;
+                    uint32_t dispCropX = img.cropX, dispCropY = img.cropY;
+                    uint32_t dispCropW = img.cropW, dispCropH = img.cropH;
+                    auto plIt = img.placements.find(ex->imagePlacementId);
+                    if (plIt != img.placements.end()) {
+                        const auto& pl = plIt->second;
+                        if (pl.cellWidth > 0)  dispCellW = pl.cellWidth;
+                        if (pl.cellHeight > 0) dispCellH = pl.cellHeight;
+                        if (pl.cropW > 0 || pl.cropH > 0) {
+                            dispCropX = pl.cropX; dispCropY = pl.cropY;
+                            dispCropW = pl.cropW; dispCropH = pl.cropH;
+                        }
+                    }
 
-                // Display size: use cell dimensions (scaled) if available, otherwise original pixels
-                float imgW = img.cellWidth > 0
-                    ? static_cast<float>(img.cellWidth) * charWidth_
-                    : static_cast<float>(img.pixelWidth);
-                float imgH = img.cellHeight > 0
-                    ? static_cast<float>(img.cellHeight) * lineHeight_
-                    : static_cast<float>(img.pixelHeight);
-                float imgX = padLeft_ + static_cast<float>(ex->imageStartCol) * charWidth_;
-                float imgY = padTop_ + (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
+                    float imgW = dispCellW > 0
+                        ? static_cast<float>(dispCellW) * charWidth_
+                        : static_cast<float>(img.pixelWidth);
+                    float imgH = dispCellH > 0
+                        ? static_cast<float>(dispCellH) * lineHeight_
+                        : static_cast<float>(img.pixelHeight);
+                    float imgX = padLeft_ + static_cast<float>(ex->imageStartCol) * charWidth_;
+                    float imgY = padTop_ + (static_cast<float>(re.viewRow) - ex->imageOffsetRow) * lineHeight_;
 
-                float x0 = std::max(imgX, 0.0f);
-                float y0 = std::max(imgY, 0.0f);
-                float x1 = std::min(imgX + imgW, vpW);
-                float y1 = std::min(imgY + imgH, vpH);
+                    float x0 = std::max(imgX, 0.0f);
+                    float y0 = std::max(imgY, 0.0f);
+                    float x1 = std::min(imgX + imgW, vpW);
+                    float y1 = std::min(imgY + imgH, vpH);
 
-                if (x1 <= x0 || y1 <= y0) continue;
+                    if (x1 <= x0 || y1 <= y0) continue;
 
-                // Source rect crop: map UVs to the crop sub-rectangle
-                float texW = static_cast<float>(img.pixelWidth);
-                float texH = static_cast<float>(img.pixelHeight);
-                float cropU0 = img.cropW > 0 ? static_cast<float>(img.cropX) / texW : 0.0f;
-                float cropV0 = img.cropH > 0 ? static_cast<float>(img.cropY) / texH : 0.0f;
-                float cropU1 = img.cropW > 0 ? static_cast<float>(img.cropX + img.cropW) / texW : 1.0f;
-                float cropV1 = img.cropH > 0 ? static_cast<float>(img.cropY + img.cropH) / texH : 1.0f;
+                    // Source rect crop: map UVs to the crop sub-rectangle
+                    float texW = static_cast<float>(img.pixelWidth);
+                    float texH = static_cast<float>(img.pixelHeight);
+                    float cropU0 = dispCropW > 0 ? static_cast<float>(dispCropX) / texW : 0.0f;
+                    float cropV0 = dispCropH > 0 ? static_cast<float>(dispCropY) / texH : 0.0f;
+                    float cropU1 = dispCropW > 0 ? static_cast<float>(dispCropX + dispCropW) / texW : 1.0f;
+                    float cropV1 = dispCropH > 0 ? static_cast<float>(dispCropY + dispCropH) / texH : 1.0f;
 
-                Renderer::ImageDrawCmd cmd;
-                cmd.imageId = ex->imageId;
-                cmd.x = x0;
-                cmd.y = y0;
-                cmd.w = x1 - x0;
-                cmd.h = y1 - y0;
-                // Lerp viewport clipping into crop UV range
-                float fracX0 = (x0 - imgX) / imgW;
-                float fracY0 = (y0 - imgY) / imgH;
-                float fracX1 = (x1 - imgX) / imgW;
-                float fracY1 = (y1 - imgY) / imgH;
-                cmd.u0 = cropU0 + fracX0 * (cropU1 - cropU0);
-                cmd.v0 = cropV0 + fracY0 * (cropV1 - cropV0);
-                cmd.u1 = cropU0 + fracX1 * (cropU1 - cropU0);
-                cmd.v1 = cropV0 + fracY1 * (cropV1 - cropV0);
-                imageCmds.push_back(cmd);
+                    Renderer::ImageDrawCmd cmd;
+                    cmd.imageId = ex->imageId;
+                    cmd.x = x0;
+                    cmd.y = y0;
+                    cmd.w = x1 - x0;
+                    cmd.h = y1 - y0;
+                    float fracX0 = (x0 - imgX) / imgW;
+                    float fracY0 = (y0 - imgY) / imgH;
+                    float fracX1 = (x1 - imgX) / imgW;
+                    float fracY1 = (y1 - imgY) / imgH;
+                    cmd.u0 = cropU0 + fracX0 * (cropU1 - cropU0);
+                    cmd.v0 = cropV0 + fracY0 * (cropV1 - cropV0);
+                    cmd.u1 = cropU0 + fracX1 * (cropU1 - cropU0);
+                    cmd.v1 = cropV0 + fracY1 * (cropV1 - cropV0);
+                    imageCmds.push_back(cmd);
+                }
             }
 
             // Keep render loop alive for visible animations

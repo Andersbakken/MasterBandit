@@ -84,7 +84,8 @@ static_assert(sizeof(Cell) == 12);
 
 struct CellExtra {
     uint32_t imageId { 0 };
-    uint32_t imageStartCol { 0 };   // column where the image starts (for X positioning)
+    uint32_t imagePlacementId { 0 }; // kitty placement ID (p=), 0 = default placement
+    uint32_t imageStartCol { 0 };    // column where the image starts (for X positioning)
     uint32_t imageOffsetRow { 0 };
     uint32_t hyperlinkId { 0 };      // OSC 8: index into hyperlink registry
     uint32_t underlineColor { 0 };   // SGR 58: packed RGBA8, 0 = use fg color

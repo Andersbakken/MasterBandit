@@ -291,6 +291,68 @@ TEST_CASE("render: kitty graphics two images vertically" * doctest::test_suite("
     CHECK(rt.matchesReference(png, "kitty_two_vertical"));
 }
 
+TEST_CASE("render: kitty graphics multiple placements of same image" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    // Transmit a 4x4 solid red image (transmit only, don't display)
+    auto px = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=t,i=1,f=32,s=4,v=4,q=2", px));
+    rt.wait(200);
+
+    // Place at row 0 with placement ID 1 (2x1 cells)
+    rt.injectData(kittyGfxEscape("a=p,i=1,p=1,c=2,r=1,q=2", {}));
+    rt.wait(200);
+
+    // Move cursor down 2 rows
+    rt.injectData("\r\n\n");
+
+    // Place again at row 2 with placement ID 2 (2x1 cells)
+    rt.injectData(kittyGfxEscape("a=p,i=1,p=2,c=2,r=1,q=2", {}));
+    rt.wait(300);
+
+    // Screenshot: should show two red rectangles at rows 0 and 2
+    auto png = rt.screenshotPaneRect(0, 0, 0, 4, 4);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_multiple_placements"));
+}
+
+TEST_CASE("render: kitty graphics placement replacement" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    // Transmit a 4x4 solid blue image
+    auto px = solidRGBA(4, 4, 0, 0, 255);
+    rt.injectData(kittyGfxEscape("a=t,i=1,f=32,s=4,v=4,q=2", px));
+    rt.wait(200);
+
+    // Place at row 0 with placement ID 5
+    rt.injectData(kittyGfxEscape("a=p,i=1,p=5,c=3,r=1,q=2", {}));
+    rt.wait(200);
+
+    // Move down and replace same placement ID 5 at new position (row 3)
+    rt.injectData("\r\n\n\n");
+    rt.injectData(kittyGfxEscape("a=p,i=1,p=5,c=3,r=1,q=2", {}));
+    rt.wait(300);
+
+    // Screenshot: blue should appear only at row 3, row 0 should be empty
+    auto png = rt.screenshotPaneRect(0, 0, 0, 5, 5);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_placement_replace"));
+}
+
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;

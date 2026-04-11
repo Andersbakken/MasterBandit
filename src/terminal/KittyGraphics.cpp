@@ -409,17 +409,26 @@ void TerminalEmulator::processAPC()
     case 'q': // query (validate but don't store)
         break;
     case 'p': {
-        // Put (display a previously transmitted image)
+        // Put (display a previously transmitted image at a new or existing placement)
         uint32_t targetId = resolveId();
         auto it = mImageRegistry.find(targetId);
         if (it == mImageRegistry.end()) {
             sendResponse(targetId, "ENOENT:image not found");
             return;
         }
-        const auto& img = it->second;
+        auto& img = it->second;
         int cols = cmd.cellCols > 0 ? static_cast<int>(cmd.cellCols) : static_cast<int>(img.cellWidth);
         int rows = cmd.cellRows > 0 ? static_cast<int>(cmd.cellRows) : static_cast<int>(img.cellHeight);
-        placeImageInGrid(targetId, cols, rows, cmd.cursorMovement == 0);
+
+        // Store per-placement display params
+        ImageEntry::Placement pl;
+        pl.cellWidth = static_cast<uint32_t>(cols);
+        pl.cellHeight = static_cast<uint32_t>(rows);
+        pl.cropX = cmd.xOffset; pl.cropY = cmd.yOffset;
+        pl.cropW = cmd.width;   pl.cropH = cmd.height;
+        img.placements[cmd.placementId] = pl;
+
+        placeImageInGrid(targetId, cmd.placementId, cols, rows, cmd.cursorMovement == 0);
         sendResponse(targetId, "OK");
         return;
     }
@@ -459,15 +468,82 @@ void TerminalEmulator::processAPC()
             }
             break;
         }
-        case 'i': // delete by image id
+        case 'i': // delete by image id (optionally by placement)
         case 'I':
-            if (cmd.id > 0) mImageRegistry.erase(cmd.id);
+            if (cmd.id > 0) {
+                if (cmd.placementId > 0) {
+                    // Delete specific placement only
+                    auto imgIt = mImageRegistry.find(cmd.id);
+                    if (imgIt != mImageRegistry.end()) {
+                        imgIt->second.placements.erase(cmd.placementId);
+                        // Clear cells for this placement
+                        IGrid& dg = grid();
+                        for (int r = 0; r < mHeight; r++) {
+                            for (int c = 0; c < mWidth; c++) {
+                                const CellExtra* cex = dg.getExtra(c, r);
+                                if (cex && cex->imageId == cmd.id && cex->imagePlacementId == cmd.placementId) {
+                                    dg.clearExtra(c, r);
+                                    dg.markRowDirty(r);
+                                }
+                            }
+                        }
+                        // If uppercase and no placements remain, free image data
+                        if (da == 'I' && imgIt->second.placements.empty())
+                            mImageRegistry.erase(imgIt);
+                    }
+                } else {
+                    // Delete all placements of this image
+                    mImageRegistry.erase(cmd.id);
+                    // Clear cells referencing this image
+                    IGrid& dg = grid();
+                    for (int r = 0; r < mHeight; r++) {
+                        for (int c = 0; c < mWidth; c++) {
+                            const CellExtra* cex = dg.getExtra(c, r);
+                            if (cex && cex->imageId == cmd.id) {
+                                dg.clearExtra(c, r);
+                                dg.markRowDirty(r);
+                            }
+                        }
+                    }
+                }
+            }
             break;
-        case 'n': // delete by image number (most recent match)
+        case 'n': // delete by image number (optionally by placement)
         case 'N':
             if (cmd.imageNumber > 0) {
                 uint32_t found = findImageByNumber(cmd.imageNumber);
-                if (found > 0) mImageRegistry.erase(found);
+                if (found > 0) {
+                    if (cmd.placementId > 0) {
+                        auto imgIt = mImageRegistry.find(found);
+                        if (imgIt != mImageRegistry.end()) {
+                            imgIt->second.placements.erase(cmd.placementId);
+                            IGrid& dg = grid();
+                            for (int r = 0; r < mHeight; r++) {
+                                for (int c = 0; c < mWidth; c++) {
+                                    const CellExtra* cex = dg.getExtra(c, r);
+                                    if (cex && cex->imageId == found && cex->imagePlacementId == cmd.placementId) {
+                                        dg.clearExtra(c, r);
+                                        dg.markRowDirty(r);
+                                    }
+                                }
+                            }
+                            if (da == 'N' && imgIt->second.placements.empty())
+                                mImageRegistry.erase(imgIt);
+                        }
+                    } else {
+                        mImageRegistry.erase(found);
+                        IGrid& dg = grid();
+                        for (int r = 0; r < mHeight; r++) {
+                            for (int c = 0; c < mWidth; c++) {
+                                const CellExtra* cex = dg.getExtra(c, r);
+                                if (cex && cex->imageId == found) {
+                                    dg.clearExtra(c, r);
+                                    dg.markRowDirty(r);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             break;
         case 'f': // delete animation frames for an image
@@ -703,7 +779,13 @@ void TerminalEmulator::processAPC()
 
     // Place in grid if action is transmit+display
     if (cmd.action == 'T') {
-        placeImageInGrid(imageId, cellCols, cellRows, cmd.cursorMovement == 0);
+        ImageEntry::Placement pl;
+        pl.cellWidth = static_cast<uint32_t>(cellCols);
+        pl.cellHeight = static_cast<uint32_t>(cellRows);
+        pl.cropX = cmd.xOffset; pl.cropY = cmd.yOffset;
+        pl.cropW = cmd.width;   pl.cropH = cmd.height;
+        mImageRegistry[imageId].placements[cmd.placementId] = pl;
+        placeImageInGrid(imageId, cmd.placementId, cellCols, cellRows, cmd.cursorMovement == 0);
     }
 
     // Use cmd.id for response — if client didn't set i= (cmd.id==0), no response

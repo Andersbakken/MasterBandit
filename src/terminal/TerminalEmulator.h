@@ -185,6 +185,13 @@ public:
         uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
         std::vector<uint8_t> rgba;  // root frame (frame 0)
 
+        // Per-placement display parameters (one image, multiple positions)
+        struct Placement {
+            uint32_t cellWidth { 0 }, cellHeight { 0 };
+            uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
+        };
+        std::unordered_map<uint32_t, Placement> placements; // placementId → params
+
         // Animation
         struct Frame {
             std::vector<uint8_t> rgba;  // full frame RGBA data (same dimensions as image)
@@ -295,7 +302,7 @@ private:
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
     void processAPC();
-    void placeImageInGrid(uint32_t imageId, int cellCols, int cellRows, bool moveCursor = true);
+    void placeImageInGrid(uint32_t imageId, uint32_t placementId, int cellCols, int cellRows, bool moveCursor = true);
     std::string buildCurrentSGR() const;
 
     // Kitty graphics protocol: chunked transfer accumulation

@@ -195,7 +195,7 @@ TEST_CASE("kitty graphics: delete all visible images")
     auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
     // Use a=T so images are placed in the grid (visible)
     t.gfx("a=T,i=1,f=32,s=1,v=1,q=2", px);
-    t.feed("\n");
+    t.feed("\r\n");
     t.gfx("a=T,i=2,f=32,s=1,v=1,q=2", px);
     CHECK(t.term.imageRegistry().size() == 2);
 
@@ -555,32 +555,32 @@ TEST_CASE("kitty graphics: no crop when w=0 h=0")
 TEST_CASE("kitty graphics: two images coexist in grid")
 {
     GraphicsTerminal t(40, 20);
-    // First image: 10x20 red (1 col x 1 row)
+    // First image: 10x20 red (1 col x 1 row), placed at column 0
     auto px1 = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px1);
 
-    CHECK(t.term.cursorY() == 0); // cursor on last row of image (row 0)
+    CHECK(t.term.cursorY() == 0);
 
-    // Advance cursor past first image (like viuer's print_newline)
-    t.feed("\n");
+    // Move to start of next line (CR+LF like a real app would)
+    t.feed("\r\n");
 
-    // Second image: 10x20 green (1 col x 1 row)
+    // Second image: 10x20 green (1 col x 1 row), placed at column 0
     auto px2 = GraphicsTerminal::solidRGBA(10, 20, 0, 255, 0);
     t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px2);
 
-    CHECK(t.term.cursorY() == 1); // cursor on last row of second image
+    CHECK(t.term.cursorY() == 1);
 
     // Both images should be in registry
     CHECK(t.term.imageRegistry().size() == 2);
     CHECK(t.term.imageRegistry().count(1));
     CHECK(t.term.imageRegistry().count(2));
 
-    // First image at row 0
+    // First image at col 0, row 0
     const CellExtra* ex0 = t.extra(0, 0);
     REQUIRE(ex0);
     CHECK(ex0->imageId == 1);
 
-    // Second image at row 1
+    // Second image at col 0, row 1
     const CellExtra* ex1 = t.extra(0, 1);
     REQUIRE(ex1);
     CHECK(ex1->imageId == 2);
@@ -592,7 +592,7 @@ TEST_CASE("kitty graphics: delete visible preserves non-visible image")
     // Place image 1 at top, then image 2 below
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
-    t.feed("\n");
+    t.feed("\r\n");
     t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px);
 
     CHECK(t.term.imageRegistry().size() == 2);

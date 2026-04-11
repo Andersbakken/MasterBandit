@@ -434,15 +434,23 @@ void TerminalEmulator::processAPC()
             std::unordered_set<uint32_t> visibleIds;
             IGrid& dg = grid();
             for (int r = 0; r < mHeight; r++) {
-                const CellExtra* cex = dg.getExtra(0, r);
-                if (cex && cex->imageId > 0)
-                    visibleIds.insert(cex->imageId);
+                for (int c = 0; c < mWidth; c++) {
+                    const CellExtra* cex = dg.getExtra(c, r);
+                    if (cex && cex->imageId > 0) {
+                        visibleIds.insert(cex->imageId);
+                        break;
+                    }
+                }
             }
             // Clear cell extras for visible images
             for (int r = 0; r < mHeight; r++) {
-                const CellExtra* cex = dg.getExtra(0, r);
-                if (cex && cex->imageId > 0)
-                    dg.clearRowExtras(r);
+                for (int c = 0; c < mWidth; c++) {
+                    const CellExtra* cex = dg.getExtra(c, r);
+                    if (cex && cex->imageId > 0) {
+                        dg.clearRowExtras(r);
+                        break;
+                    }
+                }
             }
             // For uppercase (free), also delete the image data
             if (da == 'A') {

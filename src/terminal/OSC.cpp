@@ -127,7 +127,8 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
 void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cellRows, bool moveCursor)
 {
     IGrid& g = grid();
-    int fillCols = std::min(cellCols, mWidth);
+    int startCol = mCursorX;
+    int fillCols = std::min(cellCols, mWidth - startCol);
 
     int savedX = mCursorX, savedY = mCursorY;
 
@@ -141,15 +142,15 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
 
         // Fill cells with blanks to reserve visual space
         for (int c = 0; c < fillCols; ++c) {
-            Cell& cell = g.cell(c, mCursorY);
+            Cell& cell = g.cell(startCol + c, mCursorY);
             cell.wc = 0;
             cell.attrs = CellAttrs{};
         }
 
-        // Place one extra at column 0 with image ID and row offset
-        CellExtra& ex = g.ensureExtra(0, mCursorY);
+        // Place extra at startCol with image ID, start column, and row offset
+        CellExtra& ex = g.ensureExtra(startCol, mCursorY);
         ex.imageId = imageId;
-        ex.imageOffsetCol = 0;
+        ex.imageStartCol = static_cast<uint32_t>(startCol);
         ex.imageOffsetRow = r;
 
         g.markRowDirty(mCursorY);
@@ -161,12 +162,11 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, int cellCols, int cell
         mCursorY = std::max(0, savedY);
     } else {
         // Match kitty: cursor goes to last row of image, column past right edge.
-        // The caller (or newline from the app) handles advancing to the next row.
         mCursorY--;
         if (mCursorY >= mHeight) {
             mCursorY = mHeight - 1;
         }
-        mCursorX = std::min(fillCols, mWidth - 1);
+        mCursorX = std::min(startCol + fillCols, mWidth - 1);
     }
 }
 

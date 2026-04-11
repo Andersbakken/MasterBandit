@@ -277,6 +277,9 @@ TEST_CASE("render: kitty graphics two images vertically" * doctest::test_suite("
     rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=4,r=2,q=2", px1));
     rt.wait(200);
 
+    // Move to next line before second image
+    rt.injectData("\r\n");
+
     // Second image: 4x4 solid blue, scaled to 4x2 cells (placed below first)
     auto px2 = solidRGBA(4, 4, 0, 0, 255);
     rt.injectData(kittyGfxEscape("a=T,i=2,f=32,s=4,v=4,c=4,r=2,q=2", px2));

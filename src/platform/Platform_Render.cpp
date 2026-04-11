@@ -742,13 +742,23 @@ void PlatformDawn::renderFrame()
                 const CellExtra* ex = nullptr;
                 if (absRow >= histSize) {
                     int gridRow = absRow - histSize;
-                    if (gridRow >= 0 && gridRow < g.rows())
+                    if (gridRow >= 0 && gridRow < g.rows()) {
+                        // Check column 0 first (common case), then scan
                         ex = g.getExtra(0, gridRow);
+                        if (!ex || ex->imageId == 0) {
+                            ex = nullptr;
+                            for (int c = 1; c < g.cols(); ++c) {
+                                auto* ce = g.getExtra(c, gridRow);
+                                if (ce && ce->imageId != 0) { ex = ce; break; }
+                            }
+                        }
+                    }
                 } else {
                     auto* extrasMap = term->document().historyExtras(absRow);
                     if (extrasMap) {
-                        auto it = extrasMap->find(0);
-                        if (it != extrasMap->end()) ex = &it->second;
+                        for (auto& [col, ce] : *extrasMap) {
+                            if (ce.imageId != 0) { ex = &ce; break; }
+                        }
                     }
                 }
 
@@ -776,7 +786,7 @@ void PlatformDawn::renderFrame()
                 float imgH = img.cellHeight > 0
                     ? static_cast<float>(img.cellHeight) * lineHeight_
                     : static_cast<float>(img.pixelHeight);
-                float imgX = padLeft_;
+                float imgX = padLeft_ + static_cast<float>(ex->imageStartCol) * charWidth_;
                 float imgY = padTop_ + (static_cast<float>(viewRow) - ex->imageOffsetRow) * lineHeight_;
 
                 float x0 = std::max(imgX, 0.0f);

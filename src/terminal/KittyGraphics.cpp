@@ -280,10 +280,14 @@ void TerminalEmulator::processAPC()
         sendResponse(cmd.id, "OK");
         return;
     }
+    case 'f': // animation frame load (not yet supported)
+    case 'a': // animation control (not yet supported)
+    case 'c': // frame composition (not yet supported)
+        // Silently consume — no response to avoid garbage after client exits
+        return;
     default:
         // Unrecognized action — silently consume
         spdlog::debug("kitty graphics: unhandled action '{}'", cmd.action);
-        sendResponse(cmd.id, "EINVAL:unsupported action");
         return;
     }
 

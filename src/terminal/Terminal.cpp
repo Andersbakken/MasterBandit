@@ -159,6 +159,11 @@ void Terminal::flushPendingResize()
     struct winsize ws = {};
     ws.ws_col = static_cast<unsigned short>(this->width());
     ws.ws_row = static_cast<unsigned short>(this->height());
+    auto& cbs = callbacks();
+    if (cbs.cellPixelWidth && cbs.cellPixelHeight) {
+        ws.ws_xpixel = static_cast<unsigned short>(cbs.cellPixelWidth() * ws.ws_col);
+        ws.ws_ypixel = static_cast<unsigned short>(cbs.cellPixelHeight() * ws.ws_row);
+    }
     ioctl(mMasterFD, TIOCSWINSZ, &ws);
 }
 

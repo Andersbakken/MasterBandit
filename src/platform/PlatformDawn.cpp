@@ -256,16 +256,35 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
 
         if (!isHeadless()) {
-            // Load bold variant (windowed only)
             const std::string& family = options.font.empty() ? std::string{} : options.font;
-            std::string boldPath = family.empty() ? std::string{} : resolveFontFamily(family, true);
+
+            // Load bold variant
             bool hasBoldFont = false;
-            if (!boldPath.empty() && boldPath != fontPath) {
-                auto boldData = loadFontFile(boldPath);
-                if (!boldData.empty()) {
-                    spdlog::info("Using bold font: {}", boldPath);
-                    fontList.push_back(std::move(boldData));
-                    hasBoldFont = true;
+            if (!family.empty()) {
+                std::string boldPath = resolveFontFamily(family, FontTraitBold);
+                if (!boldPath.empty() && boldPath != fontPath) {
+                    auto boldData = loadFontFile(boldPath);
+                    if (!boldData.empty()) {
+                        spdlog::info("Using bold font: {}", boldPath);
+                        fontList.push_back(std::move(boldData));
+                        hasBoldFont = true;
+                    }
+                }
+            }
+
+            // Load italic variant
+            bool hasItalicFont = false;
+            uint32_t italicFontIndex = 0;
+            if (!family.empty()) {
+                std::string italicPath = resolveFontFamily(family, FontTraitItalic);
+                if (!italicPath.empty() && italicPath != fontPath) {
+                    auto italicData = loadFontFile(italicPath);
+                    if (!italicData.empty()) {
+                        spdlog::info("Using italic font: {}", italicPath);
+                        italicFontIndex = static_cast<uint32_t>(fontList.size());
+                        fontList.push_back(std::move(italicData));
+                        hasItalicFont = true;
+                    }
                 }
             }
 
@@ -282,6 +301,12 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 textSystem_.addSyntheticBoldVariant(fontName_, options.boldStrength, options.boldStrength);
             }
             textSystem_.setBoldStrength(options.boldStrength, options.boldStrength);
+
+            if (hasItalicFont) {
+                textSystem_.tagFontStyle(fontName_, italicFontIndex, {.bold = false, .italic = true});
+            } else {
+                textSystem_.addSyntheticItalicVariant(fontName_);
+            }
 
             // Load bundled Symbols Nerd Font Mono as a built-in fallback
             auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
@@ -560,7 +585,7 @@ void PlatformDawn::applyFontChange(const Config& config)
     std::vector<std::vector<uint8_t>> fontList = {std::move(fontData)};
     bool hasBoldFont = false;
     if (!config.font.empty()) {
-        std::string boldPath = resolveFontFamily(config.font, true);
+        std::string boldPath = resolveFontFamily(config.font, FontTraitBold);
         if (!boldPath.empty() && boldPath != fontPath) {
             auto boldData = loadFontFile(boldPath);
             if (!boldData.empty()) {

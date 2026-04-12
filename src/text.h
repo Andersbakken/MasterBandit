@@ -112,9 +112,14 @@ public:
     const FontData* getFont(const std::string& name) const;
     bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
     bool addSyntheticBoldVariant(const std::string& name, float xStrength = 0.02f, float yStrength = 0.02f);
+    bool addSyntheticItalicVariant(const std::string& name, float slant = 0.2f);
+
+    // Tag an already-loaded font entry as a styled variant (e.g. italic loaded from file)
+    void tagFontStyle(const std::string& name, uint32_t fontIndex, FontStyle style);
 
     // Set bold strength for on-demand synthetic bold creation on fallback fonts
     void setBoldStrength(float x, float y) { boldStrengthX_ = x; boldStrengthY_ = y; }
+    void setItalicSlant(float s) { italicSlant_ = s; }
 
     // System font fallback callback. Given a primary font path and a codepoint,
     // returns font file data for a system font covering that codepoint.
@@ -156,5 +161,6 @@ private:
     SystemFallbackFn systemFallback_;
     EmojiFallbackFn  emojiFallback_;
     float boldStrengthX_ = 0.04f, boldStrengthY_ = 0.04f;
+    float italicSlant_ = 0.2f;
 
 };

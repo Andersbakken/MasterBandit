@@ -475,6 +475,56 @@ bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrengt
     return true;
 }
 
+bool TextSystem::addSyntheticItalicVariant(const std::string& name, float slant)
+{
+    auto it = fonts_.find(name);
+    if (it == fonts_.end()) return false;
+
+    FontData& font = it->second;
+    if (font.hbFonts.empty()) return false;
+
+    const auto& primary = font.hbFonts[0];
+
+    FontData::HBEntry entry;
+    entry.hbBlob = hb_blob_reference(primary.hbBlob);
+    entry.hbFace = hb_face_reference(primary.hbFace);
+    entry.hbFont = hb_font_create(entry.hbFace);
+    hb_font_set_synthetic_slant(entry.hbFont, slant);
+    entry.gpuDraw = hb_gpu_draw_create_or_fail();
+    if (!entry.gpuDraw) {
+        sLog().error("addSyntheticItalicVariant '{}': hb_gpu_draw_create_or_fail() returned null", name);
+        hb_font_destroy(entry.hbFont);
+        hb_face_destroy(entry.hbFace);
+        hb_blob_destroy(entry.hbBlob);
+        return false;
+    }
+
+    entry.baseFontIndex = 0;
+    entry.style = {.bold = false, .italic = true};
+
+    uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size());
+    font.hbFonts.push_back(entry);
+
+    uint64_t variantKey = (static_cast<uint64_t>(0) << 8) | entry.style.key();
+    font.styledVariants[variantKey] = newFi;
+
+    sLog().info("Added synthetic italic variant to '{}' (fi={})", name, newFi);
+    return true;
+}
+
+void TextSystem::tagFontStyle(const std::string& name, uint32_t fontIndex, FontStyle style)
+{
+    auto it = fonts_.find(name);
+    if (it == fonts_.end()) return;
+
+    FontData& font = it->second;
+    if (fontIndex >= font.hbFonts.size()) return;
+
+    font.hbFonts[fontIndex].style = style;
+    uint64_t variantKey = (static_cast<uint64_t>(0) << 8) | style.key();
+    font.styledVariants[variantKey] = fontIndex;
+}
+
 // --- Font registry: resolve fonts with style ---
 
 
@@ -507,6 +557,8 @@ uint32_t TextSystem::getStyledVariant(FontData& font, uint32_t baseFi, FontStyle
     entry.hbFont = hb_font_create(entry.hbFace);
     if (style.bold)
         hb_font_set_synthetic_bold(entry.hbFont, boldStrengthX_, boldStrengthY_, false);
+    if (style.italic)
+        hb_font_set_synthetic_slant(entry.hbFont, italicSlant_);
     entry.gpuDraw = hb_gpu_draw_create_or_fail();
     if (!entry.gpuDraw) {
         hb_font_destroy(entry.hbFont);

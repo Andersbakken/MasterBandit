@@ -512,6 +512,25 @@ TEST_CASE("render: kitty graphics z-layering above text" * doctest::test_suite("
     CHECK(rt.matchesReference(png, "kitty_z_above_text"));
 }
 
+TEST_CASE("render: italic text" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    rt.injectData("\x1b[?25l"); // hide cursor
+    rt.injectData("Normal \x1b[3mItalic\x1b[0m");
+    rt.wait(300);
+
+    auto png = rt.screenshotPaneRect(0, 0, 0, 13, 1);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "italic_text"));
+}
+
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;

@@ -7,29 +7,31 @@ namespace {
 
 // If requireFamily is true, verify the matched font's family matches the request.
 // CoreText will happily return a substitute font when the requested family doesn't exist.
-std::string resolveByFamily(const std::string& family, bool bold, bool requireFamily = false)
+std::string resolveByFamily(const std::string& family, FontTraits traits, bool requireFamily = false)
 {
     CFStringRef cfFamily = CFStringCreateWithCString(nullptr, family.c_str(), kCFStringEncodingUTF8);
 
     CTFontDescriptorRef desc;
-    if (bold) {
+    if (traits != FontTraitNone) {
         CFStringRef keys[] = { kCTFontFamilyNameAttribute, kCTFontTraitsAttribute };
-        uint32_t trait = kCTFontBoldTrait;
-        CFNumberRef traitNum = CFNumberCreate(nullptr, kCFNumberSInt32Type, &trait);
+        uint32_t ctTrait = 0;
+        if (traits & FontTraitBold) ctTrait |= kCTFontBoldTrait;
+        if (traits & FontTraitItalic) ctTrait |= kCTFontItalicTrait;
+        CFNumberRef traitNum = CFNumberCreate(nullptr, kCFNumberSInt32Type, &ctTrait);
         CFStringRef traitKeys[] = { kCTFontSymbolicTrait };
         CFTypeRef traitVals[] = { traitNum };
-        CFDictionaryRef traits = CFDictionaryCreate(nullptr,
+        CFDictionaryRef traitDict = CFDictionaryCreate(nullptr,
             reinterpret_cast<const void**>(traitKeys),
             reinterpret_cast<const void**>(traitVals), 1,
             &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-        CFTypeRef vals[] = { cfFamily, traits };
+        CFTypeRef vals[] = { cfFamily, traitDict };
         CFDictionaryRef attrs = CFDictionaryCreate(nullptr,
             reinterpret_cast<const void**>(keys),
             reinterpret_cast<const void**>(vals), 2,
             &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
         desc = CTFontDescriptorCreateWithAttributes(attrs);
         CFRelease(attrs);
-        CFRelease(traits);
+        CFRelease(traitDict);
         CFRelease(traitNum);
     } else {
         desc = CTFontDescriptorCreateWithNameAndSize(cfFamily, 0.0);
@@ -71,21 +73,22 @@ std::string resolveByFamily(const std::string& family, bool bold, bool requireFa
 }
 
 // Last-resort: ask CoreText for any font with the monospace trait.
-std::string resolveByMonoTrait(bool bold)
+std::string resolveByMonoTrait(FontTraits traits)
 {
     uint32_t trait = kCTFontMonoSpaceTrait;
-    if (bold) trait |= kCTFontBoldTrait;
+    if (traits & FontTraitBold) trait |= kCTFontBoldTrait;
+    if (traits & FontTraitItalic) trait |= kCTFontItalicTrait;
 
     CFNumberRef traitNum = CFNumberCreate(nullptr, kCFNumberSInt32Type, &trait);
     CFStringRef traitKeys[] = { kCTFontSymbolicTrait };
     CFTypeRef traitVals[] = { traitNum };
-    CFDictionaryRef traits = CFDictionaryCreate(nullptr,
+    CFDictionaryRef traitDict = CFDictionaryCreate(nullptr,
         reinterpret_cast<const void**>(traitKeys),
         reinterpret_cast<const void**>(traitVals), 1,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
     CFStringRef keys[] = { kCTFontTraitsAttribute };
-    CFTypeRef vals[] = { traits };
+    CFTypeRef vals[] = { traitDict };
     CFDictionaryRef attrs = CFDictionaryCreate(nullptr,
         reinterpret_cast<const void**>(keys),
         reinterpret_cast<const void**>(vals), 1,
@@ -93,7 +96,7 @@ std::string resolveByMonoTrait(bool bold)
 
     CTFontDescriptorRef desc = CTFontDescriptorCreateWithAttributes(attrs);
     CFRelease(attrs);
-    CFRelease(traits);
+    CFRelease(traitDict);
     CFRelease(traitNum);
 
     if (!desc) return {};
@@ -117,16 +120,15 @@ std::string resolveByMonoTrait(bool bold)
 
 } // namespace
 
-std::string resolveFontFamily(const std::string& family, bool bold)
+std::string resolveFontFamily(const std::string& family, FontTraits traits)
 {
     if (isGenericMonoFamily(family)) {
         for (const auto& candidate : preferredMonospaceFonts()) {
-            auto result = resolveByFamily(candidate, bold);
+            auto result = resolveByFamily(candidate, traits);
             if (!result.empty()) return result;
         }
-        // Last resort: any monospace font on the system.
-        return resolveByMonoTrait(bold);
+        return resolveByMonoTrait(traits);
     }
 
-    return resolveByFamily(family, bold, true);
+    return resolveByFamily(family, traits, true);
 }

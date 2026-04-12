@@ -178,6 +178,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
         // Shape the run
         FontStyle runStyle;
         runStyle.bold = runBold;
+        runStyle.italic = runItalic;
         const ShapedRun& shaped = textSystem_.shapeRun(fontName_, runText, fontSize_, runStyle);
 
         // Find contiguous RTL cell ranges for mirroring.

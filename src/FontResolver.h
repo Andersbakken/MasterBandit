@@ -1,11 +1,18 @@
 #pragma once
 
+#include <cstdint>
 #include <span>
 #include <string>
 
+enum FontTraits : uint8_t {
+    FontTraitNone   = 0,
+    FontTraitBold   = 1 << 0,
+    FontTraitItalic = 1 << 1,
+};
+
 // Resolves a font family name (e.g. "JetBrains Mono") to an absolute font file path.
 // Returns empty string if the family cannot be found.
-std::string resolveFontFamily(const std::string& family, bool bold = false);
+std::string resolveFontFamily(const std::string& family, FontTraits traits = FontTraitNone);
 
 // Returns whether the family name is a generic alias (e.g. "monospace", "mono")
 // that should be resolved via preferredMonospaceFonts() instead of directly.

@@ -4,16 +4,15 @@
 
 namespace {
 
-// If requireFamily is true, verify the matched font's family matches the request.
-// This is needed because FcFontMatch always returns a best-effort match even when
-// the requested family doesn't exist.
-std::string resolveByFamily(const std::string& family, bool bold, bool requireFamily = false)
+std::string resolveByFamily(const std::string& family, FontTraits traits, bool requireFamily = false)
 {
     FcPattern* pat = FcNameParse(reinterpret_cast<const FcChar8*>(family.c_str()));
     if (!pat) return {};
 
-    if (bold)
+    if (traits & FontTraitBold)
         FcPatternAddInteger(pat, FC_WEIGHT, FC_WEIGHT_BOLD);
+    if (traits & FontTraitItalic)
+        FcPatternAddInteger(pat, FC_SLANT, FC_SLANT_ITALIC);
 
     FcConfigSubstitute(nullptr, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
@@ -46,16 +45,15 @@ std::string resolveByFamily(const std::string& family, bool bold, bool requireFa
 
 } // namespace
 
-std::string resolveFontFamily(const std::string& family, bool bold)
+std::string resolveFontFamily(const std::string& family, FontTraits traits)
 {
     if (isGenericMonoFamily(family)) {
         for (const auto& candidate : preferredMonospaceFonts()) {
-            auto result = resolveByFamily(candidate, bold, true);
+            auto result = resolveByFamily(candidate, traits, true);
             if (!result.empty()) return result;
         }
-        // Fall back to fontconfig's native "monospace" alias.
-        return resolveByFamily("monospace", bold);
+        return resolveByFamily("monospace", traits);
     }
 
-    return resolveByFamily(family, bold, true);
+    return resolveByFamily(family, traits, true);
 }

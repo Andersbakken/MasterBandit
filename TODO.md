@@ -44,7 +44,7 @@
 - [x] Per-pane title tracking — each pane stores its own OSC title/icon; tab bar shows the focused pane's title and updates on focus change.
 - [x] Cursor rendering — solid cursor on focused pane, hollow outline on unfocused panes. Cursor type and position passed as UBO params to compute shader (no cell mutation).
 - [x] PTY exit handling — `terminalExited` closes pane, or tab if last pane, or quits if last tab.
-- [ ] Mouse selection on macOS — drag-to-select doesn't work (single and double-line click selection works).
+- [x] Mouse selection on macOS — drag-to-select.
 - [ ] Pane resize — drag split dividers with mouse (needs mouse binding system first).
 - [ ] Refactor MouseSelection and OpenHyperlink — these are mouse-input-path concepts that need mouse coordinates, not general actions. They should be removed from the `Action` variant and handled purely as mouse binding result types. Similarly, PushOverlay needs parameters (command/shell) so it can't work as a parameterless action — it's script-only.
 - [ ] Pane swap/rotate — swap focused pane with another, rotate panes clockwise/counterclockwise.
@@ -98,7 +98,7 @@
 - [x] Indirect glyph list — ResolvedCell stores offset+count into GlyphEntry buffer. Supports multiple glyphs per cell (combining marks) and zero glyphs (ligature trailing cells).
 - [x] Substitution detection — shaped glyph ID compared against nominal lookup. Substituted glyphs use HarfBuzz advance positioning; normal glyphs anchor at cell origin.
 - [x] Per-row shaping cache — only dirty rows re-shaped. Clean rows reuse cached glyph data.
-- [ ] Italic font rendering — SGR italic bit is tracked correctly but the text system never selects a real italic font variant nor synthesizes via `hb_font_set_synthetic_slant`. Parity with bold: try italic variant via fontconfig/CoreText first, fall back to synthetic slant.
+- [x] Italic font rendering — real italic variant resolved via CoreText/fontconfig (`kCTFontItalicTrait` / `FC_SLANT_ITALIC`), falls back to synthetic slant via `hb_font_set_synthetic_slant`. Same pattern as bold.
 - [ ] Ligature verification — test with ligature fonts (Fira Code, JetBrains Mono).
 - [ ] Arabic cursive connection verification — test with proper Arabic fonts (GSUB contextual forms).
 

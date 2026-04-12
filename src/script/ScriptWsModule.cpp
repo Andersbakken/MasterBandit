@@ -67,9 +67,15 @@ struct WsServer {
 struct ModuleState {
     Engine* engine = nullptr;
     lws_context* ctx = nullptr;
+    // Active (open) servers.
     std::vector<std::unique_ptr<WsServer>> servers;
-    // Engine pointer is captured in fd-watch lambdas; that's fine since fds are
-    // removed before the context is destroyed.
+    // Servers that have been `closed` but whose lws vhost may still fire
+    // callbacks during deferred cleanup. `lws_vhost_destroy` is asynchronous —
+    // connections in flight keep the vhost alive, and their callbacks reach
+    // this WsServer via `lws_vhost_user(vh)`. We keep the WsServer alive here
+    // until its last connection finishes closing. See `closeWsServer` and
+    // LWS_CALLBACK_CLOSED for the transfer rules.
+    std::vector<std::unique_ptr<WsServer>> pendingDeath;
 };
 
 // One ModuleState per Engine. Raw map — we never delete Engine mid-session.
@@ -361,10 +367,9 @@ static void closeWsServer(ModuleState* mod, WsServer* srv)
 {
     if (srv->closed) return;
 
-    // Fire close events + release JS-side connection objects *before* we mark
-    // the server closed and tear down the vhost. The subsequent vhost_destroy
-    // will fire LWS_CALLBACK_CLOSED for each wsi, but by then srv->closed is
-    // true and JsWsConnData::conn has been nulled, so the handler is inert.
+    // Fire close events + release JS-side connection objects before we tear
+    // down anything native. destroyConnectionJs nulls JsWsConnData::conn so
+    // stale JS references become inert.
     if (srv->ctx) {
         for (auto& conn : srv->connections) {
             if (!conn->closed)
@@ -373,16 +378,6 @@ static void closeWsServer(ModuleState* mod, WsServer* srv)
     }
 
     srv->closed = true;
-    for (auto& conn : srv->connections) conn->closed = true;
-
-    if (srv->vhost) {
-        lws_vhost_destroy(srv->vhost);
-        srv->vhost = nullptr;
-    }
-
-    // vhost destruction above has fired CLOSED for every connection and those
-    // handlers nulled psd->conn. Drop the C++ state for all of them now.
-    srv->connections.clear();
 
     // Detach JS server object.
     if (srv->ctx && !JS_IsUndefined(srv->jsObj)) {
@@ -391,11 +386,32 @@ static void closeWsServer(ModuleState* mod, WsServer* srv)
         JS_FreeValue(srv->ctx, srv->jsObj);
         srv->jsObj = JS_UNDEFINED;
     }
+    // Clear ctx — the owning JSContext may be freed right after this returns
+    // (Engine::unload calls JS_FreeContext after wsUnloadInstance). Any later
+    // callback that checks srv->ctx finds null and skips JS-side work.
+    srv->ctx = nullptr;
 
-    // Remove from module state (owning unique_ptr dies here).
+    // Move the WsServer from the active list to pendingDeath BEFORE starting
+    // vhost destruction. `lws_vhost_destroy` may fire CLOSED for in-flight
+    // connections synchronously or during later service calls — those callbacks
+    // resolve srv via `lws_vhost_user(vh)` and must still find live memory.
+    std::unique_ptr<WsServer> owned;
     for (auto it = mod->servers.begin(); it != mod->servers.end(); ++it) {
-        if (it->get() == srv) { mod->servers.erase(it); break; }
+        if (it->get() == srv) { owned = std::move(*it); mod->servers.erase(it); break; }
     }
+    if (owned)
+        mod->pendingDeath.push_back(std::move(owned));
+
+    if (srv->vhost) {
+        lws_vhost_destroy(srv->vhost);
+        srv->vhost = nullptr;
+    }
+    // NOTE: even when srv->connections is empty, we do not free the WsServer
+    // here. lws_vhost_destroy is deferred and may still fire callbacks for
+    // the listening wsi (and any other vhost-internal wsi) that resolve the
+    // vhost-user pointer. pendingDeath entries are only reaped in
+    // `wsDestroyEngine`, after lws_context_destroy has fully drained the
+    // context.
 }
 
 // ============================================================================
@@ -489,11 +505,18 @@ static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
         c->closed = true;
         if (srv->ctx && !srv->closed)
             destroyConnectionJs(srv->ctx, c, true);
-        // Remove from server.connections
+        // Remove from server.connections.
         for (auto it = srv->connections.begin(); it != srv->connections.end(); ++it) {
             if (it->get() == c) { srv->connections.erase(it); break; }
         }
         psd->conn = nullptr;
+        // NOTE: do NOT free the WsServer here, even when fully drained. lws
+        // continues to fire callbacks (DEL_POLL_FD via
+        // __remove_wsi_socket_from_fds) after CLOSED returns, resolving the
+        // vhost-user pointer from lws_vhost_user(vh). Freeing `srv` now would
+        // UAF those callbacks. Pending servers are finally reaped in
+        // `wsDestroyEngine`, which runs after `lws_context_destroy` has fully
+        // drained the context.
         break;
     }
 
@@ -697,13 +720,20 @@ void wsDestroyEngine(Script::Engine* eng)
     if (it == g_modules.end()) return;
     ModuleState* mod = it->second.get();
 
-    // Close all remaining servers (detaches vhosts).
+    // Close all remaining servers (moves them to pendingDeath).
     while (!mod->servers.empty())
         closeWsServer(mod, mod->servers.back().get());
 
     if (mod->ctx) {
+        // lws_context_destroy fires CLOSED for every remaining wsi synchronously
+        // and the handler drains entries out of pendingDeath.
         lws_context_destroy(mod->ctx);
         mod->ctx = nullptr;
     }
+
+    // Anything still hanging on (shouldn't happen — lws_context_destroy drains
+    // everything) gets freed here. Safe because no more callbacks can fire.
+    mod->pendingDeath.clear();
+
     g_modules.erase(it);
 }

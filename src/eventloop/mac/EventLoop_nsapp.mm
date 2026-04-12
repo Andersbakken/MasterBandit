@@ -254,11 +254,20 @@ void NSAppEventLoop::timerFired(TimerId id)
     auto it = std::find_if(timers_.begin(), timers_.end(),
                             [id](const Timer& t) { return t.id == id; });
     if (it == timers_.end()) return;
-    it->cb();
-    if (!it->repeat) {
-        [it->nsTimer invalidate];
+
+    // Copy the fields we need *before* running the callback — it may mutate
+    // timers_ via addTimer (push_back → reallocation) or removeTimer, either
+    // of which invalidates `it`.
+    TimerCb cb = it->cb;
+    bool repeat = it->repeat;
+    NSTimer* nsTimer = it->nsTimer;
+
+    if (!repeat) {
+        [nsTimer invalidate];
         timers_.erase(it);
     }
+    // For repeat timers, `it` may dangle after cb() but we don't touch it again.
+    cb();
 }
 
 EventLoop::TimerId NSAppEventLoop::addTimer(uint64_t ms, bool repeat, TimerCb cb)

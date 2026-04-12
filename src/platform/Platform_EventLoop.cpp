@@ -112,6 +112,35 @@ int PlatformDawn::exec()
             }
             return {};
         };
+        scbs.paneCommands = [this](Script::PaneId paneId, int limit) -> std::vector<Script::CommandInfo> {
+            std::vector<Script::CommandInfo> result;
+            for (auto& tab : tabs_) {
+                Pane* p = tab->layout()->pane(paneId);
+                if (!p) continue;
+                TerminalEmulator* te = p->terminal();
+                if (!te) continue;
+                const auto& ring = te->commands();
+                size_t start = 0;
+                if (limit > 0 && static_cast<int>(ring.size()) > limit)
+                    start = ring.size() - static_cast<size_t>(limit);
+                const auto& doc = te->document();
+                for (size_t i = start; i < ring.size(); ++i) {
+                    const auto& r = ring[i];
+                    if (!r.complete) continue;
+                    Script::CommandInfo info{
+                        r.id, r.command, r.output, r.cwd, r.exitCode,
+                        r.startMs, r.endMs,
+                        doc.absForRowId(r.promptStartRowId),  r.promptStartCol,
+                        doc.absForRowId(r.commandStartRowId), r.commandStartCol,
+                        doc.absForRowId(r.outputStartRowId),  r.outputStartCol,
+                        doc.absForRowId(r.outputEndRowId),    r.outputEndCol
+                    };
+                    result.push_back(std::move(info));
+                }
+                break;
+            }
+            return result;
+        };
         scbs.overlayInfo = [this](Script::TabId tabId) -> Script::AppCallbacks::OverlayInfo {
             if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
                 if (auto* ov = tabs_[tabId]->topOverlay())

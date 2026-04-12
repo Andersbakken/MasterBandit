@@ -107,7 +107,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 {
     TerminalCallbacks cbs;
 
-    cbs.event = [this, paneId](TerminalEmulator*, int ev, void*) {
+    cbs.event = [this, paneId](TerminalEmulator*, int ev, void* payload) {
         switch (static_cast<TerminalEmulator::Event>(ev)) {
         case TerminalEmulator::Update:
         case TerminalEmulator::ScrollbackChanged:
@@ -118,6 +118,26 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             }
             break;
         case TerminalEmulator::VisibleBell:
+            break;
+        case TerminalEmulator::CommandComplete:
+            if (payload) {
+                const auto* rec = static_cast<const TerminalEmulator::CommandRecord*>(payload);
+                TerminalEmulator* te = nullptr;
+                for (auto& tab : tabs_) {
+                    if (auto* p = tab->layout()->pane(paneId)) { te = p->terminal(); break; }
+                }
+                const auto& doc = te ? te->document() : *static_cast<const Document*>(nullptr);
+                if (!te) break;
+                Script::CommandInfo info{
+                    rec->id, rec->command, rec->output, rec->cwd, rec->exitCode,
+                    rec->startMs, rec->endMs,
+                    doc.absForRowId(rec->promptStartRowId),  rec->promptStartCol,
+                    doc.absForRowId(rec->commandStartRowId), rec->commandStartCol,
+                    doc.absForRowId(rec->outputStartRowId),  rec->outputStartCol,
+                    doc.absForRowId(rec->outputEndRowId),    rec->outputEndCol
+                };
+                scriptEngine_.notifyCommandComplete(paneId, info);
+            }
             break;
         }
     };

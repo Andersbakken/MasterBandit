@@ -240,39 +240,106 @@ void TerminalEmulator::processStringSequence()
         break;
     case 2: processOSC_Title(payload, true); break;
     case 22: processOSC_PointerShape(payload); break;
-    case 133: { // Shell integration (FinalTerm / semantic prompts)
-        // OSC 133;X where X is: A=prompt start, B=command start, C=output start, D=command done
-        // Optional params after X separated by ; with key=value pairs
-        if (!payload.empty()) {
-            char kind = payload[0];
-            bool isSecondary = false;
-            // Check for k=s (secondary prompt) in params
-            if (payload.size() > 1 && payload[1] == ';') {
-                auto params = payload.substr(2);
-                if (params.find("k=s") != std::string_view::npos) isSecondary = true;
+    case 133: { // Shell integration (FinalTerm / semantic prompts / Per-Bothner spec)
+        // OSC 133;<letter>[;<arg>][;<k>=<v>...]
+        //   A = start new prompt (options: aid, cl)
+        //   B = end prompt / start of input
+        //   C = end of input / start of output
+        //   D[;<exit>[;err=<v>]] = command finished
+        //   N = like A but closes matching aid'd command (options: aid, cl)
+        //   P = explicit prompt start (option: k=i|r|c|s)
+        //   I = end prompt / start input (ends at EOL)
+        //   L = fresh-line (emit \r\n if not at column 0)
+        // Legacy: also records per-row PromptKind for scrollToPrompt until zones land.
+        if (payload.empty()) break;
+        char kind = payload[0];
+
+        // Parse semicolon-delimited tokens after the letter. First may be a bare
+        // value (e.g. exit code on D); rest are key=value options.
+        std::string_view rest = payload.size() > 1 && payload[1] == ';'
+            ? payload.substr(2) : std::string_view{};
+        std::optional<int> firstArgInt;
+        bool isSecondary = false;
+        // `k=s` (continuation/secondary prompt) in any position of the options.
+        // Per spec: also `k=c` (editable continuation) and `k=r` (right prompt);
+        // we currently conflate c/s as "secondary" and don't do anything with r.
+        size_t pos = 0;
+        int tokenIndex = 0;
+        while (pos <= rest.size()) {
+            size_t semi = rest.find(';', pos);
+            std::string_view tok = rest.substr(pos, semi == std::string_view::npos ? std::string_view::npos : semi - pos);
+            if (!tok.empty()) {
+                auto eq = tok.find('=');
+                if (eq == std::string_view::npos) {
+                    if (tokenIndex == 0) {
+                        // bare value — only meaningful on D (exit code)
+                        try { firstArgInt = std::stoi(std::string(tok)); } catch (...) {}
+                    }
+                } else {
+                    auto key = tok.substr(0, eq);
+                    auto val = tok.substr(eq + 1);
+                    if (key == "k" && (val == "s" || val == "c")) isSecondary = true;
+                    else if (key == "err" && !val.empty()) {
+                        // Non-empty err= wins over bare exit code per the spec.
+                        int v = 0; try { v = std::stoi(std::string(val)); } catch (...) { v = 1; }
+                        firstArgInt = v;
+                    }
+                }
             }
-            IGrid& g = grid();
-            switch (kind) {
-            case 'A': // Prompt start
-                if (mCursorY >= 0 && mCursorY < mHeight) {
-                    mDocument.setRowPromptKind(mCursorY,
-                        isSecondary ? Document::SecondaryPrompt : Document::PromptStart);
-                }
-                break;
-            case 'B': // Command input start (after prompt)
-                if (mCursorY >= 0 && mCursorY < mHeight) {
-                    mDocument.setRowPromptKind(mCursorY, Document::CommandStart);
-                }
-                break;
-            case 'C': // Command output start
-                if (mCursorY >= 0 && mCursorY < mHeight) {
-                    mDocument.setRowPromptKind(mCursorY, Document::OutputStart);
-                }
-                break;
-            case 'D': // Command finished (with exit code)
-                // Could store exit code from params, for now just ignore
-                break;
+            if (semi == std::string_view::npos) break;
+            pos = semi + 1;
+            ++tokenIndex;
+        }
+
+        int absRow = absoluteRowFromScreen(mCursorY);
+
+        (void)isSecondary; // currently informational; could tag CommandRecord later
+        switch (kind) {
+        case 'A':
+        case 'N':
+            if (kind == 'N' && mCommandInProgress) {
+                // Implicit close of the in-flight command (no exit code available).
+                finishCommand(absRow, mCursorX, std::nullopt);
             }
+            startCommand(absRow, mCursorX);
+            mSemanticMode = SemanticMode::Prompt;
+            mCurrentAttrs.setSemanticType(CellAttrs::Prompt);
+            break;
+        case 'P':
+            // Explicit prompt start; behave like A if no command is in progress.
+            if (!mCommandInProgress) startCommand(absRow, mCursorX);
+            mSemanticMode = SemanticMode::Prompt;
+            mCurrentAttrs.setSemanticType(CellAttrs::Prompt);
+            break;
+        case 'B':
+        case 'I':
+            markCommandInput(absRow, mCursorX);
+            mSemanticMode = SemanticMode::Input;
+            mCurrentAttrs.setSemanticType(CellAttrs::Input);
+            break;
+        case 'C':
+            markCommandOutput(absRow, mCursorX);
+            mSemanticMode = SemanticMode::Output;
+            mCurrentAttrs.setSemanticType(CellAttrs::Output);
+            break;
+        case 'D':
+            finishCommand(absRow, mCursorX, firstArgInt);
+            mSemanticMode = SemanticMode::Inactive;
+            // Reset the pen to Output — cells written between D and the next A are
+            // output-by-default. Matches WezTerm's convention.
+            mCurrentAttrs.setSemanticType(CellAttrs::Output);
+            break;
+        case 'L':
+            // Fresh-line: emit \r\n if cursor isn't already at column 0.
+            // Just synthesize a newline through the normal path.
+            if (mCursorX > 0) {
+                lineFeed();
+                mCursorX = 0;
+            }
+            break;
+        default:
+            // Unknown letter; ignore silently per spec ("terminal must ignore unknown options").
+            break;
         }
         break;
     }
@@ -319,7 +386,7 @@ void TerminalEmulator::processStringSequence()
         break;
     }
     case 7: // CWD reporting: file://hostname/path
-        if (mCallbacks.onCWDChanged) {
+        {
             std::string_view url = payload;
             // Strip file:// prefix and optional hostname
             if (url.substr(0, 7) == "file://") {
@@ -328,7 +395,9 @@ void TerminalEmulator::processStringSequence()
                 if (slash != std::string_view::npos)
                     url.remove_prefix(slash);
             }
-            mCallbacks.onCWDChanged(std::string(url));
+            // Remember for attaching to subsequent OSC 133;A records.
+            mCurrentCwd.assign(url.data(), url.size());
+            if (mCallbacks.onCWDChanged) mCallbacks.onCWDChanged(std::string(url));
         }
         break;
     case 8: // Hyperlinks: "params;uri" to start, ";;" to end

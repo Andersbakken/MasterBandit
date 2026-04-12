@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -104,8 +105,48 @@ public:
     enum Event {
         Update,
         ScrollbackChanged,
-        VisibleBell
+        VisibleBell,
+        CommandComplete          // payload: const CommandRecord*
     };
+
+    // Semantic mode transitioned by OSC 133 A/B/C/D; tracks "what is the terminal
+    // currently writing?" at the cell level. Inactive = no OSC 133 session active.
+    enum class SemanticMode : uint8_t {
+        Inactive = 0,
+        Prompt,
+        Input,
+        Output
+    };
+    SemanticMode semanticMode() const { return mSemanticMode; }
+
+    // One executed command, built up from OSC 133 markers. Coordinates are
+    // stored as stable row ids (assigned by Document); convert to current
+    // abs-rows via `document().absForRowId(id)` when you need to navigate.
+    // Archive-head eviction past a row makes its id "stale" — lookup returns -1.
+    // Cell content mutation (shell redraw) does not affect row ids.
+    struct CommandRecord {
+        uint64_t id = 0;
+        // Stable row ids from Document — resolve to current abs-row at query time.
+        uint64_t promptStartRowId = 0;
+        uint64_t commandStartRowId = 0;
+        uint64_t outputStartRowId = 0;
+        uint64_t outputEndRowId = 0;
+        int promptStartCol = -1;
+        int commandStartCol = -1;
+        int outputStartCol = -1;
+        int outputEndCol = -1;
+        // Captured eagerly — independent of later cell mutations or archival.
+        std::string command;                    // text between B and C
+        std::string output;                     // text between C and D (truncated)
+        std::string cwd;                        // OSC 7 value at A
+        // Metadata.
+        std::optional<int> exitCode;            // from OSC 133;D;<n>
+        uint64_t startMs = 0;                   // when C fired
+        uint64_t endMs = 0;                     // when D fired
+        bool complete = false;
+    };
+    const std::deque<CommandRecord>& commands() const { return mCommandRing; }
+    const CommandRecord* lastCommand() const;   // most recently completed (or in-progress) record, nullptr if none
 
     struct Action
     {
@@ -500,6 +541,25 @@ private:
     std::string mNotifyId;
     std::string mNotifyTitle;
     std::string mNotifyBody;
+
+    // OSC 133 shell-integration state.
+    SemanticMode mSemanticMode { SemanticMode::Inactive };
+    std::deque<CommandRecord> mCommandRing;   // last N completed + in-progress
+    static constexpr size_t COMMAND_RING_MAX = 256;
+    uint64_t mNextCommandId { 1 };
+    bool mCommandInProgress { false };        // true between A and D (or N)
+    std::string mCurrentCwd;                  // last OSC 7 value (for command records)
+    static constexpr size_t COMMAND_OUTPUT_MAX_BYTES = 64 * 1024;
+
+    int absoluteRowFromScreen(int screenRow) const;
+    CommandRecord* inProgressCommandMut();    // nullptr if no in-progress record
+    void startCommand(int absRow, int col);
+    void markCommandInput(int absRow, int col);
+    void markCommandOutput(int absRow, int col);
+    void finishCommand(int absRow, int col, std::optional<int> exitCode);
+    std::string textFromAbsRange(int startAbsRow, int startCol,
+                                 int endAbsRow, int endCol,
+                                 size_t maxBytes) const;
 
     // Default colors (OSC 10/11/12)
     DefaultColors mDefaultColors;

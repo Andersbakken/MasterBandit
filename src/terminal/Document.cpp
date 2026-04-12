@@ -115,7 +115,6 @@ Document::Document(int cols, int screenHeight, int tier1Capacity, int maxArchive
     ring_.resize(static_cast<size_t>(ringCapacity_) * cols_);
     ringExtras_.resize(ringCapacity_);
     continued_.assign(ringCapacity_, false);
-    promptKind_.assign(ringCapacity_, UnknownPrompt);
     dirty_.assign(screenHeight_, true);
     allDirty_ = true;
     ringHead_ = screenHeight_; // screen rows are [0..screenHeight_-1], head is past them
@@ -135,7 +134,6 @@ void Document::clearPhysicalRow(int physical) {
     for (int c = 0; c < cols_; ++c) r[c] = Cell{};
     ringExtras_[physical].clear();
     continued_[physical] = false;
-    promptKind_[physical] = UnknownPrompt;
 }
 
 void Document::evictToArchive() {
@@ -146,6 +144,7 @@ void Document::evictToArchive() {
     continued_[oldest] = false;
     if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
         archive_.pop_front();
+        ++rowIdBase_;  // keep remaining rowIds stable as abs-rows shift down.
     }
     historyCount_--;
 }
@@ -165,19 +164,16 @@ void Document::growRing()
     std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
     std::vector<std::unordered_map<int, CellExtra>> newExtras(newCap);
     std::vector<bool> newCont(newCap, false);
-    std::vector<PromptKind> newPK(newCap, UnknownPrompt);
     for (int i = 0; i < total; ++i) {
         int oldPhys = (ringHead_ - total + i) & ringMask();
         std::memcpy(&newRing[static_cast<size_t>(i) * cols_],
                     &ring_[static_cast<size_t>(oldPhys) * cols_], cols_ * sizeof(Cell));
         newExtras[i] = std::move(ringExtras_[oldPhys]);
         newCont[i] = continued_[oldPhys];
-        newPK[i] = promptKind_[oldPhys];
     }
     ring_ = std::move(newRing);
     ringExtras_ = std::move(newExtras);
     continued_ = std::move(newCont);
-    promptKind_ = std::move(newPK);
     ringCapacity_ = newCap;
     ringHead_ = total & (newCap - 1);
 }
@@ -508,22 +504,17 @@ bool Document::isHistoryRowContinued(int idx) const {
 }
 
 
-Document::PromptKind Document::rowPromptKind(int screenRow) const {
-    int phys = screenRowToPhysical(screenRow);
-    return promptKind_[phys];
+uint64_t Document::rowIdForAbs(int abs) const {
+    if (abs < 0) return 0;
+    return rowIdBase_ + static_cast<uint64_t>(abs);
 }
 
-void Document::setRowPromptKind(int screenRow, PromptKind kind) {
-    int phys = screenRowToPhysical(screenRow);
-    promptKind_[phys] = kind;
-}
-
-Document::PromptKind Document::historyRowPromptKind(int idx) const {
-    int archiveSize = static_cast<int>(archive_.size());
-    if (idx < archiveSize) return UnknownPrompt; // archive doesn't store prompt kind
-    int tier1Idx = idx - archiveSize;
-    if (tier1Idx < 0 || tier1Idx >= historyCount_) return UnknownPrompt;
-    return promptKind_[historyTier1ToPhysical(tier1Idx)];
+int Document::absForRowId(uint64_t id) const {
+    if (id < rowIdBase_) return -1;
+    uint64_t diff = id - rowIdBase_;
+    int total = static_cast<int>(archive_.size()) + historyCount_ + screenHeight_;
+    if (diff >= static_cast<uint64_t>(total)) return -1;
+    return static_cast<int>(diff);
 }
 
 // --- Resize ---
@@ -539,7 +530,6 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         ring_.resize(static_cast<size_t>(ringCapacity_) * cols_);
         ringExtras_.resize(ringCapacity_);
         continued_.assign(ringCapacity_, false);
-        promptKind_.assign(ringCapacity_, UnknownPrompt);
         dirty_.assign(screenHeight_, true);
         allDirty_ = true;
         ringHead_ = screenHeight_;
@@ -581,7 +571,6 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             int cols;
             bool cont;
             const std::unordered_map<int, CellExtra>* extras;
-            PromptKind promptKind;
         };
 
         // We need to parse archived rows into temporary buffers
@@ -592,8 +581,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                     parseArchivedRow(archive_[idx]);
                     archivedCells[idx].assign(parseBuffer_.begin(), parseBuffer_.end());
                 }
-                return {archivedCells[idx].data(), cols_, archive_[idx].continued, nullptr,
-                        UnknownPrompt};
+                return {archivedCells[idx].data(), cols_, archive_[idx].continued, nullptr};
             }
             int ringIdx = idx - archiveSize;
             int phys;
@@ -605,7 +593,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             }
             const auto& ex = ringExtras_[phys];
             return {&ring_[static_cast<size_t>(phys) * cols_], cols_, continued_[phys],
-                    ex.empty() ? nullptr : &ex, promptKind_[phys]};
+                    ex.empty() ? nullptr : &ex};
         };
 
         // Step 2 & 3: Join logical lines and re-wrap at new width, tracking cursor
@@ -760,6 +748,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                 archive_.push_back({serializeRow(rowCells, newCols), dstContinued[i]});
                 if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
                     archive_.pop_front();
+                    ++rowIdBase_;
                 }
             }
             // Shift cursor tracking
@@ -789,7 +778,6 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         ring_.assign(static_cast<size_t>(newCap) * newCols, Cell{});
         ringExtras_.assign(newCap, {});
         continued_.assign(newCap, false);
-        promptKind_.assign(newCap, UnknownPrompt);
 
         for (int i = 0; i < ringTotal && i < totalDstRows; ++i) {
             std::memcpy(&ring_[static_cast<size_t>(i) * newCols],
@@ -844,7 +832,6 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                 std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
                 std::vector<std::unordered_map<int, CellExtra>> newExtras(newCap);
                 std::vector<bool> newCont(newCap, false);
-                std::vector<PromptKind> newPK(newCap, UnknownPrompt);
                 int total = historyCount_ + screenHeight_;
                 for (int i = 0; i < total; ++i) {
                     int oldPhys = (ringHead_ - total + i) & ringMask();
@@ -852,12 +839,10 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                                 &ring_[static_cast<size_t>(oldPhys) * cols_], cols_ * sizeof(Cell));
                     newExtras[i] = std::move(ringExtras_[oldPhys]);
                     newCont[i] = continued_[oldPhys];
-                    newPK[i] = promptKind_[oldPhys];
                 }
                 ring_ = std::move(newRing);
                 ringExtras_ = std::move(newExtras);
                 continued_ = std::move(newCont);
-                promptKind_ = std::move(newPK);
                 ringCapacity_ = newCap;
                 ringHead_ = total & (newCap - 1);
             }
@@ -875,7 +860,6 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             std::vector<Cell> newRing(static_cast<size_t>(newCap) * cols_);
             std::vector<std::unordered_map<int, CellExtra>> newExtras(newCap);
             std::vector<bool> newCont(newCap, false);
-            std::vector<PromptKind> newPK(newCap, UnknownPrompt);
             int total = historyCount_ + screenHeight_;
             for (int i = 0; i < total; ++i) {
                 int oldPhys = (ringHead_ - total + i) & ringMask();
@@ -883,12 +867,10 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                             &ring_[static_cast<size_t>(oldPhys) * cols_], cols_ * sizeof(Cell));
                 newExtras[i] = std::move(ringExtras_[oldPhys]);
                 newCont[i] = continued_[oldPhys];
-                newPK[i] = promptKind_[oldPhys];
             }
             ring_ = std::move(newRing);
             ringExtras_ = std::move(newExtras);
             continued_ = std::move(newCont);
-            promptKind_ = std::move(newPK);
             ringCapacity_ = newCap;
             ringHead_ = total & (newCap - 1);
         }
@@ -904,8 +886,27 @@ std::string Document::serializeRow(const Cell* cells, int cols) {
     std::string out;
     out.reserve(cols * 2);
     CellAttrs currentAttrs{};
+    // Track the OSC 133 semantic type separately from SGR attrs so we can emit
+    // A/B/C transitions. The serialized byte stream becomes a mini-terminal
+    // session that replays through the OSC 133 parser on tier-1 reload.
+    auto emitOsc133 = [&](CellAttrs::SemanticType t) {
+        char verb = '\0';
+        switch (t) {
+            case CellAttrs::Prompt: verb = 'A'; break;
+            case CellAttrs::Input:  verb = 'B'; break;
+            case CellAttrs::Output: verb = 'C'; break;
+        }
+        if (verb) {
+            out += '\x1b'; out += ']'; out += '1'; out += '3'; out += '3';
+            out += ';'; out += verb;
+            out += '\x1b'; out += '\\';
+        }
+    };
     for (int c = 0; c < cols; ++c) {
         const Cell& cell = cells[c];
+        if (cell.attrs.semanticType() != currentAttrs.semanticType()) {
+            emitOsc133(cell.attrs.semanticType());
+        }
         if (std::memcmp(cell.attrs.data, currentAttrs.data, 8) != 0) {
             emitSGR(out, currentAttrs, cell.attrs);
             currentAttrs = cell.attrs;
@@ -943,6 +944,26 @@ void Document::parseArchivedRow(const ArchivedRow& archived) const {
             } else {
                 pos = len;
             }
+        } else if (s[pos] == '\x1b' && pos + 1 < len && s[pos + 1] == ']') {
+            // OSC escape. serializeRow only emits `\e]133;{A,B,C}\e\\` for
+            // semantic-type transitions, but we're lenient and accept the full
+            // spec in case the format evolves. Scan to ST, pick off the verb.
+            int start = pos + 2;
+            int end = start;
+            while (end + 1 < len && !(s[end] == '\x1b' && s[end + 1] == '\\')) ++end;
+            if (end - start >= 5 && s[start] == '1' && s[start + 1] == '3' &&
+                s[start + 2] == '3' && s[start + 3] == ';') {
+                switch (s[start + 4]) {
+                    case 'A': case 'N': case 'P':
+                        currentAttrs.setSemanticType(CellAttrs::Prompt); break;
+                    case 'B': case 'I':
+                        currentAttrs.setSemanticType(CellAttrs::Input); break;
+                    case 'C': case 'D':
+                        currentAttrs.setSemanticType(CellAttrs::Output); break;
+                    default: break;
+                }
+            }
+            pos = (end + 1 < len) ? end + 2 : len; // skip past ST (ESC \)
         } else {
             int consumed;
             char32_t cp = utf8::decode(s + pos, len - pos, consumed);

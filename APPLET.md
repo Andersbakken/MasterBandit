@@ -109,6 +109,61 @@ Key facts:
 - Unauthorized API calls throw a TypeError **and** schedule the script for
   termination on a zero-delay timer. Built-in scripts bypass all checks.
 
+## Shell integration (OSC 133) and the `commandComplete` event
+
+When the shell emits OSC 133 semantic-prompt markers (FinalTerm / Per Bothner
+spec), MB assembles them into `MbCommand` records and fires a
+`commandComplete` event per completed command.
+
+Wire format shells should emit:
+
+```
+\e]133;A\e\\          start of prompt           (options: k=s/c for continuation, k=r for right)
+\e]133;B\e\\          end of prompt / input begins
+\e]133;C\e\\          end of input / output begins
+\e]133;D;<exit>\e\\   command finished (exit code parsed and stored)
+\e]133;N[;aid=...]\e\\  like A but closes the in-flight command
+\e]133;P[;k=...]\e\\    explicit prompt start (optional after A/N)
+\e]133;I\e\\          end of prompt / input begins (ends at EOL)
+\e]133;L\e\\          fresh-line (emit \r\n if not at column 0)
+```
+
+MB captures the command text (between `B` and `C`) and a plaintext render of
+the output (between `C` and `D`, truncated to 64 KB). The `cwd` field snaps
+the most recent OSC 7 value at `A` time.
+
+```ts
+pane.addEventListener("commandComplete", (cmd) => {
+    if (cmd.exitCode !== 0) {
+        shellWs.send(JSON.stringify({
+            kind: "failed-command",
+            command: cmd.command,
+            output: cmd.output,
+            exitCode: cmd.exitCode,
+            cwd: cmd.cwd,
+        }));
+    }
+});
+```
+
+**Permission required: `shell.commands`.** Reading `pane.lastCommand`,
+iterating `pane.commands`, and subscribing to `commandComplete` all require
+this bit. Command records frequently contain secrets (typed passwords, API
+tokens in argv, file contents in output) — gate carefully. Declare it
+alongside `shell.write` in your applet header if you need both.
+
+**Collapse case** (shell rewrites a multi-line header/footer prompt down to a
+single command line on Enter): if another `A` arrives before a `D` has
+finalized the previous command, MB treats it as a relocation of the same
+logical command — `promptStart` is updated, not a new record created. `N`
+with a matching `aid` explicitly closes the in-flight command.
+
+**Caveats**
+- Output >64 KB is truncated. Increase `COMMAND_OUTPUT_MAX_BYTES` if you need more.
+- Rows evicted from the tier-2 archive become unrecoverable; recent commands are always fine.
+- Exit code is parsed from `D;<n>` or `D;err=<v>` (non-empty `err` wins per spec).
+- Alt-screen (e.g. vim, less) doesn't participate — its output isn't in the record.
+
 ## OSC handler routing
 
 Applets register OSC listeners per-pane:

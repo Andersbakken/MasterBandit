@@ -309,6 +309,14 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
         if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
         prop = "__mouse_listeners";
         registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+    } else if (strcmp(event, "commandComplete") == 0) {
+        if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+            JS_FreeCString(ctx, event);
+            scheduleTermination(ctx);
+            return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+        }
+        prop = std::string("__evt_") + event;
+        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else {
         prop = std::string("__evt_") + event;
         // Register for lifecycle events too (so destroyed can be found)
@@ -382,6 +390,8 @@ static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p);
+
 static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
     auto* pane = jsPaneGet(ctx, this_val);
@@ -400,6 +410,28 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
                  ? JS_NULL
                  : JS_NewString(ctx, info.focusedPopupId.c_str());
     case 8: return JS_NewString(ctx, info.foregroundProcess.c_str());
+    case 9: { // lastCommand — gated on shell.commands.
+        if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+            scheduleTermination(ctx);
+            return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+        }
+        if (!eng->callbacks().paneCommands) return JS_NULL;
+        auto list = eng->callbacks().paneCommands(pane->id, 1);
+        if (list.empty()) return JS_NULL;
+        return buildCommandObject(ctx, list.back());
+    }
+    case 10: { // commands — gated on shell.commands.
+        if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+            scheduleTermination(ctx);
+            return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+        }
+        JSValue arr = JS_NewArray(ctx);
+        if (!eng->callbacks().paneCommands) return arr;
+        auto list = eng->callbacks().paneCommands(pane->id, 0);
+        for (size_t i = 0; i < list.size(); ++i)
+            JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i]));
+        return arr;
+    }
     default: return JS_UNDEFINED;
     }
 }
@@ -424,6 +456,8 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("focusedPopupId", jsPaneGetProp, nullptr, 7),
     JS_CGETSET_MAGIC_DEF("foregroundProcess", jsPaneGetProp, nullptr, 8),
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
+    JS_CGETSET_MAGIC_DEF("lastCommand", jsPaneGetProp, nullptr, 9),
+    JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
 };
 
 // ============================================================================
@@ -2556,6 +2590,52 @@ void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& proc
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_foregroundProcessChanged");
             JSValue arg = JS_NewString(inst.ctx, processName.c_str());
+            enqueueListeners(inst.ctx, arr, 1, &arg);
+            JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+// Build the JS object exposed to commandComplete listeners (and pane.commands / lastCommand).
+static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p)
+{
+    JSValue obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, obj, "id",      JS_NewInt64(ctx, static_cast<int64_t>(p.id)));
+    JS_SetPropertyStr(ctx, obj, "command", JS_NewStringLen(ctx, p.command.data(), p.command.size()));
+    JS_SetPropertyStr(ctx, obj, "output",  JS_NewStringLen(ctx, p.output.data(),  p.output.size()));
+    JS_SetPropertyStr(ctx, obj, "cwd",     JS_NewStringLen(ctx, p.cwd.data(),     p.cwd.size()));
+    if (p.exitCode.has_value())
+        JS_SetPropertyStr(ctx, obj, "exitCode", JS_NewInt32(ctx, *p.exitCode));
+    else
+        JS_SetPropertyStr(ctx, obj, "exitCode", JS_NULL);
+    JS_SetPropertyStr(ctx, obj, "startMs", JS_NewInt64(ctx, static_cast<int64_t>(p.startMs)));
+    JS_SetPropertyStr(ctx, obj, "endMs",   JS_NewInt64(ctx, static_cast<int64_t>(p.endMs)));
+    JS_SetPropertyStr(ctx, obj, "promptStartAbsRow",  JS_NewInt32(ctx, p.promptStartAbsRow));
+    JS_SetPropertyStr(ctx, obj, "promptStartCol",     JS_NewInt32(ctx, p.promptStartCol));
+    JS_SetPropertyStr(ctx, obj, "commandStartAbsRow", JS_NewInt32(ctx, p.commandStartAbsRow));
+    JS_SetPropertyStr(ctx, obj, "commandStartCol",    JS_NewInt32(ctx, p.commandStartCol));
+    JS_SetPropertyStr(ctx, obj, "outputStartAbsRow",  JS_NewInt32(ctx, p.outputStartAbsRow));
+    JS_SetPropertyStr(ctx, obj, "outputStartCol",     JS_NewInt32(ctx, p.outputStartCol));
+    JS_SetPropertyStr(ctx, obj, "outputEndAbsRow",    JS_NewInt32(ctx, p.outputEndAbsRow));
+    JS_SetPropertyStr(ctx, obj, "outputEndCol",       JS_NewInt32(ctx, p.outputEndCol));
+    return obj;
+}
+
+void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
+{
+    for (auto& inst : instances_) {
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_commandComplete");
+            JSValue arg = buildCommandObject(inst.ctx, rec);
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);
             JS_FreeValue(inst.ctx, arr);

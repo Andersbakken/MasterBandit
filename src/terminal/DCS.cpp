@@ -305,16 +305,9 @@ std::string TerminalEmulator::buildCurrentSGR() const
     if (mCurrentAttrs.invisible())     add(8);
     if (mCurrentAttrs.strikethrough()) add(9);
 
-    // Foreground color
+    // Foreground color — we always store RGB, never Indexed (SGR parse resolves at ingest).
     switch (mCurrentAttrs.fgMode()) {
     case CellAttrs::Default: break;
-    case CellAttrs::Indexed: {
-        int idx = mCurrentAttrs.fgR();
-        if (idx < 8)       add(30 + idx);
-        else if (idx < 16) add(90 + (idx - 8));
-        else               { add(38); add(5); add(idx); }
-        break;
-    }
     case CellAttrs::RGB:
         add(38); add(2);
         add(mCurrentAttrs.fgR()); add(mCurrentAttrs.fgG()); add(mCurrentAttrs.fgB());
@@ -324,13 +317,6 @@ std::string TerminalEmulator::buildCurrentSGR() const
     // Background color
     switch (mCurrentAttrs.bgMode()) {
     case CellAttrs::Default: break;
-    case CellAttrs::Indexed: {
-        int idx = mCurrentAttrs.bgR();
-        if (idx < 8)       add(40 + idx);
-        else if (idx < 16) add(100 + (idx - 8));
-        else               { add(48); add(5); add(idx); }
-        break;
-    }
     case CellAttrs::RGB:
         add(48); add(2);
         add(mCurrentAttrs.bgR()); add(mCurrentAttrs.bgG()); add(mCurrentAttrs.bgB());

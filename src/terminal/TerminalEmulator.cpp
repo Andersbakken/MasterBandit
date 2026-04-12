@@ -226,94 +226,89 @@ void TerminalEmulator::resetViewport()
     }
 }
 
+// Helper: semantic type of the first non-blank cell in a row, or the first cell
+// if all blank. Returns Output for rows that have never seen OSC 133 content.
+static CellAttrs::SemanticType rowSemanticType(const Cell* row, int cols)
+{
+    for (int c = 0; c < cols; ++c) {
+        if (row[c].wc != 0) return row[c].attrs.semanticType();
+    }
+    return row[0].attrs.semanticType();
+}
+
 void TerminalEmulator::scrollToPrompt(int direction)
 {
-    // Scan history + screen rows for PromptStart markers.
-    // Rows are indexed as absolute: 0 = oldest history, historySize() + screenRow = screen.
-    // Current viewport top is at absolute row: historySize() - mViewportOffset.
+    // Walk cell tags directly — reflow-correct because tags ride with cells.
+    // A "prompt-start row" is a row tagged Prompt whose predecessor is not.
     int histSize = mDocument.historySize();
     int totalRows = histSize + mHeight;
-
-    // Current position: the row at the top of the viewport
     int currentAbsRow = histSize - mViewportOffset;
 
+    auto getRow = [&](int absRow) -> const Cell* {
+        return absRow < histSize
+            ? mDocument.historyRow(absRow)
+            : mDocument.row(absRow - histSize);
+    };
+
+    auto isPromptStart = [&](int absRow) {
+        const Cell* row = getRow(absRow);
+        if (!row || rowSemanticType(row, mWidth) != CellAttrs::Prompt) return false;
+        if (absRow == 0) return true;
+        const Cell* prev = getRow(absRow - 1);
+        return !prev || rowSemanticType(prev, mWidth) != CellAttrs::Prompt;
+    };
+
+    auto scrollTo = [&](int targetAbsRow) {
+        int newOffset = histSize - targetAbsRow;
+        if (newOffset <= 0) {
+            resetViewport();
+        } else {
+            mViewportOffset = std::clamp(newOffset, 0, histSize);
+            grid().markAllDirty();
+            if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
+        }
+    };
+
     if (direction < 0) {
-        // Search upward from current viewport top - 1
-        for (int absRow = currentAbsRow - 1; absRow >= 0; --absRow) {
-            Document::PromptKind pk;
-            if (absRow < histSize) {
-                pk = mDocument.historyRowPromptKind(absRow);
-            } else {
-                pk = mDocument.rowPromptKind(absRow - histSize);
-            }
-            if (pk == Document::PromptStart) {
-                // Scroll so this row is near the top of the viewport
-                int newOffset = histSize - absRow;
-                mViewportOffset = std::clamp(newOffset, 0, histSize);
-                grid().markAllDirty();
-                if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
-                return;
-            }
+        for (int r = currentAbsRow - 1; r >= 0; --r) {
+            if (isPromptStart(r)) { scrollTo(r); return; }
         }
     } else {
-        // Search downward from current viewport top + 1
-        for (int absRow = currentAbsRow + 1; absRow < totalRows; ++absRow) {
-            Document::PromptKind pk;
-            if (absRow < histSize) {
-                pk = mDocument.historyRowPromptKind(absRow);
-            } else {
-                pk = mDocument.rowPromptKind(absRow - histSize);
-            }
-            if (pk == Document::PromptStart) {
-                int newOffset = histSize - absRow;
-                if (newOffset <= 0) {
-                    // On screen or past it — reset to live
-                    resetViewport();
-                } else {
-                    mViewportOffset = std::clamp(newOffset, 0, histSize);
-                    grid().markAllDirty();
-                    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
-                }
-                return;
-            }
+        for (int r = currentAbsRow + 1; r < totalRows; ++r) {
+            if (isPromptStart(r)) { scrollTo(r); return; }
         }
-        // No next prompt found — jump to live
         resetViewport();
     }
 }
 
 void TerminalEmulator::selectCommandOutput()
 {
-    // Find the command output region around the current viewport position.
-    // Look for OutputStart (C) above, then PromptStart (A) below for the boundary.
+    // Walk cells around the viewport pivot to find a contiguous Output region.
     int histSize = mDocument.historySize();
-    int currentAbsRow = histSize - mViewportOffset + (mHeight / 2); // middle of viewport
+    int totalRows = histSize + mHeight;
+    int pivot = histSize - mViewportOffset + (mHeight / 2);
+    if (pivot < 0 || pivot >= totalRows) return;
 
-    // Find OutputStart at or above current position
-    int outputStart = -1;
-    for (int absRow = currentAbsRow; absRow >= 0; --absRow) {
-        Document::PromptKind pk;
-        if (absRow < histSize) pk = mDocument.historyRowPromptKind(absRow);
-        else pk = mDocument.rowPromptKind(absRow - histSize);
+    auto getRow = [&](int absRow) -> const Cell* {
+        return absRow < histSize
+            ? mDocument.historyRow(absRow)
+            : mDocument.row(absRow - histSize);
+    };
+    auto rowType = [&](int absRow) -> CellAttrs::SemanticType {
+        const Cell* row = getRow(absRow);
+        return row ? rowSemanticType(row, mWidth) : CellAttrs::Output;
+    };
 
-        if (pk == Document::OutputStart) { outputStart = absRow; break; }
-        if (pk == Document::PromptStart && absRow < currentAbsRow) break; // passed a prompt boundary
-    }
-    if (outputStart < 0) return;
+    // Pivot must be on an Output row to anchor a selection.
+    if (rowType(pivot) != CellAttrs::Output) return;
 
-    // Find end: next PromptStart or end of content
-    int outputEnd = histSize + mHeight - 1;
-    for (int absRow = outputStart + 1; absRow < histSize + mHeight; ++absRow) {
-        Document::PromptKind pk;
-        if (absRow < histSize) pk = mDocument.historyRowPromptKind(absRow);
-        else pk = mDocument.rowPromptKind(absRow - histSize);
+    int outStart = pivot;
+    while (outStart > 0 && rowType(outStart - 1) == CellAttrs::Output) --outStart;
+    int outEnd = pivot;
+    while (outEnd + 1 < totalRows && rowType(outEnd + 1) == CellAttrs::Output) ++outEnd;
 
-        if (pk == Document::PromptStart) { outputEnd = absRow - 1; break; }
-    }
-
-    // Select the range
-    startSelection(0, outputStart);
-    updateSelection(mWidth - 1, outputEnd);
+    startSelection(0, outStart);
+    updateSelection(mWidth - 1, outEnd);
     finalizeSelection();
 
     std::string text = selectedText();
@@ -321,6 +316,157 @@ void TerminalEmulator::selectCommandOutput()
         mCallbacks.copyToClipboard(text);
     }
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+}
+
+// ============================================================================
+// OSC 133 / shell-integration state machine.
+// ============================================================================
+
+int TerminalEmulator::absoluteRowFromScreen(int screenRow) const
+{
+    if (mUsingAltScreen) return screenRow;      // alt screen has no scrollback
+    return mDocument.historySize() + std::max(0, std::min(screenRow, mHeight - 1));
+}
+
+const TerminalEmulator::CommandRecord* TerminalEmulator::lastCommand() const
+{
+    if (mCommandRing.empty()) return nullptr;
+    return &mCommandRing.back();
+}
+
+TerminalEmulator::CommandRecord* TerminalEmulator::inProgressCommandMut()
+{
+    if (!mCommandInProgress || mCommandRing.empty()) return nullptr;
+    CommandRecord& r = mCommandRing.back();
+    return r.complete ? nullptr : &r;
+}
+
+void TerminalEmulator::startCommand(int absRow, int col)
+{
+    uint64_t rowId = mDocument.rowIdForAbs(absRow);
+    if (CommandRecord* existing = inProgressCommandMut()) {
+        if (existing->outputStartCol < 0) {
+            // Collapse case: shell re-emits A before output has begun. This is a
+            // prompt redraw (multi-line header collapses into one line) — relocate
+            // the in-flight record instead of creating a new one.
+            existing->promptStartRowId  = rowId;
+            existing->promptStartCol    = col;
+            existing->commandStartRowId = 0; existing->commandStartCol = -1;
+            existing->command.clear();
+            return;
+        }
+        // Output already started but no D seen — shell moved on (cancelled or
+        // just missing the D). Finalize as complete without exit code, then
+        // create a fresh record.
+        finishCommand(absRow, col, std::nullopt);
+    }
+    CommandRecord r;
+    r.id                = mNextCommandId++;
+    r.promptStartRowId  = rowId;
+    r.promptStartCol    = col;
+    r.cwd               = mCurrentCwd;
+    mCommandRing.push_back(std::move(r));
+    while (mCommandRing.size() > COMMAND_RING_MAX) mCommandRing.pop_front();
+    mCommandInProgress = true;
+}
+
+void TerminalEmulator::markCommandInput(int absRow, int col)
+{
+    if (CommandRecord* r = inProgressCommandMut()) {
+        r->commandStartRowId = mDocument.rowIdForAbs(absRow);
+        r->commandStartCol   = col;
+    }
+}
+
+void TerminalEmulator::markCommandOutput(int absRow, int col)
+{
+    CommandRecord* r = inProgressCommandMut();
+    if (!r) return;
+    r->outputStartRowId = mDocument.rowIdForAbs(absRow);
+    r->outputStartCol   = col;
+    r->startMs          = mono();
+    // Capture only if B fired (commandStartCol is the sentinel, not the rowId,
+    // because rowId=0 is a valid value for the first row).
+    int startAbs = r->commandStartCol < 0 ? -1 : mDocument.absForRowId(r->commandStartRowId);
+    if (startAbs >= 0) {
+        r->command = textFromAbsRange(startAbs, r->commandStartCol, absRow, col, /*maxBytes*/ 16 * 1024);
+        while (!r->command.empty() && (r->command.back() == ' ' || r->command.back() == '\n' ||
+                                        r->command.back() == '\r' || r->command.back() == '\t')) {
+            r->command.pop_back();
+        }
+    }
+}
+
+void TerminalEmulator::finishCommand(int absRow, int col, std::optional<int> exitCode)
+{
+    CommandRecord* r = inProgressCommandMut();
+    if (!r) { mCommandInProgress = false; return; }
+    r->outputEndRowId = mDocument.rowIdForAbs(absRow);
+    r->outputEndCol   = col;
+    r->endMs          = mono();
+    r->exitCode       = exitCode;
+    r->complete       = true;
+    int outStart = r->outputStartCol < 0 ? -1 : mDocument.absForRowId(r->outputStartRowId);
+    if (outStart >= 0) {
+        r->output = textFromAbsRange(outStart, r->outputStartCol, absRow, col,
+                                     COMMAND_OUTPUT_MAX_BYTES);
+    }
+    mCommandInProgress = false;
+    if (mCallbacks.event) {
+        mCallbacks.event(this, static_cast<int>(CommandComplete), r);
+    }
+}
+
+// Walk an absolute-row range [startAbsRow, endAbsRow] (inclusive) and extract
+// plaintext, honoring the start/end column bounds. Stops at `maxBytes`.
+std::string TerminalEmulator::textFromAbsRange(int startAbsRow, int startCol,
+                                                int endAbsRow, int endCol,
+                                                size_t maxBytes) const
+{
+    std::string out;
+    out.reserve(std::min<size_t>(maxBytes, 4096));
+    const int histSize = mDocument.historySize();
+    int startAbs = std::max(0, startAbsRow);
+    int endAbs   = std::min(histSize + mHeight - 1, endAbsRow);
+    for (int abs = startAbs; abs <= endAbs; ++abs) {
+        const Cell* row = abs < histSize
+            ? mDocument.historyRow(abs)
+            : mDocument.row(abs - histSize);
+        if (!row) continue;
+
+        int colStart = (abs == startAbsRow) ? std::max(0, startCol) : 0;
+        // endCol is an exclusive bound (cursor position at the marker event —
+        // points past the last written cell). Clamp into [0, mWidth].
+        int colEnd   = (abs == endAbsRow)   ? std::max(0, std::min(mWidth, endCol)) : mWidth;
+
+        // Trim trailing blanks on this row (common: most rows are mostly empty).
+        int effective = colEnd;
+        while (effective > colStart && row[effective - 1].wc == 0) --effective;
+
+        for (int c = colStart; c < effective; ++c) {
+            char32_t ch = row[c].wc ? row[c].wc : U' ';
+            // UTF-8 encode.
+            char buf[4];
+            int n = 0;
+            if (ch < 0x80)      { buf[n++] = static_cast<char>(ch); }
+            else if (ch < 0x800){ buf[n++] = static_cast<char>(0xC0 | (ch >> 6));
+                                  buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
+            else if (ch < 0x10000){ buf[n++] = static_cast<char>(0xE0 | (ch >> 12));
+                                    buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                                    buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
+            else                 { buf[n++] = static_cast<char>(0xF0 | (ch >> 18));
+                                   buf[n++] = static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
+                                   buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                                   buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
+            if (out.size() + static_cast<size_t>(n) > maxBytes) return out;
+            out.append(buf, n);
+        }
+        if (abs != endAbsRow) {
+            if (out.size() + 1 > maxBytes) return out;
+            out.push_back('\n');
+        }
+    }
+    return out;
 }
 
 std::string TerminalEmulator::serializeScrollback() const

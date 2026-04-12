@@ -21,6 +21,7 @@ enum Perm : uint32_t {
     IoInject          = 1 << 6,
     // shell group
     ShellWrite        = 1 << 7,
+    ShellReadCommands = 1 << 16,  // read OSC 133 command records + subscribe to commandComplete
     // actions group
     ActionsInvoke     = 1 << 8,
     // tabs group
@@ -38,7 +39,7 @@ enum Perm : uint32_t {
     // Group masks
     GroupUi      = UiOverlayCreate | UiOverlayClose | UiPopupCreate | UiPopupDestroy,
     GroupIo      = IoFilterInput | IoFilterOutput | IoInject,
-    GroupShell   = ShellWrite,
+    GroupShell   = ShellWrite | ShellReadCommands,
     GroupActions = ActionsInvoke,
     GroupTabs    = TabsCreate | TabsClose,
     GroupScripts = ScriptsLoad | ScriptsUnload,
@@ -63,7 +64,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 3;
+inline constexpr int kAllowlistVersion = 4;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

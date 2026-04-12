@@ -26,7 +26,7 @@ type MbPermission =
     | "ui.overlay.create" | "ui.overlay.close"
     | "ui.popup.create"   | "ui.popup.destroy"
     | "io.filter.input"   | "io.filter.output" | "io.inject"
-    | "shell.write"
+    | "shell.write"       | "shell.commands"
     | "actions.invoke"
     | "tabs.create"       | "tabs.close"
     | "scripts.load"      | "scripts.unload"
@@ -59,6 +59,37 @@ interface MbMouseEvent {
 // Pane
 // ============================================================================
 
+/**
+ * A single command executed in this pane, populated from OSC 133 markers.
+ * Coordinates are absolute row indices (archive + tier-1 history + screen) at
+ * the moment each marker fired; treat them as best-effort references since
+ * rows can be evicted from the archive.
+ */
+interface MbCommand {
+    /** Monotonic per-pane id. */
+    readonly id: number;
+    /** Command text as it was echoed between `B` and `C`. Whitespace-trimmed. */
+    readonly command: string;
+    /** Rendered plain-text output between `C` and `D`, truncated to 64 KB. */
+    readonly output: string;
+    /** `OSC 7` CWD value at the moment `A` fired. */
+    readonly cwd: string;
+    /** From `D;<exit>` or `D;err=<v>`. `null` if `D` never carried one. */
+    readonly exitCode: number | null;
+    /** Monotonic milliseconds when `C` fired (command started executing). */
+    readonly startMs: number;
+    /** Monotonic milliseconds when `D` fired (command finished). */
+    readonly endMs: number;
+    readonly promptStartAbsRow: number;
+    readonly promptStartCol: number;
+    readonly commandStartAbsRow: number;
+    readonly commandStartCol: number;
+    readonly outputStartAbsRow: number;
+    readonly outputStartCol: number;
+    readonly outputEndAbsRow: number;
+    readonly outputEndCol: number;
+}
+
 interface MbPane {
     readonly id: number;
     readonly cols: number;
@@ -75,6 +106,16 @@ interface MbPane {
     readonly foregroundProcess: string;
     /** Active popups on this pane. */
     readonly popups: MbPopupInfo[];
+    /**
+     * Most recently completed command seen on this pane, or null. Requires
+     * `shell.commands` permission (command records can contain secrets).
+     */
+    readonly lastCommand: MbCommand | null;
+    /**
+     * Bounded ring of recently completed commands (oldest first, most recent
+     * last). Requires `shell.commands` permission.
+     */
+    readonly commands: readonly MbCommand[];
 
     /** Emit data into the terminal emulator (as if the PTY wrote it). Requires `io.inject`. */
     inject(data: string): void;
@@ -101,6 +142,13 @@ interface MbPane {
      * `"osc:58237"`, `"osc:9"`, etc.
      */
     addEventListener(event: `osc:${number}`, fn: (payload: string) => void): void;
+    /**
+     * Fires once per completed shell command (OSC 133;D arrival). The callback
+     * receives the full `MbCommand` record including command text, rendered
+     * output, exit code, timing, and cwd. Useful for AI integrations and
+     * triggers on failing commands. Requires `shell.commands` permission.
+     */
+    addEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
 }
 
 interface MbPopupInfo {

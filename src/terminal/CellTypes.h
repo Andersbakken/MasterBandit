@@ -7,8 +7,10 @@
 struct CellAttrs {
     // [0] fg R, [1] fg G, [2] fg B
     // [3] bg R, [4] bg G, [5] bg B
-    // [6] bits 0-1: fg mode (0=default,1=indexed,2=RGB)
-    //     bits 2-3: bg mode
+    // [6] bit 0: fg mode (0=default, 1=RGB — Indexed was never actually stored,
+    //            palette colors resolve to RGB at SGR parse time)
+    //     bit 1: bg mode (same)
+    //     bits 2-3: semanticType (0=Output, 1=Input, 2=Prompt — OSC 133)
     //     bit 4: bold, bit 5: italic, bit 6: underline, bit 7: strikethrough
     // [7] bit 0: blink, bit 1: inverse, bit 2: dim, bit 3: invisible
     //     bit 4: wide, bit 5: wide spacer
@@ -24,12 +26,18 @@ struct CellAttrs {
     void setFg(uint8_t r, uint8_t g, uint8_t b) { data[0] = r; data[1] = g; data[2] = b; }
     void setBg(uint8_t r, uint8_t g, uint8_t b) { data[3] = r; data[4] = g; data[5] = b; }
 
-    enum ColorMode : uint8_t { Default = 0, Indexed = 1, RGB = 2 };
+    enum ColorMode : uint8_t { Default = 0, RGB = 1 };
 
-    ColorMode fgMode() const { return static_cast<ColorMode>(data[6] & 0x03); }
-    ColorMode bgMode() const { return static_cast<ColorMode>((data[6] >> 2) & 0x03); }
-    void setFgMode(ColorMode m) { data[6] = (data[6] & ~0x03) | (m & 0x03); }
-    void setBgMode(ColorMode m) { data[6] = (data[6] & ~0x0C) | ((m & 0x03) << 2); }
+    ColorMode fgMode() const { return static_cast<ColorMode>(data[6] & 0x01); }
+    ColorMode bgMode() const { return static_cast<ColorMode>((data[6] >> 1) & 0x01); }
+    void setFgMode(ColorMode m) { data[6] = (data[6] & ~0x01) | (m & 0x01); }
+    void setBgMode(ColorMode m) { data[6] = (data[6] & ~0x02) | ((m & 0x01) << 1); }
+
+    // OSC 133 semantic type (WezTerm-style per-cell tag). Output is the default
+    // so cells that never saw an OSC 133 marker read as Output.
+    enum SemanticType : uint8_t { Output = 0, Input = 1, Prompt = 2 };
+    SemanticType semanticType() const { return static_cast<SemanticType>((data[6] >> 2) & 0x03); }
+    void setSemanticType(SemanticType t) { data[6] = (data[6] & ~0x0C) | ((static_cast<uint8_t>(t) & 0x03) << 2); }
 
     bool bold() const { return data[6] & 0x10; }
     void setBold(bool v) { if (v) data[6] |= 0x10; else data[6] &= ~0x10; }
@@ -73,7 +81,13 @@ struct CellAttrs {
              | 0xFF000000u;
     }
 
-    void reset() { memset(data, 0, sizeof(data)); }
+    // SGR 0 clears all styling but not the OSC 133 semantic type — semantic mode
+    // is orthogonal to SGR and only cycles through A/B/C/D markers.
+    void reset() {
+        uint8_t sem = data[6] & 0x0C;
+        memset(data, 0, sizeof(data));
+        data[6] = sem;
+    }
 };
 
 struct Cell {

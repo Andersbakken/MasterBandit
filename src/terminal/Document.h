@@ -61,17 +61,18 @@ public:
     void setRowContinued(int screenRow, bool v);
     bool isHistoryRowContinued(int idx) const; // idx 0 = oldest (archive + tier-1)
 
-    // --- Per-row prompt kind (OSC 133 shell integration) ---
-    enum PromptKind : uint8_t {
-        UnknownPrompt = 0,
-        PromptStart = 1,      // OSC 133;A — primary prompt
-        SecondaryPrompt = 2,  // OSC 133;A;k=s — secondary/continuation prompt
-        CommandStart = 3,     // OSC 133;B — command input starts
-        OutputStart = 4       // OSC 133;C — command output starts
-    };
-    PromptKind rowPromptKind(int screenRow) const;
-    void setRowPromptKind(int screenRow, PromptKind kind);
-    PromptKind historyRowPromptKind(int idx) const; // idx 0 = oldest
+    // --- Stable monotonic row ids ---
+    //
+    // Each row in the structure has a logical id that doesn't change as the row
+    // scrolls through archive / tier-1 / screen. IDs are assigned implicitly by
+    // absolute position: `rowIdForAbs(abs) = rowIdBase_ + abs`. Archive-head
+    // eviction bumps `rowIdBase_` so that remaining rows' ids stay constant
+    // while their abs-row numbers shift down. Reflow on resize does NOT preserve
+    // ids (rows split/merge and logical identity breaks); callers treat ids
+    // from before a resize as best-effort.
+    uint64_t rowIdForAbs(int abs) const;
+    // Returns -1 if the row has been evicted from archive or is otherwise gone.
+    int absForRowId(uint64_t id) const;
 
 private:
     int cols_ = 0;
@@ -84,7 +85,10 @@ private:
     std::vector<Cell> ring_;
     std::vector<std::unordered_map<int, CellExtra>> ringExtras_;
     std::vector<bool> continued_;  // per physical ring slot: row was soft-wrapped
-    std::vector<PromptKind> promptKind_;  // per physical ring slot: OSC 133 prompt type
+
+    // Row-id base: the id of the row currently at abs-row 0. Increments when
+    // the oldest archive row evicts (so remaining rows' ids stay stable).
+    uint64_t rowIdBase_ = 0;
 
     // Dirty tracking (screen-relative)
     std::vector<bool> dirty_;

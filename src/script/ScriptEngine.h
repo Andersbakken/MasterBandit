@@ -23,6 +23,23 @@ using InstanceId = uint64_t;
 using PaneId = int;
 using TabId = int;
 
+// OSC 133 command record as surfaced to scripts — shared between AppCallbacks
+// (for pane.commands / lastCommand queries) and Engine::notifyCommandComplete
+// (for the event payload). Kept at namespace scope so forward declarations work.
+struct CommandInfo {
+    uint64_t id = 0;
+    std::string command;
+    std::string output;
+    std::string cwd;
+    std::optional<int> exitCode;
+    uint64_t startMs = 0;
+    uint64_t endMs = 0;
+    int promptStartAbsRow = -1, promptStartCol = -1;
+    int commandStartAbsRow = -1, commandStartCol = -1;
+    int outputStartAbsRow = -1, outputStartCol = -1;
+    int outputEndAbsRow = -1, outputEndCol = -1;
+};
+
 struct AppCallbacks {
     // Inject data directly into a terminal emulator (bypass PTY)
     std::function<void(PaneId, const std::string&)> injectPaneData;
@@ -40,6 +57,9 @@ struct AppCallbacks {
     // Query pane info
     struct PaneInfo { int cols; int rows; std::string title; std::string cwd; bool hasPty; bool focused; std::string focusedPopupId; std::string foregroundProcess; };
     std::function<PaneInfo(PaneId)> paneInfo;
+    // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
+    // entries (0 = all). Used by pane.commands / pane.lastCommand JS properties.
+    std::function<std::vector<CommandInfo>(PaneId, int limit)> paneCommands;
     // Query overlay info
     struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
     std::function<OverlayInfo(TabId)> overlayInfo;
@@ -140,6 +160,8 @@ public:
     void notifyOverlayDestroyed(TabId tab);
     void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
     void notifyForegroundProcessChanged(PaneId pane, const std::string& processName);
+
+    void notifyCommandComplete(PaneId pane, const CommandInfo& rec);
 
     // Deliver input to listeners on registered objects across all contexts.
     void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);

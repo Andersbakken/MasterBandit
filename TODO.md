@@ -13,7 +13,10 @@
 - [x] Kitty graphics: position-based delete — `d=c`/`d=C` (cursor), `d=p`/`d=P` (cell position), `d=x`/`d=X` (column), `d=y`/`d=Y` (row), `d=r`/`d=R` (ID range). Uppercase frees image data.
 - [x] Kitty graphics: frame composition (`a=c`) — explicit pixel-level blit between animation frames. Source/dest frame selection, rectangle region, alpha blend or overwrite.
 - [x] Kitty graphics: z-layering — `z=` index per placement. `z >= 0` renders above text (default), `z < 0` below text. Sorted render with split-point. Delete by z-index (`d=z`/`d=Z`) and position+z (`d=q`/`d=Q`). Frame selection via `a=a,c=`.
-- [ ] Kitty graphics: Unicode placeholders — `U+10EEEE` virtual placements.
+- [x] Kitty graphics: `S=`/`O=` data size/offset — subrange reads for `t=f` (file), `t=t` (temp file), `t=s` (shared memory).
+- [x] Kitty graphics: transparent border on GPU textures — 1px transparent border around image textures for soft edge blending matching kitty's `GL_CLAMP_TO_BORDER` behavior.
+- [ ] Kitty graphics: Unicode placeholders — `U+10EEEE` virtual placements. Neither WezTerm nor most terminals support this.
+- [ ] Kitty graphics: relative placements — `P=`/`Q=` parent image/placement references. Neither WezTerm nor most terminals support this.
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
 - [x] OSC 7 — Current working directory reporting. Pane stores CWD for new splits.
 - [x] OSC 8 — Hyperlinks. Cmd/Ctrl+click opens URL. Auto-underlines linked text.

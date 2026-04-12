@@ -21,6 +21,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 if (Tab* now = activeTab())
                     refreshDividers(now);
                 updateWindowTitle();
+                refreshPointerShape();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
             }
@@ -35,6 +36,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 if (Tab* now = activeTab())
                     refreshDividers(now);
                 updateWindowTitle();
+                refreshPointerShape();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
             }
@@ -92,6 +94,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                     pendingTabBarRelease_.push_back(tx);
                 paneRenderStates_.erase(it);
             }
+            paneCursorStyle_.erase(paneId);
             releasePopupStates(fp);
 
             scriptEngine_.notifyPaneDestroyed(paneId);
@@ -220,6 +223,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             if (tab && tab->hasOverlay()) {
                 scriptEngine_.notifyOverlayDestroyed(activeTabIdx_);
                 tab->popOverlay();
+                refreshPointerShape();
             }
         },
         [&](const Action::IncreaseFontSize&) { adjustFontSize(1.0f);  },
@@ -325,6 +329,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                         }
                         overlayRenderStates_.erase(oit);
                     }
+                    refreshPointerShape();
                     setNeedsRedraw();
                 });
             };
@@ -359,6 +364,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             addPtyPoll(overlay->masterFD(), overlay.get());
             tab->pushOverlay(std::move(overlay));
             scriptEngine_.notifyOverlayCreated(activeTabIdx_);
+            refreshPointerShape();  // overlay may want a different cursor
             setNeedsRedraw();
         },
         [&](const Action::ReloadConfig&) { reloadConfigNow(); },

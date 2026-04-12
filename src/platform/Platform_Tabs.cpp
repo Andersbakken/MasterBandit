@@ -48,6 +48,49 @@ void PlatformDawn::updateWindowTitle()
     if (window_) window_->setTitle(windowTitle);
 }
 
+Window::CursorStyle PlatformDawn::pointerShapeNameToCursorStyle(const std::string& name)
+{
+    using CS = Window::CursorStyle;
+    if (name.empty() || name == "default" || name == "left_ptr" ||
+        name == "context-menu" || name == "alias" || name == "copy" ||
+        name == "dnd-link" || name == "dnd-copy" || name == "dnd-none" ||
+        name == "none")                                              return CS::Arrow;
+    if (name == "text" || name == "vertical-text" ||
+        name == "xterm" || name == "ibeam")                          return CS::IBeam;
+    if (name == "pointer" || name == "pointing_hand" || name == "hand" ||
+        name == "hand1" || name == "hand2" || name == "openhand" ||
+        name == "closedhand" || name == "grab" || name == "grabbing") return CS::Pointer;
+    if (name == "crosshair" || name == "tcross" || name == "cross" ||
+        name == "cell" || name == "plus")                            return CS::Crosshair;
+    if (name == "wait" || name == "clock" || name == "watch" ||
+        name == "progress" || name == "half-busy" ||
+        name == "left_ptr_watch")                                    return CS::Wait;
+    if (name == "help" || name == "question_arrow" ||
+        name == "whats_this")                                        return CS::Help;
+    if (name == "move" || name == "fleur" || name == "all-scroll" ||
+        name == "pointer-move")                                      return CS::Move;
+    if (name == "not-allowed" || name == "no-drop" ||
+        name == "forbidden" || name == "crossed_circle" ||
+        name == "dnd-no-drop")                                       return CS::NotAllowed;
+    if (name == "ew-resize" || name == "e-resize" || name == "w-resize" ||
+        name == "col-resize" || name == "right_side" ||
+        name == "left_side" || name == "sb_h_double_arrow" ||
+        name == "split_h")                                           return CS::ResizeH;
+    if (name == "ns-resize" || name == "n-resize" || name == "s-resize" ||
+        name == "row-resize" || name == "top_side" ||
+        name == "bottom_side" || name == "sb_v_double_arrow" ||
+        name == "split_v")                                           return CS::ResizeV;
+    if (name == "nesw-resize" || name == "ne-resize" || name == "sw-resize" ||
+        name == "top_right_corner" || name == "bottom_left_corner" ||
+        name == "size_bdiag" || name == "size-bdiag")                return CS::ResizeNESW;
+    if (name == "nwse-resize" || name == "nw-resize" || name == "se-resize" ||
+        name == "top_left_corner" || name == "bottom_right_corner" ||
+        name == "size_fdiag" || name == "size-fdiag")                return CS::ResizeNWSE;
+    if (name == "zoom-in" || name == "zoom_in" ||
+        name == "zoom-out" || name == "zoom_out")                    return CS::Crosshair;
+    return CS::Arrow;
+}
+
 // Helper: find which tab contains a given pane
 static Tab* findTabForPane(const std::vector<std::unique_ptr<Tab>>& tabs, int paneId, int* outTabIdx = nullptr)
 {
@@ -151,6 +194,25 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         return scriptEngine_.lookupCustomTcap(name);
     };
 
+    cbs.onMouseCursorShape = [this, paneId](const std::string& shape) {
+        // Cache the converted style per pane; cursor-pos updates read this
+        // without re-parsing the CSS name on every mouse move.
+        if (shape.empty()) {
+            paneCursorStyle_.erase(paneId);
+        } else {
+            paneCursorStyle_[paneId] = pointerShapeNameToCursorStyle(shape);
+        }
+        // Apply immediately if the request is from the focused pane in the
+        // active tab; otherwise the next mouse-move into that pane will pick
+        // it up. Background panes/tabs don't fight over the cursor.
+        if (!window_ || isHeadless()) return;
+        Tab* t = activeTab();
+        if (!t || t->layout()->focusedPaneId() != paneId) return;
+        window_->setCursorStyle(shape.empty()
+            ? Window::CursorStyle::IBeam
+            : paneCursorStyle_[paneId]);
+    };
+
     cbs.onForegroundProcessChanged = [this, paneId](const std::string& proc) {
         scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
         // Use foreground process as tab title if pane has no OSC title
@@ -244,6 +306,7 @@ void PlatformDawn::createTab()
 
     updateTabBarVisibility();
     updateWindowTitle();
+    refreshPointerShape();
     tabBarDirty_ = true;
     setNeedsRedraw();
 
@@ -274,6 +337,7 @@ void PlatformDawn::closeTab(int idx)
                 pendingTabBarRelease_.push_back(t2);
             paneRenderStates_.erase(it);
         }
+        paneCursorStyle_.erase(panePtr->id());
         releasePopupStates(panePtr.get());
         scriptEngine_.notifyPaneDestroyed(panePtr->id());
     }
@@ -289,6 +353,7 @@ void PlatformDawn::closeTab(int idx)
         activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
 
     updateTabBarVisibility();
+    refreshPointerShape();
     tabBarDirty_ = true;
     setNeedsRedraw();
     spdlog::info("Closed tab {}", idx + 1);
@@ -367,6 +432,31 @@ void PlatformDawn::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
         Pane* p = tab->layout()->pane(newId);
         if (p && p->terminal()) p->terminal()->focusEvent(true);
     }
+    refreshPointerShape();
+}
+
+void PlatformDawn::refreshPointerShape()
+{
+    if (!window_ || isHeadless()) return;
+    Tab* tab = activeTab();
+    if (!tab) return;
+    // Prefer the pane the mouse is physically over (so split/focus changes
+    // don't show a cursor that doesn't match the hovered pane). Falls back to
+    // the focused pane when the mouse position isn't usefully hovering one
+    // (e.g. before any motion event has fired).
+    int paneId = -1;
+    if (!tab->hasOverlay()) {
+        double sx = lastCursorX_ * contentScaleX_;
+        double sy = lastCursorY_ * contentScaleY_;
+        paneId = tab->layout()->paneAtPixel(static_cast<int>(sx),
+                                            static_cast<int>(sy));
+        if (paneId < 0 && tab->layout()->focusedPane())
+            paneId = tab->layout()->focusedPane()->id();
+    }
+    auto it = paneCursorStyle_.find(paneId);
+    window_->setCursorStyle(it != paneCursorStyle_.end()
+        ? it->second
+        : Window::CursorStyle::IBeam);
 }
 
 
@@ -423,6 +513,7 @@ void PlatformDawn::terminalExited(Terminal* terminal)
                     pendingTabBarRelease_.push_back(tx);
                 paneRenderStates_.erase(it);
             }
+            paneCursorStyle_.erase(paneId);
             releasePopupStates(panePtr.get());
 
             scriptEngine_.notifyPaneDestroyed(paneId);
@@ -441,6 +532,7 @@ void PlatformDawn::terminalExited(Terminal* terminal)
                     activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
                 updateTabBarVisibility();
                 updateWindowTitle();
+                refreshPointerShape();
                 tabBarDirty_ = true;
             } else {
                 tab->layout()->removePane(paneId);

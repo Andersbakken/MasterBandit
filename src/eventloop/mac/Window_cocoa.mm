@@ -559,10 +559,20 @@ void CocoaWindow::dispatchContentScale(float sx, float sy)
 void CocoaWindow::setCursorStyle(CursorStyle shape)
 {
     switch (shape) {
-    case CursorStyle::Arrow:   [[NSCursor arrowCursor] set]; break;
-    case CursorStyle::IBeam:   [[NSCursor IBeamCursor] set]; break;
-    case CursorStyle::ResizeH: [[NSCursor resizeLeftRightCursor] set]; break;
-    case CursorStyle::ResizeV: [[NSCursor resizeUpDownCursor] set]; break;
+    case CursorStyle::Arrow:       [[NSCursor arrowCursor] set]; break;
+    case CursorStyle::IBeam:       [[NSCursor IBeamCursor] set]; break;
+    case CursorStyle::Pointer:     [[NSCursor pointingHandCursor] set]; break;
+    case CursorStyle::Crosshair:   [[NSCursor crosshairCursor] set]; break;
+    // macOS has no first-class busy/help/not-allowed cursor APIs; closest
+    // approximations:
+    case CursorStyle::Wait:        [[NSCursor arrowCursor] set]; break;
+    case CursorStyle::Help:        [[NSCursor arrowCursor] set]; break;
+    case CursorStyle::NotAllowed:  [[NSCursor operationNotAllowedCursor] set]; break;
+    case CursorStyle::Move:        [[NSCursor closedHandCursor] set]; break;
+    case CursorStyle::ResizeH:     [[NSCursor resizeLeftRightCursor] set]; break;
+    case CursorStyle::ResizeV:     [[NSCursor resizeUpDownCursor] set]; break;
+    case CursorStyle::ResizeNESW:  [[NSCursor resizeUpDownCursor] set]; break;
+    case CursorStyle::ResizeNWSE:  [[NSCursor resizeUpDownCursor] set]; break;
     }
 }
 

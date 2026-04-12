@@ -218,12 +218,22 @@ static xcb_cursor_t createGlyphCursor(xcb_connection_t* conn, xcb_font_t font, u
 
 void XCBWindow::createCursors()
 {
+    // Glyphs from <X11/cursorfont.h>. The cursor font lacks a true
+    // not-allowed/forbidden glyph; X_cursor (0) is the closest.
     xcb_font_t font = xcb_generate_id(conn_);
     xcb_open_font(conn_, font, 6, "cursor");
-    cursorArrow_   = createGlyphCursor(conn_, font, 68);  // XC_left_ptr
-    cursorIBeam_   = createGlyphCursor(conn_, font, 152); // XC_xterm
-    cursorResizeH_ = createGlyphCursor(conn_, font, 108); // XC_sb_h_double_arrow
-    cursorResizeV_ = createGlyphCursor(conn_, font, 116); // XC_sb_v_double_arrow
+    cursorArrow_      = createGlyphCursor(conn_, font,  68); // XC_left_ptr
+    cursorIBeam_      = createGlyphCursor(conn_, font, 152); // XC_xterm
+    cursorPointer_    = createGlyphCursor(conn_, font,  60); // XC_hand2
+    cursorCrosshair_  = createGlyphCursor(conn_, font,  34); // XC_crosshair
+    cursorWait_       = createGlyphCursor(conn_, font, 150); // XC_watch
+    cursorHelp_       = createGlyphCursor(conn_, font,  92); // XC_question_arrow
+    cursorMove_       = createGlyphCursor(conn_, font,  52); // XC_fleur
+    cursorNotAllowed_ = createGlyphCursor(conn_, font,   0); // XC_X_cursor
+    cursorResizeH_    = createGlyphCursor(conn_, font, 108); // XC_sb_h_double_arrow
+    cursorResizeV_    = createGlyphCursor(conn_, font, 116); // XC_sb_v_double_arrow
+    cursorResizeNESW_ = createGlyphCursor(conn_, font, 136); // XC_top_right_corner
+    cursorResizeNWSE_ = createGlyphCursor(conn_, font, 134); // XC_top_left_corner
     xcb_close_font(conn_, font);
 }
 
@@ -233,10 +243,18 @@ void XCBWindow::setCursorStyle(CursorStyle shape)
     currentCursor_ = shape;
     xcb_cursor_t c;
     switch (shape) {
-    case CursorStyle::Arrow:   c = cursorArrow_; break;
-    case CursorStyle::IBeam:   c = cursorIBeam_; break;
-    case CursorStyle::ResizeH: c = cursorResizeH_; break;
-    case CursorStyle::ResizeV: c = cursorResizeV_; break;
+    case CursorStyle::Arrow:       c = cursorArrow_;      break;
+    case CursorStyle::IBeam:       c = cursorIBeam_;      break;
+    case CursorStyle::Pointer:     c = cursorPointer_;    break;
+    case CursorStyle::Crosshair:   c = cursorCrosshair_;  break;
+    case CursorStyle::Wait:        c = cursorWait_;       break;
+    case CursorStyle::Help:        c = cursorHelp_;       break;
+    case CursorStyle::Move:        c = cursorMove_;       break;
+    case CursorStyle::NotAllowed:  c = cursorNotAllowed_; break;
+    case CursorStyle::ResizeH:     c = cursorResizeH_;    break;
+    case CursorStyle::ResizeV:     c = cursorResizeV_;    break;
+    case CursorStyle::ResizeNESW:  c = cursorResizeNESW_; break;
+    case CursorStyle::ResizeNWSE:  c = cursorResizeNWSE_; break;
     default: return;
     }
     xcb_change_window_attributes(conn_, window_, XCB_CW_CURSOR, &c);

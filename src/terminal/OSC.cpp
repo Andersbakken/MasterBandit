@@ -239,6 +239,7 @@ void TerminalEmulator::processStringSequence()
         if (mCallbacks.onIconChanged) mCallbacks.onIconChanged(std::string(payload));
         break;
     case 2: processOSC_Title(payload, true); break;
+    case 22: processOSC_PointerShape(payload); break;
     case 133: { // Shell integration (FinalTerm / semantic prompts)
         // OSC 133;X where X is: A=prompt start, B=command start, C=output start, D=command done
         // Optional params after X separated by ; with key=value pairs
@@ -637,4 +638,131 @@ void TerminalEmulator::processOSC_PaletteReset(std::string_view payload)
             m16ColorPalette[idx][2] = m16PaletteDefaults[idx][2];
         }
     }
+}
+
+bool TerminalEmulator::isKnownPointerShape(std::string_view name)
+{
+    // CSS3 cursor names plus the X11 / kitty aliases. Kept sorted by length
+    // then alpha for readability — runtime cost is negligible.
+    static constexpr std::string_view kNames[] = {
+        // CSS3 canonical
+        "default", "none", "context-menu", "help", "pointer", "progress",
+        "wait", "cell", "crosshair", "text", "vertical-text", "alias",
+        "copy", "move", "no-drop", "not-allowed", "grab", "grabbing",
+        "e-resize", "n-resize", "ne-resize", "nw-resize", "s-resize",
+        "se-resize", "sw-resize", "w-resize", "ew-resize", "ns-resize",
+        "nesw-resize", "nwse-resize", "col-resize", "row-resize",
+        "all-scroll", "zoom-in", "zoom-out",
+        // X11 / kitty aliases
+        "left_ptr", "xterm", "ibeam", "pointing_hand", "hand2", "hand",
+        "question_arrow", "whats_this", "clock", "watch", "half-busy",
+        "left_ptr_watch", "tcross", "plus", "cross", "fleur",
+        "pointer-move", "right_side", "top_right_corner", "top_left_corner",
+        "top_side", "bottom_right_corner", "bottom_left_corner",
+        "bottom_side", "left_side", "sb_h_double_arrow", "split_h",
+        "sb_v_double_arrow", "split_v", "size_bdiag", "size-bdiag",
+        "size_fdiag", "size-fdiag", "zoom_in", "zoom_out",
+        "dnd-link", "dnd-copy", "forbidden", "crossed_circle",
+        "dnd-no-drop", "openhand", "hand1", "closedhand", "dnd-none",
+    };
+    for (auto n : kNames) {
+        if (n == name) return true;
+    }
+    return false;
+}
+
+void TerminalEmulator::notifyPointerShapeChanged()
+{
+    if (mCallbacks.onMouseCursorShape)
+        mCallbacks.onMouseCursorShape(currentPointerShape());
+}
+
+void TerminalEmulator::processOSC_PointerShape(std::string_view payload)
+{
+    // OSC 22 ; [op]name[,name...] ST
+    //   '=' set top of stack (default if op omitted)
+    //   '>' push name(s) onto stack
+    //   '<' pop one entry
+    //   '?' query: respond OSC 22 ; csv-of-1/0/named ST
+    char op = '=';
+    if (!payload.empty() &&
+        (payload.front() == '=' || payload.front() == '>' ||
+         payload.front() == '<' || payload.front() == '?')) {
+        op = payload.front();
+        payload.remove_prefix(1);
+    }
+
+    std::vector<std::string_view> names;
+    if (!payload.empty()) {
+        size_t pos = 0;
+        while (pos <= payload.size()) {
+            size_t comma = payload.find(',', pos);
+            if (comma == std::string_view::npos) {
+                names.push_back(payload.substr(pos));
+                break;
+            }
+            names.push_back(payload.substr(pos, comma - pos));
+            pos = comma + 1;
+        }
+    }
+
+    auto& stack = mUsingAltScreen ? mPointerShapeStackAlt : mPointerShapeStackMain;
+
+    if (op == '?') {
+        // Query each name; respond with CSV of validity / resolved names.
+        std::string resp = "\x1b]22;";
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (i) resp += ',';
+            std::string_view n = names[i];
+            if (n == "__current__") {
+                resp += stack.empty() ? std::string{} : stack.back();
+            } else if (n == "__default__") {
+                // We have no separate "config default" pointer shape; report
+                // the platform default ("default" per CSS).
+                resp += "default";
+            } else if (n.empty() || isKnownPointerShape(n)) {
+                resp += "1";
+            } else {
+                resp += "0";
+            }
+        }
+        resp += "\x1b\\";
+        writeToOutput(resp.data(), resp.size());
+        return;
+    }
+
+    bool changed = false;
+
+    if (op == '<') {
+        // Pop one entry; comma list (if any) is ignored, matching kitty.
+        if (!stack.empty()) {
+            stack.pop_back();
+            changed = true;
+        }
+    } else {
+        // '=' with no names → reset to default (clear stack).
+        if (op == '=' && names.empty()) {
+            if (!stack.empty()) { stack.clear(); changed = true; }
+        }
+        // '=' or '>': iterate names.
+        for (auto n : names) {
+            // Empty name with '=' resets to default (clear stack).
+            if (n.empty() && op == '=') {
+                if (!stack.empty()) { stack.clear(); changed = true; }
+                continue;
+            }
+            if (n.empty()) continue;
+            if (op == '=') {
+                if (stack.empty()) stack.emplace_back(n);
+                else stack.back().assign(n);
+            } else { // '>'
+                if (stack.size() >= MAX_POINTER_SHAPE_STACK)
+                    stack.erase(stack.begin());  // drop oldest
+                stack.emplace_back(n);
+            }
+            changed = true;
+        }
+    }
+
+    if (changed) notifyPointerShapeChanged();
 }

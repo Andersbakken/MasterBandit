@@ -105,6 +105,21 @@ public:
 
     void renderFrame();
     void setNeedsRedraw();
+
+    // Map a CSS / kitty pointer name (from OSC 22) to a Window::CursorStyle.
+    // Empty string and unknown names fall back to the platform default arrow.
+    static Window::CursorStyle pointerShapeNameToCursorStyle(const std::string& name);
+
+    // Per-pane cached cursor style requested via OSC 22. Looked up on every
+    // mouse move (cheap unordered_map find). Absent entry / Arrow → fall back
+    // to the IBeam used for selection. Updated by the onMouseCursorShape
+    // terminal callback; erased on pane destruction.
+    std::unordered_map<int, Window::CursorStyle> paneCursorStyle_;
+    // Push the active tab's focused-pane cursor style to the window. Call
+    // after focus changes (pane- or tab-level) so the cursor updates without
+    // waiting for the next mouse-move event.
+    void refreshPointerShape();
+
     bool shouldClose() {
         if (isHeadless()) return false;
         return window_ && window_->shouldClose();

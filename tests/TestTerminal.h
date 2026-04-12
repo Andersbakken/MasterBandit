@@ -33,6 +33,8 @@ struct TestTerminal {
     std::string capturedNotifyTitle;
     std::string capturedNotifyBody;
     std::string capturedNotifyId;
+    std::string capturedPointerShape;
+    int         pointerShapeCallCount = 0;
 
     InnerTerminal term;
 
@@ -44,6 +46,10 @@ struct TestTerminal {
             cb.onCWDChanged   = [this](const std::string& d) { capturedCWD = d; };
             cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id) {
                 capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id;
+            };
+            cb.onMouseCursorShape = [this](const std::string& s) {
+                capturedPointerShape = s;
+                ++pointerShapeCallCount;
             };
             return cb;
           }())

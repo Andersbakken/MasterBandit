@@ -161,6 +161,7 @@ int PlatformDawn::exec()
             overlay->resize(cols, rows);
 
             tab->pushOverlay(std::move(overlay));
+            if (tabId == activeTabIdx_) refreshPointerShape();
             setNeedsRedraw();
             return true;
         };
@@ -169,6 +170,7 @@ int PlatformDawn::exec()
             Tab* tab = tabs_[tabId].get();
             if (tab->hasOverlay()) {
                 tab->popOverlay();
+                if (tabId == activeTabIdx_) refreshPointerShape();
                 setNeedsRedraw();
             }
         };

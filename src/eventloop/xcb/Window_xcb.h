@@ -128,10 +128,18 @@ private:
     uint32_t      lastPressTime_    = 0;
 
     // Cached X11 cursors (from cursor font)
-    xcb_cursor_t cursorArrow_ = 0;
-    xcb_cursor_t cursorIBeam_ = 0;
-    xcb_cursor_t cursorResizeH_ = 0;
-    xcb_cursor_t cursorResizeV_ = 0;
+    xcb_cursor_t cursorArrow_      = 0;
+    xcb_cursor_t cursorIBeam_      = 0;
+    xcb_cursor_t cursorPointer_    = 0;
+    xcb_cursor_t cursorCrosshair_  = 0;
+    xcb_cursor_t cursorWait_       = 0;
+    xcb_cursor_t cursorHelp_       = 0;
+    xcb_cursor_t cursorMove_       = 0;
+    xcb_cursor_t cursorNotAllowed_ = 0;
+    xcb_cursor_t cursorResizeH_    = 0;
+    xcb_cursor_t cursorResizeV_    = 0;
+    xcb_cursor_t cursorResizeNESW_ = 0;
+    xcb_cursor_t cursorResizeNWSE_ = 0;
     CursorStyle  currentCursor_ = CursorStyle::Arrow;
     void createCursors();
 

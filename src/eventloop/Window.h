@@ -47,7 +47,20 @@ public:
     std::function<void()> onExpose;        // called when window content needs redraw
     std::function<void()> onLiveResizeEnd; // called when live resize settles
     // Mouse cursor style
-    enum class CursorStyle { Arrow, IBeam, ResizeH, ResizeV };
+    enum class CursorStyle {
+        Arrow,        // CSS "default"
+        IBeam,        // CSS "text"
+        Pointer,      // CSS "pointer" (hand)
+        Crosshair,    // CSS "crosshair"
+        Wait,         // CSS "wait"
+        Help,         // CSS "help"
+        Move,         // CSS "move"
+        NotAllowed,   // CSS "not-allowed"
+        ResizeH,      // CSS "ew-resize" / e-/w-resize
+        ResizeV,      // CSS "ns-resize" / n-/s-resize
+        ResizeNESW,   // CSS "nesw-resize"
+        ResizeNWSE,   // CSS "nwse-resize"
+    };
     virtual void setCursorStyle(CursorStyle) {}
 
     virtual void frameRendered() {}       // called after each frame; used for _NET_WM_SYNC_REQUEST

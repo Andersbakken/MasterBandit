@@ -534,13 +534,27 @@ void PlatformDawn::onCursorPos(double x, double y)
     double sx = x * contentScaleX_;
     double sy = y * contentScaleY_;
 
-    // Update mouse cursor shape based on region
+    // Update mouse cursor shape based on region. Inside a pane, honour the
+    // OSC 22 pointer shape of whichever pane the mouse is physically over
+    // (not necessarily the focused one) — matches user intuition that a pane
+    // showing a clickable region uses a hand cursor when hovered. Falls back
+    // to the I-beam for selection. The tab bar always uses the arrow. Overlays
+    // cover the whole tab and aren't tracked in paneCursorStyle_, so they get
+    // IBeam by default.
     if (window_) {
         MouseRegion region = hitTest(sx, sy);
-        if (region == MouseRegion::TabBar)
+        if (region == MouseRegion::TabBar) {
             window_->setCursorStyle(Window::CursorStyle::Arrow);
-        else
-            window_->setCursorStyle(Window::CursorStyle::IBeam);
+        } else {
+            int hoveredId = tab->hasOverlay()
+                ? -1
+                : tab->layout()->paneAtPixel(static_cast<int>(sx),
+                                             static_cast<int>(sy));
+            auto it = paneCursorStyle_.find(hoveredId);
+            window_->setCursorStyle(it != paneCursorStyle_.end()
+                ? it->second
+                : Window::CursorStyle::IBeam);
+        }
     }
 
     PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};

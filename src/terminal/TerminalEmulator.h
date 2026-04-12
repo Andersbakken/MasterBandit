@@ -31,6 +31,7 @@ struct TerminalCallbacks {
     std::function<void(int /*state*/, int /*pct*/)> onProgressChanged; // OSC 9;4
     std::function<bool()>                        isDarkMode;         // for mode 2031
     std::function<void(const std::string&)>      onCWDChanged;       // OSC 7
+    std::function<void(const std::string&)>      onMouseCursorShape; // OSC 22 (CSS pointer name; "" = default)
     std::function<void(const std::string&, const std::string&, const std::string&)> onDesktopNotification; // OSC 99
     std::function<void(const std::string&)>      onForegroundProcessChanged;
     // Called for XTGETTCAP queries not found in the built-in table.
@@ -59,6 +60,14 @@ public:
     };
     CursorShape cursorShape() const { return mCursorShape; }
     bool cursorBlinkEnabled() const { return mCursorBlinkEnabled; }
+
+    // OSC 22 — current pointer shape (CSS name); empty = platform default.
+    std::string currentPointerShape() const {
+        const auto& s = mUsingAltScreen ? mPointerShapeStackAlt : mPointerShapeStackMain;
+        return s.empty() ? std::string{} : s.back();
+    }
+    // True if `name` is a CSS pointer name we recognise (or a kitty/X11 alias).
+    static bool isKnownPointerShape(std::string_view name);
     // True iff the cursor should currently visibly blink: shape is a blinking
     // variant AND DEC private mode 12 is on.
     bool cursorBlinking() const {
@@ -324,6 +333,7 @@ private:
     void processOSC_PaletteReset(std::string_view payload);
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
+    void processOSC_PointerShape(std::string_view payload);
     void processAPC();
     void placeImageInGrid(uint32_t imageId, uint32_t placementId, int cellCols, int cellRows, bool moveCursor = true);
     std::string buildCurrentSGR() const;
@@ -438,6 +448,14 @@ private:
     std::unordered_map<int, bool> mSavedPrivateModes;
     void savePrivateModes(const std::vector<int>& modes);
     void restorePrivateModes(const std::vector<int>& modes);
+
+    // OSC 22 mouse pointer shape stacks. Separate stacks for main/alt screen
+    // so vim's pointer state in alt screen doesn't bleed back into the main
+    // shell on exit. Capped to keep runaway apps from growing unbounded.
+    static constexpr size_t MAX_POINTER_SHAPE_STACK = 16;
+    std::vector<std::string> mPointerShapeStackMain;
+    std::vector<std::string> mPointerShapeStackAlt;
+    void notifyPointerShapeChanged();
 
     // Kitty keyboard protocol
     static constexpr int KITTY_STACK_MAX = 8;

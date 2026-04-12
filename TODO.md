@@ -20,7 +20,7 @@
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
 - [x] OSC 7 — Current working directory reporting. Pane stores CWD for new splits.
 - [x] OSC 8 — Hyperlinks. Cmd/Ctrl+click opens URL. Auto-underlines linked text.
-- [ ] OSC 22 — Set mouse cursor shape (pointer, text, etc.)
+- [x] OSC 22 — Set mouse cursor shape. Full kitty-style stack ops (`=`/`>`/`<`/`?`), per-screen stacks (main vs alt), CSS3 + X11 alias name table, Cocoa + XCB cursor mappings. Per-pane CursorStyle cache; cursor follows the hovered pane (not focused), refreshed on tab/pane/overlay lifecycle events.
 - [x] OSC 99 — Desktop notifications (kitty). Title/body accumulation, macOS UNUserNotification.
 - [x] OSC 10/11/12 — Query/set default fg/bg/cursor colors. Responses in `rgb:RRRR/GGGG/BBBB` format.
 - [x] OSC 4/104 — Set/query individual ANSI palette entries at runtime (`OSC 4 ; index ; color` to set, `OSC 4 ; index ; ?` to query, `OSC 104` to reset). Used by Neovim, Vim, and tmux to detect or adapt to the terminal's color scheme.
@@ -129,7 +129,6 @@
 - [ ] Prompt-aware reflow — when OSC 133 markers are present, blank the rprompt region of prompt lines before reflow to prevent rprompt padding from wrapping into extra rows. The shell redraws the current prompt after SIGWINCH; history prompts could use the marker to identify and strip the rprompt portion.
 - [x] Reflow strips spaces — cursor gap detection treated spaces as null cells, truncating content after cursor.
 - [x] Underlines not cleared on scroll — deleteChars/insertChars didn't shift extras map entries, leaving stale underline colors at wrong columns.
-- [ ] PTY poll error handling — `addPtyPoll()` ignores `uv_poll_init`/`uv_poll_start` return values. Should check and log errors, avoid inserting into `ptyPolls_` on failure.
 - [x] Scripting engine (QuickJS-ng) — embedded with Pane/Overlay/Tab JS classes, synchronous output/input filters (zero-copy when no listeners), async lifecycle events via microtasks, action listener system. Two script types: controller (global app control) and applet (headless terminal overlay).
 - [x] Scripting: OSC handler routing — `pane.addEventListener("osc:NNNN", fn)` registers JS handlers for specific OSC numbers. Terminal emulator routes unhandled OSC codes to script engine. Enables applet launch via escape sequence.
 - [x] Scripting: applet launch confirmation — implemented in JS (applet-loader.js). Creates a popup with clickable [allow]/[deny]/[always]/[never] buttons. Supports both keyboard and mouse click input. Allowlist persisted in config dir.

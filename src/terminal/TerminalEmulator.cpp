@@ -675,6 +675,9 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     mUsingAltScreen = false;
                     mDocument.markAllDirty();
                 }
+                mPointerShapeStackMain.clear();
+                mPointerShapeStackAlt.clear();
+                notifyPointerShapeChanged();
                 g.markAllDirty();
                 for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
                 clearSelection();
@@ -1426,6 +1429,7 @@ void TerminalEmulator::onAction(const Action *action)
             mUsingAltScreen = true;
             // Kitty: switch to alt screen's stack
             mKittyFlags = (mKittyStackDepthAlt > 0) ? mKittyStackAlt[mKittyStackDepthAlt - 1] : 0;
+            notifyPointerShapeChanged();  // alt stack is now active
             mCursorX = 0;
             mCursorY = 0;
             for (int r = 0; r < mAltGrid.rows(); ++r) mAltGrid.clearRow(r);
@@ -1465,6 +1469,7 @@ void TerminalEmulator::onAction(const Action *action)
             mUsingAltScreen = false;
             // Kitty: switch back to main screen's stack
             mKittyFlags = (mKittyStackDepthMain > 0) ? mKittyStackMain[mKittyStackDepthMain - 1] : 0;
+            notifyPointerShapeChanged();  // main stack is active again
             mCursorX = mSavedCursorX;
             mCursorY = mSavedCursorY;
             mCurrentAttrs = mSavedAttrs;

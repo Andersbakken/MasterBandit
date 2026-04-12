@@ -274,3 +274,156 @@ TEST_CASE("OSC 10 set updates defaultColors struct")
     CHECK(dc.fgG == 0x20);
     CHECK(dc.fgB == 0x30);
 }
+
+// ── OSC 22 — mouse pointer shape (kitty) ─────────────────────────────────────
+
+TEST_CASE("OSC 22 set defaults to '=' op and updates current shape")
+{
+    TestTerminal t;
+    t.osc("22;pointer");
+    CHECK(t.term.currentPointerShape() == "pointer");
+    CHECK(t.capturedPointerShape == "pointer");
+    CHECK(t.pointerShapeCallCount == 1);
+}
+
+TEST_CASE("OSC 22 explicit '=' replaces top of stack")
+{
+    TestTerminal t;
+    t.osc("22;pointer");
+    t.osc("22;=text");
+    CHECK(t.term.currentPointerShape() == "text");
+}
+
+TEST_CASE("OSC 22 '>' pushes onto stack")
+{
+    TestTerminal t;
+    t.osc("22;pointer");
+    t.osc("22;>text");
+    CHECK(t.term.currentPointerShape() == "text");
+    t.osc("22;<");
+    CHECK(t.term.currentPointerShape() == "pointer");
+}
+
+TEST_CASE("OSC 22 '<' pops; popping empty stack is a no-op")
+{
+    TestTerminal t;
+    t.osc("22;<");  // empty
+    CHECK(t.term.currentPointerShape().empty());
+    CHECK(t.pointerShapeCallCount == 0);
+}
+
+TEST_CASE("OSC 22 empty payload with '=' resets to default")
+{
+    TestTerminal t;
+    t.osc("22;pointer");
+    t.osc("22;=");
+    CHECK(t.term.currentPointerShape().empty());
+}
+
+TEST_CASE("OSC 22 '>' with comma list pushes each in order")
+{
+    TestTerminal t;
+    t.osc("22;>pointer,text,wait");
+    CHECK(t.term.currentPointerShape() == "wait");
+    t.osc("22;<");
+    CHECK(t.term.currentPointerShape() == "text");
+    t.osc("22;<");
+    CHECK(t.term.currentPointerShape() == "pointer");
+    t.osc("22;<");
+    CHECK(t.term.currentPointerShape().empty());
+}
+
+TEST_CASE("OSC 22 '?' query: known/unknown CSS names")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.osc("22;?pointer,bogus,text");
+    CHECK(t.output() == "\x1b]22;1,0,1\x1b\\");
+}
+
+TEST_CASE("OSC 22 '?' __current__ returns current shape")
+{
+    TestTerminal t;
+    t.osc("22;pointer");
+    t.clearOutput();
+    t.osc("22;?__current__");
+    CHECK(t.output() == "\x1b]22;pointer\x1b\\");
+}
+
+TEST_CASE("OSC 22 '?' __current__ on empty stack returns empty")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.osc("22;?__current__");
+    CHECK(t.output() == "\x1b]22;\x1b\\");
+}
+
+TEST_CASE("OSC 22 '?' __default__ returns 'default'")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.osc("22;?__default__");
+    CHECK(t.output() == "\x1b]22;default\x1b\\");
+}
+
+TEST_CASE("OSC 22 query does not mutate state")
+{
+    TestTerminal t;
+    t.osc("22;pointer");
+    int before = t.pointerShapeCallCount;
+    t.osc("22;?text");
+    CHECK(t.term.currentPointerShape() == "pointer");
+    CHECK(t.pointerShapeCallCount == before);  // no callback for queries
+}
+
+TEST_CASE("OSC 22 push beyond stack limit drops oldest")
+{
+    TestTerminal t;
+    // Push MAX + 1 entries; oldest should be dropped, current is the last pushed.
+    for (int i = 0; i < 17; ++i) {
+        t.osc(std::string("22;>shape") + std::to_string(i));
+    }
+    CHECK(t.term.currentPointerShape() == "shape16");
+    // Pop 15 times; we should still see shape1 (shape0 was dropped).
+    for (int i = 0; i < 15; ++i) t.osc("22;<");
+    CHECK(t.term.currentPointerShape() == "shape1");
+}
+
+TEST_CASE("OSC 22 main and alt screens have separate stacks")
+{
+    TestTerminal t;
+    t.osc("22;pointer");                // main stack: [pointer]
+    CHECK(t.term.currentPointerShape() == "pointer");
+    t.csi("?1049h");                    // enter alt screen
+    CHECK(t.term.currentPointerShape().empty());
+    CHECK(t.capturedPointerShape.empty());  // toggle fires callback with new top
+    t.osc("22;text");                   // alt stack: [text]
+    CHECK(t.term.currentPointerShape() == "text");
+    t.csi("?1049l");                    // back to main
+    CHECK(t.term.currentPointerShape() == "pointer");
+    CHECK(t.capturedPointerShape == "pointer");
+}
+
+TEST_CASE("OSC 22 RIS clears both stacks")
+{
+    TestTerminal t;
+    t.osc("22;pointer");
+    t.csi("?1049h");
+    t.osc("22;text");
+    t.esc("c");                         // RIS (also exits alt screen)
+    CHECK(t.term.currentPointerShape().empty());
+    t.csi("?1049h");                    // alt again
+    CHECK(t.term.currentPointerShape().empty());
+}
+
+TEST_CASE("isKnownPointerShape recognises CSS and X11 names")
+{
+    using TE = TerminalEmulator;
+    CHECK(TE::isKnownPointerShape("pointer"));
+    CHECK(TE::isKnownPointerShape("text"));
+    CHECK(TE::isKnownPointerShape("nesw-resize"));
+    CHECK(TE::isKnownPointerShape("hand2"));        // X11 alias
+    CHECK(TE::isKnownPointerShape("sb_h_double_arrow"));
+    CHECK_FALSE(TE::isKnownPointerShape("not-a-cursor-name"));
+    CHECK_FALSE(TE::isKnownPointerShape(""));
+}

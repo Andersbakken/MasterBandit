@@ -58,6 +58,22 @@ public:
         CursorSteadyBar = 6
     };
     CursorShape cursorShape() const { return mCursorShape; }
+    bool cursorBlinkEnabled() const { return mCursorBlinkEnabled; }
+    // True iff the cursor should currently visibly blink: shape is a blinking
+    // variant AND DEC private mode 12 is on.
+    bool cursorBlinking() const {
+        if (!mCursorBlinkEnabled) return false;
+        switch (mCursorShape) {
+        case CursorBlock:
+        case CursorUnderline:
+        case CursorBar:
+            return true;
+        default:
+            return false;
+        }
+    }
+    void setDefaultCursorShape(CursorShape s) { mCursorShape = s; mDefaultCursorShape = s; }
+    void setDefaultCursorBlinkEnabled(bool b) { mCursorBlinkEnabled = b; mDefaultCursorBlinkEnabled = b; }
     int width() const { return mWidth; }
     int height() const { return mHeight; }
 
@@ -137,6 +153,7 @@ public:
         if (idx >= 0 && idx < 16) { m16ColorPalette[idx][0] = r; m16ColorPalette[idx][1] = g; m16ColorPalette[idx][2] = b; }
     }
     void applyColorScheme(const struct ColorScheme& cs);
+    void applyCursorConfig(const struct CursorConfig& cc);
 
     // Default colors (for OSC 10/11/12 and rendering)
     struct DefaultColors {
@@ -261,6 +278,9 @@ private:
     int mCursorX { 0 }, mCursorY { 0 };
     bool mCursorVisible { true };
     CursorShape mCursorShape { CursorBlock };
+    CursorShape mDefaultCursorShape { CursorBlock };  // restored on RIS
+    bool mCursorBlinkEnabled { true };                // DEC private mode 12
+    bool mDefaultCursorBlinkEnabled { true };         // restored on RIS
     bool mWrapPending { false };    // deferred autowrap state
 
     Document mDocument;

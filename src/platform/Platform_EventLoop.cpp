@@ -397,6 +397,9 @@ int PlatformDawn::exec()
         };
     }
 
+    // Start cursor blink timer from current options (default 500ms).
+    applyBlinkInterval(terminalOptions_.cursor.blink_interval);
+
     if (eventLoop_) eventLoop_->run();
 
     if (debugSink_) debugSink_->setIPC(nullptr);
@@ -409,6 +412,10 @@ int PlatformDawn::exec()
     if (configDebounceActive_) {
         eventLoop_->removeTimer(configDebounceTimer_);
         configDebounceActive_ = false;
+    }
+    if (cursorBlinkTimer_) {
+        eventLoop_->removeTimer(cursorBlinkTimer_);
+        cursorBlinkTimer_ = 0;
     }
     eventLoop_->removeFileWatch();
 

@@ -367,3 +367,122 @@ TEST_CASE("XTRESTORE does not invoke DECSTBM scroll-region path")
     CHECK(t.term.cursorX() == 9);
     CHECK(t.term.cursorY() == 4);
 }
+
+// ── cursor blink (DEC private mode 12) ───────────────────────────────────────
+
+TEST_CASE("cursor blink defaults to enabled")
+{
+    TestTerminal t;
+    CHECK(t.term.cursorBlinkEnabled());
+    // Default shape is CursorBlock (blinking variant), so blinking is active.
+    CHECK(t.term.cursorBlinking());
+}
+
+TEST_CASE("CSI ?12l disables cursor blink")
+{
+    TestTerminal t;
+    t.csi("?12l");
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+    CHECK_FALSE(t.term.cursorBlinking());
+}
+
+TEST_CASE("CSI ?12h re-enables cursor blink")
+{
+    TestTerminal t;
+    t.csi("?12l");
+    t.csi("?12h");
+    CHECK(t.term.cursorBlinkEnabled());
+    CHECK(t.term.cursorBlinking());
+}
+
+TEST_CASE("steady cursor shape never blinks even with mode 12 on")
+{
+    TestTerminal t;
+    t.csi("2 q");  // DECSCUSR steady block
+    CHECK(t.term.cursorBlinkEnabled());
+    CHECK_FALSE(t.term.cursorBlinking());
+}
+
+TEST_CASE("blinking cursor shape stops blinking when mode 12 reset")
+{
+    TestTerminal t;
+    t.csi("5 q");    // DECSCUSR blinking bar
+    CHECK(t.term.cursorBlinking());
+    t.csi("?12l");
+    CHECK_FALSE(t.term.cursorBlinking());
+}
+
+TEST_CASE("XTSAVE/XTRESTORE round-trips mode 12")
+{
+    TestTerminal t;
+    t.csi("?12s");      // save (currently true)
+    t.csi("?12l");      // disable
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+    t.csi("?12r");      // restore
+    CHECK(t.term.cursorBlinkEnabled());
+}
+
+TEST_CASE("RIS restores configured cursor defaults")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.shape = "underline";
+    cc.blink = false;
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyUnderline);
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+
+    // App changes cursor at runtime
+    t.csi("5 q");        // blinking bar
+    t.csi("?12h");       // blink on
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBar);
+    CHECK(t.term.cursorBlinkEnabled());
+
+    t.esc("c");          // RIS
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyUnderline);
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+}
+
+// ── cursor config mapping ────────────────────────────────────────────────────
+
+TEST_CASE("applyCursorConfig: block + blink → CursorBlock")
+{
+    TestTerminal t;
+    CursorConfig cc; cc.shape = "block"; cc.blink = true;
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+    CHECK(t.term.cursorBlinkEnabled());
+}
+
+TEST_CASE("applyCursorConfig: block + no blink → CursorSteadyBlock")
+{
+    TestTerminal t;
+    CursorConfig cc; cc.shape = "block"; cc.blink = false;
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+}
+
+TEST_CASE("applyCursorConfig: underline + blink → CursorUnderline")
+{
+    TestTerminal t;
+    CursorConfig cc; cc.shape = "underline"; cc.blink = true;
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorUnderline);
+}
+
+TEST_CASE("applyCursorConfig: bar + no blink → CursorSteadyBar")
+{
+    TestTerminal t;
+    CursorConfig cc; cc.shape = "bar"; cc.blink = false;
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBar);
+}
+
+TEST_CASE("applyCursorConfig: unknown shape falls back to block")
+{
+    TestTerminal t;
+    CursorConfig cc; cc.shape = "weird"; cc.blink = true;
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+}

@@ -140,6 +140,14 @@ private:
     std::unique_ptr<Window>    window_;
     EventLoop::TimerId         configDebounceTimer_ = 0;
     bool                       configDebounceActive_ = false;
+
+    // Cursor blink: a single repeating timer toggles a phase flag and requests
+    // a redraw. The renderer hides cursors that are currently blinking when the
+    // phase is off. interval=0 disables blinking.
+    EventLoop::TimerId         cursorBlinkTimer_ = 0;
+    int                        cursorBlinkInterval_ = 500;
+    bool                       cursorBlinkPhaseOn_ = true;
+    void                       applyBlinkInterval(int ms);
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
@@ -242,6 +250,7 @@ private:
         uint32_t totalGlyphs = 0;
         int lastCursorX = -1, lastCursorY = -1;
         bool lastCursorVisible = true;
+        bool lastCursorBlinkOn = true;  // last rendered blink phase, for blinking cursors
         PooledTexture* heldTexture = nullptr;
         bool dirty = true;
         std::vector<PooledTexture*> pendingRelease;

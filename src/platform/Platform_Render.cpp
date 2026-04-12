@@ -586,7 +586,13 @@ void PlatformDawn::renderFrame()
         rs.lastCursorY = curY;
         rs.lastCursorVisible = term->cursorVisible();
 
-        bool needsRender = rs.dirty || g.anyDirty() || cursorMoved || !rs.heldTexture;
+        // Detect blink-phase flip for a currently-blinking cursor
+        bool cursorBlinkChanged = term->cursorBlinking() &&
+                                  cursorBlinkPhaseOn_ != rs.lastCursorBlinkOn;
+        rs.lastCursorBlinkOn = cursorBlinkPhaseOn_;
+
+        bool needsRender = rs.dirty || g.anyDirty() || cursorMoved ||
+                           cursorBlinkChanged || !rs.heldTexture;
 
         if (term->syncOutputActive() && rs.heldTexture)
             needsRender = false;
@@ -922,6 +928,9 @@ void PlatformDawn::renderFrame()
                                           | 0xFF000000u; }
                     if (!isFocused || popupHasFocus) {
                         params.cursor_type = 2u;
+                    } else if (term->cursorBlinking() && !cursorBlinkPhaseOn_) {
+                        // Off-phase of a blinking cursor: render no cursor.
+                        params.cursor_type = 0u;
                     } else {
                         switch (term->cursorShape()) {
                         case TerminalEmulator::CursorBlock:

@@ -161,6 +161,7 @@ int main(int argc, char **argv)
         options.activePaneTintAlpha   = config.active_pane_tint_alpha;
         options.replacementChar       = config.replacement_char;
         options.padding               = config.padding;
+        options.cursor                = config.cursor;
         options.colors                = config.colors;
     }
 

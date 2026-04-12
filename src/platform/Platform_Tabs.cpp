@@ -215,6 +215,7 @@ void PlatformDawn::createTab()
     }
 
     terminal->applyColorScheme(opts.colors);
+    terminal->applyCursorConfig(opts.cursor);
     if (!terminal->init(opts)) {
         spdlog::error("createTab: failed to init terminal");
         return;
@@ -482,6 +483,7 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
     if (!cwd.empty()) opts.cwd = cwd;
 
     terminal->applyColorScheme(opts.colors);
+    terminal->applyCursorConfig(opts.cursor);
     if (!terminal->init(opts)) {
         spdlog::error("spawnTerminalForPane: failed to init terminal");
         return;

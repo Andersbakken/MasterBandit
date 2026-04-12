@@ -25,6 +25,7 @@ struct TerminalOptions {
     float activePaneTintAlpha = 0.0f;
     std::string replacementChar = "\xEF\xBF\xBD"; // U+FFFD
     PaddingConfig padding;
+    CursorConfig cursor;
     ColorScheme colors;
 
     // Returns the tier1 capacity to pass to Document: INT_MAX when infinite.

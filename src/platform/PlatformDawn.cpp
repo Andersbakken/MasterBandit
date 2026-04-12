@@ -398,6 +398,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
 
     terminal->applyColorScheme(options.colors);
+    terminal->applyCursorConfig(options.cursor);
     if (!terminal->init(options)) {
         spdlog::error("Failed to init terminal");
         return;
@@ -638,6 +639,48 @@ void PlatformDawn::applyFontChange(const Config& config)
     spdlog::info("Config reload: font changed to '{}'", fontPath);
 }
 
+void PlatformDawn::applyBlinkInterval(int ms)
+{
+    if (!eventLoop_) {
+        cursorBlinkInterval_ = ms;
+        return;
+    }
+    if (cursorBlinkTimer_) {
+        eventLoop_->removeTimer(cursorBlinkTimer_);
+        cursorBlinkTimer_ = 0;
+    }
+    cursorBlinkInterval_ = ms;
+    cursorBlinkPhaseOn_ = true;
+    if (ms <= 0) return;
+    cursorBlinkTimer_ = eventLoop_->addTimer(static_cast<uint64_t>(ms), true, [this]() {
+        cursorBlinkPhaseOn_ = !cursorBlinkPhaseOn_;
+        // Only request a redraw if something in the *active* tab is being
+        // rendered with a visible blinking cursor — inactive tabs aren't drawn,
+        // and an active overlay supersedes the layout's panes/popups.
+        Tab* tab = activeTab();
+        if (!tab) return;
+        auto wantsRedraw = [](TerminalEmulator* term) {
+            return term && term->cursorBlinking() && term->cursorVisible();
+        };
+        if (tab->hasOverlay()) {
+            if (wantsRedraw(tab->topOverlay())) setNeedsRedraw();
+            return;
+        }
+        for (auto& panePtr : tab->layout()->panes()) {
+            if (wantsRedraw(panePtr->terminal())) {
+                setNeedsRedraw();
+                return;
+            }
+            for (const auto& popup : panePtr->popups()) {
+                if (wantsRedraw(popup.terminal.get())) {
+                    setNeedsRedraw();
+                    return;
+                }
+            }
+        }
+    });
+}
+
 void PlatformDawn::reloadConfigNow()
 {
     spdlog::info("Config: hot-reload triggered");
@@ -660,6 +703,13 @@ void PlatformDawn::reloadConfigNow()
         term->applyColorScheme(config.colors);
     });
     invalidateAllRowCaches();
+
+    // Cursor
+    terminalOptions_.cursor = config.cursor;
+    notifyAllTerminals([&config](TerminalEmulator* term) {
+        term->applyCursorConfig(config.cursor);
+    });
+    applyBlinkInterval(config.cursor.blink_interval);
 
     // Divider
     dividerWidth_ = std::max(0, config.divider_width);

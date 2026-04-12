@@ -111,6 +111,21 @@ void TerminalEmulator::applyColorScheme(const ColorScheme& cs)
     mConfigDefaultColors = mDefaultColors;
 }
 
+void TerminalEmulator::applyCursorConfig(const CursorConfig& cc)
+{
+    CursorShape shape;
+    if (cc.shape == "underline") {
+        shape = cc.blink ? CursorUnderline : CursorSteadyUnderline;
+    } else if (cc.shape == "bar" || cc.shape == "beam") {
+        shape = cc.blink ? CursorBar : CursorSteadyBar;
+    } else {
+        // "block" or anything unrecognized falls back to block
+        shape = cc.blink ? CursorBlock : CursorSteadyBlock;
+    }
+    setDefaultCursorShape(shape);
+    setDefaultCursorBlinkEnabled(cc.blink);
+}
+
 void TerminalEmulator::resize(int width, int height)
 {
     int oldCols = mWidth;
@@ -640,7 +655,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mCursorX = 0;
                 mCursorY = 0;
                 mCursorVisible = true;
-                mCursorShape = CursorBlock;
+                mCursorShape = mDefaultCursorShape;
+                mCursorBlinkEnabled = mDefaultCursorBlinkEnabled;
                 mScrollTop = 0;
                 mScrollBottom = mHeight;
                 mCursorKeyMode = false;
@@ -1220,12 +1236,13 @@ void TerminalEmulator::processCSI()
 void TerminalEmulator::savePrivateModes(const std::vector<int>& modes)
 {
     static constexpr int kKnownModes[] = {
-        1, 7, 25, 1000, 1002, 1003, 1004, 1006, 2004, 2026, 2031
+        1, 7, 12, 25, 1000, 1002, 1003, 1004, 1006, 2004, 2026, 2031
     };
     auto saveOne = [this](int m) {
         switch (m) {
         case 1:    mSavedPrivateModes[1]    = mCursorKeyMode; break;
         case 7:    mSavedPrivateModes[7]    = mAutoWrap; break;
+        case 12:   mSavedPrivateModes[12]   = mCursorBlinkEnabled; break;
         case 25:   mSavedPrivateModes[25]   = mCursorVisible; break;
         case 1000: mSavedPrivateModes[1000] = mMouseMode1000; break;
         case 1002: mSavedPrivateModes[1002] = mMouseMode1002; break;
@@ -1254,6 +1271,7 @@ void TerminalEmulator::restorePrivateModes(const std::vector<int>& modes)
         switch (m) {
         case 1:    mCursorKeyMode             = v; break;
         case 7:    mAutoWrap                  = v; break;
+        case 12:   mCursorBlinkEnabled        = v; break;
         case 25:   mCursorVisible             = v; break;
         case 1000: mMouseMode1000             = v; break;
         case 1002: mMouseMode1002             = v; break;
@@ -1390,6 +1408,9 @@ void TerminalEmulator::onAction(const Action *action)
         case 7: // DECAWM: autowrap
             mAutoWrap = true;
             break;
+        case 12: // ATT610: cursor blink on
+            mCursorBlinkEnabled = true;
+            break;
         case 25: // DECTCEM: show cursor
             mCursorVisible = true;
             break;
@@ -1429,6 +1450,9 @@ void TerminalEmulator::onAction(const Action *action)
             break;
         case 7: // DECAWM: no autowrap
             mAutoWrap = false;
+            break;
+        case 12: // ATT610: cursor blink off
+            mCursorBlinkEnabled = false;
             break;
         case 25: // DECTCEM: hide cursor
             mCursorVisible = false;

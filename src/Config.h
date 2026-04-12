@@ -129,6 +129,21 @@ struct ColorScheme {
     };
 };
 
+struct CursorConfig {
+    std::string shape = "block";       // "block" | "underline" | "bar"
+    bool        blink = false;         // off by default; opt-in via config or DECSCUSR
+    int         blink_interval = 500;  // ms; 0 disables blinking globally
+
+    struct glaze {
+        using T = CursorConfig;
+        static constexpr auto value = glz::object(
+            "shape",          &T::shape,
+            "blink",          &T::blink,
+            "blink_interval", &T::blink_interval
+        );
+    };
+};
+
 struct PaddingConfig {
     int left   = 0;
     int top    = 6;  // room for progress bar
@@ -152,6 +167,7 @@ struct Config {
     float bold_strength = 0.04f;
     int scrollback_lines = -1; // -1 = infinite
     PaddingConfig padding;
+    CursorConfig cursor;
     ColorScheme colors;
     TabBarConfig tab_bar;
     std::vector<BindingConfig> keybindings;
@@ -172,6 +188,7 @@ struct Config {
             "bold_strength", &T::bold_strength,
             "scrollback_lines", &T::scrollback_lines,
             "padding", &T::padding,
+            "cursor", &T::cursor,
             "colors", &T::colors,
             "tab_bar", &T::tab_bar,
             "keybinding", &T::keybindings,

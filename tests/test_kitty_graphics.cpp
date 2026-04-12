@@ -2,6 +2,8 @@
 #include "TestTerminal.h"
 #include "Utils.h"
 #include <cstring>
+#include <cstdio>
+#include <unistd.h>
 
 // Helper: TestTerminal with cell pixel size callbacks for kitty graphics
 struct GraphicsTerminal : TestTerminal {
@@ -1122,6 +1124,99 @@ TEST_CASE("kitty graphics: frame composition nonexistent frame returns ENOENT")
     t.clearOutput();
     t.gfx("a=c,i=1,r=1,c=5"); // frame 5 doesn't exist
     CHECK(t.output().find("ENOENT") != std::string::npos);
+}
+
+// ── S=/O= data size/offset ──────────────────────────────────────────────────
+
+TEST_CASE("kitty graphics: file transmission with S= and O= reads subrange")
+{
+    GraphicsTerminal t(40, 20);
+
+    // Write a file with two 2x2 RGBA images back-to-back (32 bytes each)
+    // First: red, Second: green
+    auto red = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    auto green = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
+
+    std::string path = "/tmp/mb_test_subrange.bin";
+    {
+        FILE* f = fopen(path.c_str(), "wb");
+        REQUIRE(f);
+        fwrite(red.data(), 1, red.size(), f);
+        fwrite(green.data(), 1, green.size(), f);
+        fclose(f);
+    }
+
+    // Transmit the green portion: offset=16 (skip red), size=16 (one 2x2 image)
+    std::string b64path = base64::encode(reinterpret_cast<const uint8_t*>(path.data()), path.size());
+    std::string esc = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,S=16,O=16;" + b64path + "\x1b\\";
+    t.feed(esc);
+
+    auto& reg = t.term.imageRegistry();
+    REQUIRE(reg.count(1));
+    auto& img = reg.at(1);
+    CHECK(img.pixelWidth == 2);
+    CHECK(img.pixelHeight == 2);
+    // First pixel should be green (from offset 16)
+    CHECK(img.rgba[0] == 0);
+    CHECK(img.rgba[1] == 255);
+    CHECK(img.rgba[2] == 0);
+    CHECK(img.rgba[3] == 255);
+
+    unlink(path.c_str());
+}
+
+TEST_CASE("kitty graphics: file transmission with O= only reads from offset to end")
+{
+    GraphicsTerminal t(40, 20);
+
+    auto red = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    auto blue = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
+
+    std::string path = "/tmp/mb_test_offset.bin";
+    {
+        FILE* f = fopen(path.c_str(), "wb");
+        REQUIRE(f);
+        fwrite(red.data(), 1, red.size(), f);
+        fwrite(blue.data(), 1, blue.size(), f);
+        fclose(f);
+    }
+
+    // Transmit from offset 16 to end (no S=)
+    std::string b64path = base64::encode(reinterpret_cast<const uint8_t*>(path.data()), path.size());
+    std::string esc = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,O=16,q=2;" + b64path + "\x1b\\";
+    t.feed(esc);
+
+    auto& img = t.term.imageRegistry().at(1);
+    // Should be blue
+    CHECK(img.rgba[0] == 0);
+    CHECK(img.rgba[1] == 0);
+    CHECK(img.rgba[2] == 255);
+
+    unlink(path.c_str());
+}
+
+TEST_CASE("kitty graphics: file transmission with out-of-range offset returns error")
+{
+    GraphicsTerminal t(40, 20);
+
+    auto px = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    std::string path = "/tmp/mb_test_oor.bin";
+    {
+        FILE* f = fopen(path.c_str(), "wb");
+        REQUIRE(f);
+        fwrite(px.data(), 1, px.size(), f);
+        fclose(f);
+    }
+
+    // Offset past end of file
+    t.clearOutput();
+    std::string b64path = base64::encode(reinterpret_cast<const uint8_t*>(path.data()), path.size());
+    std::string esc = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,O=9999;" + b64path + "\x1b\\";
+    t.feed(esc);
+    CHECK(t.output().find("EINVAL") != std::string::npos);
+    CHECK(t.term.imageRegistry().empty());
+
+    unlink(path.c_str());
 }
 
 TEST_CASE("kitty graphics: sub-cell pixel offsets stored on placement")

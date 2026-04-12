@@ -44,6 +44,8 @@ struct KittyGraphicsCommand {
     int32_t zIndex = 0;          // z= (also gap in ms for a=f)
     uint32_t cursorMovement = 0; // C= (0=move, 1=don't move)
     uint32_t imageNumber = 0;    // I= (non-unique image number)
+    uint32_t dataSize = 0;       // S= (bytes to read from file/shm, 0=all)
+    uint32_t dataOffset = 0;     // O= (byte offset into file/shm)
     // Note: for animation commands, keys are reused contextually:
     //   a=f: z=gap(ms), r=frame_number, s=data_width, v=data_height
     //   a=a: s=animation_state(1/2/3), v=loop_count, r=frame_number, z=gap
@@ -113,7 +115,9 @@ bool parseCommand(std::string_view control, KittyGraphicsCommand& cmd)
         case 'z': cmd.zIndex = parseInt(val); break;
         case 'C': cmd.cursorMovement = parseUint(val); break;
         case 'I': cmd.imageNumber = parseUint(val); break;
-        // Ignored keys: U, P, Q, H, V, S, O — deferred features
+        case 'S': cmd.dataSize = parseUint(val); break;
+        case 'O': cmd.dataOffset = parseUint(val); break;
+        // Ignored keys: U, P, Q, H, V — deferred features
         default: break;
         }
     }
@@ -308,6 +312,8 @@ void TerminalEmulator::processAPC()
             mKittyLoading.quiet = cmd.quiet;
             mKittyLoading.zIndex = cmd.zIndex;
             mKittyLoading.cursorMovement = cmd.cursorMovement;
+            mKittyLoading.dataSize = cmd.dataSize;
+            mKittyLoading.dataOffset = cmd.dataOffset;
             mKittyLoading.action = cmd.action;
             mKittyLoading.compressed = cmd.compressed;
         }
@@ -336,6 +342,8 @@ void TerminalEmulator::processAPC()
         cmd.quiet = mKittyLoading.quiet;
         cmd.zIndex = mKittyLoading.zIndex;
         cmd.cursorMovement = mKittyLoading.cursorMovement;
+        cmd.dataSize = mKittyLoading.dataSize;
+        cmd.dataOffset = mKittyLoading.dataOffset;
         cmd.action = mKittyLoading.action;
         cmd.compressed = mKittyLoading.compressed;
         mKittyLoading.active = false;
@@ -355,8 +363,19 @@ void TerminalEmulator::processAPC()
             sendResponse(cmd.id, "EINVAL:cannot stat file");
             return;
         }
-        chunkData.resize(static_cast<size_t>(st.st_size));
-        ssize_t n = read(fd, chunkData.data(), chunkData.size());
+        off_t fileSize = st.st_size;
+        off_t offset = static_cast<off_t>(cmd.dataOffset);
+        size_t readSize = cmd.dataSize > 0
+            ? static_cast<size_t>(cmd.dataSize)
+            : static_cast<size_t>(fileSize - offset);
+        if (offset >= fileSize || offset + static_cast<off_t>(readSize) > fileSize) {
+            close(fd);
+            sendResponse(cmd.id, "EINVAL:offset/size out of range");
+            return;
+        }
+        if (offset > 0) lseek(fd, offset, SEEK_SET);
+        chunkData.resize(readSize);
+        ssize_t n = read(fd, chunkData.data(), readSize);
         close(fd);
         if (cmd.transmissionType == 't') unlink(path.c_str());
         if (n <= 0) {
@@ -385,7 +404,17 @@ void TerminalEmulator::processAPC()
             sendResponse(cmd.id, "EINVAL:mmap failed");
             return;
         }
-        chunkData.assign(static_cast<uint8_t*>(ptr), static_cast<uint8_t*>(ptr) + mapSize);
+        size_t offset = static_cast<size_t>(cmd.dataOffset);
+        size_t readSize = cmd.dataSize > 0
+            ? static_cast<size_t>(cmd.dataSize)
+            : mapSize - offset;
+        if (offset >= mapSize || offset + readSize > mapSize) {
+            munmap(ptr, mapSize);
+            sendResponse(cmd.id, "EINVAL:offset/size out of range");
+            return;
+        }
+        chunkData.assign(static_cast<uint8_t*>(ptr) + offset,
+                         static_cast<uint8_t*>(ptr) + offset + readSize);
         munmap(ptr, mapSize);
     }
 

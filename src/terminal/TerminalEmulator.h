@@ -321,6 +321,8 @@ private:
         uint32_t quiet = 0;          // q=
         int32_t zIndex = 0;          // z=
         uint32_t cursorMovement = 0; // C=
+        uint32_t dataSize = 0;       // S=
+        uint32_t dataOffset = 0;     // O=
         char action = 'T';           // a=
         char compressed = 0;         // o=
         bool active = false;

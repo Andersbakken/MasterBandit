@@ -157,13 +157,6 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, uint32_t placementId,
             savedY--;  // track scroll for restore
         }
 
-        // Fill cells with blanks to reserve visual space
-        for (int c = 0; c < fillCols; ++c) {
-            Cell& cell = g.cell(startCol + c, mCursorY);
-            cell.wc = 0;
-            cell.attrs = CellAttrs{};
-        }
-
         // Track old image being overwritten
         const CellExtra* oldEx = g.getExtra(startCol, mCursorY);
         if (oldEx && oldEx->imageId != 0 && oldEx->imageId != imageId)

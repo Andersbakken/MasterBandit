@@ -12,7 +12,7 @@
 - [x] Kitty graphics: sub-cell pixel offsets — `X=` and `Y=` offset image within the starting cell. Per-placement.
 - [x] Kitty graphics: position-based delete — `d=c`/`d=C` (cursor), `d=p`/`d=P` (cell position), `d=x`/`d=X` (column), `d=y`/`d=Y` (row), `d=r`/`d=R` (ID range). Uppercase frees image data.
 - [x] Kitty graphics: frame composition (`a=c`) — explicit pixel-level blit between animation frames. Source/dest frame selection, rectangle region, alpha blend or overwrite.
-- [ ] Kitty graphics: z-layering — `z=` index, negative = under text. Requires render pass restructuring.
+- [x] Kitty graphics: z-layering — `z=` index per placement. `z >= 0` renders above text (default), `z < 0` below text. Sorted render with split-point. Delete by z-index (`d=z`/`d=Z`) and position+z (`d=q`/`d=Q`). Frame selection via `a=a,c=`.
 - [ ] Kitty graphics: Unicode placeholders — `U+10EEEE` virtual placements.
 - [x] Underline styles (`CSI 4:N m`) — Curly, dotted, dashed, double underlines + colored underlines (`CSI 58;...m`).
 - [x] OSC 7 — Current working directory reporting. Pane stores CWD for new splits.

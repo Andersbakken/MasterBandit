@@ -190,6 +190,7 @@ public:
             uint32_t cellWidth { 0 }, cellHeight { 0 };
             uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
             uint32_t cellXOffset { 0 }, cellYOffset { 0 }; // X=, Y= sub-cell pixel offsets
+            int32_t zIndex { 0 };
         };
         std::unordered_map<uint32_t, Placement> placements; // placementId → params
 

@@ -428,6 +428,7 @@ void TerminalEmulator::processAPC()
         pl.cropW = cmd.width;   pl.cropH = cmd.height;
         pl.cellXOffset = cmd.cellXOffset;
         pl.cellYOffset = cmd.cellYOffset;
+        pl.zIndex = cmd.zIndex;
         img.placements[cmd.placementId] = pl;
 
         placeImageInGrid(targetId, cmd.placementId, cols, rows, cmd.cursorMovement == 0);
@@ -720,10 +721,94 @@ void TerminalEmulator::processAPC()
             }
             break;
         }
-        case 'z': case 'Z': // delete by z-index (z-layering not yet implemented)
-        case 'q': case 'Q': // delete by position + z-index
-            spdlog::debug("kitty graphics: unhandled delete action '{}' (needs z-index)", da);
+        case 'z': case 'Z': // delete by z-index
+        {
+            IGrid& dg = grid();
+            int32_t targetZ = cmd.zIndex;
+            std::unordered_set<uint64_t> toDelete;
+            for (int r = 0; r < mHeight; r++) {
+                for (int c = 0; c < mWidth; c++) {
+                    const CellExtra* cex = dg.getExtra(c, r);
+                    if (!cex || cex->imageId == 0) continue;
+                    auto imgIt = mImageRegistry.find(cex->imageId);
+                    if (imgIt == mImageRegistry.end()) continue;
+                    auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
+                    int32_t z = (plIt != imgIt->second.placements.end()) ? plIt->second.zIndex : 0;
+                    if (z == targetZ)
+                        toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
+                }
+            }
+            for (uint64_t key : toDelete) {
+                uint32_t imgId = static_cast<uint32_t>(key >> 32);
+                uint32_t plId = static_cast<uint32_t>(key & 0xFFFFFFFF);
+                for (int r = 0; r < mHeight; r++) {
+                    for (int c = 0; c < mWidth; c++) {
+                        const CellExtra* ce = dg.getExtra(c, r);
+                        if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
+                            dg.clearExtra(c, r);
+                            dg.markRowDirty(r);
+                        }
+                    }
+                }
+                if (da == 'Z') {
+                    auto it = mImageRegistry.find(imgId);
+                    if (it != mImageRegistry.end()) {
+                        it->second.placements.erase(plId);
+                        if (it->second.placements.empty())
+                            mImageRegistry.erase(it);
+                    }
+                }
+            }
             break;
+        }
+        case 'q': case 'Q': // delete by position + z-index
+        {
+            int targetCol = cmd.xOffset > 0 ? static_cast<int>(cmd.xOffset) - 1 : 0;
+            int targetRow = cmd.yOffset > 0 ? static_cast<int>(cmd.yOffset) - 1 : 0;
+            int32_t targetZ = cmd.zIndex;
+            IGrid& dg = grid();
+            std::unordered_set<uint64_t> toDelete;
+            for (int c = 0; c < mWidth; c++) {
+                const CellExtra* cex = dg.getExtra(c, targetRow);
+                if (!cex || cex->imageId == 0) continue;
+                auto imgIt = mImageRegistry.find(cex->imageId);
+                if (imgIt == mImageRegistry.end()) continue;
+                uint32_t cw = imgIt->second.cellWidth;
+                auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
+                if (plIt != imgIt->second.placements.end()) {
+                    if (plIt->second.cellWidth > 0) cw = plIt->second.cellWidth;
+                    if (plIt->second.zIndex != targetZ) continue;
+                } else if (targetZ != 0) {
+                    continue;
+                }
+                if (targetCol >= static_cast<int>(cex->imageStartCol) &&
+                    targetCol < static_cast<int>(cex->imageStartCol + cw)) {
+                    toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
+                }
+            }
+            for (uint64_t key : toDelete) {
+                uint32_t imgId = static_cast<uint32_t>(key >> 32);
+                uint32_t plId = static_cast<uint32_t>(key & 0xFFFFFFFF);
+                for (int r = 0; r < mHeight; r++) {
+                    for (int c = 0; c < mWidth; c++) {
+                        const CellExtra* ce = dg.getExtra(c, r);
+                        if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
+                            dg.clearExtra(c, r);
+                            dg.markRowDirty(r);
+                        }
+                    }
+                }
+                if (da == 'Q') {
+                    auto it = mImageRegistry.find(imgId);
+                    if (it != mImageRegistry.end()) {
+                        it->second.placements.erase(plId);
+                        if (it->second.placements.empty())
+                            mImageRegistry.erase(it);
+                    }
+                }
+            }
+            break;
+        }
         default:
             spdlog::debug("kitty graphics: unknown delete action '{}'", da);
             break;
@@ -1050,6 +1135,7 @@ void TerminalEmulator::processAPC()
         pl.cropW = cmd.width;   pl.cropH = cmd.height;
         pl.cellXOffset = cmd.cellXOffset;
         pl.cellYOffset = cmd.cellYOffset;
+        pl.zIndex = cmd.zIndex;
         mImageRegistry[imageId].placements[cmd.placementId] = pl;
         placeImageInGrid(imageId, cmd.placementId, cellCols, cellRows, cmd.cursorMovement == 0);
     }

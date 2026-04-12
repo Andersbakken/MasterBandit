@@ -798,9 +798,12 @@ void Renderer::updateImageGPU(wgpu::Queue& queue, uint32_t imageId,
 void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              wgpu::TextureView target,
                              float paneWidth, float paneHeight,
-                             const std::vector<ImageDrawCmd>& cmds)
+                             const std::vector<ImageDrawCmd>& cmds,
+                             size_t rangeStart, size_t rangeCount)
 {
-    if (!imagePipelineReady_ || cmds.empty()) return;
+    if (!imagePipelineReady_) return;
+    size_t rangeEnd = std::min(rangeStart + rangeCount, cmds.size());
+    if (rangeStart >= rangeEnd) return;
 
     // Update viewport uniform — use pane dimensions, not global framebuffer
     float uniforms[4] = { paneWidth, paneHeight, 0, 0 };
@@ -821,7 +824,8 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     size_t vertexStride = 6 * sizeof(ImageVertex);
     size_t count = 0;
 
-    for (const auto& cmd : cmds) {
+    for (size_t ci = rangeStart; ci < rangeEnd; ++ci) {
+        const auto& cmd = cmds[ci];
         if (!imageGPU_.count(cmd.imageId)) continue;
         if (count >= MaxImageSlots) {
             spdlog::error("image render: exceeded {} image slots, dropping remaining images", MaxImageSlots);
@@ -844,7 +848,8 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     }
 
     size_t idx = 0;
-    for (const auto& cmd : cmds) {
+    for (size_t ci = rangeStart; ci < rangeEnd; ++ci) {
+        const auto& cmd = cmds[ci];
         auto it = imageGPU_.find(cmd.imageId);
         if (it == imageGPU_.end()) continue;
         if (idx >= count) break;
@@ -866,7 +871,8 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              ComputeState* computeState,
                              wgpu::TextureView target,
                              const float pane_tint[4],
-                             const std::vector<ImageDrawCmd>& imageCmds)
+                             const std::vector<ImageDrawCmd>& imageCmds,
+                             size_t imgSplitText)
 {
     if (!computeInitialized_) return;
     if (!computeState) return;
@@ -948,9 +954,9 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         pass.End();
     }
 
-    // Image pass
-    if (!imageCmds.empty())
-        renderImages(encoder, queue, target, contentW, contentH, imageCmds);
+    // Below-text images (z < 0) — between backgrounds and text
+    if (imgSplitText > 0)
+        renderImages(encoder, queue, target, contentW, contentH, imageCmds, 0, imgSplitText);
 
     // Text pass
     {
@@ -969,6 +975,10 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         pass.DrawIndirect(computeState->indirectBuffer, 0);
         pass.End();
     }
+
+    // Above-text images (z >= 0) — after text
+    if (imgSplitText < imageCmds.size())
+        renderImages(encoder, queue, target, contentW, contentH, imageCmds, imgSplitText);
 }
 
 void Renderer::composite(wgpu::CommandEncoder& encoder,

@@ -5,6 +5,7 @@
 #include "ColrAtlas.h"
 #include "ComputeTypes.h"
 #include "ComputeStatePool.h"
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -33,6 +34,7 @@ public:
         uint32_t imageId;
         float x, y, w, h;       // screen pixel rect (clipped to viewport)
         float u0, v0, u1, v1;   // UV coords into the image texture
+        int32_t zIndex = 0;     // z-layering: <0 = below text, >=0 = above text
     };
 
     void init(wgpu::Device& device, wgpu::Queue& queue,
@@ -65,13 +67,16 @@ public:
 
     // Render terminal content to an externally-provided texture from the TexturePool.
     // pane_tint: RGBA multiplier applied to all rendered content (1,1,1,1 = no tint).
+    // imageCmds must be sorted by zIndex. splitBelowText is the index where
+    // z >= 0 starts (i.e., [0, splitBelowText) renders below text, [splitBelowText, size) above).
     void renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       const std::string& fontName,
                       const TerminalComputeParams& params,
                       ComputeState* computeState,
                       wgpu::TextureView target,
                       const float pane_tint[4],
-                      const std::vector<ImageDrawCmd>& imageCmds = {});
+                      const std::vector<ImageDrawCmd>& imageCmds = {},
+                      size_t imgSplitText = 0);
 
     // Composite entry: a rendered pane texture and where to place it on the swapchain.
     struct CompositeEntry {
@@ -136,7 +141,8 @@ public:
     void renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       wgpu::TextureView target,
                       float paneWidth, float paneHeight,
-                      const std::vector<ImageDrawCmd>& cmds);
+                      const std::vector<ImageDrawCmd>& cmds,
+                      size_t start = 0, size_t count = std::numeric_limits<size_t>::max());
 
     // COLRv1 emoji rasterization
     void initColrPipeline(wgpu::Device& device, const std::string& shaderDir);

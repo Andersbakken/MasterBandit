@@ -729,8 +729,10 @@ void PlatformDawn::renderFrame()
             bool hasVisibleAnimations = false;
             term->tickAnimations();
 
-            // Collect image draw commands — one per (imageId, placementId) pair
+            // Collect image draw commands — one per (imageId, placementId) pair,
+            // sorted by z-index. imgSplitText tracks where z >= 0 starts.
             std::vector<Renderer::ImageDrawCmd> imageCmds;
+            size_t imgSplitText = 0;
             std::unordered_set<uint64_t> seenPlacements; // (imageId << 32) | placementId
             std::unordered_set<uint32_t> seenImageGPU;   // GPU upload dedup
             int vo = term->viewportOffset();
@@ -858,7 +860,14 @@ void PlatformDawn::renderFrame()
                     cmd.v0 = cropV0 + fracY0 * (cropV1 - cropV0);
                     cmd.u1 = cropU0 + fracX1 * (cropU1 - cropU0);
                     cmd.v1 = cropV0 + fracY1 * (cropV1 - cropV0);
-                    imageCmds.push_back(cmd);
+                    cmd.zIndex = plIt != img.placements.end() ? plIt->second.zIndex : 0;
+                    // Insert sorted by z-index
+                    auto pos = std::lower_bound(imageCmds.begin(), imageCmds.end(), cmd,
+                        [](const Renderer::ImageDrawCmd& a, const Renderer::ImageDrawCmd& b) {
+                            return a.zIndex < b.zIndex;
+                        });
+                    imageCmds.insert(pos, cmd);
+                    if (cmd.zIndex < 0) imgSplitText++;
                 }
             }
 
@@ -949,7 +958,7 @@ void PlatformDawn::renderFrame()
             }
 
             const float* tint = isFocused ? activeTint_ : inactiveTint_;
-            renderer_.renderToPane(encoder, queue_, fontName_, params, cs, newTexture->view, tint, imageCmds);
+            renderer_.renderToPane(encoder, queue_, fontName_, params, cs, newTexture->view, tint, imageCmds, imgSplitText);
 
             // Render COLRv1 emoji quads on top
             if (!colrDrawCmds.empty()) {

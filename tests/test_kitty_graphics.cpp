@@ -939,6 +939,93 @@ TEST_CASE("kitty graphics: animation control c= sets current frame")
     CHECK(data[2] == 255);
 }
 
+// ── Z-layering ──────────────────────────────────────────────────────────────
+
+TEST_CASE("kitty graphics: z-index stored on placement")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    t.gfx("a=p,i=1,p=1,z=-5,q=2");
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.placements.count(1));
+    CHECK(img.placements.at(1).zIndex == -5);
+}
+
+TEST_CASE("kitty graphics: transmit+display stores z-index")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,z=-1,q=2", px);
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.placements.count(0));
+    CHECK(img.placements.at(0).zIndex == -1);
+}
+
+TEST_CASE("kitty graphics: default z-index is 0")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
+
+    auto& img = t.term.imageRegistry().at(1);
+    REQUIRE(img.placements.count(0));
+    CHECK(img.placements.at(0).zIndex == 0);
+}
+
+TEST_CASE("kitty graphics: delete by z-index (d=z)")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    // Place two placements with different z-indices
+    t.gfx("a=p,i=1,p=1,z=-1,q=2");
+    t.feed("\r\n\n");
+    t.gfx("a=p,i=1,p=2,z=5,q=2");
+
+    // Delete z=-1 only
+    t.gfx("a=d,d=z,z=-1");
+
+    // Placement 1 (z=-1) should be gone
+    const CellExtra* ex0 = t.extra(0, 0);
+    CHECK((!ex0 || ex0->imageId == 0));
+
+    // Placement 2 (z=5) should survive
+    const CellExtra* ex2 = t.extra(0, 2);
+    REQUIRE(ex2);
+    CHECK(ex2->imageId == 1);
+}
+
+TEST_CASE("kitty graphics: delete by position + z-index (d=q)")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=10,v=20,q=2", px);
+
+    // Place at row 0 with z=-1
+    t.gfx("a=p,i=1,p=1,z=-1,q=2");
+    t.feed("\r\n\n");
+    // Place at row 2 with z=3
+    t.gfx("a=p,i=1,p=2,z=3,q=2");
+
+    // Delete at position (1,3) (1-based = row 2, col 0) with z=3 — should only hit placement 2
+    t.gfx("a=d,d=q,x=1,y=3,z=3");
+
+    // Placement 2 should be gone
+    const CellExtra* ex2 = t.extra(0, 2);
+    CHECK((!ex2 || ex2->imageId == 0));
+
+    // Placement 1 (z=-1) should still exist at row 0
+    const CellExtra* ex0 = t.extra(0, 0);
+    REQUIRE(ex0);
+    CHECK(ex0->imageId == 1);
+    CHECK(ex0->imagePlacementId == 1);
+}
+
 TEST_CASE("kitty graphics: frame composition copies rectangle between frames")
 {
     GraphicsTerminal t;

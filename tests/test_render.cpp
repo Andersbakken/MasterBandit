@@ -460,6 +460,58 @@ TEST_CASE("render: kitty graphics frame composition" * doctest::test_suite("rend
     CHECK(rt.matchesReference(png, "kitty_frame_composition"));
 }
 
+TEST_CASE("render: kitty graphics z-layering below text" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    // Write white text on default (black) background
+    rt.injectData("\x1b[37mHello\x1b[0m");
+    rt.wait(100);
+
+    // Move cursor home, place a red image with z=-1 (below text) covering the text area
+    rt.injectData("\x1b[H");
+    auto px = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=6,r=1,z=-1,q=2", px));
+    rt.wait(300);
+
+    // Screenshot: text should be visible on top of the red image
+    auto png = rt.screenshotPaneRect(0, 0, 0, 8, 2);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_z_below_text"));
+}
+
+TEST_CASE("render: kitty graphics z-layering above text" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    MBConnection rt(opts);
+    REQUIRE(rt.connect());
+    rt.wait(300);
+
+    // Write white text
+    rt.injectData("\x1b[37mHello\x1b[0m");
+    rt.wait(100);
+
+    // Move cursor home, place a red image with z=0 (above text, default)
+    rt.injectData("\x1b[H");
+    auto px = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=6,r=1,q=2", px));
+    rt.wait(300);
+
+    // Screenshot: red image should cover the text
+    auto png = rt.screenshotPaneRect(0, 0, 0, 8, 2);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "kitty_z_above_text"));
+}
+
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;

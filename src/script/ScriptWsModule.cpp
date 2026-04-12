@@ -575,7 +575,16 @@ static bool ensureLwsContext(ModuleState* mod)
     info.options = LWS_SERVER_OPTION_EXPLICIT_VHOSTS;
     info.user = mod;
     // Default vhost has no protocols; real protocols attach per-vhost at createServer time.
-    lws_set_log_level(0, nullptr);
+    // Route lws's own diagnostics through spdlog so handshake failures surface
+    // (e.g. "pcol name too long"). ERR/WARN/NOTICE only.
+    lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE,
+        [](int level, const char* line) {
+            std::string s(line ? line : "");
+            if (!s.empty() && s.back() == '\n') s.pop_back();
+            if (level & LLL_ERR)          spdlog::error("lws: {}", s);
+            else if (level & LLL_WARN)    spdlog::warn("lws: {}", s);
+            else                          spdlog::info("lws: {}", s);
+        });
     mod->ctx = lws_create_context(&info);
     if (!mod->ctx) {
         spdlog::error("mb:ws: failed to create lws context");
@@ -619,6 +628,12 @@ static JSValue jsWsCreateServer(JSContext* ctx, JSValueConst, int argc, JSValueC
         return JS_ThrowTypeError(ctx, "mb:ws: opts.token is required");
     if (host != "127.0.0.1" && host != "localhost")
         return JS_ThrowTypeError(ctx, "mb:ws: only loopback host (127.0.0.1) supported");
+    // lws's WS upgrade code has a 64-byte buffer (including NUL) for the
+    // matched protocol name. "mb-shell." is 9 bytes, leaving 54 for the token.
+    // Fail loudly here instead of silently hanging up client handshakes.
+    if (token.size() > 54)
+        return JS_ThrowTypeError(ctx,
+            "mb:ws: token too long (max 54 chars; mb-shell.<token> must fit in lws's 63-char protocol-name buffer)");
 
     auto* mod = ensureModuleState(eng);
     if (!ensureLwsContext(mod))

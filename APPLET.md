@@ -13,6 +13,27 @@ trigger it:
 2. **Command palette / config / built-in script** — any script with `scripts.load` permission can call `mb.loadScript` directly.
 3. **Built-in scripts** — `assets/scripts/*.js` loaded at MB startup; fully trusted (all permissions, no prompt).
 
+`mb.loadScript` returns a `MbLoadResult` discriminated union:
+`{status:"loaded", id}` | `{status:"pending"}` | `{status:"denied"}` | `{status:"error", error?}`.
+A `"pending"` return means the user prompt was raised and the caller will get
+the final outcome via `mb.approveScript`'s return value when the user picks.
+
+### OSC 58237 acknowledgement
+
+For every `applet` verb OSC 58237, `applet-loader.js` writes exactly one
+response to the originating pane's PTY:
+
+```
+\e]58237;result;status=loaded;id=<n>;path=<path>\e\\       — script running
+\e]58237;result;status=denied;path=<path>\e\\              — allowlist-denied or user denied
+\e]58237;result;status=error;path=<path>;error=<url-encoded>\e\\
+```
+
+No ack is written while the permission prompt is showing (`pending` state) —
+the final `loaded` / `denied` ack is written after the user picks. Shells
+should treat "no ack within a generous timeout" (30s+) as "no integration
+available" and run un-integrated; humans take time on prompts.
+
 ## Register everything at top level, synchronously
 
 **The single most important rule.** QuickJS runs the module's top-level code

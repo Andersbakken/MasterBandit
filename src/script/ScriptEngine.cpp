@@ -1308,10 +1308,33 @@ static JSValue jsMbCreateSecureToken(JSContext* ctx, JSValueConst, int argc, JSV
     return JS_NewStringLen(ctx, result.data(), result.size());
 }
 
-// mb.loadScript(path, permissionsStr) -> instanceId or 0
+// Convert a LoadResult to a JS { status, id?, error? } object.
+static JSValue loadResultToJs(JSContext* ctx, const Engine::LoadResult& res)
+{
+    JSValue obj = JS_NewObject(ctx);
+    const char* statusStr = "error";
+    switch (res.status) {
+        case Engine::LoadResult::Status::Loaded:  statusStr = "loaded";  break;
+        case Engine::LoadResult::Status::Pending: statusStr = "pending"; break;
+        case Engine::LoadResult::Status::Denied:  statusStr = "denied";  break;
+        case Engine::LoadResult::Status::Error:   statusStr = "error";   break;
+    }
+    JS_SetPropertyStr(ctx, obj, "status", JS_NewString(ctx, statusStr));
+    if (res.status == Engine::LoadResult::Status::Loaded)
+        JS_SetPropertyStr(ctx, obj, "id", JS_NewInt64(ctx, static_cast<int64_t>(res.id)));
+    if (res.status == Engine::LoadResult::Status::Error && !res.error.empty())
+        JS_SetPropertyStr(ctx, obj, "error",
+                          JS_NewStringLen(ctx, res.error.data(), res.error.size()));
+    return obj;
+}
+
+// mb.loadScript(path, permissionsStr) -> { status, id?, error? }
 static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_NewInt64(ctx, 0);
+    if (argc < 1) {
+        Engine::LoadResult res{ Engine::LoadResult::Status::Error, 0, "path argument required" };
+        return loadResultToJs(ctx, res);
+    }
     REQUIRE_PERM(ctx, ScriptsLoad);
     Engine* eng = engineFromCtx(ctx);
 
@@ -1325,15 +1348,19 @@ static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueCon
     }
 
     uint32_t perms = parsePermissions(permsStr);
-    uint64_t id = eng->loadScript(std::string(path), perms);
+    Engine::LoadResult res = eng->loadScript(std::string(path), perms);
     JS_FreeCString(ctx, path);
-    return JS_NewInt64(ctx, static_cast<int64_t>(id));
+    return loadResultToJs(ctx, res);
 }
 
-// mb.approveScript(path, response) — response is "y", "n", "a", "d"
+// mb.approveScript(path, response) — response is "y", "n", "a", "d".
+// Returns the final LoadResult as { status, id?, error? }.
 static JSValue jsMbApproveScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
-    if (argc < 2) return JS_UNDEFINED;
+    if (argc < 2) {
+        Engine::LoadResult res{ Engine::LoadResult::Status::Error, 0, "approveScript requires path and response" };
+        return loadResultToJs(ctx, res);
+    }
     // Only built-in scripts can approve
     auto* inst = instanceFromCtx(ctx);
     if (!inst || !inst->builtIn)
@@ -1348,9 +1375,9 @@ static JSValue jsMbApproveScript(JSContext* ctx, JSValueConst, int argc, JSValue
     char response = resp[0];
     JS_FreeCString(ctx, resp);
 
-    eng->approveScript(std::string(path), response);
+    Engine::LoadResult res = eng->approveScript(std::string(path), response);
     JS_FreeCString(ctx, path);
-    return JS_UNDEFINED;
+    return loadResultToJs(ctx, res);
 }
 
 // mb.createTab() -> Tab
@@ -1967,25 +1994,29 @@ static bool verifyModuleHashes(const Allowlist::AllowEntry& entry)
     return current == entry.modules;
 }
 
-InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) {
+Engine::LoadResult Engine::loadScript(const std::string& path, uint32_t requestedPerms) {
     std::string content = io::readFile(path);
     if (content.empty()) {
         sLog().error("ScriptEngine: failed to read '{}'", path);
-        return 0;
+        return { LoadResult::Status::Error, 0, "failed to read '" + path + "'" };
     }
 
     std::string hash = sha256Hex(content);
 
     if (allowlist_.isDenied(path, hash)) {
         sLog().info("ScriptEngine: script '{}' is permanently denied", path);
-        return 0;
+        return { LoadResult::Status::Denied, 0, {} };
     }
 
     const auto* entry = allowlist_.check(path, hash);
     if (entry) {
         if ((requestedPerms & ~entry->permissions) == 0) {
-            if (verifyModuleHashes(*entry))
-                return loadScriptInternal(path, content, requestedPerms);
+            if (verifyModuleHashes(*entry)) {
+                InstanceId id = loadScriptInternal(path, content, requestedPerms);
+                if (id == 0)
+                    return { LoadResult::Status::Error, 0, "script evaluation failed" };
+                return { LoadResult::Status::Loaded, id, {} };
+            }
             sLog().info("ScriptEngine: module files changed for '{}', re-prompting", path);
         }
         // Requesting new perms beyond what was granted, or modules changed — re-prompt
@@ -1997,7 +2028,7 @@ InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) 
 
     // Fire scriptPermissionRequired event on mb
     notifyPermissionRequired(path, permissionsToString(requestedPerms), hash);
-    return 0;
+    return { LoadResult::Status::Pending, 0, {} };
 }
 
 InstanceId Engine::loadScriptInternal(const std::string& path, const std::string& content,
@@ -2050,36 +2081,41 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     return id;
 }
 
-void Engine::approveScript(const std::string& path, char response) {
+Engine::LoadResult Engine::approveScript(const std::string& path, char response) {
     auto it = pendingScripts_.find(path);
     if (it == pendingScripts_.end()) {
         sLog().warn("ScriptEngine: no pending script for '{}'", path);
-        return;
+        return { LoadResult::Status::Error, 0, "no pending script for '" + path + "'" };
     }
 
     PendingScript pending = std::move(it->second);
     pendingScripts_.erase(it);
 
+    auto tryLoad = [&]() -> LoadResult {
+        InstanceId id = loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
+        if (id == 0)
+            return { LoadResult::Status::Error, 0, "script evaluation failed" };
+        return { LoadResult::Status::Loaded, id, {} };
+    };
+
     switch (response) {
     case 'y': case 'Y':
-        loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
-        break;
+        return tryLoad();
     case 'a': case 'A': {
         auto modules = collectDirModules(pending.path);
         allowlist_.allow(pending.path, pending.hash, pending.requestedPerms, modules);
         allowlist_.save();
-        loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
-        break;
+        return tryLoad();
     }
     case 'd': case 'D':
         allowlist_.deny(pending.path, pending.hash);
         allowlist_.save();
         sLog().info("ScriptEngine: permanently denied '{}'", pending.path);
-        break;
+        return { LoadResult::Status::Denied, 0, {} };
     case 'n': case 'N':
     default:
         sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
-        break;
+        return { LoadResult::Status::Denied, 0, {} };
     }
 }
 

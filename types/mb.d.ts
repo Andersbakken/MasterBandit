@@ -185,6 +185,20 @@ interface MbOverlay {
 }
 
 // ============================================================================
+// Script loading result
+// ============================================================================
+
+/**
+ * Outcome of `mb.loadScript` / `mb.approveScript`. Narrow via `status`:
+ * the `id` field is only present on `"loaded"`, and `error` only on `"error"`.
+ */
+type MbLoadResult =
+    | { status: "loaded"; id: number }
+    | { status: "pending" }
+    | { status: "denied" }
+    | { status: "error"; error?: string };
+
+// ============================================================================
 // Action registry
 // ============================================================================
 
@@ -225,12 +239,26 @@ interface MbGlobal {
     closeTab(id?: number): void;
 
     // --- Script management ---
-    /** Requires `scripts.load`. Returns 0 if pending user prompt / denied. */
-    loadScript(path: string, permissions?: MbPermissionList): number;
+    /**
+     * Requires `scripts.load`. Returns an outcome object:
+     *  - `{ status: "loaded", id }`      — script is running, `id` is the instance id.
+     *  - `{ status: "pending" }`         — allowlist miss, permission prompt raised;
+     *                                      a `scriptPermissionRequired` event has been
+     *                                      queued and the final outcome will be the
+     *                                      return value of a matching `approveScript`.
+     *  - `{ status: "denied" }`          — permanently denied per allowlist.
+     *  - `{ status: "error", error }`    — file unreadable or JS evaluation failed.
+     */
+    loadScript(path: string, permissions?: MbPermissionList): MbLoadResult;
     /** Requires `scripts.unload`. */
     unloadScript(id: number): void;
-    /** Respond to a `scriptPermissionRequired` event. Built-in scripts only. */
-    approveScript(path: string, response: "y" | "n" | "a" | "d"): void;
+    /**
+     * Respond to a `scriptPermissionRequired` event. Built-in scripts only.
+     * Returns the final outcome, same shape as `loadScript` (minus `pending`):
+     * `loaded` for y/a if the subsequent eval succeeded, `error` if it failed,
+     * `denied` for n/d.
+     */
+    approveScript(path: string, response: "y" | "n" | "a" | "d"): MbLoadResult;
     /** Schedule self-unload via a zero-delay timer. */
     exit(): void;
 

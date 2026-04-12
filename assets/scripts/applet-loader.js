@@ -3,6 +3,15 @@
 //
 // Shell usage:
 //   printf '\e]58237;applet;path=/path/to/script.js;permissions=ui,io\e\\'
+//
+// Acknowledgement: for every OSC 58237 "applet" request, the shell receives
+// exactly one terminal response on its stdin:
+//   \e]58237;result;status=loaded;id=<n>;path=<path>\e\\    — script running
+//   \e]58237;result;status=denied;path=<path>\e\\           — allowlist-denied or user denied
+//   \e]58237;result;status=error;path=<path>;error=<url-encoded>\e\\
+// "pending" (prompt shown) produces no immediate ack; the final loaded/denied
+// ack arrives only after the user responds. Shells should use a generous
+// timeout (approval can take 30s+).
 
 function parsePayload(payload) {
     const parts = payload.split(";");
@@ -19,26 +28,58 @@ function parsePayload(payload) {
     return { verb, kv };
 }
 
+// path → pane awaiting permission-prompt resolution. The final ack is written
+// from respond() once the user picks allow / deny / always / never.
+const pendingPanes = new Map();
+
+function writeAck(pane, path, result) {
+    if (!pane || !pane.hasPty) return;
+    let msg = `\x1b]58237;result;status=${result.status};path=${path}`;
+    if (result.status === "loaded" && typeof result.id === "number") {
+        msg += `;id=${result.id}`;
+    } else if (result.status === "error" && result.error) {
+        msg += `;error=${encodeURIComponent(result.error)}`;
+    }
+    msg += "\x1b\\";
+    pane.write(msg);
+}
+
 function registerPane(pane) {
     pane.addEventListener("osc:58237", (payload) => {
         const parsed = parsePayload(payload);
         if (!parsed) return;
 
-        if (parsed.verb === "applet") {
-            const path = parsed.kv.path;
-            if (!path) {
-                console.error("applet-loader: missing path in applet OSC");
-                return;
-            }
-            const permissions = parsed.kv.permissions || "";
-            const id = mb.loadScript(path, permissions);
-            if (id) {
-                console.log("applet-loader: loaded script:", path, "id:", id);
-            } else {
-                console.log("applet-loader: script pending approval or denied:", path);
-            }
-        } else {
-            console.log("applet-loader: unknown verb:", parsed.verb);
+        if (parsed.verb !== "applet") {
+            // Not our verb — either stray OSC, or another listener's concern.
+            return;
+        }
+
+        const path = parsed.kv.path;
+        if (!path) {
+            console.error("applet-loader: missing path in applet OSC");
+            return;
+        }
+        const permissions = parsed.kv.permissions || "";
+        const res = mb.loadScript(path, permissions);
+
+        switch (res.status) {
+            case "loaded":
+                console.log("applet-loader: loaded script:", path, "id:", res.id);
+                writeAck(pane, path, res);
+                break;
+            case "pending":
+                console.log("applet-loader: script awaiting approval:", path);
+                pendingPanes.set(path, pane);
+                // No ack yet; respond() will write it after the user picks.
+                break;
+            case "denied":
+                console.log("applet-loader: script permanently denied:", path);
+                writeAck(pane, path, res);
+                break;
+            case "error":
+                console.error("applet-loader: script load error:", path, res.error);
+                writeAck(pane, path, res);
+                break;
         }
     });
 }
@@ -118,7 +159,10 @@ function showPermissionPrompt(path, permissions, hash) {
     function respond(response) {
         delete activePermPopups[path];
         popup.close();
-        mb.approveScript(path, response);
+        const res = mb.approveScript(path, response);
+        const originPane = pendingPanes.get(path);
+        pendingPanes.delete(path);
+        if (originPane) writeAck(originPane, path, res);
     }
 
     // Keyboard input (focus popup first with Cmd+Shift+I)

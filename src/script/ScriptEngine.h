@@ -91,14 +91,26 @@ public:
     // Load a built-in script (fully trusted, all permissions)
     InstanceId loadController(const std::string& path);
 
+    struct LoadResult {
+        enum class Status { Loaded, Pending, Denied, Error };
+        Status status = Status::Error;
+        InstanceId id = 0;
+        std::string error;
+    };
+
     // Load a user script with declared permissions.
-    // Returns instanceId if pre-approved, 0 if pending user prompt or denied.
-    InstanceId loadScript(const std::string& path, uint32_t requestedPerms);
+    //  - Loaded  → `id` is the running instance id.
+    //  - Pending → user prompt raised; a matching `approveScript` call will follow.
+    //  - Denied  → permanently denied per allowlist.
+    //  - Error   → file unreadable or JS eval failed; `error` holds a message.
+    LoadResult loadScript(const std::string& path, uint32_t requestedPerms);
 
     void unload(InstanceId id);
 
-    // Called by JS (applet-loader) when user responds to permission prompt
-    void approveScript(const std::string& path, char response);
+    // Called by JS (applet-loader) when user responds to permission prompt.
+    // Returns the outcome so the caller can inform the originating channel
+    // (e.g. applet-loader writes the shell ack after the user picks).
+    LoadResult approveScript(const std::string& path, char response);
 
     // Custom XTGETTCAP capabilities registered by scripts.
     // Returns nullopt if the name is not registered.

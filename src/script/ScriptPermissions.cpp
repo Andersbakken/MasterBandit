@@ -30,6 +30,7 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"tabs",        Perm::GroupTabs},
     {"scripts",     Perm::GroupScripts},
     {"fs",          Perm::GroupFs},
+    {"net",         Perm::GroupNet},
     // Individual
     {"ui.overlay.create", Perm::UiOverlayCreate},
     {"ui.overlay.close",  Perm::UiOverlayClose},
@@ -46,6 +47,7 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"scripts.unload",    Perm::ScriptsUnload},
     {"fs.read",           Perm::FsRead},
     {"fs.write",          Perm::FsWrite},
+    {"net.listen.local",  Perm::NetListenLocal},
 };
 
 uint32_t parsePermissions(const std::string& permStr)
@@ -93,6 +95,7 @@ std::string permissionsToString(uint32_t perms)
         {Perm::GroupTabs,    "tabs"},
         {Perm::GroupScripts, "scripts"},
         {Perm::GroupFs,      "fs"},
+        {Perm::GroupNet,     "net"},
     };
 
     uint32_t remaining = perms;
@@ -121,6 +124,7 @@ std::string permissionsToString(uint32_t perms)
         {Perm::ScriptsUnload,   "scripts.unload"},
         {Perm::FsRead,          "fs.read"},
         {Perm::FsWrite,         "fs.write"},
+        {Perm::NetListenLocal,  "net.listen.local"},
     };
     for (const auto& b : bits) {
         if (remaining & b.bit) {

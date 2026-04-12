@@ -1,5 +1,6 @@
 #include "ScriptEngine.h"
 #include "ScriptFsModule.h"
+#include "ScriptWsModule.h"
 #include "Action.h"
 #include "Utils.h"
 
@@ -12,7 +13,32 @@
 #include <fstream>
 #include <sstream>
 
+#ifdef __APPLE__
+#include <stdlib.h>  // arc4random_buf
+#else
+#include <sys/random.h>  // getrandom
+#endif
+
 namespace fs = std::filesystem;
+
+static void fillSecureRandom(unsigned char* buf, size_t len)
+{
+#ifdef __APPLE__
+    arc4random_buf(buf, len);
+#else
+    size_t off = 0;
+    while (off < len) {
+        ssize_t r = getrandom(buf + off, len - off, 0);
+        if (r > 0) off += static_cast<size_t>(r);
+        else if (r < 0 && errno != EINTR) {
+            // Fall back to /dev/urandom if getrandom is unavailable.
+            std::ifstream f("/dev/urandom", std::ios::binary);
+            f.read(reinterpret_cast<char*>(buf + off), static_cast<std::streamsize>(len - off));
+            break;
+        }
+    }
+#endif
+}
 
 namespace Script {
 
@@ -61,7 +87,7 @@ static char* moduleNormalize(JSContext* ctx, const char* base_name,
     // Built-in module (mb:fs, mb:tui, etc.)
     if (strncmp(name, "mb:", 3) == 0) {
         // Native C++ modules — returned as-is, handled in moduleLoader
-        static const char* kNativeModules[] = { "fs", nullptr };
+        static const char* kNativeModules[] = { "fs", "ws", nullptr };
         std::string moduleName = name + 3;
         for (int i = 0; kNativeModules[i]; ++i) {
             if (moduleName == kNativeModules[i])
@@ -127,6 +153,8 @@ static JSModuleDef* moduleLoader(JSContext* ctx, const char* module_name, void* 
     // Native C++ modules
     if (strcmp(module_name, "mb:fs") == 0)
         return createFsNativeModule(ctx, eng);
+    if (strcmp(module_name, "mb:ws") == 0)
+        return createWsNativeModule(ctx, eng);
 
     std::ifstream f(module_name, std::ios::binary);
     if (!f) {
@@ -1255,6 +1283,31 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
     return arr;
 }
 
+// mb.createSecureToken(length = 32) -> hex string
+// Generates `length` cryptographically-secure random bytes and returns them as a 2*length
+// hex string. Ungated — providing randomness confers no capability.
+static JSValue jsMbCreateSecureToken(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    int length = 32;
+    if (argc >= 1 && JS_IsNumber(argv[0])) {
+        int32_t n;
+        if (JS_ToInt32(ctx, &n, argv[0]) == 0 && n > 0 && n <= 4096)
+            length = n;
+    }
+
+    std::vector<unsigned char> buf(static_cast<size_t>(length));
+    fillSecureRandom(buf.data(), buf.size());
+
+    static const char hex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(static_cast<size_t>(length) * 2);
+    for (size_t i = 0; i < buf.size(); ++i) {
+        result += hex[buf[i] >> 4];
+        result += hex[buf[i] & 0x0F];
+    }
+    return JS_NewStringLen(ctx, result.data(), result.size());
+}
+
 // mb.loadScript(path, permissionsStr) -> instanceId or 0
 static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -1653,6 +1706,8 @@ Engine::Engine()
 
 Engine::~Engine()
 {
+    // Close any live WS servers + their lws context before runtime teardown.
+    wsDestroyEngine(this);
     for (auto& inst : instances_)
         JS_FreeContext(inst.ctx);
     if (rt_) JS_FreeRuntime(rt_);
@@ -1754,6 +1809,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, mb, "loadScript",
         JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
+    JS_SetPropertyStr(ctx, mb, "createSecureToken",
+        JS_NewCFunction(ctx, jsMbCreateSecureToken, "createSecureToken", 1));
     JS_SetPropertyStr(ctx, mb, "approveScript",
         JS_NewCFunction(ctx, jsMbApproveScript, "approveScript", 2));
     JS_SetPropertyStr(ctx, mb, "setNamespace",
@@ -1865,7 +1922,10 @@ void Engine::unload(InstanceId id)
             }
         }
 
-        // 6. Free context and remove instance
+        // 6. Close any WS servers + connections owned by this instance.
+        wsUnloadInstance(this, id);
+
+        // 7. Free context and remove instance
         JS_FreeContext(ctx);
         instances_.erase(it);
         return;

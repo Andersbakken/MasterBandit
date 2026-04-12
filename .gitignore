@@ -29,6 +29,8 @@
 # Claude Code
 .claude/
 
+.cache/
+
 # Editor / IDE
 *.swp
 *.swo

@@ -1,7 +1,7 @@
 find_package(Dawn REQUIRED)
 # harfbuzz built from 3rdparty submodule (v14+)
+# SheenBidi built from 3rdparty submodule (patched for U+276F BiDi crash)
 find_package(spdlog REQUIRED CONFIG)
-find_package(SheenBidi CONFIG REQUIRED)
 find_package(libunibreak CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)

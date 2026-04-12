@@ -1,6 +1,6 @@
 find_package(doctest CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(SheenBidi CONFIG REQUIRED)
+# SheenBidi comes from 3rdparty submodule (target SheenBidi::SheenBidi)
 find_package(Stb REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)

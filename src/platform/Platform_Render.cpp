@@ -569,6 +569,8 @@ void PlatformDawn::renderFrame()
     // Work items: packed as (targetIdx << 16) | row
     std::vector<uint32_t> allWorkItems;
 
+    bool anyRunningAnimation = false;
+    uint64_t nextAnimationDueAt = std::numeric_limits<uint64_t>::max();
     for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
         auto& target = renderTargets[ti];
         TerminalEmulator* term = target.term;
@@ -578,6 +580,21 @@ void PlatformDawn::renderFrame()
             continue;
         }
         const IGrid& g = term->grid();
+
+        // Advance animated kitty images for this terminal. Done unconditionally
+        // (not inside the needsRender branch) so animations keep advancing even
+        // when there's no other reason to render; the return value feeds into
+        // needsRender so we only re-render when a frame actually changed.
+        bool animationAdvanced = term->tickAnimations();
+        for (const auto& [id, img] : term->imageRegistry()) {
+            if (img.hasAnimation()) {
+                anyRunningAnimation = true;
+                uint32_t gap = img.currentFrameGap();
+                if (gap == 0) gap = 40;
+                uint64_t due = img.frameShownAt + gap;
+                if (due < nextAnimationDueAt) nextAnimationDueAt = due;
+            }
+        }
 
         int curX = term->cursorX(), curY = term->cursorY();
         bool cursorMoved = (curX != rs.lastCursorX || curY != rs.lastCursorY ||
@@ -592,7 +609,8 @@ void PlatformDawn::renderFrame()
         rs.lastCursorBlinkOn = cursorBlinkPhaseOn_;
 
         bool needsRender = rs.dirty || g.anyDirty() || cursorMoved ||
-                           cursorBlinkChanged || !rs.heldTexture;
+                           cursorBlinkChanged || animationAdvanced ||
+                           !rs.heldTexture;
 
         if (term->syncOutputActive() && rs.heldTexture)
             needsRender = false;
@@ -627,6 +645,11 @@ void PlatformDawn::renderFrame()
             }
         }
     }
+
+    // Wake the event loop precisely at the next animation frame boundary
+    // instead of spinning at display refresh rate.
+    if (anyRunningAnimation && nextAnimationDueAt != std::numeric_limits<uint64_t>::max())
+        scheduleAnimationWakeup(nextAnimationDueAt);
 
     // Parallel resolve across all panes
     if (allWorkItems.size() > 4) {
@@ -732,16 +755,14 @@ void PlatformDawn::renderFrame()
 
             renderer_.updateFontAtlas(queue_, fontName_, *font);
 
-            // Tick animations before collecting image commands
-            bool hasVisibleAnimations = false;
-            term->tickAnimations();
-
             // Collect image draw commands — one per (imageId, placementId) pair,
             // sorted by z-index. imgSplitText tracks where z >= 0 starts.
             std::vector<Renderer::ImageDrawCmd> imageCmds;
             size_t imgSplitText = 0;
             std::unordered_set<uint64_t> seenPlacements; // (imageId << 32) | placementId
             std::unordered_set<uint32_t> seenImageGPU;   // GPU upload dedup
+            // Fresh set built this render pass; swapped into rs.lastVisibleImageIds below.
+            std::unordered_set<uint32_t> paneVisibleImages;
             int vo = term->viewportOffset();
             float vpW = static_cast<float>(paneRect.w);
             float vpH = static_cast<float>(paneRect.h);
@@ -782,16 +803,19 @@ void PlatformDawn::renderFrame()
                     if (it == term->imageRegistry().end()) continue;
                     const auto& img = it->second;
 
-                    // GPU upload — once per image, not per placement
+                    // GPU upload — once per image, not per placement. The
+                    // renderer caches one texture per frame index, so animation
+                    // playback only re-uploads on the first cycle.
                     if (!seenImageGPU.count(ex->imageId)) {
                         seenImageGPU.insert(ex->imageId);
                         const auto& frameData = img.currentFrameRGBA();
-                        renderer_.ensureImageGPU(queue_, ex->imageId,
+                        uint32_t totalFrames =
+                            1 + static_cast<uint32_t>(img.extraFrames.size());
+                        renderer_.useImageFrame(queue_, ex->imageId,
+                            img.currentFrameIndex, totalFrames,
+                            img.frameGeneration,
                             frameData.data(), img.pixelWidth, img.pixelHeight);
-                        renderer_.updateImageGPU(queue_, ex->imageId,
-                            frameData.data(), img.pixelWidth, img.pixelHeight,
-                            img.frameGeneration);
-                        if (img.hasAnimation()) hasVisibleAnimations = true;
+                        paneVisibleImages.insert(ex->imageId);
                     }
 
                     // Use per-placement display params if available, else image defaults
@@ -877,9 +901,6 @@ void PlatformDawn::renderFrame()
                     if (cmd.zIndex < 0) imgSplitText++;
                 }
             }
-
-            // Keep render loop alive for visible animations
-            if (hasVisibleAnimations) setNeedsRedraw();
 
             TerminalComputeParams params = {};
             params.cols = static_cast<uint32_t>(g.cols());
@@ -983,7 +1004,11 @@ void PlatformDawn::renderFrame()
 
             if (rs.heldTexture) rs.pendingRelease.push_back(rs.heldTexture);
             rs.heldTexture = newTexture;
-            rs.dirty = hasVisibleAnimations; // stay dirty if animating
+            rs.lastVisibleImageIds = std::move(paneVisibleImages);
+            // We just rendered this pane; clear the re-render flag. If an
+            // animation's next frame is due on a later tick, tickAnimations()
+            // will set needsRender via its return value then.
+            rs.dirty = false;
         }
 
         if (rs.heldTexture) {
@@ -996,6 +1021,29 @@ void PlatformDawn::renderFrame()
             compositeEntries.push_back(entry);
         }
     }
+
+    // Release GPU textures for images that have scrolled out of every pane's
+    // viewport across every tab. Each pane/popup caches its last visible image
+    // set at phase-2 time; we union those and keep whatever's in any of them.
+    // This avoids upload/evict churn on cursor blink, focus change, or tab
+    // switch — those render frames don't iterate image extras but the caches
+    // still vouch for visibility. Scrolling an image into scrollback updates
+    // that pane's cache on its next re-render, dropping the imageId, which is
+    // when eviction actually happens.
+    std::unordered_set<uint32_t> imagesToRetain;
+    for (const auto& [paneId, rs] : paneRenderStates_) {
+        imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
+                              rs.lastVisibleImageIds.end());
+    }
+    for (const auto& [key, rs] : popupRenderStates_) {
+        imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
+                              rs.lastVisibleImageIds.end());
+    }
+    for (const auto& [tab, rs] : overlayRenderStates_) {
+        imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
+                              rs.lastVisibleImageIds.end());
+    }
+    renderer_.retainImagesOnly(imagesToRetain);
 
     // Render tab bar if dirty
     if (tabBarVisible() && tabBarDirty_) {

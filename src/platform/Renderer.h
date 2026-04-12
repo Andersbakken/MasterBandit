@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Per-vertex data for Slug text rendering (36 bytes)
@@ -122,22 +123,34 @@ public:
                          wgpu::Texture target, uint32_t fbW, uint32_t fbH,
                          const ProgressBarParams& params);
 
-    // Image rendering
-    struct ImageGPU {
+    // Image rendering. Animated kitty images keep one texture per frame index
+    // so playback is just a sampler swap — no re-upload on every cycle.
+    struct ImageFrame {
         wgpu::Texture texture;
         wgpu::TextureView view;
         wgpu::BindGroup bindGroup;
-        uint32_t width, height;       // logical image size
-        uint32_t texWidth, texHeight; // GPU texture size (image + 2px border)
-        uint32_t frameGeneration { 0 };
+        uint32_t uploadedVersion { 0 };  // 0 = never uploaded
+    };
+    struct ImageGPU {
+        uint32_t width = 0, height = 0;       // logical image size
+        uint32_t texWidth = 0, texHeight = 0; // GPU texture size (image + 2px border)
+        std::vector<ImageFrame> frames;       // indexed by frame index
+        uint32_t currentFrameIndex = 0;
     };
 
     void initImagePipeline(wgpu::Device& device, const std::string& shaderDir);
-    void ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
-                        const uint8_t* rgba, uint32_t width, uint32_t height);
-    void updateImageGPU(wgpu::Queue& queue, uint32_t imageId,
-                        const uint8_t* rgba, uint32_t width, uint32_t height,
-                        uint32_t generation);
+    // Ensures the slot for `frameIndex` exists and contains pixel data matching
+    // `contentVersion`, then selects it as the active frame for renderImages.
+    // If the slot already matches `contentVersion`, no upload happens.
+    void useImageFrame(wgpu::Queue& queue, uint32_t imageId,
+                       uint32_t frameIndex, uint32_t totalFrames,
+                       uint32_t contentVersion,
+                       const uint8_t* rgba, uint32_t width, uint32_t height);
+
+    // Evict GPU textures for any image not in `keep`. Used after each frame
+    // to release images that scrolled out of every pane's viewport — they'll
+    // be re-uploaded lazily by useImageFrame when/if they scroll back in.
+    void retainImagesOnly(const std::unordered_set<uint32_t>& keep);
     void renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       wgpu::TextureView target,
                       float paneWidth, float paneHeight,

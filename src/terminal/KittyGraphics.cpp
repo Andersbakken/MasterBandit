@@ -974,7 +974,8 @@ void TerminalEmulator::processAPC()
             uint32_t idx = cmd.cellCols - 1; // convert to 0-based
             if (idx < totalFrames) {
                 img.currentFrameIndex = idx;
-                img.frameGeneration++;
+                // Frame-index change is a display switch, not a content edit —
+                // don't bump frameGeneration (see useImageFrame caching).
                 // Dirty grid rows containing this image so the render loop re-uploads
                 IGrid& ag = grid();
                 for (int r = 0; r < mHeight; r++) {
@@ -1174,9 +1175,10 @@ void TerminalEmulator::processAPC()
     sendResponse(cmd.id, "OK");
 }
 
-void TerminalEmulator::tickAnimations()
+bool TerminalEmulator::tickAnimations()
 {
     uint64_t now = mono();
+    bool anyAdvanced = false;
 
     for (auto& [id, img] : mImageRegistry) {
         if (!img.hasAnimation()) continue;
@@ -1191,6 +1193,7 @@ void TerminalEmulator::tickAnimations()
         // Advance frame(s), potentially skipping if multiple gaps elapsed
         uint32_t totalFrames = 1 + static_cast<uint32_t>(img.extraFrames.size());
         bool stopped = false;
+        uint32_t startIndex = img.currentFrameIndex;
 
         while (elapsed >= gap && !stopped) {
             elapsed -= gap;
@@ -1209,8 +1212,20 @@ void TerminalEmulator::tickAnimations()
             if (gap == 0) gap = 40;
         }
 
-        img.frameShownAt = now;
-        img.frameGeneration++;
+        // Drift-free rebase: `elapsed` has had each consumed gap subtracted, so
+        // `now - elapsed` is the boundary at which the current frame should
+        // have started. Setting `frameShownAt = now` instead would rebase to
+        // wake-up time and let timer jitter accumulate — eventually crossing
+        // a gap boundary and causing a visible double-advance.
+        img.frameShownAt = now - elapsed;
+        if (img.currentFrameIndex != startIndex)
+            anyAdvanced = true;
+        // Do NOT bump frameGeneration here: it tracks *content* edits only.
+        // The renderer keys cached textures by (frameIndex, frameGeneration);
+        // bumping on a tick would invalidate every cached frame slot every
+        // cycle, defeating the cache.
     }
+
+    return anyAdvanced;
 }
 

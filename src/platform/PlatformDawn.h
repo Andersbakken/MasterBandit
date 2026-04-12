@@ -163,6 +163,13 @@ private:
     int                        cursorBlinkInterval_ = 500;
     bool                       cursorBlinkPhaseOn_ = true;
     void                       applyBlinkInterval(int ms);
+
+    // Animation wakeup: one-shot timer scheduled for the next animated-image
+    // frame boundary. Avoids spinning the event loop at display refresh rate
+    // while waiting for the next tick.
+    EventLoop::TimerId         animationTimer_ = 0;
+    uint64_t                   animationTimerDueAt_ = 0;
+    void                       scheduleAnimationWakeup(uint64_t dueAt);
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
@@ -266,6 +273,11 @@ private:
         int lastCursorX = -1, lastCursorY = -1;
         bool lastCursorVisible = true;
         bool lastCursorBlinkOn = true;  // last rendered blink phase, for blinking cursors
+        // Image IDs visible in this pane as of its last re-render. Used to keep
+        // the GPU image cache resident for panes that aren't re-rendering this
+        // frame (heldTexture is displaying them; eviction would just force a
+        // re-upload on the next real render).
+        std::unordered_set<uint32_t> lastVisibleImageIds;
         PooledTexture* heldTexture = nullptr;
         bool dirty = true;
         std::vector<PooledTexture*> pendingRelease;

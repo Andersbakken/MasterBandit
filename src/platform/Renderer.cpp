@@ -718,81 +718,87 @@ void Renderer::initImagePipeline(wgpu::Device& device, const std::string& shader
     spdlog::info("Image pipeline initialized");
 }
 
-void Renderer::ensureImageGPU(wgpu::Queue& queue, uint32_t imageId,
-                               const uint8_t* rgba, uint32_t width, uint32_t height)
+void Renderer::useImageFrame(wgpu::Queue& queue, uint32_t imageId,
+                              uint32_t frameIndex, uint32_t totalFrames,
+                              uint32_t contentVersion,
+                              const uint8_t* rgba, uint32_t width, uint32_t height)
 {
-    if (imageGPU_.count(imageId)) return;
+    if (totalFrames == 0) return;
+    if (frameIndex >= totalFrames) return;
 
-    ImageGPU gpu;
-    gpu.width = width;
-    gpu.height = height;
+    auto& gpu = imageGPU_[imageId];
 
-    // Create texture with 1px transparent border on each side to match
-    // kitty's GL_CLAMP_TO_BORDER behavior — linear filtering at the edge
-    // blends toward transparent black, producing a soft edge.
-    uint32_t texW = width + 2, texH = height + 2;
-    gpu.texWidth = texW;
-    gpu.texHeight = texH;
+    // First time we've seen this image: capture dimensions and texture geometry.
+    if (gpu.width == 0) {
+        gpu.width = width;
+        gpu.height = height;
+        // Add a 1px transparent border on each side so linear filtering at the
+        // edge fades to transparent black (matches kitty's GL_CLAMP_TO_BORDER).
+        gpu.texWidth = width + 2;
+        gpu.texHeight = height + 2;
+    } else if (gpu.width != width || gpu.height != height) {
+        // Dimensions changed mid-flight — caller must drop the image and re-add.
+        return;
+    }
 
-    wgpu::TextureDescriptor texDesc = {};
-    texDesc.size = {texW, texH, 1};
-    texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
-    texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-    texDesc.dimension = wgpu::TextureDimension::e2D;
-    texDesc.mipLevelCount = 1;
-    texDesc.sampleCount = 1;
-    gpu.texture = device_.CreateTexture(&texDesc);
-    gpu.view = gpu.texture.CreateView();
+    if (gpu.frames.size() < totalFrames)
+        gpu.frames.resize(totalFrames);
 
-    // Upload image data at offset (1,1), leaving the border as zero (transparent black)
-    wgpu::TexelCopyTextureInfo dst = {};
-    dst.texture = gpu.texture;
-    dst.origin = {1, 1, 0};
-    wgpu::TexelCopyBufferLayout layout = {};
-    layout.bytesPerRow = width * 4;
-    layout.rowsPerImage = height;
-    wgpu::Extent3D extent = {width, height, 1};
-    queue.WriteTexture(&dst, rgba, width * height * 4, &layout, &extent);
+    auto& slot = gpu.frames[frameIndex];
+    bool slotIsNew = !slot.texture;
 
-    // Create bind group
-    wgpu::BindGroupEntry bindings[3] = {};
-    bindings[0].binding = 0;
-    bindings[0].buffer = imageUniformBuffer_;
-    bindings[0].size = 16;
-    bindings[1].binding = 1;
-    bindings[1].textureView = gpu.view;
-    bindings[2].binding = 2;
-    bindings[2].sampler = imageSampler_;
+    // Lazily create the texture+bindgroup the first time this frame is shown.
+    if (slotIsNew) {
+        wgpu::TextureDescriptor texDesc = {};
+        texDesc.size = {gpu.texWidth, gpu.texHeight, 1};
+        texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+        texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+        texDesc.dimension = wgpu::TextureDimension::e2D;
+        texDesc.mipLevelCount = 1;
+        texDesc.sampleCount = 1;
+        slot.texture = device_.CreateTexture(&texDesc);
+        slot.view = slot.texture.CreateView();
 
-    wgpu::BindGroupDescriptor bgDesc = {};
-    bgDesc.layout = imageBindGroupLayout_;
-    bgDesc.entryCount = 3;
-    bgDesc.entries = bindings;
-    gpu.bindGroup = device_.CreateBindGroup(&bgDesc);
+        wgpu::BindGroupEntry bindings[3] = {};
+        bindings[0].binding = 0;
+        bindings[0].buffer = imageUniformBuffer_;
+        bindings[0].size = 16;
+        bindings[1].binding = 1;
+        bindings[1].textureView = slot.view;
+        bindings[2].binding = 2;
+        bindings[2].sampler = imageSampler_;
 
-    imageGPU_[imageId] = std::move(gpu);
+        wgpu::BindGroupDescriptor bgDesc = {};
+        bgDesc.layout = imageBindGroupLayout_;
+        bgDesc.entryCount = 3;
+        bgDesc.entries = bindings;
+        slot.bindGroup = device_.CreateBindGroup(&bgDesc);
+    }
+
+    // Always upload on first creation (the texture is empty); after that, only
+    // when the content version moves forward. For animation playback this means
+    // the first cycle uploads each frame once, subsequent cycles skip entirely.
+    if (slotIsNew || slot.uploadedVersion != contentVersion) {
+        wgpu::TexelCopyTextureInfo dst = {};
+        dst.texture = slot.texture;
+        dst.origin = {1, 1, 0};  // upload inside the 1px border
+        wgpu::TexelCopyBufferLayout layout = {};
+        layout.bytesPerRow = width * 4;
+        layout.rowsPerImage = height;
+        wgpu::Extent3D extent = {width, height, 1};
+        queue.WriteTexture(&dst, rgba, width * height * 4, &layout, &extent);
+        slot.uploadedVersion = contentVersion;
+    }
+
+    gpu.currentFrameIndex = frameIndex;
 }
 
-void Renderer::updateImageGPU(wgpu::Queue& queue, uint32_t imageId,
-                                const uint8_t* rgba, uint32_t width, uint32_t height,
-                                uint32_t generation)
+void Renderer::retainImagesOnly(const std::unordered_set<uint32_t>& keep)
 {
-    auto it = imageGPU_.find(imageId);
-    if (it == imageGPU_.end()) return;
-    auto& gpu = it->second;
-    if (gpu.frameGeneration == generation) return; // already up to date
-    if (gpu.width != width || gpu.height != height) return; // dimensions changed, need full recreate
-
-    wgpu::TexelCopyTextureInfo dst = {};
-    dst.texture = gpu.texture;
-    dst.origin = {1, 1, 0}; // upload inside the 1px border
-    wgpu::TexelCopyBufferLayout layout = {};
-    layout.bytesPerRow = width * 4;
-    layout.rowsPerImage = height;
-    wgpu::Extent3D extent = {width, height, 1};
-    queue.WriteTexture(&dst, rgba, width * height * 4, &layout, &extent);
-
-    gpu.frameGeneration = generation;
+    for (auto it = imageGPU_.begin(); it != imageGPU_.end(); ) {
+        if (keep.count(it->first)) ++it;
+        else it = imageGPU_.erase(it);
+    }
 }
 
 void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
@@ -826,7 +832,11 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 
     for (size_t ci = rangeStart; ci < rangeEnd; ++ci) {
         const auto& cmd = cmds[ci];
-        if (!imageGPU_.count(cmd.imageId)) continue;
+        auto sit = imageGPU_.find(cmd.imageId);
+        if (sit == imageGPU_.end()) continue;
+        const auto& gpu = sit->second;
+        if (gpu.frames.empty() || gpu.currentFrameIndex >= gpu.frames.size() ||
+            !gpu.frames[gpu.currentFrameIndex].bindGroup) continue;
         if (count >= MaxImageSlots) {
             spdlog::error("image render: exceeded {} image slots, dropping remaining images", MaxImageSlots);
             break;
@@ -852,12 +862,16 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
         const auto& cmd = cmds[ci];
         auto it = imageGPU_.find(cmd.imageId);
         if (it == imageGPU_.end()) continue;
+        const auto& gpu = it->second;
+        if (gpu.frames.empty() || gpu.currentFrameIndex >= gpu.frames.size()) continue;
+        const auto& slot = gpu.frames[gpu.currentFrameIndex];
+        if (!slot.bindGroup) continue;
         if (idx >= count) break;
 
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetViewport(0.0f, 0.0f, paneWidth, paneHeight, 0.0f, 1.0f);
         pass.SetPipeline(imagePipeline_);
-        pass.SetBindGroup(0, it->second.bindGroup);
+        pass.SetBindGroup(0, slot.bindGroup);
         pass.SetVertexBuffer(0, imageVertexBuffer_, idx * vertexStride, vertexStride);
         pass.Draw(6);
         pass.End();

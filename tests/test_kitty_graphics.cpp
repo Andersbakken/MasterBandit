@@ -400,13 +400,16 @@ TEST_CASE("kitty graphics: tickAnimations advances frame")
 
     // Force frameShownAt into the past to avoid wall-clock timing dependency
     auto& mutImg = t.term.imageRegistryMut().at(1);
-    mutImg.frameShownAt = TerminalEmulator::mono() - 1000;
+    uint64_t shownBefore = TerminalEmulator::mono() - 1000;
+    mutImg.frameShownAt = shownBefore;
     REQUIRE(mutImg.hasAnimation());
-    uint32_t genBefore = mutImg.frameGeneration;
     t.term.tickAnimations();
-    // frameGeneration bumps on any tick that processes this image,
-    // regardless of which frame it lands on (which depends on exact timing)
-    CHECK(mutImg.frameGeneration > genBefore);
+    // Ticking an animated image with elapsed > gap must process this image
+    // and update its frameShownAt timestamp. (We can't assert which index it
+    // lands on — with a 3-frame loop and 1000ms elapsed, the final index is
+    // determined by the gap math and may equal the starting index.
+    // frameGeneration is no longer bumped on a tick; it tracks content edits.)
+    CHECK(mutImg.frameShownAt > shownBefore);
 }
 
 // ── Delta frame compositing ─────────────────────────────────────────────────

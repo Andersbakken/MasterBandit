@@ -681,6 +681,35 @@ void PlatformDawn::applyBlinkInterval(int ms)
     });
 }
 
+void PlatformDawn::scheduleAnimationWakeup(uint64_t dueAt)
+{
+    if (!eventLoop_) return;
+    uint64_t now = TerminalEmulator::mono();
+    if (dueAt <= now) {
+        // Already past — don't schedule a timer, just wake now.
+        if (animationTimer_) {
+            eventLoop_->removeTimer(animationTimer_);
+            animationTimer_ = 0;
+        }
+        animationTimerDueAt_ = 0;
+        setNeedsRedraw();
+        return;
+    }
+    // Skip reschedule if an equivalent timer is already pending.
+    if (animationTimer_ && animationTimerDueAt_ == dueAt) return;
+    if (animationTimer_) {
+        eventLoop_->removeTimer(animationTimer_);
+        animationTimer_ = 0;
+    }
+    animationTimerDueAt_ = dueAt;
+    uint64_t delay = dueAt - now;
+    animationTimer_ = eventLoop_->addTimer(delay, false, [this]() {
+        animationTimer_ = 0;
+        animationTimerDueAt_ = 0;
+        setNeedsRedraw();
+    });
+}
+
 void PlatformDawn::reloadConfigNow()
 {
     spdlog::info("Config: hot-reload triggered");

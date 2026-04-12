@@ -419,6 +419,10 @@ int PlatformDawn::exec()
         eventLoop_->removeTimer(cursorBlinkTimer_);
         cursorBlinkTimer_ = 0;
     }
+    if (animationTimer_) {
+        eventLoop_->removeTimer(animationTimer_);
+        animationTimer_ = 0;
+    }
     eventLoop_->removeFileWatch();
 
     if (debugIPC_) debugIPC_->closeHandles();

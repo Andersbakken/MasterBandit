@@ -254,7 +254,10 @@ public:
     uint32_t findImageByNumber(uint32_t number) const;
 
     // Advance all running animations based on current time.
-    void tickAnimations();
+    // Advance every running animated image whose gap has elapsed. Returns
+    // true iff at least one image's currentFrameIndex actually changed — the
+    // renderer uses this to decide whether the pane needs re-rendering.
+    bool tickAnimations();
 
     void injectData(const char* data, size_t len);
 

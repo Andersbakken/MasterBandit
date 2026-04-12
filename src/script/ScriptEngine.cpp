@@ -1942,7 +1942,22 @@ InstanceId Engine::loadScript(const std::string& path, uint32_t requestedPerms) 
 
 InstanceId Engine::loadScriptInternal(const std::string& path, const std::string& content,
                                        uint32_t permissions) {
-    // Unload any existing instance with the same path
+    std::string hash = sha256Hex(content);
+
+    // Idempotent reload: if an existing instance has identical path, content hash,
+    // and permissions, return its id without unloading/reloading. Avoids pointless
+    // churn (owned resources, registered handlers, WS servers, etc.) when the same
+    // script is loaded repeatedly — e.g. applet-loader handling repeated OSC 58237
+    // triggers from multiple shells.
+    for (auto& inst : instances_) {
+        if (!inst.builtIn && inst.path == path
+            && inst.contentHash == hash && inst.permissions == permissions) {
+            sLog().info("ScriptEngine: identical reload of '{}' (id={}), no-op", path, inst.id);
+            return inst.id;
+        }
+    }
+
+    // Unload any existing instance with the same path (content or perms differ)
     for (auto& inst : instances_) {
         if (inst.path == path && !inst.builtIn) {
             sLog().info("ScriptEngine: replacing existing instance of '{}'", path);
@@ -1955,7 +1970,6 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     InstanceId id = nextId_++;
     setupGlobals(ctx, id);
 
-    std::string hash = sha256Hex(content);
     instances_.push_back({id, ctx, path, hash, permissions, false});
     JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
 

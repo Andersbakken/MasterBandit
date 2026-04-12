@@ -1000,8 +1000,19 @@ void TerminalEmulator::processCSI()
         break;
     case SCP:
         if (isPrivate) {
-            // CSI ? Ps s — XTERM save private mode values (ignore)
-            sLog().warn("Ignoring XTERM save private mode: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            // CSI ? Pm s — XTSAVE: save DEC private mode values
+            std::vector<int> modes;
+            const char* p = mEscapeBuffer + 2;
+            const char* end = mEscapeBuffer + mEscapeIndex - 1;
+            while (p < end) {
+                char* next;
+                unsigned long v = strtoul(p, &next, 10);
+                if (next == p) break;
+                modes.push_back(static_cast<int>(v));
+                p = next;
+                if (p < end && *p == ';') ++p;
+            }
+            savePrivateModes(modes);
         } else if (mEscapeIndex == 2) {
             action.type = Action::SaveCursorPosition;
         } else {
@@ -1073,7 +1084,23 @@ void TerminalEmulator::processCSI()
             }
         }
         break;
-    case DECSTBM: { // Set scrolling region
+    case DECSTBM: { // Set scrolling region (or XTRESTORE if private prefix)
+        if (isPrivate) {
+            // CSI ? Pm r — XTRESTORE: restore DEC private mode values
+            std::vector<int> modes;
+            const char* p = mEscapeBuffer + 2;
+            const char* end = mEscapeBuffer + mEscapeIndex - 1;
+            while (p < end) {
+                char* next;
+                unsigned long v = strtoul(p, &next, 10);
+                if (next == p) break;
+                modes.push_back(static_cast<int>(v));
+                p = next;
+                if (p < end && *p == ';') ++p;
+            }
+            restorePrivateModes(modes);
+            break;
+        }
         // CSI Pt ; Pb r
         int top = 1, bottom = mHeight;
         char *end;
@@ -1129,6 +1156,30 @@ void TerminalEmulator::processCSI()
             }
         }
         break;
+    case 'x': {
+        // CSI Ps x with no intermediate is DECREQTPARM (Request Terminal Parameters).
+        // With an intermediate ($, *, ' ...) it is a different command (DECFRA/DECSACE/etc).
+        char prev = mEscapeIndex >= 2 ? mEscapeBuffer[mEscapeIndex - 2] : 0;
+        if (prev >= 0x20 && prev <= 0x2f) {
+            sLog().warn("Ignoring CSI x with intermediate: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            break;
+        }
+        int ps = 0;
+        if (mEscapeIndex > 2) {
+            char* end;
+            ps = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
+        }
+        if (ps == 0 || ps == 1) {
+            // Reply: CSI Psol;1;1;128;128;1;0 x
+            //   Psol = 2 (unsolicited reply to req=0) or 3 (solicited reply to req=1)
+            //   par=1 (no parity), nbits=1 (8 bits), xspeed=rspeed=128 (19200 baud),
+            //   clkmul=1, flags=0
+            int psol = (ps == 0) ? 2 : 3;
+            char response[48];
+            int rlen = snprintf(response, sizeof(response), "\x1b[%d;1;1;128;128;1;0x", psol);
+            writeToOutput(response, rlen);
+        }
+        break; }
     case 't': {
         // XTWINOPS — only handle push/pop title (22/23)
         char* end;
@@ -1164,6 +1215,62 @@ void TerminalEmulator::processCSI()
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
 #endif
     mState = Normal;
+}
+
+void TerminalEmulator::savePrivateModes(const std::vector<int>& modes)
+{
+    static constexpr int kKnownModes[] = {
+        1, 7, 25, 1000, 1002, 1003, 1004, 1006, 2004, 2026, 2031
+    };
+    auto saveOne = [this](int m) {
+        switch (m) {
+        case 1:    mSavedPrivateModes[1]    = mCursorKeyMode; break;
+        case 7:    mSavedPrivateModes[7]    = mAutoWrap; break;
+        case 25:   mSavedPrivateModes[25]   = mCursorVisible; break;
+        case 1000: mSavedPrivateModes[1000] = mMouseMode1000; break;
+        case 1002: mSavedPrivateModes[1002] = mMouseMode1002; break;
+        case 1003: mSavedPrivateModes[1003] = mMouseMode1003; break;
+        case 1004: mSavedPrivateModes[1004] = mFocusReporting; break;
+        case 1006: mSavedPrivateModes[1006] = mMouseMode1006; break;
+        case 2004: mSavedPrivateModes[2004] = mBracketedPaste; break;
+        case 2026: mSavedPrivateModes[2026] = mSyncOutput; break;
+        case 2031: mSavedPrivateModes[2031] = mColorPreferenceReporting; break;
+        default: break;
+        }
+    };
+    if (modes.empty()) {
+        for (int m : kKnownModes) saveOne(m);
+    } else {
+        for (int m : modes) saveOne(m);
+    }
+}
+
+void TerminalEmulator::restorePrivateModes(const std::vector<int>& modes)
+{
+    auto restoreOne = [this](int m) {
+        auto it = mSavedPrivateModes.find(m);
+        if (it == mSavedPrivateModes.end()) return;
+        bool v = it->second;
+        switch (m) {
+        case 1:    mCursorKeyMode             = v; break;
+        case 7:    mAutoWrap                  = v; break;
+        case 25:   mCursorVisible             = v; break;
+        case 1000: mMouseMode1000             = v; break;
+        case 1002: mMouseMode1002             = v; break;
+        case 1003: mMouseMode1003             = v; break;
+        case 1004: mFocusReporting            = v; break;
+        case 1006: mMouseMode1006             = v; break;
+        case 2004: mBracketedPaste            = v; break;
+        case 2026: mSyncOutput                = v; break;
+        case 2031: mColorPreferenceReporting  = v; break;
+        default: break;
+        }
+    };
+    if (modes.empty()) {
+        for (auto& kv : mSavedPrivateModes) restoreOne(kv.first);
+    } else {
+        for (int m : modes) restoreOne(m);
+    }
 }
 
 void TerminalEmulator::onAction(const Action *action)

@@ -413,6 +413,12 @@ private:
     bool mSyncOutput { false };      // Mode 2026: synchronized output
     bool mColorPreferenceReporting { false }; // Mode 2031
 
+    // XTSAVE / XTRESTORE: snapshot of DEC private modes saved via CSI ? Pm s,
+    // restored via CSI ? Pm r. Empty mode list = all known modes.
+    std::unordered_map<int, bool> mSavedPrivateModes;
+    void savePrivateModes(const std::vector<int>& modes);
+    void restorePrivateModes(const std::vector<int>& modes);
+
     // Kitty keyboard protocol
     static constexpr int KITTY_STACK_MAX = 8;
     uint8_t mKittyFlags { 0 };

@@ -254,3 +254,116 @@ TEST_CASE("notifyColorPreference silent when mode 2031 is not set")
     t.term.notifyColorPreference(true);
     CHECK(t.term.capturedOutput.empty());
 }
+
+// ── DECREQTPARM (CSI Ps x) ───────────────────────────────────────────────────
+
+TEST_CASE("DECREQTPARM Ps=0 returns Psol=2")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("0x");
+    CHECK(t.output() == "\x1b[2;1;1;128;128;1;0x");
+}
+
+TEST_CASE("DECREQTPARM Ps=1 returns Psol=3")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("1x");
+    CHECK(t.output() == "\x1b[3;1;1;128;128;1;0x");
+}
+
+TEST_CASE("DECREQTPARM with no parameter defaults to Ps=0")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("x");
+    CHECK(t.output() == "\x1b[2;1;1;128;128;1;0x");
+}
+
+TEST_CASE("DECREQTPARM with invalid Ps does not respond")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("2x");
+    CHECK(t.output().empty());
+}
+
+TEST_CASE("CSI x with intermediate is not treated as DECREQTPARM")
+{
+    TestTerminal t;
+    t.clearOutput();
+    // CSI 1;1;1;1;1$x — DECFRA-style, has '$' intermediate
+    t.csi("1;1;1;1;1$x");
+    CHECK(t.output().empty());
+}
+
+// ── XTSAVE / XTRESTORE (CSI ? Pm s / CSI ? Pm r) ─────────────────────────────
+
+TEST_CASE("XTSAVE/XTRESTORE round-trips a single mode")
+{
+    TestTerminal t;
+    t.csi("?25h");          // cursor visible
+    t.csi("?25s");          // save
+    t.csi("?25l");          // hide
+    CHECK_FALSE(t.term.cursorVisible());
+    t.csi("?25r");          // restore
+    CHECK(t.term.cursorVisible());
+}
+
+TEST_CASE("XTSAVE/XTRESTORE round-trips multiple modes via list")
+{
+    TestTerminal t;
+    t.csi("?25h");
+    t.csi("?2004h");
+    t.csi("?25;2004s");     // save both
+    t.csi("?25l");
+    t.csi("?2004l");
+    CHECK_FALSE(t.term.cursorVisible());
+    CHECK_FALSE(t.term.bracketedPaste());
+    t.csi("?25;2004r");     // restore both
+    CHECK(t.term.cursorVisible());
+    CHECK(t.term.bracketedPaste());
+}
+
+TEST_CASE("XTSAVE with no parameters saves all known modes")
+{
+    TestTerminal t;
+    t.csi("?25h");
+    t.csi("?2004h");
+    t.csi("?s");            // save all
+    t.csi("?25l");
+    t.csi("?2004l");
+    t.csi("?r");            // restore all
+    CHECK(t.term.cursorVisible());
+    CHECK(t.term.bracketedPaste());
+}
+
+TEST_CASE("XTRESTORE without prior save is a no-op")
+{
+    TestTerminal t;
+    CHECK(t.term.cursorVisible());
+    t.csi("?25r");          // nothing was saved
+    CHECK(t.term.cursorVisible());
+}
+
+TEST_CASE("XTSAVE captures false values too")
+{
+    TestTerminal t;
+    t.csi("?25l");          // hide
+    t.csi("?25s");          // save (false)
+    t.csi("?25h");          // show
+    CHECK(t.term.cursorVisible());
+    t.csi("?25r");          // restore -> false
+    CHECK_FALSE(t.term.cursorVisible());
+}
+
+TEST_CASE("XTRESTORE does not invoke DECSTBM scroll-region path")
+{
+    // Regression: CSI ? r used to fall through to DECSTBM and reset the cursor.
+    TestTerminal t;
+    t.csi("5;10H");
+    t.csi("?r");
+    CHECK(t.term.cursorX() == 9);
+    CHECK(t.term.cursorY() == 4);
+}

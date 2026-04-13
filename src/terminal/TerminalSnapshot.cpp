@@ -110,6 +110,42 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     // re-mark them.
     grid.clearAllDirty();
 
+    // Image view capture. Collect imageIds referenced by visible extras, plus
+    // any images with active animations (scheduling the next wake-up needs
+    // their gap/frameShownAt even when off-screen).
+    images.clear();
+    const auto& liveRegistry = term.imageRegistry();
+    auto captureView = [&](uint32_t imageId) {
+        if (images.count(imageId)) return;
+        auto it = liveRegistry.find(imageId);
+        if (it == liveRegistry.end() || !it->second) return;
+        const auto& img = *it->second;
+        ImageView view;
+        view.entry = it->second;  // shared_ptr copy — keeps image alive past parser delete
+        view.pixelWidth  = img.pixelWidth;
+        view.pixelHeight = img.pixelHeight;
+        view.cellWidth   = img.cellWidth;
+        view.cellHeight  = img.cellHeight;
+        view.cropX = img.cropX; view.cropY = img.cropY;
+        view.cropW = img.cropW; view.cropH = img.cropH;
+        view.currentFrameIndex = img.currentFrameIndex;
+        view.totalFrames = 1u + static_cast<uint32_t>(img.extraFrames.size());
+        view.frameGeneration = img.frameGeneration;
+        view.currentFrameGap = img.currentFrameGap();
+        view.frameShownAt = img.frameShownAt;
+        view.hasAnimation = img.hasAnimation();
+        images.emplace(imageId, std::move(view));
+    };
+    for (const auto& re : rowExtras) {
+        for (const auto& [col, ex] : re.entries) {
+            (void)col;
+            if (ex.imageId) captureView(ex.imageId);
+        }
+    }
+    for (const auto& [id, imgPtr] : liveRegistry) {
+        if (imgPtr && imgPtr->hasAnimation()) captureView(id);
+    }
+
     lastRows_ = rows;
     lastCols_ = cols;
     lastViewportOffset_ = viewportOffset;

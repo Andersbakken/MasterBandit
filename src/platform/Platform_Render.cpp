@@ -586,22 +586,23 @@ void PlatformDawn::renderFrame()
         // when there's no other reason to render; the return value feeds into
         // needsRender so we only re-render when a frame actually changed.
         bool animationAdvanced = term->tickAnimations();
-        // TODO(phase2): image registry iteration moves to render-side registry.
-        for (const auto& [id, img] : term->imageRegistry()) {
-            if (img.hasAnimation()) {
-                anyRunningAnimation = true;
-                uint32_t gap = img.currentFrameGap();
-                if (gap == 0) gap = 40;
-                uint64_t due = img.frameShownAt + gap;
-                if (due < nextAnimationDueAt) nextAnimationDueAt = due;
-            }
-        }
 
         // Capture snapshot. This copies all scalar state and dirty viewport
         // rows, then clears the live grid's dirty bits — after this point,
         // per-row dirtiness is read from snap.rowDirty, not the grid.
         rs.snapshot.update(*term);
         const TerminalSnapshot& snap = rs.snapshot;
+
+        // Animation wake-up scheduling — read through snapshot.
+        for (const auto& [id, view] : snap.images) {
+            if (view.hasAnimation) {
+                anyRunningAnimation = true;
+                uint32_t gap = view.currentFrameGap;
+                if (gap == 0) gap = 40;
+                uint64_t due = view.frameShownAt + gap;
+                if (due < nextAnimationDueAt) nextAnimationDueAt = due;
+            }
+        }
 
         bool cursorMoved = (snap.cursorX != rs.lastCursorX || snap.cursorY != rs.lastCursorY ||
                             snap.cursorVisible != rs.lastCursorVisible);
@@ -795,32 +796,32 @@ void PlatformDawn::renderFrame()
                     if (seenPlacements.count(key)) continue;
                     seenPlacements.insert(key);
 
-                    auto it = term->imageRegistry().find(ex->imageId);
-                    if (it == term->imageRegistry().end()) continue;
-                    const auto& img = it->second;
+                    auto viewIt = snap.images.find(ex->imageId);
+                    if (viewIt == snap.images.end()) continue;
+                    const auto& view = viewIt->second;
+                    if (!view.entry) continue;
+                    const auto& placements = view.entry->placements;
 
                     // GPU upload — once per image, not per placement. The
                     // renderer caches one texture per frame index, so animation
                     // playback only re-uploads on the first cycle.
                     if (!seenImageGPU.count(ex->imageId)) {
                         seenImageGPU.insert(ex->imageId);
-                        const auto& frameData = img.currentFrameRGBA();
-                        uint32_t totalFrames =
-                            1 + static_cast<uint32_t>(img.extraFrames.size());
+                        const auto& frameData = view.entry->currentFrameRGBA();
                         renderer_.useImageFrame(queue_, ex->imageId,
-                            img.currentFrameIndex, totalFrames,
-                            img.frameGeneration,
-                            frameData.data(), img.pixelWidth, img.pixelHeight);
+                            view.currentFrameIndex, view.totalFrames,
+                            view.frameGeneration,
+                            frameData.data(), view.pixelWidth, view.pixelHeight);
                         paneVisibleImages.insert(ex->imageId);
                     }
 
                     // Use per-placement display params if available, else image defaults
-                    uint32_t dispCellW = img.cellWidth, dispCellH = img.cellHeight;
-                    uint32_t dispCropX = img.cropX, dispCropY = img.cropY;
-                    uint32_t dispCropW = img.cropW, dispCropH = img.cropH;
+                    uint32_t dispCellW = view.cellWidth, dispCellH = view.cellHeight;
+                    uint32_t dispCropX = view.cropX, dispCropY = view.cropY;
+                    uint32_t dispCropW = view.cropW, dispCropH = view.cropH;
                     float subCellX = 0.0f, subCellY = 0.0f;
-                    auto plIt = img.placements.find(ex->imagePlacementId);
-                    if (plIt != img.placements.end()) {
+                    auto plIt = placements.find(ex->imagePlacementId);
+                    if (plIt != placements.end()) {
                         const auto& pl = plIt->second;
                         if (pl.cellWidth > 0)  dispCellW = pl.cellWidth;
                         if (pl.cellHeight > 0) dispCellH = pl.cellHeight;
@@ -834,10 +835,10 @@ void PlatformDawn::renderFrame()
 
                     float imgW = dispCellW > 0
                         ? static_cast<float>(dispCellW) * charWidth_
-                        : static_cast<float>(img.pixelWidth);
+                        : static_cast<float>(view.pixelWidth);
                     float imgH = dispCellH > 0
                         ? static_cast<float>(dispCellH) * lineHeight_
-                        : static_cast<float>(img.pixelHeight);
+                        : static_cast<float>(view.pixelHeight);
                     float imgX = padLeft_ + static_cast<float>(ex->imageStartCol) * charWidth_ + subCellX;
                     float imgY = padTop_ + (static_cast<float>(re.viewRow) - ex->imageOffsetRow) * lineHeight_ + subCellY;
 
@@ -851,12 +852,12 @@ void PlatformDawn::renderFrame()
                     // Source rect crop: map UVs to the crop sub-rectangle.
                     // GPU texture has a 1px transparent border, so image data
                     // occupies [1, width+1] x [1, height+1] in texel coords.
-                    float texW = static_cast<float>(img.pixelWidth + 2);
-                    float texH = static_cast<float>(img.pixelHeight + 2);
+                    float texW = static_cast<float>(view.pixelWidth + 2);
+                    float texH = static_cast<float>(view.pixelHeight + 2);
                     float borderU = 1.0f / texW;
                     float borderV = 1.0f / texH;
-                    float imgU = static_cast<float>(img.pixelWidth) / texW;
-                    float imgV = static_cast<float>(img.pixelHeight) / texH;
+                    float imgU = static_cast<float>(view.pixelWidth) / texW;
+                    float imgV = static_cast<float>(view.pixelHeight) / texH;
                     float cropU0, cropV0, cropU1, cropV1;
                     if (dispCropW > 0) {
                         cropU0 = borderU + static_cast<float>(dispCropX) / texW;
@@ -887,7 +888,7 @@ void PlatformDawn::renderFrame()
                     cmd.v0 = cropV0 + fracY0 * (cropV1 - cropV0);
                     cmd.u1 = cropU0 + fracX1 * (cropU1 - cropU0);
                     cmd.v1 = cropV0 + fracY1 * (cropV1 - cropV0);
-                    cmd.zIndex = plIt != img.placements.end() ? plIt->second.zIndex : 0;
+                    cmd.zIndex = plIt != placements.end() ? plIt->second.zIndex : 0;
                     // Insert sorted by z-index
                     auto pos = std::lower_bound(imageCmds.begin(), imageCmds.end(), cmd,
                         [](const Renderer::ImageDrawCmd& a, const Renderer::ImageDrawCmd& b) {

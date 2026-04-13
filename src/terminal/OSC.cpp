@@ -120,7 +120,7 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
     uint32_t imageId = entry.id;
     spdlog::warn("OSC 1337: image id={} {}x{} px, {}x{} cells",
                  imageId, w, h, cellCols, cellRows);
-    mImageRegistry[imageId] = std::move(entry);
+    mImageRegistry[imageId] = std::make_shared<ImageEntry>(std::move(entry));
 
     placeImageInGrid(imageId, 0, cellCols, cellRows);
 }

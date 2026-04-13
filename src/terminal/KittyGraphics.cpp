@@ -233,7 +233,7 @@ uint32_t TerminalEmulator::findImageByNumber(uint32_t number) const
 {
     uint32_t bestId = 0;
     for (const auto& [id, img] : mImageRegistry) {
-        if (img.imageNumber == number && id > bestId)
+        if (img->imageNumber == number && id > bestId)
             bestId = id;
     }
     return bestId;
@@ -445,7 +445,7 @@ void TerminalEmulator::processAPC()
             sendResponse(targetId, "ENOENT:image not found");
             return;
         }
-        auto& img = it->second;
+        auto& img = *it->second;
         int cols = cmd.cellCols > 0 ? static_cast<int>(cmd.cellCols) : static_cast<int>(img.cellWidth);
         int rows = cmd.cellRows > 0 ? static_cast<int>(cmd.cellRows) : static_cast<int>(img.cellHeight);
 
@@ -507,7 +507,7 @@ void TerminalEmulator::processAPC()
                     // Delete specific placement only
                     auto imgIt = mImageRegistry.find(cmd.id);
                     if (imgIt != mImageRegistry.end()) {
-                        imgIt->second.placements.erase(cmd.placementId);
+                        imgIt->second->placements.erase(cmd.placementId);
                         // Clear cells for this placement
                         IGrid& dg = grid();
                         for (int r = 0; r < mHeight; r++) {
@@ -520,7 +520,7 @@ void TerminalEmulator::processAPC()
                             }
                         }
                         // If uppercase and no placements remain, free image data
-                        if (da == 'I' && imgIt->second.placements.empty())
+                        if (da == 'I' && imgIt->second->placements.empty())
                             mImageRegistry.erase(imgIt);
                     }
                 } else {
@@ -548,7 +548,7 @@ void TerminalEmulator::processAPC()
                     if (cmd.placementId > 0) {
                         auto imgIt = mImageRegistry.find(found);
                         if (imgIt != mImageRegistry.end()) {
-                            imgIt->second.placements.erase(cmd.placementId);
+                            imgIt->second->placements.erase(cmd.placementId);
                             IGrid& dg = grid();
                             for (int r = 0; r < mHeight; r++) {
                                 for (int c = 0; c < mWidth; c++) {
@@ -559,7 +559,7 @@ void TerminalEmulator::processAPC()
                                     }
                                 }
                             }
-                            if (da == 'N' && imgIt->second.placements.empty())
+                            if (da == 'N' && imgIt->second->placements.empty())
                                 mImageRegistry.erase(imgIt);
                         }
                     } else {
@@ -584,10 +584,10 @@ void TerminalEmulator::processAPC()
             uint32_t targetId = resolveId();
             auto fit = mImageRegistry.find(targetId);
             if (fit != mImageRegistry.end()) {
-                fit->second.extraFrames.clear();
-                fit->second.currentFrameIndex = 0;
-                fit->second.animationState = ImageEntry::Stopped;
-                fit->second.frameGeneration++;
+                fit->second->extraFrames.clear();
+                fit->second->currentFrameIndex = 0;
+                fit->second->animationState = ImageEntry::Stopped;
+                fit->second->frameGeneration++;
             }
             break;
         }
@@ -613,9 +613,9 @@ void TerminalEmulator::processAPC()
                 // Check if targetCol falls within this image's column range
                 auto imgIt = mImageRegistry.find(cex->imageId);
                 if (imgIt == mImageRegistry.end()) continue;
-                uint32_t cw = imgIt->second.cellWidth;
-                auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
-                if (plIt != imgIt->second.placements.end() && plIt->second.cellWidth > 0)
+                uint32_t cw = imgIt->second->cellWidth;
+                auto plIt = imgIt->second->placements.find(cex->imagePlacementId);
+                if (plIt != imgIt->second->placements.end() && plIt->second.cellWidth > 0)
                     cw = plIt->second.cellWidth;
                 if (targetCol >= static_cast<int>(cex->imageStartCol) &&
                     targetCol < static_cast<int>(cex->imageStartCol + cw)) {
@@ -638,8 +638,8 @@ void TerminalEmulator::processAPC()
                 if (da >= 'A' && da <= 'Z') {
                     auto it = mImageRegistry.find(imgId);
                     if (it != mImageRegistry.end()) {
-                        it->second.placements.erase(plId);
-                        if (it->second.placements.empty())
+                        it->second->placements.erase(plId);
+                        if (it->second->placements.empty())
                             mImageRegistry.erase(it);
                     }
                 }
@@ -657,9 +657,9 @@ void TerminalEmulator::processAPC()
                     if (!cex || cex->imageId == 0) continue;
                     auto imgIt = mImageRegistry.find(cex->imageId);
                     if (imgIt == mImageRegistry.end()) continue;
-                    uint32_t cw = imgIt->second.cellWidth;
-                    auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
-                    if (plIt != imgIt->second.placements.end() && plIt->second.cellWidth > 0)
+                    uint32_t cw = imgIt->second->cellWidth;
+                    auto plIt = imgIt->second->placements.find(cex->imagePlacementId);
+                    if (plIt != imgIt->second->placements.end() && plIt->second.cellWidth > 0)
                         cw = plIt->second.cellWidth;
                     if (targetCol >= static_cast<int>(cex->imageStartCol) &&
                         targetCol < static_cast<int>(cex->imageStartCol + cw)) {
@@ -682,8 +682,8 @@ void TerminalEmulator::processAPC()
                 if (da >= 'A' && da <= 'Z') {
                     auto it = mImageRegistry.find(imgId);
                     if (it != mImageRegistry.end()) {
-                        it->second.placements.erase(plId);
-                        if (it->second.placements.empty())
+                        it->second->placements.erase(plId);
+                        if (it->second->placements.empty())
                             mImageRegistry.erase(it);
                     }
                 }
@@ -715,8 +715,8 @@ void TerminalEmulator::processAPC()
                 if (da >= 'A' && da <= 'Z') {
                     auto it = mImageRegistry.find(imgId);
                     if (it != mImageRegistry.end()) {
-                        it->second.placements.erase(plId);
-                        if (it->second.placements.empty())
+                        it->second->placements.erase(plId);
+                        if (it->second->placements.empty())
                             mImageRegistry.erase(it);
                     }
                 }
@@ -761,8 +761,8 @@ void TerminalEmulator::processAPC()
                     if (!cex || cex->imageId == 0) continue;
                     auto imgIt = mImageRegistry.find(cex->imageId);
                     if (imgIt == mImageRegistry.end()) continue;
-                    auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
-                    int32_t z = (plIt != imgIt->second.placements.end()) ? plIt->second.zIndex : 0;
+                    auto plIt = imgIt->second->placements.find(cex->imagePlacementId);
+                    int32_t z = (plIt != imgIt->second->placements.end()) ? plIt->second.zIndex : 0;
                     if (z == targetZ)
                         toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
                 }
@@ -782,8 +782,8 @@ void TerminalEmulator::processAPC()
                 if (da == 'Z') {
                     auto it = mImageRegistry.find(imgId);
                     if (it != mImageRegistry.end()) {
-                        it->second.placements.erase(plId);
-                        if (it->second.placements.empty())
+                        it->second->placements.erase(plId);
+                        if (it->second->placements.empty())
                             mImageRegistry.erase(it);
                     }
                 }
@@ -802,9 +802,9 @@ void TerminalEmulator::processAPC()
                 if (!cex || cex->imageId == 0) continue;
                 auto imgIt = mImageRegistry.find(cex->imageId);
                 if (imgIt == mImageRegistry.end()) continue;
-                uint32_t cw = imgIt->second.cellWidth;
-                auto plIt = imgIt->second.placements.find(cex->imagePlacementId);
-                if (plIt != imgIt->second.placements.end()) {
+                uint32_t cw = imgIt->second->cellWidth;
+                auto plIt = imgIt->second->placements.find(cex->imagePlacementId);
+                if (plIt != imgIt->second->placements.end()) {
                     if (plIt->second.cellWidth > 0) cw = plIt->second.cellWidth;
                     if (plIt->second.zIndex != targetZ) continue;
                 } else if (targetZ != 0) {
@@ -830,8 +830,8 @@ void TerminalEmulator::processAPC()
                 if (da == 'Q') {
                     auto it = mImageRegistry.find(imgId);
                     if (it != mImageRegistry.end()) {
-                        it->second.placements.erase(plId);
-                        if (it->second.placements.empty())
+                        it->second->placements.erase(plId);
+                        if (it->second->placements.empty())
                             mImageRegistry.erase(it);
                     }
                 }
@@ -853,7 +853,7 @@ void TerminalEmulator::processAPC()
             sendResponse(targetId, "ENOENT:image not found");
             return;
         }
-        auto& img = it->second;
+        auto& img = *it->second;
 
         auto decoded = decodeImageData(chunkData, cmd.compressed,
                                         cmd.format, cmd.dataWidth, cmd.dataHeight);
@@ -938,7 +938,7 @@ void TerminalEmulator::processAPC()
             // Silently ignore — client may have exited
             return;
         }
-        auto& img = it->second;
+        auto& img = *it->second;
 
         // s= (dataWidth) is animation_state: 1=stop, 2=loading, 3=running
         if (cmd.dataWidth >= 1 && cmd.dataWidth <= 3) {
@@ -1001,7 +1001,7 @@ void TerminalEmulator::processAPC()
             sendResponse(targetId, "ENOENT:image not found");
             return;
         }
-        auto& img = it->second;
+        auto& img = *it->second;
         uint32_t totalFrames = 1 + static_cast<uint32_t>(img.extraFrames.size());
 
         // r= source frame, c= dest frame (1-based; reused as cellRows/cellCols)
@@ -1153,7 +1153,7 @@ void TerminalEmulator::processAPC()
 
     spdlog::debug("kitty graphics: image id={} {}x{} px, {}x{} cells, action={}, t={}",
                   imageId, imgW, imgH, cellCols, cellRows, cmd.action, cmd.transmissionType);
-    mImageRegistry[imageId] = std::move(entry);
+    mImageRegistry[imageId] = std::make_shared<ImageEntry>(std::move(entry));
     mLastKittyImageId = imageId;
 
     // Place in grid if action is transmit+display
@@ -1166,7 +1166,7 @@ void TerminalEmulator::processAPC()
         pl.cellXOffset = cmd.cellXOffset;
         pl.cellYOffset = cmd.cellYOffset;
         pl.zIndex = cmd.zIndex;
-        mImageRegistry[imageId].placements[cmd.placementId] = pl;
+        mImageRegistry[imageId]->placements[cmd.placementId] = pl;
         placeImageInGrid(imageId, cmd.placementId, cellCols, cellRows, cmd.cursorMovement == 0);
     }
 
@@ -1180,7 +1180,8 @@ bool TerminalEmulator::tickAnimations()
     uint64_t now = mono();
     bool anyAdvanced = false;
 
-    for (auto& [id, img] : mImageRegistry) {
+    for (auto& [id, imgPtr] : mImageRegistry) {
+        auto& img = *imgPtr;
         if (!img.hasAnimation()) continue;
 
         uint32_t gap = img.currentFrameGap();

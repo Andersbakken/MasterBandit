@@ -3,6 +3,8 @@
 #include <CellTypes.h>
 #include <TerminalEmulator.h>
 #include <cstdint>
+#include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -51,6 +53,30 @@ struct TerminalSnapshot {
     // be evaluated without calling back into Terminal.
     TerminalEmulator::Selection selection {};
     bool isCellSelected(int col, int absRow) const;
+
+    // Per-image view for rendering and animation scheduling. Populated from
+    // TerminalEmulator::imageRegistry() during update() with the subset of
+    // images needed this frame — visible (referenced by CellExtra in viewport
+    // rows) plus any images with active animations (so animation scheduling
+    // sees off-screen running images too).
+    //
+    // `entry` is a shared_ptr into the parser's registry so the image data
+    // remains alive across snapshot use even if the parser deletes its
+    // registry entry. Scalar fields are copied by value so the renderer
+    // reads don't depend on the entry's mutable fields staying frozen.
+    struct ImageView {
+        std::shared_ptr<const TerminalEmulator::ImageEntry> entry;
+        uint32_t pixelWidth { 0 }, pixelHeight { 0 };
+        uint32_t cellWidth { 0 }, cellHeight { 0 };
+        uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
+        uint32_t currentFrameIndex { 0 };
+        uint32_t totalFrames { 1 };  // 1 + extraFrames.size()
+        uint32_t frameGeneration { 0 };
+        uint32_t currentFrameGap { 40 };
+        uint64_t frameShownAt { 0 };
+        bool hasAnimation { false };
+    };
+    std::unordered_map<uint32_t, ImageView> images;
 
     // Mode 2026 — when true the render thread should re-present the prior
     // frame instead of updating.

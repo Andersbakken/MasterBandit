@@ -80,7 +80,7 @@ TEST_CASE("kitty graphics: transmit+display places image in grid")
     // Image should be in registry
     auto& reg = t.term.imageRegistry();
     REQUIRE(reg.count(5));
-    auto& img = reg.at(5);
+    auto& img = *reg.at(5);
     CHECK(img.pixelWidth == 10);
     CHECK(img.pixelHeight == 20);
     CHECK(img.id == 5);
@@ -102,7 +102,7 @@ TEST_CASE("kitty graphics: transmit+display calculates cell dimensions from pixe
     auto px = GraphicsTerminal::solidRGBA(25, 45, 0, 0, 255);
     t.gfx("a=T,i=1,f=32,s=25,v=45,q=2", px);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.cellWidth == 3);
     CHECK(img.cellHeight == 3);
 }
@@ -113,7 +113,7 @@ TEST_CASE("kitty graphics: explicit c= and r= override calculated dimensions")
     auto px = GraphicsTerminal::solidRGBA(10, 10, 128, 128, 128);
     t.gfx("a=T,i=1,f=32,s=10,v=10,c=5,r=3,q=2", px);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.cellWidth == 5);
     CHECK(img.cellHeight == 3);
 }
@@ -143,7 +143,7 @@ TEST_CASE("kitty graphics: auto-assign ID when i=0")
     auto& reg = t.term.imageRegistry();
     CHECK(reg.size() == 1);
     // Should have an auto-assigned ID > 0
-    CHECK(reg.begin()->second.id > 0);
+    CHECK(reg.begin()->second->id > 0);
 }
 
 // ── RGB format ──────────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ TEST_CASE("kitty graphics: RGB24 format converted to RGBA")
     std::vector<uint8_t> rgb = {255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128};
     t.gfx("a=t,i=1,f=24,s=2,v=2,q=2", rgb);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.pixelWidth == 2);
     CHECK(img.pixelHeight == 2);
     // First pixel: R=255, G=0, B=0, A=255
@@ -184,7 +184,7 @@ TEST_CASE("kitty graphics: chunked transfer reassembles correctly")
     // Second chunk with m=0
     t.feed("\x1b_Gm=0;" + chunk2 + "\x1b\\");
     REQUIRE(t.term.imageRegistry().count(7));
-    auto& img = t.term.imageRegistry().at(7);
+    auto& img = *t.term.imageRegistry().at(7);
     CHECK(img.pixelWidth == 2);
     CHECK(img.pixelHeight == 2);
 }
@@ -242,7 +242,7 @@ TEST_CASE("kitty graphics: delete animation frames")
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.extraFrames.size() == 2);
 
     // Delete frames
@@ -338,7 +338,7 @@ TEST_CASE("kitty graphics: frame load adds extra frames")
     auto frame2 = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=50,q=2", frame2);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.extraFrames.size() == 2);
     CHECK(img.extraFrames[0].gap == 100);
     CHECK(img.extraFrames[1].gap == 50);
@@ -353,7 +353,7 @@ TEST_CASE("kitty graphics: frame load with i=0 uses last image")
     auto frame = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     t.gfx("a=f,f=32,s=2,v=2,z=80,q=2", frame); // no i=
 
-    auto& img = t.term.imageRegistry().at(10);
+    auto& img = *t.term.imageRegistry().at(10);
     CHECK(img.extraFrames.size() == 1);
 }
 
@@ -366,7 +366,7 @@ TEST_CASE("kitty graphics: animation control starts/stops animation")
     auto frame = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.animationState == TerminalEmulator::ImageEntry::Stopped);
 
     // Start animation (s=3 → Running)
@@ -395,11 +395,11 @@ TEST_CASE("kitty graphics: tickAnimations advances frame")
     // Set root frame gap to 10ms and start animation
     t.gfx("a=a,i=1,r=1,z=10"); // set gap for frame 1 (root) to 10ms
     t.gfx("a=a,i=1,s=3");      // start running
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.currentFrameIndex == 0);
 
     // Force frameShownAt into the past to avoid wall-clock timing dependency
-    auto& mutImg = t.term.imageRegistryMut().at(1);
+    auto& mutImg = *t.term.imageRegistryMut().at(1);
     uint64_t shownBefore = TerminalEmulator::mono() - 1000;
     mutImg.frameShownAt = shownBefore;
     REQUIRE(mutImg.hasAnimation());
@@ -426,7 +426,7 @@ TEST_CASE("kitty graphics: partial frame composites onto previous frame")
     std::string b64 = base64::encode(patch.data(), patch.size());
     t.feed("\x1b_Ga=f,i=1,f=32,s=2,v=2,x=1,y=1,z=40,q=2;" + b64 + "\x1b\\");
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 1);
 
     auto& frame = img.extraFrames[0];
@@ -455,7 +455,7 @@ TEST_CASE("kitty graphics: image number stores and retrieves")
 
     auto& reg = t.term.imageRegistry();
     CHECK(reg.size() == 1);
-    auto& img = reg.begin()->second;
+    auto& img = *reg.begin()->second;
     CHECK(img.imageNumber == 42);
 }
 
@@ -465,7 +465,7 @@ TEST_CASE("kitty graphics: put by image number")
     auto px = GraphicsTerminal::solidRGBA(10, 10, 0, 0, 255);
     t.gfx("a=t,I=99,f=32,s=10,v=10,q=2", px);
 
-    uint32_t imgId = t.term.imageRegistry().begin()->second.id;
+    uint32_t imgId = t.term.imageRegistry().begin()->second->id;
 
     t.clearOutput();
     t.gfx("a=p,I=99");
@@ -489,7 +489,7 @@ TEST_CASE("kitty graphics: image number lookup returns most recent")
     // Both have I=7; findImageByNumber should return the higher ID (most recent)
     uint32_t maxId = 0;
     for (auto& [id, img] : reg) {
-        CHECK(img.imageNumber == 7);
+        CHECK(img->imageNumber == 7);
         maxId = std::max(maxId, id);
     }
     CHECK(t.term.findImageByNumber(7) == maxId);
@@ -528,7 +528,7 @@ TEST_CASE("kitty graphics: animation frame load by image number")
 
     auto& reg = t.term.imageRegistry();
     CHECK(reg.size() == 1);
-    auto& img = reg.begin()->second;
+    auto& img = *reg.begin()->second;
     CHECK(img.extraFrames.size() == 1);
 }
 
@@ -540,7 +540,7 @@ TEST_CASE("kitty graphics: crop parameters stored on image")
     auto px = GraphicsTerminal::solidRGBA(10, 10, 255, 0, 0);
     t.gfx("a=t,i=1,f=32,s=10,v=10,x=2,y=3,w=5,h=4,q=2", px);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.cropX == 2);
     CHECK(img.cropY == 3);
     CHECK(img.cropW == 5);
@@ -553,7 +553,7 @@ TEST_CASE("kitty graphics: no crop when w=0 h=0")
     auto px = GraphicsTerminal::solidRGBA(10, 10, 255, 0, 0);
     t.gfx("a=t,i=1,f=32,s=10,v=10,q=2", px);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.cropW == 0);
     CHECK(img.cropH == 0);
 }
@@ -679,7 +679,7 @@ TEST_CASE("kitty graphics: put with placement ID creates separate placement")
     CHECK(ex0b->imagePlacementId == 1);
 
     // Image has two placements
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.placements.size() == 2);
     CHECK(img.placements.count(1));
     CHECK(img.placements.count(2));
@@ -738,7 +738,7 @@ TEST_CASE("kitty graphics: delete specific placement by ID")
 
     // Image still in registry (has remaining placement)
     CHECK(t.term.imageRegistry().count(1));
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.placements.size() == 1);
     CHECK(img.placements.count(2));
 }
@@ -783,7 +783,7 @@ TEST_CASE("kitty graphics: placement stores per-placement display params")
     // Place with custom cell dimensions
     t.gfx("a=p,i=1,p=1,c=4,r=3,q=2");
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
     auto& pl = img.placements.at(1);
     CHECK(pl.cellWidth == 4);
@@ -927,7 +927,7 @@ TEST_CASE("kitty graphics: animation control c= sets current frame")
     auto f2 = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", f2);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.currentFrameIndex == 0);
 
     // Switch to frame 2 (1-based)
@@ -954,7 +954,7 @@ TEST_CASE("kitty graphics: z-index stored on placement")
 
     t.gfx("a=p,i=1,p=1,z=-5,q=2");
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
     CHECK(img.placements.at(1).zIndex == -5);
 }
@@ -965,7 +965,7 @@ TEST_CASE("kitty graphics: transmit+display stores z-index")
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,z=-1,q=2", px);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(0));
     CHECK(img.placements.at(0).zIndex == -1);
 }
@@ -976,7 +976,7 @@ TEST_CASE("kitty graphics: default z-index is 0")
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(0));
     CHECK(img.placements.at(0).zIndex == 0);
 }
@@ -1042,7 +1042,7 @@ TEST_CASE("kitty graphics: frame composition copies rectangle between frames")
     auto frame2 = GraphicsTerminal::solidRGBA(4, 4, 0, 0, 255);
     t.gfx("a=f,i=1,f=32,s=4,v=4,z=40,q=2", frame2);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 1);
 
     // Compose: copy 2x2 from frame 1 (red) at src (0,0) to frame 2 (blue) at dst (1,1)
@@ -1083,7 +1083,7 @@ TEST_CASE("kitty graphics: frame composition alpha blends by default")
     CHECK(t.output().find("OK") != std::string::npos);
 
     // Frame 3 pixel (0,0): should be blended red over blue
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     auto& f3 = img.extraFrames[1];
     // Red channel: (255 * 128 + 0 * 127) / 255 ≈ 128
     CHECK(f3.rgba[0] > 100); // R should be significant
@@ -1156,7 +1156,7 @@ TEST_CASE("kitty graphics: file transmission with S= and O= reads subrange")
 
     auto& reg = t.term.imageRegistry();
     REQUIRE(reg.count(1));
-    auto& img = reg.at(1);
+    auto& img = *reg.at(1);
     CHECK(img.pixelWidth == 2);
     CHECK(img.pixelHeight == 2);
     // First pixel should be green (from offset 16)
@@ -1189,7 +1189,7 @@ TEST_CASE("kitty graphics: file transmission with O= only reads from offset to e
     std::string esc = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,O=16,q=2;" + b64path + "\x1b\\";
     t.feed(esc);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     // Should be blue
     CHECK(img.rgba[0] == 0);
     CHECK(img.rgba[1] == 0);
@@ -1230,7 +1230,7 @@ TEST_CASE("kitty graphics: sub-cell pixel offsets stored on placement")
 
     t.gfx("a=p,i=1,p=1,X=3,Y=5,q=2");
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
     auto& pl = img.placements.at(1);
     CHECK(pl.cellXOffset == 3);
@@ -1243,7 +1243,7 @@ TEST_CASE("kitty graphics: transmit+display stores sub-cell offsets")
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,X=2,Y=4,q=2", px);
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(0));
     auto& pl = img.placements.at(0);
     CHECK(pl.cellXOffset == 2);
@@ -1259,7 +1259,7 @@ TEST_CASE("kitty graphics: placement with crop params")
     // Place with crop
     t.gfx("a=p,i=1,p=1,x=2,y=3,w=10,h=8,q=2");
 
-    auto& img = t.term.imageRegistry().at(1);
+    auto& img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
     auto& pl = img.placements.at(1);
     CHECK(pl.cropX == 2);

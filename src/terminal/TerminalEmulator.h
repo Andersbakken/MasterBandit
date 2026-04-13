@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -298,8 +299,14 @@ public:
         }
         bool hasAnimation() const { return !extraFrames.empty() && animationState == Running; }
     };
-    const std::unordered_map<uint32_t, ImageEntry>& imageRegistry() const { return mImageRegistry; }
-    std::unordered_map<uint32_t, ImageEntry>& imageRegistryMut() { return mImageRegistry; }
+    // ImageEntry is owned via shared_ptr so the render thread can hold a
+    // reference to an image's data (rgba buffers, placements, animation
+    // state) across the Terminal mutex being released. When the parser
+    // deletes an image, its map entry is removed; any outstanding
+    // shared_ptr — e.g. captured in a TerminalSnapshot — keeps the data
+    // alive until the render drops its reference.
+    const std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>>& imageRegistry() const { return mImageRegistry; }
+    std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>>& imageRegistryMut() { return mImageRegistry; }
     uint32_t findImageByNumber(uint32_t number) const;
 
     // Advance all running animations based on current time.
@@ -533,7 +540,7 @@ private:
     Selection mSelection;
 
     // Image registry
-    std::unordered_map<uint32_t, ImageEntry> mImageRegistry;
+    std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>> mImageRegistry;
     uint32_t mNextImageId { 1 };
 
     // Hyperlink registry (OSC 8)

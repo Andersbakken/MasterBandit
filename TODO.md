@@ -173,6 +173,19 @@
 - [ ] Image vertex buffer growth — `imageVertexBuffer_` is fixed at 256 image slots. Should grow dynamically or guard against overflow when >256 images are visible in one frame.
 - [ ] mmap font loading — large fonts (64 MB+) are currently read into a malloc'd buffer. Use `mmap` so pages can be faulted in on demand and reclaimed under memory pressure. HarfBuzz accepts pointer+length so this is a drop-in change.
 
+## Architecture / Threading
+
+See `RENDER_THREADING.md` for the full design. High-level phases, each shippable on its own:
+
+- [ ] Phase 1: Introduce `TerminalSnapshot` and route all renderer reads through it. Single-threaded initially; updates synchronously in `renderFrame()`. Forces the renderer-read audit to completion.
+- [ ] Phase 2: Move image registry to renderer-owned; parser sends upload/placement/delete messages via SPSC queue. Parser keeps metadata-only side index for kitty protocol responses. Placements keyed by monotonic row ID.
+- [ ] Phase 3: Add `std::mutex` on `Terminal`; acquire in all mutation paths and in `TerminalSnapshot::update()`. Still single-threaded so uncontended — validates mutation-site coverage.
+- [ ] Phase 4: Split render thread. `renderFrame()` runs on its own thread driven by `renderWakeup.notify()` from `flushReadBuffer()`. WorkerPool `resolveRow()` reads from snapshot.
+- [ ] Phase 5: GPU frame pacing. `FrameState[3]` + `FramePacer` using `Queue::OnSubmittedWorkDone` with `CallbackMode::AllowSpontaneous` and `std::counting_semaphore`.
+- [ ] Phase 6: Atlas dirty counter. Atomic monotonic counter on `FontData`; render thread compares per frame and uploads under existing `shared_mutex`.
+- [ ] Phase 7: Move `tickAnimations()` to render thread, driven by frame cadence.
+- [ ] Phase 8: Resize coalescing (25 ms window) and sync-output (mode 2026) early-exit in snapshot update.
+
 ## Platform (Linux)
 
 - [ ] Notifications via D-Bus — replace `execvp notify-send` with direct libdbus calls. Wire libdbus watches/timeouts into libuv (`uv_poll_t`/`uv_timer_t`) via `dbus_connection_set_watch_functions` / `dbus_connection_set_timeout_functions`. Subscribe to `ActionInvoked`, `NotificationClosed`, `ActivationToken` signals for click-to-focus support (like kitty/wezterm). kitty's `glfw/dbus_glfw.c` + `glfw/linux_notify.c` (~500 lines, no extra deps beyond libdbus) is a useful reference for the watch integration pattern.

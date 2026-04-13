@@ -932,11 +932,14 @@ void PlatformDawn::renderFrame()
                     params.cursor_type  = isFocused ? 1u : 2u;
                 }
             } else {
-                // Main pane: suppress cursor if any popup exists (popup has its own cursor)
+                // Main pane: suppress cursor only if a popup covers the cursor's
+                // cell (otherwise the cursor is visually unobstructed even when
+                // popups are open elsewhere in the pane).
                 bool popupHasFocus = target.pane && target.pane->focusedPopup() != nullptr;
-                bool hasPanePopups = target.pane && !target.pane->popups().empty();
                 int cursorViewRow = term->cursorY() + term->viewportOffset();
-                if (!hasPanePopups &&
+                bool cursorCovered = target.pane &&
+                    target.pane->isCellCoveredByPopup(term->cursorX(), cursorViewRow);
+                if (!cursorCovered &&
                     term->cursorVisible() &&
                     term->cursorX() >= 0 && term->cursorX() < g.cols() &&
                     cursorViewRow >= 0 && cursorViewRow < g.rows()) {

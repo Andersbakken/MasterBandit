@@ -39,6 +39,18 @@ public:
     bool resizePopup(const std::string& id, int x, int y, int w, int h);
     PopupPane* findPopup(const std::string& id);
     const std::vector<PopupPane>& popups() const { return mPopups; }
+
+    // True if the given cell (col, row) lies inside any popup's rect. Used by
+    // the renderer to decide whether the main pane's cursor should be hidden.
+    bool isCellCoveredByPopup(int col, int row) const {
+        for (const auto& p : mPopups) {
+            if (col >= p.cellX && col < p.cellX + p.cellW &&
+                row >= p.cellY && row < p.cellY + p.cellH) {
+                return true;
+            }
+        }
+        return false;
+    }
     std::string focusedPopupId() const { return mFocusedPopupId; }
     void setFocusedPopup(const std::string& id) { mFocusedPopupId = id; }
     void clearFocusedPopup() { mFocusedPopupId.clear(); }

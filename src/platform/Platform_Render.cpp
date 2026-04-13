@@ -391,6 +391,13 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
 
 void PlatformDawn::renderFrame()
 {
+    // Coarse lock — serializes against main-thread structural mutations
+    // (tab/pane create/destroy, tab switch, resize). Released during the
+    // CPU-heavy shaping dispatch below so main thread input / deferred
+    // callbacks can proceed concurrently. Reacquired before any GPU
+    // encode or shared-field mutation.
+    std::unique_lock<std::mutex> plk(platformMutex_);
+
     if (fbWidth_ == 0 || fbHeight_ == 0) return;
     Tab* currentTab = activeTab();
     if (!currentTab) return;
@@ -689,7 +696,22 @@ void PlatformDawn::renderFrame()
     if (anyRunningAnimation && nextAnimationDueAt != std::numeric_limits<uint64_t>::max())
         scheduleAnimationWakeup(nextAnimationDueAt);
 
-    // Parallel resolve across all panes
+    // Parallel resolve across all panes.
+    //
+    // Release platformMutex_ while shaping runs — this is the CPU-heavy
+    // phase that doesn't touch main-thread-shared PaneRenderState fields
+    // (heldTexture / pendingRelease are untouched here; resolveRow reads
+    // rs.snapshot, which is already populated, and writes
+    // rs.rowShapingCache / rs.resolvedCells, which only the render thread
+    // ever touches).
+    //
+    // renderActive_ tells main thread's drainPendingExits() to defer
+    // structural erasure while the render is holding raw Tab/Pane
+    // pointers captured above. When we clear the flag, we wake the event
+    // loop so the next tick drains any deferred exits promptly.
+    renderActive_.store(true, std::memory_order_release);
+    plk.unlock();
+
     if (allWorkItems.size() > 4) {
         renderWorkers_.dispatch(allWorkItems, [&](uint32_t packed) {
             uint32_t ti = packed >> 16;
@@ -707,6 +729,10 @@ void PlatformDawn::renderFrame()
                        target.pixelOriginX, target.pixelOriginY);
         }
     }
+
+    plk.lock();
+    renderActive_.store(false, std::memory_order_release);
+    if (eventLoop_) eventLoop_->wakeup();
 
     // (Dirty flags are cleared by TerminalSnapshot::update() under the
     // Terminal mutex — nothing to do here.)

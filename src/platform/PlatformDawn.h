@@ -280,6 +280,12 @@ private:
     uint32_t defaultBgColor_ = 0x00000000;
     std::atomic<bool> needsRedraw_ { true };
     std::atomic<int> pendingGpuCallbacks_ { 0 };
+    // True while the render thread is mid-frame with platformMutex_
+    // released (shaping dispatch section). Main thread's structural erases
+    // (drainPendingExits, releasePopupStates) check this and defer when
+    // set, because the render thread is holding raw Tab*/Pane*/Terminal*
+    // pointers captured under the lock at frame start.
+    std::atomic<bool> renderActive_ { false };
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;
 
@@ -305,7 +311,10 @@ private:
         // re-upload on the next real render).
         std::unordered_set<uint32_t> lastVisibleImageIds;
         PooledTexture* heldTexture = nullptr;
-        bool dirty = true;
+        // Written by main thread (lock-free — load/store atomic), read by
+        // render thread at frame start. Phase 6.1 shrunk the render-side
+        // lock; dirty is now observable across threads without platformMutex_.
+        std::atomic<bool> dirty { true };
         std::vector<PooledTexture*> pendingRelease;
         wgpu::Buffer dividerVB;
         // Cached popup border buffers: 4 buffers (top/bottom/left/right) per popup

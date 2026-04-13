@@ -101,9 +101,13 @@ void PlatformDawn::drainDeferredMain()
 
 void PlatformDawn::drainPendingExits()
 {
-    // Called on the main thread from onTick under platformMutex_. Converts
-    // the deferred queue into actual terminalExited() structural mutations,
-    // safe now because the render thread is blocked on platformMutex_.
+    // Called on the main thread from onTick under platformMutex_. Skip when
+    // the render thread has released platformMutex_ for its shaping section
+    // but is still holding raw Tab/Pane/Terminal pointers captured before
+    // the release — erasing now would dangle them. We'll retry on the next
+    // tick (render wakes the event loop when clearing renderActive_).
+    if (renderActive_.load(std::memory_order_acquire)) return;
+
     std::vector<Terminal*> exits;
     {
         std::lock_guard<std::mutex> lk(deferredExitMutex_);
@@ -134,17 +138,16 @@ void PlatformDawn::renderThreadMain()
         }
         if (renderStop_.load(std::memory_order_acquire)) return;
 
-        // Coarse lock — serializes renderFrame against main-thread structural
-        // mutations (tab/pane create/destroy, tab switch, resize). Terminal
-        // state is separately guarded via TerminalEmulator::mutex() inside
-        // TerminalSnapshot::update().
-        std::lock_guard<std::mutex> plk(platformMutex_);
         if (renderStop_.load(std::memory_order_acquire)) return;
         // Tick Dawn on the render thread: it drains device-side events
         // (completion callbacks, deferred destroys). Must not run on main
         // thread concurrently with render-thread encoding — Metal backend
         // asserts `encodeSignalEvent:value: with uncommitted encoder`.
+        // Dawn Tick is thread-safe so it doesn't need platformMutex_.
         device_.Tick();
+        // renderFrame manages platformMutex_ internally — it releases the
+        // lock during shaping so input handlers / deferred callbacks on
+        // main thread can proceed concurrently with the CPU-heavy section.
         renderFrame();
     }
 }

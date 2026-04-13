@@ -139,6 +139,54 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
     std::lock_guard<std::mutex> plk(platformMutex_);
 
+    // During a live window drag, debounce the full resize work (surface
+    // reconfigure + layout recompute + pane/terminal reflow) to 25 ms.
+    // One-off resizes (first show, programmatic, live-resize end) apply
+    // immediately.
+    const bool live = window_ && window_->inLiveResize();
+    if (live) {
+        pendingResizeW_ = static_cast<uint32_t>(width);
+        pendingResizeH_ = static_cast<uint32_t>(height);
+        if (eventLoop_ && resizeDebounceTimer_ == 0) {
+            resizeDebounceTimer_ = eventLoop_->addTimer(25, false, [this]() {
+                std::lock_guard<std::mutex> plk(platformMutex_);
+                resizeDebounceTimer_ = 0;
+                if (pendingResizeW_ && pendingResizeH_) {
+                    applyFramebufferResize(static_cast<int>(pendingResizeW_),
+                                           static_cast<int>(pendingResizeH_));
+                    pendingResizeW_ = pendingResizeH_ = 0;
+                }
+            });
+        }
+        // Even while debounced, update fbWidth_/fbHeight_ so other main-thread
+        // readers (tab bar layout, hit-testing) see the latest window size.
+        // The actual surface reconfigure + reflow happens when the timer fires.
+        fbWidth_  = static_cast<uint32_t>(width);
+        fbHeight_ = static_cast<uint32_t>(height);
+        setNeedsRedraw();
+        return;
+    }
+
+    applyFramebufferResize(width, height);
+}
+
+void PlatformDawn::flushPendingFramebufferResize()
+{
+    // Called on main thread under platformMutex_ from onLiveResizeEnd.
+    if (resizeDebounceTimer_ && eventLoop_) {
+        eventLoop_->removeTimer(resizeDebounceTimer_);
+        resizeDebounceTimer_ = 0;
+    }
+    if (pendingResizeW_ && pendingResizeH_) {
+        applyFramebufferResize(static_cast<int>(pendingResizeW_),
+                               static_cast<int>(pendingResizeH_));
+        pendingResizeW_ = pendingResizeH_ = 0;
+    }
+}
+
+void PlatformDawn::applyFramebufferResize(int width, int height)
+{
+    // Caller must hold platformMutex_.
     fbWidth_ = static_cast<uint32_t>(width);
     fbHeight_ = static_cast<uint32_t>(height);
 
@@ -187,7 +235,6 @@ void PlatformDawn::onFramebufferResize(int width, int height)
     tabBarDirty_ = true;
     if (Tab* active = activeTab()) refreshDividers(active);
     setNeedsRedraw();
-
 }
 
 

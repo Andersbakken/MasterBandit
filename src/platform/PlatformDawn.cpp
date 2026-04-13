@@ -231,7 +231,15 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 else if (dy < 0) dispatchAction(Action::ScrollDown{});
             };
             window_->onExpose = [this]() { setNeedsRedraw(); };
-            window_->onLiveResizeEnd = [this]() { setNeedsRedraw(); };
+            window_->onLiveResizeEnd = [this]() {
+                // Apply any debounced resize captured during the drag so the
+                // final frame reflects the true window geometry.
+                {
+                    std::lock_guard<std::mutex> plk(platformMutex_);
+                    flushPendingFramebufferResize();
+                }
+                setNeedsRedraw();
+            };
             window_->onFocus = [this](bool focused) {
                 Tab* t = activeTab();
                 if (!t) return;

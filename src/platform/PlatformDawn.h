@@ -175,6 +175,17 @@ private:
     // while waiting for the next tick.
     EventLoop::TimerId         animationTimer_ = 0;
     uint64_t                   animationTimerDueAt_ = 0;
+
+    // Resize coalescing (Phase 6). During a live window drag, Cocoa fires
+    // framebuffer-resize events at display cadence. Each triggers surface
+    // reconfigure + layout recompute + terminal reflow — expensive to run
+    // per frame. Debounce to 25 ms so a drag settles briefly before we do
+    // the work; on live-resize-end, flush immediately.
+    EventLoop::TimerId         resizeDebounceTimer_ = 0;
+    uint32_t                   pendingResizeW_ = 0;
+    uint32_t                   pendingResizeH_ = 0;
+    void                       applyFramebufferResize(int width, int height);
+    void                       flushPendingFramebufferResize();
     // Render thread requests an animation wakeup by setting this atomic.
     // Main thread consumes it in onTick and schedules the actual timer on
     // the event loop (thread-affine).

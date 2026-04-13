@@ -330,8 +330,13 @@ int TerminalEmulator::absoluteRowFromScreen(int screenRow) const
 
 const TerminalEmulator::CommandRecord* TerminalEmulator::lastCommand() const
 {
-    if (mCommandRing.empty()) return nullptr;
-    return &mCommandRing.back();
+    // Walk backwards looking for the last completed record, skipping any
+    // in-flight ones at the tail. (JS paneCommands does the same — having
+    // consistent semantics across the two APIs avoids subtle caller bugs.)
+    for (auto it = mCommandRing.rbegin(); it != mCommandRing.rend(); ++it) {
+        if (it->complete) return &*it;
+    }
+    return nullptr;
 }
 
 TerminalEmulator::CommandRecord* TerminalEmulator::inProgressCommandMut()

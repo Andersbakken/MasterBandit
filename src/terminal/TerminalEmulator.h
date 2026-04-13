@@ -146,7 +146,7 @@ public:
         bool complete = false;
     };
     const std::deque<CommandRecord>& commands() const { return mCommandRing; }
-    const CommandRecord* lastCommand() const;   // most recently completed (or in-progress) record, nullptr if none
+    const CommandRecord* lastCommand() const;   // most recently completed record (skipping any in-flight tail), nullptr if none
 
     struct Action
     {

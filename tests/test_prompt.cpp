@@ -415,6 +415,25 @@ TEST_CASE("OSC 133: clear operation resets cells to Output")
     CHECK(t.cell(5, 0).attrs.semanticType() == CellAttrs::Output);
 }
 
+TEST_CASE("OSC 133: lastCommand skips in-flight tail and returns previous completed")
+{
+    TestTerminal t(20, 3);
+    // A completed command.
+    osc133(t, "A");  osc133(t, "B");  t.feed("cmd1");
+    osc133(t, "C");  osc133(t, "D;0");
+    // A new in-flight command (prompt shown, user hasn't finished typing).
+    osc133(t, "A");  osc133(t, "B");
+    t.feed("cmd2-typing");
+
+    // The in-flight command is the ring's tail but has no exit code.
+    // lastCommand() should look past it to the previously-completed one.
+    const auto* last = t.term.lastCommand();
+    REQUIRE(last != nullptr);
+    CHECK(last->complete);
+    CHECK(last->command == "cmd1");
+    CHECK(last->exitCode.value() == 0);
+}
+
 TEST_CASE("OSC 133: lastCommand returns most recent completed")
 {
     TestTerminal t(40, 5);

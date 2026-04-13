@@ -120,13 +120,15 @@ int PlatformDawn::exec()
                 TerminalEmulator* te = p->terminal();
                 if (!te) continue;
                 const auto& ring = te->commands();
-                size_t start = 0;
-                if (limit > 0 && static_cast<int>(ring.size()) > limit)
-                    start = ring.size() - static_cast<size_t>(limit);
-                const auto& doc = te->document();
-                for (size_t i = start; i < ring.size(); ++i) {
-                    const auto& r = ring[i];
-                    if (!r.complete) continue;
+                const auto& doc  = te->document();
+                // Walk backwards collecting completed records — this avoids the
+                // bug where an in-flight record at the ring's tail would be the
+                // "slice window" and then get filtered out, producing an empty
+                // list even though earlier completed records exist.
+                for (auto it = ring.rbegin(); it != ring.rend(); ++it) {
+                    if (!it->complete) continue;
+                    if (limit > 0 && result.size() >= static_cast<size_t>(limit)) break;
+                    const auto& r = *it;
                     Script::CommandInfo info{
                         r.id, r.command, r.output, r.cwd, r.exitCode,
                         r.startMs, r.endMs,
@@ -137,6 +139,8 @@ int PlatformDawn::exec()
                     };
                     result.push_back(std::move(info));
                 }
+                // Callers expect most-recent-last. We collected most-recent-first, so flip.
+                std::reverse(result.begin(), result.end());
                 break;
             }
             return result;

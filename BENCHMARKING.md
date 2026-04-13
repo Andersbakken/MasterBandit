@@ -247,11 +247,15 @@ median MB/s by more than ~5% is worth investigating before moving on.
   hit vsync cap.
 
 - **Throughput drifts slightly downward at very large repeat counts**
-  (observed: 3.59 → 3.35 MB/s from 1× to 40× on plain text). Likely
-  scrollback eviction / archival costs accumulating. Not a bug; just
-  means "parser throughput" isn't fully independent of accumulated
-  terminal state. Keep baseline comparisons at a fixed repeat count for
-  consistency.
+  (observed: 3.59 → 3.35 MB/s from 1× to 40× on plain text). Linux
+  perf profiling of repeat=100 identified the cause: ~33% of runtime is
+  in `Document::growRing()` — scroll-into-scrollback is reallocating
+  and memcpy-ing the ring repeatedly rather than amortizing growth.
+  Fixing it is a separate project from the threading refactor; for
+  benchmark stability, either do a warmup feed to pre-grow the ring, or
+  compare baselines at a fixed repeat count. The baseline numbers
+  include this cost; that's fine as long as post-refactor numbers are
+  recorded the same way.
 
 - **SGR-heavy input is faster than plain text, not slower.** Observed:
   synthetic-colored-1MB (~10% of bytes in `CSI ... m` sequences) runs at

@@ -225,6 +225,12 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
 {
     FontGPU gpu;
 
+    // Hold the font's shared_lock for the whole capture: atlasUsed +
+    // atlasData contents must agree, and the atomic version snapshot
+    // must reflect the state we're copying.
+    std::shared_lock<std::shared_mutex> lock(font.mutex);
+    uint64_t version = font.atlasVersion.load(std::memory_order_acquire);
+
     // Storage buffer for glyph atlas (pre-allocate 4MB = 256K vec4<i32>)
     uint32_t capacity = std::max(font.atlasUsed, 256u * 1024u);
     {
@@ -241,6 +247,7 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
                           static_cast<uint64_t>(font.atlasUsed) * 4 * sizeof(int32_t));
     }
     gpu.uploadedSize = font.atlasUsed;
+    gpu.uploadedVersion = version;
 
     // Uniform buffer: mat4x4f mvp + vec2f viewport + f32 gamma + f32 stem_darkening
     {
@@ -294,9 +301,23 @@ void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
 
     FontGPU& gpu = it->second;
 
-    if (font.atlasUsed <= gpu.uploadedSize) return;
+    // Version counter bumped each time a new glyph is appended to the atlas
+    // (under font.mutex write-lock). If unchanged since last upload, the GPU
+    // copy is still current — skip the shared_lock entirely.
+    uint64_t version = font.atlasVersion.load(std::memory_order_acquire);
+    if (version == gpu.uploadedVersion) return;
+
+    // Take a shared_lock so the appending thread (shaping worker) cannot
+    // mutate atlasData/atlasUsed while we copy from them.
+    std::shared_lock<std::shared_mutex> lock(font.mutex);
+
+    if (font.atlasUsed <= gpu.uploadedSize) {
+        gpu.uploadedVersion = version;
+        return;
+    }
 
     if (font.atlasUsed > gpu.storageCapacity) {
+        lock.unlock();  // uploadFontAtlas reacquires the lock itself.
         uploadFontAtlas(queue, fontName, font);
         return;
     }
@@ -306,6 +327,7 @@ void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     queue.WriteBuffer(gpu.storageBuffer, offset,
                       font.atlasData.data() + gpu.uploadedSize * 4, size);
     gpu.uploadedSize = font.atlasUsed;
+    gpu.uploadedVersion = version;
 }
 
 void Renderer::removeFontAtlas(const std::string& fontName)

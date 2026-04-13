@@ -199,6 +199,10 @@ private:
         wgpu::BindGroup bindGroup;
         uint32_t uploadedSize = 0;
         uint32_t storageCapacity = 0;
+        // Last observed FontData::atlasVersion. Render thread compares vs.
+        // current version to skip upload when atlas hasn't changed, avoiding
+        // the shared_mutex shared_lock on the hot path.
+        uint64_t uploadedVersion = 0;
     };
     std::unordered_map<std::string, FontGPU> fontGPU_;
 

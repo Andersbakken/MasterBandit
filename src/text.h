@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <shared_mutex>
@@ -74,6 +75,13 @@ struct FontData {
     // Read lock for lookups, write lock for insertions (new glyphs, fallback fonts, styled variants).
     // Not movable — FontData must be constructed in-place in the fonts_ map.
     mutable std::shared_mutex mutex;
+
+    // Monotonic counter bumped every time the atlas storage buffer
+    // (atlasData / atlasUsed) changes. The renderer caches the last-seen
+    // value per font; an unchanged counter means the GPU copy is still
+    // current and re-upload can be skipped. See RENDER_THREADING.md §Atlas
+    // Dirty Tracking.
+    std::atomic<uint64_t> atlasVersion { 0 };
 };
 
 struct ShapedGlyph { uint64_t glyphId; float x, y; };

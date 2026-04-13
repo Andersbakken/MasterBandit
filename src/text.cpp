@@ -241,6 +241,7 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
             font.atlasUsed += numTexels;
 
             font.glyphs[key] = info;
+            font.atlasVersion.fetch_add(1, std::memory_order_release);
         }
         hb_gpu_draw_recycle_blob(g, blob);
 

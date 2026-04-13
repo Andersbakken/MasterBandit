@@ -149,12 +149,41 @@ void PlatformDawn::onFramebufferResize(int width, int height)
         pendingResizeH_ = static_cast<uint32_t>(height);
         if (eventLoop_ && resizeDebounceTimer_ == 0) {
             resizeDebounceTimer_ = eventLoop_->addTimer(25, false, [this]() {
-                std::lock_guard<std::mutex> plk(platformMutex_);
-                resizeDebounceTimer_ = 0;
-                if (pendingResizeW_ && pendingResizeH_) {
-                    applyFramebufferResize(static_cast<int>(pendingResizeW_),
-                                           static_cast<int>(pendingResizeH_));
-                    pendingResizeW_ = pendingResizeH_ = 0;
+                // Lightweight update during live drag: signal the render thread
+                // to reconfigure the surface and release stale textures.
+                // The heavy work (terminal reflow, GPU buffer updates, dividers)
+                // is deferred to onLiveResizeEnd → flushPendingFramebufferResize
+                // so platformMutex_ is held only briefly here, keeping XSync
+                // counter acknowledgments prompt.
+                bool didResize = false;
+                {
+                    std::lock_guard<std::mutex> plk(platformMutex_);
+                    resizeDebounceTimer_ = 0;
+                    if (pendingResizeW_ && pendingResizeH_) {
+                        fbWidth_  = pendingResizeW_;
+                        fbHeight_ = pendingResizeH_;
+                        // Leave pendingResizeW_/H_ set so flushPendingFramebufferResize
+                        // can pass the final size to applyFramebufferResize.
+                        surfaceNeedsReconfigure_.store(true, std::memory_order_release);
+                        renderer_.setViewportSize(fbWidth_, fbHeight_);
+                        for (auto& [id, rs] : paneRenderStates_) {
+                            if (rs.heldTexture) {
+                                rs.pendingRelease.push_back(rs.heldTexture);
+                                rs.heldTexture = nullptr;
+                            }
+                            rs.dirty = true;
+                        }
+                        if (tabBarTexture_) {
+                            pendingTabBarRelease_.push_back(tabBarTexture_);
+                            tabBarTexture_ = nullptr;
+                        }
+                        tabBarDirty_ = true;
+                        didResize = true;
+                    }
+                }
+                if (didResize) {
+                    setNeedsRedraw();
+                    wakeRenderThread();
                 }
             });
         }
@@ -190,7 +219,7 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     fbWidth_ = static_cast<uint32_t>(width);
     fbHeight_ = static_cast<uint32_t>(height);
 
-    configureSurface(fbWidth_, fbHeight_);
+    surfaceNeedsReconfigure_.store(true, std::memory_order_release);
     renderer_.setViewportSize(fbWidth_, fbHeight_);
     renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
 

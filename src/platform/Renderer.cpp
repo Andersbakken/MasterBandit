@@ -1037,8 +1037,11 @@ void Renderer::composite(wgpu::CommandEncoder& encoder,
     }
 
     // Copy each pane texture to its rect on the swapchain
+    uint32_t swapW = swapchainTexture.GetWidth();
+    uint32_t swapH = swapchainTexture.GetHeight();
     for (const auto& e : entries) {
         if (!e.texture || e.srcW == 0 || e.srcH == 0) continue;
+        if (e.dstX >= swapW || e.dstY >= swapH) continue;
 
         wgpu::TexelCopyTextureInfo src = {};
         src.texture = e.texture;
@@ -1048,12 +1051,17 @@ void Renderer::composite(wgpu::CommandEncoder& encoder,
         dst.texture = swapchainTexture;
         dst.origin  = { e.dstX, e.dstY, 0 };
 
-        // Clamp to actual texture size to guard against stale entries after resize.
-        wgpu::Extent3D texSize = e.texture.GetWidth() > 0
+        // Clamp extent to both source texture size and destination remaining space.
+        // paneRect dimensions can race ahead of the surface size during live resize
+        // when applyFramebufferResize() runs while the render lock is released.
+        wgpu::Extent3D srcSize = e.texture.GetWidth() > 0
             ? wgpu::Extent3D{ e.texture.GetWidth(), e.texture.GetHeight(), 1 }
             : wgpu::Extent3D{ e.srcW, e.srcH, 1 };
-        wgpu::Extent3D extent = { std::min(e.srcW, texSize.width),
-                                  std::min(e.srcH, texSize.height), 1 };
+        uint32_t maxW = std::min(e.srcW, swapW - e.dstX);
+        uint32_t maxH = std::min(e.srcH, swapH - e.dstY);
+        wgpu::Extent3D extent = { std::min(maxW, srcSize.width),
+                                  std::min(maxH, srcSize.height), 1 };
+        if (extent.width == 0 || extent.height == 0) continue;
         encoder.CopyTextureToTexture(&src, &dst, &extent);
     }
 }

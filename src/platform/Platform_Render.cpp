@@ -391,14 +391,70 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
 
 void PlatformDawn::renderFrame()
 {
-    // Coarse lock — serializes against main-thread structural mutations
-    // (tab/pane create/destroy, tab switch, resize). Released during the
-    // CPU-heavy shaping dispatch below so main thread input / deferred
-    // callbacks can proceed concurrently. Reacquired before any GPU
-    // encode or shared-field mutation.
+    // Apply any pending surface reconfiguration before acquiring the swapchain
+    // image.  configureSurface() must only be called from the render thread.
+    if (!isHeadless() && surfaceNeedsReconfigure_.exchange(false, std::memory_order_acq_rel)) {
+        uint32_t w, h;
+        {
+            std::lock_guard<std::mutex> lk(platformMutex_);
+            w = fbWidth_;
+            h = fbHeight_;
+        }
+        if (w && h) {
+            configureSurface(w, h);
+            renderer_.setViewportSize(w, h);
+        }
+    }
+
+    // Acquire the surface texture before taking platformMutex_.
+    // vkAcquireNextImageKHR (called by GetCurrentTexture) uses UINT64_MAX
+    // timeout and can stall; keeping it outside the lock means a stall only
+    // blocks the render thread, not the main-thread event loop.
+    wgpu::SurfaceTexture surfaceTexture;
+    wgpu::Texture compositeTarget;
+    if (!isHeadless()) {
+        surface_.GetCurrentTexture(&surfaceTexture);
+        if (surfaceTexture.status == wgpu::SurfaceGetCurrentTextureStatus::Outdated) {
+            // Surface out of date — reconfigure and retry.
+            uint32_t w, h;
+            {
+                std::lock_guard<std::mutex> lk(platformMutex_);
+                w = fbWidth_;
+                h = fbHeight_;
+            }
+            if (w && h) {
+                configureSurface(w, h);
+                renderer_.setViewportSize(w, h);
+            }
+            surface_.GetCurrentTexture(&surfaceTexture);
+        }
+        if (surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
+            surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+            needsRedraw_ = true;
+            return;
+        }
+        compositeTarget = surfaceTexture.texture;
+    }
+
     std::unique_lock<std::mutex> plk(platformMutex_);
 
     if (fbWidth_ == 0 || fbHeight_ == 0) return;
+
+    // If the surface texture is smaller than fbWidth_/fbHeight_ (can happen
+    // transiently when the main thread updates fb dimensions before the render
+    // thread reconfigures the surface), snap fb to the texture size for this
+    // frame to prevent out-of-bounds GPU copies.
+    if (!isHeadless() && compositeTarget) {
+        uint32_t texW = compositeTarget.GetWidth();
+        uint32_t texH = compositeTarget.GetHeight();
+        if (texW && texH && (texW != fbWidth_ || texH != fbHeight_)) {
+            fbWidth_  = texW;
+            fbHeight_ = texH;
+            renderer_.setViewportSize(texW, texH);
+            surfaceNeedsReconfigure_.store(true, std::memory_order_release);
+        }
+    }
+
     Tab* currentTab = activeTab();
     if (!currentTab) return;
 
@@ -416,17 +472,7 @@ void PlatformDawn::renderFrame()
         }
     }
 
-    wgpu::SurfaceTexture surfaceTexture;
-    wgpu::Texture compositeTarget;
-    if (!isHeadless()) {
-        surface_.GetCurrentTexture(&surfaceTexture);
-        if (surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
-            surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
-            return;
-        }
-        compositeTarget = surfaceTexture.texture;
-    } else {
-        // Headless: render to an offscreen texture with CopyDst for compositing
+    if (isHeadless()) {
         if (!headlessComposite_) {
             wgpu::TextureDescriptor desc = {};
             desc.size = {fbWidth_, fbHeight_, 1};
@@ -733,6 +779,19 @@ void PlatformDawn::renderFrame()
     plk.lock();
     renderActive_.store(false, std::memory_order_release);
     if (eventLoop_) eventLoop_->wakeup();
+
+    // Re-snap after shaping in case the main thread updated fb dimensions
+    // during the unlock window.
+    if (!isHeadless() && compositeTarget) {
+        uint32_t texW = compositeTarget.GetWidth();
+        uint32_t texH = compositeTarget.GetHeight();
+        if (texW && texH && (texW != fbWidth_ || texH != fbHeight_)) {
+            fbWidth_  = texW;
+            fbHeight_ = texH;
+            renderer_.setViewportSize(texW, texH);
+            surfaceNeedsReconfigure_.store(true, std::memory_order_release);
+        }
+    }
 
     // (Dirty flags are cleared by TerminalSnapshot::update() under the
     // Terminal mutex — nothing to do here.)
@@ -1398,6 +1457,5 @@ void PlatformDawn::renderFrame()
         surface_.Present();
     }
     obs::notifyFrame();
-    if (window_) window_->frameRendered();
 }
 

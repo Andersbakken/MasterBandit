@@ -647,7 +647,31 @@ void PlatformDawn::configureSurface(uint32_t width, uint32_t height)
     config.format = wgpu::TextureFormat::BGRA8Unorm;
     config.width = width;
     config.height = height;
-    config.presentMode = wgpu::PresentMode::Fifo;
+    // Prefer non-blocking present modes: Mailbox → FifoRelaxed → Fifo.
+    // Dawn's vkAcquireNextImageKHR uses UINT64_MAX timeout, so Fifo can stall
+    // the render thread indefinitely if the compositor pauses frame consumption.
+    {
+        static wgpu::PresentMode chosenMode = wgpu::PresentMode::Undefined;
+        config.presentMode = wgpu::PresentMode::Fifo;
+        wgpu::SurfaceCapabilities caps = {};
+        if (surface_.GetCapabilities(device_.GetAdapter(), &caps) == wgpu::Status::Success) {
+            for (auto mode : { wgpu::PresentMode::Mailbox,
+                               wgpu::PresentMode::FifoRelaxed,
+                               wgpu::PresentMode::Fifo }) {
+                bool found = false;
+                for (size_t i = 0; i < caps.presentModeCount; ++i)
+                    if (caps.presentModes[i] == mode) { found = true; break; }
+                if (found) { config.presentMode = mode; break; }
+            }
+        }
+        if (config.presentMode != chosenMode) {
+            chosenMode = config.presentMode;
+            const char* name = config.presentMode == wgpu::PresentMode::Mailbox    ? "Mailbox"
+                             : config.presentMode == wgpu::PresentMode::FifoRelaxed ? "FifoRelaxed"
+                                                                                    : "Fifo";
+            spdlog::info("Surface present mode: {}", name);
+        }
+    }
     config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
     config.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
     surface_.Configure(&config);

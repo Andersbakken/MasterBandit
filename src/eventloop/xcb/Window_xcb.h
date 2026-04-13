@@ -100,9 +100,8 @@ private:
     int  height_ = 0;
     bool shouldClose_ = false;
 
-    // _NET_WM_SYNC_REQUEST: signal the WM after each frame to eliminate resize flicker
-    xcb_sync_counter_t syncCounter_      = 0;
-    int64_t            syncSerial_       = 0; // serial from last _NET_WM_SYNC_REQUEST
+    // _NET_WM_SYNC_REQUEST: acknowledged immediately on the main thread in handleClientMessage
+    xcb_sync_counter_t syncCounter_ = 0;
 
     // Atoms
     xcb_atom_t atomWmProtocols_          = 0;
@@ -147,5 +146,4 @@ private:
     // Live resize debounce: set while a one-shot timer is pending after a resize
     EventLoop::TimerId resizeDebounceTimer_ = 0;
     bool inLiveResize() const override;
-    void frameRendered() override;
 };

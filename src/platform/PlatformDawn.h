@@ -186,6 +186,10 @@ private:
     uint32_t                   pendingResizeH_ = 0;
     void                       applyFramebufferResize(int width, int height);
     void                       flushPendingFramebufferResize();
+    // Set by applyFramebufferResize (main thread) when fbWidth_/fbHeight_ change.
+    // Consumed by the render thread at the top of renderFrame() so that
+    // surface_.Configure() is always called from the render thread only.
+    std::atomic<bool>          surfaceNeedsReconfigure_ { false };
     // Render thread requests an animation wakeup by setting this atomic.
     // Main thread consumes it in onTick and schedules the actual timer on
     // the event loop (thread-affine).

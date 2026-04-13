@@ -754,21 +754,18 @@ void XCBWindow::handleClientMessage(xcb_client_message_event_t* ev)
     if (ev->data.data32[0] == atomWmDeleteWindow_) {
         shouldClose_ = true;
     } else if (ev->data.data32[0] == atomNetWmSyncRequest_) {
-        syncSerial_ = static_cast<int64_t>(
+        // Acknowledge immediately so the compositor never stalls waiting for us.
+        int64_t serial = static_cast<int64_t>(
             static_cast<uint64_t>(ev->data.data32[3]) << 32 |
             static_cast<uint64_t>(ev->data.data32[2]));
+        if (serial && syncCounter_) {
+            xcb_sync_int64_t value;
+            value.hi = static_cast<int32_t>(serial >> 32);
+            value.lo = static_cast<uint32_t>(serial);
+            xcb_sync_set_counter(conn_, syncCounter_, value);
+            xcb_flush(conn_);
+        }
     }
-}
-
-void XCBWindow::frameRendered()
-{
-    if (!syncSerial_ || !syncCounter_) return;
-    xcb_sync_int64_t value;
-    value.hi = static_cast<int32_t>(syncSerial_ >> 32);
-    value.lo = static_cast<uint32_t>(syncSerial_);
-    xcb_sync_set_counter(conn_, syncCounter_, value);
-    xcb_flush(conn_);
-    syncSerial_ = 0;
 }
 
 // ---------- clipboard ----------

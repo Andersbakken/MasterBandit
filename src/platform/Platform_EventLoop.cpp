@@ -445,7 +445,8 @@ int PlatformDawn::exec()
             //   "encodeSignalEvent:value: with uncommitted encoder".
 
             if (needsRedraw_.load(std::memory_order_acquire) ||
-                (debugIPC_ && debugIPC_->pngScreenshotPending())) {
+                (debugIPC_ && debugIPC_->pngScreenshotPending()) ||
+                pendingGpuCallbacks_ > 0) {
                 wakeRenderThread();
             }
 

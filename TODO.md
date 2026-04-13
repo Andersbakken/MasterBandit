@@ -175,16 +175,16 @@
 
 ## Architecture / Threading
 
-See `RENDER_THREADING.md` for the full design. High-level phases, each shippable on its own:
+See `RENDER_THREADING.md` for the full design. Phases, each shippable on its own:
 
-- [ ] Phase 1: Introduce `TerminalSnapshot` and route all renderer reads through it. Single-threaded initially; updates synchronously in `renderFrame()`. Forces the renderer-read audit to completion.
-- [ ] Phase 2: Move image registry to renderer-owned; parser sends upload/placement/delete messages via SPSC queue. Parser keeps metadata-only side index for kitty protocol responses. Placements keyed by monotonic row ID.
-- [ ] Phase 3: Add `std::mutex` on `Terminal`; acquire in all mutation paths and in `TerminalSnapshot::update()`. Still single-threaded so uncontended — validates mutation-site coverage.
-- [ ] Phase 4: Split render thread. `renderFrame()` runs on its own thread driven by `renderWakeup.notify()` from `flushReadBuffer()`. WorkerPool `resolveRow()` reads from snapshot.
-- [ ] Phase 5: GPU frame pacing. `FrameState[3]` + `FramePacer` using `Queue::OnSubmittedWorkDone` with `CallbackMode::AllowSpontaneous` and `std::counting_semaphore`.
-- [ ] Phase 6: Atlas dirty counter. Atomic monotonic counter on `FontData`; render thread compares per frame and uploads under existing `shared_mutex`.
-- [ ] Phase 7: Move `tickAnimations()` to render thread, driven by frame cadence.
-- [ ] Phase 8: Resize coalescing (25 ms window) and sync-output (mode 2026) early-exit in snapshot update.
+- [ ] Benchmark harness (prerequisite). `bench_parse` + `bench_snapshot` + `mb --ctl feed`/`wait-idle`/`stats` IPC hooks. Baseline before any refactor.
+- [ ] Phase 1: `TerminalSnapshot` + `std::mutex` on `Terminal`, both single-threaded. All renderer reads go through snapshot; all mutations hold the mutex. Uncontended in this phase; enforces discipline during the audit.
+- [ ] Phase 2: Image registry moves to renderer-owned; parser sends upload/placement/delete/compose/anim-control via SPSC queue. Parser keeps metadata-only side index for kitty protocol responses. Placements keyed by monotonic row ID.
+- [ ] Phase 3: Split render thread. `renderFrame()` on its own thread driven by `renderWakeup.notify()` from `flushReadBuffer()`. WorkerPool `resolveRow()` reads from snapshot. GPU path: `PresentMode::Fifo` + `queue.writeBuffer` (no explicit frame pacer).
+- [ ] Phase 4: Atlas dirty counter. Atomic monotonic counter on `FontData`; render thread compares per frame and uploads under existing `shared_mutex`.
+- [ ] Phase 5: Move `tickAnimations()` to render thread, driven by frame cadence.
+- [ ] Phase 6: Resize coalescing (25 ms window) and sync-output (mode 2026) early-exit in snapshot update.
+- [ ] Phase 7 (conditional): Explicit `FramePacer` with `FrameState[N]` + Future-based `WaitAny`. Only if phase-3 profiling shows `Fifo + writeBuffer` is inadequate. Likely unnecessary.
 
 ## Platform (Linux)
 

@@ -3,6 +3,7 @@
 #include "Utils.h"
 #include "Utf8.h"
 #include "Wcwidth.h"
+#include "Observability.h"
 #include <spdlog/spdlog.h>
 
 static spdlog::logger& sLog()
@@ -542,6 +543,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 {
     if (sLog().should_log(spdlog::level::debug))
         sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
+    obs::notifyParse(len_);
     const int len = static_cast<int>(len_);
 
     auto resetToNormal = [this]() {

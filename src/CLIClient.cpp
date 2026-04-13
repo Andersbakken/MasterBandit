@@ -8,6 +8,7 @@
 #include <vector>
 #include <glob.h>
 #include <poll.h>
+#include <limits.h>
 
 #include <cxxopts.hpp>
 #include <libwebsockets.h>
@@ -190,11 +191,13 @@ int runCLI(int argc, char** argv)
     if (result.count("help") || !result.count("command")) {
         fprintf(stderr, "%s\nCommands:\n"
             "  screenshot [--target <pane|id>] [--cell x,y,w,h]  Take PNG screenshot\n"
-            "  key <key> [<mod>...]  Inject key event\n"
-            "  logs                  Stream log output\n"
-            "  stats                 Print render stats\n"
-            "  inject <text>         Inject text into terminal\n"
-            "  action <name> [args]  Dispatch action\n",
+            "  key <key> [<mod>...]              Inject key event\n"
+            "  logs                              Stream log output\n"
+            "  stats                             Print render stats + observability counters\n"
+            "  inject <text>                     Inject text into terminal\n"
+            "  feed <path>                       Inject contents of a file into the active terminal\n"
+            "  wait-idle [<timeout_ms> [<settle_ms>]]  Block until parser quiet + frame drawn\n"
+            "  action <name> [args]              Dispatch action\n",
             opts.help().c_str());
         return result.count("help") ? 0 : 1;
     }
@@ -243,6 +246,39 @@ int runCLI(int argc, char** argv)
         streaming = true;
     } else if (command == "stats") {
         reqObj["cmd"] = "stats";
+    } else if (command == "feed") {
+        if (positionalArgs.empty() || positionalArgs[0].empty()) {
+            fprintf(stderr, "feed requires a path\n"); return 1;
+        }
+        char absPath[PATH_MAX];
+        const char* p = realpath(positionalArgs[0].c_str(), absPath);
+        if (!p) {
+            fprintf(stderr, "feed: cannot resolve path: %s\n", strerror(errno));
+            return 1;
+        }
+        reqObj["cmd"] = "feed";
+        reqObj["path"] = std::string(absPath);
+        if (positionalArgs.size() >= 2 && !positionalArgs[1].empty()) {
+            try { reqObj["repeat"] = std::stod(positionalArgs[1]); }
+            catch (const std::exception&) {
+                fprintf(stderr, "feed: repeat must be a number\n"); return 1;
+            }
+        }
+    } else if (command == "wait-idle") {
+        reqObj["cmd"] = "wait-idle";
+        auto parseNum = [](const std::string& s, double& out) -> bool {
+            if (s.empty()) return false;
+            try { out = std::stod(s); return true; }
+            catch (const std::exception&) { return false; }
+        };
+        if (positionalArgs.size() >= 1) {
+            double v = 0;
+            if (parseNum(positionalArgs[0], v)) reqObj["timeout_ms"] = v;
+        }
+        if (positionalArgs.size() >= 2) {
+            double v = 0;
+            if (parseNum(positionalArgs[1], v)) reqObj["settle_ms"] = v;
+        }
     } else {
         fprintf(stderr, "Unknown command: %s\n", command.c_str());
         return 1;

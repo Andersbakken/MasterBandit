@@ -1,12 +1,15 @@
 #include "DebugIPC.h"
 #include "Terminal.h"
 #include "Utils.h"
+#include "Observability.h"
 
 #include <glaze/glaze.hpp>
 #include <spdlog/spdlog.h>
 
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 
 // Helpers for building JSON objects
 static std::string dumpObj(const glz::generic::object_t& obj)
@@ -321,6 +324,30 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
     } else if (cmd == "inject") {
         std::string data = jsonStr(j, "data");
         cmdInject(wsi, id, data);
+    } else if (cmd == "feed") {
+        std::string path = jsonStr(j, "path");
+        uint32_t repeat = 1;
+        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+            if (auto it = obj->find("repeat"); it != obj->end()) {
+                if (auto* n = std::get_if<double>(&it->second.data)) {
+                    if (*n >= 1.0) repeat = static_cast<uint32_t>(*n);
+                }
+            }
+        }
+        cmdFeed(wsi, id, path, repeat);
+    } else if (cmd == "wait-idle") {
+        // timeout_ms default 10s, settle_ms default 200ms
+        uint64_t timeoutMs = 10000;
+        uint64_t settleMs  = 200;
+        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+            if (auto it = obj->find("timeout_ms"); it != obj->end()) {
+                if (auto* n = std::get_if<double>(&it->second.data)) timeoutMs = static_cast<uint64_t>(*n);
+            }
+            if (auto it = obj->find("settle_ms"); it != obj->end()) {
+                if (auto* n = std::get_if<double>(&it->second.data)) settleMs = static_cast<uint64_t>(*n);
+            }
+        }
+        cmdWaitIdle(wsi, id, timeoutMs, settleMs);
     } else if (cmd == "subscribe") {
         std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
@@ -551,6 +578,157 @@ void DebugIPC::cmdInject(struct lws* wsi, int id, const std::string& data)
     auto decoded = base64::decode(data);
     terminal->injectData(reinterpret_cast<const char*>(decoded.data()), decoded.size());
     sendResponse(wsi, dumpObj({{"type", "ok"}, {"id", static_cast<double>(id)}}));
+}
+
+// ============================================================================
+// Command: feed <path>
+// ============================================================================
+
+void DebugIPC::cmdFeed(struct lws* wsi, int id, const std::string& path, uint32_t repeat)
+{
+    Terminal* terminal = termCb_ ? termCb_() : nullptr;
+    if (!terminal) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no active terminal"}}));
+        return;
+    }
+    if (path.empty()) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "missing path"}}));
+        return;
+    }
+    if (repeat == 0) repeat = 1;
+
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)},
+                                    {"msg", std::string("open failed: ") + strerror(errno)}}));
+        return;
+    }
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(fd);
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "not a regular file"}}));
+        return;
+    }
+
+    const size_t size = static_cast<size_t>(st.st_size);
+    if (size == 0) {
+        ::close(fd);
+        sendResponse(wsi, dumpObj({{"type", "ok"}, {"id", static_cast<double>(id)}, {"bytes", 0.0}}));
+        return;
+    }
+
+    void* mapped = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    ::close(fd);
+    if (mapped == MAP_FAILED) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)},
+                                    {"msg", std::string("mmap failed: ") + strerror(errno)}}));
+        return;
+    }
+
+    // Pre-touch mapped pages so the timed section doesn't eat page faults
+    // on the first iteration.
+    {
+        volatile uint64_t sink = 0;
+        const auto* p = static_cast<const uint8_t*>(mapped);
+        for (size_t i = 0; i < size; i += 4096) sink += p[i];
+        (void)sink;
+    }
+
+    const uint64_t t0 = obs::now_us();
+    for (uint32_t r = 0; r < repeat; ++r) {
+        terminal->injectData(static_cast<const char*>(mapped), size);
+    }
+    const uint64_t parseUs = obs::now_us() - t0;
+    ::munmap(mapped, size);
+
+    const uint64_t totalBytes = static_cast<uint64_t>(size) * repeat;
+    glz::generic::object_t resp;
+    resp["type"] = "ok";
+    resp["id"] = static_cast<double>(id);
+    resp["bytes"] = static_cast<double>(totalBytes);
+    resp["bytes_per_iter"] = static_cast<double>(size);
+    resp["repeat"] = static_cast<double>(repeat);
+    resp["parse_us"] = static_cast<double>(parseUs);
+    resp["mb_per_sec"] = parseUs > 0
+        ? (static_cast<double>(totalBytes) / static_cast<double>(parseUs))  // bytes/us == MB/s
+        : 0.0;
+    sendResponse(wsi, dumpObj(resp));
+}
+
+// ============================================================================
+// Command: wait-idle
+// ============================================================================
+
+void DebugIPC::cmdWaitIdle(struct lws* wsi, int id, uint64_t timeoutMs, uint64_t settleMs)
+{
+    if (!loop_) {
+        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no event loop"}}));
+        return;
+    }
+
+    auto state = std::make_shared<WaitIdleState>();
+    state->wsi = wsi;
+    state->id = id;
+    state->startUs = obs::now_us();
+    state->timeoutUs = timeoutMs * 1000;
+    state->settleUs = settleMs * 1000;
+    state->framesAtStart = obs::frames_presented.load(std::memory_order_relaxed);
+
+    // Poll every 25 ms. Cheap; plenty of granularity for benchmark use.
+    // The lambda captures state by value, so the shared_ptr keeps the state
+    // alive as long as the timer is registered. removeTimer destroys the
+    // lambda, which drops the last strong ref.
+    state->timer = loop_->addTimer(25, true, [this, state]() {
+        pollWaitIdle(state);
+    });
+}
+
+void DebugIPC::pollWaitIdle(const std::shared_ptr<WaitIdleState>& state)
+{
+    // Connection dropped while we were waiting? Cancel silently.
+    if (!findConnection(state->wsi)) {
+        loop_->removeTimer(state->timer);
+        return;
+    }
+
+    const uint64_t now = obs::now_us();
+    const uint64_t lastParse = obs::last_parse_time_us.load(std::memory_order_acquire);
+    const uint64_t framesNow = obs::frames_presented.load(std::memory_order_relaxed);
+    const uint64_t bytesNow  = obs::bytes_parsed.load(std::memory_order_relaxed);
+    const uint64_t framesAtLastParse = obs::frames_at_last_parse.load(std::memory_order_relaxed);
+
+    // Idle predicate:
+    //   - If no parse has ever happened: trivially idle (after one frame).
+    //   - Otherwise: last parse was >= settleUs ago AND a frame has been
+    //     presented after the last parse.
+    const bool noParseEver = (lastParse == 0);
+    const bool settled = noParseEver || (now - lastParse >= state->settleUs);
+    const bool framed  = noParseEver
+        ? (framesNow > state->framesAtStart)
+        : (framesNow > framesAtLastParse);
+
+    bool done = false;
+    bool idle = false;
+    if (settled && framed) {
+        done = true;
+        idle = true;
+    } else if (now - state->startUs >= state->timeoutUs) {
+        done = true;
+        idle = false;
+    }
+
+    if (!done) return;
+
+    glz::generic::object_t resp;
+    resp["type"] = "wait-idle";
+    resp["id"] = static_cast<double>(state->id);
+    resp["idle"] = idle;
+    resp["elapsed_us"] = static_cast<double>(now - state->startUs);
+    resp["bytes_parsed"] = static_cast<double>(bytesNow);
+    resp["frames_presented"] = static_cast<double>(framesNow);
+    sendResponse(state->wsi, dumpObj(resp));
+
+    loop_->removeTimer(state->timer);
 }
 
 // ============================================================================

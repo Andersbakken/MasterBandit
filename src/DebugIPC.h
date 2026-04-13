@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <functional>
 
@@ -57,6 +58,8 @@ private:
                     const std::string& key, const std::vector<std::string>& mods);
     void cmdStats(struct lws* wsi, int id);
     void cmdInject(struct lws* wsi, int id, const std::string& data);
+    void cmdFeed(struct lws* wsi, int id, const std::string& path, uint32_t repeat);
+    void cmdWaitIdle(struct lws* wsi, int id, uint64_t timeoutMs, uint64_t settleMs);
     void cmdAction(struct lws* wsi, int id, const std::string& action,
                    const std::vector<std::string>& args);
     void cmdSubscribeLogs(struct lws* wsi, int id);
@@ -97,6 +100,17 @@ private:
 
     // Called from within lws callbacks to drain log queue and notify writeable
     void drainLogQueue();
+
+    struct WaitIdleState {
+        struct lws* wsi = nullptr;
+        int id = 0;
+        uint64_t startUs = 0;
+        uint64_t timeoutUs = 0;
+        uint64_t settleUs = 0;
+        uint64_t framesAtStart = 0;
+        EventLoop::TimerId timer = 0;
+    };
+    void pollWaitIdle(const std::shared_ptr<WaitIdleState>& state);
 
     // Called when an lws-watched fd fires in the EventLoop
     void serviceFd(int fd, EventLoop::FdEvents fired);

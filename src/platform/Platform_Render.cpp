@@ -2,6 +2,7 @@
 #include "ProceduralGlyphTable.h"
 #include "Utf8.h"
 #include "Utils.h"
+#include "Observability.h"
 
 #include <numeric>
 
@@ -1358,6 +1359,7 @@ void PlatformDawn::renderFrame()
     if (!isHeadless()) {
         surface_.Present();
     }
+    obs::notifyFrame();
     if (window_) window_->frameRendered();
 }
 

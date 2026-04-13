@@ -1,6 +1,7 @@
 #include "PlatformDawn.h"
 #include "Utf8.h"
 #include "Utils.h"
+#include "Observability.h"
 #include <glaze/glaze.hpp>
 
 static void appendUtf8(std::string& s, uint32_t cp) { utf8::append(s, cp); }
@@ -100,6 +101,14 @@ std::string PlatformDawn::statsJson(int id)
         {"total_kb",    toKB(computeStats.totalBytes)},
         {"free_kb",     toKB(computeStats.freeBytes)},
         {"limit_kb",    toKB(computeStats.limitBytes)},
+    };
+
+    resp["obs"] = glz::generic::object_t{
+        {"bytes_parsed",         static_cast<double>(obs::bytes_parsed.load(std::memory_order_relaxed))},
+        {"frames_presented",     static_cast<double>(obs::frames_presented.load(std::memory_order_relaxed))},
+        {"last_parse_time_us",   static_cast<double>(obs::last_parse_time_us.load(std::memory_order_relaxed))},
+        {"frames_at_last_parse", static_cast<double>(obs::frames_at_last_parse.load(std::memory_order_relaxed))},
+        {"now_us",               static_cast<double>(obs::now_us())},
     };
 
     glz::generic::array_t tabsArr;

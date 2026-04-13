@@ -1,0 +1,5 @@
+# Benchmark fixtures must be byte-exact. Disable all git EOL normalization,
+# diffing, and text heuristics. Treating them as binary preserves CRLF
+# (which VT input needs — ONLCR-translated PTY output is CRLF in real use)
+# and keeps diffs out of PRs where they'd be useless anyway.
+fixtures/** binary

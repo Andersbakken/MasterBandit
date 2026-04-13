@@ -177,7 +177,7 @@
 
 See `RENDER_THREADING.md` for the full design. Phases, each shippable on its own:
 
-- [ ] Benchmark harness (prerequisite). `bench_parse` + `bench_snapshot` + `mb --ctl feed`/`wait-idle`/`stats` IPC hooks. Baseline before any refactor.
+- [x] Benchmark harness (prerequisite). `mb --ctl feed <path> [repeat]`, `wait-idle [timeout [settle]]`, `stats` with `obs` counters. See `BENCHMARKING.md` for fixture generation, usage, and baseline-recording workflow.
 - [ ] Phase 1: `TerminalSnapshot` + `std::mutex` on `Terminal`, both single-threaded. All renderer reads go through snapshot; all mutations hold the mutex. Uncontended in this phase; enforces discipline during the audit.
 - [ ] Phase 2: Image registry moves to renderer-owned; parser sends upload/placement/delete/compose/anim-control via SPSC queue. Parser keeps metadata-only side index for kitty protocol responses. Placements keyed by monotonic row ID.
 - [ ] Phase 3: Split render thread. `renderFrame()` on its own thread driven by `renderWakeup.notify()` from `flushReadBuffer()`. WorkerPool `resolveRow()` reads from snapshot. GPU path: `PresentMode::Fifo` + `queue.writeBuffer` (no explicit frame pacer).

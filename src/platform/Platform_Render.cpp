@@ -439,11 +439,12 @@ void PlatformDawn::renderFrame()
 
     // Drain deferred releases from GPU completion callbacks (thread-safe)
     {
-        std::lock_guard<std::mutex> lock(deferredReleaseMutex_);
-        for (auto* t : deferredTextureRelease_) texturePool_.release(t);
-        deferredTextureRelease_.clear();
-        for (auto* cs : deferredComputeRelease_) renderer_.computePool().release(cs);
-        deferredComputeRelease_.clear();
+        auto& state = *deferredReleaseState_;
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (auto* t : state.textures) texturePool_.release(t);
+        state.textures.clear();
+        for (auto* cs : state.compute) renderer_.computePool().release(cs);
+        state.compute.clear();
     }
 
     std::vector<Renderer::CompositeEntry> compositeEntries;
@@ -618,10 +619,13 @@ void PlatformDawn::renderFrame()
         rs.lastCursorY = snap.cursorY;
         rs.lastCursorVisible = snap.cursorVisible;
 
-        // Detect blink-phase flip for a currently-blinking cursor
+        // Detect blink-phase flip for a currently-blinking cursor. Load the
+        // atomic once — the blink timer (main thread) can flip it between
+        // loads, which would desync cursorBlinkChanged from lastCursorBlinkOn.
+        bool blinkPhase = cursorBlinkPhaseOn_.load(std::memory_order_acquire);
         bool cursorBlinkChanged = snap.cursorBlinking &&
-                                  cursorBlinkPhaseOn_ != rs.lastCursorBlinkOn;
-        rs.lastCursorBlinkOn = cursorBlinkPhaseOn_;
+                                  blinkPhase != rs.lastCursorBlinkOn;
+        rs.lastCursorBlinkOn = blinkPhase;
 
         bool anyRowDirty = false;
         for (uint8_t d : snap.rowDirty) { if (d) { anyRowDirty = true; break; } }
@@ -1349,16 +1353,17 @@ void PlatformDawn::renderFrame()
         auto texturesToRelease = toRelease;
         auto computeToRelease  = pendingComputeRelease_;
         pendingComputeRelease_.clear();
-        auto* mutex = &deferredReleaseMutex_;
-        auto* deferredTextures = &deferredTextureRelease_;
-        auto* deferredCompute = &deferredComputeRelease_;
+        // Capture the deferred-release state by shared_ptr so the callback
+        // can safely fire even after ~PlatformDawn has run — Dawn's
+        // AllowSpontaneous mode makes no guarantee about callback timing.
+        auto state = deferredReleaseState_;
         queue_.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
-            [mutex, deferredTextures, deferredCompute, texturesToRelease, computeToRelease]
+            [state, texturesToRelease, computeToRelease]
             (wgpu::QueueWorkDoneStatus, wgpu::StringView) mutable {
-                std::lock_guard<std::mutex> lock(*mutex);
-                deferredTextures->insert(deferredTextures->end(),
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->textures.insert(state->textures.end(),
                     texturesToRelease.begin(), texturesToRelease.end());
-                deferredCompute->insert(deferredCompute->end(),
+                state->compute.insert(state->compute.end(),
                     computeToRelease.begin(), computeToRelease.end());
             });
     }

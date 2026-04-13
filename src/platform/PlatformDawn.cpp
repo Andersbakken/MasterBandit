@@ -157,6 +157,22 @@ PlatformDawn::~PlatformDawn()
     wakeRenderThread();
     if (renderThread_.joinable()) renderThread_.join();
 
+    // Drain any deferred releases that landed via GPU completion callbacks
+    // between the render thread exiting and now — they hold raw pointers
+    // into the texture / compute pools which are about to be destroyed.
+    // Callbacks that fire *after* this drain harmlessly append to the
+    // shared state (kept alive by lambda captures); their contents are
+    // never observed, and the dangling pointers they contain are never
+    // dereferenced.
+    {
+        auto& state = *deferredReleaseState_;
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (auto* t : state.textures) texturePool_.release(t);
+        state.textures.clear();
+        for (auto* cs : state.compute) renderer_.computePool().release(cs);
+        state.compute.clear();
+    }
+
     // Release held textures before clearing pool
     for (auto& [id, rs] : paneRenderStates_) {
         if (rs.heldTexture) texturePool_.release(rs.heldTexture);

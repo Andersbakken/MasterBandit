@@ -361,10 +361,22 @@ private:
     std::vector<PooledTexture*> pendingTabBarRelease_;
     std::vector<ComputeState*> pendingComputeRelease_;
 
-    // Deferred release from GPU completion callbacks (thread-safe)
-    std::mutex deferredReleaseMutex_;
-    std::vector<PooledTexture*> deferredTextureRelease_;
-    std::vector<ComputeState*> deferredComputeRelease_;
+    // Deferred release from GPU completion callbacks. The callbacks are
+    // registered via queue_.OnSubmittedWorkDone with CallbackMode::AllowSpontaneous,
+    // which means Dawn may fire them on its own completion thread even after
+    // ~PlatformDawn has run. Wrapping the mutex + vectors in a shared_ptr
+    // lets the state outlive the outer object: each callback captures a
+    // shared_ptr copy, so the state survives until the last callback fires.
+    // Raw pointers written into the vectors post-destructor are harmless —
+    // nobody observes them, and the shared state is torn down when its
+    // refcount drops.
+    struct DeferredReleaseState {
+        std::mutex mutex;
+        std::vector<PooledTexture*> textures;
+        std::vector<ComputeState*> compute;
+    };
+    std::shared_ptr<DeferredReleaseState> deferredReleaseState_
+        = std::make_shared<DeferredReleaseState>();
 
     // Render thread. renderFrame() runs here, woken by main thread after
     // parse / input / animation mutations. Coarse `platformMutex_` serializes

@@ -9,6 +9,11 @@ class Document : public IGrid {
 public:
     Document();
     Document(int cols, int screenHeight, int tier1Capacity = 4096, int maxArchiveRows = 100000);
+    ~Document();
+    Document(Document&&) noexcept;
+    Document& operator=(Document&&) noexcept;
+    Document(const Document&) = delete;
+    Document& operator=(const Document&) = delete;
 
     // --- IGrid interface (screen-relative coordinates) ---
     int cols() const override { return cols_; }
@@ -75,16 +80,28 @@ public:
     int absForRowId(uint64_t id) const;
 
 private:
+    // Segmented ring buffer: each segment holds SEG_SIZE rows of cols_ cells.
+    // Segments are allocated without construction; cells are written before read
+    // (either by growRing/resize copies or by clearPhysicalRow before first use).
+    static constexpr int SEG_SHIFT = 6;              // log2(rows per segment)
+    static constexpr int SEG_SIZE  = 1 << SEG_SHIFT; // 64 rows per segment
+    static constexpr int SEG_MASK  = SEG_SIZE - 1;   // 63
+
     int cols_ = 0;
     int screenHeight_ = 0;
 
     // Ring buffer: holds history (tier 1) + screen rows
-    int ringCapacity_ = 0;   // power of 2
+    int ringCapacity_ = 0;   // power of 2, always a multiple of SEG_SIZE
     int ringHead_ = 0;       // physical slot after last screen row
     int historyCount_ = 0;   // tier-1 history rows in ring
-    std::vector<Cell> ring_;
+    std::vector<Cell*> segments_; // segments_[i] → SEG_SIZE * cols_ uninitialized Cells
     std::vector<std::unordered_map<int, CellExtra>> ringExtras_;
     std::vector<bool> continued_;  // per physical ring slot: row was soft-wrapped
+
+    // Pointer to the first cell of physical ring slot p.
+    Cell* rowPtr(int p) const {
+        return segments_[p >> SEG_SHIFT] + (p & SEG_MASK) * cols_;
+    }
 
     // Row-id base: the id of the row currently at abs-row 0. Increments when
     // the oldest archive row evicts (so remaining rows' ids stay stable).
@@ -108,6 +125,13 @@ private:
     void evictToArchive();
     void clearPhysicalRow(int physical);
     void growRing();
+    // General grow used by resize(): linearizes existing circular data into
+    // new segments. Slower than growRing() but handles arbitrary ringHead_.
+    void growRingGeneral(int newCap);
+    // Free all segments and clear the vector.
+    void freeSegments();
+    // Allocate n segments of SEG_SIZE * cols_ cells each, appending to segments_.
+    void allocSegments(int from, int to);
 
     static int roundUpPow2(int v);
     static std::string serializeRow(const Cell* cells, int cols);

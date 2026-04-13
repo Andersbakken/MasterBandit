@@ -9,6 +9,7 @@ add_library(terminal OBJECT
     DCS.cpp
     CellGrid.cpp
     Document.cpp
+    TerminalSnapshot.cpp
 )
 
 target_include_directories(terminal PUBLIC

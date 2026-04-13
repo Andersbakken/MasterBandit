@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -45,6 +46,12 @@ class TerminalEmulator
 public:
     TerminalEmulator(TerminalCallbacks callbacks);
     virtual ~TerminalEmulator();
+
+    // Serializes mutation vs. render-thread snapshot capture. Inert in Phase 1
+    // (single-threaded); lock-guards at mutation entry points are added with
+    // the render thread split in Phase 3. See RENDER_THREADING.md §Terminal
+    // Mutex & Snapshot.
+    std::mutex& mutex() const { return mMutex; }
 
     int cursorX() const { return mCursorX; }
     int cursorY() const { return mCursorY; }
@@ -239,6 +246,7 @@ public:
     void finalizeSelection();
     void clearSelection();
     bool hasSelection() const { return mSelection.valid || mSelection.active; }
+    const Selection& selection() const { return mSelection; }
     bool isCellSelected(int col, int absRow) const;
     std::string selectedText() const;
 
@@ -326,6 +334,8 @@ protected:
 
 private:
     TerminalCallbacks mCallbacks;
+
+    mutable std::mutex mMutex;
 
     int mWidth { 0 }, mHeight { 0 };
     int mCursorX { 0 }, mCursorY { 0 };

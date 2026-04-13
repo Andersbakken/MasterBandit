@@ -1,0 +1,120 @@
+#include "TerminalSnapshot.h"
+
+#include <CellGrid.h>
+#include <Document.h>
+#include <IGrid.h>
+
+#include <algorithm>
+#include <cstring>
+
+bool TerminalSnapshot::isCellSelected(int col, int absRow) const
+{
+    if (!selection.active && !selection.valid) return false;
+
+    int r0 = selection.startAbsRow, c0 = selection.startCol;
+    int r1 = selection.endAbsRow,   c1 = selection.endCol;
+
+    if (selection.mode == TerminalEmulator::SelectionMode::Rectangle) {
+        int minR = std::min(r0, r1), maxR = std::max(r0, r1);
+        int minC = std::min(c0, c1), maxC = std::max(c0, c1);
+        return absRow >= minR && absRow <= maxR && col >= minC && col <= maxC;
+    }
+
+    if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+        std::swap(r0, r1);
+        std::swap(c0, c1);
+    }
+
+    if (absRow < r0 || absRow > r1) return false;
+    if (absRow == r0 && absRow == r1) return col >= c0 && col <= c1;
+    if (absRow == r0) return col >= c0;
+    if (absRow == r1) return col <= c1;
+    return true;
+}
+
+bool TerminalSnapshot::update(TerminalEmulator& term)
+{
+    if (term.syncOutputActive()) {
+        syncOutputActive = true;
+        return false;
+    }
+    syncOutputActive = false;
+
+    const int newRows = term.height();
+    const int newCols = term.width();
+    const int newOffset = term.viewportOffset();
+    const int newHistory = term.document().historySize();
+
+    const bool structuralChange =
+        newRows != lastRows_ || newCols != lastCols_ ||
+        newOffset != lastViewportOffset_ || newHistory != lastHistorySize_;
+
+    rows = newRows;
+    cols = newCols;
+    viewportOffset = newOffset;
+    historySize = newHistory;
+
+    cursorX = term.cursorX();
+    cursorY = term.cursorY();
+    cursorShape = term.cursorShape();
+    cursorVisible = term.cursorVisible();
+    cursorBlinking = term.cursorBlinking();
+    defaults = term.defaultColors();
+
+    // Selection: copy by value. Cheap; re-evaluated every frame.
+    selection = term.selection();
+
+    const size_t cellCount = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    cells.resize(cellCount);
+    rowDirty.assign(static_cast<size_t>(rows), 0);
+    rowExtras.resize(static_cast<size_t>(rows));
+
+    IGrid& grid = term.grid();
+    const Document& doc = term.document();
+    const bool onAltScreen = (&grid != static_cast<const IGrid*>(&doc));
+
+    for (int r = 0; r < rows; ++r) {
+        const bool rowIsDirty = structuralChange || grid.isRowDirty(r);
+        if (!rowIsDirty) continue;
+
+        const Cell* src = term.viewportRow(r);
+        Cell* dst = cells.data() + static_cast<size_t>(r) * static_cast<size_t>(cols);
+        if (src) {
+            std::memcpy(dst, src, sizeof(Cell) * static_cast<size_t>(cols));
+        } else {
+            std::memset(dst, 0, sizeof(Cell) * static_cast<size_t>(cols));
+        }
+
+        RowExtras& re = rowExtras[static_cast<size_t>(r)];
+        re.entries.clear();
+        if (onAltScreen) {
+            for (int c = 0; c < cols; ++c) {
+                if (const CellExtra* ex = grid.getExtra(c, r)) {
+                    re.entries.emplace_back(c, *ex);
+                }
+            }
+        } else if (const auto* exMap = doc.viewportExtras(r, viewportOffset)) {
+            re.entries.reserve(exMap->size());
+            for (const auto& kv : *exMap) {
+                re.entries.emplace_back(kv.first, kv.second);
+            }
+            std::sort(re.entries.begin(), re.entries.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+        }
+
+        rowDirty[static_cast<size_t>(r)] = 1;
+    }
+
+    // Clear per-row dirty flags on the live grid. The render thread has now
+    // captured everything it needs for these rows; subsequent mutations will
+    // re-mark them.
+    grid.clearAllDirty();
+
+    lastRows_ = rows;
+    lastCols_ = cols;
+    lastViewportOffset_ = viewportOffset;
+    lastHistorySize_ = historySize;
+
+    ++version;
+    return true;
+}

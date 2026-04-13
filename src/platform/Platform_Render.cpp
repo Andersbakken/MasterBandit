@@ -580,13 +580,13 @@ void PlatformDawn::renderFrame()
             resolveInfos.push_back({ti, false, false, 0});
             continue;
         }
-        const IGrid& g = term->grid();
 
         // Advance animated kitty images for this terminal. Done unconditionally
         // (not inside the needsRender branch) so animations keep advancing even
         // when there's no other reason to render; the return value feeds into
         // needsRender so we only re-render when a frame actually changed.
         bool animationAdvanced = term->tickAnimations();
+        // TODO(phase2): image registry iteration moves to render-side registry.
         for (const auto& [id, img] : term->imageRegistry()) {
             if (img.hasAnimation()) {
                 anyRunningAnimation = true;
@@ -597,50 +597,74 @@ void PlatformDawn::renderFrame()
             }
         }
 
-        int curX = term->cursorX(), curY = term->cursorY();
-        bool cursorMoved = (curX != rs.lastCursorX || curY != rs.lastCursorY ||
-                            term->cursorVisible() != rs.lastCursorVisible);
-        rs.lastCursorX = curX;
-        rs.lastCursorY = curY;
-        rs.lastCursorVisible = term->cursorVisible();
+        // Capture snapshot. This copies all scalar state and dirty viewport
+        // rows, then clears the live grid's dirty bits — after this point,
+        // per-row dirtiness is read from snap.rowDirty, not the grid.
+        rs.snapshot.update(*term);
+        const TerminalSnapshot& snap = rs.snapshot;
+
+        bool cursorMoved = (snap.cursorX != rs.lastCursorX || snap.cursorY != rs.lastCursorY ||
+                            snap.cursorVisible != rs.lastCursorVisible);
+        rs.lastCursorX = snap.cursorX;
+        rs.lastCursorY = snap.cursorY;
+        rs.lastCursorVisible = snap.cursorVisible;
 
         // Detect blink-phase flip for a currently-blinking cursor
-        bool cursorBlinkChanged = term->cursorBlinking() &&
+        bool cursorBlinkChanged = snap.cursorBlinking &&
                                   cursorBlinkPhaseOn_ != rs.lastCursorBlinkOn;
         rs.lastCursorBlinkOn = cursorBlinkPhaseOn_;
 
-        bool needsRender = rs.dirty || g.anyDirty() || cursorMoved ||
-                           cursorBlinkChanged || animationAdvanced ||
-                           !rs.heldTexture;
+        bool anyRowDirty = false;
+        for (uint8_t d : snap.rowDirty) { if (d) { anyRowDirty = true; break; } }
 
-        if (term->syncOutputActive() && rs.heldTexture)
+        // Selection change forces re-resolve of affected rows — selection
+        // mutations don't mark grid rows dirty, and snapshot.update() would
+        // otherwise not flag them. Compared field-by-field rather than via
+        // operator== to avoid changing the Selection type.
+        const auto& ls = rs.lastSelection;
+        const auto& cs = snap.selection;
+        bool selectionChanged =
+            ls.startCol != cs.startCol || ls.startAbsRow != cs.startAbsRow ||
+            ls.endCol   != cs.endCol   || ls.endAbsRow   != cs.endAbsRow   ||
+            ls.active   != cs.active   || ls.valid       != cs.valid       ||
+            ls.mode     != cs.mode;
+        rs.lastSelection = cs;
+
+        bool needsRender = rs.dirty || anyRowDirty || cursorMoved ||
+                           cursorBlinkChanged || animationAdvanced ||
+                           selectionChanged || !rs.heldTexture;
+
+        if (snap.syncOutputActive && rs.heldTexture)
             needsRender = false;
 
-        resolveInfos.push_back({ti, needsRender, cursorMoved, curY});
+        resolveInfos.push_back({ti, needsRender, cursorMoved, snap.cursorY});
 
         if (needsRender || pngNeeded) {
-            size_t needed = static_cast<size_t>(g.cols()) * g.rows();
+            size_t needed = static_cast<size_t>(snap.cols) * snap.rows;
             if (rs.resolvedCells.size() != needed)
                 rs.resolvedCells.resize(needed);
 
-            int vo = term->viewportOffset();
-            int histSize = term->document().historySize();
+            int vo = snap.viewportOffset;
+            int histSize = snap.historySize;
             bool viewportShifted = (vo != rs.lastViewportOffset ||
                                     (vo != 0 && histSize != rs.lastHistorySize));
             rs.lastViewportOffset = vo;
             rs.lastHistorySize = histSize;
 
-            if (static_cast<int>(rs.rowShapingCache.size()) != g.rows())
-                rs.rowShapingCache.resize(g.rows());
+            if (static_cast<int>(rs.rowShapingCache.size()) != snap.rows)
+                rs.rowShapingCache.resize(snap.rows);
 
-            if (viewportShifted || (rs.dirty && !g.anyDirty())) {
-                // Full re-resolve: viewport shifted, or render state dirty without grid changes
-                // (e.g. popup added/removed)
-                for (int row = 0; row < g.rows(); ++row)
+            // Snapshot already marks every row dirty on viewport shift (detected
+            // as a structural change), but the `rs.dirty && !anyRowDirty` case
+            // — e.g. popup added without grid mutation — still needs a forced
+            // full resolve. Selection change also forces full resolve so old
+            // and new selected rows both re-render.
+            if (viewportShifted || selectionChanged || (rs.dirty && !anyRowDirty)) {
+                for (int row = 0; row < snap.rows; ++row)
                     allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
             } else {
-                for (int row = 0; row < g.rows(); ++row) {
-                    if (g.isRowDirty(row) || (cursorMoved && row == curY))
+                for (int row = 0; row < snap.rows; ++row) {
+                    if (snap.rowDirty[row] || (cursorMoved && row == snap.cursorY))
                         allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
                 }
             }
@@ -671,13 +695,8 @@ void PlatformDawn::renderFrame()
         }
     }
 
-    // Clear dirty flags after all resolves complete
-    for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
-        auto& info = resolveInfos[ti];
-        if (info.needsRender || pngNeeded) {
-            const_cast<IGrid&>(renderTargets[ti].term->grid()).clearAllDirty();
-        }
-    }
+    // (Dirty flags are cleared by TerminalSnapshot::update() under the
+    // Terminal mutex — nothing to do here.)
 
     // --- Phase 2: Per-target GPU upload and rendering ---
 
@@ -687,24 +706,24 @@ void PlatformDawn::renderFrame()
         PaneRenderState& rs = *target.rs;
         const PaneRect& paneRect = target.rect;
         if (paneRect.isEmpty()) continue;
-        const IGrid& g = term->grid();
         auto& info = resolveInfos[ti];
         bool needsRender = info.needsRender;
         bool cursorMoved = info.cursorMoved;
         int curY = info.curY;
+        const TerminalSnapshot& snap = rs.snapshot;
 
         if (needsRender || pngNeeded) {
 
             // Assemble glyph buffer from per-row caches and set cell glyph_offset/glyph_count
             rs.glyphBuffer.clear();
-            for (int row = 0; row < g.rows(); ++row) {
+            for (int row = 0; row < snap.rows; ++row) {
                 auto& rowCache = rs.rowShapingCache[row];
                 if (!rowCache.valid) continue;
                 uint32_t rowGlyphBase = static_cast<uint32_t>(rs.glyphBuffer.size());
                 rs.glyphBuffer.insert(rs.glyphBuffer.end(),
                                       rowCache.glyphs.begin(), rowCache.glyphs.end());
-                int baseIdx = row * g.cols();
-                for (int col = 0; col < g.cols(); ++col) {
+                int baseIdx = row * snap.cols;
+                for (int col = 0; col < snap.cols; ++col) {
                     auto& range = rowCache.cellGlyphRanges[col];
                     rs.resolvedCells[baseIdx + col].glyph_offset = rowGlyphBase + range.first;
                     rs.resolvedCells[baseIdx + col].glyph_count = range.second;
@@ -713,14 +732,13 @@ void PlatformDawn::renderFrame()
             rs.totalGlyphs = static_cast<uint32_t>(rs.glyphBuffer.size());
 
             // Apply selection highlight
-            bool selectionVisible = term->hasSelection();
-            int histSize = term->document().historySize();
+            bool selectionVisible = snap.selection.valid || snap.selection.active;
             if (selectionVisible) {
-                for (int row = 0; row < g.rows(); ++row) {
-                    int absRow = histSize - term->viewportOffset() + row;
-                    for (int col = 0; col < g.cols(); ++col) {
-                        if (term->isCellSelected(col, absRow)) {
-                            int idx = row * g.cols() + col;
+                for (int row = 0; row < snap.rows; ++row) {
+                    int absRow = snap.historySize - snap.viewportOffset + row;
+                    for (int col = 0; col < snap.cols; ++col) {
+                        if (snap.isCellSelected(col, absRow)) {
+                            int idx = row * snap.cols + col;
                             rs.resolvedCells[idx].bg_color = 0xFF664422;
                             rs.resolvedCells[idx].fg_color = 0xFFFFFFFF;
                         }
@@ -731,7 +749,7 @@ void PlatformDawn::renderFrame()
             // Cursor — passed as UBO params, no cell mutation needed
             bool isFocused = target.isFocused;
 
-            uint32_t totalCells = static_cast<uint32_t>(g.cols()) * g.rows();
+            uint32_t totalCells = static_cast<uint32_t>(snap.cols) * snap.rows;
             ComputeState* cs = renderer_.computePool().acquire(totalCells);
 
             // Ensure glyph buffer and vertex buffers are large enough (grow-only)
@@ -741,18 +759,8 @@ void PlatformDawn::renderFrame()
             renderer_.uploadResolvedCells(queue_, cs, rs.resolvedCells.data(), totalCells);
             renderer_.uploadGlyphs(queue_, cs, rs.glyphBuffer.data(), rs.totalGlyphs);
 
-            // Mark selection rows dirty for next frame
-            if (selectionVisible) {
-                for (int row = 0; row < g.rows(); ++row) {
-                    int absRow = histSize - term->viewportOffset() + row;
-                    for (int col = 0; col < g.cols(); ++col) {
-                        if (term->isCellSelected(col, absRow)) {
-                            const_cast<IGrid&>(g).markRowDirty(row);
-                            break;
-                        }
-                    }
-                }
-            }
+            // (Rows affected by selection changes are forced to re-resolve via
+            // selectionChanged tracking in the pre-dispatch loop above.)
 
             renderer_.updateFontAtlas(queue_, fontName_, *font);
 
@@ -764,34 +772,21 @@ void PlatformDawn::renderFrame()
             std::unordered_set<uint32_t> seenImageGPU;   // GPU upload dedup
             // Fresh set built this render pass; swapped into rs.lastVisibleImageIds below.
             std::unordered_set<uint32_t> paneVisibleImages;
-            int vo = term->viewportOffset();
             float vpW = static_cast<float>(paneRect.w);
             float vpH = static_cast<float>(paneRect.h);
 
-            for (int viewRow = 0; viewRow < g.rows(); ++viewRow) {
-                int absRow = histSize - vo + viewRow;
-
-                // Collect all image extras in this row (may have multiple placements)
+            for (int viewRow = 0; viewRow < snap.rows; ++viewRow) {
+                // Collect all image extras in this row (may have multiple
+                // placements). Snapshot unifies main-screen, alt-screen, and
+                // scrollback extras into one sorted list per visible row.
                 struct RowExtra { const CellExtra* ex; int viewRow; };
                 std::vector<RowExtra> rowExtras;
 
-                if (absRow >= histSize) {
-                    int gridRow = absRow - histSize;
-                    if (gridRow >= 0 && gridRow < g.rows()) {
-                        for (int c = 0; c < g.cols(); ++c) {
-                            auto* ce = g.getExtra(c, gridRow);
-                            if (ce && ce->imageId != 0)
-                                rowExtras.push_back({ce, viewRow});
-                        }
-                    }
-                } else {
-                    auto* extrasMap = term->document().historyExtras(absRow);
-                    if (extrasMap) {
-                        for (auto& [col, ce] : *extrasMap) {
-                            if (ce.imageId != 0)
-                                rowExtras.push_back({&ce, viewRow});
-                        }
-                    }
+                const auto& entries = snap.rowExtras[static_cast<size_t>(viewRow)].entries;
+                for (const auto& [col, ce] : entries) {
+                    (void)col;
+                    if (ce.imageId != 0)
+                        rowExtras.push_back({&ce, viewRow});
                 }
 
                 for (const auto& re : rowExtras) {
@@ -904,8 +899,8 @@ void PlatformDawn::renderFrame()
             }
 
             TerminalComputeParams params = {};
-            params.cols = static_cast<uint32_t>(g.cols());
-            params.rows = static_cast<uint32_t>(g.rows());
+            params.cols = static_cast<uint32_t>(snap.cols);
+            params.rows = static_cast<uint32_t>(snap.rows);
             params.cell_width = charWidth_;
             params.cell_height = lineHeight_;
             params.viewport_w = static_cast<float>(paneRect.w);
@@ -916,20 +911,23 @@ void PlatformDawn::renderFrame()
             params.pane_origin_y = target.pixelOriginY;
             params.max_text_vertices = cs->maxTextVertices;
 
+            auto packCursorColor = [](const TerminalEmulator::DefaultColors& dc) {
+                return static_cast<uint32_t>(dc.cursorR)
+                     | (static_cast<uint32_t>(dc.cursorG) << 8)
+                     | (static_cast<uint32_t>(dc.cursorB) << 16)
+                     | 0xFF000000u;
+            };
+
             // Cursor
             params.cursor_type = 0;
             if (target.isPopup) {
                 // Popup: render the popup terminal's own cursor in texture-local coords
-                if (term->cursorVisible() &&
-                    term->cursorX() >= 0 && term->cursorX() < g.cols() &&
-                    term->cursorY() >= 0 && term->cursorY() < g.rows()) {
-                    params.cursor_col   = static_cast<uint32_t>(term->cursorX());
-                    params.cursor_row   = static_cast<uint32_t>(term->cursorY());
-                    { const auto& dc = term->defaultColors();
-                      params.cursor_color = static_cast<uint32_t>(dc.cursorR)
-                                          | (static_cast<uint32_t>(dc.cursorG) << 8)
-                                          | (static_cast<uint32_t>(dc.cursorB) << 16)
-                                          | 0xFF000000u; }
+                if (snap.cursorVisible &&
+                    snap.cursorX >= 0 && snap.cursorX < snap.cols &&
+                    snap.cursorY >= 0 && snap.cursorY < snap.rows) {
+                    params.cursor_col   = static_cast<uint32_t>(snap.cursorX);
+                    params.cursor_row   = static_cast<uint32_t>(snap.cursorY);
+                    params.cursor_color = packCursorColor(snap.defaults);
                     params.cursor_type  = isFocused ? 1u : 2u;
                 }
             } else {
@@ -937,27 +935,23 @@ void PlatformDawn::renderFrame()
                 // cell (otherwise the cursor is visually unobstructed even when
                 // popups are open elsewhere in the pane).
                 bool popupHasFocus = target.pane && target.pane->focusedPopup() != nullptr;
-                int cursorViewRow = term->cursorY() + term->viewportOffset();
+                int cursorViewRow = snap.cursorY + snap.viewportOffset;
                 bool cursorCovered = target.pane &&
-                    target.pane->isCellCoveredByPopup(term->cursorX(), cursorViewRow);
+                    target.pane->isCellCoveredByPopup(snap.cursorX, cursorViewRow);
                 if (!cursorCovered &&
-                    term->cursorVisible() &&
-                    term->cursorX() >= 0 && term->cursorX() < g.cols() &&
-                    cursorViewRow >= 0 && cursorViewRow < g.rows()) {
-                    params.cursor_col   = static_cast<uint32_t>(term->cursorX());
+                    snap.cursorVisible &&
+                    snap.cursorX >= 0 && snap.cursorX < snap.cols &&
+                    cursorViewRow >= 0 && cursorViewRow < snap.rows) {
+                    params.cursor_col   = static_cast<uint32_t>(snap.cursorX);
                     params.cursor_row   = static_cast<uint32_t>(cursorViewRow);
-                    { const auto& dc = term->defaultColors();
-                      params.cursor_color = static_cast<uint32_t>(dc.cursorR)
-                                          | (static_cast<uint32_t>(dc.cursorG) << 8)
-                                          | (static_cast<uint32_t>(dc.cursorB) << 16)
-                                          | 0xFF000000u; }
+                    params.cursor_color = packCursorColor(snap.defaults);
                     if (!isFocused || popupHasFocus) {
                         params.cursor_type = 2u;
-                    } else if (term->cursorBlinking() && !cursorBlinkPhaseOn_) {
+                    } else if (snap.cursorBlinking && !cursorBlinkPhaseOn_) {
                         // Off-phase of a blinking cursor: render no cursor.
                         params.cursor_type = 0u;
                     } else {
-                        switch (term->cursorShape()) {
+                        switch (snap.cursorShape) {
                         case TerminalEmulator::CursorBlock:
                         case TerminalEmulator::CursorSteadyBlock:
                             params.cursor_type = 1u; break;

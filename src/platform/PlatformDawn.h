@@ -5,6 +5,7 @@
 #include "InputTypes.h"
 #include "ClickDetector.h"
 #include "Terminal.h"
+#include "TerminalSnapshot.h"
 #include "Renderer.h"
 #include "TexturePool.h"
 #include "text.h"
@@ -267,6 +268,10 @@ private:
 
     // Per-pane render state
     struct PaneRenderState {
+        // Phase 1 render-thread decoupling: renderer reads terminal state from
+        // this snapshot, not the live Terminal. Populated once per frame via
+        // snapshot.update(*term). See RENDER_THREADING.md.
+        TerminalSnapshot snapshot;
         std::vector<ResolvedCell> resolvedCells;
         std::vector<GlyphEntry> glyphBuffer;
         uint32_t totalGlyphs = 0;
@@ -291,6 +296,10 @@ private:
         std::vector<PopupBorder> popupBorders;
         int lastViewportOffset = 0;
         int lastHistorySize = 0;
+        // Previous frame's selection — used to force re-resolve of
+        // newly-selected and newly-deselected rows in the snapshot world
+        // (selection mutations no longer mark grid rows dirty).
+        TerminalEmulator::Selection lastSelection{};
 
         struct RowGlyphCache {
             std::vector<GlyphEntry> glyphs;

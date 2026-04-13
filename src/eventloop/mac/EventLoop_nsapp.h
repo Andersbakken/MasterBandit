@@ -2,6 +2,7 @@
 
 #include <EventLoop.h>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -73,5 +74,8 @@ private:
     void*   fsEventStream_ = nullptr;  // FSEventStreamRef
 
     void* observer_ = nullptr;  // CFRunLoopObserverRef
-    bool wakeupPending_ = false;
+    // wakeup() may be called from the render thread; observer callback reads
+    // on main. CFRunLoopWakeUp is documented thread-safe; we only need the
+    // flag to be atomic.
+    std::atomic<bool> wakeupPending_ { false };
 };

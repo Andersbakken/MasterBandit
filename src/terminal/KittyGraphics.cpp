@@ -1177,6 +1177,7 @@ void TerminalEmulator::processAPC()
 
 bool TerminalEmulator::tickAnimations()
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     uint64_t now = mono();
     bool anyAdvanced = false;
 

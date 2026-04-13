@@ -5,6 +5,7 @@
 
 void TerminalEmulator::keyPressEvent(const KeyEvent *event)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     resetViewport();
 
     spdlog::debug("keyPressEvent: key=0x{:x} text='{}' ({} bytes) count={} mods=0x{:x} action={}",

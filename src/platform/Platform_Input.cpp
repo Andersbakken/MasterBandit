@@ -11,6 +11,7 @@ static std::string codepointToUtf8(uint32_t cp) { return utf8::encode(cp); }
 // — the Window backend (XCBWindow/CocoaWindow) does all conversion before calling here.
 void PlatformDawn::onKey(int key, int scancode, int action, int mods)
 {
+    std::lock_guard<std::mutex> plk(platformMutex_);
     TerminalEmulator* term = activeTerm();
     if (!term) return;
 
@@ -83,6 +84,7 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
 
 void PlatformDawn::onChar(uint32_t codepoint)
 {
+    std::lock_guard<std::mutex> plk(platformMutex_);
     TerminalEmulator* term = activeTerm();
     if (!term) return;
 
@@ -134,6 +136,8 @@ void PlatformDawn::adjustFontSize(float delta)
 void PlatformDawn::onFramebufferResize(int width, int height)
 {
     if (width <= 0 || height <= 0) return;
+
+    std::lock_guard<std::mutex> plk(platformMutex_);
 
     fbWidth_ = static_cast<uint32_t>(width);
     fbHeight_ = static_cast<uint32_t>(height);
@@ -257,6 +261,7 @@ static int resolveTabBarClickIndex(double sx, double sy,
 
 void PlatformDawn::onMouseButton(int button, int action, int mods)
 {
+    std::lock_guard<std::mutex> plk(platformMutex_);
     Tab* tab = activeTab();
     if (!tab) return;
 
@@ -521,6 +526,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
 
 void PlatformDawn::onCursorPos(double x, double y)
 {
+    std::lock_guard<std::mutex> plk(platformMutex_);
     Tab* tab = activeTab();
     if (!tab) return;
     Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();

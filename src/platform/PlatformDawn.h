@@ -28,11 +28,14 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/base_sink.h>
 
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -162,7 +165,9 @@ private:
     // phase is off. interval=0 disables blinking.
     EventLoop::TimerId         cursorBlinkTimer_ = 0;
     int                        cursorBlinkInterval_ = 500;
-    bool                       cursorBlinkPhaseOn_ = true;
+    // Written by the blink timer on the main thread, read by the render
+    // thread in renderFrame.
+    std::atomic<bool>          cursorBlinkPhaseOn_ { true };
     void                       applyBlinkInterval(int ms);
 
     // Animation wakeup: one-shot timer scheduled for the next animated-image
@@ -170,7 +175,12 @@ private:
     // while waiting for the next tick.
     EventLoop::TimerId         animationTimer_ = 0;
     uint64_t                   animationTimerDueAt_ = 0;
+    // Render thread requests an animation wakeup by setting this atomic.
+    // Main thread consumes it in onTick and schedules the actual timer on
+    // the event loop (thread-affine).
+    std::atomic<uint64_t>      pendingAnimationDueAt_ { 0 };
     void                       scheduleAnimationWakeup(uint64_t dueAt);
+    void                       applyPendingAnimationWakeup();
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
@@ -257,7 +267,7 @@ private:
     // Default colors
     uint32_t defaultFgColor_ = 0xFFDDDDDD;
     uint32_t defaultBgColor_ = 0x00000000;
-    bool needsRedraw_ = true;
+    std::atomic<bool> needsRedraw_ { true };
     std::atomic<int> pendingGpuCallbacks_ { 0 };
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;
@@ -319,7 +329,7 @@ private:
     }
     void releasePopupStates(Pane* pane);
 
-    void resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale,
+    void resolveRow(PaneRenderState& rs, int row, FontData* font, float scale,
                     float pixelOriginX, float pixelOriginY);
 
     std::unordered_map<int, Terminal*> ptyPolls_;
@@ -344,6 +354,43 @@ private:
     std::mutex deferredReleaseMutex_;
     std::vector<PooledTexture*> deferredTextureRelease_;
     std::vector<ComputeState*> deferredComputeRelease_;
+
+    // Render thread. renderFrame() runs here, woken by main thread after
+    // parse / input / animation mutations. Coarse `platformMutex_` serializes
+    // render reads against main-thread structural mutations (tab/pane/popup
+    // create/destroy, tab switch, resize). Terminal state is separately
+    // protected by TerminalEmulator::mutex() — acquired briefly inside
+    // TerminalSnapshot::update().
+    std::mutex              platformMutex_;
+    std::mutex              renderCvMutex_;
+    std::condition_variable renderCv_;
+    std::atomic<bool>       renderWake_ { false };
+    std::atomic<bool>       renderStop_ { false };
+    std::thread             renderThread_;
+    void renderThreadMain();
+    void wakeRenderThread();
+
+    // Deferred structural mutations from parse callbacks. Parse runs on the
+    // main thread without `platformMutex_` held so the render thread can
+    // draw concurrently during a flood. Callbacks that mutate PlatformDawn
+    // structural state (notably `terminalExited`, which tears down a
+    // pane/tab) push themselves here; the queue drains after parse, under
+    // `platformMutex_`, avoiding the Terminal-mutex / platformMutex_ lock
+    // inversion a synchronous call would create.
+    std::mutex                            deferredExitMutex_;
+    std::vector<Terminal*>                pendingExits_;
+    void drainPendingExits();
+
+    // Generic main-thread post queue. Parse-time callbacks (title / icon /
+    // cwd / progress / mouse-cursor-shape / foreground-process changes)
+    // enqueue a lambda via postToMainThread(); drainDeferredMain() runs
+    // them on the main thread under platformMutex_ after parse completes.
+    // (std::move_only_function would let us capture move-only types but
+    // isn't in libc++ yet on AppleClang — std::function suffices.)
+    std::mutex                            deferredMainMutex_;
+    std::vector<std::function<void()>>    deferredMain_;
+    void postToMainThread(std::function<void()> fn);
+    void drainDeferredMain();
 
     // Pane divider colors
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;

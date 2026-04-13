@@ -394,8 +394,15 @@ int PlatformDawn::exec()
                 return;
             }
 
-            // Advance progress animations
+            // Structural reads (tabs_, paneRenderStates_, tab-bar state) run
+            // under platformMutex_. The parse itself does NOT — so the render
+            // thread can draw frames concurrently during a long flood.
+            // Callbacks fired from inside parse that would mutate platform
+            // state (notably terminalExited) defer to pendingExits_ and are
+            // drained below under the lock.
             {
+                std::lock_guard<std::mutex> plk(platformMutex_);
+                // Advance progress animations
                 bool hasAnim = false;
                 for (auto& t : tabs_) {
                     for (auto& panePtr : t->layout()->panes()) {
@@ -414,20 +421,37 @@ int PlatformDawn::exec()
                 }
             }
 
-            // Flush coalesced PTY reads before rendering — on macOS, many
-            // tiny reads accumulate between ticks due to small PTY buffers.
+            // Flush coalesced PTY reads — no platformMutex_, so the render
+            // thread can run concurrently. Terminal mutation is serialized by
+            // TerminalEmulator::mutex() inside injectData. Structural
+            // callbacks (terminalExited) defer their work; we drain them
+            // under platformMutex_ right after.
             for (auto& [fd, term] : ptyPolls_)
                 term->flushReadBuffer();
 
-            scriptEngine_.executePendingJobs();
-            device_.Tick();
+            {
+                std::lock_guard<std::mutex> plk(platformMutex_);
+                drainDeferredMain();         // title / icon / cwd / progress / etc.
+                drainPendingExits();
+                scriptEngine_.executePendingJobs();
+                // Render thread may have requested an animation wakeup — wire
+                // the event-loop timer on the main thread.
+                applyPendingAnimationWakeup();
+            }
 
-            if (needsRedraw_ || (debugIPC_ && debugIPC_->pngScreenshotPending()))
-                renderFrame();
+            // device_.Tick() is called from the render thread (see
+            // renderThreadMain). Calling it here while the render thread
+            // is mid-encode triggers a Metal assertion:
+            //   "encodeSignalEvent:value: with uncommitted encoder".
 
-            // If something during render requested another frame (e.g. animation),
+            if (needsRedraw_.load(std::memory_order_acquire) ||
+                (debugIPC_ && debugIPC_->pngScreenshotPending())) {
+                wakeRenderThread();
+            }
+
+            // If something during this tick requested another frame (e.g. animation),
             // ensure the event loop doesn't sleep.
-            if (needsRedraw_ || pendingGpuCallbacks_ > 0)
+            if (needsRedraw_.load(std::memory_order_acquire) || pendingGpuCallbacks_ > 0)
                 eventLoop_->wakeup();
         };
     }

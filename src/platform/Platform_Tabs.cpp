@@ -111,32 +111,39 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         switch (static_cast<TerminalEmulator::Event>(ev)) {
         case TerminalEmulator::Update:
         case TerminalEmulator::ScrollbackChanged:
+            // setNeedsRedraw uses atomic; safe from any thread. Mutation of
+            // paneRenderStates_.dirty is deferred to main thread.
             setNeedsRedraw();
-            {
+            postToMainThread([this, paneId] {
                 auto it = paneRenderStates_.find(paneId);
                 if (it != paneRenderStates_.end()) it->second.dirty = true;
-            }
+            });
             break;
         case TerminalEmulator::VisibleBell:
             break;
         case TerminalEmulator::CommandComplete:
             if (payload) {
+                // Copy the record out of the callback payload — it may not
+                // outlive the deferred lambda.
                 const auto* rec = static_cast<const TerminalEmulator::CommandRecord*>(payload);
-                TerminalEmulator* te = nullptr;
-                for (auto& tab : tabs_) {
-                    if (auto* p = tab->layout()->pane(paneId)) { te = p->terminal(); break; }
-                }
-                const auto& doc = te ? te->document() : *static_cast<const Document*>(nullptr);
-                if (!te) break;
-                Script::CommandInfo info{
-                    rec->id, rec->command, rec->output, rec->cwd, rec->exitCode,
-                    rec->startMs, rec->endMs,
-                    doc.absForRowId(rec->promptStartRowId),  rec->promptStartCol,
-                    doc.absForRowId(rec->commandStartRowId), rec->commandStartCol,
-                    doc.absForRowId(rec->outputStartRowId),  rec->outputStartCol,
-                    doc.absForRowId(rec->outputEndRowId),    rec->outputEndCol
-                };
-                scriptEngine_.notifyCommandComplete(paneId, info);
+                TerminalEmulator::CommandRecord recCopy = *rec;
+                postToMainThread([this, paneId, recCopy = std::move(recCopy)] {
+                    TerminalEmulator* te = nullptr;
+                    for (auto& tab : tabs_) {
+                        if (auto* p = tab->layout()->pane(paneId)) { te = p->terminal(); break; }
+                    }
+                    if (!te) return;
+                    const auto& doc = te->document();
+                    Script::CommandInfo info{
+                        recCopy.id, recCopy.command, recCopy.output, recCopy.cwd, recCopy.exitCode,
+                        recCopy.startMs, recCopy.endMs,
+                        doc.absForRowId(recCopy.promptStartRowId),  recCopy.promptStartCol,
+                        doc.absForRowId(recCopy.commandStartRowId), recCopy.commandStartCol,
+                        doc.absForRowId(recCopy.outputStartRowId),  recCopy.outputStartCol,
+                        doc.absForRowId(recCopy.outputEndRowId),    recCopy.outputEndCol
+                    };
+                    scriptEngine_.notifyCommandComplete(paneId, info);
+                });
             }
             break;
         }
@@ -144,9 +151,14 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
     if (!isHeadless()) {
         cbs.copyToClipboard = [this](const std::string& text) {
-            if (window_) window_->setClipboard(text);
+            // NSPasteboard access must stay on the main thread.
+            postToMainThread([this, text] {
+                if (window_) window_->setClipboard(text);
+            });
         };
         cbs.pasteFromClipboard = [this]() -> std::string {
+            // Synchronous read. Called while parse holds Terminal mutex on
+            // the main thread today; if Phase 5+ moves it, re-evaluate.
             return window_ ? window_->getClipboard() : std::string{};
         };
     } else {
@@ -155,39 +167,45 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
     }
 
     cbs.onTitleChanged = [this, paneId](const std::string& title) {
-        int tabIdx = -1;
-        Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
-        if (!t) return;
-        if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setTitle(title);
-            if (tabIdx == activeTabIdx_) updateWindowTitle();
-            tabBarDirty_ = true;
-            setNeedsRedraw();
-        }
+        postToMainThread([this, paneId, title] {
+            int tabIdx = -1;
+            Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
+            if (!t) return;
+            if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
+            if (t->layout()->focusedPaneId() == paneId) {
+                t->setTitle(title);
+                if (tabIdx == activeTabIdx_) updateWindowTitle();
+                tabBarDirty_ = true;
+                setNeedsRedraw();
+            }
+        });
     };
 
     cbs.onIconChanged = [this, paneId](const std::string& icon) {
-        int tabIdx = -1;
-        Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
-        if (!t) return;
-        if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
-        if (t->layout()->focusedPaneId() == paneId) {
-            t->setIcon(icon);
-            if (tabIdx == activeTabIdx_) updateWindowTitle();
-            tabBarDirty_ = true;
-            setNeedsRedraw();
-        }
+        postToMainThread([this, paneId, icon] {
+            int tabIdx = -1;
+            Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
+            if (!t) return;
+            if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
+            if (t->layout()->focusedPaneId() == paneId) {
+                t->setIcon(icon);
+                if (tabIdx == activeTabIdx_) updateWindowTitle();
+                tabBarDirty_ = true;
+                setNeedsRedraw();
+            }
+        });
     };
 
     cbs.onProgressChanged = [this, paneId](int state, int pct) {
-        Tab* t = findTabForPane(tabs_, paneId);
-        if (!t) return;
-        if (Pane* p = t->layout()->pane(paneId)) {
-            p->setProgress(state, pct);
-            tabBarDirty_ = true;
-            setNeedsRedraw();
-        }
+        postToMainThread([this, paneId, state, pct] {
+            Tab* t = findTabForPane(tabs_, paneId);
+            if (!t) return;
+            if (Pane* p = t->layout()->pane(paneId)) {
+                p->setProgress(state, pct);
+                tabBarDirty_ = true;
+                setNeedsRedraw();
+            }
+        });
     };
 
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
@@ -195,19 +213,32 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
     cbs.isDarkMode = isHeadless() ? []() { return true; } : []() { return platformIsDarkMode(); };
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
-        Tab* t = findTabForPane(tabs_, paneId);
-        if (!t) return;
-        if (Pane* p = t->layout()->pane(paneId)) p->setCWD(dir);
+        postToMainThread([this, paneId, dir] {
+            Tab* t = findTabForPane(tabs_, paneId);
+            if (!t) return;
+            if (Pane* p = t->layout()->pane(paneId)) p->setCWD(dir);
+        });
     };
 
-    cbs.onDesktopNotification = isHeadless()
-        ? [](const std::string&, const std::string&, const std::string&) {}
-        : [](const std::string& title, const std::string& body, const std::string&) {
-            platformSendNotification(title, body);
+    if (isHeadless()) {
+        cbs.onDesktopNotification = [](const std::string&, const std::string&, const std::string&) {};
+    } else {
+        cbs.onDesktopNotification = [this](const std::string& title, const std::string& body, const std::string& /*icon*/) {
+            // Route through main thread — platformSendNotification calls into
+            // NSUserNotificationCenter / D-Bus which are main-thread affine.
+            postToMainThread([title, body] {
+                platformSendNotification(title, body);
+            });
         };
+    }
 
     cbs.onOSC = [this, paneId](int oscNum, std::string_view payload) {
-        scriptEngine_.notifyOSC(paneId, oscNum, std::string(payload));
+        // Script dispatch — scripts may mutate anything. Defer so the script
+        // runs on the main thread under platformMutex_.
+        std::string payloadCopy(payload);
+        postToMainThread([this, paneId, oscNum, payloadCopy = std::move(payloadCopy)] {
+            scriptEngine_.notifyOSC(paneId, oscNum, payloadCopy);
+        });
     };
 
     cbs.customTcapLookup = [this](const std::string& name) -> std::optional<std::string> {
@@ -215,37 +246,41 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
     };
 
     cbs.onMouseCursorShape = [this, paneId](const std::string& shape) {
-        // Cache the converted style per pane; cursor-pos updates read this
-        // without re-parsing the CSS name on every mouse move.
-        if (shape.empty()) {
-            paneCursorStyle_.erase(paneId);
-        } else {
-            paneCursorStyle_[paneId] = pointerShapeNameToCursorStyle(shape);
-        }
-        // Apply immediately if the request is from the focused pane in the
-        // active tab; otherwise the next mouse-move into that pane will pick
-        // it up. Background panes/tabs don't fight over the cursor.
-        if (!window_ || isHeadless()) return;
-        Tab* t = activeTab();
-        if (!t || t->layout()->focusedPaneId() != paneId) return;
-        window_->setCursorStyle(shape.empty()
-            ? Window::CursorStyle::IBeam
-            : paneCursorStyle_[paneId]);
+        postToMainThread([this, paneId, shape] {
+            // Cache the converted style per pane; cursor-pos updates read this
+            // without re-parsing the CSS name on every mouse move.
+            if (shape.empty()) {
+                paneCursorStyle_.erase(paneId);
+            } else {
+                paneCursorStyle_[paneId] = pointerShapeNameToCursorStyle(shape);
+            }
+            // Apply immediately if the request is from the focused pane in the
+            // active tab; otherwise the next mouse-move into that pane will pick
+            // it up. Background panes/tabs don't fight over the cursor.
+            if (!window_ || isHeadless()) return;
+            Tab* t = activeTab();
+            if (!t || t->layout()->focusedPaneId() != paneId) return;
+            window_->setCursorStyle(shape.empty()
+                ? Window::CursorStyle::IBeam
+                : paneCursorStyle_[paneId]);
+        });
     };
 
     cbs.onForegroundProcessChanged = [this, paneId](const std::string& proc) {
-        scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
-        // Use foreground process as tab title if pane has no OSC title
-        int tabIdx = -1;
-        Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
-        if (!t) return;
-        Pane* p = t->layout()->pane(paneId);
-        if (p && p->title().empty() && t->layout()->focusedPaneId() == paneId) {
-            t->setTitle(proc);
-            if (tabIdx == activeTabIdx_) updateWindowTitle();
-            tabBarDirty_ = true;
-            setNeedsRedraw();
-        }
+        postToMainThread([this, paneId, proc] {
+            scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
+            // Use foreground process as tab title if pane has no OSC title
+            int tabIdx = -1;
+            Tab* t = findTabForPane(tabs_, paneId, &tabIdx);
+            if (!t) return;
+            Pane* p = t->layout()->pane(paneId);
+            if (p && p->title().empty() && t->layout()->focusedPaneId() == paneId) {
+                t->setTitle(proc);
+                if (tabIdx == activeTabIdx_) updateWindowTitle();
+                tabBarDirty_ = true;
+                setNeedsRedraw();
+            }
+        });
     };
 
     return cbs;
@@ -272,7 +307,11 @@ void PlatformDawn::createTab()
 
     auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
-    pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
+    pcbs.onTerminalExited = [this](Terminal* t) {
+        std::lock_guard<std::mutex> lk(deferredExitMutex_);
+        pendingExits_.push_back(t);
+        if (eventLoop_) eventLoop_->wakeup();
+    };
     pcbs.quit = [this]() { quit(); };
     pcbs.shouldFilterOutput = [this, paneId]() {
         return scriptEngine_.hasPaneOutputFilters(paneId);
@@ -576,7 +615,11 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
 
     auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
-    pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
+    pcbs.onTerminalExited = [this](Terminal* t) {
+        std::lock_guard<std::mutex> lk(deferredExitMutex_);
+        pendingExits_.push_back(t);
+        if (eventLoop_) eventLoop_->wakeup();
+    };
     pcbs.quit = [this]() { quit(); };
     pcbs.shouldFilterOutput = [this, paneId]() {
         return scriptEngine_.hasPaneOutputFilters(paneId);

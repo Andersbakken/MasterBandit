@@ -134,6 +134,10 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
         view.currentFrameGap = img.currentFrameGap();
         view.frameShownAt = img.frameShownAt;
         view.hasAnimation = img.hasAnimation();
+        const auto& frame = img.currentFrameRGBA();
+        view.currentFrameRGBA = frame.data();
+        view.currentFrameRGBASize = frame.size();
+        view.placements = img.placements;  // copy — render iteration must not race with parser mutations
         images.emplace(imageId, std::move(view));
     };
     for (const auto& re : rowExtras) {

@@ -60,10 +60,14 @@ struct TerminalSnapshot {
     // rows) plus any images with active animations (so animation scheduling
     // sees off-screen running images too).
     //
-    // `entry` is a shared_ptr into the parser's registry so the image data
-    // remains alive across snapshot use even if the parser deletes its
-    // registry entry. Scalar fields are copied by value so the renderer
-    // reads don't depend on the entry's mutable fields staying frozen.
+    // `entry` is a shared_ptr into the parser's registry: keeps the ImageEntry
+    // alive across render without holding the Terminal mutex even if the
+    // parser deletes its map entry. Scalar fields are copied by value at
+    // snapshot time; placements map is copied so render iteration can't race
+    // with parser insertion. `currentFrameRGBA` is a raw pointer into the
+    // entry's (still-alive) rgba vector — safe because rgba content is
+    // immutable after load, and vector<Frame> moves preserve inner buffer
+    // identity.
     struct ImageView {
         std::shared_ptr<const TerminalEmulator::ImageEntry> entry;
         uint32_t pixelWidth { 0 }, pixelHeight { 0 };
@@ -75,6 +79,9 @@ struct TerminalSnapshot {
         uint32_t currentFrameGap { 40 };
         uint64_t frameShownAt { 0 };
         bool hasAnimation { false };
+        const uint8_t* currentFrameRGBA { nullptr };
+        size_t currentFrameRGBASize { 0 };
+        std::unordered_map<uint32_t, TerminalEmulator::ImageEntry::Placement> placements;
     };
     std::unordered_map<uint32_t, ImageView> images;
 

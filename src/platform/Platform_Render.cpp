@@ -26,14 +26,24 @@ void PlatformDawn::releasePopupStates(Pane* pane)
     }
 }
 
-void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int row, FontData* font, float scale,
+void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, float scale,
                               float pixelOriginX, float pixelOriginY)
 {
-    if (!term) return;
-
-    int cols = term->width();
+    const TerminalSnapshot& snap = rs.snapshot;
+    int cols = snap.cols;
+    if (row < 0 || row >= snap.rows || cols <= 0) return;
     int baseIdx = row * cols;
-    const Cell* rowData = term->viewportRow(row);
+    const Cell* rowData = snap.cells.data() + baseIdx;
+    const auto& rowExtraEntries = snap.rowExtras[static_cast<size_t>(row)].entries;
+
+    // Lookup helper — snapshot rowExtras is sorted by column, so binary search.
+    auto findExtra = [&](int col) -> const CellExtra* {
+        auto it = std::lower_bound(
+            rowExtraEntries.begin(), rowExtraEntries.end(), col,
+            [](const std::pair<int, CellExtra>& e, int c) { return e.first < c; });
+        if (it != rowExtraEntries.end() && it->first == col) return &it->second;
+        return nullptr;
+    };
 
     auto& rowCache = rs.rowShapingCache[row];
     rowCache.glyphs.clear();
@@ -46,7 +56,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
         ResolvedCell& rc = rs.resolvedCells[baseIdx + col];
         const Cell& cell = rowData[col];
 
-        const auto& dc = term->defaultColors();
+        const auto& dc = snap.defaults;
         uint32_t defFg = static_cast<uint32_t>(dc.fgR) | (static_cast<uint32_t>(dc.fgG) << 8) | (static_cast<uint32_t>(dc.fgB) << 16) | 0xFF000000u;
         uint32_t defBg = (dc.bgR || dc.bgG || dc.bgB)
             ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
@@ -65,7 +75,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
 
         uint32_t ulInfo = 0;
         {
-            const CellExtra* extra = term->grid().getExtra(col, row);
+            const CellExtra* extra = findExtra(col);
             bool hasUnderline = cell.attrs.underline();
             bool isHyperlink = extra && extra->hyperlinkId;
             if (!hasUnderline && isHyperlink) hasUnderline = true;
@@ -158,16 +168,14 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, TerminalEmulator* term, int r
         std::string runText;
         runText.reserve(static_cast<size_t>(runEnd - runStart) * 4); // worst case: 4 bytes per codepoint
         std::vector<std::pair<uint32_t, int>> byteToCell; // (byteOffset, cellCol)
-        const auto* rowExtras = term->document().viewportExtras(row, term->viewportOffset());
         for (int c = runStart; c < runEnd; ++c) {
             if (rowData[c].attrs.wideSpacer()) continue;
             if (rowData[c].wc == 0) continue;
             byteToCell.push_back({static_cast<uint32_t>(runText.size()), c});
             appendUtf8(runText, rowData[c].wc);
-            if (rowExtras) {
-                auto it = rowExtras->find(c);
-                if (it != rowExtras->end() && it->second.combiningCp != 0)
-                    appendUtf8(runText, it->second.combiningCp);
+            if (const CellExtra* extra = findExtra(c)) {
+                if (extra->combiningCp != 0)
+                    appendUtf8(runText, extra->combiningCp);
             }
         }
 
@@ -683,7 +691,7 @@ void PlatformDawn::renderFrame()
             uint32_t ti = packed >> 16;
             int row = static_cast<int>(packed & 0xFFFF);
             auto& target = renderTargets[ti];
-            resolveRow(*target.rs, target.term, row, font, scale,
+            resolveRow(*target.rs, row, font, scale,
                        target.pixelOriginX, target.pixelOriginY);
         });
     } else {
@@ -691,7 +699,7 @@ void PlatformDawn::renderFrame()
             uint32_t ti = packed >> 16;
             int row = static_cast<int>(packed & 0xFFFF);
             auto& target = renderTargets[ti];
-            resolveRow(*target.rs, target.term, row, font, scale,
+            resolveRow(*target.rs, row, font, scale,
                        target.pixelOriginX, target.pixelOriginY);
         }
     }
@@ -799,19 +807,17 @@ void PlatformDawn::renderFrame()
                     auto viewIt = snap.images.find(ex->imageId);
                     if (viewIt == snap.images.end()) continue;
                     const auto& view = viewIt->second;
-                    if (!view.entry) continue;
-                    const auto& placements = view.entry->placements;
+                    const auto& placements = view.placements;
 
                     // GPU upload — once per image, not per placement. The
                     // renderer caches one texture per frame index, so animation
                     // playback only re-uploads on the first cycle.
                     if (!seenImageGPU.count(ex->imageId)) {
                         seenImageGPU.insert(ex->imageId);
-                        const auto& frameData = view.entry->currentFrameRGBA();
                         renderer_.useImageFrame(queue_, ex->imageId,
                             view.currentFrameIndex, view.totalFrames,
                             view.frameGeneration,
-                            frameData.data(), view.pixelWidth, view.pixelHeight);
+                            view.currentFrameRGBA, view.pixelWidth, view.pixelHeight);
                         paneVisibleImages.insert(ex->imageId);
                     }
 
@@ -1304,7 +1310,13 @@ void PlatformDawn::renderFrame()
                             rgba.data(), static_cast<int>(w * 4));
 
                         std::string b64 = base64::encode(pngData.data(), pngData.size());
-                        ipc->onPngReady(b64);
+                        // MapAsync callback fires on a Dawn/GCD worker
+                        // thread. DebugIPC state and libwebsockets' fd
+                        // watches are main-thread-only, so post the PNG
+                        // delivery back to the main thread.
+                        postToMainThread([ipc, b64 = std::move(b64)] {
+                            ipc->onPngReady(b64);
+                        });
                     });
             }
         } else {

@@ -48,11 +48,11 @@ public:
     TerminalEmulator(TerminalCallbacks callbacks);
     virtual ~TerminalEmulator();
 
-    // Serializes mutation vs. render-thread snapshot capture. Inert in Phase 1
-    // (single-threaded); lock-guards at mutation entry points are added with
-    // the render thread split in Phase 3. See RENDER_THREADING.md §Terminal
-    // Mutex & Snapshot.
-    std::mutex& mutex() const { return mMutex; }
+    // Serializes mutation vs. render-thread snapshot capture. Recursive because
+    // script callbacks fired synchronously from inside injectData (OSC
+    // handlers, action dispatch) can re-enter mutation APIs on the same
+    // thread. Using std::recursive_mutex avoids deadlock in that path.
+    std::recursive_mutex& mutex() const { return mMutex; }
 
     int cursorX() const { return mCursorX; }
     int cursorY() const { return mCursorY; }
@@ -342,7 +342,7 @@ protected:
 private:
     TerminalCallbacks mCallbacks;
 
-    mutable std::mutex mMutex;
+    mutable std::recursive_mutex mMutex;
 
     int mWidth { 0 }, mHeight { 0 };
     int mCursorX { 0 }, mCursorY { 0 };

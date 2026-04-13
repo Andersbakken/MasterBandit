@@ -5,6 +5,7 @@
 
 void TerminalEmulator::focusEvent(bool focused)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (mFocusReporting) {
         writeToOutput(focused ? "\x1b[I" : "\x1b[O", 3);
     }
@@ -12,6 +13,7 @@ void TerminalEmulator::focusEvent(bool focused)
 
 void TerminalEmulator::notifyColorPreference(bool isDark)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (mColorPreferenceReporting) {
         char response[16];
         int rlen = snprintf(response, sizeof(response), "\x1b[?997;%dn", isDark ? 1 : 2);
@@ -63,6 +65,7 @@ static int buttonToCode(Button button)
 
 void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // Shift overrides mouse reporting → always select
     bool forceSelect = (ev->modifiers & ShiftModifier) != 0;
 
@@ -84,6 +87,7 @@ void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
 
 void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // Button released without moving — discard pending selection
     mPendingSelection = false;
 
@@ -113,6 +117,7 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
 
 void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // First move after press — activate the pending selection
     if (mPendingSelection) {
         mPendingSelection = false;
@@ -177,6 +182,7 @@ static char32_t cellAt(const TerminalEmulator& te, int col, int absRow)
 // Selection implementation
 void TerminalEmulator::startSelection(int col, int absRow)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     mSelection.startCol = col;
     mSelection.startAbsRow = absRow;
     mSelection.endCol = col;
@@ -188,6 +194,7 @@ void TerminalEmulator::startSelection(int col, int absRow)
 
 void TerminalEmulator::startWordSelection(int col, int absRow)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // Scan left and right for word boundaries
     int left = col, right = col;
     char32_t ch = cellAt(*this, col, absRow);
@@ -221,6 +228,7 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
 
 void TerminalEmulator::startLineSelection(int absRow)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     mSelection.startCol = 0;
     mSelection.startAbsRow = absRow;
     mSelection.endCol = mWidth - 1;
@@ -238,6 +246,7 @@ void TerminalEmulator::startLineSelection(int absRow)
 
 void TerminalEmulator::extendSelection(int col, int absRow)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (!mSelection.valid && !mSelection.active) {
         // No existing selection — start a new one
         startSelection(col, absRow);
@@ -270,6 +279,7 @@ void TerminalEmulator::extendSelection(int col, int absRow)
 
 void TerminalEmulator::startRectangleSelection(int col, int absRow)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     mSelection.startCol = col;
     mSelection.startAbsRow = absRow;
     mSelection.endCol = col;
@@ -281,18 +291,21 @@ void TerminalEmulator::startRectangleSelection(int col, int absRow)
 
 void TerminalEmulator::updateSelection(int col, int absRow)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     mSelection.endCol = col;
     mSelection.endAbsRow = absRow;
 }
 
 void TerminalEmulator::finalizeSelection()
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     mSelection.active = false;
     mSelection.valid = true;
 }
 
 void TerminalEmulator::clearSelection()
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     bool had = mSelection.active || mSelection.valid;
     mSelection.active = false;
     mSelection.valid = false;

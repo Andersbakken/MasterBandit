@@ -79,8 +79,84 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     texturePool_.init(device_, wgpu::TextureFormat::BGRA8Unorm);
 }
 
+void PlatformDawn::postToMainThread(std::function<void()> fn)
+{
+    {
+        std::lock_guard<std::mutex> lk(deferredMainMutex_);
+        deferredMain_.push_back(std::move(fn));
+    }
+    if (eventLoop_) eventLoop_->wakeup();
+}
+
+void PlatformDawn::drainDeferredMain()
+{
+    // Called on the main thread from onTick under platformMutex_.
+    std::vector<std::function<void()>> pending;
+    {
+        std::lock_guard<std::mutex> lk(deferredMainMutex_);
+        pending.swap(deferredMain_);
+    }
+    for (auto& fn : pending) fn();
+}
+
+void PlatformDawn::drainPendingExits()
+{
+    // Called on the main thread from onTick under platformMutex_. Converts
+    // the deferred queue into actual terminalExited() structural mutations,
+    // safe now because the render thread is blocked on platformMutex_.
+    std::vector<Terminal*> exits;
+    {
+        std::lock_guard<std::mutex> lk(deferredExitMutex_);
+        exits.swap(pendingExits_);
+    }
+    for (auto* t : exits) terminalExited(t);
+}
+
+void PlatformDawn::wakeRenderThread()
+{
+    {
+        std::lock_guard<std::mutex> lk(renderCvMutex_);
+        renderWake_.store(true, std::memory_order_release);
+    }
+    renderCv_.notify_one();
+}
+
+void PlatformDawn::renderThreadMain()
+{
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lk(renderCvMutex_);
+            renderCv_.wait(lk, [this] {
+                return renderWake_.load(std::memory_order_acquire) ||
+                       renderStop_.load(std::memory_order_acquire);
+            });
+            renderWake_.store(false, std::memory_order_relaxed);
+        }
+        if (renderStop_.load(std::memory_order_acquire)) return;
+
+        // Coarse lock — serializes renderFrame against main-thread structural
+        // mutations (tab/pane create/destroy, tab switch, resize). Terminal
+        // state is separately guarded via TerminalEmulator::mutex() inside
+        // TerminalSnapshot::update().
+        std::lock_guard<std::mutex> plk(platformMutex_);
+        if (renderStop_.load(std::memory_order_acquire)) return;
+        // Tick Dawn on the render thread: it drains device-side events
+        // (completion callbacks, deferred destroys). Must not run on main
+        // thread concurrently with render-thread encoding — Metal backend
+        // asserts `encodeSignalEvent:value: with uncommitted encoder`.
+        device_.Tick();
+        renderFrame();
+    }
+}
+
 PlatformDawn::~PlatformDawn()
 {
+    // Stop the render thread before destroying any Dawn / window state it
+    // might be reading. Signal stop, wake it if idle, join.
+    renderStop_.store(true, std::memory_order_release);
+    wakeRenderThread();
+    if (renderThread_.joinable()) renderThread_.join();
+
     // Release held textures before clearing pool
     for (auto& [id, rs] : paneRenderStates_) {
         if (rs.heldTexture) texturePool_.release(rs.heldTexture);
@@ -380,6 +456,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         renderer_.initProgressPipeline(device_, shaderDir);
         renderer_.uploadFontAtlas(queue_, fontName_, *font);
 
+        // Spawn the render thread once all Dawn/surface/font state is
+        // initialized. It sits idle on the condition variable until the main
+        // thread signals a wake after parse/input/animation mutations.
+        renderThread_ = std::thread([this] { renderThreadMain(); });
     }
 
     // Create a layout and tab for this terminal
@@ -393,7 +473,16 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
-    pcbs.onTerminalExited = [this](Terminal* t) { terminalExited(t); };
+    pcbs.onTerminalExited = [this](Terminal* t) {
+        // Deferred: terminalExited fires from inside Terminal::readFromFD
+        // (during parse, with Terminal mutex held). Running the structural
+        // mutation immediately would require acquiring platformMutex_ while
+        // holding Terminal mutex — the opposite of the render thread's
+        // order and a deadlock. Queue and drain after parse.
+        std::lock_guard<std::mutex> lk(deferredExitMutex_);
+        pendingExits_.push_back(t);
+        if (eventLoop_) eventLoop_->wakeup();
+    };
     pcbs.quit = [this]() { quit(); };
     auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
 
@@ -683,10 +772,24 @@ void PlatformDawn::applyBlinkInterval(int ms)
 
 void PlatformDawn::scheduleAnimationWakeup(uint64_t dueAt)
 {
-    if (!eventLoop_) return;
+    // Called from the render thread during renderFrame(). The event loop
+    // (addTimer / removeTimer) is not thread-safe, so we stash the request
+    // in an atomic and let the main thread's onTick wire it up via
+    // applyPendingAnimationWakeup(). Kick the event loop so onTick runs
+    // even when nothing else is happening.
+    pendingAnimationDueAt_.store(dueAt, std::memory_order_release);
+    if (eventLoop_) eventLoop_->wakeup();
+}
+
+void PlatformDawn::applyPendingAnimationWakeup()
+{
+    // Main thread only. Consume the atomic request stashed by the render
+    // thread and (re)arm the event loop timer.
+    uint64_t dueAt = pendingAnimationDueAt_.exchange(0, std::memory_order_acquire);
+    if (!dueAt || !eventLoop_) return;
+
     uint64_t now = TerminalEmulator::mono();
     if (dueAt <= now) {
-        // Already past — don't schedule a timer, just wake now.
         if (animationTimer_) {
             eventLoop_->removeTimer(animationTimer_);
             animationTimer_ = 0;

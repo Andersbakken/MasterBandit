@@ -95,6 +95,7 @@ void TerminalEmulator::resetScrollback(int scrollbackLines)
 
 void TerminalEmulator::applyColorScheme(const ColorScheme& cs)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     const std::string* colors[] = {
         &cs.color0, &cs.color1, &cs.color2, &cs.color3,
         &cs.color4, &cs.color5, &cs.color6, &cs.color7,
@@ -114,6 +115,7 @@ void TerminalEmulator::applyColorScheme(const ColorScheme& cs)
 
 void TerminalEmulator::applyCursorConfig(const CursorConfig& cc)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     CursorShape shape;
     if (cc.shape == "underline") {
         shape = cc.blink ? CursorUnderline : CursorSteadyUnderline;
@@ -129,6 +131,7 @@ void TerminalEmulator::applyCursorConfig(const CursorConfig& cc)
 
 void TerminalEmulator::resize(int width, int height)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     int oldCols = mWidth;
     mWidth = width;
     mHeight = height;
@@ -209,6 +212,7 @@ const Cell* TerminalEmulator::viewportRow(int viewRow) const
 
 void TerminalEmulator::scrollViewport(int delta)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     int oldOffset = mViewportOffset;
     // delta > 0 means scroll into history, delta < 0 toward live
     mViewportOffset = std::clamp(mViewportOffset + delta, 0, mDocument.historySize());
@@ -220,6 +224,7 @@ void TerminalEmulator::scrollViewport(int delta)
 
 void TerminalEmulator::resetViewport()
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (mViewportOffset != 0) {
         mViewportOffset = 0;
         grid().markAllDirty();
@@ -239,6 +244,7 @@ static CellAttrs::SemanticType rowSemanticType(const Cell* row, int cols)
 
 void TerminalEmulator::scrollToPrompt(int direction)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // Walk cell tags directly — reflow-correct because tags ride with cells.
     // A "prompt-start row" is a row tagged Prompt whose predecessor is not.
     int histSize = mDocument.historySize();
@@ -284,6 +290,7 @@ void TerminalEmulator::scrollToPrompt(int direction)
 
 void TerminalEmulator::selectCommandOutput()
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // Walk cells around the viewport pivot to find a contiguous Output region.
     int histSize = mDocument.historySize();
     int totalRows = histSize + mHeight;
@@ -541,6 +548,7 @@ void TerminalEmulator::lineFeed()
 
 void TerminalEmulator::injectData(const char* buf, size_t len_)
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (sLog().should_log(spdlog::level::debug))
         sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
     obs::notifyParse(len_);

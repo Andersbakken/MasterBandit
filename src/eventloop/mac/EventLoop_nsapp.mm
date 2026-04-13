@@ -85,8 +85,7 @@ NSAppEventLoop::NSAppEventLoop()
         ^(CFRunLoopObserverRef, CFRunLoopActivity activity) {
             if (activity == kCFRunLoopBeforeWaiting) {
                 if (onTick) onTick();
-                if (wakeupPending_) {
-                    wakeupPending_ = false;
+                if (wakeupPending_.exchange(false, std::memory_order_acquire)) {
                     CFRunLoopWakeUp(CFRunLoopGetMain());
                 }
             } else if (activity == kCFRunLoopAfterWaiting) {
@@ -144,7 +143,9 @@ void NSAppEventLoop::stop()
 
 void NSAppEventLoop::wakeup()
 {
-    wakeupPending_ = true;
+    // Thread-safe: CFRunLoopWakeUp is documented as callable from any thread.
+    // wakeupPending_ is atomic.
+    wakeupPending_.store(true, std::memory_order_release);
     CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 

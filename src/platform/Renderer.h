@@ -154,6 +154,7 @@ public:
     void renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                       wgpu::TextureView target,
                       float paneWidth, float paneHeight,
+                      const float* tint,
                       const std::vector<ImageDrawCmd>& cmds,
                       size_t start = 0, size_t count = std::numeric_limits<size_t>::max());
 
@@ -180,6 +181,7 @@ public:
     void renderColrQuads(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                          wgpu::TextureView target,
                          float viewport_w, float viewport_h,
+                         const float* tint,
                          const std::vector<ColrDrawCmd>& cmds);
 
     ColrAtlas& colrAtlas() { return colrAtlas_; }

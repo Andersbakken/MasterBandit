@@ -1096,7 +1096,7 @@ void PlatformDawn::renderFrame()
             if (!colrDrawCmds.empty()) {
                 renderer_.renderColrQuads(encoder, queue_, newTexture->view,
                                           params.viewport_w, params.viewport_h,
-                                          colrDrawCmds);
+                                          tint, colrDrawCmds);
             }
 
             wgpu::CommandBuffer commands = encoder.Finish();

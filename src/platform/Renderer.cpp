@@ -713,7 +713,7 @@ void Renderer::initImagePipeline(wgpu::Device& device, const std::string& shader
     // Uniform buffer (viewport size)
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = 16; // vec2f + padding
+        desc.size = 32; // vec2f + padding + vec4f pane_tint
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         imageUniformBuffer_ = device.CreateBuffer(&desc);
     }
@@ -826,6 +826,7 @@ void Renderer::retainImagesOnly(const std::unordered_set<uint32_t>& keep)
 void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              wgpu::TextureView target,
                              float paneWidth, float paneHeight,
+                             const float* tint,
                              const std::vector<ImageDrawCmd>& cmds,
                              size_t rangeStart, size_t rangeCount)
 {
@@ -833,8 +834,9 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     size_t rangeEnd = std::min(rangeStart + rangeCount, cmds.size());
     if (rangeStart >= rangeEnd) return;
 
-    // Update viewport uniform — use pane dimensions, not global framebuffer
-    float uniforms[4] = { paneWidth, paneHeight, 0, 0 };
+    // Update viewport + pane_tint uniform
+    float uniforms[8] = { paneWidth, paneHeight, 0, 0,
+                           tint[0], tint[1], tint[2], tint[3] };
     queue.WriteBuffer(imageUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
     wgpu::RenderPassColorAttachment att = {};
@@ -992,7 +994,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 
     // Below-text images (z < 0) — between backgrounds and text
     if (imgSplitText > 0)
-        renderImages(encoder, queue, target, contentW, contentH, imageCmds, 0, imgSplitText);
+        renderImages(encoder, queue, target, contentW, contentH, pane_tint, imageCmds, 0, imgSplitText);
 
     // Text pass
     {
@@ -1014,7 +1016,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 
     // Above-text images (z >= 0) — after text
     if (imgSplitText < imageCmds.size())
-        renderImages(encoder, queue, target, contentW, contentH, imageCmds, imgSplitText);
+        renderImages(encoder, queue, target, contentW, contentH, pane_tint, imageCmds, imgSplitText);
 }
 
 void Renderer::composite(wgpu::CommandEncoder& encoder,
@@ -1464,12 +1466,17 @@ void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& q
 void Renderer::renderColrQuads(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                                 wgpu::TextureView target,
                                 float viewport_w, float viewport_h,
+                                const float* tint,
                                 const std::vector<ColrDrawCmd>& cmds)
 {
     if (!imagePipelineReady_ || cmds.empty()) return;
 
-    // Update viewport uniform
-    float uniforms[4] = { viewport_w, viewport_h, 0, 0 };
+    // Update viewport + pane_tint uniform (Params struct: f32, f32, vec4f = 8 floats)
+    float uniforms[8] = {
+        viewport_w, viewport_h,
+        0, 0,  // padding to align vec4f
+        tint[0], tint[1], tint[2], tint[3]
+    };
     queue.WriteBuffer(imageUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
     // Group quads by bucket

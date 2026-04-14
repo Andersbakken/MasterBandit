@@ -3,6 +3,9 @@
 struct Params {
     viewport_w: f32,
     viewport_h: f32,
+    _pad0: f32,
+    _pad1: f32,
+    pane_tint: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -26,5 +29,6 @@ struct VsOut {
 }
 
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4f {
-    return textureSample(img_texture, img_sampler, in.uv);
+    var c = textureSample(img_texture, img_sampler, in.uv);
+    return vec4f(c.rgb * params.pane_tint.rgb, c.a * params.pane_tint.a);
 }

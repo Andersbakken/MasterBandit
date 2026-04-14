@@ -248,6 +248,11 @@ interface MbOverlay {
     /** Close this overlay. */
     close(): void;
 
+    /** Extract plain text from a stable row-id range (inclusive). */
+    getTextFromRows(startRowId: number, endRowId: number): string;
+    /** Stable row ID for a screen row (0 = top). Returns null if out of range. */
+    rowIdAt(screenRow: number): number | null;
+
     /** Keyboard events when the overlay is focused. Requires `io.filter.input`. */
     addEventListener(event: "input", fn: (data: string) => void): void;
     addEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;

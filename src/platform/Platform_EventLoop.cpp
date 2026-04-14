@@ -165,6 +165,30 @@ int PlatformDawn::exec()
             }
             return {};
         };
+        scbs.paneRowIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (TerminalEmulator* te = p->terminal()) {
+                        const auto& doc = te->document();
+                        if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
+                        int abs = doc.historySize() + screenRow;
+                        return doc.rowIdForAbs(abs);
+                    }
+                }
+            }
+            return std::nullopt;
+        };
+        scbs.overlayRowIdAt = [this](Script::TabId tabId, int screenRow) -> std::optional<uint64_t> {
+            if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
+                if (auto* ov = tabs_[tabId]->topOverlay()) {
+                    const auto& doc = ov->document();
+                    if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
+                    int abs = doc.historySize() + screenRow;
+                    return doc.rowIdForAbs(abs);
+                }
+            }
+            return std::nullopt;
+        };
         scbs.overlayInfo = [this](Script::TabId tabId) -> Script::AppCallbacks::OverlayInfo {
             if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
                 if (auto* ov = tabs_[tabId]->topOverlay())

@@ -40,8 +40,10 @@ struct IncreaseFontSize    {};
 struct DecreaseFontSize    {};
 struct ResetFontSize       {};
 struct ScrollToPrompt      { int direction = -1; }; // -1 = previous, +1 = next
-struct SelectCommandOutput {};
-struct ShowScrollback      {};
+struct SelectCommandOutput   {};
+struct ShowScrollback        {};
+struct CopyLastCommand       {}; // prompt + input + output of last command to clipboard
+struct CopyDocument          {}; // entire scrollback + screen as plain text to clipboard
 struct FocusPopup          {}; // Cycle focus: main terminal → popup1 → popup2 → ... → main
 struct ReloadConfig        {};
 struct ScriptAction        { std::string name; std::vector<std::string> args; };
@@ -60,6 +62,7 @@ using Any = std::variant<
     PushOverlay, PopOverlay,
     IncreaseFontSize, DecreaseFontSize, ResetFontSize,
     ScrollToPrompt, SelectCommandOutput, ShowScrollback,
+    CopyLastCommand, CopyDocument,
     FocusPopup, ReloadConfig, ScriptAction,
     MouseSelection, OpenHyperlink, PasteSelection
 >;

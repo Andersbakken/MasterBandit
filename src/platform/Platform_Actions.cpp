@@ -237,6 +237,23 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             Terminal* term = activeTerm();
             if (term) term->selectCommandOutput();
         },
+        [&](const Action::CopyLastCommand&) {
+            Terminal* term = activeTerm();
+            if (!term) return;
+            const auto* cmd = term->lastCommand();
+            if (!cmd || !cmd->complete) return;
+            // Extract from prompt start through output end (prompt + input + output).
+            std::string text = term->document().getTextFromRows(
+                cmd->promptStartRowId, cmd->outputEndRowId,
+                cmd->promptStartCol,   cmd->outputEndCol);
+            if (!text.empty() && window_) window_->setClipboard(text);
+        },
+        [&](const Action::CopyDocument&) {
+            Terminal* term = activeTerm();
+            if (!term) return;
+            std::string text = term->serializeScrollback();
+            if (!text.empty() && window_) window_->setClipboard(text);
+        },
         [&](const Action::FocusPopup&) {
             Tab* tab = activeTab();
             if (!tab || tab->hasOverlay()) return;

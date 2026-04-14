@@ -193,6 +193,8 @@ std::optional<Action::Any> parseAction(const std::string& name,
     if (name == "scroll_to_next_prompt")     return Action::ScrollToPrompt{1};
     if (name == "select_command_output")     return Action::SelectCommandOutput{};
     if (name == "show_scrollback")           return Action::ShowScrollback{};
+    if (name == "copy_last_command")         return Action::CopyLastCommand{};
+    if (name == "copy_document")             return Action::CopyDocument{};
     if (name == "reload_config")            return Action::ReloadConfig{};
 
     if (name == "mouse_selection") {

@@ -395,6 +395,42 @@ using GetTextFn = std::function<std::string(uint64_t startRowId, int startCol,
                                              uint64_t endRowId, int endCol)>;
 static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, const GetTextFn& getText);
 
+static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
+                                      int argc, JSValueConst* argv)
+{
+    if (argc < 2) return JS_NewString(ctx, "");
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_NewString(ctx, "");
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneGetText) return JS_NewString(ctx, "");
+    uint64_t startId = 0, endId = 0;
+    JS_ToIndex(ctx, &startId, argv[0]);
+    JS_ToIndex(ctx, &endId, argv[1]);
+    auto text = eng->callbacks().paneGetText(pane->id, startId, 0, endId,
+                                              std::numeric_limits<int>::max());
+    return JS_NewStringLen(ctx, text.data(), text.size());
+}
+
+static JSValue jsPaneRowIdAt(JSContext* ctx, JSValueConst this_val,
+                               int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_NULL;
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_NULL;
+    Engine* eng = engineFromCtx(ctx);
+    auto info = eng->callbacks().paneInfo(pane->id);
+    int32_t screenRow = 0;
+    JS_ToInt32(ctx, &screenRow, argv[0]);
+    if (screenRow < 0 || screenRow >= info.rows) return JS_NULL;
+    // rowIdAt requires a direct document query — call via paneGetText with a
+    // single-row range and discard the text; we need the rowId itself.
+    // We expose this via a dedicated callback added to AppCallbacks.
+    if (!eng->callbacks().paneRowIdAt) return JS_NULL;
+    auto result = eng->callbacks().paneRowIdAt(pane->id, screenRow);
+    if (!result.has_value()) return JS_NULL;
+    return JS_NewInt64(ctx, static_cast<int64_t>(*result));
+}
+
 static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
     auto* pane = jsPaneGet(ctx, this_val);
@@ -454,6 +490,8 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsPaneRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
+    JS_CFUNC_DEF("getTextFromRows", 2, jsPaneGetTextFromRows),
+    JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("cols", jsPaneGetProp, nullptr, 1),
@@ -886,6 +924,37 @@ static JSValue jsOverlayGetProp(JSContext* ctx, JSValueConst this_val, int magic
     }
 }
 
+static JSValue jsOverlayGetTextFromRows(JSContext* ctx, JSValueConst this_val,
+                                         int argc, JSValueConst* argv)
+{
+    if (argc < 2) return JS_NewString(ctx, "");
+    auto* ov = jsOverlayGet(ctx, this_val);
+    if (!ov || !ov->alive) return JS_NewString(ctx, "");
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().overlayGetText) return JS_NewString(ctx, "");
+    uint64_t startId = 0, endId = 0;
+    JS_ToIndex(ctx, &startId, argv[0]);
+    JS_ToIndex(ctx, &endId, argv[1]);
+    auto text = eng->callbacks().overlayGetText(ov->tabId, startId, 0, endId,
+                                                 std::numeric_limits<int>::max());
+    return JS_NewStringLen(ctx, text.data(), text.size());
+}
+
+static JSValue jsOverlayRowIdAt(JSContext* ctx, JSValueConst this_val,
+                                  int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_NULL;
+    auto* ov = jsOverlayGet(ctx, this_val);
+    if (!ov || !ov->alive) return JS_NULL;
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().overlayRowIdAt) return JS_NULL;
+    int32_t screenRow = 0;
+    JS_ToInt32(ctx, &screenRow, argv[0]);
+    auto result = eng->callbacks().overlayRowIdAt(ov->tabId, screenRow);
+    if (!result.has_value()) return JS_NULL;
+    return JS_NewInt64(ctx, static_cast<int64_t>(*result));
+}
+
 // Forward declaration — defined later after mb functions
 static JSValue jsOverlayClose(JSContext* ctx, JSValueConst this_val, int, JSValueConst*);
 
@@ -894,6 +963,8 @@ static const JSCFunctionListEntry jsOverlayProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsOverlayRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsOverlayInject),
     JS_CFUNC_DEF("write", 1, jsOverlayWrite),
+    JS_CFUNC_DEF("getTextFromRows", 2, jsOverlayGetTextFromRows),
+    JS_CFUNC_DEF("rowIdAt", 1, jsOverlayRowIdAt),
     JS_CFUNC_DEF("close", 0, jsOverlayClose),
     JS_CGETSET_MAGIC_DEF("cols", jsOverlayGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("rows", jsOverlayGetProp, nullptr, 1),

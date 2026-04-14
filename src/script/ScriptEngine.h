@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -71,6 +72,9 @@ struct AppCallbacks {
                               uint64_t endRowId, int endCol)> paneGetText;
     std::function<std::string(TabId, uint64_t startRowId, int startCol,
                               uint64_t endRowId, int endCol)> overlayGetText;
+    // Returns the stable row ID for a screen row, or nullopt if out of range.
+    std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneRowIdAt;
+    std::function<std::optional<uint64_t>(TabId, int screenRow)> overlayRowIdAt;
     // Query overlay info
     struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
     std::function<OverlayInfo(TabId)> overlayInfo;

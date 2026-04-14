@@ -116,6 +116,32 @@ void PlatformDawn::drainPendingExits()
     for (auto* t : exits) terminalExited(t);
 }
 
+void PlatformDawn::deferIfRendering(std::function<void()> fn)
+{
+    // Main thread holds platformMutex_ here. If renderActive_ is clear, the
+    // render thread is not in its shaping-phase unlock window and can't
+    // acquire a new raw-pointer capture until it takes platformMutex_
+    // again — which is blocked by the caller. Safe to run `fn` directly.
+    if (!renderActive_.load(std::memory_order_acquire)) {
+        fn();
+        return;
+    }
+    pendingTeardowns_.push_back(std::move(fn));
+}
+
+void PlatformDawn::drainPendingTeardowns()
+{
+    // Called on the main thread from onTick under platformMutex_. Same
+    // renderActive_ gate as drainPendingExits — retry next tick if the
+    // render thread is still mid-shaping.
+    if (renderActive_.load(std::memory_order_acquire)) return;
+    if (pendingTeardowns_.empty()) return;
+
+    std::vector<std::function<void()>> fns;
+    fns.swap(pendingTeardowns_);
+    for (auto& fn : fns) fn();
+}
+
 void PlatformDawn::wakeRenderThread()
 {
     {

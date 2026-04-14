@@ -395,21 +395,20 @@ TEST_CASE("kitty graphics: tickAnimations advances frame")
     // Set root frame gap to 10ms and start animation
     t.gfx("a=a,i=1,r=1,z=10"); // set gap for frame 1 (root) to 10ms
     t.gfx("a=a,i=1,s=3");      // start running
-    auto& img = *t.term.imageRegistry().at(1);
+    const auto& img = *t.term.imageRegistry().at(1);
     CHECK(img.currentFrameIndex == 0);
 
     // Force frameShownAt into the past to avoid wall-clock timing dependency
-    auto& mutImg = *t.term.imageRegistryMut().at(1);
     uint64_t shownBefore = TerminalEmulator::mono() - 1000;
-    mutImg.frameShownAt = shownBefore;
-    REQUIRE(mutImg.hasAnimation());
+    REQUIRE(t.term.setImageFrameShownAtForTest(1, shownBefore));
+    REQUIRE(img.hasAnimation());
     t.term.tickAnimations();
     // Ticking an animated image with elapsed > gap must process this image
     // and update its frameShownAt timestamp. (We can't assert which index it
     // lands on — with a 3-frame loop and 1000ms elapsed, the final index is
     // determined by the gap math and may equal the starting index.
     // frameGeneration is no longer bumped on a tick; it tracks content edits.)
-    CHECK(mutImg.frameShownAt > shownBefore);
+    CHECK(img.frameShownAt > shownBefore);
 }
 
 // ── Delta frame compositing ─────────────────────────────────────────────────

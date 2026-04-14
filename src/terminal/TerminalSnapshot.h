@@ -9,13 +9,13 @@
 #include <vector>
 
 // Render-thread view of Terminal state. Populated under the Terminal mutex
-// in `update()`; read without a lock on the render thread. See
-// RENDER_THREADING.md §Snapshot Type.
+// in `update()`; read without a lock on the render thread.
 //
-// Phase 1 coverage: viewport cells + extras, cursor, default colors, viewport
-// offset + history size (for abs-row conversion), selection, sync-output flag.
-// Image registry is deliberately deferred to Phase 2 — the renderer still
-// reads the live registry under the Terminal mutex in Phase 1.
+// Covers: viewport cells + extras, cursor, default colors, viewport offset +
+// history size (for abs-row conversion), selection, sync-output flag, and
+// image views (kitty graphics placements + current-frame RGBA pointer held
+// alive via shared_ptr). The renderer reads only this snapshot — it never
+// dereferences the live Terminal during rendering.
 struct TerminalSnapshot {
     // Dimensions of the viewport.
     int rows { 0 };
@@ -93,11 +93,11 @@ struct TerminalSnapshot {
     // debugging and for ensuring a render sees a new snapshot.
     uint64_t version { 0 };
 
-    // Copies state from `term` into this snapshot. Caller must hold
-    // `term.mutex()` for the duration of the call. Returns false if sync
-    // output is active and the snapshot was not updated (caller should
-    // re-present prior frame). Clears per-row dirty flags on `term.grid()`
-    // for rows that were re-copied.
+    // Copies state from `term` into this snapshot. Acquires `term.mutex()`
+    // internally for the duration of the copy. Returns false if sync output
+    // is active and the snapshot was not updated (caller should re-present
+    // prior frame). Clears per-row dirty flags on `term.grid()` for rows
+    // that were re-copied.
     bool update(TerminalEmulator& term);
 
 private:

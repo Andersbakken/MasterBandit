@@ -196,18 +196,28 @@ void TerminalEmulator::scrollUpInRegion(int n)
     }
 }
 
-const Cell* TerminalEmulator::viewportRow(int viewRow) const
+bool TerminalEmulator::copyViewportRow(int viewRow, std::span<Cell> dst) const
 {
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+
+    assert(static_cast<int>(dst.size()) == mWidth);
+
+    const Cell* src = nullptr;
     if (mViewportOffset == 0) {
-        return grid().row(viewRow);
-    }
-    int histSize = mDocument.historySize();
-    int logicalRow = histSize - mViewportOffset + viewRow;
-    if (logicalRow < histSize) {
-        return mDocument.historyRow(logicalRow);
+        src = grid().row(viewRow);
     } else {
-        return grid().row(logicalRow - histSize);
+        int histSize = mDocument.historySize();
+        int logicalRow = histSize - mViewportOffset + viewRow;
+        if (logicalRow < histSize) {
+            src = mDocument.historyRow(logicalRow);
+        } else {
+            src = grid().row(logicalRow - histSize);
+        }
     }
+
+    if (!src) return false;
+    std::memcpy(dst.data(), src, sizeof(Cell) * static_cast<size_t>(mWidth));
+    return true;
 }
 
 void TerminalEmulator::scrollViewport(int delta)

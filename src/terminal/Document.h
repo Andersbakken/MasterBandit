@@ -52,6 +52,11 @@ public:
     void clearHistory();
 
     // --- Viewport support ---
+    // Returned pointers alias ring-buffer storage: valid only while the
+    // owning TerminalEmulator's mutex is held and until the next mutation
+    // (resize invalidates the pointer; scrollUp / clearPhysicalRow reuse
+    // the slot so content at the same address changes). External callers
+    // should go through TerminalEmulator::copyViewportRow instead.
     const Cell* viewportRow(int viewRow, int viewportOffset) const;
     const std::unordered_map<int, CellExtra>* viewportExtras(int viewRow, int viewportOffset) const;
 

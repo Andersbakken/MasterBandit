@@ -383,41 +383,47 @@ void PlatformDawn::closeTab(int idx)
     if (tabs_.empty() || idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
     if (tabs_.size() == 1) return; // can't close the last tab
 
-    // Stop PTY polls for all terminals in this tab
-    Tab* tab = tabs_[idx].get();
-    for (auto& panePtr : tab->layout()->panes()) {
-        if (auto* t = panePtr->terminal()) {
-            removePtyPoll(t->masterFD());
+    deferIfRendering([this, idx]() {
+        // Re-validate inside the deferred run: the tab index and tabs_ size
+        // are read at execution time (possibly a tick later than the enqueue).
+        if (tabs_.empty() || idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
+
+        // Stop PTY polls for all terminals in this tab
+        Tab* tab = tabs_[idx].get();
+        for (auto& panePtr : tab->layout()->panes()) {
+            if (auto* t = panePtr->terminal()) {
+                removePtyPoll(t->masterFD());
+            }
+            // Release pane and popup render states
+            auto it = paneRenderStates_.find(panePtr->id());
+            if (it != paneRenderStates_.end()) {
+                if (it->second.heldTexture)
+                    pendingTabBarRelease_.push_back(it->second.heldTexture);
+                for (auto* t2 : it->second.pendingRelease)
+                    pendingTabBarRelease_.push_back(t2);
+                paneRenderStates_.erase(it);
+            }
+            paneCursorStyle_.erase(panePtr->id());
+            releasePopupStates(panePtr.get());
+            scriptEngine_.notifyPaneDestroyed(panePtr->id());
         }
-        // Release pane and popup render states
-        auto it = paneRenderStates_.find(panePtr->id());
-        if (it != paneRenderStates_.end()) {
-            if (it->second.heldTexture)
-                pendingTabBarRelease_.push_back(it->second.heldTexture);
-            for (auto* t2 : it->second.pendingRelease)
-                pendingTabBarRelease_.push_back(t2);
-            paneRenderStates_.erase(it);
-        }
-        paneCursorStyle_.erase(panePtr->id());
-        releasePopupStates(panePtr.get());
-        scriptEngine_.notifyPaneDestroyed(panePtr->id());
-    }
 
-    if (tab->hasOverlay())
-        scriptEngine_.notifyOverlayDestroyed(idx);
-    scriptEngine_.notifyTabDestroyed(idx);
+        if (tab->hasOverlay())
+            scriptEngine_.notifyOverlayDestroyed(idx);
+        scriptEngine_.notifyTabDestroyed(idx);
 
-    tabs_.erase(tabs_.begin() + idx);
+        tabs_.erase(tabs_.begin() + idx);
 
-    // Adjust active tab index
-    if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
-        activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+        // Adjust active tab index
+        if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
+            activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
 
-    updateTabBarVisibility();
-    refreshPointerShape();
-    tabBarDirty_ = true;
-    setNeedsRedraw();
-    spdlog::info("Closed tab {}", idx + 1);
+        updateTabBarVisibility();
+        refreshPointerShape();
+        tabBarDirty_ = true;
+        setNeedsRedraw();
+        spdlog::info("Closed tab {}", idx + 1);
+    });
 }
 
 

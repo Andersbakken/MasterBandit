@@ -312,31 +312,33 @@ int PlatformDawn::exec()
             return false;
         };
         scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
-            for (auto& tab : tabs_) {
-                if (Pane* p = tab->layout()->pane(paneId)) {
-                    bool wasPopupFocused = (p->focusedPopupId() == popupId);
-                    p->destroyPopup(popupId);
-                    Terminal* t = p->terminal();
-                    if (wasPopupFocused && t && p->popups().empty())
-                        t->focusEvent(true);
-                    if (t) t->grid().markAllDirty();
-                    // Release popup render state (deferred — texture may still be in flight)
-                    std::string key = popupStateKey(paneId, popupId);
-                    auto pit = popupRenderStates_.find(key);
-                    if (pit != popupRenderStates_.end()) {
-                        if (pit->second.heldTexture)
-                            pendingTabBarRelease_.push_back(pit->second.heldTexture);
-                        for (auto* tx : pit->second.pendingRelease)
-                            pendingTabBarRelease_.push_back(tx);
-                        popupRenderStates_.erase(pit);
+            deferIfRendering([this, paneId, popupId]() {
+                for (auto& tab : tabs_) {
+                    if (Pane* p = tab->layout()->pane(paneId)) {
+                        bool wasPopupFocused = (p->focusedPopupId() == popupId);
+                        p->destroyPopup(popupId);
+                        Terminal* t = p->terminal();
+                        if (wasPopupFocused && t && p->popups().empty())
+                            t->focusEvent(true);
+                        if (t) t->grid().markAllDirty();
+                        // Release popup render state (deferred — texture may still be in flight)
+                        std::string key = popupStateKey(paneId, popupId);
+                        auto pit = popupRenderStates_.find(key);
+                        if (pit != popupRenderStates_.end()) {
+                            if (pit->second.heldTexture)
+                                pendingTabBarRelease_.push_back(pit->second.heldTexture);
+                            for (auto* tx : pit->second.pendingRelease)
+                                pendingTabBarRelease_.push_back(tx);
+                            popupRenderStates_.erase(pit);
+                        }
+                        // Dirty parent pane so it re-renders without the popup composite entry
+                        auto it = paneRenderStates_.find(paneId);
+                        if (it != paneRenderStates_.end()) it->second.dirty = true;
+                        setNeedsRedraw();
+                        return;
                     }
-                    // Dirty parent pane so it re-renders without the popup composite entry
-                    auto it = paneRenderStates_.find(paneId);
-                    if (it != paneRenderStates_.end()) it->second.dirty = true;
-                    setNeedsRedraw();
-                    return;
                 }
-            }
+            });
         };
         scbs.resizePopup = [this](Script::PaneId paneId, const std::string& popupId,
                                    int x, int y, int w, int h) -> bool {
@@ -477,6 +479,7 @@ int PlatformDawn::exec()
                 std::lock_guard<std::mutex> plk(platformMutex_);
                 drainDeferredMain();         // title / icon / cwd / progress / etc.
                 drainPendingExits();
+                drainPendingTeardowns();
                 scriptEngine_.executePendingJobs();
                 // Render thread may have requested an animation wakeup — wire
                 // the event-loop timer on the main thread.

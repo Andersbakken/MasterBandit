@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <span>
 
 bool TerminalSnapshot::isCellSelected(int col, int absRow) const
 {
@@ -34,6 +35,8 @@ bool TerminalSnapshot::isCellSelected(int col, int absRow) const
 
 bool TerminalSnapshot::update(TerminalEmulator& term)
 {
+    std::lock_guard<std::recursive_mutex> _lk(term.mutex());
+
     if (term.syncOutputActive()) {
         syncOutputActive = true;
         return false;
@@ -77,11 +80,9 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
         const bool rowIsDirty = structuralChange || grid.isRowDirty(r);
         if (!rowIsDirty) continue;
 
-        const Cell* src = term.viewportRow(r);
         Cell* dst = cells.data() + static_cast<size_t>(r) * static_cast<size_t>(cols);
-        if (src) {
-            std::memcpy(dst, src, sizeof(Cell) * static_cast<size_t>(cols));
-        } else {
+        std::span<Cell> dstSpan{dst, static_cast<size_t>(cols)};
+        if (!term.copyViewportRow(r, dstSpan)) {
             std::memset(dst, 0, sizeof(Cell) * static_cast<size_t>(cols));
         }
 

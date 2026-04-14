@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -102,8 +103,16 @@ public:
 
     virtual void resize(int width, int height);
 
-    // Scrollback viewport
-    const Cell* viewportRow(int viewRow) const;
+    // Scrollback viewport.
+    //
+    // Copies the viewport row at `viewRow` (0 = top) into `dst`, which must
+    // be sized to exactly `width()`. Returns true on success, false if the
+    // requested row has no backing data (in which case `dst` is untouched).
+    // Acquires the terminal mutex internally — safe to call without
+    // external locking. The copy-at-the-API-boundary pattern keeps callers
+    // from accidentally caching pointers into ring-buffer storage that a
+    // later mutation can invalidate.
+    bool copyViewportRow(int viewRow, std::span<Cell> dst) const;
     void scrollViewport(int delta);
     void resetViewport();
     int viewportOffset() const { return mViewportOffset; }
@@ -304,8 +313,12 @@ public:
     // shared_ptr — e.g. captured in a TerminalSnapshot — keeps the data
     // alive until the render drops its reference.
     const std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>>& imageRegistry() const { return mImageRegistry; }
-    std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>>& imageRegistryMut() { return mImageRegistry; }
     uint32_t findImageByNumber(uint32_t number) const;
+
+    // Test-only: override the monotonic timestamp at which an image's current
+    // frame was first displayed. Lets animation tests drive tickAnimations()
+    // without wall-clock dependency. Returns false if the image does not exist.
+    bool setImageFrameShownAtForTest(uint32_t id, uint64_t t);
 
     // Advance all running animations based on current time.
     // Advance every running animated image whose gap has elapsed. Returns

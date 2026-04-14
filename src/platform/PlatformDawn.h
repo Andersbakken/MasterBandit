@@ -417,6 +417,19 @@ private:
     std::vector<Terminal*>                pendingExits_;
     void drainPendingExits();
 
+    // User-initiated teardowns (ClosePane / closeTab / popup destroy / overlay
+    // destroy) can race the render thread's shaping phase: between
+    // Platform_Render.cpp's plk.unlock() and plk.lock(), render workers hold
+    // raw pointers into paneRenderStates_ / popupRenderStates_ / overlayRenderStates_.
+    // Erasing those entries during that window is UAF. deferIfRendering()
+    // runs `fn` immediately when renderActive_ is clear; otherwise it queues
+    // here and drainPendingTeardowns() (called from onTick under platformMutex_)
+    // runs them after the render thread releases the lock. Accessed only on
+    // the main thread under platformMutex_, so no separate mutex.
+    std::vector<std::function<void()>>    pendingTeardowns_;
+    void deferIfRendering(std::function<void()> fn);
+    void drainPendingTeardowns();
+
     // Generic main-thread post queue. Parse-time callbacks (title / icon /
     // cwd / progress / mouse-cursor-shape / foreground-process changes)
     // enqueue a lambda via postToMainThread(); drainDeferredMain() runs

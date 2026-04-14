@@ -68,8 +68,8 @@ TEST_CASE("viewportRow with offset returns history content")
     // With 5-row terminal and 8 lines written, 3 lines are in history.
     // Scroll 1 line into history.
     t.term.scrollViewport(1);
-    const Cell* row = t.term.viewportRow(0);
-    REQUIRE(row != nullptr);
+    std::vector<Cell> row(t.term.width());
+    REQUIRE(t.term.copyViewportRow(0, row));
     // The first cell of that row should be 'l' (start of "lineX")
     CHECK(row[0].wc == U'l');
 }

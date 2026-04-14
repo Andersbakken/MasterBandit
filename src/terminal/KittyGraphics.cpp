@@ -239,6 +239,15 @@ uint32_t TerminalEmulator::findImageByNumber(uint32_t number) const
     return bestId;
 }
 
+bool TerminalEmulator::setImageFrameShownAtForTest(uint32_t id, uint64_t t)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    auto it = mImageRegistry.find(id);
+    if (it == mImageRegistry.end() || !it->second) return false;
+    it->second->frameShownAt = t;
+    return true;
+}
+
 void TerminalEmulator::processAPC()
 {
     // APC format: G<control>;<payload>  or  G<control>

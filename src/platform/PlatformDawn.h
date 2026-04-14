@@ -169,6 +169,7 @@ private:
     // thread in renderFrame.
     std::atomic<bool>          cursorBlinkPhaseOn_ { true };
     void                       applyBlinkInterval(int ms);
+    void                       resetCursorBlink();
 
     // Animation wakeup: one-shot timer scheduled for the next animated-image
     // frame boundary. Avoids spinning the event loop at display refresh rate

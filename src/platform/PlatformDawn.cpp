@@ -850,6 +850,14 @@ void PlatformDawn::applyBlinkInterval(int ms)
     });
 }
 
+void PlatformDawn::resetCursorBlink()
+{
+    if (cursorBlinkInterval_ <= 0 || !cursorBlinkTimer_ || !eventLoop_) return;
+    cursorBlinkPhaseOn_ = true;
+    eventLoop_->restartTimer(cursorBlinkTimer_);
+    setNeedsRedraw();
+}
+
 void PlatformDawn::scheduleAnimationWakeup(uint64_t dueAt)
 {
     // Called from the render thread during renderFrame(). The event loop

@@ -296,6 +296,21 @@ void NSAppEventLoop::removeTimer(TimerId id)
     timers_.erase(it);
 }
 
+void NSAppEventLoop::restartTimer(TimerId id)
+{
+    auto it = std::find_if(timers_.begin(), timers_.end(),
+                            [id](const Timer& t) { return t.id == id; });
+    if (it == timers_.end()) return;
+    [it->nsTimer invalidate];
+    NSTimeInterval interval = static_cast<double>(it->ms) / 1000.0;
+    __block TimerId blockId = id;
+    it->nsTimer = [NSTimer scheduledTimerWithTimeInterval:interval
+                                                  repeats:(it->repeat ? YES : NO)
+                                                    block:^(NSTimer*) {
+        this->timerFired(blockId);
+    }];
+}
+
 // ---------- file watching ----------
 
 void NSAppEventLoop::addFileWatch(const std::string& path, WatchCb cb)

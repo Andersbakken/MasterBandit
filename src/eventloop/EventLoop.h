@@ -33,6 +33,7 @@ public:
     // Timers — ms=0 fires on next iteration, repeat=false for one-shot
     virtual TimerId addTimer(uint64_t ms, bool repeat, TimerCb cb) = 0;
     virtual void    removeTimer(TimerId id) = 0;
+    virtual void    restartTimer(TimerId id) = 0;
 
     // File watching — single watch slot (config file only for now)
     virtual void addFileWatch(const std::string& path, WatchCb cb) = 0;

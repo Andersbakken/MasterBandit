@@ -34,6 +34,7 @@ public:
 
     TimerId addTimer(uint64_t ms, bool repeat, TimerCb cb) override;
     void    removeTimer(TimerId id) override;
+    void    restartTimer(TimerId id) override;
 
     void addFileWatch(const std::string& path, WatchCb cb) override;
     void removeFileWatch() override;

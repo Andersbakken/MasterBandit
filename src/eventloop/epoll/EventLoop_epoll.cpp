@@ -222,6 +222,22 @@ void EpollEventLoop::removeTimer(TimerId id)
     updateTimerFd();
 }
 
+void EpollEventLoop::restartTimer(TimerId id)
+{
+    uint64_t now = nowNs();
+    std::vector<Timer> remaining;
+    remaining.reserve(timers_.size());
+    while (!timers_.empty()) {
+        Timer t = timers_.top(); timers_.pop();
+        if (t.id == id) {
+            t.nextFireNs = now + t.ms * 1'000'000ULL;
+        }
+        remaining.push_back(std::move(t));
+    }
+    for (auto& t : remaining) timers_.push(std::move(t));
+    updateTimerFd();
+}
+
 void EpollEventLoop::drainTimers()
 {
     uint64_t now = nowNs();

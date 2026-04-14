@@ -208,6 +208,21 @@ void KQueueEventLoop::removeTimer(TimerId id)
     for (auto& t : remaining) timers_.push(std::move(t));
 }
 
+void KQueueEventLoop::restartTimer(TimerId id)
+{
+    uint64_t now = nowMs();
+    std::vector<Timer> remaining;
+    remaining.reserve(timers_.size());
+    while (!timers_.empty()) {
+        Timer t = timers_.top(); timers_.pop();
+        if (t.id == id) {
+            t.nextFireMs = now + t.ms;
+        }
+        remaining.push_back(std::move(t));
+    }
+    for (auto& t : remaining) timers_.push(std::move(t));
+}
+
 // ---------- file watching ----------
 
 void KQueueEventLoop::addFileWatch(const std::string& path, WatchCb cb)

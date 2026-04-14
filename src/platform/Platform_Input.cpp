@@ -38,6 +38,7 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
     // Reset viewport to live when typing (not on release, not for bindings)
     if (action != static_cast<int>(KeyAction_Release)) {
         term->resetViewport();
+        resetCursorBlink();
     }
 
     KeyEvent ev;
@@ -90,6 +91,7 @@ void PlatformDawn::onChar(uint32_t codepoint)
 
     spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
     term->resetViewport();
+    resetCursorBlink();
 
     // In Kitty mode, onKey handles everything
     if (term->kittyFlags() != 0) return;

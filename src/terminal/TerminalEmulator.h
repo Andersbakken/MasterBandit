@@ -81,14 +81,16 @@ public:
     // True iff the cursor should currently visibly blink: shape is a blinking
     // variant AND DEC private mode 12 is on.
     bool cursorBlinking() const {
-        if (!mCursorBlinkEnabled) return false;
+        // A blinking shape variant (set via DECSCUSR) is sufficient to blink.
+        // Mode 12 (mCursorBlinkEnabled) can independently enable blinking
+        // even for steady shape variants.
         switch (mCursorShape) {
         case CursorBlock:
         case CursorUnderline:
         case CursorBar:
             return true;
         default:
-            return false;
+            return mCursorBlinkEnabled;
         }
     }
     void setDefaultCursorShape(CursorShape s) { mCursorShape = s; mDefaultCursorShape = s; }

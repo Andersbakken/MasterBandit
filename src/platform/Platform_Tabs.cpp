@@ -507,14 +507,22 @@ void PlatformDawn::refreshPointerShape()
     if (!window_ || isHeadless()) return;
     Tab* tab = activeTab();
     if (!tab) return;
+    // When the pointer is over the tab bar, show the arrow regardless of the
+    // focused pane's cursor shape — matches the hover path in onMouseMove.
+    // Without this, clicking a tab triggers a focus change and applies the
+    // focused pane's IBeam even though the pointer is still in the tab bar.
+    double sx = lastCursorX_ * contentScaleX_;
+    double sy = lastCursorY_ * contentScaleY_;
+    if (hitTest(sx, sy) == MouseRegion::TabBar) {
+        window_->setCursorStyle(Window::CursorStyle::Arrow);
+        return;
+    }
     // Prefer the pane the mouse is physically over (so split/focus changes
     // don't show a cursor that doesn't match the hovered pane). Falls back to
     // the focused pane when the mouse position isn't usefully hovering one
     // (e.g. before any motion event has fired).
     int paneId = -1;
     if (!tab->hasOverlay()) {
-        double sx = lastCursorX_ * contentScaleX_;
-        double sy = lastCursorY_ * contentScaleY_;
         paneId = tab->layout()->paneAtPixel(static_cast<int>(sx),
                                             static_cast<int>(sy));
         if (paneId < 0 && tab->layout()->focusedPane())

@@ -19,6 +19,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-x11.h>
 
+#include <Utf8.h>
+
 #include <spdlog/spdlog.h>
 
 #include <cstring>
@@ -919,9 +921,9 @@ void XCBWindow::handleSelectionNotify(xcb_selection_notify_event_t* ev)
 std::string XCBWindow::keyName(int keycode) const
 {
     if (!xkbState_) return {};
-    xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_,
-                                                    static_cast<xkb_keycode_t>(keycode));
-    char buf[64];
-    xkb_keysym_get_name(sym, buf, sizeof(buf));
-    return buf;
+    uint32_t cp = xkb_state_key_get_utf32(xkbState_, static_cast<xkb_keycode_t>(keycode));
+    if (cp < 0x20 || cp == 0x7f) return {};
+    std::string result;
+    utf8::append(result, cp);
+    return result;
 }

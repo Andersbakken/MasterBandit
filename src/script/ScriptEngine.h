@@ -28,12 +28,16 @@ using TabId = int;
 // (for the event payload). Kept at namespace scope so forward declarations work.
 struct CommandInfo {
     uint64_t id = 0;
-    std::string command;
-    std::string output;
     std::string cwd;
     std::optional<int> exitCode;
     uint64_t startMs = 0;
     uint64_t endMs = 0;
+    // Stable row IDs for lazy text extraction via paneGetText/overlayGetText.
+    uint64_t promptStartRowId = 0;
+    uint64_t commandStartRowId = 0;
+    uint64_t outputStartRowId = 0;
+    uint64_t outputEndRowId = 0;
+    // Volatile abs rows at query time (for JS position properties).
     int promptStartAbsRow = -1, promptStartCol = -1;
     int commandStartAbsRow = -1, commandStartCol = -1;
     int outputStartAbsRow = -1, outputStartCol = -1;
@@ -60,6 +64,13 @@ struct AppCallbacks {
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
     // entries (0 = all). Used by pane.commands / pane.lastCommand JS properties.
     std::function<std::vector<CommandInfo>(PaneId, int limit)> paneCommands;
+    // Extract plain text from a row-id range in a pane's or overlay's document.
+    // startCol/endCol bound which columns are included on the first/last row;
+    // pass 0 and INT_MAX (or std::numeric_limits<int>::max()) for full rows.
+    std::function<std::string(PaneId, uint64_t startRowId, int startCol,
+                              uint64_t endRowId, int endCol)> paneGetText;
+    std::function<std::string(TabId, uint64_t startRowId, int startCol,
+                              uint64_t endRowId, int endCol)> overlayGetText;
     // Query overlay info
     struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
     std::function<OverlayInfo(TabId)> overlayInfo;

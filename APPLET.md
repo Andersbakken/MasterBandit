@@ -128,16 +128,18 @@ Wire format shells should emit:
 \e]133;L\e\\          fresh-line (emit \r\n if not at column 0)
 ```
 
-MB captures the command text (between `B` and `C`) and a plaintext render of
-the output (between `C` and `D`, truncated to 64 KB). The `cwd` field snaps
-the most recent OSC 7 value at `A` time.
+MB records stable row IDs for each OSC 133 zone boundary (`promptStartRowId`,
+`commandStartRowId`, `outputStartRowId`, `outputEndRowId`). The `command` and
+`output` text fields are extracted lazily from the document at query time —
+they are never truncated and reflect the live cell content. The `cwd` field
+snaps the most recent OSC 7 value at `A` time.
 
 ```ts
 pane.addEventListener("commandComplete", (cmd) => {
     if (cmd.exitCode !== 0) {
         shellWs.send(JSON.stringify({
             kind: "failed-command",
-            command: cmd.command,
+            command: cmd.command,   // extracted lazily, no size cap
             output: cmd.output,
             exitCode: cmd.exitCode,
             cwd: cmd.cwd,
@@ -145,6 +147,22 @@ pane.addEventListener("commandComplete", (cmd) => {
     }
 });
 ```
+
+### Document query API
+
+You can extract text from any row-id range, not just command zones:
+
+```ts
+// Get text from a command's full span (prompt + input + output)
+const fullText = pane.getTextFromRows(cmd.promptStartRowId, cmd.outputEndRowId);
+
+// Get the row ID at a given screen row (null if out of range)
+const rowId = pane.rowIdAt(0); // top of visible screen
+```
+
+Row IDs are stable monotonic integers that survive scrolling. Use them to
+anchor a position in the document and re-read text at any later time (as long
+as the row hasn't been evicted from the archive).
 
 **Permission required: `shell.commands`.** Reading `pane.lastCommand`,
 iterating `pane.commands`, and subscribing to `commandComplete` all require
@@ -159,8 +177,7 @@ logical command — `promptStart` is updated, not a new record created. `N`
 with a matching `aid` explicitly closes the in-flight command.
 
 **Caveats**
-- Output >64 KB is truncated. Increase `COMMAND_OUTPUT_MAX_BYTES` if you need more.
-- Rows evicted from the tier-2 archive become unrecoverable; recent commands are always fine.
+- Rows evicted from the archive are gone; recent commands are always accessible.
 - Exit code is parsed from `D;<n>` or `D;err=<v>` (non-empty `err` wins per spec).
 - Alt-screen (e.g. vim, less) doesn't participate — its output isn't in the record.
 

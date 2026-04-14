@@ -98,6 +98,7 @@ public:
     const IGrid& grid() const { return mUsingAltScreen ? static_cast<const IGrid&>(mAltGrid) : static_cast<const IGrid&>(mDocument); }
     IGrid& grid() { return mUsingAltScreen ? static_cast<IGrid&>(mAltGrid) : static_cast<IGrid&>(mDocument); }
     const Document& document() const { return mDocument; }
+    Document& document() { return mDocument; }
 
     virtual void resize(int width, int height);
 
@@ -135,6 +136,7 @@ public:
     struct CommandRecord {
         uint64_t id = 0;
         // Stable row ids from Document — resolve to current abs-row at query time.
+        // Text is extracted lazily via Document::getTextFromRows rather than captured here.
         uint64_t promptStartRowId = 0;
         uint64_t commandStartRowId = 0;
         uint64_t outputStartRowId = 0;
@@ -143,11 +145,7 @@ public:
         int commandStartCol = -1;
         int outputStartCol = -1;
         int outputEndCol = -1;
-        // Captured eagerly — independent of later cell mutations or archival.
-        std::string command;                    // text between B and C
-        std::string output;                     // text between C and D (truncated)
         std::string cwd;                        // OSC 7 value at A
-        // Metadata.
         std::optional<int> exitCode;            // from OSC 133;D;<n>
         uint64_t startMs = 0;                   // when C fired
         uint64_t endMs = 0;                     // when D fired
@@ -566,7 +564,6 @@ private:
     uint64_t mNextCommandId { 1 };
     bool mCommandInProgress { false };        // true between A and D (or N)
     std::string mCurrentCwd;                  // last OSC 7 value (for command records)
-    static constexpr size_t COMMAND_OUTPUT_MAX_BYTES = 64 * 1024;
 
     int absoluteRowFromScreen(int screenRow) const;
     CommandRecord* inProgressCommandMut();    // nullptr if no in-progress record
@@ -574,9 +571,6 @@ private:
     void markCommandInput(int absRow, int col);
     void markCommandOutput(int absRow, int col);
     void finishCommand(int absRow, int col, std::optional<int> exitCode);
-    std::string textFromAbsRange(int startAbsRow, int startCol,
-                                 int endAbsRow, int endCol,
-                                 size_t maxBytes) const;
 
     // Default colors (OSC 10/11/12)
     DefaultColors mDefaultColors;

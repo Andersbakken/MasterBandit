@@ -61,16 +61,21 @@ interface MbMouseEvent {
 
 /**
  * A single command executed in this pane, populated from OSC 133 markers.
- * Coordinates are absolute row indices (archive + tier-1 history + screen) at
- * the moment each marker fired; treat them as best-effort references since
- * rows can be evicted from the archive.
+ *
+ * Text fields (`command`, `output`) are extracted lazily from the document at
+ * query time rather than captured eagerly — they reflect the live cell content
+ * and are not subject to a size cap.
+ *
+ * Row ID fields are stable monotonic identifiers that survive scrolling into
+ * history. Absolute-row fields are volatile (they shift as rows scroll) and
+ * are provided for convenience; prefer row IDs for durable references.
  */
 interface MbCommand {
     /** Monotonic per-pane id. */
     readonly id: number;
-    /** Command text as it was echoed between `B` and `C`. Whitespace-trimmed. */
+    /** Command text echoed between `B` and `C`, whitespace-trimmed. Extracted lazily. */
     readonly command: string;
-    /** Rendered plain-text output between `C` and `D`, truncated to 64 KB. */
+    /** Plain-text output between `C` and `D`. Extracted lazily, no size cap. */
     readonly output: string;
     /** `OSC 7` CWD value at the moment `A` fired. */
     readonly cwd: string;
@@ -80,6 +85,12 @@ interface MbCommand {
     readonly startMs: number;
     /** Monotonic milliseconds when `D` fired (command finished). */
     readonly endMs: number;
+    /** Stable row IDs — use with `pane.getTextFromRows()` for custom extractions. */
+    readonly promptStartRowId: number;
+    readonly commandStartRowId: number;
+    readonly outputStartRowId: number;
+    readonly outputEndRowId: number;
+    /** Volatile absolute row indices at query time (archive + history + screen). */
     readonly promptStartAbsRow: number;
     readonly promptStartCol: number;
     readonly commandStartAbsRow: number;
@@ -117,6 +128,18 @@ interface MbPane {
      */
     readonly commands: readonly MbCommand[];
 
+    /**
+     * Extract plain UTF-8 text from a stable row-id range (inclusive on both
+     * ends). Row IDs come from `MbCommand` fields or from `rowIdAt()`. Returns
+     * an empty string if the start row has been evicted from the archive.
+     */
+    getTextFromRows(startRowId: number, endRowId: number): string;
+    /**
+     * Return the stable row ID for a screen row (0 = top of visible screen).
+     * Returns `null` if `screenRow` is out of range (≥ terminal height).
+     */
+    rowIdAt(screenRow: number): number | null;
+
     /** Emit data into the terminal emulator (as if the PTY wrote it). Requires `io.inject`. */
     inject(data: string): void;
     /** Write data to the PTY master (shell stdin). Requires `shell.write`. Throws if no PTY. */
@@ -144,9 +167,8 @@ interface MbPane {
     addEventListener(event: `osc:${number}`, fn: (payload: string) => void): void;
     /**
      * Fires once per completed shell command (OSC 133;D arrival). The callback
-     * receives the full `MbCommand` record including command text, rendered
-     * output, exit code, timing, and cwd. Useful for AI integrations and
-     * triggers on failing commands. Requires `shell.commands` permission.
+     * receives an `MbCommand` record with exit code, timing, cwd, row IDs, and
+     * lazily-extracted `command`/`output` text. Requires `shell.commands` permission.
      */
     addEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
 }

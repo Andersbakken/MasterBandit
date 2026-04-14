@@ -2,7 +2,7 @@
 #include "Utf8.h"
 #include <algorithm>
 #include <cassert>
-#include <climits>
+#include <limits>
 #include <cstring>
 
 // --- SGR helpers ---
@@ -127,8 +127,8 @@ Document::Document(int cols, int screenHeight, int tier1Capacity, int maxArchive
     , tier1Capacity_(tier1Capacity)
 {
     // Start at max capacity so growRing() is never called during normal use.
-    // Cap to avoid overflow when tier1Capacity is INT_MAX (infinite scrollback).
-    int initialHistory = (tier1Capacity < INT_MAX / 2) ? tier1Capacity : 1024;
+    // Cap to avoid overflow when tier1Capacity is std::numeric_limits<int>::max() (infinite scrollback).
+    int initialHistory = (tier1Capacity < std::numeric_limits<int>::max() / 2) ? tier1Capacity : 1024;
     ringCapacity_ = roundUpPow2(initialHistory + screenHeight + SEG_SIZE);
     allocSegments(0, ringCapacity_ >> SEG_SHIFT);
     // Zero-init all segments. History slots will be overwritten by clearPhysicalRow
@@ -227,7 +227,7 @@ void Document::growRing()
     // We simply append new segments — no data copying needed.
     int total = historyCount_ + screenHeight_;
     int newCap = roundUpPow2(total + SEG_SIZE);
-    if (tier1Capacity_ < INT_MAX / 2) {
+    if (tier1Capacity_ < std::numeric_limits<int>::max() / 2) {
         int maxCap = roundUpPow2(tier1Capacity_ + screenHeight_ + SEG_SIZE);
         newCap = std::min(newCap, maxCap);
     }
@@ -507,13 +507,14 @@ int Document::historySize() const {
 }
 
 const Cell* Document::historyRow(int idx) const {
+    if (idx < 0) return nullptr;
     int archiveSize = static_cast<int>(archive_.size());
     if (idx < archiveSize) {
         parseArchivedRow(archive_[idx]);
         return parseBuffer_.data();
     }
     int tier1Idx = idx - archiveSize;
-    if (tier1Idx < 0 || tier1Idx >= historyCount_) return nullptr;
+    if (tier1Idx >= historyCount_) return nullptr;
     return rowPtr(historyTier1ToPhysical(tier1Idx));
 }
 
@@ -600,6 +601,64 @@ int Document::absForRowId(uint64_t id) const {
     int total = static_cast<int>(archive_.size()) + historyCount_ + screenHeight_;
     if (diff >= static_cast<uint64_t>(total)) return -1;
     return static_cast<int>(diff);
+}
+
+std::string Document::getTextFromRows(uint64_t startRowId, uint64_t endRowId,
+                                       int startCol, int endCol) const
+{
+    int startAbs = absForRowId(startRowId);
+    int endAbs   = absForRowId(endRowId);
+    if (startAbs < 0) return {};
+    if (endAbs < 0) {
+        // End row evicted — clamp to last available row.
+        int total = static_cast<int>(archive_.size()) + historyCount_ + screenHeight_;
+        endAbs = total - 1;
+    }
+    if (startAbs > endAbs) return {};
+    endAbs = std::min(endAbs, static_cast<int>(archive_.size()) + historyCount_ + screenHeight_ - 1);
+
+    std::string out;
+    int archSz  = static_cast<int>(archive_.size());
+    int histEnd = archSz + historyCount_;
+    int scrEnd  = histEnd + screenHeight_;
+
+    for (int abs = startAbs; abs <= endAbs; ++abs) {
+        const Cell* row = nullptr;
+        if (abs < archSz) {
+            parseArchivedRow(archive_[abs]);
+            row = parseBuffer_.data();
+        } else if (abs < histEnd) {
+            row = rowPtr(historyTier1ToPhysical(abs - archSz));
+        } else if (abs < scrEnd) {
+            row = rowPtr(screenRowToPhysical(abs - histEnd));
+        }
+        if (!row) continue;
+
+        int colStart = (abs == startAbs) ? std::max(0, startCol) : 0;
+        int colEnd   = (abs == endAbs)   ? std::min(cols_, endCol == std::numeric_limits<int>::max() ? cols_ : endCol) : cols_;
+
+        // Trim trailing blanks.
+        int effective = colEnd;
+        while (effective > colStart && row[effective - 1].wc == 0) --effective;
+
+        for (int c = colStart; c < effective; ++c) {
+            char32_t ch = row[c].wc ? row[c].wc : U' ';
+            char buf[4]; int n = 0;
+            if      (ch < 0x80)    { buf[n++] = static_cast<char>(ch); }
+            else if (ch < 0x800)   { buf[n++] = static_cast<char>(0xC0 | (ch >> 6));
+                                     buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
+            else if (ch < 0x10000) { buf[n++] = static_cast<char>(0xE0 | (ch >> 12));
+                                     buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                                     buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
+            else                   { buf[n++] = static_cast<char>(0xF0 | (ch >> 18));
+                                     buf[n++] = static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
+                                     buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                                     buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
+            out.append(buf, n);
+        }
+        if (abs < endAbs) out += '\n';
+    }
+    return out;
 }
 
 // --- Resize ---
@@ -829,7 +888,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         }
 
         int ringTotal = newHistoryCount + newScreenRows;
-        int newCap = (tier1Capacity_ < INT_MAX / 2)
+        int newCap = (tier1Capacity_ < std::numeric_limits<int>::max() / 2)
             ? roundUpPow2(std::max(ringTotal, tier1Capacity_ + newRows) + SEG_SIZE)
             : roundUpPow2(ringTotal + SEG_SIZE);
 

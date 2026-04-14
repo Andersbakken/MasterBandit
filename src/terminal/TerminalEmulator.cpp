@@ -365,7 +365,6 @@ void TerminalEmulator::startCommand(int absRow, int col)
             existing->promptStartRowId  = rowId;
             existing->promptStartCol    = col;
             existing->commandStartRowId = 0; existing->commandStartCol = -1;
-            existing->command.clear();
             return;
         }
         // Output already started but no D seen — shell moved on (cancelled or
@@ -398,16 +397,6 @@ void TerminalEmulator::markCommandOutput(int absRow, int col)
     r->outputStartRowId = mDocument.rowIdForAbs(absRow);
     r->outputStartCol   = col;
     r->startMs          = mono();
-    // Capture only if B fired (commandStartCol is the sentinel, not the rowId,
-    // because rowId=0 is a valid value for the first row).
-    int startAbs = r->commandStartCol < 0 ? -1 : mDocument.absForRowId(r->commandStartRowId);
-    if (startAbs >= 0) {
-        r->command = textFromAbsRange(startAbs, r->commandStartCol, absRow, col, /*maxBytes*/ 16 * 1024);
-        while (!r->command.empty() && (r->command.back() == ' ' || r->command.back() == '\n' ||
-                                        r->command.back() == '\r' || r->command.back() == '\t')) {
-            r->command.pop_back();
-        }
-    }
 }
 
 void TerminalEmulator::finishCommand(int absRow, int col, std::optional<int> exitCode)
@@ -419,68 +408,12 @@ void TerminalEmulator::finishCommand(int absRow, int col, std::optional<int> exi
     r->endMs          = mono();
     r->exitCode       = exitCode;
     r->complete       = true;
-    int outStart = r->outputStartCol < 0 ? -1 : mDocument.absForRowId(r->outputStartRowId);
-    if (outStart >= 0) {
-        r->output = textFromAbsRange(outStart, r->outputStartCol, absRow, col,
-                                     COMMAND_OUTPUT_MAX_BYTES);
-    }
     mCommandInProgress = false;
     if (mCallbacks.event) {
         mCallbacks.event(this, static_cast<int>(CommandComplete), r);
     }
 }
 
-// Walk an absolute-row range [startAbsRow, endAbsRow] (inclusive) and extract
-// plaintext, honoring the start/end column bounds. Stops at `maxBytes`.
-std::string TerminalEmulator::textFromAbsRange(int startAbsRow, int startCol,
-                                                int endAbsRow, int endCol,
-                                                size_t maxBytes) const
-{
-    std::string out;
-    out.reserve(std::min<size_t>(maxBytes, 4096));
-    const int histSize = mDocument.historySize();
-    int startAbs = std::max(0, startAbsRow);
-    int endAbs   = std::min(histSize + mHeight - 1, endAbsRow);
-    for (int abs = startAbs; abs <= endAbs; ++abs) {
-        const Cell* row = abs < histSize
-            ? mDocument.historyRow(abs)
-            : mDocument.row(abs - histSize);
-        if (!row) continue;
-
-        int colStart = (abs == startAbsRow) ? std::max(0, startCol) : 0;
-        // endCol is an exclusive bound (cursor position at the marker event —
-        // points past the last written cell). Clamp into [0, mWidth].
-        int colEnd   = (abs == endAbsRow)   ? std::max(0, std::min(mWidth, endCol)) : mWidth;
-
-        // Trim trailing blanks on this row (common: most rows are mostly empty).
-        int effective = colEnd;
-        while (effective > colStart && row[effective - 1].wc == 0) --effective;
-
-        for (int c = colStart; c < effective; ++c) {
-            char32_t ch = row[c].wc ? row[c].wc : U' ';
-            // UTF-8 encode.
-            char buf[4];
-            int n = 0;
-            if (ch < 0x80)      { buf[n++] = static_cast<char>(ch); }
-            else if (ch < 0x800){ buf[n++] = static_cast<char>(0xC0 | (ch >> 6));
-                                  buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
-            else if (ch < 0x10000){ buf[n++] = static_cast<char>(0xE0 | (ch >> 12));
-                                    buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                                    buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
-            else                 { buf[n++] = static_cast<char>(0xF0 | (ch >> 18));
-                                   buf[n++] = static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
-                                   buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                                   buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
-            if (out.size() + static_cast<size_t>(n) > maxBytes) return out;
-            out.append(buf, n);
-        }
-        if (abs != endAbsRow) {
-            if (out.size() + 1 > maxBytes) return out;
-            out.push_back('\n');
-        }
-    }
-    return out;
-}
 
 std::string TerminalEmulator::serializeScrollback() const
 {

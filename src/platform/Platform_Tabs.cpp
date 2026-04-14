@@ -135,8 +135,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
                     if (!te) return;
                     const auto& doc = te->document();
                     Script::CommandInfo info{
-                        recCopy.id, recCopy.command, recCopy.output, recCopy.cwd, recCopy.exitCode,
+                        recCopy.id, recCopy.cwd, recCopy.exitCode,
                         recCopy.startMs, recCopy.endMs,
+                        recCopy.promptStartRowId, recCopy.commandStartRowId,
+                        recCopy.outputStartRowId, recCopy.outputEndRowId,
                         doc.absForRowId(recCopy.promptStartRowId),  recCopy.promptStartCol,
                         doc.absForRowId(recCopy.commandStartRowId), recCopy.commandStartCol,
                         doc.absForRowId(recCopy.outputStartRowId),  recCopy.outputStartCol,

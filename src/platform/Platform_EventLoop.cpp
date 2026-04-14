@@ -130,8 +130,10 @@ int PlatformDawn::exec()
                     if (limit > 0 && result.size() >= static_cast<size_t>(limit)) break;
                     const auto& r = *it;
                     Script::CommandInfo info{
-                        r.id, r.command, r.output, r.cwd, r.exitCode,
+                        r.id, r.cwd, r.exitCode,
                         r.startMs, r.endMs,
+                        r.promptStartRowId, r.commandStartRowId,
+                        r.outputStartRowId, r.outputEndRowId,
                         doc.absForRowId(r.promptStartRowId),  r.promptStartCol,
                         doc.absForRowId(r.commandStartRowId), r.commandStartCol,
                         doc.absForRowId(r.outputStartRowId),  r.outputStartCol,
@@ -144,6 +146,24 @@ int PlatformDawn::exec()
                 break;
             }
             return result;
+        };
+        scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startRowId, int startCol,
+                                  uint64_t endRowId, int endCol) -> std::string {
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (TerminalEmulator* te = p->terminal())
+                        return te->document().getTextFromRows(startRowId, endRowId, startCol, endCol);
+                }
+            }
+            return {};
+        };
+        scbs.overlayGetText = [this](Script::TabId tabId, uint64_t startRowId, int startCol,
+                                     uint64_t endRowId, int endCol) -> std::string {
+            if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {
+                if (auto* ov = tabs_[tabId]->topOverlay())
+                    return ov->document().getTextFromRows(startRowId, endRowId, startCol, endCol);
+            }
+            return {};
         };
         scbs.overlayInfo = [this](Script::TabId tabId) -> Script::AppCallbacks::OverlayInfo {
             if (tabId >= 0 && tabId < static_cast<int>(tabs_.size())) {

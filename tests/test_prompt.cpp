@@ -6,6 +6,27 @@ static void osc133(TestTerminal& t, const std::string& kind) {
     t.osc("133;" + kind);
 }
 
+// Helpers for lazily extracting text from a CommandRecord via the document.
+static std::string recordCommandText(const TerminalEmulator& term,
+                                      const TerminalEmulator::CommandRecord& r)
+{
+    if (r.commandStartCol < 0) return {};
+    auto text = term.document().getTextFromRows(r.commandStartRowId, r.outputStartRowId,
+                                                r.commandStartCol, r.outputStartCol);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\n' ||
+                              text.back() == '\r' || text.back() == '\t'))
+        text.pop_back();
+    return text;
+}
+
+static std::string recordOutputText(const TerminalEmulator& term,
+                                     const TerminalEmulator::CommandRecord& r)
+{
+    if (r.outputStartCol < 0) return {};
+    return term.document().getTextFromRows(r.outputStartRowId, r.outputEndRowId,
+                                           r.outputStartCol, r.outputEndCol);
+}
+
 // === OSC 133 marker storage ===
 
 TEST_CASE("OSC 133 A sets PromptStart on cursor row")
@@ -151,10 +172,10 @@ TEST_CASE("OSC 133: full A/B/C/D lifecycle captures command + output + exit code
     CHECK(r.complete);
     CHECK(r.exitCode.has_value());
     CHECK(r.exitCode.value() == 0);
-    CHECK(r.command == "ls -la");
+    CHECK(recordCommandText(t.term, r) == "ls -la");
     // Output includes both file lines (joined by newlines in the range walk).
-    CHECK(r.output.find("file1.txt") != std::string::npos);
-    CHECK(r.output.find("file2.txt") != std::string::npos);
+    CHECK(recordOutputText(t.term, r).find("file1.txt") != std::string::npos);
+    CHECK(recordOutputText(t.term, r).find("file2.txt") != std::string::npos);
 }
 
 TEST_CASE("OSC 133: D exit code non-zero")
@@ -207,7 +228,7 @@ TEST_CASE("OSC 133: collapse case — second A before D updates in-flight record
 
     // Exactly one command was completed, not two.
     CHECK(t.term.commands().size() == 1);
-    CHECK(t.term.commands().back().command == "ls");
+    CHECK(recordCommandText(t.term, t.term.commands().back()) == "ls");
 }
 
 TEST_CASE("OSC 133: N closes in-flight command implicitly")
@@ -257,7 +278,7 @@ TEST_CASE("OSC 133: commandComplete callback fires with the record")
     bool fired = false;
     uint64_t seenId = 0;
     std::optional<int> seenExit;
-    std::string seenCommand;
+    uint64_t seenCmdRowId = 0, seenOutRowId = 0;
 
     // Custom TestTerminal-style setup with event callback.
     TerminalCallbacks cb;
@@ -267,7 +288,8 @@ TEST_CASE("OSC 133: commandComplete callback fires with the record")
             fired = true;
             seenId = r->id;
             seenExit = r->exitCode;
-            seenCommand = r->command;
+            seenCmdRowId = r->commandStartRowId;
+            seenOutRowId = r->outputStartRowId;
         }
     };
 
@@ -287,7 +309,8 @@ TEST_CASE("OSC 133: commandComplete callback fires with the record")
     CHECK(fired);
     CHECK(seenId != 0);
     CHECK(seenExit.value() == 7);
-    CHECK(seenCommand == "echo hi");
+    REQUIRE(term.lastCommand() != nullptr);
+    CHECK(recordCommandText(term, *term.lastCommand()) == "echo hi");
 }
 
 TEST_CASE("OSC 133: second A after output finalizes previous command without exit code")
@@ -307,8 +330,8 @@ TEST_CASE("OSC 133: second A after output finalizes previous command without exi
     CHECK(ring[0].complete);
     CHECK_FALSE(ring[0].exitCode.has_value());
     // Output should include file1 and file2.
-    CHECK(ring[0].output.find("file1") != std::string::npos);
-    CHECK(ring[0].output.find("file2") != std::string::npos);
+    CHECK(recordOutputText(t.term, ring[0]).find("file1") != std::string::npos);
+    CHECK(recordOutputText(t.term, ring[0]).find("file2") != std::string::npos);
     CHECK_FALSE(ring[1].complete);
 }
 
@@ -326,13 +349,12 @@ TEST_CASE("OSC 133: captured output survives scrolling into tier-1 history")
     // Scroll the prompt into history by writing more content.
     for (int i = 0; i < 20; ++i) t.feed("filler line\r\n");
 
-    // The captured command + output strings were copied eagerly at C / D, so
-    // they survive scrolling even if the underlying rows have moved far back.
+    // Text is extracted lazily from the document — rows are in tier-1 history.
     const auto* last = t.term.lastCommand();
     REQUIRE(last != nullptr);
     CHECK(last->complete);
-    CHECK(last->command == "cmd");
-    CHECK(last->output.find("out") != std::string::npos);
+    CHECK(recordCommandText(t.term, *last) == "cmd");
+    CHECK(recordOutputText(t.term, *last).find("out") != std::string::npos);
 }
 
 TEST_CASE("OSC 133: semantic type round-trips through tier-2 archive")
@@ -430,7 +452,7 @@ TEST_CASE("OSC 133: lastCommand skips in-flight tail and returns previous comple
     const auto* last = t.term.lastCommand();
     REQUIRE(last != nullptr);
     CHECK(last->complete);
-    CHECK(last->command == "cmd1");
+    CHECK(recordCommandText(t.term, *last) == "cmd1");
     CHECK(last->exitCode.value() == 0);
 }
 
@@ -443,7 +465,7 @@ TEST_CASE("OSC 133: lastCommand returns most recent completed")
     osc133(t, "C");  osc133(t, "D;1");
 
     REQUIRE(t.term.lastCommand() != nullptr);
-    CHECK(t.term.lastCommand()->command == "cmd2");
+    CHECK(recordCommandText(t.term, *t.term.lastCommand()) == "cmd2");
     CHECK(t.term.lastCommand()->exitCode.value() == 1);
 }
 

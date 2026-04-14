@@ -21,6 +21,7 @@ set(TEST_SOURCES
     test_kitty_keyboard.cpp
     test_reflow.cpp
     test_prompt.cpp
+    test_archive.cpp
     test_render.cpp
     test_cwd.cpp
     test_osc_palette.cpp

@@ -390,7 +390,10 @@ static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p);
+// getText extracts text from a row-id range with col bounds (for first/last rows).
+using GetTextFn = std::function<std::string(uint64_t startRowId, int startCol,
+                                             uint64_t endRowId, int endCol)>;
+static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, const GetTextFn& getText);
 
 static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
@@ -418,7 +421,10 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         if (!eng->callbacks().paneCommands) return JS_NULL;
         auto list = eng->callbacks().paneCommands(pane->id, 1);
         if (list.empty()) return JS_NULL;
-        return buildCommandObject(ctx, list.back());
+        auto getText = eng->callbacks().paneGetText
+            ? GetTextFn([eng, id = pane->id](uint64_t s, int sc, uint64_t e, int ec) { return eng->callbacks().paneGetText(id, s, sc, e, ec); })
+            : GetTextFn{};
+        return buildCommandObject(ctx, list.back(), getText);
     }
     case 10: { // commands — gated on shell.commands.
         if (!checkPerm(ctx, Perm::ShellReadCommands)) {
@@ -428,8 +434,11 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         JSValue arr = JS_NewArray(ctx);
         if (!eng->callbacks().paneCommands) return arr;
         auto list = eng->callbacks().paneCommands(pane->id, 0);
+        auto getText = eng->callbacks().paneGetText
+            ? GetTextFn([eng, id = pane->id](uint64_t s, int sc, uint64_t e, int ec) { return eng->callbacks().paneGetText(id, s, sc, e, ec); })
+            : GetTextFn{};
         for (size_t i = 0; i < list.size(); ++i)
-            JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i]));
+            JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], getText));
         return arr;
     }
     default: return JS_UNDEFINED;
@@ -2600,19 +2609,44 @@ void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& proc
 }
 
 // Build the JS object exposed to commandComplete listeners (and pane.commands / lastCommand).
-static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p)
+// getText is called lazily to extract command/output text — pass {} to omit text fields.
+static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, const GetTextFn& getText)
 {
     JSValue obj = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, obj, "id",      JS_NewInt64(ctx, static_cast<int64_t>(p.id)));
-    JS_SetPropertyStr(ctx, obj, "command", JS_NewStringLen(ctx, p.command.data(), p.command.size()));
-    JS_SetPropertyStr(ctx, obj, "output",  JS_NewStringLen(ctx, p.output.data(),  p.output.size()));
-    JS_SetPropertyStr(ctx, obj, "cwd",     JS_NewStringLen(ctx, p.cwd.data(),     p.cwd.size()));
+    JS_SetPropertyStr(ctx, obj, "id",  JS_NewInt64(ctx, static_cast<int64_t>(p.id)));
+    JS_SetPropertyStr(ctx, obj, "cwd", JS_NewStringLen(ctx, p.cwd.data(), p.cwd.size()));
     if (p.exitCode.has_value())
         JS_SetPropertyStr(ctx, obj, "exitCode", JS_NewInt32(ctx, *p.exitCode));
     else
         JS_SetPropertyStr(ctx, obj, "exitCode", JS_NULL);
     JS_SetPropertyStr(ctx, obj, "startMs", JS_NewInt64(ctx, static_cast<int64_t>(p.startMs)));
     JS_SetPropertyStr(ctx, obj, "endMs",   JS_NewInt64(ctx, static_cast<int64_t>(p.endMs)));
+
+    // Lazy text extraction with col bounds so prompt/command/output on the same row
+    // are correctly separated (commandStartCol..outputStartCol for the input zone, etc.)
+    if (getText) {
+        std::string cmd = (p.commandStartCol >= 0 && p.outputStartRowId)
+            ? getText(p.commandStartRowId, p.commandStartCol,
+                      p.outputStartRowId,  p.outputStartCol) : std::string{};
+        while (!cmd.empty() && (cmd.back() == ' ' || cmd.back() == '\n' ||
+                                 cmd.back() == '\r' || cmd.back() == '\t'))
+            cmd.pop_back();
+        std::string out = (p.outputStartCol >= 0 && p.outputEndRowId)
+            ? getText(p.outputStartRowId, p.outputStartCol,
+                      p.outputEndRowId,   p.outputEndCol) : std::string{};
+        JS_SetPropertyStr(ctx, obj, "command", JS_NewStringLen(ctx, cmd.data(), cmd.size()));
+        JS_SetPropertyStr(ctx, obj, "output",  JS_NewStringLen(ctx, out.data(), out.size()));
+    } else {
+        JS_SetPropertyStr(ctx, obj, "command", JS_NewString(ctx, ""));
+        JS_SetPropertyStr(ctx, obj, "output",  JS_NewString(ctx, ""));
+    }
+
+    // Row IDs (stable)
+    JS_SetPropertyStr(ctx, obj, "promptStartRowId",  JS_NewInt64(ctx, static_cast<int64_t>(p.promptStartRowId)));
+    JS_SetPropertyStr(ctx, obj, "commandStartRowId", JS_NewInt64(ctx, static_cast<int64_t>(p.commandStartRowId)));
+    JS_SetPropertyStr(ctx, obj, "outputStartRowId",  JS_NewInt64(ctx, static_cast<int64_t>(p.outputStartRowId)));
+    JS_SetPropertyStr(ctx, obj, "outputEndRowId",    JS_NewInt64(ctx, static_cast<int64_t>(p.outputEndRowId)));
+    // Volatile abs rows (for position navigation)
     JS_SetPropertyStr(ctx, obj, "promptStartAbsRow",  JS_NewInt32(ctx, p.promptStartAbsRow));
     JS_SetPropertyStr(ctx, obj, "promptStartCol",     JS_NewInt32(ctx, p.promptStartCol));
     JS_SetPropertyStr(ctx, obj, "commandStartAbsRow", JS_NewInt32(ctx, p.commandStartAbsRow));
@@ -2626,6 +2660,10 @@ static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p)
 
 void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
 {
+    auto getText = callbacks_.paneGetText
+        ? GetTextFn([this, pane](uint64_t s, int sc, uint64_t e, int ec) { return callbacks_.paneGetText(pane, s, sc, e, ec); })
+        : GetTextFn{};
+
     for (auto& inst : instances_) {
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
@@ -2635,7 +2673,7 @@ void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
         JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_commandComplete");
-            JSValue arg = buildCommandObject(inst.ctx, rec);
+            JSValue arg = buildCommandObject(inst.ctx, rec, getText);
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);
             JS_FreeValue(inst.ctx, arr);

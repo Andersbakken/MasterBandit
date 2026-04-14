@@ -2,6 +2,7 @@
 
 #include "IGrid.h"
 #include <deque>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,13 @@ public:
     uint64_t rowIdForAbs(int abs) const;
     // Returns -1 if the row has been evicted from archive or is otherwise gone.
     int absForRowId(uint64_t id) const;
+
+    // Extract plain UTF-8 text from a stable row-id range (inclusive on both ends).
+    // startCol/endCol bound the columns on the first/last row; pass 0 and INT_MAX
+    // for full rows. Rows evicted past the archive cap are skipped silently.
+    std::string getTextFromRows(uint64_t startRowId, uint64_t endRowId,
+                                int startCol = 0,
+                                int endCol = std::numeric_limits<int>::max()) const;
 
 private:
     // Segmented ring buffer: each segment holds SEG_SIZE rows of cols_ cells.

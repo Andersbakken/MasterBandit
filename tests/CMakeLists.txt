@@ -27,6 +27,7 @@ set(TEST_SOURCES
     test_osc_palette.cpp
     test_decrqss.cpp
     test_kitty_graphics.cpp
+    test_osc_1337.cpp
     test_popup.cpp
     MBConnection.cpp
     ../src/text.cpp

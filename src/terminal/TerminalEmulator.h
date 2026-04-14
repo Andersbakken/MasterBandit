@@ -267,6 +267,9 @@ public:
         // Source rect crop (0 = use full image)
         uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
         std::vector<uint8_t> rgba;  // root frame (frame 0)
+        // iTerm OSC 1337 "name=" metadata (base64-decoded filename). Never set
+        // by kitty graphics. Purely informational — not displayed.
+        std::string name;
 
         // Per-placement display parameters (one image, multiple positions)
         struct Placement {

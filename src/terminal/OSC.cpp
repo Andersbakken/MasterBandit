@@ -56,19 +56,95 @@ uint64_t TerminalEmulator::mono()
 }
 
 // --- OSC 1337 iTerm2 inline images ---
+namespace {
+
+// Parsed "width=" / "height=" value. iTerm accepts: N (cells), Npx (pixels),
+// N% (percent of session extent), or "auto" / unspecified (natural size).
+enum class ITermDimUnit { Auto, Cells, Pixels, Percent };
+struct ITermDim {
+    ITermDimUnit unit { ITermDimUnit::Auto };
+    float value { 0.0f };
+};
+
+bool parseFloat(std::string_view s, float& out)
+{
+    if (s.empty()) return false;
+    try {
+        size_t consumed = 0;
+        float v = std::stof(std::string(s), &consumed);
+        if (consumed != s.size()) return false;
+        out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+ITermDim parseITermDim(std::string_view s)
+{
+    ITermDim d;
+    if (s.empty() || s == "auto") return d;
+    if (s.back() == '%') {
+        if (!parseFloat(s.substr(0, s.size() - 1), d.value) || d.value < 0)
+            return {};
+        d.unit = ITermDimUnit::Percent;
+        return d;
+    }
+    if (s.size() > 2 && s.substr(s.size() - 2) == "px") {
+        if (!parseFloat(s.substr(0, s.size() - 2), d.value) || d.value < 0)
+            return {};
+        d.unit = ITermDimUnit::Pixels;
+        return d;
+    }
+    if (!parseFloat(s, d.value) || d.value < 0)
+        return {};
+    d.unit = ITermDimUnit::Cells;
+    return d;
+}
+
+// Resolve a width/height spec to a cell count. Returns 0 if the spec is Auto
+// (caller should fall back to natural or aspect-derived size).
+int resolveDimToCells(ITermDim dim, float cellPixels, int terminalCells)
+{
+    switch (dim.unit) {
+    case ITermDimUnit::Auto:    return 0;
+    case ITermDimUnit::Cells:   return std::max(1, static_cast<int>(dim.value));
+    case ITermDimUnit::Pixels:
+        if (cellPixels <= 0) return 0;
+        return std::max(1, static_cast<int>(std::ceil(dim.value / cellPixels)));
+    case ITermDimUnit::Percent:
+        if (terminalCells <= 0) return 0;
+        return std::max(1, static_cast<int>(std::ceil(dim.value * terminalCells / 100.0f)));
+    }
+    return 0;
+}
+
+int naturalCells(int pixels, float cellPixels)
+{
+    if (cellPixels <= 0) return 1;
+    return std::max(1, static_cast<int>(std::ceil(static_cast<float>(pixels) / cellPixels)));
+}
+
+} // namespace
+
 void TerminalEmulator::processOSC_iTerm(std::string_view payload)
 {
-    // Format: "File=[params]:base64data"
+    // Format: "File=[params]:base64data". Params are ";"-separated name=value
+    // pairs. Per iTerm spec, inline=1 is required for display (otherwise the
+    // sequence is a "download to disk" request, which we don't implement).
     if (payload.substr(0, 5) != "File=") return;
 
     size_t colonPos = payload.find(':');
     if (colonPos == std::string_view::npos) return;
 
     std::string_view paramStr = payload.substr(5, colonPos - 5);
-    std::string_view b64data = payload.substr(colonPos + 1);
+    std::string_view b64data  = payload.substr(colonPos + 1);
 
-    // Parse params
-    bool isInline = false;
+    bool      isInline           = false;
+    bool      preserveAspect     = true;   // iTerm default
+    ITermDim  widthSpec, heightSpec;
+    std::string_view nameB64;
+
     std::string_view::size_type pos = 0;
     while (pos < paramStr.size()) {
         auto eq = paramStr.find('=', pos);
@@ -79,17 +155,21 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
         std::string_view key = paramStr.substr(pos, eq - pos);
         std::string_view val = paramStr.substr(eq + 1, semi - eq - 1);
 
-        if (key == "inline" && val == "1") isInline = true;
+        if      (key == "inline" && val == "1") isInline = true;
+        else if (key == "width")  widthSpec  = parseITermDim(val);
+        else if (key == "height") heightSpec = parseITermDim(val);
+        else if (key == "preserveAspectRatio") preserveAspect = (val != "0");
+        else if (key == "name")   nameB64 = val;
+        // size=, type= and other iTerm params: accepted but not used.
+
         pos = semi + 1;
     }
 
     if (!isInline) return;
 
-    // Decode base64
     std::vector<uint8_t> imageBytes = base64::decode(b64data);
     if (imageBytes.empty()) return;
 
-    // Decode image
     int w, h, channels;
     uint8_t* pixels = stbi_load_from_memory(
         imageBytes.data(), static_cast<int>(imageBytes.size()), &w, &h, &channels, 4);
@@ -98,28 +178,67 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
         return;
     }
 
-    float cw = mCallbacks.cellPixelWidth ? mCallbacks.cellPixelWidth() : 0.0f;
+    float cw = mCallbacks.cellPixelWidth  ? mCallbacks.cellPixelWidth()  : 0.0f;
     float ch = mCallbacks.cellPixelHeight ? mCallbacks.cellPixelHeight() : 0.0f;
     if (cw <= 0 || ch <= 0) {
         stbi_image_free(pixels);
         return;
     }
 
-    int cellCols = std::max(1, static_cast<int>(std::ceil(static_cast<float>(w) / cw)));
-    int cellRows = std::max(1, static_cast<int>(std::ceil(static_cast<float>(h) / ch)));
+    // Resolve requested cell extents. Zero = unspecified; fill in below.
+    int reqCols = resolveDimToCells(widthSpec,  cw, mWidth);
+    int reqRows = resolveDimToCells(heightSpec, ch, mHeight);
+
+    // The image's aspect ratio expressed in cell units (accounts for the fact
+    // that a cell is usually taller than it is wide).
+    const float imgPxAspect  = static_cast<float>(w) / static_cast<float>(h);
+    const float cellAspect   = ch / cw;              // >1 when cells are tall
+    const float cellsAspect  = imgPxAspect * cellAspect;  // cols-per-row ratio
+
+    int cellCols = 0, cellRows = 0;
+    if (reqCols == 0 && reqRows == 0) {
+        // No dims given: natural size.
+        cellCols = naturalCells(w, cw);
+        cellRows = naturalCells(h, ch);
+    } else if (!preserveAspect) {
+        cellCols = reqCols > 0 ? reqCols : naturalCells(w, cw);
+        cellRows = reqRows > 0 ? reqRows : naturalCells(h, ch);
+    } else if (reqCols > 0 && reqRows > 0) {
+        // Fit inside the requested box, preserving aspect.
+        const int derivedRows = std::max(1, static_cast<int>(std::round(reqCols / cellsAspect)));
+        if (derivedRows <= reqRows) {
+            cellCols = reqCols;
+            cellRows = derivedRows;
+        } else {
+            cellCols = std::max(1, static_cast<int>(std::round(reqRows * cellsAspect)));
+            cellRows = reqRows;
+        }
+    } else if (reqCols > 0) {
+        cellCols = reqCols;
+        cellRows = std::max(1, static_cast<int>(std::round(reqCols / cellsAspect)));
+    } else { // reqRows > 0
+        cellRows = reqRows;
+        cellCols = std::max(1, static_cast<int>(std::round(reqRows * cellsAspect)));
+    }
 
     ImageEntry entry;
-    entry.id = mNextImageId++;
-    entry.pixelWidth = w;
+    entry.id         = mNextImageId++;
+    entry.pixelWidth  = w;
     entry.pixelHeight = h;
-    entry.cellWidth = cellCols;
-    entry.cellHeight = cellRows;
+    entry.cellWidth   = cellCols;
+    entry.cellHeight  = cellRows;
     entry.rgba.assign(pixels, pixels + w * h * 4);
     stbi_image_free(pixels);
 
-    uint32_t imageId = entry.id;
-    spdlog::warn("OSC 1337: image id={} {}x{} px, {}x{} cells",
-                 imageId, w, h, cellCols, cellRows);
+    if (!nameB64.empty()) {
+        std::vector<uint8_t> decoded = base64::decode(nameB64);
+        if (!decoded.empty())
+            entry.name.assign(reinterpret_cast<const char*>(decoded.data()), decoded.size());
+    }
+
+    const uint32_t imageId = entry.id;
+    spdlog::info("OSC 1337: image id={} {}x{} px, {}x{} cells name=\"{}\"",
+                 imageId, w, h, cellCols, cellRows, entry.name);
     mImageRegistry[imageId] = std::make_shared<ImageEntry>(std::move(entry));
 
     placeImageInGrid(imageId, 0, cellCols, cellRows);

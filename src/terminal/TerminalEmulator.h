@@ -506,6 +506,7 @@ private:
 
     // Mouse reporting
     void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, uint32_t modifiers);
+    void sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers);
 
     bool mCursorKeyMode { false };  // DECCKM: true = application mode
     bool mKeypadMode { false };     // DECKPAM: true = application mode
@@ -514,6 +515,7 @@ private:
     bool mMouseMode1002 { false };
     bool mMouseMode1003 { false };
     bool mMouseMode1006 { false };
+    bool mMouseMode1016 { false }; // SGR-Pixel
     int mMouseButtonDown { -1 };
     int mLastMouseX { -1 }, mLastMouseY { -1 };
     bool mAutoWrap { true };         // DECAWM (private mode 7): autowrap at right margin

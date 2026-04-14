@@ -592,6 +592,8 @@ struct MouseEvent
     int y { 0 };
     int globalX { 0 };
     int globalY { 0 };
+    int pixelX { 0 };  // pane-relative pixel coordinates (for SGR-Pixel mode 1016)
+    int pixelY { 0 };
 
     static std::string buttonName(uint32_t buttons)
     {

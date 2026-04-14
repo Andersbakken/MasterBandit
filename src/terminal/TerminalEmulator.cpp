@@ -769,6 +769,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mMouseMode1002 = false;
                 mMouseMode1003 = false;
                 mMouseMode1006 = false;
+                mMouseMode1016 = false;
                 mAutoWrap = true;
                 mInsertMode = false;
                 mBracketedPaste = false;
@@ -1343,6 +1344,7 @@ void TerminalEmulator::processCSI()
             case 1002: pm = mMouseMode1002 ? 1 : 2; break;
             case 1003: pm = mMouseMode1003 ? 1 : 2; break;
             case 1006: pm = mMouseMode1006 ? 1 : 2; break;
+            case 1016: pm = mMouseMode1016 ? 1 : 2; break;
             case 1004: pm = mFocusReporting ? 1 : 2; break;
             case 1049: pm = mUsingAltScreen ? 1 : 2; break;
             case 2004: pm = mBracketedPaste ? 1 : 2; break;
@@ -1380,7 +1382,7 @@ void TerminalEmulator::processCSI()
 void TerminalEmulator::savePrivateModes(const std::vector<int>& modes)
 {
     static constexpr int kKnownModes[] = {
-        1, 7, 12, 25, 1000, 1002, 1003, 1004, 1006, 2004, 2026, 2031
+        1, 7, 12, 25, 1000, 1002, 1003, 1004, 1006, 1016, 2004, 2026, 2031
     };
     auto saveOne = [this](int m) {
         switch (m) {
@@ -1393,6 +1395,7 @@ void TerminalEmulator::savePrivateModes(const std::vector<int>& modes)
         case 1003: mSavedPrivateModes[1003] = mMouseMode1003; break;
         case 1004: mSavedPrivateModes[1004] = mFocusReporting; break;
         case 1006: mSavedPrivateModes[1006] = mMouseMode1006; break;
+        case 1016: mSavedPrivateModes[1016] = mMouseMode1016; break;
         case 2004: mSavedPrivateModes[2004] = mBracketedPaste; break;
         case 2026: mSavedPrivateModes[2026] = mSyncOutput; break;
         case 2031: mSavedPrivateModes[2031] = mColorPreferenceReporting; break;
@@ -1422,6 +1425,7 @@ void TerminalEmulator::restorePrivateModes(const std::vector<int>& modes)
         case 1003: mMouseMode1003             = v; break;
         case 1004: mFocusReporting            = v; break;
         case 1006: mMouseMode1006             = v; break;
+        case 1016: mMouseMode1016             = v; break;
         case 2004: mBracketedPaste            = v; break;
         case 2026: mSyncOutput                = v; break;
         case 2031: mColorPreferenceReporting  = v; break;
@@ -1562,6 +1566,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 1002: mMouseMode1002 = true; break;
         case 1003: mMouseMode1003 = true; break;
         case 1006: mMouseMode1006 = true; break;
+        case 1016: mMouseMode1016 = true; break;
         case 1049: // Alt screen: save cursor, switch to alt, clear
             mSavedCursorX = mCursorX;
             mSavedCursorY = mCursorY;
@@ -1606,6 +1611,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 1002: mMouseMode1002 = false; break;
         case 1003: mMouseMode1003 = false; break;
         case 1006: mMouseMode1006 = false; break;
+        case 1016: mMouseMode1016 = false; break;
         case 1049: // Alt screen off: switch back to main, restore cursor
             mUsingAltScreen = false;
             // Kitty: switch back to main screen's stack

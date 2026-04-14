@@ -102,6 +102,85 @@ TEST_CASE("mouse mode 1003 set/reset")
     CHECK_FALSE(t.term.mouseReportingActive());
 }
 
+// ── SGR mouse reporting (mode 1006) ──────────────────────────────────────────
+
+TEST_CASE("mouse mode 1006 SGR format press/release")
+{
+    TestTerminal t;
+    t.csi("?1000h"); // enable tracking
+    t.csi("?1006h"); // enable SGR format
+    t.clearOutput();
+
+    MouseEvent press;
+    press.x = 4; press.y = 2;
+    press.pixelX = 40; press.pixelY = 30;
+    press.button = LeftButton; press.buttons = LeftButton;
+    t.term.mousePressEvent(&press);
+    CHECK(t.output() == "\x1b[<0;5;3M"); // 1-based: col 5, row 3
+
+    t.clearOutput();
+    MouseEvent release;
+    release.x = 4; release.y = 2;
+    release.pixelX = 40; release.pixelY = 30;
+    release.button = LeftButton;
+    t.term.mouseReleaseEvent(&release);
+    CHECK(t.output() == "\x1b[<0;5;3m"); // lowercase m = release
+}
+
+// ── SGR-Pixel mouse reporting (mode 1016) ────────────────────────────────────
+
+TEST_CASE("mouse mode 1016 SGR-Pixel format press/release")
+{
+    TestTerminal t;
+    t.csi("?1000h"); // enable tracking
+    t.csi("?1016h"); // enable SGR-Pixel format
+    t.clearOutput();
+
+    MouseEvent press;
+    press.x = 4; press.y = 2;
+    press.pixelX = 40; press.pixelY = 30;
+    press.button = LeftButton; press.buttons = LeftButton;
+    t.term.mousePressEvent(&press);
+    CHECK(t.output() == "\x1b[<0;41;31M"); // 1-based pixel: 41, 31
+
+    t.clearOutput();
+    MouseEvent release;
+    release.x = 4; release.y = 2;
+    release.pixelX = 40; release.pixelY = 30;
+    release.button = LeftButton;
+    t.term.mouseReleaseEvent(&release);
+    CHECK(t.output() == "\x1b[<0;41;31m");
+}
+
+TEST_CASE("mouse mode 1016 falls back to 1006 when pixel coords unavailable")
+{
+    TestTerminal t;
+    t.csi("?1000h");
+    t.csi("?1016h");
+    t.csi("?1006h");
+    t.clearOutput();
+
+    MouseEvent press;
+    press.x = 4; press.y = 2;
+    press.pixelX = -1; press.pixelY = -1; // no pixel info
+    press.button = LeftButton; press.buttons = LeftButton;
+    t.term.mousePressEvent(&press);
+    CHECK(t.output() == "\x1b[<0;5;3M"); // cell coords, not pixel
+}
+
+TEST_CASE("mouse mode 1016 set/reset via DECRQM")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("?1016$p");
+    CHECK(t.output() == "\x1b[?1016;2$y"); // recognized, reset
+
+    t.clearOutput();
+    t.csi("?1016h");
+    t.csi("?1016$p");
+    CHECK(t.output() == "\x1b[?1016;1$y"); // recognized, set
+}
+
 // ── bracketed paste (mode 2004) ───────────────────────────────────────────────
 
 TEST_CASE("bracketed paste mode set/reset")

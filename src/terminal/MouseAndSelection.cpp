@@ -23,6 +23,11 @@ void TerminalEmulator::notifyColorPreference(bool isDark)
 
 void TerminalEmulator::sendMouseEvent(int button, bool press, bool motion, int cx, int cy, uint32_t modifiers)
 {
+    sendMouseEventPixel(button, press, motion, cx, cy, -1, -1, modifiers);
+}
+
+void TerminalEmulator::sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers)
+{
     // Encode modifier bits into button code
     int cb = button;
     if (motion) cb += 32;
@@ -30,17 +35,21 @@ void TerminalEmulator::sendMouseEvent(int button, bool press, bool motion, int c
     if (modifiers & AltModifier) cb += 8;
     if (modifiers & CtrlModifier) cb += 16;
 
-    // 1-based coordinates
-    int x = cx + 1;
-    int y = cy + 1;
-
-    if (mMouseMode1006) {
-        // SGR format: \x1b[<Cb;Cx;CyM (press) or m (release)
+    if (mMouseMode1016 && px >= 0 && py >= 0) {
+        // SGR-Pixel format: same as SGR but with pixel coordinates
         char buf[64];
-        int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", cb, x, y, press ? 'M' : 'm');
+        int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", cb, px + 1, py + 1, press ? 'M' : 'm');
+        writeToOutput(buf, n);
+    } else if (mMouseMode1006) {
+        // SGR format: \x1b[<Cb;Cx;CyM (press) or m (release)
+        // 1-based cell coordinates
+        char buf[64];
+        int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", cb, cx + 1, cy + 1, press ? 'M' : 'm');
         writeToOutput(buf, n);
     } else {
         // Legacy format: \x1b[Mcb cx cy (all + 32)
+        int x = cx + 1;
+        int y = cy + 1;
         if (x > 223 || y > 223) return; // can't encode
         char buf[6];
         buf[0] = '\x1b';
@@ -74,7 +83,7 @@ void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
         mMouseButtonDown = btn;
         mLastMouseX = ev->x;
         mLastMouseY = ev->y;
-        sendMouseEvent(btn, true, false, ev->x, ev->y, ev->modifiers);
+        sendMouseEventPixel(btn, true, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         return;
     }
 
@@ -103,11 +112,11 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
 
     if (mouseReportingActive() && mMouseButtonDown >= 0) {
         int btn = buttonToCode(ev->button);
-        if (mMouseMode1006) {
-            sendMouseEvent(btn, false, false, ev->x, ev->y, ev->modifiers);
+        if (mMouseMode1006 || mMouseMode1016) {
+            sendMouseEventPixel(btn, false, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         } else {
             // Legacy: release is button code 3
-            sendMouseEvent(3, false, false, ev->x, ev->y, ev->modifiers);
+            sendMouseEventPixel(3, false, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         }
         mMouseButtonDown = -1;
         mLastMouseX = -1;
@@ -137,11 +146,11 @@ void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
 
     if (mMouseMode1003) {
         int btn = (mMouseButtonDown >= 0) ? mMouseButtonDown : 3; // 3 = no button in motion
-        sendMouseEvent(btn, true, true, ev->x, ev->y, ev->modifiers);
+        sendMouseEventPixel(btn, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         mLastMouseX = ev->x;
         mLastMouseY = ev->y;
     } else if (mMouseMode1002 && mMouseButtonDown >= 0) {
-        sendMouseEvent(mMouseButtonDown, true, true, ev->x, ev->y, ev->modifiers);
+        sendMouseEventPixel(mMouseButtonDown, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         mLastMouseX = ev->x;
         mLastMouseY = ev->y;
     }

@@ -369,6 +369,8 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
             ev.y = static_cast<int>((sy - pr.y) / lineHeight_);
             ev.globalX = static_cast<int>(sx);
             ev.globalY = static_cast<int>(sy);
+            ev.pixelX = static_cast<int>(sx - pr.x);
+            ev.pixelY = static_cast<int>(sy - pr.y);
             ev.button = NoButton;
             ev.modifiers = lastMods_;
             term2->mouseReleaseEvent(&ev);
@@ -587,6 +589,8 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
         ev.y = static_cast<int>(relY / lineHeight_);
         ev.globalX = static_cast<int>(sx);
         ev.globalY = static_cast<int>(sy);
+        ev.pixelX = static_cast<int>(relX);
+        ev.pixelY = static_cast<int>(relY);
         ev.modifiers = lastMods_;
         switch (button) {
         case static_cast<int>(LeftButton):   ev.button = LeftButton; break;
@@ -652,6 +656,8 @@ void PlatformDawn::onCursorPos(double x, double y)
         ev.y = static_cast<int>(relY / lineHeight_);
         ev.globalX = static_cast<int>(sx);
         ev.globalY = static_cast<int>(sy);
+        ev.pixelX = static_cast<int>(relX);
+        ev.pixelY = static_cast<int>(relY);
         ev.button = NoButton;
         ev.modifiers = lastMods_;
         if ((heldButtons_ & LeftButton) != 0)

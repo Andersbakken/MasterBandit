@@ -1054,7 +1054,8 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
 // --- Terminal-specific run shaping (no BiDi reordering, no line wrapping) ---
 
 ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& text,
-                                float fontSize, FontStyle style)
+                                float fontSize, FontStyle style,
+                                std::span<const std::pair<uint32_t, int>> byteToCell)
 {
     auto fontIt = fonts_.find(fontName);
     if (fontIt == fonts_.end()) return {};
@@ -1132,7 +1133,84 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                 if (cp >= 0xFE00 && cp <= 0xFE0F) continue;
 
                 bool vs16 = hasVS16(text, cluster, consumed);
+                bool emoji = isWidenedEmoji(static_cast<char32_t>(cp)) || vs16;
 
+                // For emoji: use byteToCell to find the full byte range for
+                // this cell (base + all combiningCps), then re-shape with the
+                // emoji font. This handles ZWJ sequences, skin tone modifiers,
+                // flag sequences, keycap sequences, etc.
+                if (emoji) {
+                    // Find which byteToCell entry this cluster belongs to
+                    int btcIdx = -1;
+                    for (int b = 0; b < static_cast<int>(byteToCell.size()); b++) {
+                        if (byteToCell[b].first == cluster) { btcIdx = b; break; }
+                    }
+                    if (btcIdx >= 0) {
+                        uint32_t cellByteStart = byteToCell[btcIdx].first;
+                        uint32_t cellByteEnd = (btcIdx + 1 < static_cast<int>(byteToCell.size()))
+                            ? byteToCell[btcIdx + 1].first
+                            : static_cast<uint32_t>(text.size());
+
+                        // Only attempt multi-codepoint re-shaping if the cell
+                        // has more bytes than just the base codepoint
+                        if (cellByteEnd - cellByteStart > static_cast<uint32_t>(consumed)) {
+                            auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, true);
+                            if (resolved.glyphId != 0) {
+                                uint32_t emojiFi = resolved.fontIndex;
+                                hb_font_t* emojiHbFont;
+                                hb_face_t* emojiHbFace;
+                                {
+                                    std::shared_lock lock2(font.mutex);
+                                    emojiHbFont = font.hbFonts[emojiFi].hbFont;
+                                    emojiHbFace = font.hbFonts[emojiFi].hbFace;
+                                }
+
+                                hb_buffer_t* emojiBuf = hb_buffer_create();
+                                hb_buffer_add_utf8(emojiBuf, text.c_str(), static_cast<int>(text.size()),
+                                                   cellByteStart, static_cast<int>(cellByteEnd - cellByteStart));
+                                hb_buffer_set_direction(emojiBuf, segmentRtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+                                hb_buffer_set_script(emojiBuf, HB_SCRIPT_COMMON);
+                                hb_buffer_set_language(emojiBuf, hb_language_get_default());
+                                hb_buffer_set_cluster_level(emojiBuf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
+                                hb_shape(emojiHbFont, emojiBuf, nullptr, 0);
+
+                                uint32_t emojiCount;
+                                hb_glyph_info_t* emojiInfos = hb_buffer_get_glyph_infos(emojiBuf, &emojiCount);
+                                hb_glyph_position_t* emojiPositions = hb_buffer_get_glyph_positions(emojiBuf, &emojiCount);
+
+                                uint32_t emojiUpem = hb_face_get_upem(emojiHbFace);
+                                float emojiPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(emojiUpem);
+
+                                bool emittedGlyph = false;
+                                for (uint32_t j = 0; j < emojiCount; j++) {
+                                    uint32_t eGid = emojiInfos[j].codepoint;
+                                    if (eGid == 0) continue;
+                                    ensureGlyphEncoded(font, emojiFi, eGid);
+                                    float adv = (j == 0)
+                                        ? font.charWidth * scale * 2.0f
+                                        : emojiPositions[j].x_advance * emojiPixelScale * scale;
+                                    result.glyphs.push_back({
+                                        glyphKey(emojiFi, eGid), cluster, adv,
+                                        emojiPositions[j].x_offset * emojiPixelScale * scale,
+                                        emojiPositions[j].y_offset * emojiPixelScale * scale,
+                                        false, segmentRtl});
+                                    emittedGlyph = true;
+                                }
+
+                                hb_buffer_destroy(emojiBuf);
+
+                                if (emittedGlyph) {
+                                    // Skip all remaining glyphs that belong to this cell's byte range
+                                    while (i + 1 < count && infos[i + 1].cluster < cellByteEnd)
+                                        i++;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Single codepoint fallback
                 auto resolved = resolveGlyph(font, fontName, static_cast<char32_t>(cp), style, fi, vs16);
                 if (resolved.glyphId != 0) {
                     glyphFi = resolved.fontIndex;

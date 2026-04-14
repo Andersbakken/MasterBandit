@@ -84,13 +84,14 @@ TEST_CASE("VS16: warning sign with VS16 is widened to two columns")
     CHECK(t.term.cursorX() == 2);
 }
 
-TEST_CASE("VS16: combiningCp stored in cell extra")
+TEST_CASE("VS16: combiningCps stored in cell extra")
 {
     TestTerminal t;
     t.feed(WARNING_SIGN + VS16);
     const CellExtra* ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
-    CHECK(ex->combiningCp == U'\ufe0f');
+    REQUIRE(ex->combiningCps.size() == 1);
+    CHECK(ex->combiningCps[0] == U'\ufe0f');
 }
 
 TEST_CASE("VS16: character after emoji-with-VS16 lands at correct column")
@@ -110,4 +111,56 @@ TEST_CASE("VS16: does not re-widen an already-wide emoji")
     CHECK(t.attrs(0, 0).wide());
     CHECK(t.attrs(1, 0).wideSpacer());
     CHECK(t.term.cursorX() == 2);
+}
+
+// ── ZWJ emoji sequences ─────────────────────────────────────────────────────
+
+// 🧑‍🌾 = U+1F9D1 ZWJ U+1F33E (farmer)
+static const std::string FARMER = "\xf0\x9f\xa7\x91\xe2\x80\x8d\xf0\x9f\x8c\xbe";
+
+// 👨‍👩‍👧 = U+1F468 ZWJ U+1F469 ZWJ U+1F467 (family)
+static const std::string FAMILY = "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7";
+
+TEST_CASE("ZWJ emoji sequence stored as single grapheme cluster")
+{
+    TestTerminal t;
+    t.feed(FARMER);
+    // Base codepoint is U+1F9D1
+    CHECK(t.wc(0, 0) == U'\U0001f9d1');
+    CHECK(t.attrs(0, 0).wide());
+    CHECK(t.attrs(1, 0).wideSpacer());
+    // ZWJ + U+1F33E stored as combining codepoints
+    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    REQUIRE(ex != nullptr);
+    REQUIRE(ex->combiningCps.size() == 2);
+    CHECK(ex->combiningCps[0] == U'\u200d');  // ZWJ
+    CHECK(ex->combiningCps[1] == U'\U0001f33e'); // 🌾
+    // Cursor after the single cluster
+    CHECK(t.term.cursorX() == 2);
+}
+
+TEST_CASE("ZWJ family emoji stored as single grapheme cluster")
+{
+    TestTerminal t;
+    t.feed(FAMILY);
+    CHECK(t.wc(0, 0) == U'\U0001f468');
+    CHECK(t.attrs(0, 0).wide());
+    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    REQUIRE(ex != nullptr);
+    // ZWJ + 👩 + ZWJ + 👧 = 4 continuation codepoints
+    REQUIRE(ex->combiningCps.size() == 4);
+    CHECK(ex->combiningCps[0] == U'\u200d');
+    CHECK(ex->combiningCps[1] == U'\U0001f469');
+    CHECK(ex->combiningCps[2] == U'\u200d');
+    CHECK(ex->combiningCps[3] == U'\U0001f467');
+    CHECK(t.term.cursorX() == 2);
+}
+
+TEST_CASE("character after ZWJ sequence lands at correct column")
+{
+    TestTerminal t;
+    t.feed(FARMER + "A");
+    CHECK(t.wc(0, 0) == U'\U0001f9d1');
+    CHECK(t.wc(2, 0) == U'A');
+    CHECK(t.term.cursorX() == 3);
 }

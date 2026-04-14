@@ -408,8 +408,10 @@ std::string TerminalEmulator::selectedText() const
                 line += utf8::fromCodepoint(cell.wc);
                 if (extras) {
                     auto it = extras->find(col);
-                    if (it != extras->end() && it->second.combiningCp != 0)
-                        line += utf8::fromCodepoint(it->second.combiningCp);
+                    if (it != extras->end()) {
+                        for (char32_t cp : it->second.combiningCps)
+                            line += utf8::fromCodepoint(cp);
+                    }
                 }
                 lastNonSpace = static_cast<int>(line.size()) - 1;
             }

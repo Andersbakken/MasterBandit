@@ -379,6 +379,7 @@ private:
     uint32_t mCurrentUnderlineColor { 0 }; // SGR 58: packed RGBA8, 0 = use fg
     char32_t mLastPrintedChar { 0 };       // for REP (CSI b)
     int mLastPrintedX { -1 }, mLastPrintedY { -1 }; // position of last stored cell (for combining codepoints)
+    uint_least16_t mGraphemeState { 0 };   // libgrapheme stateful break detection
     int mSavedCursorX { 0 }, mSavedCursorY { 0 };
     bool mSavedWrapPending { false };
     CellAttrs mSavedAttrs;

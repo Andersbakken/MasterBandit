@@ -6,6 +6,10 @@
 #include "Observability.h"
 #include <spdlog/spdlog.h>
 
+extern "C" {
+#include <grapheme.h>
+}
+
 static spdlog::logger& sLog()
 {
     static auto l = spdlog::get("terminal");
@@ -551,6 +555,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 } else {
                     // ASCII character — write to cell grid
                     mLastPrintedChar = static_cast<char32_t>(buf[i]);
+                    mGraphemeState = 0;
                     if (mWrapPending) {
                         advanceCursorToNewLine();
                         mWrapPending = false;
@@ -559,6 +564,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         if (mInsertMode) {
                             g.insertChars(mCursorY, mCursorX, 1);
                         }
+                        mLastPrintedX = mCursorX;
+                        mLastPrintedY = mCursorY;
                         g.cell(mCursorX, mCursorY) = Cell{static_cast<char32_t>(buf[i]), mCurrentAttrs};
                         g.clearExtra(mCursorX, mCursorY);
                         if (mActiveHyperlinkId || mCurrentUnderlineColor) {
@@ -600,33 +607,48 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 
                 int w = wcwidth(cp);
                 if (w < 0) w = 0; // non-printable control char — skip
-                if (w == 0) {
-                    // Zero-width / combining character — attach to previous cell
-                    if (cp == 0xFE0F && mLastPrintedX >= 0 && mLastPrintedY >= 0 &&
-                        mLastPrintedY < mHeight && mLastPrintedX < mWidth) {
-                        CellExtra& ex = g.ensureExtra(mLastPrintedX, mLastPrintedY);
-                        ex.combiningCp = cp;
 
-                        // Widen the previous cell if it was single-width and there's room
-                        Cell& prevCell = g.cell(mLastPrintedX, mLastPrintedY);
-                        if (!prevCell.attrs.wide() && mLastPrintedY == mCursorY && !mWrapPending) {
-                            prevCell.attrs.setWide(true);
-                            CellAttrs spacerAttrs = mCurrentAttrs;
-                            spacerAttrs.setWideSpacer(true);
-                            g.cell(mCursorX, mCursorY) = Cell{0, spacerAttrs};
-                            g.clearExtra(mCursorX, mCursorY);
-                            mCursorX++;
-                            if (mCursorX >= mWidth) {
-                                mCursorX = mWidth - 1;
-                                if (mAutoWrap) mWrapPending = true;
-                            }
+                // Grapheme cluster continuation: if the new codepoint does not
+                // form a break with the previous one, append it to the
+                // previous cell rather than starting a new cell.
+                if (mLastPrintedChar != 0 && mLastPrintedX >= 0 && mLastPrintedY >= 0 &&
+                    mLastPrintedY < mHeight && mLastPrintedX < mWidth &&
+                    !grapheme_is_character_break(mLastPrintedChar, cp, &mGraphemeState)) {
+                    CellExtra& ex = g.ensureExtra(mLastPrintedX, mLastPrintedY);
+                    ex.combiningCps.push_back(cp);
+
+                    // Widen the previous cell to 2 columns if the cluster
+                    // should be wide (e.g. emoji + VS16, or ZWJ sequence)
+                    // and it's currently single-width with room to expand.
+                    Cell& prevCell = g.cell(mLastPrintedX, mLastPrintedY);
+                    bool shouldBeWide = isWidenedEmoji(prevCell.wc) || cp == 0xFE0F;
+                    if (shouldBeWide && !prevCell.attrs.wide() &&
+                        mLastPrintedY == mCursorY && !mWrapPending &&
+                        mCursorX < mWidth) {
+                        prevCell.attrs.setWide(true);
+                        CellAttrs spacerAttrs = mCurrentAttrs;
+                        spacerAttrs.setWideSpacer(true);
+                        g.cell(mCursorX, mCursorY) = Cell{0, spacerAttrs};
+                        g.clearExtra(mCursorX, mCursorY);
+                        mCursorX++;
+                        if (mCursorX >= mWidth) {
+                            mCursorX = mWidth - 1;
+                            if (mAutoWrap) mWrapPending = true;
                         }
-
-                        g.markRowDirty(mLastPrintedY);
                     }
+
+                    // Track the last codepoint for subsequent grapheme break
+                    // checks, but keep mLastPrintedX/Y pointing at the base cell.
+                    mLastPrintedChar = cp;
+                    g.markRowDirty(mLastPrintedY);
+                } else if (w == 0) {
+                    // Zero-width codepoint that starts a new grapheme cluster
+                    // (e.g. standalone combining mark) — nothing to display.
+                    mGraphemeState = 0;
                 } else if (w == 2) {
                     // Wide character: needs two cells
                     mLastPrintedChar = cp;
+                    mGraphemeState = 0;
                     if (mWrapPending) {
                         advanceCursorToNewLine();
                         mWrapPending = false;
@@ -666,6 +688,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 } else {
                     // Normal single-width character
                     mLastPrintedChar = cp;
+                    mGraphemeState = 0;
                     if (mWrapPending) {
                         advanceCursorToNewLine();
                         mWrapPending = false;
@@ -1349,6 +1372,7 @@ void TerminalEmulator::processCSI()
             case 1049: pm = mUsingAltScreen ? 1 : 2; break;
             case 2004: pm = mBracketedPaste ? 1 : 2; break;
             case 2026: pm = mSyncOutput ? 1 : 2; break;
+            case 2027: pm = 3; break; // grapheme cluster mode — permanently set
             case 2031: pm = mColorPreferenceReporting ? 1 : 2; break;
             default:
                 pm = 0;
@@ -1587,6 +1611,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 1004: mFocusReporting = true; break;
         case 2004: mBracketedPaste = true; break;
         case 2026: mSyncOutput = true; break;
+        case 2027: break; // grapheme cluster mode — always on, ignore
         case 2031: mColorPreferenceReporting = true; break;
         default:
             sLog().warn("Ignoring private mode set {}", action->count);
@@ -1629,6 +1654,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 1004: mFocusReporting = false; break;
         case 2004: mBracketedPaste = false; break;
         case 2026: mSyncOutput = false; break;
+        case 2027: break; // grapheme cluster mode — always on, ignore
         case 2031: mColorPreferenceReporting = false; break;
         default:
             sLog().warn("Ignoring private mode reset {}", action->count);

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <shared_mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -116,7 +117,8 @@ public:
                          float fontSize, float wrapWidth = 0, int align = 0,
                          FontStyle style = {});
     ShapedRun shapeRun(const std::string& fontName, const std::string& text,
-                       float fontSize, FontStyle style = {});
+                       float fontSize, FontStyle style = {},
+                       std::span<const std::pair<uint32_t, int>> byteToCell = {});
     const FontData* getFont(const std::string& name) const;
     bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
     bool addSyntheticBoldVariant(const std::string& name, float xStrength = 0.02f, float yStrength = 0.02f);

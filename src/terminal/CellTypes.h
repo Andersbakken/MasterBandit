@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 struct CellAttrs {
     // [0] fg R, [1] fg G, [2] fg B
@@ -103,5 +104,5 @@ struct CellExtra {
     uint32_t imageOffsetRow { 0 };
     uint32_t hyperlinkId { 0 };      // OSC 8: index into hyperlink registry
     uint32_t underlineColor { 0 };   // SGR 58: packed RGBA8, 0 = use fg color
-    char32_t combiningCp { 0 };      // variation selector / combining codepoint (e.g. U+FE0F)
+    std::vector<char32_t> combiningCps; // grapheme cluster continuation codepoints (ZWJ, combiners, VS16, etc.)
 };

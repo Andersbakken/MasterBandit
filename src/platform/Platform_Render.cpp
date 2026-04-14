@@ -174,8 +174,8 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
             byteToCell.push_back({static_cast<uint32_t>(runText.size()), c});
             appendUtf8(runText, rowData[c].wc);
             if (const CellExtra* extra = findExtra(c)) {
-                if (extra->combiningCp != 0)
-                    appendUtf8(runText, extra->combiningCp);
+                for (char32_t cp : extra->combiningCps)
+                    appendUtf8(runText, cp);
             }
         }
 
@@ -188,7 +188,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
         FontStyle runStyle;
         runStyle.bold = runBold;
         runStyle.italic = runItalic;
-        const ShapedRun& shaped = textSystem_.shapeRun(fontName_, runText, fontSize_, runStyle);
+        const ShapedRun& shaped = textSystem_.shapeRun(fontName_, runText, fontSize_, runStyle, byteToCell);
 
         // Find contiguous RTL cell ranges for mirroring.
         // Build a map of which byteToCell indices are RTL.

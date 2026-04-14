@@ -31,14 +31,31 @@ cells.
 ## 2. Cell Grid (implemented)
 
 A `cols × rows` cell array providing O(1) random access for cursor-addressed writes.
+`sizeof(Cell) == 12` bytes, asserted statically.
 
 | Field | Size | Contents |
 |---|---|---|
 | `char32_t wc` | 4 B | Unicode codepoint |
-| packed attrs | 8 B | 24-bit fg, 24-bit bg, 2-bit color mode per color, 1-bit flags: bold, italic, underline, strikethrough, blink, inverse, dim |
+| `CellAttrs attrs` | 8 B | see below |
 
-Rare attributes (hyperlinks, combining characters, image refs) are stored in a
-lazy-allocated side table keyed by cell coordinate.
+**`CellAttrs` layout** (`data[8]`, see `src/terminal/CellTypes.h`):
+
+- `data[0..2]` — fg R,G,B (24-bit)
+- `data[3..5]` — bg R,G,B (24-bit)
+- `data[6]` bits:
+  - bit 0 — fg color mode (0 = Default / use palette default, 1 = RGB). Indexed palette colors resolve to RGB at SGR parse time, so only these two modes are stored.
+  - bit 1 — bg color mode (same)
+  - bits 2–3 — OSC 133 semantic type (0 = Output, 1 = Input, 2 = Prompt). Orthogonal to SGR; `reset()` preserves it.
+  - bits 4–7 — bold, italic, underline, strikethrough
+- `data[7]` bits:
+  - bits 0–3 — blink, inverse, dim, invisible
+  - bits 4–5 — wide, wide-spacer
+  - bits 6–7 — underline style (0 = straight, 1 = double, 2 = curly, 3 = dotted)
+
+Rare attributes (`imageId`/`imagePlacementId`/`imageStartCol`/`imageOffsetRow`,
+`hyperlinkId`, `underlineColor` for SGR 58, `combiningCp` for variation selectors
+and combining marks) live in a lazy-allocated `CellExtra` side table keyed by
+cell coordinate.
 
 **Wide characters**: first cell holds the glyph, subsequent cells are marked as
 spacers (same model reused for ligatures).
@@ -171,11 +188,12 @@ PlatformDawn
 ### Tab bar
 
 - Rendered as a 1-row cell grid using the same compute/text/rect GPU pipeline.
-- Powerline style: U+E0B0 chevron separators via bundled Symbols Nerd Font Mono.
+- Powerline-style chevrons: U+E0B0 separators via bundled Symbols Nerd Font Mono.
 - Per-tab: index `[N]`, optional icon (OSC 1), title from focused pane (OSC 2),
   progress glyph (OSC 9;4) with indeterminate animation.
-- Configurable: style (powerline/hidden), position (top/bottom), font, font size,
-  colors. Stored in `[tab_bar]` config section.
+- Configurable: visibility (`"auto"` = hide when only one tab, `"visible"` =
+  always show, `"hidden"` = never show), position (`"top"` / `"bottom"`), font,
+  font size, colors. Stored in `[tab_bar]` config section.
 - Left-click: switch tab. Middle-click: close tab (no-op if last tab).
 
 ### Pane titles
@@ -299,7 +317,15 @@ in the Document ring buffer (`promptKind_` vector).
 - `A` — prompt start (primary or secondary with `k=s`)
 - `B` — command input starts (after prompt text)
 - `C` — command output starts
-- `D` — command finished (with exit code, currently ignored)
+- `D` — command finished (with exit code); stored on the per-command `CommandRecord`
+
+**Per-command record**: a bounded ring (~256 entries) of `CommandRecord` tracks
+exit code, timing, captured command text, captured output, and working directory
+per completed command. Cells also keep the per-cell `semanticType` tag (Output /
+Input / Prompt) in `CellAttrs` so content survives reflow and tier-2 archival —
+the serializer re-emits `\e]133;A/B/C\e\\` transitions at segment boundaries and
+the parser restores them on reload. Older commands that age out of the ring keep
+their cell tags but lose their per-command record.
 
 **Features using markers**:
 - **Jump to prompt**: `scrollToPrompt(direction)` scans history + screen for
@@ -310,6 +336,8 @@ in the Document ring buffer (`promptKind_` vector).
   `PromptStart`.
 - **Prompt-aware reflow**: when OSC 133 markers are present, prompt lines can
   be blanked before reflow to prevent rprompt content from causing wrapping.
+- **Scripting**: `pane.lastCommand`, `pane.commands`, and the `commandComplete`
+  event expose the command ring to JS.
 
 **Requires shell integration**: the shell must emit OSC 133 sequences. Kitty
 auto-injects these via `ZDOTDIR` hijacking; we don't yet (planned).
@@ -382,7 +410,7 @@ binding system.
 TOML config at `$XDG_CONFIG_HOME/MasterBandit/config.toml`. Parsed via glaze.
 
 ```toml
-font = "Inconsolata"
+font = ""               # empty = system default via fontconfig / CoreText
 font_size = 20.0
 bold_strength = 0.04
 scrollback_lines = -1   # -1 = infinite
@@ -390,7 +418,7 @@ divider_color = "#3d3d3d"
 divider_width = 1
 
 [tab_bar]
-style = "powerline"     # powerline | hidden
+style = "auto"          # auto | visible | hidden
 position = "bottom"     # top | bottom
 font = ""               # empty = same as terminal font
 font_size = 0.0         # 0 = same as terminal font_size
@@ -420,10 +448,23 @@ PTY environment: `$TERM=xterm-256color`, `$COLORTERM=truecolor`.
 
 ## 14. Font Fallback (implemented)
 
-Two-pass fontconfig strategy (same as WezTerm):
+Platform-specific codepoint fallback, two-pass on both platforms (same strategy
+as WezTerm):
+
+**Linux (`src/FontFallback_FontConfig.cpp`)**:
 - **Pass 1**: monospace fonts only (FC_MONO / FC_DUAL / FC_CHARCELL), using
   `FcFontList` (database order, no sort-scoring bias).
 - **Pass 2**: any font if no monospace covers the codepoint.
+
+**macOS (`src/FontFallback_CoreText.mm`)**:
+- **Pass 1**: prefer monospace fonts (`kCTFontMonoSpaceTrait`) via
+  `CTFontCopyDefaultCascadeListForLanguages` / `CTFontCreateForString`.
+- **Pass 2**: any font returned by CoreText's cascade list.
+
+Italic/bold variant lookup uses the same platform split
+(`FontResolver_CoreText.mm` / `FontResolver_FontConfig.cpp`), resolving real
+`kCTFontItalicTrait` / `FC_SLANT_ITALIC` files where available and otherwise
+synthesizing via HarfBuzz (`hb_font_set_synthetic_slant` / `synthetic_bold`).
 
 Unicode whitespace codepoints are excluded from fallback (no visible glyph needed).
 
@@ -440,14 +481,21 @@ WebSocket server on a Unix domain socket (`/tmp/mb-<pid>.sock`). Accessed via
 
 | Command | Description |
 |---|---|
-| `screenshot [--format grid\|png]` | Capture terminal content |
-| `key --text <text>` | Send text input |
-| `key --key <name> [--mod <mod>]` | Send named key with modifier |
-| `stats` | GPU pool and pane memory usage (JSON) |
+| `screenshot [--target <pane\|id>] [--cell x,y,w,h]` | Capture PNG of the window, a pane, or a cell rectangle |
+| `key <key> [<mod>...]` | Inject a named key event with optional modifiers |
+| `inject <text>` | Inject text into the active terminal |
+| `feed <path> [repeat]` | Feed the contents of a file into the active terminal (optionally N times — benchmark fixture) |
+| `wait-idle [timeout_ms [settle_ms]]` | Block until the parser is quiet and a frame has been drawn — pairs with `feed` for benchmark runs |
+| `action <name> [args...]` | Dispatch a registered action (built-in or script-registered) |
+| `stats` | GPU pool and pane memory usage + `obs` observability counters (JSON) |
 | `logs` | Stream log messages (Ctrl+C to stop) |
 
-Stats response includes texture pool (total/in-use/free/bytes), compute pool, and
-per-tab/per-pane information (dimensions, held texture size, divider buffer).
+Stats response includes texture pool (total/in-use/free/bytes), compute pool,
+observability counters (`obs`), and per-tab/per-pane information (dimensions,
+held texture size, divider buffer).
+
+The IPC socket is only created when `mb` runs in `--test` mode, so production
+builds don't expose the endpoint.
 
 ---
 
@@ -519,50 +567,84 @@ xtgettcap mb-query-popup  # → 1+r6d622d71756572792d706f707570
 
 ```
 src/
-  main.cpp                  — entry point, config loading
-  platform/                 — GPU rendering, windowing, event loop (OBJECT library)
-    PlatformDawn.h/cpp      — class definition, init, createTerminal, factory
-    EventLoop.cpp           — exec(), quit()
-    Input.cpp               — GLFW key/mouse/resize callbacks
-    Actions.cpp             — keybinding action dispatch
-    Render.cpp              — resolveRow, renderFrame
-    Tabs.cpp                — tab/pane lifecycle, PTY polling, dividers
-    TabBar.cpp              — tab bar init and rendering
-    Debug.cpp               — gridToJson, statsJson
-    Renderer.h/cpp          — GPU pipeline setup, render passes, compositing
-    ComputeStatePool.h/cpp  — GPU buffer pool for compute pass
-    ComputeTypes.h          — ResolvedCell, GlyphEntry, TerminalComputeParams
-    TexturePool.h/cpp       — GPU texture pool with LRU eviction
-    InputTypes.h            — Key enum, KeyEvent, MouseEvent, modifiers
-  terminal/                 — terminal emulation (OBJECT library)
-    TerminalEmulator.h/cpp  — VT parser core: state machine, CSI, onAction
-    KittyKeyboard.cpp       — kitty keyboard protocol + key encoding
-    MouseAndSelection.cpp   — mouse event handling, text selection
-    SGR.cpp                 — Select Graphic Rendition attribute parsing
-    OSC.cpp                 — OSC processing, iTerm2 images, clipboard, notifications
-    Terminal.h/cpp          — PTY management (fork, read, write, resize)
-    Document.h/cpp          — scrollback: ring buffer + compressed archive
-    CellGrid.h/cpp          — simple cols×rows cell array
-    CellTypes.h             — Cell, CellAttrs, CellExtra structs
-    IGrid.h                 — abstract grid interface
-  text.h/cpp                — HarfBuzz shaping, font atlas, glyph cache, SheenBidi
-  Layout.h/cpp              — binary split tree for pane layout
-  Pane.h/cpp                — terminal container with popup support
-  Tab.h/cpp                 — tab container with overlay support
-  Bindings.h/cpp            — keybinding parsing and sequence matching
-  Config.h/cpp              — TOML config loading
-  ScriptEngine.h/cpp        — QuickJS-ng scripting engine, JS API surface
-  ScriptPermissions.h/cpp   — permission bitmask, allowlist, hash verification
-  ClickDetector.h/cpp       — multi-click detection for mouse bindings
+  main.cpp                         — entry point, config loading, CLI dispatch
+  Action.h/cpp                     — Action variant (all built-in + script actions)
+  Bindings.h/cpp                   — keybinding parsing and sequence matching
+  ClickDetector.h/cpp              — multi-click detection for mouse bindings
+  CLIClient.h/cpp                  — `mb --ctl` client (IPC over UDS)
+  DebugIPC.h/cpp                   — IPC server surface (screenshot/key/stats/feed/wait-idle/…)
+  Config.h/cpp                     — TOML config loading (glaze)
+  ColrAtlas.h/cpp                  — COLRv1 bucketed tile atlas (32/64/128/256/512 px)
+  ColrEncoder.h/cpp, ColrTypes.h   — COLRv1 paint-graph encoding for GPU rasterization
+  FontResolver.h                   — family → file resolution interface
+  FontResolver_CoreText.mm         — macOS implementation (CoreText)
+  FontResolver_FontConfig.cpp      — Linux implementation (fontconfig)
+  FontFallback.h                   — codepoint fallback interface
+  FontFallback_CoreText.mm         — macOS implementation (two-pass CoreText)
+  FontFallback_FontConfig.cpp      — Linux implementation (two-pass fontconfig)
+  Observability.h                  — lightweight counter/histogram registry
+  ProceduralGlyphTable.h           — box drawing / powerline / shade procedural glyphs
+  Layout.h/cpp                     — binary split tree for pane layout
+  Pane.h/cpp                       — terminal container with popup support
+  Tab.h/cpp                        — tab container with overlay support
+  text.h/cpp                       — HarfBuzz shaping, font registry, glyph atlas, SheenBidi BiDi
+  WorkerPool.h                     — small fixed-size thread pool for row resolve/shape
+  renderer_utils.h, Utils.h        — shared render helpers
+  platform/                        — GPU rendering, windowing (OBJECT library)
+    PlatformDawn.h/cpp             — platform singleton, init, render thread, deferred mutation
+    Platform_EventLoop.cpp         — event-loop tick, PTY polling, timers, render wakeup
+    Platform_Input.cpp             — keyboard/mouse event routing
+    Platform_Actions.cpp           — action dispatch
+    Platform_Render.cpp            — renderFrame, resolveRow, snapshot capture, shaping phase
+    Platform_Tabs.cpp              — tab/pane lifecycle, dividers, buildTerminalCallbacks
+    Platform_TabBar.cpp            — tab bar init and rendering
+    Platform_Debug.cpp             — gridToJson, statsJson, debug IPC handlers
+    PlatformUtils.h, PlatformUtils_macOS.mm, PlatformUtils_Linux.cpp — OS helpers
+    Renderer.h/cpp                 — GPU pipelines, render passes, compositing
+    ComputeStatePool.h/cpp         — GPU buffer pool for compute pass
+    ComputeTypes.h                 — ResolvedCell, GlyphEntry, TerminalComputeParams
+    TexturePool.h/cpp              — GPU texture pool with LRU eviction
+    InputTypes.h                   — Key enum, KeyEvent, MouseEvent, modifiers
+  terminal/                        — terminal emulation (OBJECT library)
+    TerminalEmulator.h/cpp         — VT parser core: state machine, CSI, onAction, mMutex
+    Terminal.h/cpp                 — PTY management (fork, read, write, resize)
+    TerminalSnapshot.h/cpp         — viewport snapshot captured by the render thread
+    TerminalOptions.h              — terminal creation options
+    KittyKeyboard.cpp              — kitty keyboard protocol + key encoding
+    KittyGraphics.cpp              — kitty image protocol, animation, placements
+    MouseAndSelection.cpp          — mouse event handling, text selection
+    SGR.cpp                        — Select Graphic Rendition attribute parsing
+    OSC.cpp                        — OSC processing, iTerm2 images (1337), clipboard, notifications
+    DCS.cpp                        — DCS processing (XTGETTCAP, DECRQSS)
+    Document.h/cpp                 — scrollback: ring buffer + compressed archive
+    CellGrid.h/cpp                 — simple cols×rows cell array
+    CellTypes.h                    — Cell, CellAttrs, CellExtra structs
+    IGrid.h                        — abstract grid interface
+    Utf8.h, Wcwidth.h              — UTF-8 decoding + East Asian Width tables
+  eventloop/                       — platform-specific event loops and window backends
+    EventLoop.h                    — abstract fd watch / timer interface
+    mac/Window_cocoa.mm, …         — macOS Cocoa run loop + NSWindow
+    xcb/Window_xcb.cpp, …          — Linux X11 / XCB
+    epoll/, kqueue/                — fd/timer primitives
+  script/                          — QuickJS-ng scripting
+    ScriptEngine.h/cpp             — JS runtime, mb.* API surface, lifecycle
+    ScriptPermissions.h/cpp        — permission bitmask, allowlist, hash verification
+    ScriptFsModule.cpp             — `mb:fs` file API (permission-gated)
+    ScriptWsModule.cpp             — WebSocket client module
+    …                              — other JS modules
+  shaders/                         — WGSL sources (compute + fragment)
 assets/
   scripts/
-    applet-loader.js        — built-in: OSC 58237 applet loading + permission prompts
-    command-palette.js      — built-in: fuzzy command palette (Cmd+Shift+P)
+    applet-loader.js               — built-in: OSC 58237 applet loading + permission prompts
+    command-palette.js             — built-in: fuzzy command palette (Cmd+Shift+P)
+    modules/                       — built-in JS modules (e.g. `mb:tui`)
 examples/
-  popup-demo.js             — example popup script
+  popup-demo.js                    — example popup script
 tests/
-  TestTerminal.h            — lightweight TerminalEmulator wrapper for tests
-  test_*.cpp                — doctest test files
+  TestTerminal.h                   — lightweight TerminalEmulator wrapper for tests
+  MBConnection.h/cpp               — helper for tests that spawn `mb` and drive it over IPC
+  reference/                       — reference PNGs for rendering tests
+  test_*.cpp                       — doctest test files
 ```
 
 ---

@@ -1325,8 +1325,45 @@ void TerminalEmulator::processCSI()
         }
         break;
     }
+    case 'p': {
+        // CSI ? Ps $ p — DECRQM (Request Mode, private)
+        // Response: CSI ? Ps ; Pm $ y
+        //   Pm: 0=not recognized, 1=set, 2=reset
+        if (isPrivate && mEscapeIndex >= 5 &&
+            mEscapeBuffer[mEscapeIndex - 2] == '$') {
+            char* end;
+            int ps = static_cast<int>(strtoul(mEscapeBuffer + 2, &end, 10));
+            int pm = 0; // not recognized
+            switch (ps) {
+            case 1:    pm = mCursorKeyMode ? 1 : 2; break;
+            case 7:    pm = mAutoWrap ? 1 : 2; break;
+            case 12:   pm = mCursorBlinkEnabled ? 1 : 2; break;
+            case 25:   pm = mCursorVisible ? 1 : 2; break;
+            case 1000: pm = mMouseMode1000 ? 1 : 2; break;
+            case 1002: pm = mMouseMode1002 ? 1 : 2; break;
+            case 1003: pm = mMouseMode1003 ? 1 : 2; break;
+            case 1006: pm = mMouseMode1006 ? 1 : 2; break;
+            case 1004: pm = mFocusReporting ? 1 : 2; break;
+            case 1049: pm = mUsingAltScreen ? 1 : 2; break;
+            case 2004: pm = mBracketedPaste ? 1 : 2; break;
+            case 2026: pm = mSyncOutput ? 1 : 2; break;
+            case 2031: pm = mColorPreferenceReporting ? 1 : 2; break;
+            default:
+                pm = 0;
+                sLog().warn("DECRQM: unrecognized private mode {}", ps);
+                break;
+            }
+            char response[32];
+            int rlen = snprintf(response, sizeof(response),
+                "\x1b[?%d;%d$y", ps, pm);
+            writeToOutput(response, rlen);
+        } else {
+            sLog().warn("Ignoring CSI p variant: \"{}\"", toPrintable(mEscapeBuffer, mEscapeIndex));
+        }
+        break;
+    }
     default:
-        sLog().error("Unknown CSI final byte {:#x}", static_cast<unsigned char>(finalByte));
+        sLog().error("Unknown CSI final byte {:#x}: \"{}\"", static_cast<unsigned char>(finalByte), toPrintable(mEscapeBuffer, mEscapeIndex));
         break;
     }
 

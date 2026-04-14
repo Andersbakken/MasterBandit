@@ -205,6 +205,7 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { (void)event; return YES; }
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];

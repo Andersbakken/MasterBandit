@@ -417,11 +417,13 @@ private:
     struct KittyLoadState {
         std::vector<uint8_t> data;   // accumulated decoded payload
         uint32_t id = 0;             // client image ID (i=)
+        uint32_t imageNumber = 0;    // I= (non-unique image number)
         uint32_t placementId = 0;    // placement ID (p=)
         uint32_t format = 32;        // f= (24=RGB, 32=RGBA, 100=PNG)
         uint32_t width = 0, height = 0; // s=, v= (source data dimensions)
         uint32_t cellCols = 0, cellRows = 0; // c=, r=
         uint32_t xOffset = 0, yOffset = 0;   // x=, y= (source rect offset)
+        uint32_t cellXOffset = 0, cellYOffset = 0; // X=, Y= (context-dependent: sub-cell offset or a=f compose/bg)
         uint32_t cropWidth = 0, cropHeight = 0; // w=, h= (source rect size)
         uint32_t quiet = 0;          // q=
         int32_t zIndex = 0;          // z=
@@ -430,6 +432,7 @@ private:
         uint32_t dataOffset = 0;     // O=
         char action = 'T';           // a=
         char compressed = 0;         // o=
+        char transmissionType = 'd'; // t=
         bool active = false;
     };
     KittyLoadState mKittyLoading;

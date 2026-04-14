@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -286,19 +287,32 @@ void TerminalEmulator::processAPC()
 
     // Helper to send a response back to the application
     // Response logic matching kitty's finish_command_response():
-    // - No id → no response
+    // - No id and no image number → no response
     // - q>=1: suppress OK responses
     // - q>=2: suppress all responses
     // - OK only sent if dataLoaded is true (a=a doesn't load data → no OK)
+    // - Format: "_Gi=<id>[,I=<n>][,p=<p>][,r=<frame>];<msg>\e\\"
     auto sendResponse = [&](uint32_t imgId, const char* msg, bool dataLoaded = true) {
-        if (imgId == 0) return;
+        if (imgId == 0 && cmd.imageNumber == 0) return;
         bool isOk = std::strncmp(msg, "OK", 2) == 0;
         if (cmd.quiet >= 2) return;
         if (cmd.quiet >= 1 && isOk) return;
         if (isOk && !dataLoaded) return;
         char buf[256];
-        int n = snprintf(buf, sizeof(buf), "\x1b_Gi=%u;%s\x1b\\", imgId, msg);
-        if (n > 0) writeToOutput(buf, static_cast<size_t>(n));
+        int pos = 0;
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "\x1b_G");
+        if (imgId > 0)
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "i=%u", imgId);
+        if (cmd.imageNumber > 0)
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "%sI=%u",
+                            pos > 3 ? "," : "", cmd.imageNumber);
+        if (cmd.placementId > 0)
+            pos += snprintf(buf + pos, sizeof(buf) - pos, ",p=%u", cmd.placementId);
+        if (cmd.cellRows > 0 && (cmd.action == 'f' || cmd.action == 'a'))
+            pos += snprintf(buf + pos, sizeof(buf) - pos, ",r=%u", cmd.cellRows);
+        pos += snprintf(buf + pos, sizeof(buf) - pos, ";%s\x1b\\", msg);
+        if (pos > 0 && pos < (int)sizeof(buf))
+            writeToOutput(buf, static_cast<size_t>(pos));
     };
 
     // --- Chunked transfer accumulation ---
@@ -308,12 +322,15 @@ void TerminalEmulator::processAPC()
             mKittyLoading = {};
             mKittyLoading.active = true;
             mKittyLoading.id = cmd.id;
+            mKittyLoading.imageNumber = cmd.imageNumber;
             mKittyLoading.placementId = cmd.placementId;
             mKittyLoading.format = cmd.format;
             mKittyLoading.width = cmd.dataWidth;
             mKittyLoading.height = cmd.dataHeight;
             mKittyLoading.xOffset = cmd.xOffset;
             mKittyLoading.yOffset = cmd.yOffset;
+            mKittyLoading.cellXOffset = cmd.cellXOffset;
+            mKittyLoading.cellYOffset = cmd.cellYOffset;
             mKittyLoading.cropWidth = cmd.width;
             mKittyLoading.cropHeight = cmd.height;
             mKittyLoading.cellCols = cmd.cellCols;
@@ -325,6 +342,7 @@ void TerminalEmulator::processAPC()
             mKittyLoading.dataOffset = cmd.dataOffset;
             mKittyLoading.action = cmd.action;
             mKittyLoading.compressed = cmd.compressed;
+            mKittyLoading.transmissionType = cmd.transmissionType;
         }
 
         // Append this chunk's data
@@ -338,12 +356,15 @@ void TerminalEmulator::processAPC()
         // Final chunk (m=0): reconstruct full command from saved state
         chunkData = std::move(mKittyLoading.data);
         cmd.id = mKittyLoading.id;
+        cmd.imageNumber = mKittyLoading.imageNumber;
         cmd.placementId = mKittyLoading.placementId;
         cmd.format = mKittyLoading.format;
         cmd.dataWidth = mKittyLoading.width;
         cmd.dataHeight = mKittyLoading.height;
         cmd.xOffset = mKittyLoading.xOffset;
         cmd.yOffset = mKittyLoading.yOffset;
+        cmd.cellXOffset = mKittyLoading.cellXOffset;
+        cmd.cellYOffset = mKittyLoading.cellYOffset;
         cmd.width = mKittyLoading.cropWidth;
         cmd.height = mKittyLoading.cropHeight;
         cmd.cellCols = mKittyLoading.cellCols;
@@ -355,6 +376,7 @@ void TerminalEmulator::processAPC()
         cmd.dataOffset = mKittyLoading.dataOffset;
         cmd.action = mKittyLoading.action;
         cmd.compressed = mKittyLoading.compressed;
+        cmd.transmissionType = mKittyLoading.transmissionType;
         mKittyLoading.active = false;
     }
 
@@ -384,14 +406,20 @@ void TerminalEmulator::processAPC()
         }
         if (offset > 0) lseek(fd, offset, SEEK_SET);
         chunkData.resize(readSize);
-        ssize_t n = read(fd, chunkData.data(), readSize);
+        size_t total = 0;
+        while (total < readSize) {
+            ssize_t n = read(fd, chunkData.data() + total, readSize - total);
+            if (n > 0) { total += static_cast<size_t>(n); continue; }
+            if (n < 0 && errno == EINTR) continue;
+            break;
+        }
         close(fd);
         if (cmd.transmissionType == 't') unlink(path.c_str());
-        if (n <= 0) {
+        if (total != readSize) {
             sendResponse(cmd.id, "EINVAL:cannot read file");
             return;
         }
-        chunkData.resize(static_cast<size_t>(n));
+        chunkData.resize(total);
     } else if (cmd.transmissionType == 's') {
         std::string name(chunkData.begin(), chunkData.end());
         int fd = shm_open(name.c_str(), O_RDONLY, 0);
@@ -871,35 +899,61 @@ void TerminalEmulator::processAPC()
             return;
         }
 
-        uint32_t gap = cmd.zIndex > 0 ? static_cast<uint32_t>(cmd.zIndex) : 40;
-        bool overwrite = (cmd.cursorMovement == 1); // C=1 means overwrite for a=f
+        // a=f reuses C= as composition mode: 0=alpha-blend, 1=overwrite.
+        // (Matches kitty: graphics.h unions cursor_movement with compose_mode.)
+        bool overwrite = (cmd.cursorMovement == 1);
 
-        // Determine base frame for compositing:
-        // c= (cellCols) specifies compose_onto frame (1-based). 0 = previous frame.
-        uint32_t composeOnto = cmd.cellCols; // c= reused as compose_onto for a=f
+        // c= specifies the 1-based frame to composite onto. 0 or unset means
+        // standalone — the base is the Y= background color (transparent
+        // black if unset).
+        uint32_t composeOnto = cmd.cellCols;
 
-        ImageEntry::Frame frame;
-        frame.gap = gap;
-        if (static_cast<uint32_t>(decoded.width) == img.pixelWidth &&
-            static_cast<uint32_t>(decoded.height) == img.pixelHeight &&
-            cmd.xOffset == 0 && cmd.yOffset == 0) {
-            // Full-size frame at origin — store directly
-            frame.rgba = std::move(decoded.rgba);
-        } else {
-            // Get the base frame to composite onto
-            if (composeOnto == 0 && !img.extraFrames.empty()) {
-                // Default: use previous frame
-                frame.rgba = img.extraFrames.back().rgba;
-            } else if (composeOnto == 1) {
-                // Frame 1 = root frame
-                frame.rgba = img.rgba;
+        // r= specifies the 1-based frame to edit. 0/unset/past-end means
+        // append a new frame. (Matches kitty graphics.c:1559.)
+        uint32_t totalFrames = 1 + static_cast<uint32_t>(img.extraFrames.size());
+        uint32_t frameNumber = cmd.cellRows;
+        if (frameNumber == 0 || frameNumber > totalFrames + 1)
+            frameNumber = totalFrames + 1;
+        bool isNewFrame = (frameNumber == totalFrames + 1);
+
+        // Build the base buffer this frame will start from.
+        std::vector<uint8_t> baseRGBA;
+        size_t pixelCount = static_cast<size_t>(img.pixelWidth) * img.pixelHeight;
+        if (isNewFrame) {
+            if (composeOnto == 1) {
+                baseRGBA = img.rgba;
             } else if (composeOnto >= 2 && composeOnto - 2 < img.extraFrames.size()) {
-                frame.rgba = img.extraFrames[composeOnto - 2].rgba;
+                baseRGBA = img.extraFrames[composeOnto - 2].rgba;
             } else {
-                // Fallback to root
-                frame.rgba = img.rgba;
+                // Standalone: fill with Y= as packed RRGGBBAA.
+                baseRGBA.resize(pixelCount * 4);
+                uint32_t bg = cmd.cellYOffset;
+                if (bg != 0) {
+                    uint8_t r = static_cast<uint8_t>((bg >> 24) & 0xff);
+                    uint8_t g = static_cast<uint8_t>((bg >> 16) & 0xff);
+                    uint8_t b = static_cast<uint8_t>((bg >>  8) & 0xff);
+                    uint8_t a = static_cast<uint8_t>( bg        & 0xff);
+                    for (size_t i = 0; i < pixelCount; ++i) {
+                        baseRGBA[i*4+0] = r; baseRGBA[i*4+1] = g;
+                        baseRGBA[i*4+2] = b; baseRGBA[i*4+3] = a;
+                    }
+                }
             }
+        } else {
+            // Edit-in-place: base is the target frame's current content.
+            if (frameNumber == 1) baseRGBA = img.rgba;
+            else                  baseRGBA = img.extraFrames[frameNumber - 2].rgba;
+        }
 
+        // Fast path: full-size standalone new frame at origin — store the
+        // decoded data directly as the frame.
+        bool fastStore = isNewFrame && composeOnto == 0 && cmd.cellYOffset == 0 &&
+            cmd.xOffset == 0 && cmd.yOffset == 0 &&
+            static_cast<uint32_t>(decoded.width) == img.pixelWidth &&
+            static_cast<uint32_t>(decoded.height) == img.pixelHeight;
+        if (fastStore) {
+            baseRGBA = std::move(decoded.rgba);
+        } else {
             int srcW = decoded.width, srcH = decoded.height;
             int dstW = static_cast<int>(img.pixelWidth);
             int ox = static_cast<int>(cmd.xOffset);
@@ -913,21 +967,20 @@ void TerminalEmulator::processAPC()
                     size_t si = (static_cast<size_t>(y) * srcW + x) * 4;
                     size_t di = (static_cast<size_t>(dy) * dstW + dx) * 4;
                     if (overwrite) {
-                        std::memcpy(&frame.rgba[di], &decoded.rgba[si], 4);
+                        std::memcpy(&baseRGBA[di], &decoded.rgba[si], 4);
                     } else {
-                        // Alpha-over compositing
                         uint8_t sa = decoded.rgba[si + 3];
                         if (sa == 255) {
-                            std::memcpy(&frame.rgba[di], &decoded.rgba[si], 4);
+                            std::memcpy(&baseRGBA[di], &decoded.rgba[si], 4);
                         } else if (sa > 0) {
                             for (int c = 0; c < 3; c++) {
                                 uint8_t sc = decoded.rgba[si + c];
-                                uint8_t dc = frame.rgba[di + c];
-                                frame.rgba[di + c] = static_cast<uint8_t>(
+                                uint8_t dc = baseRGBA[di + c];
+                                baseRGBA[di + c] = static_cast<uint8_t>(
                                     (sc * sa + dc * (255 - sa)) / 255);
                             }
-                            uint8_t da = frame.rgba[di + 3];
-                            frame.rgba[di + 3] = static_cast<uint8_t>(
+                            uint8_t da = baseRGBA[di + 3];
+                            baseRGBA[di + 3] = static_cast<uint8_t>(
                                 sa + da * (255 - sa) / 255);
                         }
                     }
@@ -935,7 +988,27 @@ void TerminalEmulator::processAPC()
             }
         }
 
-        img.extraFrames.push_back(std::move(frame));
+        if (isNewFrame) {
+            uint32_t gap = cmd.zIndex > 0 ? static_cast<uint32_t>(cmd.zIndex) : 40;
+            ImageEntry::Frame frame;
+            frame.gap = gap;
+            frame.rgba = std::move(baseRGBA);
+            img.extraFrames.push_back(std::move(frame));
+        } else {
+            // Edit-in-place: write back and optionally refresh the gap.
+            if (frameNumber == 1) {
+                img.rgba = std::move(baseRGBA);
+                if (cmd.zIndex > 0)
+                    img.rootFrameGap = static_cast<uint32_t>(cmd.zIndex);
+            } else {
+                auto& target = img.extraFrames[frameNumber - 2];
+                target.rgba = std::move(baseRGBA);
+                if (cmd.zIndex > 0)
+                    target.gap = static_cast<uint32_t>(cmd.zIndex);
+            }
+            // Frame content changed — invalidate cached GPU textures.
+            img.frameGeneration++;
+        }
         sendResponse(targetId, "OK");
         return;
     }

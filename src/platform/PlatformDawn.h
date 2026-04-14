@@ -290,6 +290,8 @@ private:
     // set, because the render thread is holding raw Tab*/Pane*/Terminal*
     // pointers captured under the lock at frame start.
     std::atomic<bool> renderActive_ { false };
+    std::atomic<bool> windowHasFocus_ { true };
+    std::atomic<bool> focusChanged_ { false };
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;
 

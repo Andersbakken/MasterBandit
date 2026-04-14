@@ -459,6 +459,7 @@ void PlatformDawn::renderFrame()
     if (!currentTab) return;
 
     needsRedraw_ = false;
+    bool focusChanged = focusChanged_.exchange(false);
     renderer_.colrAtlas().advanceGeneration();
 
     // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
@@ -514,6 +515,12 @@ void PlatformDawn::renderFrame()
         markDirty(lastFocusedPaneId_);
         markDirty(currentFocusedPaneId);
         lastFocusedPaneId_ = currentFocusedPaneId;
+    } else if (focusChanged) {
+        // Window gained/lost OS focus — the focused pane ID hasn't changed
+        // but the cursor style (solid vs hollow) and tint depend on
+        // windowHasFocus_, so mark the focused pane dirty.
+        auto it = paneRenderStates_.find(currentFocusedPaneId);
+        if (it != paneRenderStates_.end()) it->second.dirty = true;
     }
 
     // If an overlay is active, render it as a full-screen terminal instead of panes
@@ -579,7 +586,7 @@ void PlatformDawn::renderFrame()
             if (pane->rect().isEmpty()) continue;
             Terminal* term = pane->terminal();
             if (!term) continue;
-            bool focused = (pane->id() == currentTab->layout()->focusedPaneId());
+            bool focused = (pane->id() == currentTab->layout()->focusedPaneId()) && windowHasFocus_.load(std::memory_order_acquire);
             RenderTarget pt;
             pt.term = term; pt.rs = &paneRenderStates_[pane->id()];
             pt.rect = pane->rect(); pt.isFocused = focused; pt.pane = pane;

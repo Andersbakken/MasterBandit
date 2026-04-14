@@ -286,6 +286,9 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 setNeedsRedraw();
             };
             window_->onFocus = [this](bool focused) {
+                windowHasFocus_ = focused;
+                focusChanged_.store(true);
+                setNeedsRedraw();
                 Tab* t = activeTab();
                 if (!t) return;
                 if (t->hasOverlay()) {

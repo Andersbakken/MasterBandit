@@ -24,6 +24,7 @@ find_package(ZLIB REQUIRED)
 target_link_libraries(terminal PUBLIC
     spdlog::spdlog
     ZLIB::ZLIB
+    grapheme
 )
 
 target_include_directories(terminal PRIVATE ${Stb_INCLUDE_DIR})

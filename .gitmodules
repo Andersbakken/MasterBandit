@@ -4,3 +4,6 @@
 [submodule "3rdparty/SheenBidi"]
 	path = 3rdparty/SheenBidi
 	url = https://github.com/Tehreer/SheenBidi.git
+[submodule "3rdparty/libgrapheme"]
+	path = 3rdparty/libgrapheme
+	url = https://github.com/FRIGN/libgrapheme.git

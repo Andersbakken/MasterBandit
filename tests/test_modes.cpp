@@ -457,12 +457,14 @@ TEST_CASE("cursor blink defaults to enabled")
     CHECK(t.term.cursorBlinking());
 }
 
-TEST_CASE("CSI ?12l disables cursor blink")
+TEST_CASE("CSI ?12l disables cursor blink flag")
 {
     TestTerminal t;
     t.csi("?12l");
     CHECK_FALSE(t.term.cursorBlinkEnabled());
-    CHECK_FALSE(t.term.cursorBlinking());
+    // Default shape is CursorBlock (blinking variant) — DECSCUSR blinking
+    // shapes blink regardless of mode 12.
+    CHECK(t.term.cursorBlinking());
 }
 
 TEST_CASE("CSI ?12h re-enables cursor blink")
@@ -474,21 +476,31 @@ TEST_CASE("CSI ?12h re-enables cursor blink")
     CHECK(t.term.cursorBlinking());
 }
 
-TEST_CASE("steady cursor shape never blinks even with mode 12 on")
+TEST_CASE("steady cursor shape blinks when mode 12 is on")
 {
     TestTerminal t;
     t.csi("2 q");  // DECSCUSR steady block
     CHECK(t.term.cursorBlinkEnabled());
+    // Mode 12 independently enables blinking even for steady shapes
+    CHECK(t.term.cursorBlinking());
+}
+
+TEST_CASE("steady cursor shape does not blink when mode 12 is off")
+{
+    TestTerminal t;
+    t.csi("2 q");  // DECSCUSR steady block
+    t.csi("?12l"); // mode 12 off
     CHECK_FALSE(t.term.cursorBlinking());
 }
 
-TEST_CASE("blinking cursor shape stops blinking when mode 12 reset")
+TEST_CASE("blinking cursor shape blinks regardless of mode 12")
 {
     TestTerminal t;
     t.csi("5 q");    // DECSCUSR blinking bar
     CHECK(t.term.cursorBlinking());
     t.csi("?12l");
-    CHECK_FALSE(t.term.cursorBlinking());
+    // Blinking shape variant always blinks — mode 12 cannot suppress it
+    CHECK(t.term.cursorBlinking());
 }
 
 TEST_CASE("XTSAVE/XTRESTORE round-trips mode 12")

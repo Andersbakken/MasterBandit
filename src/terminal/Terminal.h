@@ -63,6 +63,16 @@ private:
     EventLoop* mLoop { nullptr };
     EventLoop::TimerId mWritePollId { 0 };
     bool mWritePollActive { false };
+    // Set once the PTY has delivered EOF or an unrecoverable I/O error.
+    // Further read/write attempts short-circuit, and the fd is disarmed
+    // from the event loop so kqueue/epoll don't re-fire on the persistent
+    // EV_EOF and busy-spin the main thread before onTick can drain the
+    // deferred terminalExited callback.
+    bool mExited { false };
     std::vector<char> mWriteQueue;
     std::vector<char> mReadCoalesceBuffer;
+
+    // Disarm the PTY fd in the event loop and fire onTerminalExited (once).
+    // Safe to call multiple times — the first call sets mExited.
+    void markExited();
 };

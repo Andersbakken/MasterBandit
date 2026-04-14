@@ -169,8 +169,22 @@ void Terminal::flushPendingResize()
     ioctl(mMasterFD, TIOCSWINSZ, &ws);
 }
 
+void Terminal::markExited()
+{
+    if (mExited) return;
+    mExited = true;
+    // Stop further fd notifications. EV_EOF on a closed PTY stays set,
+    // so kqueue/epoll would re-fire readFromFD on every run-loop pass
+    // until onTick drains pendingExits and removePtyPoll runs — but
+    // while kqueue is spinning, the run loop never reaches the
+    // BeforeWaiting observer that triggers onTick, causing the hang.
+    if (mLoop && mMasterFD >= 0) mLoop->removeFd(mMasterFD);
+    if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
+}
+
 void Terminal::readFromFD()
 {
+    if (mExited) return;
     // Accumulate data into coalesce buffer without injecting.
     // On macOS, PTY buffers are small (4-16KB) so each kqueue event
     // only delivers ~1KB. We buffer across events and inject all at
@@ -183,10 +197,10 @@ void Terminal::readFromFD()
             if (errno == EAGAIN || errno == EWOULDBLOCK) return;
             if (errno != EIO)
                 spdlog::error("Failed to read from mMasterFD {} {}", errno, strerror(errno));
-            if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
+            markExited();
             return;
         } else if (ret == 0) {
-            if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
+            markExited();
             return;
         }
         mReadCoalesceBuffer.insert(mReadCoalesceBuffer.end(), buf, buf + ret);
@@ -225,8 +239,13 @@ void Terminal::writeToPTY(const char* data, size_t len)
         EINTRWRAP(ret, ::write(mMasterFD, data, len));
         if (ret == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return;
-            spdlog::critical("Failed to write to master {} {}", errno, strerror(errno)); std::abort();
-            if (mPlatformCbs.quit) mPlatformCbs.quit();
+            // EIO = slave end closed (child process exited). Treat any
+            // unrecoverable write error as terminal exit, matching the
+            // readFromFD path. Drop remaining bytes; markExited unwatches
+            // the fd and fires onTerminalExited once.
+            if (errno != EIO)
+                spdlog::error("Failed to write to master {} {}", errno, strerror(errno));
+            markExited();
             return;
         }
         data += ret;
@@ -251,8 +270,9 @@ void Terminal::flushWriteQueue()
         EINTRWRAP(ret, ::write(mMasterFD, mWriteQueue.data(), mWriteQueue.size()));
         if (ret == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return; // try again next poll
-            spdlog::critical("Failed to write to master {} {}", errno, strerror(errno)); std::abort();
-            if (mPlatformCbs.quit) mPlatformCbs.quit();
+            if (errno != EIO)
+                spdlog::error("Failed to write to master {} {}", errno, strerror(errno));
+            markExited();
             return;
         }
         mWriteQueue.erase(mWriteQueue.begin(), mWriteQueue.begin() + ret);

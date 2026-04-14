@@ -643,7 +643,7 @@ void Renderer::initImagePipeline(wgpu::Device& device, const std::string& shader
     // Bind group layout: uniform, texture, sampler
     wgpu::BindGroupLayoutEntry entries[3] = {};
     entries[0].binding = 0;
-    entries[0].visibility = wgpu::ShaderStage::Vertex;
+    entries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
     entries[0].buffer.type = wgpu::BufferBindingType::Uniform;
 
     entries[1].binding = 1;
@@ -784,7 +784,7 @@ void Renderer::useImageFrame(wgpu::Queue& queue, uint32_t imageId,
         wgpu::BindGroupEntry bindings[3] = {};
         bindings[0].binding = 0;
         bindings[0].buffer = imageUniformBuffer_;
-        bindings[0].size = 16;
+        bindings[0].size = 32;
         bindings[1].binding = 1;
         bindings[1].textureView = slot.view;
         bindings[2].binding = 2;
@@ -1262,7 +1262,7 @@ void Renderer::ensureColrBucket(wgpu::CommandEncoder& encoder, wgpu::Queue& queu
         wgpu::BindGroupEntry bindings[3] = {};
         bindings[0].binding = 0;
         bindings[0].buffer = imageUniformBuffer_;
-        bindings[0].size = 16;
+        bindings[0].size = 32;
         bindings[1].binding = 1;
         bindings[1].textureView = bg.view;
         bindings[2].binding = 2;

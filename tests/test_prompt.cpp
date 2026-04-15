@@ -153,6 +153,87 @@ TEST_CASE("serializeScrollback: empty terminal")
     CHECK(!content.empty());
 }
 
+TEST_CASE("serializeScrollback: tier-2 archive lines preserved")
+{
+    // tier1Capacity=2 forces eviction to tier-2 archive after 2 history rows.
+    TestTerminal t(20, 2);
+    t.term.resetScrollback(2);
+
+    // Feed enough lines that the earliest ones must live in the tier-2 archive.
+    for (int i = 0; i < 12; ++i) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "line%02d\r\n", i);
+        t.feed(buf);
+    }
+
+    // Sanity: archive must actually be populated (otherwise we're only testing tier-1).
+    REQUIRE(t.term.document().archiveSize() > 0);
+
+    std::string content = t.term.serializeScrollback();
+
+    // Every fed line — including ones evicted to tier-2 — must round-trip.
+    for (int i = 0; i < 12; ++i) {
+        char needle[8];
+        std::snprintf(needle, sizeof(needle), "line%02d", i);
+        CAPTURE(needle);
+        CHECK(content.find(needle) != std::string::npos);
+    }
+
+    // Ordering: archived line00 must appear before line11.
+    auto p0 = content.find("line00");
+    auto p11 = content.find("line11");
+    REQUIRE(p0 != std::string::npos);
+    REQUIRE(p11 != std::string::npos);
+    CHECK(p0 < p11);
+}
+
+TEST_CASE("serializeScrollback: tier-2 ordering is monotonic across all lines")
+{
+    TestTerminal t(20, 2);
+    t.term.resetScrollback(2);
+
+    constexpr int N = 30;
+    for (int i = 0; i < N; ++i) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "L%03d\r\n", i);
+        t.feed(buf);
+    }
+
+    REQUIRE(t.term.document().archiveSize() > 0);
+
+    std::string content = t.term.serializeScrollback();
+
+    // Each marker must appear exactly once, in increasing position.
+    size_t prev = 0;
+    for (int i = 0; i < N; ++i) {
+        char needle[8];
+        std::snprintf(needle, sizeof(needle), "L%03d", i);
+        auto pos = content.find(needle);
+        CAPTURE(needle);
+        REQUIRE(pos != std::string::npos);
+        CHECK(content.find(needle, pos + 1) == std::string::npos); // unique
+        if (i > 0) CHECK(pos > prev);
+        prev = pos;
+    }
+}
+
+TEST_CASE("serializeScrollback: wide chars survive tier-2 roundtrip")
+{
+    TestTerminal t(10, 2);
+    t.term.resetScrollback(2);
+
+    // First row: a wide char (中) followed by ASCII, then newline.
+    t.feed("\xe4\xb8\xad" "ab\r\n");
+    // Push the wide-char row into the tier-2 archive.
+    for (int i = 0; i < 8; ++i) t.feed("pad\r\n");
+
+    REQUIRE(t.term.document().archiveSize() > 0);
+
+    std::string content = t.term.serializeScrollback();
+    // Wide char encoded as UTF-8, with no spacer artifact between it and "ab".
+    CHECK(content.find("\xe4\xb8\xad" "ab") != std::string::npos);
+}
+
 // === OSC 133 CommandRecord tests ===
 
 TEST_CASE("OSC 133: full A/B/C/D lifecycle captures command + output + exit code")

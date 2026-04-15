@@ -11,7 +11,8 @@ static void emitSGR(std::string& out, const CellAttrs& oldA, const CellAttrs& ne
     bool needReset = (oldA.bold() && !newA.bold()) || (oldA.italic() && !newA.italic()) ||
                      (oldA.underline() && !newA.underline()) || (oldA.strikethrough() && !newA.strikethrough()) ||
                      (oldA.blink() && !newA.blink()) || (oldA.inverse() && !newA.inverse()) ||
-                     (oldA.dim() && !newA.dim()) || (oldA.invisible() && !newA.invisible());
+                     (oldA.dim() && !newA.dim()) || (oldA.invisible() && !newA.invisible()) ||
+                     (oldA.wide() && !newA.wide()) || (oldA.wideSpacer() && !newA.wideSpacer());
 
     std::string params;
     auto ap = [&](const char* p) { if (!params.empty()) params += ';'; params += p; };

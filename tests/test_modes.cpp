@@ -764,3 +764,117 @@ TEST_CASE("applyCursorConfig: unknown shape falls back to block")
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
 }
+
+// ── DECOM (origin mode, private mode 6) ───────────────────────────────────────
+
+TEST_CASE("DECOM set: cursor homes to top of scroll region")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");       // scroll region rows 5..15 (1-based)
+    t.csi("?6h");         // DECOM on
+    CHECK(t.term.cursorX() == 0);
+    CHECK(t.term.cursorY() == 4); // row 5 (1-based) = y=4
+}
+
+TEST_CASE("DECOM set: CUP is relative to scroll region")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");       // region [5,15]
+    t.csi("?6h");
+    t.csi("1;1H");        // CUP to relative (1,1) → absolute (5,1)
+    CHECK(t.term.cursorY() == 4);
+    CHECK(t.term.cursorX() == 0);
+    t.csi("3;10H");       // relative (3,10) → absolute (7,10)
+    CHECK(t.term.cursorY() == 6);
+    CHECK(t.term.cursorX() == 9);
+}
+
+TEST_CASE("DECOM set: CUP clamps inside scroll region")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");
+    t.csi("?6h");
+    t.csi("99;1H");       // way past bottom of region
+    CHECK(t.term.cursorY() == 14); // clamped to scrollBottom-1
+}
+
+TEST_CASE("DECOM set: VPA is relative to scroll region")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");
+    t.csi("?6h");
+    t.csi("3d");          // VPA to relative row 3 → absolute row 7
+    CHECK(t.term.cursorY() == 6);
+}
+
+TEST_CASE("DECOM reset: CUP is absolute again")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");
+    t.csi("?6h");
+    t.csi("?6l");         // DECOM off
+    CHECK(t.term.cursorY() == 0); // cursor homes to absolute (0,0) on reset
+    t.csi("3;1H");        // absolute row 3
+    CHECK(t.term.cursorY() == 2);
+}
+
+TEST_CASE("DECOM off by default: CUP is absolute")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");       // scroll region set, DECOM still off
+    t.csi("1;1H");
+    CHECK(t.term.cursorY() == 0); // absolute home, not scroll-region home
+}
+
+TEST_CASE("DECOM: cursor position report reports relative row")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");
+    t.csi("?6h");
+    t.csi("3;7H");        // relative (3,7) → absolute (7,7)
+    t.clearOutput();
+    t.csi("6n");          // DSR cursor position report
+    // Should report "\e[3;7R" (relative), not "\e[7;7R"
+    CHECK(t.output() == "\x1b[3;7R");
+}
+
+TEST_CASE("DECSC / DECRC saves and restores originMode")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");
+    t.csi("?6h");         // DECOM on
+    t.csi("3;5H");        // relative (3,5) → absolute (7,5)
+    t.esc("7");           // DECSC
+    t.csi("?6l");         // DECOM off
+    t.csi("1;1H");        // absolute home
+    CHECK(t.term.cursorY() == 0);
+    t.esc("8");           // DECRC → originMode restored
+    CHECK(t.term.cursorY() == 6);
+    CHECK(t.term.cursorX() == 4);
+    // Feed a CUP relative again to prove DECOM is active
+    t.csi("1;1H");
+    CHECK(t.term.cursorY() == 4); // relative (1,1) → absolute scrollTop (4)
+}
+
+TEST_CASE("RIS resets origin mode")
+{
+    TestTerminal t(80, 24);
+    t.csi("5;15r");
+    t.csi("?6h");
+    t.esc("c");           // RIS
+    t.csi("5;15r");       // re-establish scroll region (RIS clears it)
+    t.csi("1;1H");        // CUP (1,1) — absolute since DECOM is off
+    CHECK(t.term.cursorY() == 0);
+}
+
+TEST_CASE("DECRQM reports mode 6 state")
+{
+    TestTerminal t(80, 24);
+    t.clearOutput();
+    t.csi("?6$p");
+    CHECK(t.output() == "\x1b[?6;2$y");   // reset
+    t.csi("?6h");
+    t.clearOutput();
+    t.csi("?6$p");
+    CHECK(t.output() == "\x1b[?6;1$y");   // set
+}

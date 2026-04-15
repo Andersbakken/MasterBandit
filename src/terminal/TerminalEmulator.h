@@ -99,10 +99,12 @@ public:
         Charset savedCharsetG0 { CharsetASCII };
         Charset savedCharsetG1 { CharsetASCII };
         bool savedShiftOut { false };
+        bool savedOriginMode { false };
         int scrollTop { 0 }, scrollBottom { 0 };  // scroll region [top, bottom)
         bool cursorKeyMode { false };           // DECCKM
         bool keypadMode { false };              // DECKPAM
         bool autoWrap { true };                 // DECAWM
+        bool originMode { false };              // DECOM — CUP/HVP relative to scroll region
         bool insertMode { false };              // IRM
         bool bracketedPaste { false };
         bool focusReporting { false };          // mode 1004

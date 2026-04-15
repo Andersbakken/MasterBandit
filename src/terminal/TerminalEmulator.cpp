@@ -911,6 +911,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mState->savedCharsetG0 = mState->charsetG0;
                 mState->savedCharsetG1 = mState->charsetG1;
                 mState->savedShiftOut = mState->shiftOut;
+                mState->savedOriginMode = mState->originMode;
                 resetToNormal();
                 break;
             case DECRC:
@@ -921,6 +922,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mState->charsetG0 = mState->savedCharsetG0;
                 mState->charsetG1 = mState->savedCharsetG1;
                 mState->shiftOut = mState->savedShiftOut;
+                mState->originMode = mState->savedOriginMode;
                 resetToNormal();
                 break;
             case IND:
@@ -1214,10 +1216,12 @@ void TerminalEmulator::processCSI()
             // Device status report: respond "OK"
             writeToOutput("\x1b[0n", 4);
         } else if (mEscapeIndex == 3 && mEscapeBuffer[1] == '6') {
-            // Report cursor position: ESC [ row ; col R
+            // Report cursor position: ESC [ row ; col R.
+            // DECOM: report row relative to scrollTop.
+            int reportY = mState->cursorY - (mState->originMode ? mState->scrollTop : 0);
             char response[32];
             int rlen = snprintf(response, sizeof(response), "\x1b[%d;%dR",
-                                mState->cursorY + 1, mState->cursorX + 1);
+                                reportY + 1, mState->cursorX + 1);
             writeToOutput(response, rlen);
         } else {
             sLog().warn("Unhandled DSR: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
@@ -1439,6 +1443,7 @@ void TerminalEmulator::processCSI()
             int pm = 0; // not recognized
             switch (ps) {
             case 1:    pm = mState->cursorKeyMode ? 1 : 2; break;
+            case 6:    pm = mState->originMode ? 1 : 2; break;
             case 7:    pm = mState->autoWrap ? 1 : 2; break;
             case 12:   pm = mState->cursorBlinkEnabled ? 1 : 2; break;
             case 25:   pm = mState->cursorVisible ? 1 : 2; break;
@@ -1644,11 +1649,20 @@ void TerminalEmulator::onAction(const Action *action)
     case Action::CursorHorizontalAbsolute:
         mState->cursorX = std::clamp(action->count - 1, 0, mWidth - 1);
         break;
-    case Action::CursorPosition:
-        // CUP: action.x = row (1-based), action.y = col (1-based) — note x/y are swapped vs screen coords
-        mState->cursorY = std::clamp(action->x - 1, 0, mHeight - 1);
-        mState->cursorX = std::clamp(action->y - 1, 0, mWidth - 1);
+    case Action::CursorPosition: {
+        // CUP: action.x = row (1-based), action.y = col (1-based) — note x/y are swapped vs screen coords.
+        // DECOM: row is relative to scrollTop and clamped within [scrollTop, scrollBottom).
+        int row = action->x - 1;
+        int col = action->y - 1;
+        if (mState->originMode) {
+            row += mState->scrollTop;
+            mState->cursorY = std::clamp(row, mState->scrollTop, mState->scrollBottom - 1);
+        } else {
+            mState->cursorY = std::clamp(row, 0, mHeight - 1);
+        }
+        mState->cursorX = std::clamp(col, 0, mWidth - 1);
         break;
+    }
     case Action::ClearScreen:
         for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
         mState->cursorX = 0;
@@ -1695,9 +1709,16 @@ void TerminalEmulator::onAction(const Action *action)
         // ECH: erase N chars at cursor without moving it
         g.clearRow(mState->cursorY, mState->cursorX, std::min(mState->cursorX + action->count, mWidth));
         break;
-    case Action::VerticalPositionAbsolute:
-        mState->cursorY = std::clamp(action->count - 1, 0, mHeight - 1);
+    case Action::VerticalPositionAbsolute: {
+        int row = action->count - 1;
+        if (mState->originMode) {
+            row += mState->scrollTop;
+            mState->cursorY = std::clamp(row, mState->scrollTop, mState->scrollBottom - 1);
+        } else {
+            mState->cursorY = std::clamp(row, 0, mHeight - 1);
+        }
         break;
+    }
     case Action::ScrollUp:
         g.scrollUp(mState->scrollTop, mState->scrollBottom, action->count);
         break;
@@ -1714,6 +1735,7 @@ void TerminalEmulator::onAction(const Action *action)
         mState->savedCharsetG0 = mState->charsetG0;
         mState->savedCharsetG1 = mState->charsetG1;
         mState->savedShiftOut = mState->shiftOut;
+        mState->savedOriginMode = mState->originMode;
         break;
     case Action::RestoreCursorPosition:
         mState->cursorX = mState->savedCursorX;
@@ -1723,6 +1745,7 @@ void TerminalEmulator::onAction(const Action *action)
         mState->charsetG0 = mState->savedCharsetG0;
         mState->charsetG1 = mState->savedCharsetG1;
         mState->shiftOut = mState->savedShiftOut;
+        mState->originMode = mState->savedOriginMode;
         break;
     case Action::SetMode:
         switch (action->count) {
@@ -1742,6 +1765,12 @@ void TerminalEmulator::onAction(const Action *action)
                 for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
                 g.markAllDirty();
             }
+            break;
+        case 6: // DECOM: origin mode — cursor goes to home within scroll region.
+            mState->originMode = true;
+            mState->cursorX = 0;
+            mState->cursorY = mState->scrollTop;
+            mState->wrapPending = false;
             break;
         case 7: // DECAWM: autowrap
             mState->autoWrap = true;
@@ -1797,6 +1826,12 @@ void TerminalEmulator::onAction(const Action *action)
                 for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
                 g.markAllDirty();
             }
+            break;
+        case 6: // DECOM off: cursor goes to absolute home.
+            mState->originMode = false;
+            mState->cursorX = 0;
+            mState->cursorY = 0;
+            mState->wrapPending = false;
             break;
         case 7: // DECAWM: no autowrap
             mState->autoWrap = false;

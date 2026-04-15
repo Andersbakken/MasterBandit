@@ -70,6 +70,11 @@ public:
     // (mouse, bracketed paste, focus reporting, etc.) don't leak across the
     // alt-screen boundary. mDefaults holds config-seeded + factory defaults
     // used by RIS (and 1049-on-entry for the alt state).
+    // Character sets for G0/G1 designation (ESC ( X, ESC ) X). Only the three
+    // sets that real-world software actually uses: US ASCII (default), UK
+    // (# → £), and DEC Special Graphics (line drawing + misc).
+    enum Charset : uint8_t { CharsetASCII, CharsetUK, CharsetDECGraphics };
+
     struct TerminalState {
         int cursorX { 0 }, cursorY { 0 };
         bool cursorVisible { true };
@@ -78,6 +83,11 @@ public:
         bool wrapPending { false };             // deferred autowrap state
         CellAttrs currentAttrs;                 // SGR "pen"
         uint32_t currentUnderlineColor { 0 };   // SGR 58: packed RGBA8, 0 = use fg
+        // Character set slots and GL selector. Per-screen so alt-screen apps
+        // (ncurses TUIs etc.) can't leak charset state back to the shell.
+        Charset charsetG0 { CharsetASCII };
+        Charset charsetG1 { CharsetASCII };
+        bool shiftOut { false };                // false: GL=G0, true: GL=G1 (SO/SI)
         // DECSC (ESC 7) / DECRC (ESC 8) save slot — per-screen so a DECSC on
         // alt doesn't clobber main's saved cursor. Shape/blink are not saved
         // by DECSC per spec; they're preserved across alt via the state swap
@@ -85,6 +95,10 @@ public:
         int savedCursorX { 0 }, savedCursorY { 0 };
         bool savedWrapPending { false };
         CellAttrs savedAttrs;
+        // Charset state is part of DECSC's save set per DEC STD 070.
+        Charset savedCharsetG0 { CharsetASCII };
+        Charset savedCharsetG1 { CharsetASCII };
+        bool savedShiftOut { false };
         int scrollTop { 0 }, scrollBottom { 0 };  // scroll region [top, bottom)
         bool cursorKeyMode { false };           // DECCKM
         bool keypadMode { false };              // DECKPAM
@@ -407,6 +421,10 @@ private:
 
     int mWidth { 0 }, mHeight { 0 };
 
+    // Horizontal tab stops — terminal-global (shared between main/alt screens).
+    // Sized to mWidth; entry is 1 at a tab stop column, 0 otherwise.
+    std::vector<uint8_t> mTabStops;
+
     // Per-screen state. See TerminalState definition above.
     TerminalState mMainState;
     TerminalState mAltState;
@@ -504,6 +522,7 @@ private:
         DECRC = '8',
         IND = 'D',
         NEL = 'E',
+        HTS = 'H',
         RI = 'M'
     };
 

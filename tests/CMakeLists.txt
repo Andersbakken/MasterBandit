@@ -30,6 +30,7 @@ set(TEST_SOURCES
     test_osc_1337.cpp
     test_popup.cpp
     test_tabs.cpp
+    test_charset.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp

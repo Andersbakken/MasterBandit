@@ -34,7 +34,7 @@
 - [x] DECRQSS (`DCS $ q ... ST`) — Query current terminal state. Supports `" q"` (cursor shape), `m` (current SGR), `r` (scroll margins / DECSTBM). Used by Vim/Neovim to restore cursor shape on exit.
 - [ ] Color stack (OSC 30001/30101) — Push/pop entire color state. Apps can safely change colors and restore.
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
-- [ ] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking.
+- [x] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking. ATT610 mode 12 set/reset wired to `cursorBlinkEnabled` in SetMode/ResetMode.
 
 ## Multi-Tab / Multi-Pane
 

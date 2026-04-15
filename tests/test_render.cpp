@@ -81,6 +81,28 @@ TEST_CASE("render: VS16 warning emoji renders as color" * doctest::test_suite("r
     CHECK(rt.matchesReference(png, "vs16_warning_emoji"));
 }
 
+TEST_CASE("render: DEC line drawing (ESC ( 0) produces box characters" * doctest::test_suite("render"))
+{
+    // Use /bin/cat so the shell doesn't emit a prompt before our inject.
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
+    rt.wait(300);
+
+    // Two-row box: top = ┌──┐, bottom = └──┘. Emit in DEC graphics mode
+    // (ESC ( 0 l q q k) and (ESC ( 0 m q q j), with CR+LF between rows.
+    // The emulator translates q→─, l→┌, k→┐, m→└, j→┘ before the cell
+    // write, so the renderer draws Unicode box characters via the existing
+    // procedural-glyph path (U+2500 series).
+    rt.injectData("\x1b(0lqqk\r\nmqqj\x1b(B");
+    rt.wait(300);
+
+    auto png = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    REQUIRE(!png.empty());
+    CHECK(rt.matchesReference(png, "dec_line_drawing_box"));
+}
+
 TEST_CASE("render: warning sign without VS16 renders as narrow monochrome" * doctest::test_suite("render"))
 {
     // Inconsolata as primary (no U+26A0), DejaVu subset as non-COLR fallback (has U+26A0),

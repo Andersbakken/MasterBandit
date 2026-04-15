@@ -26,6 +26,16 @@ static spdlog::logger& sLog()
 
 
 
+// DEC Special Graphics character set translation table. Covers the remappable
+// ASCII range 0x5F..0x7E (indices [0..0x1F]). Outside this range characters
+// pass through unchanged. Matches the standard VT100/xterm mapping.
+static constexpr char32_t kDecGraphics[0x20] = {
+    0x00A0, 0x25C6, 0x2592, 0x2409, 0x240C, 0x240D, 0x240A, 0x00B0, // _ ` a b c d e f
+    0x00B1, 0x2424, 0x240B, 0x2518, 0x2510, 0x250C, 0x2514, 0x253C, // g h i j k l m n
+    0x23BA, 0x23BB, 0x2500, 0x23BC, 0x23BD, 0x251C, 0x2524, 0x2534, // o p q r s t u v
+    0x252C, 0x2502, 0x2264, 0x2265, 0x03C0, 0x2260, 0x00A3, 0x00B7, // w x y z { | } ~
+};
+
 std::string toPrintable(const char *bytes, int len)
 {
     std::string ret;
@@ -175,6 +185,17 @@ void TerminalEmulator::resize(int width, int height)
     }
 
     mAltGrid.resize(width, height);
+
+    // Tab stops: preserve existing stops within old range; seed defaults
+    // (every 8 columns) for any newly exposed columns. A shrink just truncates.
+    {
+        int oldStopCols = static_cast<int>(mTabStops.size());
+        mTabStops.resize(mWidth, 0);
+        int firstNew = ((oldStopCols + 7) / 8) * 8;
+        for (int x = firstNew; x < mWidth; x += 8)
+            mTabStops[x] = 1;
+    }
+
     mState->scrollTop = 0;
     mState->scrollBottom = height;
     mViewportOffset = std::clamp(mViewportOffset, 0, mDocument.historySize());
@@ -557,10 +578,13 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mState->wrapPending = false;
                 break;
             case '\t': {
-                // Tab: advance to next 8-column boundary
-                // Note: tab preserves lcf/wrapPending per xterm behavior
-                int nextTab = (mState->cursorX / 8 + 1) * 8;
-                mState->cursorX = std::min(nextTab, mWidth - 1);
+                // Tab: advance to the next tab stop (or right margin if none).
+                // Note: tab preserves lcf/wrapPending per xterm behavior.
+                int nextTab = mWidth - 1;
+                for (int x = mState->cursorX + 1; x < mWidth; ++x) {
+                    if (mTabStops[x]) { nextTab = x; break; }
+                }
+                mState->cursorX = nextTab;
                 break;
             }
             case '\v':
@@ -571,14 +595,32 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 break;
             case '\a':
                 break;
+            case 0x0E: // SO (LS1): invoke G1 into GL
+                mState->shiftOut = true;
+                break;
+            case 0x0F: // SI (LS0): invoke G0 into GL
+                mState->shiftOut = false;
+                break;
             default:
                 if (static_cast<unsigned char>(buf[i]) >= 0x80) {
                     assert(mUtf8Index == 0);
                     mUtf8Buffer[mUtf8Index++] = buf[i];
                     mParserState = InUtf8;
                 } else {
-                    // ASCII character — write to cell grid
-                    mLastPrintedChar = static_cast<char32_t>(buf[i]);
+                    // ASCII character — write to cell grid. If the invoked
+                    // charset (GL) is not ASCII, translate remappable bytes
+                    // to their Unicode equivalent so cells always store the
+                    // final codepoint (selection/copy-paste matches rendering).
+                    char32_t cp = static_cast<char32_t>(buf[i]);
+                    Charset active = mState->shiftOut ? mState->charsetG1 : mState->charsetG0;
+                    if (active == CharsetDECGraphics &&
+                        static_cast<unsigned char>(buf[i]) >= 0x5F &&
+                        static_cast<unsigned char>(buf[i]) <= 0x7E) {
+                        cp = kDecGraphics[static_cast<unsigned char>(buf[i]) - 0x5F];
+                    } else if (active == CharsetUK && buf[i] == '#') {
+                        cp = 0x00A3; // £
+                    }
+                    mLastPrintedChar = cp;
                     mGraphemeState = 0;
                     if (mState->wrapPending) {
                         advanceCursorToNewLine();
@@ -590,7 +632,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                         }
                         mLastPrintedX = mState->cursorX;
                         mLastPrintedY = mState->cursorY;
-                        g.cell(mState->cursorX, mState->cursorY) = Cell{static_cast<char32_t>(buf[i]), mState->currentAttrs};
+                        g.cell(mState->cursorX, mState->cursorY) = Cell{cp, mState->currentAttrs};
                         g.clearExtra(mState->cursorX, mState->cursorY);
                         if (mActiveHyperlinkId || mState->currentUnderlineColor) {
                             CellExtra& ex = g.ensureExtra(mState->cursorX, mState->cursorY);
@@ -830,6 +872,9 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mKittyStackDepthAlt = 0;
                 memset(mKittyStackMain, 0, sizeof(mKittyStackMain));
                 memset(mKittyStackAlt, 0, sizeof(mKittyStackAlt));
+                // Tab stops: reset to defaults (every 8 columns).
+                std::fill(mTabStops.begin(), mTabStops.end(), 0);
+                for (int x = 0; x < mWidth; x += 8) mTabStops[x] = 1;
                 resetToNormal();
                 break;
             case VB:
@@ -838,11 +883,17 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 break;
             case '(':  // G0 charset designation — ESC ( X
             case ')':  // G1 charset designation — ESC ) X
-                // Need one more byte (the charset designator). If we have it, consume and ignore.
                 if (mEscapeIndex >= 2) {
+                    Charset& slot = (mEscapeBuffer[0] == '(') ? mState->charsetG0 : mState->charsetG1;
+                    switch (mEscapeBuffer[1]) {
+                    case '0': slot = CharsetDECGraphics; break;
+                    case 'A': slot = CharsetUK; break;
+                    case 'B': slot = CharsetASCII; break;
+                    default:  slot = CharsetASCII; break; // unsupported → ASCII
+                    }
                     resetToNormal();
                 }
-                // Otherwise wait for the next byte.
+                // Otherwise wait for the designator byte.
                 break;
             case DECKPAM:
                 mState->keypadMode = true;
@@ -857,6 +908,9 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mState->savedCursorY = mState->cursorY;
                 mState->savedAttrs = mState->currentAttrs;
                 mState->savedWrapPending = mState->wrapPending;
+                mState->savedCharsetG0 = mState->charsetG0;
+                mState->savedCharsetG1 = mState->charsetG1;
+                mState->savedShiftOut = mState->shiftOut;
                 resetToNormal();
                 break;
             case DECRC:
@@ -864,12 +918,21 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mState->cursorY = mState->savedCursorY;
                 mState->currentAttrs = mState->savedAttrs;
                 mState->wrapPending = mState->savedWrapPending;
+                mState->charsetG0 = mState->savedCharsetG0;
+                mState->charsetG1 = mState->savedCharsetG1;
+                mState->shiftOut = mState->savedShiftOut;
                 resetToNormal();
                 break;
             case IND:
                 // Index: same as LF
                 mState->wrapPending = false;
                 lineFeed();
+                resetToNormal();
+                break;
+            case HTS:
+                // Set horizontal tab stop at current cursor column.
+                if (mState->cursorX >= 0 && mState->cursorX < static_cast<int>(mTabStops.size()))
+                    mTabStops[mState->cursorX] = 1;
                 resetToNormal();
                 break;
             case NEL:
@@ -1399,8 +1462,73 @@ void TerminalEmulator::processCSI()
             int rlen = snprintf(response, sizeof(response),
                 "\x1b[?%d;%d$y", ps, pm);
             writeToOutput(response, rlen);
+        } else if (!isPrivate && !isSecondary && !isEquals && !isLess &&
+                   mEscapeIndex >= 3 &&
+                   mEscapeBuffer[mEscapeIndex - 2] == '!') {
+            // CSI ! p — DECSTR (Soft Terminal Reset). Start from defaults,
+            // then restore the fields VT510/xterm say DECSTR must not touch:
+            // cursor position & visible style, plus xterm extensions (mouse,
+            // focus/paste, sync, color-pref). Screen contents, palette, and
+            // tab-stop count keep on their separate reset paths.
+            auto preserved = *mState;
+            resetToDefault(*mState);
+            mState->cursorX = preserved.cursorX;
+            mState->cursorY = preserved.cursorY;
+            mState->cursorShape = preserved.cursorShape;
+            mState->cursorBlinkEnabled = preserved.cursorBlinkEnabled;
+            mState->mouseMode1000 = preserved.mouseMode1000;
+            mState->mouseMode1002 = preserved.mouseMode1002;
+            mState->mouseMode1003 = preserved.mouseMode1003;
+            mState->mouseMode1006 = preserved.mouseMode1006;
+            mState->mouseMode1016 = preserved.mouseMode1016;
+            mState->focusReporting = preserved.focusReporting;
+            mState->bracketedPaste = preserved.bracketedPaste;
+            mState->syncOutput = preserved.syncOutput;
+            mState->colorPreferenceReporting = preserved.colorPreferenceReporting;
+            // Tab stops: reset to defaults (every 8 columns).
+            std::fill(mTabStops.begin(), mTabStops.end(), 0);
+            for (int x = 0; x < mWidth; x += 8) mTabStops[x] = 1;
         } else {
             sLog().warn("Ignoring CSI p variant: \"{}\"", toPrintable(mEscapeBuffer, mEscapeIndex));
+        }
+        break;
+    }
+    case 'g': {
+        // TBC (Tab Clear). Ps=0: clear stop at current column. Ps=3: clear all.
+        // Ps=1/2 are per-line tab variants from old terminals — no-op here.
+        int ps = readCount(0);
+        if (ps == -1) ps = 0;
+        if (ps == 0) {
+            if (mState->cursorX >= 0 && mState->cursorX < static_cast<int>(mTabStops.size()))
+                mTabStops[mState->cursorX] = 0;
+        } else if (ps == 3) {
+            std::fill(mTabStops.begin(), mTabStops.end(), 0);
+        }
+        break;
+    }
+    case 'I': {
+        // CHT (Cursor Horizontal forward Tab): advance N tab stops.
+        int n = readCount(1);
+        if (n < 1) n = 1;
+        for (int i = 0; i < n && mState->cursorX < mWidth - 1; ++i) {
+            int nextTab = mWidth - 1;
+            for (int x = mState->cursorX + 1; x < mWidth; ++x) {
+                if (mTabStops[x]) { nextTab = x; break; }
+            }
+            mState->cursorX = nextTab;
+        }
+        break;
+    }
+    case 'Z': {
+        // CBT (Cursor Backward Tabulation): retreat N tab stops.
+        int n = readCount(1);
+        if (n < 1) n = 1;
+        for (int i = 0; i < n && mState->cursorX > 0; ++i) {
+            int prevTab = 0;
+            for (int x = mState->cursorX - 1; x >= 0; --x) {
+                if (mTabStops[x]) { prevTab = x; break; }
+            }
+            mState->cursorX = prevTab;
         }
         break;
     }
@@ -1577,21 +1705,43 @@ void TerminalEmulator::onAction(const Action *action)
         g.scrollDown(mState->scrollTop, mState->scrollBottom, action->count);
         break;
     case Action::SaveCursorPosition:
+        // CSI s — shares the DECSC save slot so a subsequent RCP or DECRC
+        // restores the same state (xterm-equivalent behavior).
         mState->savedCursorX = mState->cursorX;
         mState->savedCursorY = mState->cursorY;
         mState->savedAttrs = mState->currentAttrs;
         mState->savedWrapPending = savedWrapPending;
+        mState->savedCharsetG0 = mState->charsetG0;
+        mState->savedCharsetG1 = mState->charsetG1;
+        mState->savedShiftOut = mState->shiftOut;
         break;
     case Action::RestoreCursorPosition:
         mState->cursorX = mState->savedCursorX;
         mState->cursorY = mState->savedCursorY;
         mState->currentAttrs = mState->savedAttrs;
         mState->wrapPending = mState->savedWrapPending;
+        mState->charsetG0 = mState->savedCharsetG0;
+        mState->charsetG1 = mState->savedCharsetG1;
+        mState->shiftOut = mState->savedShiftOut;
         break;
     case Action::SetMode:
         switch (action->count) {
         case 1: // DECCKM: application cursor keys
             mState->cursorKeyMode = true;
+            break;
+        case 3: // DECCOLM: 132-column mode. We don't actually resize — the
+                // window size is user-controlled — but the spec side effects
+                // (clear screen, home cursor, reset scroll region) still apply.
+            mState->cursorX = 0;
+            mState->cursorY = 0;
+            mState->wrapPending = false;
+            mState->scrollTop = 0;
+            mState->scrollBottom = mHeight;
+            {
+                IGrid& g = grid();
+                for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
+                g.markAllDirty();
+            }
             break;
         case 7: // DECAWM: autowrap
             mState->autoWrap = true;
@@ -1634,6 +1784,19 @@ void TerminalEmulator::onAction(const Action *action)
         switch (action->count) {
         case 1: // DECCKM: normal cursor keys
             mState->cursorKeyMode = false;
+            break;
+        case 3: // DECCOLM: 80-column mode. Same side effects as the set case:
+                // clear screen, home cursor, reset scroll region.
+            mState->cursorX = 0;
+            mState->cursorY = 0;
+            mState->wrapPending = false;
+            mState->scrollTop = 0;
+            mState->scrollBottom = mHeight;
+            {
+                IGrid& g = grid();
+                for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
+                g.markAllDirty();
+            }
             break;
         case 7: // DECAWM: no autowrap
             mState->autoWrap = false;
@@ -1732,6 +1895,7 @@ const char *TerminalEmulator::escapeSequenceName(EscapeSequence seq)
     case DECRC: return "DECRC";
     case IND: return "IND";
     case NEL: return "NEL";
+    case HTS: return "HTS";
     case RI: return "RI";
     }
     abort();

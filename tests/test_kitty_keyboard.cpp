@@ -480,3 +480,292 @@ TEST_CASE("kitty: report_event_types repeat includes event type") {
     t.sendKey(Key_A, 0, KeyAction_Repeat, "a");
     CHECK(t.output() == "\x1b[97;1:2u"); // mods=1 (none+1), event=2 (repeat)
 }
+
+// === Comprehensive arrow key / functional key encoding ===
+
+TEST_CASE("kitty: disambiguate up arrow sends legacy CSI A") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Up, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[A");
+}
+
+TEST_CASE("kitty: disambiguate down arrow sends legacy CSI B") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Down, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[B");
+}
+
+TEST_CASE("kitty: disambiguate left arrow sends legacy CSI D") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Left, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[D");
+}
+
+TEST_CASE("kitty: disambiguate right arrow sends legacy CSI C") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Right, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[C");
+}
+
+TEST_CASE("kitty: disambiguate home sends legacy CSI H") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Home, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[H");
+}
+
+TEST_CASE("kitty: disambiguate end sends legacy CSI F") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_End, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[F");
+}
+
+TEST_CASE("kitty: disambiguate F1 sends legacy ESC O P") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_F1, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1bOP");
+}
+
+TEST_CASE("kitty: disambiguate F5 sends legacy CSI 15~") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_F5, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[15~");
+}
+
+TEST_CASE("kitty: disambiguate delete sends legacy CSI 3~") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Delete, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[3~");
+}
+
+TEST_CASE("kitty: disambiguate insert sends legacy CSI 2~") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Insert, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[2~");
+}
+
+TEST_CASE("kitty: disambiguate pageup sends legacy CSI 5~") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_PageUp, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[5~");
+}
+
+TEST_CASE("kitty: disambiguate pagedown sends legacy CSI 6~") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_PageDown, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[6~");
+}
+
+// === Arrow keys with modifiers ===
+
+TEST_CASE("kitty: disambiguate shift+up sends CSI 1;2A") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Up, ShiftModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[1;2A");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+up sends CSI 1;5A") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Up, CtrlModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[1;5A");
+}
+
+TEST_CASE("kitty: disambiguate alt+up sends CSI 1;3A") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Up, AltModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[1;3A");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+shift+up sends CSI 1;6A") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Up, CtrlModifier | ShiftModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[1;6A");
+}
+
+// === Functional keys with modifiers (tilde style) ===
+
+TEST_CASE("kitty: disambiguate shift+F5 sends CSI 15;2~") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_F5, ShiftModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[15;2~");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+delete sends CSI 3;5~") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Delete, CtrlModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[3;5~");
+}
+
+// === Special keys ===
+
+TEST_CASE("kitty: disambiguate escape no mods sends ESC") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Escape, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b");
+}
+
+TEST_CASE("kitty: disambiguate enter no mods sends CR") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Return, 0, KeyAction_Press);
+    CHECK(t.output() == "\r");
+}
+
+TEST_CASE("kitty: disambiguate tab no mods sends TAB") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Tab, 0, KeyAction_Press);
+    CHECK(t.output() == "\t");
+}
+
+TEST_CASE("kitty: disambiguate backspace no mods sends DEL") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Backspace, 0, KeyAction_Press);
+    CHECK(t.output() == "\x7f");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+enter sends CSI u") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Return, CtrlModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[13;5u");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+tab sends CSI u") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Tab, CtrlModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[9;5u");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+backspace sends CSI u") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Backspace, CtrlModifier, KeyAction_Press);
+    CHECK(t.output() == "\x1b[127;5u");
+}
+
+// === Release events ===
+
+TEST_CASE("kitty: disambiguate release is dropped") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_A, 0, KeyAction_Release, "a");
+    CHECK(t.output().empty());
+}
+
+TEST_CASE("kitty: report_events release sends CSI u with event type 3") {
+    TestTerminal t;
+    t.csi(">3u"); // DISAMBIGUATE | REPORT_EVENT_TYPES
+    t.clearOutput();
+    t.sendKey(Key_A, 0, KeyAction_Release, "a");
+    CHECK(t.output() == "\x1b[97;1:3u");
+}
+
+TEST_CASE("kitty: report_events up arrow release sends legacy with event type") {
+    TestTerminal t;
+    t.csi(">3u"); // DISAMBIGUATE | REPORT_EVENT_TYPES
+    t.clearOutput();
+    t.sendKey(Key_Up, 0, KeyAction_Release);
+    CHECK(t.output() == "\x1b[1;1:3A");
+}
+
+// === REPORT_ALL_KEYS mode ===
+
+TEST_CASE("kitty: report_all_keys plain a uses CSI u") {
+    TestTerminal t;
+    t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
+    t.clearOutput();
+    t.sendKey(Key_A, 0, KeyAction_Press, "a");
+    CHECK(t.output() == "\x1b[97u");
+}
+
+TEST_CASE("kitty: report_all_keys up arrow uses CSI u") {
+    TestTerminal t;
+    t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
+    t.clearOutput();
+    t.sendKey(Key_Up, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57352u");
+}
+
+// === REPORT_TEXT mode ===
+
+TEST_CASE("kitty: report_text plain a includes text codepoint") {
+    TestTerminal t;
+    t.csi(">17u"); // DISAMBIGUATE | REPORT_TEXT
+    t.clearOutput();
+    t.sendKey(Key_A, 0, KeyAction_Press, "a");
+    // Plain text key, no mods — should still send as text (legacy shortcut)
+    CHECK(t.output() == "a");
+}
+
+TEST_CASE("kitty: report_text ctrl+a includes text codepoint") {
+    TestTerminal t;
+    t.csi(">17u"); // DISAMBIGUATE | REPORT_TEXT
+    t.clearOutput();
+    t.sendKey(Key_A, CtrlModifier, KeyAction_Press, "a");
+    CHECK(t.output() == "\x1b[97;5;97u"); // keycode=97, mods=5, text=97
+}
+
+// === Arrow key repeat ===
+
+TEST_CASE("kitty: disambiguate up arrow repeat sends same as press") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    t.sendKey(Key_Up, 0, KeyAction_Repeat);
+    CHECK(t.output() == "\x1b[A");
+}
+
+TEST_CASE("kitty: report_events up arrow repeat includes event type") {
+    TestTerminal t;
+    t.csi(">3u");
+    t.clearOutput();
+    t.sendKey(Key_Up, 0, KeyAction_Repeat);
+    CHECK(t.output() == "\x1b[1;1:2A");
+}

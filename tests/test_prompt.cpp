@@ -234,6 +234,72 @@ TEST_CASE("serializeScrollback: wide chars survive tier-2 roundtrip")
     CHECK(content.find("\xe4\xb8\xad" "ab") != std::string::npos);
 }
 
+TEST_CASE("serializeScrollback: wrapped line is searchable as one string")
+{
+    // Feed a 20-char string into a 10-wide terminal — it wraps once.
+    TestTerminal t(10, 2);
+    t.term.resetScrollback(4);
+
+    t.feed("abcdefghij1234567890\r\n");
+    // Push the wrapped pair into history / tier-2.
+    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+
+    std::string content = t.term.serializeScrollback();
+    // A pager search like /abcdefghij1234567890 must succeed even though
+    // the original line was wrapped across two physical rows.
+    CHECK(content.find("abcdefghij1234567890") != std::string::npos);
+}
+
+TEST_CASE("serializeScrollback: combining marks preserved through tier-2")
+{
+    // Warning sign (U+26A0) + VS16 (U+FE0F) — VS16 lives in cell extras.
+    TestTerminal t(10, 2);
+    t.term.resetScrollback(2);
+
+    t.feed("\xe2\x9a\xa0\xef\xb8\x8f\r\n"); // ⚠️
+    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+
+    REQUIRE(t.term.document().archiveSize() > 0);
+
+    std::string content = t.term.serializeScrollback();
+    // The base codepoint must be present.
+    CHECK(content.find("\xe2\x9a\xa0") != std::string::npos);
+    // The combining VS16 selector must also be emitted, immediately after the base.
+    CHECK(content.find("\xe2\x9a\xa0\xef\xb8\x8f") != std::string::npos);
+}
+
+TEST_CASE("serializeScrollback: full-width row (no trailing blanks) preserved")
+{
+    // Row that exactly fills cols — exercises the effectiveWidth path with
+    // no trailing-blank trim.
+    TestTerminal t(10, 2);
+    t.term.resetScrollback(2);
+
+    t.feed("0123456789"); // exactly 10 chars; cursor sits at the right edge
+    t.feed("\r\n");
+    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+
+    REQUIRE(t.term.document().archiveSize() > 0);
+
+    std::string content = t.term.serializeScrollback();
+    CHECK(content.find("0123456789") != std::string::npos);
+}
+
+TEST_CASE("serializeScrollback: SGR colors are stripped from output (documented behavior)")
+{
+    // Pager output is plain text — colors are dropped intentionally so that
+    // `less -R` sees no escapes and search doesn't match against ANSI bytes.
+    TestTerminal t(20, 2);
+    t.term.resetScrollback(2);
+
+    t.feed("\x1b[31mred\x1b[0m text\r\n");
+    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+
+    std::string content = t.term.serializeScrollback();
+    CHECK(content.find("red text") != std::string::npos);
+    CHECK(content.find('\x1b') == std::string::npos);
+}
+
 // === OSC 133 CommandRecord tests ===
 
 TEST_CASE("OSC 133: full A/B/C/D lifecycle captures command + output + exit code")

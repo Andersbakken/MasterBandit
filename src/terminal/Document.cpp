@@ -211,7 +211,10 @@ void Document::clearPhysicalRow(int physical) {
 void Document::evictToArchive() {
     if (historyCount_ <= 0) return;
     int oldest = historyTier1ToPhysical(0);
-    archive_.push_back({serializeRow(rowPtr(oldest), cols_), continued_[oldest]});
+    const auto& extras = ringExtras_[oldest];
+    archive_.push_back({serializeRow(rowPtr(oldest), cols_,
+                                     extras.empty() ? nullptr : &extras),
+                        continued_[oldest]});
     ringExtras_[oldest].clear();
     continued_[oldest] = false;
     if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
@@ -521,7 +524,10 @@ const Cell* Document::historyRow(int idx) const {
 
 const std::unordered_map<int, CellExtra>* Document::historyExtras(int idx) const {
     int archiveSize = static_cast<int>(archive_.size());
-    if (idx < archiveSize) return nullptr;
+    if (idx < archiveSize) {
+        parseArchivedRow(archive_[idx]);
+        return parseBufferExtras_.empty() ? nullptr : &parseBufferExtras_;
+    }
     int tier1Idx = idx - archiveSize;
     if (tier1Idx < 0 || tier1Idx >= historyCount_) return nullptr;
     int phys = historyTier1ToPhysical(tier1Idx);
@@ -965,7 +971,8 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
 
 // --- Serialization ---
 
-std::string Document::serializeRow(const Cell* cells, int cols) {
+std::string Document::serializeRow(const Cell* cells, int cols,
+                                    const std::unordered_map<int, CellExtra>* extras) {
     std::string out;
     out.reserve(cols * 2);
     CellAttrs currentAttrs{};
@@ -998,6 +1005,16 @@ std::string Document::serializeRow(const Cell* cells, int cols) {
             int n = utf8::encode(cell.wc, buf);
             out.append(buf, n);
         }
+        if (extras) {
+            auto it = extras->find(c);
+            if (it != extras->end()) {
+                for (char32_t cp : it->second.combiningCps) {
+                    char buf[4];
+                    int n = utf8::encode(cp, buf);
+                    out.append(buf, n);
+                }
+            }
+        }
     }
     return out;
 }
@@ -1005,6 +1022,7 @@ std::string Document::serializeRow(const Cell* cells, int cols) {
 void Document::parseArchivedRow(const ArchivedRow& archived) const {
     parseBuffer_.resize(cols_);
     for (int c = 0; c < cols_; ++c) parseBuffer_[c] = Cell{};
+    parseBufferExtras_.clear();
 
     const char* s = archived.data.c_str();
     int len = static_cast<int>(archived.data.size());
@@ -1045,10 +1063,16 @@ void Document::parseArchivedRow(const ArchivedRow& archived) const {
         } else {
             int consumed;
             char32_t cp = utf8::decode(s + pos, len - pos, consumed);
+            pos += consumed;
+            // Combining / zero-width codepoints attach to the previous cell
+            // (preserves grapheme clusters across tier-2 archive roundtrips).
+            if (col > 0 && wcwidth(cp) == 0 && cp != 0) {
+                parseBufferExtras_[col - 1].combiningCps.push_back(cp);
+                continue;
+            }
             parseBuffer_[col].wc = (cp == ' ') ? 0 : cp;
             parseBuffer_[col].attrs = currentAttrs;
             col++;
-            pos += consumed;
         }
     }
 }

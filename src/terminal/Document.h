@@ -4,6 +4,7 @@
 #include <deque>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class Document : public IGrid {
@@ -130,6 +131,7 @@ private:
     int maxArchiveRows_ = 0;
     int tier1Capacity_ = 0;       // max history rows before eviction to archive
     mutable std::vector<Cell> parseBuffer_;
+    mutable std::unordered_map<int, CellExtra> parseBufferExtras_;
 
     // Internal helpers
     int ringMask() const { return ringCapacity_ - 1; }
@@ -147,6 +149,7 @@ private:
     void allocSegments(int from, int to);
 
     static int roundUpPow2(int v);
-    static std::string serializeRow(const Cell* cells, int cols);
+    static std::string serializeRow(const Cell* cells, int cols,
+                                    const std::unordered_map<int, CellExtra>* extras = nullptr);
     void parseArchivedRow(const ArchivedRow& row) const;
 };

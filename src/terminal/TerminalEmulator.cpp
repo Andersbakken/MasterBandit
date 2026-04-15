@@ -434,13 +434,30 @@ std::string TerminalEmulator::serializeScrollback() const
     std::string result;
     int histSize = mDocument.historySize();
 
+    auto emitCp = [&](char32_t cp) {
+        if (cp < 0x80) {
+            result += static_cast<char>(cp);
+        } else {
+            char buf[4];
+            int n = utf8::encode(cp, buf);
+            result.append(buf, n);
+        }
+    };
+
     // Serialize all rows: history first, then screen
     for (int i = 0; i < histSize + mHeight; ++i) {
         const Cell* row;
+        const std::unordered_map<int, CellExtra>* extras;
+        bool continued;
         if (i < histSize) {
             row = mDocument.historyRow(i);
+            extras = mDocument.historyExtras(i);
+            continued = mDocument.isHistoryRowContinued(i);
         } else {
-            row = mDocument.row(i - histSize);
+            int screenRow = i - histSize;
+            row = mDocument.row(screenRow);
+            extras = nullptr; // screen-row extras pulled per-cell below
+            continued = mDocument.isRowContinued(screenRow);
         }
         if (!row) continue;
 
@@ -455,15 +472,22 @@ std::string TerminalEmulator::serializeScrollback() const
             if (row[c].attrs.wideSpacer()) continue;
             char32_t cp = row[c].wc;
             if (cp == 0) cp = ' ';
-            if (cp < 0x80) {
-                result += static_cast<char>(cp);
-            } else {
-                char buf[4];
-                int n = utf8::encode(cp, buf);
-                result.append(buf, n);
+            emitCp(cp);
+
+            const CellExtra* ex = nullptr;
+            if (extras) {
+                auto it = extras->find(c);
+                if (it != extras->end()) ex = &it->second;
+            } else if (i >= histSize) {
+                ex = mDocument.getExtra(c, i - histSize);
+            }
+            if (ex) {
+                for (char32_t ccp : ex->combiningCps) emitCp(ccp);
             }
         }
-        result += '\n';
+        // Soft-wrapped rows join with their continuation so pager search
+        // matches across the wrap boundary.
+        if (!continued) result += '\n';
     }
     return result;
 }

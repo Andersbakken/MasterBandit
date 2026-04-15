@@ -348,10 +348,10 @@ void PlatformDawn::renderTabBar()
         placeChar(col, SEP_RIGHT, ti.bgColor, nextBg);
         colRanges[i] = {startCol, col};
     }
-    {
-        std::lock_guard<std::mutex> plk(platformMutex_);
-        tabBarColRanges_ = std::move(colRanges);
-    }
+    // tabBarColRanges_ is written here on the render thread (under
+    // platformMutex_, held by renderFrame) and read on the main thread
+    // (also under platformMutex_, in resolveTabBarClickIndex).
+    tabBarColRanges_ = std::move(colRanges);
 
     // Right overflow indicator
     if (overflowRight && col + 2 <= cols) {

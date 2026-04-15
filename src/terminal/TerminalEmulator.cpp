@@ -872,6 +872,12 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mKittyStackDepthAlt = 0;
                 memset(mKittyStackMain, 0, sizeof(mKittyStackMain));
                 memset(mKittyStackAlt, 0, sizeof(mKittyStackAlt));
+                // Reset grapheme/print tracking state.
+                mLastPrintedChar = 0;
+                mLastPrintedX = -1;
+                mLastPrintedY = -1;
+                mGraphemeState = 0;
+                mViewportOffset = 0;
                 // Tab stops: reset to defaults (every 8 columns).
                 std::fill(mTabStops.begin(), mTabStops.end(), 0);
                 for (int x = 0; x < mWidth; x += 8) mTabStops[x] = 1;

@@ -462,3 +462,21 @@ TEST_CASE("kitty: without report_alternate_key omits shifted_key") {
     t.sendKey(Key_A, CtrlModifier, KeyAction_Press, "a", 'A');
     CHECK(t.output() == "\x1b[97;5u"); // no :65
 }
+
+// === Autorepeat ===
+
+TEST_CASE("kitty: disambiguate repeat sends same as press") {
+    TestTerminal t;
+    t.csi(">1u"); // DISAMBIGUATE only
+    t.clearOutput();
+    t.sendKey(Key_A, 0, KeyAction_Repeat, "a");
+    CHECK(t.output() == "a"); // same as press — no event type suffix
+}
+
+TEST_CASE("kitty: report_event_types repeat includes event type") {
+    TestTerminal t;
+    t.csi(">3u"); // DISAMBIGUATE | REPORT_EVENT_TYPES
+    t.clearOutput();
+    t.sendKey(Key_A, 0, KeyAction_Repeat, "a");
+    CHECK(t.output() == "\x1b[97;1:2u"); // mods=1 (none+1), event=2 (repeat)
+}

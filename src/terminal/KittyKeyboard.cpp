@@ -259,9 +259,10 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     bool reportAllKeys = mKittyFlags & 0x08;
     bool reportText = mKittyFlags & 0x10;
 
-    // Drop release/repeat events unless REPORT_EVENT_TYPES is active
+    // Drop release events unless REPORT_EVENT_TYPES is active.
+    // Repeat events are always sent — without REPORT_EVENT_TYPES they are
+    // encoded identically to press (no event type suffix).
     if (ev.action == KeyAction_Release && !reportEvents) return {};
-    if (ev.action == KeyAction_Repeat && !reportEvents) return {};
 
     // Modifier-only keys: only report if REPORT_ALL_KEYS
     if (isModifierKey(ev.key) && !reportAllKeys) return {};
@@ -277,7 +278,11 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     if (ev.modifiers & NumLockModifier)  kittyMods |= 128;
     uint32_t wireMods = kittyMods + 1; // protocol adds 1
 
-    uint32_t eventType = static_cast<uint32_t>(ev.action); // 1=press, 2=repeat, 3=release
+    // When REPORT_EVENT_TYPES is not set, treat repeat as press — the event
+    // type is not included in the output and repeat should encode identically.
+    uint32_t eventType = (!reportEvents && ev.action == KeyAction_Repeat)
+        ? static_cast<uint32_t>(KeyAction_Press)
+        : static_cast<uint32_t>(ev.action);
 
     // Determine key code
     uint32_t funcCode = kittyFunctionalCode(ev.key);

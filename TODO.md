@@ -35,6 +35,16 @@
 - [ ] Color stack (OSC 30001/30101) — Push/pop entire color state. Apps can safely change colors and restore.
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
 - [x] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking. ATT610 mode 12 set/reset wired to `cursorBlinkEnabled` in SetMode/ResetMode.
+- [x] Horizontal tab stops — per-terminal `mTabStops` bitmap seeded every 8 columns; `\t`/CHT/CBT consult it; HTS (`ESC H`), TBC (`CSI g` Ps=0/3), DECSTR and RIS re-seed defaults; preserve-on-grow resize.
+- [x] DECSTR (`CSI ! p`) — Soft terminal reset. Restores mode/attribute state via `resetToDefault` + preserves xterm extensions (mouse, focus, paste, sync, color-pref) and cursor position/shape/blink per VT510.
+- [x] DECCOLM (private mode 3) — 80/132 column toggle. Window is user-controlled so no resize, but spec side effects (clear screen, home cursor, reset scroll region) apply on set and reset.
+- [x] DEC line drawing / charset designation — `ESC ( X` / `ESC ) X` (ASCII, UK, DEC Special Graphics), SO (0x0E) / SI (0x0F) locking shifts, per-screen charset state saved/restored by DECSC/DECRC/SCP/RCP. Translation happens at the ASCII write site — cells store final Unicode codepoints (U+2500 series etc.), rendered by the existing procedural-glyph pipeline. SS2/SS3 parsed but no-op (G2/G3 slots not implemented).
+- [x] DECOM (private mode 6) — Origin mode. CUP/HVP/VPA coordinates relative to scroll region when set; DSR cursor-position report adjusts to relative row. Save/restore in DECSC/DECRC. DECRQM `CSI ? 6 $ p` reports status.
+- [ ] Mode 1047 / 1048 / 47 — alt-screen without save-cursor, save-cursor without alt-screen, and legacy alt-screen. Companions to the already-implemented 1049. Rarely emitted in isolation but trivial to add.
+- [ ] OSC 52 destination selectors — the current handler accepts `c;...` and any non-`c` prefix silently maps to the same clipboard callback. Per spec, destinations are `c` (clipboard), `p` (primary), `s` (selection), `q`, and cut buffers `0`–`7`; they should route through distinct callbacks (e.g. `copyToPrimary` / `copyToSelection`) so Linux middle-click paste and SSH-forwarded primary selections work correctly.
+- [ ] OSC 633 — VSCode shell integration. Alternative to OSC 133 with subcommands `A` (prompt start), `B` (command start), `C` (command executed), `D` (command finished + exit code), `E` (command line), `P` (property). Cheap to add — translate each subcommand to the existing OSC 133 semantic-tag plumbing and `CommandRecord` ring. Without it, VSCode's integrated terminal can't detect prompts/commands from our emulator.
+- [ ] XTMODKEYS / XTQMODKEYS (`CSI > Pp m`, `CSI ? Pp m`) — Modifier-key encoding knob. Largely superseded by kitty keyboard protocol; some apps still probe it.
+- [ ] DECSCA (`CSI Ps " q`) — Character protection attribute. Only consumed by very old VT apps; safe to ignore but worth recognising to silence `Unknown CSI` for final byte `q` with intermediate `"`.
 
 ## Multi-Tab / Multi-Pane
 

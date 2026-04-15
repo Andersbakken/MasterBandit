@@ -560,7 +560,9 @@ enum Button {
     NoButton = 0x0,
     LeftButton = 0x1,
     MidButton = 0x2,
-    RightButton = 0x4
+    RightButton = 0x4,
+    WheelUp = 0x8,
+    WheelDown = 0x10
 };
 
 enum Modifier {

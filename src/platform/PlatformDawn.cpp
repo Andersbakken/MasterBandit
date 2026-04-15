@@ -272,6 +272,37 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             };
             window_->onCursorPos = [this](double x, double y) { onCursorPos(x, y); };
             window_->onScroll = [this](double /*dx*/, double dy) {
+                if (dy == 0) return;
+                // If the active terminal has mouse reporting, send wheel
+                // events to the application instead of scrolling the viewport.
+                std::lock_guard<std::mutex> plk(platformMutex_);
+                Tab* tab = activeTab();
+                if (tab) {
+                    TerminalEmulator* term = nullptr;
+                    Pane* fp = nullptr;
+                    if (tab->hasOverlay()) {
+                        term = tab->topOverlay();
+                    } else {
+                        fp = tab->layout()->focusedPane();
+                        if (fp) term = fp->terminal();
+                    }
+                    if (term && term->mouseReportingActive()) {
+                        PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
+                        double relX = lastCursorX_ - pr.x;
+                        double relY = lastCursorY_ - pr.y;
+                        MouseEvent mev;
+                        mev.x = static_cast<int>(relX / charWidth_);
+                        mev.y = static_cast<int>(relY / lineHeight_);
+                        mev.globalX = static_cast<int>(lastCursorX_);
+                        mev.globalY = static_cast<int>(lastCursorY_);
+                        mev.pixelX = static_cast<int>(relX);
+                        mev.pixelY = static_cast<int>(relY);
+                        mev.button = (dy > 0) ? WheelUp : WheelDown;
+                        mev.modifiers = lastMods_;
+                        term->mousePressEvent(&mev);
+                        return;
+                    }
+                }
                 if (dy > 0) dispatchAction(Action::ScrollUp{});
                 else if (dy < 0) dispatchAction(Action::ScrollDown{});
             };

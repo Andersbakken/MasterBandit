@@ -68,6 +68,8 @@ static int buttonToCode(Button button)
     case LeftButton: return 0;
     case MidButton: return 1;
     case RightButton: return 2;
+    case WheelUp: return 64;
+    case WheelDown: return 65;
     default: return 0;
     }
 }
@@ -80,9 +82,12 @@ void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
 
     if (!forceSelect && mouseReportingActive()) {
         int btn = buttonToCode(ev->button);
-        mMouseButtonDown = btn;
-        mLastMouseX = ev->x;
-        mLastMouseY = ev->y;
+        bool isWheel = (ev->button == WheelUp || ev->button == WheelDown);
+        if (!isWheel) {
+            mMouseButtonDown = btn;
+            mLastMouseX = ev->x;
+            mLastMouseY = ev->y;
+        }
         sendMouseEventPixel(btn, true, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         return;
     }

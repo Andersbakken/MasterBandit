@@ -161,6 +161,7 @@ public:
 
     const IGrid& grid() const { return mUsingAltScreen ? static_cast<const IGrid&>(mAltGrid) : static_cast<const IGrid&>(mDocument); }
     IGrid& grid() { return mUsingAltScreen ? static_cast<IGrid&>(mAltGrid) : static_cast<IGrid&>(mDocument); }
+    bool usingAltScreen() const { return mUsingAltScreen; }
     const Document& document() const { return mDocument; }
     Document& document() { return mDocument; }
 

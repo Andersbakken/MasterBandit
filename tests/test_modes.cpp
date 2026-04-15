@@ -113,6 +113,152 @@ TEST_CASE("alt screen isolates DECSC save slot")
     CHECK(t.term.cursorY() == 3);
 }
 
+// Query a private DEC mode via DECRQM (CSI ? Pm $ p). Response is
+// CSI ? <mode> ; <state> $ y where state=1 means set, 2 means reset,
+// 0 means unknown. Returns 0/1/2/3/4 per DECRQM spec.
+static int queryMode(TestTerminal& t, int mode)
+{
+    t.clearOutput();
+    t.csi("?" + std::to_string(mode) + "$p");
+    const std::string& out = t.output();
+    std::string needle = "\x1b[?" + std::to_string(mode) + ";";
+    auto pos = out.find(needle);
+    if (pos == std::string::npos) return -1;
+    auto start = pos + needle.size();
+    auto end = out.find('$', start);
+    if (end == std::string::npos) return -1;
+    return std::stoi(out.substr(start, end - start));
+}
+
+TEST_CASE("alt screen isolates DECRQM-queryable modes")
+{
+    TestTerminal t;
+    // Modes supported by DECRQM in this terminal: 1049, 2004, 2026, 2031.
+    // 1049 is the screen itself — can't meaningfully test it here, so we
+    // stick to the app-settable app-mode flags.
+    t.csi("?2004h");  // bracketed paste
+    t.csi("?2026h");  // synchronized output
+    t.csi("?2031h");  // color preference reporting
+    REQUIRE(queryMode(t, 2004) == 1);
+    REQUIRE(queryMode(t, 2026) == 1);
+    REQUIRE(queryMode(t, 2031) == 1);
+
+    t.csi("?1049h");
+    CHECK(queryMode(t, 2004) == 2);
+    CHECK(queryMode(t, 2026) == 2);
+    CHECK(queryMode(t, 2031) == 2);
+
+    // Alt flips them to the opposite of main.
+    t.csi("?2004l");
+    t.csi("?2026h");
+    t.csi("?2031h");
+
+    t.csi("?1049l");
+    // Main's state is intact regardless of what alt did.
+    CHECK(queryMode(t, 2004) == 1);
+    CHECK(queryMode(t, 2026) == 1);
+    CHECK(queryMode(t, 2031) == 1);
+}
+
+TEST_CASE("alt screen isolates cursor shape (DECSCUSR)")
+{
+    TestTerminal t;
+    // Default is blinking block.
+    REQUIRE(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+
+    t.csi("2 q");  // DECSCUSR — steady block on main
+    REQUIRE(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
+
+    t.csi("?1049h");
+    // Alt starts with the configured default (still block here).
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+    t.csi("5 q");  // steady bar on alt (vim-style)
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBar);
+
+    t.csi("?1049l");
+    // Main's cursor shape preserved.
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
+}
+
+TEST_CASE("alt screen isolates SGR pen")
+{
+    TestTerminal t;
+    // Turn on bold on main, write 'A'.
+    t.csi("1m");
+    t.feed("A");
+    REQUIRE(t.attrs(0, 0).bold());
+
+    t.csi("?1049h");
+    // Alt pen starts clean — no bold carried over.
+    t.feed("B");
+    CHECK_FALSE(t.attrs(0, 0).bold());
+
+    t.csi("?1049l");
+    // Main is back — previously written 'A' is still bold (cell data
+    // preserved), and the pen is still bold so a new write carries bold too.
+    CHECK(t.attrs(0, 0).bold());
+    t.feed("C");
+    CHECK(t.attrs(1, 0).bold());
+}
+
+TEST_CASE("RIS clears scrollback history")
+{
+    TestTerminal t(80, 4);
+    // Feed enough lines to push content into scrollback.
+    for (int i = 0; i < 20; ++i) t.feed("line\n");
+    REQUIRE(t.term.document().historySize() > 0);
+
+    t.esc("c");  // RIS
+
+    CHECK(t.term.document().historySize() == 0);
+}
+
+TEST_CASE("RIS resets both main and alt state")
+{
+    TestTerminal t;
+    // Set modes on main.
+    t.csi("?2004h");
+    t.csi("?2026h");
+    REQUIRE(t.term.bracketedPaste());
+    REQUIRE(t.term.syncOutputActive());
+
+    // Enter alt, set modes there too.
+    t.csi("?1049h");
+    t.csi("?2004h");
+    t.csi("?2026h");
+    REQUIRE(t.term.bracketedPaste());
+    REQUIRE(t.term.syncOutputActive());
+
+    // RIS (from alt). Must reset both screens — not just the active one.
+    t.esc("c");
+
+    // Active state (now main again because RIS exits alt) is clean.
+    CHECK_FALSE(t.term.bracketedPaste());
+    CHECK_FALSE(t.term.syncOutputActive());
+
+    // Flip to alt and verify alt is also clean, proving RIS touched both.
+    t.csi("?1049h");
+    CHECK_FALSE(t.term.bracketedPaste());
+    CHECK_FALSE(t.term.syncOutputActive());
+}
+
+TEST_CASE("setDefaultCursorShape propagates to both states")
+{
+    TestTerminal t;
+    // Enter alt first so we're operating against mAltState as the active.
+    t.csi("?1049h");
+    REQUIRE(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+
+    // Config reload while on alt — the live (alt) shape updates immediately
+    // AND main's state gets the new default so exit doesn't revert.
+    t.term.setDefaultCursorShape(TerminalEmulator::CursorSteadyBar);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBar);
+
+    t.csi("?1049l");
+    // Main reflects the new config default, not the pre-reload block.
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBar);
+}
+
 // ── mouse modes ───────────────────────────────────────────────────────────────
 
 TEST_CASE("mouse mode 1000 set/reset")

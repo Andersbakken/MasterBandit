@@ -72,6 +72,47 @@ TEST_CASE("alt screen restores cursor position on exit")
     CHECK(t.term.cursorY() == 4);
 }
 
+TEST_CASE("alt screen does not leak mode changes back to main")
+{
+    TestTerminal t;
+    // Set a handful of modes on main. An app that enters alt must not be able
+    // to leave these modified once it exits.
+    t.csi("?1000h");   // mouse reporting
+    t.csi("?2004h");   // bracketed paste
+    REQUIRE(t.term.mouseReportingActive());
+    REQUIRE(t.term.bracketedPaste());
+
+    t.csi("?1049h");
+    // Alt starts clean — modes reset to defaults.
+    CHECK_FALSE(t.term.mouseReportingActive());
+    CHECK_FALSE(t.term.bracketedPaste());
+    // App on alt turns these off AND on again (then crashes without cleanup).
+    t.csi("?1000l");
+    t.csi("?2004h");
+
+    t.csi("?1049l");
+    // Main's modes are intact, regardless of what alt did.
+    CHECK(t.term.mouseReportingActive());
+    CHECK(t.term.bracketedPaste());
+}
+
+TEST_CASE("alt screen isolates DECSC save slot")
+{
+    TestTerminal t;
+    // DECSC on main at position (5, 3).
+    t.csi("4;6H");
+    t.esc("7");  // DECSC
+    t.csi("?1049h");
+    // DECSC on alt at a different position.
+    t.csi("10;20H");
+    t.esc("7");  // DECSC on alt — must not clobber main's save slot
+    t.csi("?1049l");
+    // DECRC on main should restore to (5, 3), not alt's saved position.
+    t.esc("8");  // DECRC
+    CHECK(t.term.cursorX() == 5);
+    CHECK(t.term.cursorY() == 3);
+}
+
 // ── mouse modes ───────────────────────────────────────────────────────────────
 
 TEST_CASE("mouse mode 1000 set/reset")

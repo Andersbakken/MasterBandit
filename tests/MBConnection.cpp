@@ -339,18 +339,57 @@ void MBConnection::wait(int ms)
 
 bool MBConnection::reset(int timeoutMs)
 {
-    // Send RIS (Reset Initial State) escape sequence via the PTY
-    return sendText("\033c", timeoutMs);
+    // Send RIS (Reset Initial State) via injectData so processing is
+    // synchronous with the response — bypasses the PTY roundtrip through
+    // the shell, which avoids races where the next test starts while RIS is
+    // still in flight.
+    return injectData("\033c", timeoutMs);
+}
+
+static std::string optionsFingerprint(const MBConnection::Options& o)
+{
+    // Canonicalize each field — empty strings get a sentinel so an empty
+    // fontPath and a caller-supplied default font path don't alias. fontSize
+    // is float-formatted to two decimals (sufficient for common values).
+    auto s = [](const std::string& v, const char* def) { return v.empty() ? def : v.c_str(); };
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s|%s|%s|%s|%dx%d|%.2f",
+             s(o.fontPath, "<def>"),
+             s(o.fallbackFontPath, "<none>"),
+             s(o.emojiFontPath, "<none>"),
+             s(o.shell, "<def>"),
+             o.cols, o.rows,
+             static_cast<double>(o.fontSize));
+    return buf;
 }
 
 MBConnection& MBConnection::shared()
 {
-    static MBConnection instance({.cols = 40, .rows = 10});
-    static bool initialized = false;
-    if (!initialized) {
-        initialized = instance.connect();
+    Options o;
+    o.cols = 40;
+    o.rows = 10;
+    return shared(o);
+}
+
+MBConnection& MBConnection::shared(const Options& opts)
+{
+    // Cache of live connections, keyed by Options fingerprint. unique_ptr
+    // storage because MBConnection is non-copyable; map destructor at
+    // process exit walks every entry and tears down the child process via
+    // ~MBConnection (SIGTERM + waitpid).
+    static std::unordered_map<std::string, std::unique_ptr<MBConnection>> cache;
+    auto key = optionsFingerprint(opts);
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        auto inst = std::make_unique<MBConnection>(opts);
+        if (!inst->connect()) {
+            // Leave the failed instance in the map so subsequent calls don't
+            // keep re-forking; the caller will see childPid() / !connected
+            // and fail its own assertions.
+        }
+        it = cache.emplace(std::move(key), std::move(inst)).first;
     }
-    return instance;
+    return *it->second;
 }
 
 bool MBConnection::sendText(const std::string& text, int timeoutMs)
@@ -496,7 +535,28 @@ bool MBConnection::matchesReference(const std::vector<uint8_t>& png, const std::
     auto ref = loadPng(refPath);
     if (ref.empty()) return false;
 
-    return comparePng(png, ref) <= tolerance;
+    bool ok = comparePng(png, ref) <= tolerance;
+    if (!ok) {
+        // Save the actual to /tmp for post-hoc inspection.
+        std::string failPath = "/tmp/mb_fail_" + name;
+        savePng(png, failPath);
+        fprintf(stderr, "[mb-test] mismatch; actual saved to %s\n", failPath.c_str());
+
+        // When running inside a terminal that supports iTerm2's OSC 1337 File
+        // protocol (iTerm2, WezTerm, kitty via terminfo shim, and of course
+        // MasterBandit itself), emit both images inline so the diff is
+        // visible in the test output. Silently harmless on terminals that
+        // don't support the escape.
+        auto emitInline = [](const char* label, const std::vector<uint8_t>& data) {
+            if (data.empty()) return;
+            std::string b64 = base64::encode(data.data(), data.size());
+            fprintf(stderr, "  %s: \x1b]1337;File=inline=1;size=%zu:%s\x07\n",
+                    label, data.size(), b64.c_str());
+        };
+        emitInline("expected", ref);
+        emitInline("actual  ", png);
+    }
+    return ok;
 }
 
 void MBConnection::savePng(const std::vector<uint8_t>& png, const std::string& path)

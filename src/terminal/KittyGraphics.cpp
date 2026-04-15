@@ -633,8 +633,8 @@ void TerminalEmulator::processAPC()
         {
             int targetCol, targetRow;
             if (da == 'c' || da == 'C') {
-                targetCol = mCursorX;
-                targetRow = mCursorY;
+                targetCol = mState->cursorX;
+                targetRow = mState->cursorY;
             } else {
                 // x= and y= are 1-based
                 targetCol = cmd.xOffset > 0 ? static_cast<int>(cmd.xOffset) - 1 : 0;

@@ -77,7 +77,13 @@ public:
     const std::string& socketPath() const { return socketPath_; }
     pid_t childPid() const { return pid_; }
 
-    // Shared instance for tests with default options (lazily created)
+    // Shared instance cache — one persistent mb --test child per unique
+    // Options fingerprint. Reused across tests to avoid per-test process
+    // spawn overhead; call reset() at the start of each test to return the
+    // terminal to a clean state (kitty-grade RIS).
+    static MBConnection& shared(const Options& opts);
+    // Backward-compatible shortcut for tests that don't care about options:
+    // uses a 40x10 grid with default font/shell.
     static MBConnection& shared();
 
     // Public because it's referenced from the static protocol table

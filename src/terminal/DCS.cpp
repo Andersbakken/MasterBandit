@@ -257,7 +257,7 @@ void TerminalEmulator::processDCS()
         if (sub == " q") {
             // Cursor shape query (DECSCUSR)
             // CursorBlock=0 maps to Ps=1 (blinking block); other values already match DECSCUSR
-            int ps = static_cast<int>(mCursorShape);
+            int ps = static_cast<int>(mState->cursorShape);
             if (ps == 0) ps = 1;
             char resp[32];
             int len = snprintf(resp, sizeof(resp), "\x1bP1$r%d q\x1b\\", ps);
@@ -269,10 +269,10 @@ void TerminalEmulator::processDCS()
             writeToOutput(resp.c_str(), resp.size());
         } else if (sub == "r") {
             // Scroll margins query (DECSTBM)
-            // mScrollTop is 0-indexed; mScrollBottom is exclusive upper bound
+            // mState->scrollTop is 0-indexed; mState->scrollBottom is exclusive upper bound
             char resp[64];
             int len = snprintf(resp, sizeof(resp), "\x1bP1$r%d;%dr\x1b\\",
-                mScrollTop + 1, mScrollBottom);
+                mState->scrollTop + 1, mState->scrollBottom);
             writeToOutput(resp, len);
         } else {
             // Unknown subparam
@@ -296,30 +296,30 @@ std::string TerminalEmulator::buildCurrentSGR() const
     };
 
     // Text attributes
-    if (mCurrentAttrs.bold())          add(1);
-    if (mCurrentAttrs.dim())           add(2);
-    if (mCurrentAttrs.italic())        add(3);
-    if (mCurrentAttrs.underline())     add(4);
-    if (mCurrentAttrs.blink())         add(5);
-    if (mCurrentAttrs.inverse())       add(7);
-    if (mCurrentAttrs.invisible())     add(8);
-    if (mCurrentAttrs.strikethrough()) add(9);
+    if (mState->currentAttrs.bold())          add(1);
+    if (mState->currentAttrs.dim())           add(2);
+    if (mState->currentAttrs.italic())        add(3);
+    if (mState->currentAttrs.underline())     add(4);
+    if (mState->currentAttrs.blink())         add(5);
+    if (mState->currentAttrs.inverse())       add(7);
+    if (mState->currentAttrs.invisible())     add(8);
+    if (mState->currentAttrs.strikethrough()) add(9);
 
     // Foreground color — we always store RGB, never Indexed (SGR parse resolves at ingest).
-    switch (mCurrentAttrs.fgMode()) {
+    switch (mState->currentAttrs.fgMode()) {
     case CellAttrs::Default: break;
     case CellAttrs::RGB:
         add(38); add(2);
-        add(mCurrentAttrs.fgR()); add(mCurrentAttrs.fgG()); add(mCurrentAttrs.fgB());
+        add(mState->currentAttrs.fgR()); add(mState->currentAttrs.fgG()); add(mState->currentAttrs.fgB());
         break;
     }
 
     // Background color
-    switch (mCurrentAttrs.bgMode()) {
+    switch (mState->currentAttrs.bgMode()) {
     case CellAttrs::Default: break;
     case CellAttrs::RGB:
         add(48); add(2);
-        add(mCurrentAttrs.bgR()); add(mCurrentAttrs.bgG()); add(mCurrentAttrs.bgB());
+        add(mState->currentAttrs.bgR()); add(mState->currentAttrs.bgG()); add(mState->currentAttrs.bgB());
         break;
     }
 

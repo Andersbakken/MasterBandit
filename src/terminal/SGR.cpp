@@ -45,48 +45,48 @@ void TerminalEmulator::processSGR()
 
         switch (p) {
         case 0: // Reset
-            mCurrentAttrs.reset();
-            mCurrentUnderlineColor = 0;
+            mState->currentAttrs.reset();
+            mState->currentUnderlineColor = 0;
             break;
-        case 1: mCurrentAttrs.setBold(true); break;
-        case 2: mCurrentAttrs.setDim(true); break;
-        case 3: mCurrentAttrs.setItalic(true); break;
+        case 1: mState->currentAttrs.setBold(true); break;
+        case 2: mState->currentAttrs.setDim(true); break;
+        case 3: mState->currentAttrs.setItalic(true); break;
         case 4: // Underline (with optional style sub-param)
             if (params[i].subparam == 0) {
-                mCurrentAttrs.setUnderline(false);
-                mCurrentAttrs.setUnderlineStyle(0);
+                mState->currentAttrs.setUnderline(false);
+                mState->currentAttrs.setUnderlineStyle(0);
             } else {
-                mCurrentAttrs.setUnderline(true);
+                mState->currentAttrs.setUnderline(true);
                 switch (params[i].subparam) {
-                case 1: case -1: mCurrentAttrs.setUnderlineStyle(0); break; // straight (default)
-                case 2: mCurrentAttrs.setUnderlineStyle(1); break; // double
-                case 3: mCurrentAttrs.setUnderlineStyle(2); break; // curly
-                case 4: mCurrentAttrs.setUnderlineStyle(3); break; // dotted
-                case 5: mCurrentAttrs.setUnderlineStyle(3); break; // dashed (share with dotted)
-                default: mCurrentAttrs.setUnderlineStyle(0); break;
+                case 1: case -1: mState->currentAttrs.setUnderlineStyle(0); break; // straight (default)
+                case 2: mState->currentAttrs.setUnderlineStyle(1); break; // double
+                case 3: mState->currentAttrs.setUnderlineStyle(2); break; // curly
+                case 4: mState->currentAttrs.setUnderlineStyle(3); break; // dotted
+                case 5: mState->currentAttrs.setUnderlineStyle(3); break; // dashed (share with dotted)
+                default: mState->currentAttrs.setUnderlineStyle(0); break;
                 }
             }
             break;
-        case 5: mCurrentAttrs.setBlink(true); break;
-        case 7: mCurrentAttrs.setInverse(true); break;
-        case 8: mCurrentAttrs.setInvisible(true); break;
-        case 9: mCurrentAttrs.setStrikethrough(true); break;
+        case 5: mState->currentAttrs.setBlink(true); break;
+        case 7: mState->currentAttrs.setInverse(true); break;
+        case 8: mState->currentAttrs.setInvisible(true); break;
+        case 9: mState->currentAttrs.setStrikethrough(true); break;
 
         case 21: // doubly underlined or bold off (varies)
-        case 22: mCurrentAttrs.setBold(false); mCurrentAttrs.setDim(false); break;
-        case 23: mCurrentAttrs.setItalic(false); break;
-        case 24: mCurrentAttrs.setUnderline(false); mCurrentAttrs.setUnderlineStyle(0); break;
-        case 25: mCurrentAttrs.setBlink(false); break;
-        case 27: mCurrentAttrs.setInverse(false); break;
-        case 28: mCurrentAttrs.setInvisible(false); break;
-        case 29: mCurrentAttrs.setStrikethrough(false); break;
+        case 22: mState->currentAttrs.setBold(false); mState->currentAttrs.setDim(false); break;
+        case 23: mState->currentAttrs.setItalic(false); break;
+        case 24: mState->currentAttrs.setUnderline(false); mState->currentAttrs.setUnderlineStyle(0); break;
+        case 25: mState->currentAttrs.setBlink(false); break;
+        case 27: mState->currentAttrs.setInverse(false); break;
+        case 28: mState->currentAttrs.setInvisible(false); break;
+        case 29: mState->currentAttrs.setStrikethrough(false); break;
 
         // Foreground standard colors (30-37)
         case 30: case 31: case 32: case 33:
         case 34: case 35: case 36: case 37: {
             int idx = p - 30;
-            mCurrentAttrs.setFg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
-            mCurrentAttrs.setFgMode(CellAttrs::RGB);
+            mState->currentAttrs.setFg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
+            mState->currentAttrs.setFgMode(CellAttrs::RGB);
             break;
         }
 
@@ -95,30 +95,30 @@ void TerminalEmulator::processSGR()
                 if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
                     color256ToRGB(params[i + 2].value, r, g, b);
-                    mCurrentAttrs.setFg(r, g, b);
-                    mCurrentAttrs.setFgMode(CellAttrs::RGB);
+                    mState->currentAttrs.setFg(r, g, b);
+                    mState->currentAttrs.setFgMode(CellAttrs::RGB);
                     i += 2;
                 } else if (params[i + 1].value == 2 && i + 4 < params.size()) {
-                    mCurrentAttrs.setFg(
+                    mState->currentAttrs.setFg(
                         static_cast<uint8_t>(params[i + 2].value),
                         static_cast<uint8_t>(params[i + 3].value),
                         static_cast<uint8_t>(params[i + 4].value));
-                    mCurrentAttrs.setFgMode(CellAttrs::RGB);
+                    mState->currentAttrs.setFgMode(CellAttrs::RGB);
                     i += 4;
                 }
             }
             break;
 
         case 39: // Default foreground
-            mCurrentAttrs.setFgMode(CellAttrs::Default);
+            mState->currentAttrs.setFgMode(CellAttrs::Default);
             break;
 
         // Background standard colors (40-47)
         case 40: case 41: case 42: case 43:
         case 44: case 45: case 46: case 47: {
             int idx = p - 40;
-            mCurrentAttrs.setBg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
-            mCurrentAttrs.setBgMode(CellAttrs::RGB);
+            mState->currentAttrs.setBg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
+            mState->currentAttrs.setBgMode(CellAttrs::RGB);
             break;
         }
 
@@ -127,22 +127,22 @@ void TerminalEmulator::processSGR()
                 if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
                     color256ToRGB(params[i + 2].value, r, g, b);
-                    mCurrentAttrs.setBg(r, g, b);
-                    mCurrentAttrs.setBgMode(CellAttrs::RGB);
+                    mState->currentAttrs.setBg(r, g, b);
+                    mState->currentAttrs.setBgMode(CellAttrs::RGB);
                     i += 2;
                 } else if (params[i + 1].value == 2 && i + 4 < params.size()) {
-                    mCurrentAttrs.setBg(
+                    mState->currentAttrs.setBg(
                         static_cast<uint8_t>(params[i + 2].value),
                         static_cast<uint8_t>(params[i + 3].value),
                         static_cast<uint8_t>(params[i + 4].value));
-                    mCurrentAttrs.setBgMode(CellAttrs::RGB);
+                    mState->currentAttrs.setBgMode(CellAttrs::RGB);
                     i += 4;
                 }
             }
             break;
 
         case 49: // Default background
-            mCurrentAttrs.setBgMode(CellAttrs::Default);
+            mState->currentAttrs.setBgMode(CellAttrs::Default);
             break;
 
         case 58: // Underline color
@@ -150,13 +150,13 @@ void TerminalEmulator::processSGR()
                 if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
                     color256ToRGB(params[i + 2].value, r, g, b);
-                    mCurrentUnderlineColor = static_cast<uint32_t>(r)
+                    mState->currentUnderlineColor = static_cast<uint32_t>(r)
                         | (static_cast<uint32_t>(g) << 8)
                         | (static_cast<uint32_t>(b) << 16)
                         | 0xFF000000u;
                     i += 2;
                 } else if (params[i + 1].value == 2 && i + 4 < params.size()) {
-                    mCurrentUnderlineColor = static_cast<uint32_t>(params[i + 2].value & 0xFF)
+                    mState->currentUnderlineColor = static_cast<uint32_t>(params[i + 2].value & 0xFF)
                         | (static_cast<uint32_t>(params[i + 3].value & 0xFF) << 8)
                         | (static_cast<uint32_t>(params[i + 4].value & 0xFF) << 16)
                         | 0xFF000000u;
@@ -166,15 +166,15 @@ void TerminalEmulator::processSGR()
             break;
 
         case 59: // Reset underline color
-            mCurrentUnderlineColor = 0;
+            mState->currentUnderlineColor = 0;
             break;
 
         // Bright foreground (90-97)
         case 90: case 91: case 92: case 93:
         case 94: case 95: case 96: case 97: {
             int idx = p - 90 + 8;
-            mCurrentAttrs.setFg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
-            mCurrentAttrs.setFgMode(CellAttrs::RGB);
+            mState->currentAttrs.setFg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
+            mState->currentAttrs.setFgMode(CellAttrs::RGB);
             break;
         }
 
@@ -182,8 +182,8 @@ void TerminalEmulator::processSGR()
         case 100: case 101: case 102: case 103:
         case 104: case 105: case 106: case 107: {
             int idx = p - 100 + 8;
-            mCurrentAttrs.setBg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
-            mCurrentAttrs.setBgMode(CellAttrs::RGB);
+            mState->currentAttrs.setBg(m16ColorPalette[idx][0], m16ColorPalette[idx][1], m16ColorPalette[idx][2]);
+            mState->currentAttrs.setBgMode(CellAttrs::RGB);
             break;
         }
 

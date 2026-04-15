@@ -257,6 +257,24 @@ TEST_CASE("kitty graphics: delete by image ID")
     CHECK(t.term.imageRegistry().count(2));
 }
 
+TEST_CASE("kitty graphics: RIS clears image registry")
+{
+    GraphicsTerminal t;
+    auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
+    t.gfx("a=t,i=1,f=32,s=1,v=1,q=2", px);
+    t.gfx("a=t,i=2,f=32,s=1,v=1,q=2", px);
+    REQUIRE(t.term.imageRegistry().size() == 2);
+
+    t.esc("c");  // RIS
+
+    CHECK(t.term.imageRegistry().empty());
+
+    // After RIS, a=t with i=0 (auto-assign) should start at 1 again.
+    t.gfx("a=t,f=32,s=1,v=1,q=2", px);
+    REQUIRE(t.term.imageRegistry().size() == 1);
+    CHECK(t.term.imageRegistry().count(1));
+}
+
 TEST_CASE("kitty graphics: delete animation frames")
 {
     GraphicsTerminal t;

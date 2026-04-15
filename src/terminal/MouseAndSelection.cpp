@@ -6,7 +6,7 @@
 void TerminalEmulator::focusEvent(bool focused)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    if (mFocusReporting) {
+    if (mState->focusReporting) {
         writeToOutput(focused ? "\x1b[I" : "\x1b[O", 3);
     }
 }
@@ -14,7 +14,7 @@ void TerminalEmulator::focusEvent(bool focused)
 void TerminalEmulator::notifyColorPreference(bool isDark)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    if (mColorPreferenceReporting) {
+    if (mState->colorPreferenceReporting) {
         char response[16];
         int rlen = snprintf(response, sizeof(response), "\x1b[?997;%dn", isDark ? 1 : 2);
         writeToOutput(response, rlen);
@@ -35,12 +35,12 @@ void TerminalEmulator::sendMouseEventPixel(int button, bool press, bool motion, 
     if (modifiers & AltModifier) cb += 8;
     if (modifiers & CtrlModifier) cb += 16;
 
-    if (mMouseMode1016 && px >= 0 && py >= 0) {
+    if (mState->mouseMode1016 && px >= 0 && py >= 0) {
         // SGR-Pixel format: same as SGR but with pixel coordinates
         char buf[64];
         int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", cb, px + 1, py + 1, press ? 'M' : 'm');
         writeToOutput(buf, n);
-    } else if (mMouseMode1006) {
+    } else if (mState->mouseMode1006) {
         // SGR format: \x1b[<Cb;Cx;CyM (press) or m (release)
         // 1-based cell coordinates
         char buf[64];
@@ -112,7 +112,7 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
 
     if (mouseReportingActive() && mMouseButtonDown >= 0) {
         int btn = buttonToCode(ev->button);
-        if (mMouseMode1006 || mMouseMode1016) {
+        if (mState->mouseMode1006 || mState->mouseMode1016) {
             sendMouseEventPixel(btn, false, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         } else {
             // Legacy: release is button code 3
@@ -144,12 +144,12 @@ void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
 
     if (ev->x == mLastMouseX && ev->y == mLastMouseY) return;
 
-    if (mMouseMode1003) {
+    if (mState->mouseMode1003) {
         int btn = (mMouseButtonDown >= 0) ? mMouseButtonDown : 3; // 3 = no button in motion
         sendMouseEventPixel(btn, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         mLastMouseX = ev->x;
         mLastMouseY = ev->y;
-    } else if (mMouseMode1002 && mMouseButtonDown >= 0) {
+    } else if (mState->mouseMode1002 && mMouseButtonDown >= 0) {
         sendMouseEventPixel(mMouseButtonDown, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         mLastMouseX = ev->x;
         mLastMouseY = ev->y;

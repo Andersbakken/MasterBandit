@@ -66,8 +66,8 @@ TEST_CASE("render: VS16 warning emoji renders as color" * doctest::test_suite("r
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
     opts.emojiFontPath = MB_TEST_EMOJI_FONT;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
 
     rt.wait(300);
 
@@ -89,8 +89,8 @@ TEST_CASE("render: warning sign without VS16 renders as narrow monochrome" * doc
     opts.fontPath = MB_TEST_TEXT_FONT;
     opts.fallbackFontPath = MB_TEST_FALLBACK_FONT;
     opts.shell = "/bin/cat";
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
 
     rt.wait(300);
 
@@ -117,8 +117,8 @@ static MBConnection::Options mixedEmojiOpts()
 TEST_CASE("render: text followed by VS16 emoji" * doctest::test_suite("render"))
 {
     // "Hi ⚠️" — ASCII text then a VS16-widened COLR emoji (4 cells: H i space ⚠️)
-    MBConnection rt(mixedEmojiOpts());
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(mixedEmojiOpts());
+    rt.reset();
     rt.wait(300);
     rt.injectData("Hi \xe2\x9a\xa0\xef\xb8\x8f");
     rt.wait(300);
@@ -130,8 +130,8 @@ TEST_CASE("render: text followed by VS16 emoji" * doctest::test_suite("render"))
 TEST_CASE("render: text followed by wide emoji" * doctest::test_suite("render"))
 {
     // "Hi 🍄" — ASCII text then an inherently wide COLR emoji (5 cells: H i space 🍄🍄)
-    MBConnection rt(mixedEmojiOpts());
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(mixedEmojiOpts());
+    rt.reset();
     rt.wait(300);
     rt.injectData("Hi \xf0\x9f\x8d\x84");
     rt.wait(300);
@@ -143,8 +143,8 @@ TEST_CASE("render: text followed by wide emoji" * doctest::test_suite("render"))
 TEST_CASE("render: text followed by non-VS16 warning" * doctest::test_suite("render"))
 {
     // "Hi ⚠" — ASCII text then a plain monochrome warning sign via fallback (4 cells)
-    MBConnection rt(mixedEmojiOpts());
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(mixedEmojiOpts());
+    rt.reset();
     rt.wait(300);
     rt.injectData("Hi \xe2\x9a\xa0");
     rt.wait(300);
@@ -158,8 +158,8 @@ TEST_CASE("render: wide COLRv1 emoji renders in color" * doctest::test_suite("re
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
     opts.emojiFontPath = MB_TEST_EMOJI_FONT;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
 
     rt.wait(300);
 
@@ -202,8 +202,8 @@ TEST_CASE("render: kitty graphics solid red image" * doctest::test_suite("render
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // 20x20 solid red image → should occupy ~2x1 cells at default font size
@@ -222,8 +222,8 @@ TEST_CASE("render: kitty graphics image with cell scaling" * doctest::test_suite
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // 4x4 green image scaled to 10x3 cells
@@ -242,8 +242,8 @@ TEST_CASE("render: kitty graphics source rect crop" * doctest::test_suite("rende
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // 4x4 image: top-left red, top-right green, bottom-left blue, bottom-right white
@@ -268,8 +268,8 @@ TEST_CASE("render: kitty graphics two images vertically" * doctest::test_suite("
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // First image: 4x4 solid red, scaled to 4x2 cells
@@ -297,8 +297,8 @@ TEST_CASE("render: kitty graphics multiple placements of same image" * doctest::
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // Transmit a 4x4 solid red image (transmit only, don't display)
@@ -329,8 +329,8 @@ TEST_CASE("render: kitty graphics placement replacement" * doctest::test_suite("
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // Transmit a 4x4 solid blue image
@@ -359,8 +359,8 @@ TEST_CASE("render: kitty graphics sub-cell pixel offset" * doctest::test_suite("
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // Hide cursor so it doesn't affect the reference image
@@ -395,8 +395,8 @@ TEST_CASE("render: kitty graphics delete at cursor removes image" * doctest::tes
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     rt.injectData("\x1b[?25l"); // hide cursor
@@ -429,8 +429,8 @@ TEST_CASE("render: kitty graphics frame composition" * doctest::test_suite("rend
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     rt.injectData("\x1b[?25l"); // hide cursor
@@ -466,8 +466,8 @@ TEST_CASE("render: kitty graphics z-layering below text" * doctest::test_suite("
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // Write white text on default (black) background
@@ -492,8 +492,8 @@ TEST_CASE("render: kitty graphics z-layering above text" * doctest::test_suite("
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // Write white text
@@ -518,8 +518,8 @@ TEST_CASE("render: italic text" * doctest::test_suite("render"))
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     rt.injectData("\x1b[?25l"); // hide cursor
@@ -537,8 +537,8 @@ TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite(
     opts.shell = "/bin/cat";
     opts.cols = 40;
     opts.rows = 10;
-    MBConnection rt(opts);
-    REQUIRE(rt.connect());
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
     rt.wait(300);
 
     // 2x2 checkerboard: red, blue, blue, red

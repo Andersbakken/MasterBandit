@@ -248,7 +248,7 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, uint32_t placementId,
                                          int cellCols, int cellRows, bool moveCursor)
 {
     IGrid& g = grid();
-    int startCol = mCursorX;
+    int startCol = mState->cursorX;
     int fillCols = std::min(cellCols, mWidth - startCol);
 
     // If this placement ID already has cells on screen, clear them first
@@ -266,30 +266,30 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, uint32_t placementId,
 
     // Collect old image IDs being overwritten so we can clean them up
     std::unordered_set<uint32_t> overwrittenIds;
-    int savedX = mCursorX, savedY = mCursorY;
+    int savedX = mState->cursorX, savedY = mState->cursorY;
 
     for (int r = 0; r < cellRows; ++r) {
         // Scroll if cursor is at the bottom
-        if (mCursorY >= mHeight) {
+        if (mState->cursorY >= mHeight) {
             scrollUpInRegion(1);
-            mCursorY = mHeight - 1;
+            mState->cursorY = mHeight - 1;
             savedY--;  // track scroll for restore
         }
 
         // Track old image being overwritten
-        const CellExtra* oldEx = g.getExtra(startCol, mCursorY);
+        const CellExtra* oldEx = g.getExtra(startCol, mState->cursorY);
         if (oldEx && oldEx->imageId != 0 && oldEx->imageId != imageId)
             overwrittenIds.insert(oldEx->imageId);
 
         // Place extra at startCol with image ID, placement ID, start column, and row offset
-        CellExtra& ex = g.ensureExtra(startCol, mCursorY);
+        CellExtra& ex = g.ensureExtra(startCol, mState->cursorY);
         ex.imageId = imageId;
         ex.imagePlacementId = placementId;
         ex.imageStartCol = static_cast<uint32_t>(startCol);
         ex.imageOffsetRow = r;
 
-        g.markRowDirty(mCursorY);
-        mCursorY++;
+        g.markRowDirty(mState->cursorY);
+        mState->cursorY++;
     }
 
     // Clean up overwritten images that have no remaining placements on screen
@@ -305,15 +305,15 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, uint32_t placementId,
     }
 
     if (!moveCursor) {
-        mCursorX = std::max(0, savedX);
-        mCursorY = std::max(0, savedY);
+        mState->cursorX = std::max(0, savedX);
+        mState->cursorY = std::max(0, savedY);
     } else {
         // Match kitty: cursor goes to last row of image, column past right edge.
-        mCursorY--;
-        if (mCursorY >= mHeight) {
-            mCursorY = mHeight - 1;
+        mState->cursorY--;
+        if (mState->cursorY >= mHeight) {
+            mState->cursorY = mHeight - 1;
         }
-        mCursorX = std::min(startCol + fillCols, mWidth - 1);
+        mState->cursorX = std::min(startCol + fillCols, mWidth - 1);
     }
 }
 
@@ -410,7 +410,7 @@ void TerminalEmulator::processStringSequence()
             ++tokenIndex;
         }
 
-        int absRow = absoluteRowFromScreen(mCursorY);
+        int absRow = absoluteRowFromScreen(mState->cursorY);
 
         (void)isSecondary; // currently informational; could tag CommandRecord later
         switch (kind) {
@@ -418,42 +418,42 @@ void TerminalEmulator::processStringSequence()
         case 'N':
             if (kind == 'N' && mCommandInProgress) {
                 // Implicit close of the in-flight command (no exit code available).
-                finishCommand(absRow, mCursorX, std::nullopt);
+                finishCommand(absRow, mState->cursorX, std::nullopt);
             }
-            startCommand(absRow, mCursorX);
+            startCommand(absRow, mState->cursorX);
             mSemanticMode = SemanticMode::Prompt;
-            mCurrentAttrs.setSemanticType(CellAttrs::Prompt);
+            mState->currentAttrs.setSemanticType(CellAttrs::Prompt);
             break;
         case 'P':
             // Explicit prompt start; behave like A if no command is in progress.
-            if (!mCommandInProgress) startCommand(absRow, mCursorX);
+            if (!mCommandInProgress) startCommand(absRow, mState->cursorX);
             mSemanticMode = SemanticMode::Prompt;
-            mCurrentAttrs.setSemanticType(CellAttrs::Prompt);
+            mState->currentAttrs.setSemanticType(CellAttrs::Prompt);
             break;
         case 'B':
         case 'I':
-            markCommandInput(absRow, mCursorX);
+            markCommandInput(absRow, mState->cursorX);
             mSemanticMode = SemanticMode::Input;
-            mCurrentAttrs.setSemanticType(CellAttrs::Input);
+            mState->currentAttrs.setSemanticType(CellAttrs::Input);
             break;
         case 'C':
-            markCommandOutput(absRow, mCursorX);
+            markCommandOutput(absRow, mState->cursorX);
             mSemanticMode = SemanticMode::Output;
-            mCurrentAttrs.setSemanticType(CellAttrs::Output);
+            mState->currentAttrs.setSemanticType(CellAttrs::Output);
             break;
         case 'D':
-            finishCommand(absRow, mCursorX, firstArgInt);
+            finishCommand(absRow, mState->cursorX, firstArgInt);
             mSemanticMode = SemanticMode::Inactive;
             // Reset the pen to Output — cells written between D and the next A are
             // output-by-default. Matches WezTerm's convention.
-            mCurrentAttrs.setSemanticType(CellAttrs::Output);
+            mState->currentAttrs.setSemanticType(CellAttrs::Output);
             break;
         case 'L':
             // Fresh-line: emit \r\n if cursor isn't already at column 0.
             // Just synthesize a newline through the normal path.
-            if (mCursorX > 0) {
+            if (mState->cursorX > 0) {
                 lineFeed();
-                mCursorX = 0;
+                mState->cursorX = 0;
             }
             break;
         default:

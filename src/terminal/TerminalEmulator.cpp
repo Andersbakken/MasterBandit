@@ -144,21 +144,21 @@ void TerminalEmulator::resize(int width, int height)
         // Column change on main screen: reflow with cursor tracking
         int oldHistSize = mDocument.historySize();
         Document::CursorTrack ct;
-        ct.srcX = mCursorX;
-        ct.srcY = oldHistSize + mCursorY;
+        ct.srcX = mState->cursorX;
+        ct.srcY = oldHistSize + mState->cursorY;
         ct.dstX = 0;
         ct.dstY = 0;
 
         mDocument.resize(width, height, &ct);
 
         int newHistSize = mDocument.historySize();
-        mCursorX = std::min(ct.dstX, width - 1);
-        mCursorY = std::max(0, std::min(ct.dstY - newHistSize, height - 1));
+        mState->cursorX = std::min(ct.dstX, width - 1);
+        mState->cursorY = std::max(0, std::min(ct.dstY - newHistSize, height - 1));
     } else {
         int oldHistSize = mDocument.historySize();
         Document::CursorTrack ct;
-        ct.srcX = mCursorX;
-        ct.srcY = oldHistSize + mCursorY;
+        ct.srcX = mState->cursorX;
+        ct.srcY = oldHistSize + mState->cursorY;
         ct.dstX = 0;
         ct.dstY = 0;
         mDocument.resize(width, height, &ct);
@@ -168,20 +168,20 @@ void TerminalEmulator::resize(int width, int height)
             // the history rows reappearing at the top shouldn't shift the cursor.
             int histDelta = oldHistSize - mDocument.historySize();
             if (histDelta < 0)
-                mCursorY += histDelta;
+                mState->cursorY += histDelta;
         }
-        mCursorX = std::min(mCursorX, width - 1);
-        mCursorY = std::max(0, std::min(mCursorY, height - 1));
+        mState->cursorX = std::min(mState->cursorX, width - 1);
+        mState->cursorY = std::max(0, std::min(mState->cursorY, height - 1));
     }
 
     mAltGrid.resize(width, height);
-    mScrollTop = 0;
-    mScrollBottom = height;
+    mState->scrollTop = 0;
+    mState->scrollBottom = height;
     mViewportOffset = std::clamp(mViewportOffset, 0, mDocument.historySize());
-    mWrapPending = false;
-    mSavedCursorX = std::min(mSavedCursorX, width - 1);
-    mSavedCursorY = std::min(mSavedCursorY, height - 1);
-    mSavedWrapPending = false;
+    mState->wrapPending = false;
+    mState->savedCursorX = std::min(mState->savedCursorX, width - 1);
+    mState->savedCursorY = std::min(mState->savedCursorY, height - 1);
+    mState->savedWrapPending = false;
     clearSelection();
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
@@ -190,11 +190,11 @@ void TerminalEmulator::scrollUpInRegion(int n)
 {
     IGrid& g = grid();
     // Document::scrollUp handles history push internally when top == 0
-    if (!mUsingAltScreen && mViewportOffset > 0 && mScrollTop == 0) {
+    if (!mUsingAltScreen && mViewportOffset > 0 && mState->scrollTop == 0) {
         // Will gain n history rows from the scroll
         mViewportOffset += n;
     }
-    g.scrollUp(mScrollTop, mScrollBottom, n);
+    g.scrollUp(mState->scrollTop, mState->scrollBottom, n);
     if (!mUsingAltScreen && mViewportOffset > 0) {
         mViewportOffset = std::min(mViewportOffset, mDocument.historySize());
     }
@@ -471,14 +471,14 @@ std::string TerminalEmulator::serializeScrollback() const
 void TerminalEmulator::advanceCursorToNewLine()
 {
     // Mark current row as continued (soft-wrapped) — main screen only
-    if (!mUsingAltScreen && mCursorY >= 0 && mCursorY < mHeight) {
-        mDocument.setRowContinued(mCursorY, true);
+    if (!mUsingAltScreen && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+        mDocument.setRowContinued(mState->cursorY, true);
     }
     // Line wrap: move to column 0 of next line, scrolling if needed
-    mCursorX = 0;
-    mCursorY++;
-    if (mCursorY >= mScrollBottom) {
-        mCursorY = mScrollBottom - 1;
+    mState->cursorX = 0;
+    mState->cursorY++;
+    if (mState->cursorY >= mState->scrollBottom) {
+        mState->cursorY = mState->scrollBottom - 1;
         scrollUpInRegion(1);
     }
 }
@@ -486,9 +486,9 @@ void TerminalEmulator::advanceCursorToNewLine()
 void TerminalEmulator::lineFeed()
 {
     // LF: move cursor down one line, column unchanged. Scroll if at bottom of scroll region.
-    mCursorY++;
-    if (mCursorY >= mScrollBottom) {
-        mCursorY = mScrollBottom - 1;
+    mState->cursorY++;
+    if (mState->cursorY >= mState->scrollBottom) {
+        mState->cursorY = mState->scrollBottom - 1;
         scrollUpInRegion(1);
     }
 }
@@ -502,8 +502,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
     const int len = static_cast<int>(len_);
 
     auto resetToNormal = [this]() {
-        assert(mState == InEscape || mState == InStringSequence);
-        mState = Normal;
+        assert(mParserState == InEscape || mParserState == InStringSequence);
+        mParserState = Normal;
         mEscapeIndex = 0;
 #ifndef NDEBUG
         memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
@@ -512,37 +512,37 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 
     for (int i=0; i<len; ++i) {
         IGrid& g = grid();
-        switch (mState) {
+        switch (mParserState) {
         case Normal:
             switch (buf[i]) {
             case 0x1b: // escape
-                mState = InEscape;
+                mParserState = InEscape;
                 assert(mEscapeIndex == 0);
                 break;
             case '\n':
-                mWrapPending = false;
+                mState->wrapPending = false;
                 lineFeed();
                 break;
             case '\r':
-                mCursorX = 0;
-                mWrapPending = false;
+                mState->cursorX = 0;
+                mState->wrapPending = false;
                 break;
             case '\b':
-                if (mCursorX > 0)
-                    --mCursorX;
-                mWrapPending = false;
+                if (mState->cursorX > 0)
+                    --mState->cursorX;
+                mState->wrapPending = false;
                 break;
             case '\t': {
                 // Tab: advance to next 8-column boundary
                 // Note: tab preserves lcf/wrapPending per xterm behavior
-                int nextTab = (mCursorX / 8 + 1) * 8;
-                mCursorX = std::min(nextTab, mWidth - 1);
+                int nextTab = (mState->cursorX / 8 + 1) * 8;
+                mState->cursorX = std::min(nextTab, mWidth - 1);
                 break;
             }
             case '\v':
             case '\f':
                 // Vertical tab and form feed act as line feeds
-                mWrapPending = false;
+                mState->wrapPending = false;
                 lineFeed();
                 break;
             case '\a':
@@ -551,34 +551,34 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 if (static_cast<unsigned char>(buf[i]) >= 0x80) {
                     assert(mUtf8Index == 0);
                     mUtf8Buffer[mUtf8Index++] = buf[i];
-                    mState = InUtf8;
+                    mParserState = InUtf8;
                 } else {
                     // ASCII character — write to cell grid
                     mLastPrintedChar = static_cast<char32_t>(buf[i]);
                     mGraphemeState = 0;
-                    if (mWrapPending) {
+                    if (mState->wrapPending) {
                         advanceCursorToNewLine();
-                        mWrapPending = false;
+                        mState->wrapPending = false;
                     }
-                    if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                        if (mInsertMode) {
-                            g.insertChars(mCursorY, mCursorX, 1);
+                    if (mState->cursorX >= 0 && mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                        if (mState->insertMode) {
+                            g.insertChars(mState->cursorY, mState->cursorX, 1);
                         }
-                        mLastPrintedX = mCursorX;
-                        mLastPrintedY = mCursorY;
-                        g.cell(mCursorX, mCursorY) = Cell{static_cast<char32_t>(buf[i]), mCurrentAttrs};
-                        g.clearExtra(mCursorX, mCursorY);
-                        if (mActiveHyperlinkId || mCurrentUnderlineColor) {
-                            CellExtra& ex = g.ensureExtra(mCursorX, mCursorY);
+                        mLastPrintedX = mState->cursorX;
+                        mLastPrintedY = mState->cursorY;
+                        g.cell(mState->cursorX, mState->cursorY) = Cell{static_cast<char32_t>(buf[i]), mState->currentAttrs};
+                        g.clearExtra(mState->cursorX, mState->cursorY);
+                        if (mActiveHyperlinkId || mState->currentUnderlineColor) {
+                            CellExtra& ex = g.ensureExtra(mState->cursorX, mState->cursorY);
                             ex.hyperlinkId = mActiveHyperlinkId;
-                            ex.underlineColor = mCurrentUnderlineColor;
+                            ex.underlineColor = mState->currentUnderlineColor;
                         }
-                        g.markRowDirty(mCursorY);
+                        g.markRowDirty(mState->cursorY);
                     }
-                    mCursorX++;
-                    if (mCursorX >= mWidth) {
-                        mCursorX = mWidth - 1;
-                        if (mAutoWrap) mWrapPending = true;
+                    mState->cursorX++;
+                    if (mState->cursorX >= mWidth) {
+                        mState->cursorX = mWidth - 1;
+                        if (mState->autoWrap) mState->wrapPending = true;
                     }
                 }
                 break;
@@ -593,7 +593,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 #ifndef NDEBUG
                 memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
 #endif
-                mState = Normal;
+                mParserState = Normal;
                 --i; // reprocess
                 break;
             }
@@ -623,17 +623,17 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     Cell& prevCell = g.cell(mLastPrintedX, mLastPrintedY);
                     bool shouldBeWide = isWidenedEmoji(prevCell.wc) || cp == 0xFE0F;
                     if (shouldBeWide && !prevCell.attrs.wide() &&
-                        mLastPrintedY == mCursorY && !mWrapPending &&
-                        mCursorX < mWidth) {
+                        mLastPrintedY == mState->cursorY && !mState->wrapPending &&
+                        mState->cursorX < mWidth) {
                         prevCell.attrs.setWide(true);
-                        CellAttrs spacerAttrs = mCurrentAttrs;
+                        CellAttrs spacerAttrs = mState->currentAttrs;
                         spacerAttrs.setWideSpacer(true);
-                        g.cell(mCursorX, mCursorY) = Cell{0, spacerAttrs};
-                        g.clearExtra(mCursorX, mCursorY);
-                        mCursorX++;
-                        if (mCursorX >= mWidth) {
-                            mCursorX = mWidth - 1;
-                            if (mAutoWrap) mWrapPending = true;
+                        g.cell(mState->cursorX, mState->cursorY) = Cell{0, spacerAttrs};
+                        g.clearExtra(mState->cursorX, mState->cursorY);
+                        mState->cursorX++;
+                        if (mState->cursorX >= mWidth) {
+                            mState->cursorX = mWidth - 1;
+                            if (mState->autoWrap) mState->wrapPending = true;
                         }
                     }
 
@@ -649,67 +649,67 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                     // Wide character: needs two cells
                     mLastPrintedChar = cp;
                     mGraphemeState = 0;
-                    if (mWrapPending) {
+                    if (mState->wrapPending) {
                         advanceCursorToNewLine();
-                        mWrapPending = false;
+                        mState->wrapPending = false;
                     }
-                    if (mCursorX + 1 >= mWidth) {
+                    if (mState->cursorX + 1 >= mWidth) {
                         // Not enough room — fill current cell with space and wrap
-                        if (mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                            g.cell(mCursorX, mCursorY) = Cell{' ', mCurrentAttrs};
-                            g.markRowDirty(mCursorY);
+                        if (mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                            g.cell(mState->cursorX, mState->cursorY) = Cell{' ', mState->currentAttrs};
+                            g.markRowDirty(mState->cursorY);
                         }
                         advanceCursorToNewLine();
                     }
-                    if (mCursorX >= 0 && mCursorX + 1 < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                        if (mInsertMode) g.insertChars(mCursorY, mCursorX, 2);
-                        mLastPrintedX = mCursorX;
-                        mLastPrintedY = mCursorY;
-                        CellAttrs wideAttrs = mCurrentAttrs;
+                    if (mState->cursorX >= 0 && mState->cursorX + 1 < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                        if (mState->insertMode) g.insertChars(mState->cursorY, mState->cursorX, 2);
+                        mLastPrintedX = mState->cursorX;
+                        mLastPrintedY = mState->cursorY;
+                        CellAttrs wideAttrs = mState->currentAttrs;
                         wideAttrs.setWide(true);
-                        g.cell(mCursorX, mCursorY) = Cell{cp, wideAttrs};
-                        g.clearExtra(mCursorX, mCursorY);
-                        if (mActiveHyperlinkId || mCurrentUnderlineColor) {
-                            CellExtra& ex = g.ensureExtra(mCursorX, mCursorY);
+                        g.cell(mState->cursorX, mState->cursorY) = Cell{cp, wideAttrs};
+                        g.clearExtra(mState->cursorX, mState->cursorY);
+                        if (mActiveHyperlinkId || mState->currentUnderlineColor) {
+                            CellExtra& ex = g.ensureExtra(mState->cursorX, mState->cursorY);
                             ex.hyperlinkId = mActiveHyperlinkId;
-                            ex.underlineColor = mCurrentUnderlineColor;
+                            ex.underlineColor = mState->currentUnderlineColor;
                         }
-                        CellAttrs spacerAttrs = mCurrentAttrs;
+                        CellAttrs spacerAttrs = mState->currentAttrs;
                         spacerAttrs.setWideSpacer(true);
-                        g.cell(mCursorX + 1, mCursorY) = Cell{0, spacerAttrs};
-                        g.clearExtra(mCursorX + 1, mCursorY);
-                        g.markRowDirty(mCursorY);
+                        g.cell(mState->cursorX + 1, mState->cursorY) = Cell{0, spacerAttrs};
+                        g.clearExtra(mState->cursorX + 1, mState->cursorY);
+                        g.markRowDirty(mState->cursorY);
                     }
-                    mCursorX += 2;
-                    if (mCursorX >= mWidth) {
-                        mCursorX = mWidth - 1;
-                        if (mAutoWrap) mWrapPending = true;
+                    mState->cursorX += 2;
+                    if (mState->cursorX >= mWidth) {
+                        mState->cursorX = mWidth - 1;
+                        if (mState->autoWrap) mState->wrapPending = true;
                     }
                 } else {
                     // Normal single-width character
                     mLastPrintedChar = cp;
                     mGraphemeState = 0;
-                    if (mWrapPending) {
+                    if (mState->wrapPending) {
                         advanceCursorToNewLine();
-                        mWrapPending = false;
+                        mState->wrapPending = false;
                     }
-                    if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                        if (mInsertMode) g.insertChars(mCursorY, mCursorX, 1);
-                        mLastPrintedX = mCursorX;
-                        mLastPrintedY = mCursorY;
-                        g.cell(mCursorX, mCursorY) = Cell{cp, mCurrentAttrs};
-                        g.clearExtra(mCursorX, mCursorY);
-                        if (mActiveHyperlinkId || mCurrentUnderlineColor) {
-                            CellExtra& ex = g.ensureExtra(mCursorX, mCursorY);
+                    if (mState->cursorX >= 0 && mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                        if (mState->insertMode) g.insertChars(mState->cursorY, mState->cursorX, 1);
+                        mLastPrintedX = mState->cursorX;
+                        mLastPrintedY = mState->cursorY;
+                        g.cell(mState->cursorX, mState->cursorY) = Cell{cp, mState->currentAttrs};
+                        g.clearExtra(mState->cursorX, mState->cursorY);
+                        if (mActiveHyperlinkId || mState->currentUnderlineColor) {
+                            CellExtra& ex = g.ensureExtra(mState->cursorX, mState->cursorY);
                             ex.hyperlinkId = mActiveHyperlinkId;
-                            ex.underlineColor = mCurrentUnderlineColor;
+                            ex.underlineColor = mState->currentUnderlineColor;
                         }
-                        g.markRowDirty(mCursorY);
+                        g.markRowDirty(mState->cursorY);
                     }
-                    mCursorX++;
-                    if (mCursorX >= mWidth) {
-                        mCursorX = mWidth - 1;
-                        if (mAutoWrap) mWrapPending = true;
+                    mState->cursorX++;
+                    if (mState->cursorX >= mWidth) {
+                        mState->cursorX = mWidth - 1;
+                        if (mState->autoWrap) mState->wrapPending = true;
                     }
                 }
 
@@ -717,14 +717,14 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 #ifndef NDEBUG
                 memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
 #endif
-                mState = Normal;
+                mParserState = Normal;
             } else if (mUtf8Index >= 6 || mUtf8Index > expected) {
                 sLog().error("Bad utf8 (overlong sequence)");
                 mUtf8Index = 0;
 #ifndef NDEBUG
                 memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
 #endif
-                mState = Normal;
+                mParserState = Normal;
             }
             break;
         }
@@ -758,13 +758,13 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mStringSequenceType = mEscapeBuffer[0];
                 mStringSequence.clear();
                 mWasInStringSequence = false;
-                mState = InStringSequence;
+                mParserState = InStringSequence;
                 break;
             case CSI:
                 if (mEscapeIndex > 1) {
                     if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
                         processCSI();
-                        assert(mState == Normal);
+                        assert(mParserState == Normal);
                     } else if (mEscapeIndex >= static_cast<int>(sizeof(mEscapeBuffer))) {
                         sLog().error("CSI sequence is too long {}", sizeof(mEscapeBuffer));
                         resetToNormal();
@@ -775,39 +775,30 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 }
                 break;
             case RIS:
-                // Full reset to initial state
-                mWrapPending = false;
-                mCurrentAttrs.reset();
-                mCurrentUnderlineColor = 0;
-                mCursorX = 0;
-                mCursorY = 0;
-                mCursorVisible = true;
-                mCursorShape = mDefaultCursorShape;
-                mCursorBlinkEnabled = mDefaultCursorBlinkEnabled;
-                mScrollTop = 0;
-                mScrollBottom = mHeight;
-                mCursorKeyMode = false;
-                mKeypadMode = false;
-                mMouseMode1000 = false;
-                mMouseMode1002 = false;
-                mMouseMode1003 = false;
-                mMouseMode1006 = false;
-                mMouseMode1016 = false;
-                mAutoWrap = true;
-                mInsertMode = false;
-                mBracketedPaste = false;
-                mFocusReporting = false;
-                mSyncOutput = false;
-                mColorPreferenceReporting = false;
+                // Full reset to initial state. Matches kitty semantics: both
+                // screens' state reverts to configured defaults, image
+                // registry wiped, scrollback cleared, pointer shape and kitty
+                // keyboard stacks emptied, both grids blanked.
+                resetToDefault(mMainState);
+                resetToDefault(mAltState);
+                mState = &mMainState;
                 if (mUsingAltScreen) {
                     mUsingAltScreen = false;
                     mDocument.markAllDirty();
                 }
+                // Kitty graphics: drop all stored images and reset ID counters.
+                mImageRegistry.clear();
+                mNextImageId = 1;
+                mLastKittyImageId = 0;
+                // Scrollback: history-buffer wipe (grid cells cleared below).
+                mDocument.clearHistory();
                 mPointerShapeStackMain.clear();
                 mPointerShapeStackAlt.clear();
                 notifyPointerShapeChanged();
-                g.markAllDirty();
-                for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
+                mDocument.markAllDirty();
+                mAltGrid.markAllDirty();
+                for (int r = 0; r < mDocument.rows(); ++r) mDocument.clearRow(r);
+                for (int r = 0; r < mAltGrid.rows(); ++r) mAltGrid.clearRow(r);
                 clearSelection();
                 // Reset kitty keyboard protocol state
                 mKittyFlags = 0;
@@ -830,51 +821,51 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 // Otherwise wait for the next byte.
                 break;
             case DECKPAM:
-                mKeypadMode = true;
+                mState->keypadMode = true;
                 resetToNormal();
                 break;
             case DECKPNM:
-                mKeypadMode = false;
+                mState->keypadMode = false;
                 resetToNormal();
                 break;
             case DECSC:
-                mSavedCursorX = mCursorX;
-                mSavedCursorY = mCursorY;
-                mSavedAttrs = mCurrentAttrs;
-                mSavedWrapPending = mWrapPending;
+                mState->savedCursorX = mState->cursorX;
+                mState->savedCursorY = mState->cursorY;
+                mState->savedAttrs = mState->currentAttrs;
+                mState->savedWrapPending = mState->wrapPending;
                 resetToNormal();
                 break;
             case DECRC:
-                mCursorX = mSavedCursorX;
-                mCursorY = mSavedCursorY;
-                mCurrentAttrs = mSavedAttrs;
-                mWrapPending = mSavedWrapPending;
+                mState->cursorX = mState->savedCursorX;
+                mState->cursorY = mState->savedCursorY;
+                mState->currentAttrs = mState->savedAttrs;
+                mState->wrapPending = mState->savedWrapPending;
                 resetToNormal();
                 break;
             case IND:
                 // Index: same as LF
-                mWrapPending = false;
+                mState->wrapPending = false;
                 lineFeed();
                 resetToNormal();
                 break;
             case NEL:
                 // Next Line: move to beginning of next line, scroll if needed
-                mWrapPending = false;
-                mCursorX = 0;
-                if (mCursorY == mScrollBottom - 1) {
+                mState->wrapPending = false;
+                mState->cursorX = 0;
+                if (mState->cursorY == mState->scrollBottom - 1) {
                     scrollUpInRegion(1);
-                } else if (mCursorY < mHeight - 1) {
-                    mCursorY++;
+                } else if (mState->cursorY < mHeight - 1) {
+                    mState->cursorY++;
                 }
                 resetToNormal();
                 break;
             case RI:
                 // Reverse Index: move cursor up one line, scroll down if at top of scroll region
-                mWrapPending = false;
-                if (mCursorY == mScrollTop) {
-                    g.scrollDown(mScrollTop, mScrollBottom, 1);
-                } else if (mCursorY > 0) {
-                    mCursorY--;
+                mState->wrapPending = false;
+                if (mState->cursorY == mState->scrollTop) {
+                    g.scrollDown(mState->scrollTop, mState->scrollBottom, 1);
+                } else if (mState->cursorY > 0) {
+                    mState->cursorY--;
                 }
                 resetToNormal();
                 break;
@@ -892,7 +883,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
             } else if (buf[i] == 0x1b) {
                 // Possible ST terminator (\x1b\\) — transition to InEscape
                 mWasInStringSequence = true;
-                mState = InEscape;
+                mParserState = InEscape;
                 mEscapeIndex = 0;
             } else if (mStringSequence.size() < MAX_STRING_SEQUENCE) {
                 // Scan ahead for a contiguous run of payload bytes to avoid
@@ -920,7 +911,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 
 void TerminalEmulator::processCSI()
 {
-    assert(mState == InEscape);
+    assert(mParserState == InEscape);
     assert(mEscapeIndex >= 1);
 
     if (sLog().should_log(spdlog::level::debug))
@@ -1067,41 +1058,41 @@ void TerminalEmulator::processCSI()
             int w = wcwidth(mLastPrintedChar);
             if (w < 1) w = 1;
             for (int rep = 0; rep < n; ++rep) {
-                if (mWrapPending) {
+                if (mState->wrapPending) {
                     advanceCursorToNewLine();
-                    mWrapPending = false;
+                    mState->wrapPending = false;
                 }
                 if (w == 2) {
-                    if (mCursorX + 1 >= mWidth) {
-                        if (mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                            g.cell(mCursorX, mCursorY) = Cell{' ', mCurrentAttrs};
-                            g.markRowDirty(mCursorY);
+                    if (mState->cursorX + 1 >= mWidth) {
+                        if (mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                            g.cell(mState->cursorX, mState->cursorY) = Cell{' ', mState->currentAttrs};
+                            g.markRowDirty(mState->cursorY);
                         }
                         advanceCursorToNewLine();
                     }
-                    if (mCursorX >= 0 && mCursorX + 1 < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                        CellAttrs wideAttrs = mCurrentAttrs;
+                    if (mState->cursorX >= 0 && mState->cursorX + 1 < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                        CellAttrs wideAttrs = mState->currentAttrs;
                         wideAttrs.setWide(true);
-                        g.cell(mCursorX, mCursorY) = Cell{mLastPrintedChar, wideAttrs};
-                        g.clearExtra(mCursorX, mCursorY);
-                        CellAttrs spacerAttrs = mCurrentAttrs;
+                        g.cell(mState->cursorX, mState->cursorY) = Cell{mLastPrintedChar, wideAttrs};
+                        g.clearExtra(mState->cursorX, mState->cursorY);
+                        CellAttrs spacerAttrs = mState->currentAttrs;
                         spacerAttrs.setWideSpacer(true);
-                        g.cell(mCursorX + 1, mCursorY) = Cell{0, spacerAttrs};
-                        g.clearExtra(mCursorX + 1, mCursorY);
-                        g.markRowDirty(mCursorY);
+                        g.cell(mState->cursorX + 1, mState->cursorY) = Cell{0, spacerAttrs};
+                        g.clearExtra(mState->cursorX + 1, mState->cursorY);
+                        g.markRowDirty(mState->cursorY);
                     }
-                    mCursorX += 2;
+                    mState->cursorX += 2;
                 } else {
-                    if (mCursorX >= 0 && mCursorX < mWidth && mCursorY >= 0 && mCursorY < mHeight) {
-                        g.cell(mCursorX, mCursorY) = Cell{mLastPrintedChar, mCurrentAttrs};
-                        g.clearExtra(mCursorX, mCursorY);
-                        g.markRowDirty(mCursorY);
+                    if (mState->cursorX >= 0 && mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                        g.cell(mState->cursorX, mState->cursorY) = Cell{mLastPrintedChar, mState->currentAttrs};
+                        g.clearExtra(mState->cursorX, mState->cursorY);
+                        g.markRowDirty(mState->cursorY);
                     }
-                    mCursorX++;
+                    mState->cursorX++;
                 }
-                if (mCursorX >= mWidth) {
-                    mCursorX = mWidth - 1;
-                    if (mAutoWrap) mWrapPending = true;
+                if (mState->cursorX >= mWidth) {
+                    mState->cursorX = mWidth - 1;
+                    if (mState->autoWrap) mState->wrapPending = true;
                 }
             }
         }
@@ -1139,7 +1130,7 @@ void TerminalEmulator::processCSI()
             // Report cursor position: ESC [ row ; col R
             char response[32];
             int rlen = snprintf(response, sizeof(response), "\x1b[%d;%dR",
-                                mCursorY + 1, mCursorX + 1);
+                                mState->cursorY + 1, mState->cursorX + 1);
             writeToOutput(response, rlen);
         } else {
             sLog().warn("Unhandled DSR: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
@@ -1210,7 +1201,7 @@ void TerminalEmulator::processCSI()
             char *end;
             unsigned long mode = strtoul(mEscapeBuffer + 1, &end, 10); // skip "["
             if (mode == 4) {
-                mInsertMode = true;
+                mState->insertMode = true;
             } else {
                 sLog().warn("Ignoring non-private SM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
             }
@@ -1225,7 +1216,7 @@ void TerminalEmulator::processCSI()
             char *end;
             unsigned long mode = strtoul(mEscapeBuffer + 1, &end, 10); // skip "["
             if (mode == 4) {
-                mInsertMode = false;
+                mState->insertMode = false;
             } else {
                 sLog().warn("Ignoring non-private RM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
             }
@@ -1257,14 +1248,14 @@ void TerminalEmulator::processCSI()
             unsigned long b = strtoul(end + 1, &end, 10);
             if (b > 0) bottom = static_cast<int>(b);
         }
-        mScrollTop = std::max(0, top - 1);
-        mScrollBottom = std::min(mHeight, bottom);
-        if (mScrollTop >= mScrollBottom) {
-            mScrollTop = 0;
-            mScrollBottom = mHeight;
+        mState->scrollTop = std::max(0, top - 1);
+        mState->scrollBottom = std::min(mHeight, bottom);
+        if (mState->scrollTop >= mState->scrollBottom) {
+            mState->scrollTop = 0;
+            mState->scrollBottom = mHeight;
         }
-        mCursorX = 0;
-        mCursorY = mScrollTop;
+        mState->cursorX = 0;
+        mState->cursorY = mState->scrollTop;
         break; }
     case 'c': // Device Attributes
         if (isSecondary) {
@@ -1292,13 +1283,13 @@ void TerminalEmulator::processCSI()
                     ps = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
                 }
                 switch (ps) {
-                case 0: mCursorShape = mDefaultCursorShape; break;
-                case 1: mCursorShape = CursorBlock; break;
-                case 2: mCursorShape = CursorSteadyBlock; break;
-                case 3: mCursorShape = CursorUnderline; break;
-                case 4: mCursorShape = CursorSteadyUnderline; break;
-                case 5: mCursorShape = CursorBar; break;
-                case 6: mCursorShape = CursorSteadyBar; break;
+                case 0: mState->cursorShape = mDefaults.cursorShape; break;
+                case 1: mState->cursorShape = CursorBlock; break;
+                case 2: mState->cursorShape = CursorSteadyBlock; break;
+                case 3: mState->cursorShape = CursorUnderline; break;
+                case 4: mState->cursorShape = CursorSteadyUnderline; break;
+                case 5: mState->cursorShape = CursorBar; break;
+                case 6: mState->cursorShape = CursorSteadyBar; break;
                 default: break;
                 }
             }
@@ -1360,21 +1351,21 @@ void TerminalEmulator::processCSI()
             int ps = static_cast<int>(strtoul(mEscapeBuffer + 2, &end, 10));
             int pm = 0; // not recognized
             switch (ps) {
-            case 1:    pm = mCursorKeyMode ? 1 : 2; break;
-            case 7:    pm = mAutoWrap ? 1 : 2; break;
-            case 12:   pm = mCursorBlinkEnabled ? 1 : 2; break;
-            case 25:   pm = mCursorVisible ? 1 : 2; break;
-            case 1000: pm = mMouseMode1000 ? 1 : 2; break;
-            case 1002: pm = mMouseMode1002 ? 1 : 2; break;
-            case 1003: pm = mMouseMode1003 ? 1 : 2; break;
-            case 1006: pm = mMouseMode1006 ? 1 : 2; break;
-            case 1016: pm = mMouseMode1016 ? 1 : 2; break;
-            case 1004: pm = mFocusReporting ? 1 : 2; break;
+            case 1:    pm = mState->cursorKeyMode ? 1 : 2; break;
+            case 7:    pm = mState->autoWrap ? 1 : 2; break;
+            case 12:   pm = mState->cursorBlinkEnabled ? 1 : 2; break;
+            case 25:   pm = mState->cursorVisible ? 1 : 2; break;
+            case 1000: pm = mState->mouseMode1000 ? 1 : 2; break;
+            case 1002: pm = mState->mouseMode1002 ? 1 : 2; break;
+            case 1003: pm = mState->mouseMode1003 ? 1 : 2; break;
+            case 1006: pm = mState->mouseMode1006 ? 1 : 2; break;
+            case 1016: pm = mState->mouseMode1016 ? 1 : 2; break;
+            case 1004: pm = mState->focusReporting ? 1 : 2; break;
             case 1049: pm = mUsingAltScreen ? 1 : 2; break;
-            case 2004: pm = mBracketedPaste ? 1 : 2; break;
-            case 2026: pm = mSyncOutput ? 1 : 2; break;
+            case 2004: pm = mState->bracketedPaste ? 1 : 2; break;
+            case 2026: pm = mState->syncOutput ? 1 : 2; break;
             case 2027: pm = 3; break; // grapheme cluster mode — permanently set
-            case 2031: pm = mColorPreferenceReporting ? 1 : 2; break;
+            case 2031: pm = mState->colorPreferenceReporting ? 1 : 2; break;
             default:
                 pm = 0;
                 sLog().warn("DECRQM: unrecognized private mode {}", ps);
@@ -1401,7 +1392,7 @@ void TerminalEmulator::processCSI()
 #ifndef NDEBUG
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
 #endif
-    mState = Normal;
+    mParserState = Normal;
 }
 
 void TerminalEmulator::savePrivateModes(const std::vector<int>& modes)
@@ -1411,19 +1402,19 @@ void TerminalEmulator::savePrivateModes(const std::vector<int>& modes)
     };
     auto saveOne = [this](int m) {
         switch (m) {
-        case 1:    mSavedPrivateModes[1]    = mCursorKeyMode; break;
-        case 7:    mSavedPrivateModes[7]    = mAutoWrap; break;
-        case 12:   mSavedPrivateModes[12]   = mCursorBlinkEnabled; break;
-        case 25:   mSavedPrivateModes[25]   = mCursorVisible; break;
-        case 1000: mSavedPrivateModes[1000] = mMouseMode1000; break;
-        case 1002: mSavedPrivateModes[1002] = mMouseMode1002; break;
-        case 1003: mSavedPrivateModes[1003] = mMouseMode1003; break;
-        case 1004: mSavedPrivateModes[1004] = mFocusReporting; break;
-        case 1006: mSavedPrivateModes[1006] = mMouseMode1006; break;
-        case 1016: mSavedPrivateModes[1016] = mMouseMode1016; break;
-        case 2004: mSavedPrivateModes[2004] = mBracketedPaste; break;
-        case 2026: mSavedPrivateModes[2026] = mSyncOutput; break;
-        case 2031: mSavedPrivateModes[2031] = mColorPreferenceReporting; break;
+        case 1:    mSavedPrivateModes[1]    = mState->cursorKeyMode; break;
+        case 7:    mSavedPrivateModes[7]    = mState->autoWrap; break;
+        case 12:   mSavedPrivateModes[12]   = mState->cursorBlinkEnabled; break;
+        case 25:   mSavedPrivateModes[25]   = mState->cursorVisible; break;
+        case 1000: mSavedPrivateModes[1000] = mState->mouseMode1000; break;
+        case 1002: mSavedPrivateModes[1002] = mState->mouseMode1002; break;
+        case 1003: mSavedPrivateModes[1003] = mState->mouseMode1003; break;
+        case 1004: mSavedPrivateModes[1004] = mState->focusReporting; break;
+        case 1006: mSavedPrivateModes[1006] = mState->mouseMode1006; break;
+        case 1016: mSavedPrivateModes[1016] = mState->mouseMode1016; break;
+        case 2004: mSavedPrivateModes[2004] = mState->bracketedPaste; break;
+        case 2026: mSavedPrivateModes[2026] = mState->syncOutput; break;
+        case 2031: mSavedPrivateModes[2031] = mState->colorPreferenceReporting; break;
         default: break;
         }
     };
@@ -1441,19 +1432,19 @@ void TerminalEmulator::restorePrivateModes(const std::vector<int>& modes)
         if (it == mSavedPrivateModes.end()) return;
         bool v = it->second;
         switch (m) {
-        case 1:    mCursorKeyMode             = v; break;
-        case 7:    mAutoWrap                  = v; break;
-        case 12:   mCursorBlinkEnabled        = v; break;
-        case 25:   mCursorVisible             = v; break;
-        case 1000: mMouseMode1000             = v; break;
-        case 1002: mMouseMode1002             = v; break;
-        case 1003: mMouseMode1003             = v; break;
-        case 1004: mFocusReporting            = v; break;
-        case 1006: mMouseMode1006             = v; break;
-        case 1016: mMouseMode1016             = v; break;
-        case 2004: mBracketedPaste            = v; break;
-        case 2026: mSyncOutput                = v; break;
-        case 2031: mColorPreferenceReporting  = v; break;
+        case 1:    mState->cursorKeyMode             = v; break;
+        case 7:    mState->autoWrap                  = v; break;
+        case 12:   mState->cursorBlinkEnabled        = v; break;
+        case 25:   mState->cursorVisible             = v; break;
+        case 1000: mState->mouseMode1000             = v; break;
+        case 1002: mState->mouseMode1002             = v; break;
+        case 1003: mState->mouseMode1003             = v; break;
+        case 1004: mState->focusReporting            = v; break;
+        case 1006: mState->mouseMode1006             = v; break;
+        case 1016: mState->mouseMode1016             = v; break;
+        case 2004: mState->bracketedPaste            = v; break;
+        case 2026: mState->syncOutput                = v; break;
+        case 2031: mState->colorPreferenceReporting  = v; break;
         default: break;
         }
     };
@@ -1472,150 +1463,144 @@ void TerminalEmulator::onAction(const Action *action)
         sLog().debug("Got action {} {} {} {}", Action::typeName(action->type), action->count, action->x, action->y);
 
     // Any CSI action clears pending autowrap (save old state for SCP)
-    bool savedWrapPending = mWrapPending;
-    mWrapPending = false;
+    bool savedWrapPending = mState->wrapPending;
+    mState->wrapPending = false;
 
     IGrid& g = grid();
 
     switch (action->type) {
     case Action::CursorUp:
-        mCursorY = std::max(0, mCursorY - action->count);
+        mState->cursorY = std::max(0, mState->cursorY - action->count);
         break;
     case Action::CursorDown:
-        mCursorY = std::min(mHeight - 1, mCursorY + action->count);
+        mState->cursorY = std::min(mHeight - 1, mState->cursorY + action->count);
         break;
     case Action::CursorForward:
-        mCursorX = std::min(mWidth - 1, mCursorX + action->count);
+        mState->cursorX = std::min(mWidth - 1, mState->cursorX + action->count);
         break;
     case Action::CursorBack:
-        mCursorX = std::max(0, mCursorX - action->count);
+        mState->cursorX = std::max(0, mState->cursorX - action->count);
         break;
     case Action::CursorNextLine:
-        mCursorY = std::min(mHeight - 1, mCursorY + action->count);
-        mCursorX = 0;
+        mState->cursorY = std::min(mHeight - 1, mState->cursorY + action->count);
+        mState->cursorX = 0;
         break;
     case Action::CursorPreviousLine:
-        mCursorY = std::max(0, mCursorY - action->count);
-        mCursorX = 0;
+        mState->cursorY = std::max(0, mState->cursorY - action->count);
+        mState->cursorX = 0;
         break;
     case Action::CursorHorizontalAbsolute:
-        mCursorX = std::clamp(action->count - 1, 0, mWidth - 1);
+        mState->cursorX = std::clamp(action->count - 1, 0, mWidth - 1);
         break;
     case Action::CursorPosition:
         // CUP: action.x = row (1-based), action.y = col (1-based) — note x/y are swapped vs screen coords
-        mCursorY = std::clamp(action->x - 1, 0, mHeight - 1);
-        mCursorX = std::clamp(action->y - 1, 0, mWidth - 1);
+        mState->cursorY = std::clamp(action->x - 1, 0, mHeight - 1);
+        mState->cursorX = std::clamp(action->y - 1, 0, mWidth - 1);
         break;
     case Action::ClearScreen:
         for (int r = 0; r < g.rows(); ++r) g.clearRow(r);
-        mCursorX = 0;
-        mCursorY = 0;
+        mState->cursorX = 0;
+        mState->cursorY = 0;
         break;
     case Action::ClearToEndOfScreen:
         // Clear from cursor to end of line, then all lines below
-        g.clearRow(mCursorY, mCursorX, mWidth);
-        for (int r = mCursorY + 1; r < g.rows(); ++r) g.clearRow(r);
+        g.clearRow(mState->cursorY, mState->cursorX, mWidth);
+        for (int r = mState->cursorY + 1; r < g.rows(); ++r) g.clearRow(r);
         break;
     case Action::ClearToBeginningOfScreen:
         // Clear from start to cursor, plus all lines above
-        for (int r = 0; r < mCursorY; ++r) g.clearRow(r);
-        g.clearRow(mCursorY, 0, mCursorX + 1);
+        for (int r = 0; r < mState->cursorY; ++r) g.clearRow(r);
+        g.clearRow(mState->cursorY, 0, mState->cursorX + 1);
         break;
     case Action::ClearLine:
-        g.clearRow(mCursorY);
+        g.clearRow(mState->cursorY);
         break;
     case Action::ClearToEndOfLine:
-        g.clearRow(mCursorY, mCursorX, mWidth);
+        g.clearRow(mState->cursorY, mState->cursorX, mWidth);
         break;
     case Action::ClearToBeginningOfLine:
-        g.clearRow(mCursorY, 0, mCursorX + 1);
+        g.clearRow(mState->cursorY, 0, mState->cursorX + 1);
         break;
     case Action::DeleteChars:
-        g.deleteChars(mCursorY, mCursorX, action->count);
+        g.deleteChars(mState->cursorY, mState->cursorX, action->count);
         break;
     case Action::InsertChars:
-        g.insertChars(mCursorY, mCursorX, action->count);
+        g.insertChars(mState->cursorY, mState->cursorX, action->count);
         break;
     case Action::InsertLines:
         // IL: insert blank lines at cursor, pushing existing lines down within scroll region
-        if (mCursorY >= mScrollTop && mCursorY < mScrollBottom) {
-            g.scrollDown(mCursorY, mScrollBottom, action->count);
+        if (mState->cursorY >= mState->scrollTop && mState->cursorY < mState->scrollBottom) {
+            g.scrollDown(mState->cursorY, mState->scrollBottom, action->count);
         }
         break;
     case Action::DeleteLines:
         // DL: delete lines at cursor, pulling lines up within scroll region
-        if (mCursorY >= mScrollTop && mCursorY < mScrollBottom) {
-            g.scrollUp(mCursorY, mScrollBottom, action->count);
+        if (mState->cursorY >= mState->scrollTop && mState->cursorY < mState->scrollBottom) {
+            g.scrollUp(mState->cursorY, mState->scrollBottom, action->count);
         }
         break;
     case Action::EraseChars:
         // ECH: erase N chars at cursor without moving it
-        g.clearRow(mCursorY, mCursorX, std::min(mCursorX + action->count, mWidth));
+        g.clearRow(mState->cursorY, mState->cursorX, std::min(mState->cursorX + action->count, mWidth));
         break;
     case Action::VerticalPositionAbsolute:
-        mCursorY = std::clamp(action->count - 1, 0, mHeight - 1);
+        mState->cursorY = std::clamp(action->count - 1, 0, mHeight - 1);
         break;
     case Action::ScrollUp:
-        g.scrollUp(mScrollTop, mScrollBottom, action->count);
+        g.scrollUp(mState->scrollTop, mState->scrollBottom, action->count);
         break;
     case Action::ScrollDown:
-        g.scrollDown(mScrollTop, mScrollBottom, action->count);
+        g.scrollDown(mState->scrollTop, mState->scrollBottom, action->count);
         break;
     case Action::SaveCursorPosition:
-        mSavedCursorX = mCursorX;
-        mSavedCursorY = mCursorY;
-        mSavedAttrs = mCurrentAttrs;
-        mSavedWrapPending = savedWrapPending;
+        mState->savedCursorX = mState->cursorX;
+        mState->savedCursorY = mState->cursorY;
+        mState->savedAttrs = mState->currentAttrs;
+        mState->savedWrapPending = savedWrapPending;
         break;
     case Action::RestoreCursorPosition:
-        mCursorX = mSavedCursorX;
-        mCursorY = mSavedCursorY;
-        mCurrentAttrs = mSavedAttrs;
-        mWrapPending = mSavedWrapPending;
+        mState->cursorX = mState->savedCursorX;
+        mState->cursorY = mState->savedCursorY;
+        mState->currentAttrs = mState->savedAttrs;
+        mState->wrapPending = mState->savedWrapPending;
         break;
     case Action::SetMode:
         switch (action->count) {
         case 1: // DECCKM: application cursor keys
-            mCursorKeyMode = true;
+            mState->cursorKeyMode = true;
             break;
         case 7: // DECAWM: autowrap
-            mAutoWrap = true;
+            mState->autoWrap = true;
             break;
         case 12: // ATT610: cursor blink on
-            mCursorBlinkEnabled = true;
+            mState->cursorBlinkEnabled = true;
             break;
         case 25: // DECTCEM: show cursor
-            mCursorVisible = true;
+            mState->cursorVisible = true;
             break;
-        case 1000: mMouseMode1000 = true; break;
-        case 1002: mMouseMode1002 = true; break;
-        case 1003: mMouseMode1003 = true; break;
-        case 1006: mMouseMode1006 = true; break;
-        case 1016: mMouseMode1016 = true; break;
-        case 1049: // Alt screen: save cursor, switch to alt, clear
-            mSavedCursorX = mCursorX;
-            mSavedCursorY = mCursorY;
-            mSavedAttrs = mCurrentAttrs;
-            mSavedWrapPending = savedWrapPending;
-            mSavedCursorShape = mCursorShape;
-            mSavedCursorBlinkEnabled = mCursorBlinkEnabled;
+        case 1000: mState->mouseMode1000 = true; break;
+        case 1002: mState->mouseMode1002 = true; break;
+        case 1003: mState->mouseMode1003 = true; break;
+        case 1006: mState->mouseMode1006 = true; break;
+        case 1016: mState->mouseMode1016 = true; break;
+        case 1049: // Alt screen: swap to fresh alt state, clear grid
+            // Main state is preserved intact in mMainState — on 1049 l we
+            // just flip mState back, no field-by-field restore needed.
+            resetToDefault(mAltState);
+            mState = &mAltState;
             mUsingAltScreen = true;
             // Kitty: switch to alt screen's stack
             mKittyFlags = (mKittyStackDepthAlt > 0) ? mKittyStackAlt[mKittyStackDepthAlt - 1] : 0;
             notifyPointerShapeChanged();  // alt stack is now active
-            mCursorX = 0;
-            mCursorY = 0;
             for (int r = 0; r < mAltGrid.rows(); ++r) mAltGrid.clearRow(r);
             mAltGrid.markAllDirty();
-            mScrollTop = 0;
-            mScrollBottom = mHeight;
             clearSelection();
             break;
-        case 1004: mFocusReporting = true; break;
-        case 2004: mBracketedPaste = true; break;
-        case 2026: mSyncOutput = true; break;
+        case 1004: mState->focusReporting = true; break;
+        case 2004: mState->bracketedPaste = true; break;
+        case 2026: mState->syncOutput = true; break;
         case 2027: break; // grapheme cluster mode — always on, ignore
-        case 2031: mColorPreferenceReporting = true; break;
+        case 2031: mState->colorPreferenceReporting = true; break;
         default:
             sLog().warn("Ignoring private mode set {}", action->count);
             break;
@@ -1624,43 +1609,36 @@ void TerminalEmulator::onAction(const Action *action)
     case Action::ResetMode:
         switch (action->count) {
         case 1: // DECCKM: normal cursor keys
-            mCursorKeyMode = false;
+            mState->cursorKeyMode = false;
             break;
         case 7: // DECAWM: no autowrap
-            mAutoWrap = false;
+            mState->autoWrap = false;
             break;
         case 12: // ATT610: cursor blink off
-            mCursorBlinkEnabled = false;
+            mState->cursorBlinkEnabled = false;
             break;
         case 25: // DECTCEM: hide cursor
-            mCursorVisible = false;
+            mState->cursorVisible = false;
             break;
-        case 1000: mMouseMode1000 = false; break;
-        case 1002: mMouseMode1002 = false; break;
-        case 1003: mMouseMode1003 = false; break;
-        case 1006: mMouseMode1006 = false; break;
-        case 1016: mMouseMode1016 = false; break;
-        case 1049: // Alt screen off: switch back to main, restore cursor
+        case 1000: mState->mouseMode1000 = false; break;
+        case 1002: mState->mouseMode1002 = false; break;
+        case 1003: mState->mouseMode1003 = false; break;
+        case 1006: mState->mouseMode1006 = false; break;
+        case 1016: mState->mouseMode1016 = false; break;
+        case 1049: // Alt screen off: swap back to main — state restored implicitly
+            mState = &mMainState;
             mUsingAltScreen = false;
             // Kitty: switch back to main screen's stack
             mKittyFlags = (mKittyStackDepthMain > 0) ? mKittyStackMain[mKittyStackDepthMain - 1] : 0;
             notifyPointerShapeChanged();  // main stack is active again
-            mCursorX = mSavedCursorX;
-            mCursorY = mSavedCursorY;
-            mCurrentAttrs = mSavedAttrs;
-            mWrapPending = mSavedWrapPending;
-            mCursorShape = mSavedCursorShape;
-            mCursorBlinkEnabled = mSavedCursorBlinkEnabled;
             mDocument.markAllDirty();
-            mScrollTop = 0;
-            mScrollBottom = mHeight;
             clearSelection();
             break;
-        case 1004: mFocusReporting = false; break;
-        case 2004: mBracketedPaste = false; break;
-        case 2026: mSyncOutput = false; break;
+        case 1004: mState->focusReporting = false; break;
+        case 2004: mState->bracketedPaste = false; break;
+        case 2026: mState->syncOutput = false; break;
         case 2027: break; // grapheme cluster mode — always on, ignore
-        case 2031: mColorPreferenceReporting = false; break;
+        case 2031: mState->colorPreferenceReporting = false; break;
         default:
             sLog().warn("Ignoring private mode reset {}", action->count);
             break;

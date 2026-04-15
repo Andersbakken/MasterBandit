@@ -55,10 +55,6 @@ public:
     // thread. Using std::recursive_mutex avoids deadlock in that path.
     std::recursive_mutex& mutex() const { return mMutex; }
 
-    int cursorX() const { return mCursorX; }
-    int cursorY() const { return mCursorY; }
-    bool cursorVisible() const { return mCursorVisible; }
-
     // DECSCUSR cursor shapes
     enum CursorShape {
         CursorBlock = 0,         // blinking block (default)
@@ -68,8 +64,48 @@ public:
         CursorBar = 5,           // blinking bar
         CursorSteadyBar = 6
     };
-    CursorShape cursorShape() const { return mCursorShape; }
-    bool cursorBlinkEnabled() const { return mCursorBlinkEnabled; }
+
+    // Per-screen terminal state. Main and alt screens each own an instance;
+    // mState points at the active one. 1049 h/l swaps mState so app-set modes
+    // (mouse, bracketed paste, focus reporting, etc.) don't leak across the
+    // alt-screen boundary. mDefaults holds config-seeded + factory defaults
+    // used by RIS (and 1049-on-entry for the alt state).
+    struct TerminalState {
+        int cursorX { 0 }, cursorY { 0 };
+        bool cursorVisible { true };
+        CursorShape cursorShape { CursorBlock };
+        bool cursorBlinkEnabled { true };       // DEC private mode 12
+        bool wrapPending { false };             // deferred autowrap state
+        CellAttrs currentAttrs;                 // SGR "pen"
+        uint32_t currentUnderlineColor { 0 };   // SGR 58: packed RGBA8, 0 = use fg
+        // DECSC (ESC 7) / DECRC (ESC 8) save slot — per-screen so a DECSC on
+        // alt doesn't clobber main's saved cursor. Shape/blink are not saved
+        // by DECSC per spec; they're preserved across alt via the state swap
+        // itself (main keeps its shape while alt runs).
+        int savedCursorX { 0 }, savedCursorY { 0 };
+        bool savedWrapPending { false };
+        CellAttrs savedAttrs;
+        int scrollTop { 0 }, scrollBottom { 0 };  // scroll region [top, bottom)
+        bool cursorKeyMode { false };           // DECCKM
+        bool keypadMode { false };              // DECKPAM
+        bool autoWrap { true };                 // DECAWM
+        bool insertMode { false };              // IRM
+        bool bracketedPaste { false };
+        bool focusReporting { false };          // mode 1004
+        bool syncOutput { false };              // mode 2026
+        bool colorPreferenceReporting { false }; // mode 2031
+        bool mouseMode1000 { false };
+        bool mouseMode1002 { false };
+        bool mouseMode1003 { false };
+        bool mouseMode1006 { false };
+        bool mouseMode1016 { false };           // SGR-Pixel
+    };
+
+    int cursorX() const { return mState->cursorX; }
+    int cursorY() const { return mState->cursorY; }
+    bool cursorVisible() const { return mState->cursorVisible; }
+    CursorShape cursorShape() const { return mState->cursorShape; }
+    bool cursorBlinkEnabled() const { return mState->cursorBlinkEnabled; }
 
     // OSC 22 — current pointer shape (CSS name); empty = platform default.
     std::string currentPointerShape() const {
@@ -81,20 +117,29 @@ public:
     // True iff the cursor should currently visibly blink: shape is a blinking
     // variant AND DEC private mode 12 is on.
     bool cursorBlinking() const {
-        // A blinking shape variant (set via DECSCUSR) is sufficient to blink.
-        // Mode 12 (mCursorBlinkEnabled) can independently enable blinking
-        // even for steady shape variants.
-        switch (mCursorShape) {
+        switch (mState->cursorShape) {
         case CursorBlock:
         case CursorUnderline:
         case CursorBar:
             return true;
         default:
-            return mCursorBlinkEnabled;
+            return mState->cursorBlinkEnabled;
         }
     }
-    void setDefaultCursorShape(CursorShape s) { mCursorShape = s; mDefaultCursorShape = s; }
-    void setDefaultCursorBlinkEnabled(bool b) { mCursorBlinkEnabled = b; mDefaultCursorBlinkEnabled = b; }
+    // Config-applied cursor defaults. Propagates the new default to the
+    // config prototype and to BOTH screen states so the user-visible cursor
+    // updates live regardless of which screen is active, and so returning
+    // from alt doesn't revert to a stale pre-config-reload shape.
+    void setDefaultCursorShape(CursorShape s) {
+        mDefaults.cursorShape = s;
+        mMainState.cursorShape = s;
+        mAltState.cursorShape = s;
+    }
+    void setDefaultCursorBlinkEnabled(bool b) {
+        mDefaults.cursorBlinkEnabled = b;
+        mMainState.cursorBlinkEnabled = b;
+        mAltState.cursorBlinkEnabled = b;
+    }
     int width() const { return mWidth; }
     int height() const { return mHeight; }
 
@@ -212,10 +257,10 @@ public:
     void mousePressEvent(const MouseEvent *event);
     void mouseReleaseEvent(const MouseEvent *event);
     void mouseMoveEvent(const MouseEvent *event);
-    bool mouseReportingActive() const { return mMouseMode1000 || mMouseMode1002 || mMouseMode1003; }
-    bool syncOutputActive() const { return mSyncOutput; }
+    bool mouseReportingActive() const { return mState->mouseMode1000 || mState->mouseMode1002 || mState->mouseMode1003; }
+    bool syncOutputActive() const { return mState->syncOutput; }
     uint8_t kittyFlags() const { return mKittyFlags; }
-    bool colorPreferenceReporting() const { return mColorPreferenceReporting; }
+    bool colorPreferenceReporting() const { return mState->colorPreferenceReporting; }
     void setPaletteColor(int idx, uint8_t r, uint8_t g, uint8_t b) {
         if (idx >= 0 && idx < 16) { m16ColorPalette[idx][0] = r; m16ColorPalette[idx][1] = g; m16ColorPalette[idx][2] = b; }
     }
@@ -351,7 +396,7 @@ public:
 
 protected:
     virtual void writeToOutput(const char* data, size_t len) {}
-    bool bracketedPaste() const { return mBracketedPaste; }
+    bool bracketedPaste() const { return mState->bracketedPaste; }
     void resetScrollback(int scrollbackLines);  // reinitializes document with given scrollback capacity
     TerminalCallbacks& callbacks() { return mCallbacks; }
 
@@ -361,13 +406,18 @@ private:
     mutable std::recursive_mutex mMutex;
 
     int mWidth { 0 }, mHeight { 0 };
-    int mCursorX { 0 }, mCursorY { 0 };
-    bool mCursorVisible { true };
-    CursorShape mCursorShape { CursorBlock };
-    CursorShape mDefaultCursorShape { CursorBlock };  // restored on RIS
-    bool mCursorBlinkEnabled { true };                // DEC private mode 12
-    bool mDefaultCursorBlinkEnabled { true };         // restored on RIS
-    bool mWrapPending { false };    // deferred autowrap state
+
+    // Per-screen state. See TerminalState definition above.
+    TerminalState mMainState;
+    TerminalState mAltState;
+    TerminalState mDefaults;        // seeded from config; source for resetToDefault().
+    TerminalState* mState { &mMainState };  // active state — follows 1049 h/l.
+
+    // Reset `s` to current defaults, plus runtime-derived fields (scroll region).
+    void resetToDefault(TerminalState& s) {
+        s = mDefaults;
+        s.scrollBottom = mHeight;
+    }
 
     Document mDocument;
     CellGrid mAltGrid;
@@ -375,24 +425,16 @@ private:
 
     int mViewportOffset { 0 };
 
-    CellAttrs mCurrentAttrs;       // SGR "pen"
-    uint32_t mCurrentUnderlineColor { 0 }; // SGR 58: packed RGBA8, 0 = use fg
     char32_t mLastPrintedChar { 0 };       // for REP (CSI b)
     int mLastPrintedX { -1 }, mLastPrintedY { -1 }; // position of last stored cell (for combining codepoints)
     uint_least16_t mGraphemeState { 0 };   // libgrapheme stateful break detection
-    int mSavedCursorX { 0 }, mSavedCursorY { 0 };
-    bool mSavedWrapPending { false };
-    CellAttrs mSavedAttrs;
-    CursorShape mSavedCursorShape { CursorBlock };
-    bool mSavedCursorBlinkEnabled { false };
-    int mScrollTop { 0 }, mScrollBottom { 0 }; // scroll region [top, bottom)
 
-    enum State {
+    enum ParserState {
         Normal,
         InUtf8,
         InEscape,
         InStringSequence
-    } mState { Normal };
+    } mParserState { Normal };
     char mUtf8Buffer[6];
     int mUtf8Index { 0 };
 
@@ -511,22 +553,8 @@ private:
     void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, uint32_t modifiers);
     void sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers);
 
-    bool mCursorKeyMode { false };  // DECCKM: true = application mode
-    bool mKeypadMode { false };     // DECKPAM: true = application mode
-
-    bool mMouseMode1000 { false };
-    bool mMouseMode1002 { false };
-    bool mMouseMode1003 { false };
-    bool mMouseMode1006 { false };
-    bool mMouseMode1016 { false }; // SGR-Pixel
     int mMouseButtonDown { -1 };
     int mLastMouseX { -1 }, mLastMouseY { -1 };
-    bool mAutoWrap { true };         // DECAWM (private mode 7): autowrap at right margin
-    bool mInsertMode { false };      // IRM (mode 4): insert mode
-    bool mBracketedPaste { false };
-    bool mFocusReporting { false };  // Mode 1004
-    bool mSyncOutput { false };      // Mode 2026: synchronized output
-    bool mColorPreferenceReporting { false }; // Mode 2031
 
     // XTSAVE / XTRESTORE: snapshot of DEC private modes saved via CSI ? Pm s,
     // restored via CSI ? Pm r. Empty mode list = all known modes.

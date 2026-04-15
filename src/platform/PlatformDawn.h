@@ -327,6 +327,12 @@ private:
         std::atomic<bool> dirty { true };
         std::vector<PooledTexture*> pendingRelease;
         wgpu::Buffer dividerVB;
+        // CPU-side divider geometry — written by main thread, consumed by render thread.
+        struct DividerGeom {
+            float x = 0, y = 0, w = 0, h = 0;
+            float r = 0, g = 0, b = 0, a = 0;
+            bool valid = false;
+        } dividerGeom;
         // Cached popup border buffers: 4 buffers (top/bottom/left/right) per popup
         struct PopupBorder {
             std::string popupId;
@@ -375,6 +381,7 @@ private:
     int           tabBarCols_       = 0;
     PooledTexture* tabBarTexture_   = nullptr;
     bool          tabBarDirty_      = true;
+    std::atomic<bool> dividersDirty_ { true }; // set by main thread, consumed by render thread
     // Column ranges for each tab in the rendered tab bar, for hit-testing.
     // Each pair is (startCol, endCol) — the range of columns occupied by that tab.
     std::vector<std::pair<int,int>> tabBarColRanges_;

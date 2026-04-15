@@ -463,15 +463,19 @@ void PlatformDawn::refreshDividers(Tab* tab)
     std::vector<std::pair<int, PaneRect>> dividers;
     collectFirstPaneDividers(layout->root(), dividerWidth_, dividers);
 
-    renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
+    dividersDirty_ = true;
 
     for (auto& [paneId, dr] : dividers) {
         auto it = paneRenderStates_.find(paneId);
         if (it == paneRenderStates_.end()) continue;
-        renderer_.updateDividerBuffer(queue_, it->second.dividerVB,
-            static_cast<float>(dr.x), static_cast<float>(dr.y),
-            static_cast<float>(dr.w), static_cast<float>(dr.h),
-            dividerR_, dividerG_, dividerB_, dividerA_);
+        auto& geom = it->second.dividerGeom;
+        geom.x = static_cast<float>(dr.x);
+        geom.y = static_cast<float>(dr.y);
+        geom.w = static_cast<float>(dr.w);
+        geom.h = static_cast<float>(dr.h);
+        geom.r = dividerR_; geom.g = dividerG_;
+        geom.b = dividerB_; geom.a = dividerA_;
+        geom.valid = true;
     }
 }
 

@@ -229,7 +229,7 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
 
     surfaceNeedsReconfigure_.store(true, std::memory_order_release);
     renderer_.setViewportSize(fbWidth_, fbHeight_);
-    renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
+    dividersDirty_ = true;
 
     // Clear divider buffers for all tabs — geometry is now stale
     for (auto& tabPtr : tabs_)

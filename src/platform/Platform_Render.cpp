@@ -1179,10 +1179,26 @@ void PlatformDawn::renderFrame()
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
         renderer_.composite(encoder, compositeTarget, compositeEntries);
 
-        // Update divider tint for window focus state and draw
-        const float* windowTint = windowHasFocus_.load(std::memory_order_acquire)
-            ? activeTint_ : inactiveTint_;
-        renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_, windowTint);
+        // Flush deferred divider GPU state (viewport + per-pane geometry).
+        // All GPU buffer writes happen here on the render thread, never on the main thread.
+        if (dividersDirty_ || focusChanged) {
+            const float* windowTint = windowHasFocus_.load(std::memory_order_acquire)
+                ? activeTint_ : inactiveTint_;
+            renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_, windowTint);
+            for (auto& panePtr : currentTab->layout()->panes()) {
+                auto it = paneRenderStates_.find(panePtr->id());
+                if (it == paneRenderStates_.end()) continue;
+                auto& geom = it->second.dividerGeom;
+                if (geom.valid) {
+                    renderer_.updateDividerBuffer(queue_, it->second.dividerVB,
+                        geom.x, geom.y, geom.w, geom.h,
+                        geom.r, geom.g, geom.b, geom.a);
+                }
+            }
+            dividersDirty_ = false;
+        }
+
+        // Draw per-pane dividers
         for (auto& panePtr : currentTab->layout()->panes()) {
             auto it = paneRenderStates_.find(panePtr->id());
             if (it == paneRenderStates_.end() || !it->second.dividerVB) continue;

@@ -165,11 +165,10 @@ void PlatformDawn::renderThreadMain()
         if (renderStop_.load(std::memory_order_acquire)) return;
 
         if (renderStop_.load(std::memory_order_acquire)) return;
-        // Tick Dawn on the render thread: it drains device-side events
-        // (completion callbacks, deferred destroys). Must not run on main
-        // thread concurrently with render-thread encoding — Metal backend
-        // asserts `encodeSignalEvent:value: with uncommitted encoder`.
-        // Dawn Tick is thread-safe so it doesn't need platformMutex_.
+        // Tick Dawn on the render thread: drains device-side events
+        // (completion callbacks, deferred destroys). Safe to run without
+        // platformMutex_ because all GPU calls (queue.WriteBuffer,
+        // queue.Submit, etc.) happen on this thread only.
         device_.Tick();
         // renderFrame manages platformMutex_ internally — it releases the
         // lock during shaping so input handlers / deferred callbacks on
@@ -678,7 +677,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         if (!options.replacementChar.empty())
             replacementChar_ = options.replacementChar;
 
-        renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_);
+        dividersDirty_ = true;
         tabBarConfig_ = options.tabBar;
         initTabBar(options.tabBar);
         // Recompute rects with tab bar height applied

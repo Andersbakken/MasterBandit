@@ -132,14 +132,16 @@ struct ColorScheme {
 struct CursorConfig {
     std::string shape = "block";       // "block" | "underline" | "bar"
     bool        blink = false;         // off by default; opt-in via config or DECSCUSR
-    int         blink_interval = 500;  // ms; 0 disables blinking globally
+    int         blink_rate = 800;      // ms per phase (fade-in or fade-out); 0 disables blinking
+    int         blink_fps = 10;        // animation frames per second during blink fade
 
     struct glaze {
         using T = CursorConfig;
         static constexpr auto value = glz::object(
-            "shape",          &T::shape,
-            "blink",          &T::blink,
-            "blink_interval", &T::blink_interval
+            "shape",      &T::shape,
+            "blink",      &T::blink,
+            "blink_rate", &T::blink_rate,
+            "blink_fps",  &T::blink_fps
         );
     };
 };

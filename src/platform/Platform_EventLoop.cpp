@@ -505,7 +505,7 @@ int PlatformDawn::exec()
     }
 
     // Start cursor blink timer from current options (default 500ms).
-    applyBlinkInterval(terminalOptions_.cursor.blink_interval);
+    applyBlinkConfig(terminalOptions_.cursor.blink_rate, terminalOptions_.cursor.blink_fps);
 
     if (eventLoop_) eventLoop_->run();
 

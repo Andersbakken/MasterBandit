@@ -160,15 +160,17 @@ private:
     EventLoop::TimerId         configDebounceTimer_ = 0;
     bool                       configDebounceActive_ = false;
 
-    // Cursor blink: a single repeating timer toggles a phase flag and requests
-    // a redraw. The renderer hides cursors that are currently blinking when the
-    // phase is off. interval=0 disables blinking.
+    // Cursor blink: a repeating timer fires at blink_fps rate, linearly
+    // fading the cursor opacity over blink_rate ms per phase. The render
+    // thread reads the opacity atomically.
     EventLoop::TimerId         cursorBlinkTimer_ = 0;
-    int                        cursorBlinkInterval_ = 500;
-    // Written by the blink timer on the main thread, read by the render
-    // thread in renderFrame.
-    std::atomic<bool>          cursorBlinkPhaseOn_ { true };
-    void                       applyBlinkInterval(int ms);
+    int                        cursorBlinkRate_ = 800;  // ms per phase
+    int                        cursorBlinkFps_ = 10;    // animation fps
+    int                        cursorBlinkStep_ = 0;    // current step within cycle
+    int                        cursorBlinkTotalSteps_ = 0; // steps per full cycle
+    // Written by the blink timer on the main thread, read by the render thread.
+    std::atomic<float>         cursorBlinkOpacity_ { 1.0f };
+    void                       applyBlinkConfig(int rate, int fps);
     void                       resetCursorBlink();
 
     // Animation wakeup: one-shot timer scheduled for the next animated-image
@@ -311,7 +313,7 @@ private:
         uint32_t totalGlyphs = 0;
         int lastCursorX = -1, lastCursorY = -1;
         bool lastCursorVisible = true;
-        bool lastCursorBlinkOn = true;  // last rendered blink phase, for blinking cursors
+        float lastCursorBlinkOpacity = 1.0f;  // last rendered blink opacity
         // Image IDs visible in this pane as of its last re-render. Used to keep
         // the GPU image cache resident for panes that aren't re-rendering this
         // frame (heldTexture is displaying them; eviction would just force a

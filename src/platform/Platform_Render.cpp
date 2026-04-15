@@ -679,13 +679,11 @@ void PlatformDawn::renderFrame()
         rs.lastCursorY = snap.cursorY;
         rs.lastCursorVisible = snap.cursorVisible;
 
-        // Detect blink-phase flip for a currently-blinking cursor. Load the
-        // atomic once — the blink timer (main thread) can flip it between
-        // loads, which would desync cursorBlinkChanged from lastCursorBlinkOn.
-        bool blinkPhase = cursorBlinkPhaseOn_.load(std::memory_order_acquire);
+        // Detect blink opacity change for a currently-blinking cursor.
+        float blinkOpacity = cursorBlinkOpacity_.load(std::memory_order_acquire);
         bool cursorBlinkChanged = snap.cursorBlinking &&
-                                  blinkPhase != rs.lastCursorBlinkOn;
-        rs.lastCursorBlinkOn = blinkPhase;
+                                  blinkOpacity != rs.lastCursorBlinkOpacity;
+        rs.lastCursorBlinkOpacity = blinkOpacity;
 
         bool anyRowDirty = false;
         for (uint8_t d : snap.rowDirty) { if (d) { anyRowDirty = true; break; } }
@@ -805,6 +803,7 @@ void PlatformDawn::renderFrame()
 
     // --- Phase 2: Per-target GPU upload and rendering ---
 
+    float blinkOpacity = cursorBlinkOpacity_.load(std::memory_order_acquire);
     for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
         auto& target = renderTargets[ti];
         TerminalEmulator* term = target.term;
@@ -1014,11 +1013,14 @@ void PlatformDawn::renderFrame()
             params.pane_origin_y = target.pixelOriginY;
             params.max_text_vertices = cs->maxTextVertices;
 
-            auto packCursorColor = [](const TerminalEmulator::DefaultColors& dc) {
+            auto packCursorColor = [&](const TerminalEmulator::DefaultColors& dc, bool applyBlink) {
+                uint8_t alpha = applyBlink
+                    ? static_cast<uint8_t>(blinkOpacity * 255.0f)
+                    : 0xFF;
                 return static_cast<uint32_t>(dc.cursorR)
                      | (static_cast<uint32_t>(dc.cursorG) << 8)
                      | (static_cast<uint32_t>(dc.cursorB) << 16)
-                     | 0xFF000000u;
+                     | (static_cast<uint32_t>(alpha) << 24);
             };
 
             // Cursor
@@ -1030,7 +1032,8 @@ void PlatformDawn::renderFrame()
                     snap.cursorY >= 0 && snap.cursorY < snap.rows) {
                     params.cursor_col   = static_cast<uint32_t>(snap.cursorX);
                     params.cursor_row   = static_cast<uint32_t>(snap.cursorY);
-                    params.cursor_color = packCursorColor(snap.defaults);
+                    bool blink = isFocused && snap.cursorBlinking;
+                    params.cursor_color = packCursorColor(snap.defaults, blink);
                     params.cursor_type  = isFocused ? 1u : 2u;
                 }
             } else {
@@ -1047,12 +1050,10 @@ void PlatformDawn::renderFrame()
                     cursorViewRow >= 0 && cursorViewRow < snap.rows) {
                     params.cursor_col   = static_cast<uint32_t>(snap.cursorX);
                     params.cursor_row   = static_cast<uint32_t>(cursorViewRow);
-                    params.cursor_color = packCursorColor(snap.defaults);
+                    bool blink = isFocused && !popupHasFocus && snap.cursorBlinking;
+                    params.cursor_color = packCursorColor(snap.defaults, blink);
                     if (!isFocused || popupHasFocus) {
                         params.cursor_type = 2u;
-                    } else if (snap.cursorBlinking && !cursorBlinkPhaseOn_) {
-                        // Off-phase of a blinking cursor: render no cursor.
-                        params.cursor_type = 0u;
                     } else {
                         switch (snap.cursorShape) {
                         case TerminalEmulator::CursorBlock:

@@ -808,24 +808,40 @@ void PlatformDawn::applyFontChange(const Config& config)
     spdlog::info("Config reload: font changed to '{}'", fontPath);
 }
 
-void PlatformDawn::applyBlinkInterval(int ms)
+void PlatformDawn::applyBlinkConfig(int rate, int fps)
 {
     if (!eventLoop_) {
-        cursorBlinkInterval_ = ms;
+        cursorBlinkRate_ = rate;
+        cursorBlinkFps_ = fps;
         return;
     }
     if (cursorBlinkTimer_) {
         eventLoop_->removeTimer(cursorBlinkTimer_);
         cursorBlinkTimer_ = 0;
     }
-    cursorBlinkInterval_ = ms;
-    cursorBlinkPhaseOn_ = true;
-    if (ms <= 0) return;
-    cursorBlinkTimer_ = eventLoop_->addTimer(static_cast<uint64_t>(ms), true, [this]() {
-        cursorBlinkPhaseOn_ = !cursorBlinkPhaseOn_;
-        // Only request a redraw if something in the *active* tab is being
-        // rendered with a visible blinking cursor — inactive tabs aren't drawn,
-        // and an active overlay supersedes the layout's panes/popups.
+    cursorBlinkRate_ = rate;
+    cursorBlinkFps_ = fps;
+    cursorBlinkOpacity_ = 1.0f;
+    cursorBlinkStep_ = 0;
+    if (rate <= 0 || fps <= 0) return;
+
+    int frameMs = 1000 / fps;
+    int stepsPerPhase = std::max(1, rate / frameMs);
+    cursorBlinkTotalSteps_ = stepsPerPhase * 2; // fade-out + fade-in
+
+    cursorBlinkTimer_ = eventLoop_->addTimer(static_cast<uint64_t>(frameMs), true, [this]() {
+        cursorBlinkStep_ = (cursorBlinkStep_ + 1) % cursorBlinkTotalSteps_;
+        int stepsPerPhase = cursorBlinkTotalSteps_ / 2;
+        float t;
+        if (cursorBlinkStep_ < stepsPerPhase) {
+            // Fade-out phase: 1.0 → 0.0
+            t = 1.0f - static_cast<float>(cursorBlinkStep_) / static_cast<float>(stepsPerPhase);
+        } else {
+            // Fade-in phase: 0.0 → 1.0
+            t = static_cast<float>(cursorBlinkStep_ - stepsPerPhase) / static_cast<float>(stepsPerPhase);
+        }
+        cursorBlinkOpacity_.store(t, std::memory_order_release);
+
         Tab* tab = activeTab();
         if (!tab) return;
         auto wantsRedraw = [](TerminalEmulator* term) {
@@ -852,8 +868,9 @@ void PlatformDawn::applyBlinkInterval(int ms)
 
 void PlatformDawn::resetCursorBlink()
 {
-    if (cursorBlinkInterval_ <= 0 || !cursorBlinkTimer_ || !eventLoop_) return;
-    cursorBlinkPhaseOn_ = true;
+    if (cursorBlinkRate_ <= 0 || !cursorBlinkTimer_ || !eventLoop_) return;
+    cursorBlinkStep_ = 0;
+    cursorBlinkOpacity_.store(1.0f, std::memory_order_release);
     eventLoop_->restartTimer(cursorBlinkTimer_);
     setNeedsRedraw();
 }
@@ -929,7 +946,7 @@ void PlatformDawn::reloadConfigNow()
     notifyAllTerminals([&config](TerminalEmulator* term) {
         term->applyCursorConfig(config.cursor);
     });
-    applyBlinkInterval(config.cursor.blink_interval);
+    applyBlinkConfig(config.cursor.blink_rate, config.cursor.blink_fps);
 
     // Divider
     dividerWidth_ = std::max(0, config.divider_width);

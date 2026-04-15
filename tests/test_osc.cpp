@@ -427,3 +427,146 @@ TEST_CASE("isKnownPointerShape recognises CSS and X11 names")
     CHECK_FALSE(TE::isKnownPointerShape("not-a-cursor-name"));
     CHECK_FALSE(TE::isKnownPointerShape(""));
 }
+
+// ── OSC 52 clipboard ──────────────────────────────────────────────────────────
+
+TEST_CASE("OSC 52 c;<base64> writes to clipboard")
+{
+    TestTerminal t;
+    t.osc("52;c;aGVsbG8=");          // base64("hello")
+    CHECK(t.capturedClipboard == "hello");
+}
+
+TEST_CASE("OSC 52 c;? queries clipboard and responds with base64")
+{
+    TestTerminal t;
+    t.clipboardContent = "world";
+    t.clearOutput();
+    t.osc("52;c;?");
+    CHECK(t.output() == "\x1b]52;c;d29ybGQ=\x1b\\");
+}
+
+TEST_CASE("OSC 52 with empty data clears the clipboard")
+{
+    TestTerminal t;
+    t.capturedClipboard = "previous";
+    t.osc("52;c;");
+    CHECK(t.capturedClipboard == "");
+}
+
+TEST_CASE("OSC 52 round-trip: write then query returns same content")
+{
+    TestTerminal t;
+    t.osc("52;c;dGVzdGluZw==");      // base64("testing")
+    t.clipboardContent = t.capturedClipboard;
+    t.clearOutput();
+    t.osc("52;c;?");
+    CHECK(t.output() == "\x1b]52;c;dGVzdGluZw==\x1b\\");
+}
+
+// ── OSC 9;4 kitty progress ────────────────────────────────────────────────────
+
+TEST_CASE("OSC 9;4 reports progress state and percent")
+{
+    TestTerminal t;
+    t.osc("9;4;1;42");
+    CHECK(t.progressCallCount == 1);
+    CHECK(t.capturedProgressState == 1);
+    CHECK(t.capturedProgressPct == 42);
+}
+
+TEST_CASE("OSC 9;4 state 0 clears progress (percent optional)")
+{
+    TestTerminal t;
+    t.osc("9;4;1;50");
+    t.osc("9;4;0");
+    CHECK(t.capturedProgressState == 0);
+    CHECK(t.progressCallCount == 2);
+}
+
+TEST_CASE("OSC 9;4 states 2/3/4: error, indeterminate, pause")
+{
+    TestTerminal t;
+    t.osc("9;4;2;25");
+    CHECK(t.capturedProgressState == 2);
+    t.osc("9;4;3");
+    CHECK(t.capturedProgressState == 3);
+    t.osc("9;4;4");
+    CHECK(t.capturedProgressState == 4);
+}
+
+TEST_CASE("OSC 9 without ;4 does not fire progress callback")
+{
+    TestTerminal t;
+    t.osc("9;some other payload");
+    CHECK(t.progressCallCount == 0);
+}
+
+// ── XTGETTCAP (DCS + q ... ST) ────────────────────────────────────────────────
+
+TEST_CASE("XTGETTCAP returns 1+r for known capability (TN)")
+{
+    TestTerminal t;
+    t.clearOutput();
+    // Query "TN" (terminal name) — hex-encoded: "544E"
+    t.dcs("+q544E");
+    const std::string& out = t.output();
+    REQUIRE(out.size() >= 9);
+    CHECK(out.substr(0, 5) == "\x1bP1+r");
+    CHECK(out.substr(5, 4) == "544E");
+    CHECK(out.substr(out.size() - 2) == "\x1b\\");
+}
+
+TEST_CASE("XTGETTCAP returns 0+r for unknown capability")
+{
+    TestTerminal t;
+    t.clearOutput();
+    // "zzzz" — hex "7A7A7A7A"
+    t.dcs("+q7A7A7A7A");
+    const std::string& out = t.output();
+    REQUIRE(out.size() >= 7);
+    CHECK(out.substr(0, 5) == "\x1bP0+r");
+    CHECK(out.substr(out.size() - 2) == "\x1b\\");
+}
+
+TEST_CASE("XTGETTCAP handles multiple capabilities separated by ;")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.dcs("+q544E;7A7A7A7A");
+    const std::string& out = t.output();
+    CHECK(out.find("\x1bP1+r") != std::string::npos);
+    CHECK(out.find("\x1bP0+r") != std::string::npos);
+}
+
+// ── DSR 5 device status ───────────────────────────────────────────────────────
+
+TEST_CASE("DSR 5 (device status) responds with OK")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("5n");
+    CHECK(t.output() == "\x1b[0n");
+}
+
+// ── SGR 4:5 dashed underline ──────────────────────────────────────────────────
+
+TEST_CASE("SGR 4:5 sets dashed underline style")
+{
+    TestTerminal t;
+    t.csi("4:5m");
+    t.feed("A");
+    CHECK(t.attrs(0, 0).underline());
+    // Only 2 bits of storage for style; dashed is aliased to dotted (3).
+    CHECK(t.attrs(0, 0).underlineStyle() == 3);
+}
+
+// ── mode 2027 DECRQM always reports permanently set ───────────────────────────
+
+TEST_CASE("DECRQM mode 2027 reports permanently set (pm=3)")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("?2027$p");
+    CHECK(t.output() == "\x1b[?2027;3$y");
+}

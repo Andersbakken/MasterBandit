@@ -35,6 +35,14 @@ struct TestTerminal {
     std::string capturedNotifyId;
     std::string capturedPointerShape;
     int         pointerShapeCallCount = 0;
+    // OSC 52: text sent to copyToClipboard; clipboardContent is what
+    // pasteFromClipboard returns when queried.
+    std::string capturedClipboard;
+    std::string clipboardContent;
+    // OSC 9;4 progress: last (state, pct) delivered; callCount tracks invocations.
+    int         capturedProgressState = -1;
+    int         capturedProgressPct   = -1;
+    int         progressCallCount     = 0;
 
     InnerTerminal term;
 
@@ -50,6 +58,17 @@ struct TestTerminal {
             cb.onMouseCursorShape = [this](const std::string& s) {
                 capturedPointerShape = s;
                 ++pointerShapeCallCount;
+            };
+            cb.copyToClipboard = [this](const std::string& text) {
+                capturedClipboard = text;
+            };
+            cb.pasteFromClipboard = [this]() {
+                return clipboardContent;
+            };
+            cb.onProgressChanged = [this](int state, int pct) {
+                capturedProgressState = state;
+                capturedProgressPct = pct;
+                ++progressCallCount;
             };
             return cb;
           }())

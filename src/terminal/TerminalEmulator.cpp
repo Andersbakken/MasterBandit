@@ -1292,7 +1292,8 @@ void TerminalEmulator::processCSI()
                     ps = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
                 }
                 switch (ps) {
-                case 0: case 1: mCursorShape = CursorBlock; break;
+                case 0: mCursorShape = mDefaultCursorShape; break;
+                case 1: mCursorShape = CursorBlock; break;
                 case 2: mCursorShape = CursorSteadyBlock; break;
                 case 3: mCursorShape = CursorUnderline; break;
                 case 4: mCursorShape = CursorSteadyUnderline; break;

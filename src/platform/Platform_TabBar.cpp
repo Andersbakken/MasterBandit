@@ -331,8 +331,10 @@ void PlatformDawn::renderTabBar()
         placeChar(col, " ", tbInactiveFgColor_, tbBgColor_);
     }
 
+    std::vector<std::pair<int,int>> colRanges(tabs_.size(), {-1, -1});
     for (int i = visStart; i < visEnd; ++i) {
         auto& ti = tabInfos[i];
+        int startCol = col;
         const char* p = ti.text.c_str();
         while (*p && col < cols) {
             int len = utf8::seqLen(static_cast<uint8_t>(*p));
@@ -344,6 +346,11 @@ void PlatformDawn::renderTabBar()
         uint32_t nextBg = (i + 1 < visEnd)
             ? tabInfos[i + 1].bgColor : tbBgColor_;
         placeChar(col, SEP_RIGHT, ti.bgColor, nextBg);
+        colRanges[i] = {startCol, col};
+    }
+    {
+        std::lock_guard<std::mutex> plk(platformMutex_);
+        tabBarColRanges_ = std::move(colRanges);
     }
 
     // Right overflow indicator

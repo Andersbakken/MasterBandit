@@ -375,6 +375,9 @@ private:
     int           tabBarCols_       = 0;
     PooledTexture* tabBarTexture_   = nullptr;
     bool          tabBarDirty_      = true;
+    // Column ranges for each tab in the rendered tab bar, for hit-testing.
+    // Each pair is (startCol, endCol) — the range of columns occupied by that tab.
+    std::vector<std::pair<int,int>> tabBarColRanges_;
     int           tabBarAnimFrame_  = 0;
     uint64_t      lastAnimTick_     = 0;
     std::vector<PooledTexture*> pendingTabBarRelease_;
@@ -469,6 +472,7 @@ private:
 
     void initTabBar(const TabBarConfig& cfg);
     void renderTabBar();
+    int  resolveTabBarClickIndex(double sx, double sy); // caller must hold platformMutex_
 
     void reloadConfigNow();
     void applyFontChange(const Config& config);

@@ -306,38 +306,20 @@ MouseRegion PlatformDawn::hitTest(double sx, double sy)
 
 // Resolve which tab index was clicked in the tab bar, given scaled pixel coords.
 // Returns -1 if no tab was hit.
-static int resolveTabBarClickIndex(double sx, double sy,
-                                   float tabBarCharWidth,
-                                   uint32_t fbWidth, uint32_t fbHeight,
-                                   Tab* tab,
-                                   const std::vector<std::unique_ptr<Tab>>& tabs)
+int PlatformDawn::resolveTabBarClickIndex(double sx, double sy)
 {
-    if (tabBarCharWidth <= 0.0f) return -1;
-    PaneRect tbRect = tab->layout()->tabBarRect(fbWidth, fbHeight);
+    if (tabBarCharWidth_ <= 0.0f) return -1;
+    Tab* tab = activeTab();
+    if (!tab) return -1;
+    PaneRect tbRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
     if (tbRect.isEmpty()) return -1;
 
-    int clickCol = static_cast<int>((sx - tbRect.x) / tabBarCharWidth);
-    int col = 0;
-    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
-        Tab* t = tabs[i].get();
-        std::string text = " ";
-        if (!t->icon().empty()) text += t->icon() + " ";
-        text += "[" + std::to_string(i + 1) + "] ";
-        if (!t->title().empty()) text += t->title();
-        text += " ";
-        // Count UTF-8 codepoints
-        int w = 0;
-        const char* p = text.c_str();
-        const char* end = p + text.size();
-        while (p < end) {
-            int sl = utf8::seqLen(static_cast<uint8_t>(*p));
-            w++;
-            p += std::min(sl, static_cast<int>(end - p));
-        }
-        w += 1; // separator
-        if (clickCol >= col && clickCol < col + w)
+    int clickCol = static_cast<int>((sx - tbRect.x) / tabBarCharWidth_);
+    for (int i = 0; i < static_cast<int>(tabBarColRanges_.size()); ++i) {
+        auto [start, end] = tabBarColRanges_[i];
+        if (start < 0) continue; // not visible
+        if (clickCol >= start && clickCol < end)
             return i;
-        col += w;
     }
     return -1;
 }
@@ -489,7 +471,7 @@ void PlatformDawn::onMouseButton(int button, int action, int mods)
         mouseCtx_.pixelY  = static_cast<int>(sy);
         mouseCtx_.button  = mb;
         mouseCtx_.tabBarClickIndex = (region == MouseRegion::TabBar)
-            ? resolveTabBarClickIndex(sx, sy, tabBarCharWidth_, fbWidth_, fbHeight_, tab, tabs_)
+            ? resolveTabBarClickIndex(sx, sy)
             : -1;
 
         Action::Any act = *matched;

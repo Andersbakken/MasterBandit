@@ -1068,13 +1068,15 @@ void Renderer::composite(wgpu::CommandEncoder& encoder,
     }
 }
 
-void Renderer::updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint32_t fbHeight)
+void Renderer::updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint32_t fbHeight,
+                                      const float* tint)
 {
     if (!rectBindGroupLayout_) return;
 
-    // Dividers always use no tint (1,1,1,1); viewport in first two floats.
+    static constexpr float kNoTint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    if (!tint) tint = kNoTint;
     float uniforms[8] = { static_cast<float>(fbWidth), static_cast<float>(fbHeight),
-                           0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+                           0.0f, 0.0f, tint[0], tint[1], tint[2], tint[3] };
 
     if (!dividerUniformBuffer_) {
         wgpu::BufferDescriptor desc = {};

@@ -94,7 +94,8 @@ public:
 
     // Persistent divider support.
     // Call updateDividerViewport whenever the swapchain dimensions change.
-    void updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint32_t fbHeight);
+    void updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint32_t fbHeight,
+                               const float* tint = nullptr);
 
     // Build (or update) a 6-vertex buffer for a single divider rect.
     // Pass a null Buffer to create a new one; pass an existing Buffer to overwrite in place.

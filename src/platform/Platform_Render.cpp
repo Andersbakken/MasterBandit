@@ -1153,8 +1153,8 @@ void PlatformDawn::renderFrame()
     }
     renderer_.retainImagesOnly(imagesToRetain);
 
-    // Render tab bar if dirty
-    if (tabBarVisible() && tabBarDirty_) {
+    // Render tab bar if dirty or window focus changed (tint update)
+    if (tabBarVisible() && (tabBarDirty_ || focusChanged)) {
         renderTabBar();
     }
 
@@ -1179,7 +1179,10 @@ void PlatformDawn::renderFrame()
         wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
         renderer_.composite(encoder, compositeTarget, compositeEntries);
 
-        // Draw per-pane dividers (pre-built vertex buffers, no allocation)
+        // Update divider tint for window focus state and draw
+        const float* windowTint = windowHasFocus_.load(std::memory_order_acquire)
+            ? activeTint_ : inactiveTint_;
+        renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_, windowTint);
         for (auto& panePtr : currentTab->layout()->panes()) {
             auto it = paneRenderStates_.find(panePtr->id());
             if (it == paneRenderStates_.end() || !it->second.dividerVB) continue;

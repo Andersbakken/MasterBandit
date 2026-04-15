@@ -385,8 +385,9 @@ void PlatformDawn::renderTabBar()
 
     wgpu::CommandEncoderDescriptor encDesc = {};
     wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
-    static constexpr float kNoTint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    renderer_.renderToPane(encoder, queue_, tabBarFontName_, params, cs, newTexture->view, kNoTint, {});
+    const float* windowTint = windowHasFocus_.load(std::memory_order_acquire)
+        ? activeTint_ : inactiveTint_;
+    renderer_.renderToPane(encoder, queue_, tabBarFontName_, params, cs, newTexture->view, windowTint, {});
     wgpu::CommandBuffer commands = encoder.Finish();
     queue_.Submit(1, &commands);
     pendingComputeRelease_.push_back(cs);

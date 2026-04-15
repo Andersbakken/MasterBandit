@@ -622,6 +622,7 @@ struct KeyEvent
 {
     Key key { Key_unknown };
     std::string text;
+    uint32_t shiftedKey { 0 };   // Kitty protocol: Unicode codepoint of shifted variant (e.g. 'C' for 'c')
     size_t count { 1 };
     bool autoRepeat { false };
     uint32_t modifiers { 0 };

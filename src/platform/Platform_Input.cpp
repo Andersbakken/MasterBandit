@@ -49,13 +49,19 @@ void PlatformDawn::onKey(int key, int scancode, int action, int mods)
     ev.count = 1;
 
     if (term->kittyFlags() != 0) {
-        // Kitty mode: generate text from key for printable ASCII keys
-        if (key >= Key_Space && key <= Key_AsciiTilde) {
+        // Kitty mode: text should be the unmodified key character — modifiers
+        // are encoded separately in the CSI u sequence. For ctrl+letter,
+        // send the lowercase letter, not the control character.
+        if (controlPressed_ && ((key >= Key_A && key <= Key_Z) || (key >= 0x61 && key <= 0x7a))) {
+            char ch = (key >= 0x61) ? static_cast<char>(key) : static_cast<char>(key - Key_A + 'a');
+            ev.text = std::string(1, ch);
+        } else if (key >= Key_Space && key <= Key_AsciiTilde) {
             std::string name = window_ ? window_->keyName(scancode) : std::string{};
             if (!name.empty()) ev.text = name;
-        } else if (controlPressed_ && ((key >= Key_A && key <= Key_Z) || (key >= 0x61 && key <= 0x7a))) {
-            int offset = (key >= 0x61) ? (key - 0x61) : (key - Key_A);
-            ev.text = std::string(1, static_cast<char>(offset + 1));
+        }
+        // Populate shifted_key for report_alternate_key mode
+        if (window_) {
+            ev.shiftedKey = window_->shiftedKeyCodepoint(scancode);
         }
         term->keyPressEvent(&ev);
         return;

@@ -511,6 +511,33 @@ std::string CocoaWindow::keyName(int keycode) const
     return std::string(reinterpret_cast<const char*>(chars), len);
 }
 
+uint32_t CocoaWindow::shiftedKeyCodepoint(int keycode) const
+{
+    TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
+    CFDataRef layoutData = static_cast<CFDataRef>(
+        TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+    if (!layoutData) { CFRelease(source); return 0; }
+
+    const UCKeyboardLayout* layout =
+        reinterpret_cast<const UCKeyboardLayout*>(CFDataGetBytePtr(layoutData));
+    UInt32 deadKeyState = 0;
+    UniChar chars[8];
+    UniCharCount len = 0;
+    // Modifier state 0x02 = shift key
+    UCKeyTranslate(layout, static_cast<UInt16>(keycode),
+                    kUCKeyActionDisplay, 0x02, LMGetKbdType(),
+                    kUCKeyTranslateNoDeadKeysBit, &deadKeyState, 8, &len, chars);
+    CFRelease(source);
+    if (len == 0) return 0;
+    // Convert UTF-16 to codepoint
+    uint32_t cp = chars[0];
+    if (len >= 2 && (chars[0] & 0xFC00) == 0xD800 && (chars[1] & 0xFC00) == 0xDC00) {
+        cp = 0x10000 + ((static_cast<uint32_t>(chars[0] & 0x03FF) << 10) | (chars[1] & 0x03FF));
+    }
+    if (cp < 0x20 || cp == 0x7f) return 0;
+    return cp;
+}
+
 wgpu::Surface CocoaWindow::createWgpuSurface(wgpu::Instance instance)
 {
     CAMetalLayer* layer = static_cast<CAMetalLayer*>([mbView_ layer]);

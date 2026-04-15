@@ -255,6 +255,7 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
 {
     bool disambiguate = mKittyFlags & 0x01;
     bool reportEvents = mKittyFlags & 0x02;
+    bool reportAlternate = mKittyFlags & 0x04;
     bool reportAllKeys = mKittyFlags & 0x08;
     bool reportText = mKittyFlags & 0x10;
 
@@ -379,12 +380,21 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     }
 
     // Build CSI u sequence
-    char buf[64];
+    // Format: CSI keycode[:shifted_key[:alternate_key]] ; mods[:event] [;text] u
+    char buf[128];
     int len;
 
     bool needMods = (wireMods > 1 || (reportEvents && eventType != 1));
     bool needEvent = (reportEvents && eventType != 1);
     bool needText = (reportText && !ev.text.empty());
+
+    // Build key portion: keycode or keycode:shifted_key
+    char keyPart[32];
+    if (reportAlternate && ev.shiftedKey != 0 && ev.shiftedKey != keyCode) {
+        snprintf(keyPart, sizeof(keyPart), "%u:%u", keyCode, ev.shiftedKey);
+    } else {
+        snprintf(keyPart, sizeof(keyPart), "%u", keyCode);
+    }
 
     if (needText) {
         // Build text as codepoints
@@ -399,18 +409,18 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
             textCps += cpBuf;
         }
         if (needEvent) {
-            len = snprintf(buf, sizeof(buf), "\x1b[%u;%u:%u;%su", keyCode, wireMods, eventType, textCps.c_str());
+            len = snprintf(buf, sizeof(buf), "\x1b[%s;%u:%u;%su", keyPart, wireMods, eventType, textCps.c_str());
         } else if (needMods) {
-            len = snprintf(buf, sizeof(buf), "\x1b[%u;%u;%su", keyCode, wireMods, textCps.c_str());
+            len = snprintf(buf, sizeof(buf), "\x1b[%s;%u;%su", keyPart, wireMods, textCps.c_str());
         } else {
-            len = snprintf(buf, sizeof(buf), "\x1b[%u;;%su", keyCode, textCps.c_str());
+            len = snprintf(buf, sizeof(buf), "\x1b[%s;;%su", keyPart, textCps.c_str());
         }
     } else if (needEvent) {
-        len = snprintf(buf, sizeof(buf), "\x1b[%u;%u:%uu", keyCode, wireMods, eventType);
+        len = snprintf(buf, sizeof(buf), "\x1b[%s;%u:%uu", keyPart, wireMods, eventType);
     } else if (needMods) {
-        len = snprintf(buf, sizeof(buf), "\x1b[%u;%uu", keyCode, wireMods);
+        len = snprintf(buf, sizeof(buf), "\x1b[%s;%uu", keyPart, wireMods);
     } else {
-        len = snprintf(buf, sizeof(buf), "\x1b[%uu", keyCode);
+        len = snprintf(buf, sizeof(buf), "\x1b[%su", keyPart);
     }
 
     return std::string(buf, len);

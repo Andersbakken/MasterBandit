@@ -386,3 +386,79 @@ TEST_CASE("alt screen switch mid-injectData writes to correct grid") {
     // Main screen should still have 'A'
     CHECK(t.wc(0, 0) == 'A');
 }
+
+// === Ctrl+letter encoding (regression: was broken, text was empty) ===
+
+TEST_CASE("kitty: disambiguate ctrl+c sends CSI 99;5u") {
+    TestTerminal t;
+    t.csi(">1u"); // DISAMBIGUATE
+    t.clearOutput();
+    // In Kitty mode, Ctrl+C should send the letter 'c' as text, not \x03.
+    // The encoder maps keyCode from text codepoint: 'c' = 99, ctrl+1 = 5.
+    t.sendKey(Key_C, CtrlModifier, KeyAction_Press, "c");
+    CHECK(t.output() == "\x1b[99;5u");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+c with lowercase key sends CSI 99;5u") {
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    // Key_C is uppercase enum but text is 'c' — keyCode should be 99 ('c')
+    t.sendKey(Key_C, CtrlModifier, KeyAction_Press, "c");
+    CHECK(t.output() == "\x1b[99;5u");
+}
+
+TEST_CASE("kitty: report_all_keys ctrl+c sends CSI 99;5u") {
+    TestTerminal t;
+    t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
+    t.clearOutput();
+    t.sendKey(Key_C, CtrlModifier, KeyAction_Press, "c");
+    CHECK(t.output() == "\x1b[99;5u");
+}
+
+// === shifted_key encoding ===
+
+TEST_CASE("kitty: report_alternate_key includes shifted_key for letter") {
+    TestTerminal t;
+    t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
+    t.clearOutput();
+    // 'a' with shifted_key 'A' (65)
+    t.sendKey(Key_A, 0, KeyAction_Press, "a", 'A');
+    // Plain press, no mods — should send just text
+    CHECK(t.output() == "a");
+}
+
+TEST_CASE("kitty: report_alternate_key ctrl+a includes shifted_key") {
+    TestTerminal t;
+    t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
+    t.clearOutput();
+    // keyCode=97 ('a'), shifted_key=65 ('A'), mods=5 (ctrl+1)
+    t.sendKey(Key_A, CtrlModifier, KeyAction_Press, "a", 'A');
+    CHECK(t.output() == "\x1b[97:65;5u");
+}
+
+TEST_CASE("kitty: report_alternate_key shift+a includes shifted_key") {
+    TestTerminal t;
+    t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
+    t.clearOutput();
+    // Shift+a: keyCode=97 ('a'), shifted_key=65 ('A'), mods=2 (shift+1)
+    t.sendKey(Key_A, ShiftModifier, KeyAction_Press, "A", 'A');
+    CHECK(t.output() == "\x1b[97:65;2u");
+}
+
+TEST_CASE("kitty: report_alternate_key omits shifted_key when same as keycode") {
+    TestTerminal t;
+    t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
+    t.clearOutput();
+    // Space has shifted_key = space (same as keycode 32)
+    t.sendKey(Key_Space, CtrlModifier, KeyAction_Press, " ", ' ');
+    CHECK(t.output() == "\x1b[32;5u"); // no :shifted_key
+}
+
+TEST_CASE("kitty: without report_alternate_key omits shifted_key") {
+    TestTerminal t;
+    t.csi(">1u"); // DISAMBIGUATE only
+    t.clearOutput();
+    t.sendKey(Key_A, CtrlModifier, KeyAction_Press, "a", 'A');
+    CHECK(t.output() == "\x1b[97;5u"); // no :65
+}

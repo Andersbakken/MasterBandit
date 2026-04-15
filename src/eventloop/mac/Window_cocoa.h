@@ -33,6 +33,7 @@ public:
     std::string getClipboard() const override;
 
     std::string keyName(int keycode) const override;
+    uint32_t shiftedKeyCodepoint(int keycode) const override;
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
     void setCursorStyle(CursorStyle shape) override;

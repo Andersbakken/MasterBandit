@@ -30,6 +30,7 @@ public:
 
     // Key name for a given platform key code (for Kitty keyboard protocol)
     virtual std::string keyName(int keycode) const { (void)keycode; return {}; }
+    virtual uint32_t shiftedKeyCodepoint(int keycode) const { (void)keycode; return 0; }
 
     // WebGPU surface
     virtual wgpu::Surface createWgpuSurface(wgpu::Instance instance) = 0;

@@ -5,6 +5,7 @@
 - [x] Mode 2031 — Color preference notification (light/dark mode).
 - [x] DECSCUSR (`CSI Ps SP q`) — Set cursor style: block, underline, bar, blinking variants.
 - [x] Kitty keyboard protocol (`CSI > Ps u`) — Unambiguous key encoding. Distinguishes ESC from Alt+[, Ctrl+I from Tab, reports key release, supports non-Latin layouts. Used by Neovim, Vim, crossterm, textual, Ink.
+- [ ] Kitty keyboard: `alternate_key` (base layout key) — The key codepoint from the base keyboard layout (group 0, level 0) regardless of the current layout. Requires XKB `xkb_keymap_key_get_syms_by_level(keymap, keycode, 0, 0, &syms)` on Linux and `UCKeyTranslate` with US layout on macOS. Only relevant for non-US keyboard layouts. Encoded as the third field in `CSI keycode:shifted_key:alternate_key ; mods u` when `REPORT_ALTERNATE_KEY` flag (bit 2) is set.
 - [x] Kitty graphics protocol — APC-based image protocol. Chunked transfer, persistent image IDs, PNG/RGB/RGBA formats, zlib decompression, query/delete, response messages, image numbers (`I=`), source rect cropping.
 - [x] Kitty graphics: animation — frame load (`a=f`), animation control (`a=a`), delta compositing with base frame references, render-loop driven frame advancement.
 - [x] Kitty graphics: file/shm transmission — `t=f` (file), `t=t` (temp file), `t=s` (shared memory).

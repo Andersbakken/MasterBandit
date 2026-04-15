@@ -927,3 +927,16 @@ std::string XCBWindow::keyName(int keycode) const
     utf8::append(result, cp);
     return result;
 }
+
+uint32_t XCBWindow::shiftedKeyCodepoint(int keycode) const
+{
+    if (!xkbKeymap_) return 0;
+    // Level 1 is the shifted variant in the current layout group
+    xkb_layout_index_t group = xkb_state_key_get_layout(xkbState_, static_cast<xkb_keycode_t>(keycode));
+    const xkb_keysym_t* syms = nullptr;
+    int nsyms = xkb_keymap_key_get_syms_by_level(xkbKeymap_, static_cast<xkb_keycode_t>(keycode), group, 1, &syms);
+    if (nsyms < 1 || !syms) return 0;
+    uint32_t cp = xkb_keysym_to_utf32(syms[0]);
+    if (cp < 0x20 || cp == 0x7f) return 0;
+    return cp;
+}

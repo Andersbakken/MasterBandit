@@ -383,6 +383,8 @@ private:
     int mSavedCursorX { 0 }, mSavedCursorY { 0 };
     bool mSavedWrapPending { false };
     CellAttrs mSavedAttrs;
+    CursorShape mSavedCursorShape { CursorBlock };
+    bool mSavedCursorBlinkEnabled { false };
     int mScrollTop { 0 }, mScrollBottom { 0 }; // scroll region [top, bottom)
 
     enum State {

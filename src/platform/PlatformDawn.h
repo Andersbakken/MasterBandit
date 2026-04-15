@@ -313,6 +313,7 @@ private:
         uint32_t totalGlyphs = 0;
         int lastCursorX = -1, lastCursorY = -1;
         bool lastCursorVisible = true;
+        int lastCursorShape = -1;
         float lastCursorBlinkOpacity = 1.0f;  // last rendered blink opacity
         // Image IDs visible in this pane as of its last re-render. Used to keep
         // the GPU image cache resident for panes that aren't re-rendering this

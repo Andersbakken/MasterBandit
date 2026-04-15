@@ -1596,6 +1596,8 @@ void TerminalEmulator::onAction(const Action *action)
             mSavedCursorY = mCursorY;
             mSavedAttrs = mCurrentAttrs;
             mSavedWrapPending = savedWrapPending;
+            mSavedCursorShape = mCursorShape;
+            mSavedCursorBlinkEnabled = mCursorBlinkEnabled;
             mUsingAltScreen = true;
             // Kitty: switch to alt screen's stack
             mKittyFlags = (mKittyStackDepthAlt > 0) ? mKittyStackAlt[mKittyStackDepthAlt - 1] : 0;
@@ -1646,6 +1648,8 @@ void TerminalEmulator::onAction(const Action *action)
             mCursorY = mSavedCursorY;
             mCurrentAttrs = mSavedAttrs;
             mWrapPending = mSavedWrapPending;
+            mCursorShape = mSavedCursorShape;
+            mCursorBlinkEnabled = mSavedCursorBlinkEnabled;
             mDocument.markAllDirty();
             mScrollTop = 0;
             mScrollBottom = mHeight;

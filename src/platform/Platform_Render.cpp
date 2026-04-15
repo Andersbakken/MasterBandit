@@ -675,9 +675,15 @@ void PlatformDawn::renderFrame()
 
         bool cursorMoved = (snap.cursorX != rs.lastCursorX || snap.cursorY != rs.lastCursorY ||
                             snap.cursorVisible != rs.lastCursorVisible);
+        // If cursor shape changed (e.g. RIS, DECSCUSR), reset blink to fully visible
+        if (snap.cursorShape != rs.lastCursorShape) {
+            cursorBlinkOpacity_.store(1.0f, std::memory_order_release);
+            cursorBlinkStep_ = 0;
+        }
         rs.lastCursorX = snap.cursorX;
         rs.lastCursorY = snap.cursorY;
         rs.lastCursorVisible = snap.cursorVisible;
+        rs.lastCursorShape = snap.cursorShape;
 
         // Detect blink opacity change for a currently-blinking cursor.
         float blinkOpacity = cursorBlinkOpacity_.load(std::memory_order_acquire);

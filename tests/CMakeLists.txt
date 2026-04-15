@@ -29,6 +29,7 @@ set(TEST_SOURCES
     test_kitty_graphics.cpp
     test_osc_1337.cpp
     test_popup.cpp
+    test_tabs.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp

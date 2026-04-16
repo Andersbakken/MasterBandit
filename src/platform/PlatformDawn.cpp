@@ -351,13 +351,6 @@ void PlatformDawn::buildRenderFrameState()
         renderThread_->renderState().tabs.push_back(std::move(rti));
     }
 
-    // Divider geometry
-    renderThread_->renderState().dividerGeoms.clear();
-    if (tab && !renderThread_->renderState().hasOverlay) {
-        for (auto& panePtr : tab->layout()->panes()) {
-            // Copy from the pending divider updates if any, otherwise leave empty
-        }
-    }
 
     // --- Tab bar layout (text → cell computation) ---
     renderThread_->renderState().tabBarCells.clear();

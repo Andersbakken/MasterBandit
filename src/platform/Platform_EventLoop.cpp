@@ -449,15 +449,14 @@ int PlatformDawn::exec()
             for (auto& [fd, term] : ptyPolls_)
                 term->flushReadBuffer();
 
-            // Drain deferred callbacks (no platformMutex_ needed for the
-            // queue swap itself; each callback may acquire it as needed).
+            // Drain deferred callbacks.
             drainDeferredMain();         // title / icon / cwd / progress / etc.
-            drainPendingExits();
             scriptEngine_.executePendingJobs();
 
             // Apply all accumulated mutations to the shadow render state in
-            // one batch under platformMutex_.  This is the single point where
-            // the main thread and render thread synchronize on shared state.
+            // one batch under platformMutex_.  drainPendingExits() runs
+            // inside the lock so that terminal destruction can't race the
+            // render thread's use of frameState_ term pointers.
             applyPendingMutations();
 
             // Render thread may have requested an animation wakeup — wire

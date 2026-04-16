@@ -415,6 +415,10 @@ void PlatformDawn::applyPendingMutations()
     // transfers pending_ into renderState_, clears pending_.
     std::lock_guard<std::mutex> plk(platformMutex_);
 
+    // Drain terminal exits under the lock so that terminal destruction
+    // can't race the render thread's use of frameState_ term pointers.
+    drainPendingExits();
+
     // Transfer dirty flags
     renderState_.tabBarDirty     |= pending_.tabBarDirty || tabBarDirty_;
     renderState_.dividersDirty   |= pending_.dividersDirty || dividersDirty_;
@@ -1153,7 +1157,7 @@ void PlatformDawn::applyFontChange(const Config& config)
 
     pending_.mainFontAtlasChanged = true;
     invalidateAllRowCaches();
-    onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+    applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
 
     spdlog::info("Config reload: font changed to '{}'", fontPath);
 }
@@ -1273,6 +1277,13 @@ void PlatformDawn::reloadConfigNow()
     spdlog::info("Config: hot-reload triggered");
     Config config = loadConfig();
 
+    // Hold platformMutex_ for the duration of the reload so that font
+    // registration/unregistration in textSystem_ can't overlap with the
+    // render thread's shapeRun/shapeText/getFont calls.
+    // Internal helpers (applyFramebufferResize, refreshDividers, etc.)
+    // expect the lock to be held already.
+    std::lock_guard<std::mutex> plk(platformMutex_);
+
     // Keybindings
     bindings_ = defaultBindings();
     auto userBindings = parseBindings(config.keybindings);
@@ -1366,9 +1377,9 @@ void PlatformDawn::reloadConfigNow()
             if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
         }
         invalidateAllRowCaches();
-        onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+        applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
     } else if (paddingChanged) {
-        onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+        applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
     }
 
     tabBarDirty_ = true;

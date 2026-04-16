@@ -558,16 +558,24 @@ PlatformDawn::~PlatformDawn()
     tabManager_.reset();
 
     if (renderEngine_) {
+        // Destroy the Vulkan surface and device, but intentionally leave the
+        // Vulkan instance alive (nativeInstance_ is not reset inside shutdown()).
         renderEngine_->shutdown();
-        renderEngine_.reset();
     }
 
-    // Destroy the window (X11 connection) last — the nvidia driver
-    // needs the display connection alive during Vulkan device teardown.
+    // Destroy the window (X11 connection) next:
+    //  • The display must be alive during Vulkan device teardown (NVIDIA).
+    //  • The Vulkan instance must be alive during XCloseDisplay (NVIDIA):
+    //    vkDestroyInstance removes DRI/GLX hooks registered with Xlib;
+    //    if they're gone before XCloseDisplay fires them it segfaults.
+    // Both constraints are satisfied by this ordering.
     if (window_) {
         window_->destroy();
         window_.reset();
     }
+
+    // Now that XCloseDisplay has run, drop the Vulkan instance.
+    renderEngine_.reset();
 
     // Now safe to destroy the render thread component itself; the
     // worker thread has already been joined above.

@@ -181,7 +181,13 @@ void RenderEngine::shutdown()
     queue_ = {};
     device_ = {};
     texturePool_.clear();
-    nativeInstance_.reset();
+    // nativeInstance_ is intentionally NOT reset here.  On NVIDIA, destroying
+    // the Vulkan instance (vkDestroyInstance) removes DRI/GLX state that was
+    // registered with Xlib via XESetCloseDisplay.  If XCloseDisplay fires
+    // after the instance is gone it calls a dangling function pointer and
+    // segfaults.  By leaving nativeInstance_ alive here it is destroyed by
+    // ~RenderEngine(), which PlatformDawn calls only after XCloseDisplay has
+    // already run (renderEngine_.reset() comes after window_->destroy()).
 }
 
 void RenderEngine::resolveRow(PaneRenderPrivate& rs, int row, FontData* font, float /*scale*/,

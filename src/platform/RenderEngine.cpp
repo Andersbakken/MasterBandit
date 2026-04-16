@@ -1342,6 +1342,9 @@ void RenderEngine::renderFrame()
         for (const auto& rpi : frameState_.panes) {
             auto it = paneRenderPrivate_.find(rpi.id);
             if (it == paneRenderPrivate_.end() || !it->second.dividerVB) continue;
+            // Don't draw stale VBs for panes that no longer own a divider
+            auto git = frameState_.dividerGeoms.find(rpi.id);
+            if (git == frameState_.dividerGeoms.end() || !git->second.valid) continue;
             renderer_.drawDivider(encoder, compositeTarget,
                                    frameFbW, frameFbH, it->second.dividerVB);
         }

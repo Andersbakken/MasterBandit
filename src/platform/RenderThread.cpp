@@ -109,7 +109,13 @@ void RenderThread::applyPendingMutations()
         renderState_.dividerGeoms[id]; // ensure entry exists (noop if already there)
     }
 
-    // Divider geometry updates
+    // Divider geometry updates — when the layout changes (dividersDirty),
+    // replace dividerGeoms entirely so stale entries from removed panes
+    // don't linger and cause ghost dividers to be drawn.
+    if (!pending_.dividerUpdates.empty() || pending_.dividersDirty ||
+        !pending_.clearDividerPanes.empty()) {
+        renderState_.dividerGeoms.clear();
+    }
     for (auto& du : pending_.dividerUpdates) {
         DividerGeom& dg = renderState_.dividerGeoms[du.paneId];
         dg.x = du.x; dg.y = du.y; dg.w = du.w; dg.h = du.h;

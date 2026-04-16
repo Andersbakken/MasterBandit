@@ -168,6 +168,7 @@ void TabManager::clearDividers(Tab* tab)
     if (!tab) return;
     for (auto& panePtr : tab->layout()->panes())
         host_.pending->clearDividerPanes.push_back(panePtr->id());
+    host_.pending->dividersDirty = true;
 }
 
 

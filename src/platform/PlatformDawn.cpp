@@ -1032,8 +1032,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         dividersDirty_ = true;
         tabBarConfig_ = options.tabBar;
         initTabBar(options.tabBar);
-        // Recompute rects with tab bar height applied
+        // Recompute rects with tab bar height applied (also apply divider width
+        // now that dividerWidth_ has been set from options above).
         auto& tabsVec = tabManager_->tabs();
+        tabsVec.back()->layout()->setDividerPixels(dividerWidth_);
         tabsVec.back()->layout()->computeRects(fbWidth_, fbHeight_);
         // Recompute cols/rows for this pane after layout adjustment
         {

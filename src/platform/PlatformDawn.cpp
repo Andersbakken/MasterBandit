@@ -1238,6 +1238,7 @@ void PlatformDawn::applyConfig(const Config& config)
     if (animScheduler_) animScheduler_->applyBlinkConfig(config.cursor.blink_rate, config.cursor.blink_fps);
 
     // Divider
+    int oldDividerWidth = dividerWidth_;
     dividerWidth_ = std::max(0, config.divider_width);
     const std::string& dc = config.divider_color;
     if (dc.size() == 7 && dc[0] == '#') {
@@ -1247,6 +1248,7 @@ void PlatformDawn::applyConfig(const Config& config)
     for (auto& t : tabManager_->tabs()) t->layout()->setDividerPixels(dividerWidth_);
     opts.dividerWidth = config.divider_width;
     opts.dividerColor = config.divider_color;
+    bool dividerChanged = (dividerWidth_ != oldDividerWidth);
 
     // Tints
     applyTintColor(config.active_pane_tint,   config.active_pane_tint_alpha,   activeTint_);
@@ -1306,8 +1308,11 @@ void PlatformDawn::applyConfig(const Config& config)
         }
         invalidateAllRowCaches();
         applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
-    } else if (paddingChanged) {
+    } else if (paddingChanged || dividerChanged) {
         applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+    } else {
+        // Color-only change: no layout recompute needed, just refresh divider geometry.
+        if (Tab* active = activeTab()) tabManager_->refreshDividers(active);
     }
 
     tabBarDirty_ = true;

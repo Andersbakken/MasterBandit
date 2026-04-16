@@ -598,7 +598,9 @@ void PlatformDawn::renderFrame()
     if (frameState_.hasOverlay && frameState_.overlay) {
         TerminalEmulator* overlay = frameState_.overlay;
 
-        // Use layout content area (excludes tab bar)
+        // Use layout content area (excludes tab bar).
+        // Overlay resize is done on the main thread in buildRenderFrameState(),
+        // so dimensions are already correct here.
         const PaneRect& tbRect = frameState_.tabBarRect;
         PaneRect fullRect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
         if (!tbRect.isEmpty()) {
@@ -608,14 +610,6 @@ void PlatformDawn::renderFrame()
             } else {
                 fullRect.h -= tbRect.h;
             }
-        }
-        // Resize overlay to match content area
-        float usableW = std::max(0.0f, static_cast<float>(fullRect.w) - frameState_.padLeft - frameState_.padRight);
-        float usableH = std::max(0.0f, static_cast<float>(fullRect.h) - frameState_.padTop - frameState_.padBottom);
-        int wantCols = std::max(1, static_cast<int>(usableW / frameState_.charWidth));
-        int wantRows = std::max(1, static_cast<int>(usableH / frameState_.lineHeight));
-        if (overlay->width() != wantCols || overlay->height() != wantRows) {
-            overlay->resize(wantCols, wantRows);
         }
 
         auto& rs = overlayRenderPrivate_;

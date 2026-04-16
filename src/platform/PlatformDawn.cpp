@@ -185,6 +185,28 @@ void PlatformDawn::buildRenderFrameState()
         if (tab->hasOverlay()) {
             renderState_.hasOverlay = true;
             renderState_.overlay = tab->topOverlay();
+
+            // Resize overlay to match content area (excludes tab bar + padding).
+            // Done here on the main thread so the render thread never mutates
+            // terminal state.
+            const PaneRect& tbRect = renderState_.tabBarRect;
+            PaneRect fullRect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
+            if (!tbRect.isEmpty()) {
+                if (tabBarConfig_.position == "top") {
+                    fullRect.y = tbRect.h;
+                    fullRect.h -= tbRect.h;
+                } else {
+                    fullRect.h -= tbRect.h;
+                }
+            }
+            float usableW = std::max(0.0f, static_cast<float>(fullRect.w) - padLeft_ - padRight_);
+            float usableH = std::max(0.0f, static_cast<float>(fullRect.h) - padTop_ - padBottom_);
+            int wantCols = std::max(1, static_cast<int>(usableW / charWidth_));
+            int wantRows = std::max(1, static_cast<int>(usableH / lineHeight_));
+            if (renderState_.overlay->width() != wantCols ||
+                renderState_.overlay->height() != wantRows) {
+                renderState_.overlay->resize(wantCols, wantRows);
+            }
         } else {
             for (auto& panePtr : tab->layout()->panes()) {
                 Pane* pane = panePtr.get();

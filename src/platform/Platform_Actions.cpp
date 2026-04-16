@@ -219,8 +219,13 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             Tab* tab = activeTab();
             if (tab && tab->hasOverlay()) {
                 scriptEngine_.notifyOverlayDestroyed(activeTabIdx_);
+                std::lock_guard<std::mutex> plk(platformMutex_);
                 tab->popOverlay();
+                renderState_.hasOverlay = false;
+                renderState_.overlay = nullptr;
+                pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
                 refreshPointerShape();
+                setNeedsRedraw();
             }
         },
         [&](const Action::IncreaseFontSize&) { adjustFontSize(1.0f);  },
@@ -311,7 +316,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             // Spawn pager as overlay terminal
             TerminalOptions opts = terminalOptions_;
-            opts.command = "less -R " + std::string(tmpPath) + "; rm -f " + std::string(tmpPath);
+            opts.command = "less -+F -R " + std::string(tmpPath) + "; rm -f " + std::string(tmpPath);
             opts.scrollbackLines = 0;
 
             TerminalCallbacks cbs;
@@ -335,6 +340,11 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                         }
                     }
                     tab->popOverlay();
+                    // Clear stale pointer in renderState_ immediately — the
+                    // render thread may wake before the next applyPendingMutations()
+                    // rebuilds the shadow copy via buildRenderFrameState().
+                    renderState_.hasOverlay = false;
+                    renderState_.overlay = nullptr;
                     pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
                     refreshPointerShape();
                     setNeedsRedraw();
@@ -358,15 +368,17 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             }
 
             auto overlay = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
-            if (!overlay->init(opts)) return;
 
-            // Size overlay to full framebuffer
+            // Size overlay before init so the PTY is created with the correct
+            // dimensions. The child process reads the initial PTY size before
+            // any SIGWINCH can arrive.
             float usableW = std::max(0.0f, static_cast<float>(fbWidth_) - padLeft_ - padRight_);
             float usableH = std::max(0.0f, static_cast<float>(fbHeight_) - padTop_ - padBottom_);
             int cols = std::max(1, static_cast<int>(usableW / charWidth_));
             int rows = std::max(1, static_cast<int>(usableH / lineHeight_));
             overlay->resize(cols, rows);
-            overlay->flushPendingResize();
+
+            if (!overlay->init(opts)) return;
 
             addPtyPoll(overlay->masterFD(), overlay.get());
             tab->pushOverlay(std::move(overlay));

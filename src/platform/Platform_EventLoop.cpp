@@ -246,7 +246,13 @@ int PlatformDawn::exec()
             if (tabId < 0 || tabId >= static_cast<int>(tabs_.size())) return;
             Tab* tab = tabs_[tabId].get();
             if (tab->hasOverlay()) {
+                std::lock_guard<std::mutex> plk(platformMutex_);
                 tab->popOverlay();
+                // Clear stale pointer — render thread may read renderState_
+                // before the next buildRenderFrameState() runs.
+                renderState_.hasOverlay = false;
+                renderState_.overlay = nullptr;
+                pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
                 if (tabId == activeTabIdx_) refreshPointerShape();
                 setNeedsRedraw();
             }

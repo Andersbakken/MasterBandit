@@ -71,6 +71,17 @@ bool Terminal::init(const TerminalOptions &options)
         return false;
     }
 
+    // Set the initial PTY size before fork so the child process starts with
+    // the correct dimensions. Without this, the kernel assigns a default
+    // (often 0x0) and the child may read the wrong size before SIGWINCH
+    // from flushPendingResize() arrives.
+    if (this->width() > 0 && this->height() > 0) {
+        struct winsize ws = {};
+        ws.ws_col = static_cast<unsigned short>(this->width());
+        ws.ws_row = static_cast<unsigned short>(this->height());
+        ioctl(slaveFD, TIOCSWINSZ, &ws);
+    }
+
     const pid_t pid = fork();
     int ret;
     switch (pid) {

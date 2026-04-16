@@ -18,6 +18,15 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "profile",
+            "displayName": "Profile (Release + Debug Symbols)",
+            "binaryDir": "${sourceDir}/build-profile",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
         }
     ],
     "buildPresets": [
@@ -29,6 +38,11 @@
             "name": "release",
             "configurePreset": "release",
             "configuration": "Release"
+        },
+        {
+            "name": "profile",
+            "configurePreset": "profile",
+            "configuration": "RelWithDebInfo"
         }
     ]
 }

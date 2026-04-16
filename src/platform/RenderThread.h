@@ -18,7 +18,15 @@ class Terminal;
 // component whose Host captures mutex()/pending()/renderState()), wired
 // via setHost() after the collaborators exist, started from
 // createTerminal(), stopped from ~PlatformDawn.
+class PlatformDawn;
+
 class RenderThread {
+    // PlatformDawn is the only legitimate caller of mutex()/pending()/
+    // renderState(); those are coordination primitives, not public API.
+    // Other components receive raw pointers into this state via their
+    // Host wiring, which PlatformDawn sets up at construction time.
+    friend class PlatformDawn;
+
 public:
     struct Host {
         // Main-thread event loop; created lazily by createTerminal().
@@ -65,13 +73,14 @@ public:
     // renderState_, calls host_.buildRenderFrameState(), clears pending_.
     void applyPendingMutations();
 
-    // Shared state accessors. Callers must hold mutex() except where
-    // noted by the existing thread contract.
+private:
+    // Shared state accessors — available to PlatformDawn via friendship.
+    // Callers must hold mutex() except where noted by the existing thread
+    // contract.
     std::mutex& mutex() { return mutex_; }
     PendingMutations& pending() { return pending_; }
     RenderFrameState& renderState() { return renderState_; }
 
-private:
     void threadMain();
 
     Host host_;

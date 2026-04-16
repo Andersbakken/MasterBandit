@@ -22,7 +22,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             // paneRenderStates_.dirty is deferred to main thread.
             setNeedsRedraw();
             postToMainThread([this, paneId] {
-                pending_.dirtyPanes.insert(paneId);
+                renderThread_->pending().dirtyPanes.insert(paneId);
             });
             break;
         case TerminalEmulator::VisibleBell:
@@ -142,7 +142,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
     cbs.onOSC = [this, paneId](int oscNum, std::string_view payload) {
         // Script dispatch — scripts may mutate anything. Defer so the script
-        // runs on the main thread under platformMutex_.
+        // runs on the main thread under renderThread_->mutex().
         std::string payloadCopy(payload);
         postToMainThread([this, paneId, oscNum, payloadCopy = std::move(payloadCopy)] {
             scriptEngine_.notifyOSC(paneId, oscNum, payloadCopy);

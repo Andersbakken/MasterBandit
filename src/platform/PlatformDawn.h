@@ -223,24 +223,14 @@ private:
         return std::to_string(paneId) + "/" + popupId;
     }
 
-    // Owns the render worker thread, cross-thread mutation queues
-    // (pending_, renderState_), the coarse mutex serializing render reads
-    // vs main-thread structural mutations, and the deferred main/exit
-    // post queues. Constructed early so collaborator Hosts can capture
-    // its mutex()/pending()/renderState() references.
+    // Owns the render worker thread, coarse mutex, pending mutations,
+    // renderState shadow copy, and the deferred main/exit queues.
     std::unique_ptr<RenderThread> renderThread_;
 
-    // References into the RenderThread's owned state. These let existing
-    // call sites read `platformMutex_`, `pending_`, `renderState_` without
-    // a sweep; the unique_ptr outlives every caller because it is reset
-    // last in the destructor.
-    std::mutex&        platformMutex_;
-    PendingMutations&  pending_;
-    RenderFrameState&  renderState_;
-
-    // Build renderState_ from current tabs_/panes.  Called under the
-    // render-thread mutex from RenderThread::applyPendingMutations(),
-    // which also performs the pending_ flag transfer.
+    // Build the renderState shadow copy from current tabs_/panes.
+    // Called under the render-thread mutex from
+    // RenderThread::applyPendingMutations(), which also transfers
+    // pending flags into renderState.
     void buildRenderFrameState();
 
     // Tab bar

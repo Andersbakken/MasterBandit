@@ -248,14 +248,14 @@ int PlatformDawn::exec()
             Tab* tab = tabManager_->tabAt(tabId);
             if (!tab) return;
             if (tab->hasOverlay()) {
-                std::lock_guard<std::mutex> plk(platformMutex_);
+                std::lock_guard<std::mutex> plk(renderThread_->mutex());
                 tab->popOverlay();
-                // Clear stale pointer — render thread may read renderState_
+                // Clear stale pointer — render thread may read renderThread_->renderState()
                 // before the next buildRenderFrameState() runs.
-                renderState_.hasOverlay = false;
-                renderState_.overlay = nullptr;
+                renderThread_->renderState().hasOverlay = false;
+                renderThread_->renderState().overlay = nullptr;
                 if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
-                pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
+                renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
                 if (tabId == tabManager_->activeTabIdx() && inputController_) inputController_->refreshPointerShape();
                 setNeedsRedraw();
             }
@@ -293,15 +293,15 @@ int PlatformDawn::exec()
                     pcbs.onInput = std::move(onInput);
                     if (p->createPopup(popupId, x, y, w, h, std::move(pcbs))) {
                         // Queue popup render state creation
-                        pending_.structuralOps.push_back(
+                        renderThread_->pending().structuralOps.push_back(
                             PendingMutations::CreatePopupState{paneId, popupId, w, h});
                         // Dirty all popup render states for this pane on any content change.
                         p->onPopupEvent = [this, paneId]() {
-                            pending_.dirtyPanes.insert(paneId);
+                            renderThread_->pending().dirtyPanes.insert(paneId);
                             setNeedsRedraw();
                         };
                         // Dirty parent pane so the popup composite entry is added
-                        pending_.dirtyPanes.insert(paneId);
+                        renderThread_->pending().dirtyPanes.insert(paneId);
                         setNeedsRedraw();
                         return true;
                     }
@@ -321,11 +321,11 @@ int PlatformDawn::exec()
                     if (t) t->grid().markAllDirty();
                     // Queue popup render state cleanup
                     std::string key = popupStateKey(paneId, popupId);
-                    pending_.structuralOps.push_back(
+                    renderThread_->pending().structuralOps.push_back(
                         PendingMutations::DestroyPopupState{paneId, popupId});
-                    pending_.releasePopupTextures.push_back(key);
+                    renderThread_->pending().releasePopupTextures.push_back(key);
                     // Dirty parent pane
-                    pending_.dirtyPanes.insert(paneId);
+                    renderThread_->pending().dirtyPanes.insert(paneId);
                     setNeedsRedraw();
                     return;
                 }
@@ -338,10 +338,10 @@ int PlatformDawn::exec()
                     if (p->resizePopup(popupId, x, y, w, h)) {
                         if (auto* t = p->terminal()) t->grid().markAllDirty();
                         // Queue popup render state resize
-                        pending_.structuralOps.push_back(
+                        renderThread_->pending().structuralOps.push_back(
                             PendingMutations::ResizePopupState{paneId, popupId, w, h});
                         std::string key = popupStateKey(paneId, popupId);
-                        pending_.releasePopupTextures.push_back(key);
+                        renderThread_->pending().releasePopupTextures.push_back(key);
                         setNeedsRedraw();
                         return true;
                     }
@@ -417,13 +417,13 @@ int PlatformDawn::exec()
             }
 
             // Structural reads (tabs_, paneRenderStates_, tab-bar state) run
-            // under platformMutex_. The parse itself does NOT — so the render
+            // under renderThread_->mutex(). The parse itself does NOT — so the render
             // thread can draw frames concurrently during a long flood.
             // Callbacks fired from inside parse that would mutate platform
             // state (notably terminalExited) defer to pendingExits_ and are
             // drained below under the lock.
             {
-                std::lock_guard<std::mutex> plk(platformMutex_);
+                std::lock_guard<std::mutex> plk(renderThread_->mutex());
                 // Advance progress animations
                 bool hasAnim = false;
                 for (auto& t : tabManager_->tabs()) {
@@ -443,11 +443,11 @@ int PlatformDawn::exec()
                 }
             }
 
-            // Flush coalesced PTY reads — no platformMutex_, so the render
+            // Flush coalesced PTY reads — no renderThread_->mutex(), so the render
             // thread can run concurrently. Terminal mutation is serialized by
             // TerminalEmulator::mutex() inside injectData. Structural
             // callbacks (terminalExited) defer their work; we drain them
-            // under platformMutex_ right after.
+            // under renderThread_->mutex() right after.
             for (auto& [fd, term] : tabManager_->ptyPolls())
                 term->flushReadBuffer();
 
@@ -456,7 +456,7 @@ int PlatformDawn::exec()
             scriptEngine_.executePendingJobs();
 
             // Apply all accumulated mutations to the shadow render state in
-            // one batch under platformMutex_.  drainPendingExits() runs
+            // one batch under renderThread_->mutex().  drainPendingExits() runs
             // inside the lock so that terminal destruction can't race the
             // render thread's use of frameState_ term pointers.
             applyPendingMutations();

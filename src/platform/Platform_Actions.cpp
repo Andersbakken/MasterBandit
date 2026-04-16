@@ -92,11 +92,11 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (auto* t = fp->terminal()) {
                 tabManager_->removePtyPoll(t->masterFD());
             }
-            pending_.structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
+            renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
             // Queue popup render state cleanup for this pane
             for (const auto& popup : fp->popups()) {
                 std::string key = popupStateKey(paneId, popup.id);
-                pending_.releasePopupTextures.push_back(key);
+                renderThread_->pending().releasePopupTextures.push_back(key);
             }
             if (inputController_) inputController_->erasePaneCursorStyle(paneId);
 
@@ -225,12 +225,12 @@ void PlatformDawn::executeAction(const Action::Any& action)
             Tab* tab = activeTab();
             if (tab && tab->hasOverlay()) {
                 scriptEngine_.notifyOverlayDestroyed(tabManager_->activeTabIdx());
-                std::lock_guard<std::mutex> plk(platformMutex_);
+                std::lock_guard<std::mutex> plk(renderThread_->mutex());
                 tab->popOverlay();
-                renderState_.hasOverlay = false;
-                renderState_.overlay = nullptr;
+                renderThread_->renderState().hasOverlay = false;
+                renderThread_->renderState().overlay = nullptr;
                 if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
-                pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
+                renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
                 if (inputController_) inputController_->refreshPointerShape();
                 setNeedsRedraw();
             }
@@ -293,7 +293,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 }
             }
             // Mark pane dirty so cursor position updates in the pane texture
-            pending_.dirtyPanes.insert(fp->id());
+            renderThread_->pending().dirtyPanes.insert(fp->id());
             setNeedsRedraw();
         },
         [&](const Action::ShowScrollback&) {
@@ -338,7 +338,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 // Defer cleanup — we're called from Terminal::readFromFD.
                 int fd = t->masterFD();
                 eventLoop_->addTimer(0, false, [this, tab, fd]() {
-                    std::lock_guard<std::mutex> plk(platformMutex_);
+                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
                     tabManager_->removePtyPoll(fd);
                     auto& tabsVec = tabManager_->tabs();
                     for (int ti = 0; ti < static_cast<int>(tabsVec.size()); ++ti) {
@@ -348,13 +348,13 @@ void PlatformDawn::executeAction(const Action::Any& action)
                         }
                     }
                     tab->popOverlay();
-                    // Clear stale pointer in renderState_ immediately — the
+                    // Clear stale pointer in renderThread_->renderState() immediately — the
                     // render thread may wake before the next applyPendingMutations()
                     // rebuilds the shadow copy via buildRenderFrameState().
-                    renderState_.hasOverlay = false;
-                    renderState_.overlay = nullptr;
+                    renderThread_->renderState().hasOverlay = false;
+                    renderThread_->renderState().overlay = nullptr;
                     if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
-                    pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
+                    renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
                     if (inputController_) inputController_->refreshPointerShape();
                     setNeedsRedraw();
                 });

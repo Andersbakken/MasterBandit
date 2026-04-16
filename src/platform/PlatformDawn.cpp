@@ -30,9 +30,6 @@ static std::vector<uint8_t> loadFontFile(const std::string& path) { return io::l
 PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     : flags_(flags)
     , renderThread_(std::make_unique<RenderThread>())
-    , platformMutex_(renderThread_->mutex())
-    , pending_(renderThread_->pending())
-    , renderState_(renderThread_->renderState())
 {
     try {
         auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true);
@@ -215,88 +212,88 @@ void PlatformDawn::buildRenderFrameState()
 {
     // Called under the render-thread mutex. Rebuilds the shadow copy from
     // live state and merges main-thread-owned dirty flags (tabBarDirty_,
-    // dividersDirty_) into renderState_.
-    renderState_.tabBarDirty   |= tabBarDirty_;
-    renderState_.dividersDirty |= dividersDirty_;
+    // dividersDirty_) into renderThread_->renderState().
+    renderThread_->renderState().tabBarDirty   |= tabBarDirty_;
+    renderThread_->renderState().dividersDirty |= dividersDirty_;
     tabBarDirty_   = false;
     dividersDirty_ = false;
     Tab* tab = activeTab();
-    renderState_.activeTabIdx = tabManager_->activeTabIdx();
-    renderState_.fbWidth  = fbWidth_;
-    renderState_.fbHeight = fbHeight_;
-    renderState_.charWidth  = charWidth_;
-    renderState_.lineHeight = lineHeight_;
-    renderState_.fontSize   = fontSize_;
-    renderState_.padLeft   = padLeft_;
-    renderState_.padTop    = padTop_;
-    renderState_.padRight  = padRight_;
-    renderState_.padBottom = padBottom_;
-    std::memcpy(renderState_.activeTint,   activeTint_,   sizeof(activeTint_));
-    std::memcpy(renderState_.inactiveTint, inactiveTint_, sizeof(inactiveTint_));
-    renderState_.tabBarVisible = tabBarVisible();
-    renderState_.tabBarPosition = tabBarConfig_.position;
-    renderState_.inLiveResize = window_ && window_->inLiveResize();
-    renderState_.windowHasFocus = windowHasFocus_;
-    renderState_.cursorBlinkOpacity = animScheduler_ ? animScheduler_->blinkOpacity() : 1.0f;
+    renderThread_->renderState().activeTabIdx = tabManager_->activeTabIdx();
+    renderThread_->renderState().fbWidth  = fbWidth_;
+    renderThread_->renderState().fbHeight = fbHeight_;
+    renderThread_->renderState().charWidth  = charWidth_;
+    renderThread_->renderState().lineHeight = lineHeight_;
+    renderThread_->renderState().fontSize   = fontSize_;
+    renderThread_->renderState().padLeft   = padLeft_;
+    renderThread_->renderState().padTop    = padTop_;
+    renderThread_->renderState().padRight  = padRight_;
+    renderThread_->renderState().padBottom = padBottom_;
+    std::memcpy(renderThread_->renderState().activeTint,   activeTint_,   sizeof(activeTint_));
+    std::memcpy(renderThread_->renderState().inactiveTint, inactiveTint_, sizeof(inactiveTint_));
+    renderThread_->renderState().tabBarVisible = tabBarVisible();
+    renderThread_->renderState().tabBarPosition = tabBarConfig_.position;
+    renderThread_->renderState().inLiveResize = window_ && window_->inLiveResize();
+    renderThread_->renderState().windowHasFocus = windowHasFocus_;
+    renderThread_->renderState().cursorBlinkOpacity = animScheduler_ ? animScheduler_->blinkOpacity() : 1.0f;
 
     // Tab bar config values
-    renderState_.tbBgColor         = tbBgColor_;
-    renderState_.tbActiveBgColor   = tbActiveBgColor_;
-    renderState_.tbActiveFgColor   = tbActiveFgColor_;
-    renderState_.tbInactiveBgColor = tbInactiveBgColor_;
-    renderState_.tbInactiveFgColor = tbInactiveFgColor_;
-    renderState_.progressColorR    = progressColorR_;
-    renderState_.progressColorG    = progressColorG_;
-    renderState_.progressColorB    = progressColorB_;
-    renderState_.progressBarHeight = progressBarHeight_;
-    renderState_.progressBarEnabled = tabBarConfig_.progress_bar;
-    renderState_.progressIconEnabled = tabBarConfig_.progress_icon;
-    renderState_.maxTitleLength     = tabBarConfig_.max_title_length;
+    renderThread_->renderState().tbBgColor         = tbBgColor_;
+    renderThread_->renderState().tbActiveBgColor   = tbActiveBgColor_;
+    renderThread_->renderState().tbActiveFgColor   = tbActiveFgColor_;
+    renderThread_->renderState().tbInactiveBgColor = tbInactiveBgColor_;
+    renderThread_->renderState().tbInactiveFgColor = tbInactiveFgColor_;
+    renderThread_->renderState().progressColorR    = progressColorR_;
+    renderThread_->renderState().progressColorG    = progressColorG_;
+    renderThread_->renderState().progressColorB    = progressColorB_;
+    renderThread_->renderState().progressBarHeight = progressBarHeight_;
+    renderThread_->renderState().progressBarEnabled = tabBarConfig_.progress_bar;
+    renderThread_->renderState().progressIconEnabled = tabBarConfig_.progress_icon;
+    renderThread_->renderState().maxTitleLength     = tabBarConfig_.max_title_length;
 
     // Divider appearance
-    renderState_.dividerWidth = dividerWidth_;
-    renderState_.dividerR = dividerR_;
-    renderState_.dividerG = dividerG_;
-    renderState_.dividerB = dividerB_;
-    renderState_.dividerA = dividerA_;
+    renderThread_->renderState().dividerWidth = dividerWidth_;
+    renderThread_->renderState().dividerR = dividerR_;
+    renderThread_->renderState().dividerG = dividerG_;
+    renderThread_->renderState().dividerB = dividerB_;
+    renderThread_->renderState().dividerA = dividerA_;
 
     // Font names and tab bar font metrics
-    renderState_.fontName = fontName_;
-    renderState_.tabBarFontName = tabBarFontName_;
-    renderState_.tabBarFontSize = tabBarFontSize_;
-    renderState_.tabBarCharWidth = tabBarCharWidth_;
-    renderState_.tabBarLineHeight = tabBarLineHeight_;
+    renderThread_->renderState().fontName = fontName_;
+    renderThread_->renderState().tabBarFontName = tabBarFontName_;
+    renderThread_->renderState().tabBarFontSize = tabBarFontSize_;
+    renderThread_->renderState().tabBarCharWidth = tabBarCharWidth_;
+    renderThread_->renderState().tabBarLineHeight = tabBarLineHeight_;
 
     // Content scale
-    renderState_.contentScaleX = contentScaleX_;
+    renderThread_->renderState().contentScaleX = contentScaleX_;
 
     // Tab bar animation
-    renderState_.tabBarAnimFrame = tabBarAnimFrame_;
+    renderThread_->renderState().tabBarAnimFrame = tabBarAnimFrame_;
 
     // Tab bar rect from active tab's layout
     if (tab) {
-        renderState_.tabBarRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
+        renderThread_->renderState().tabBarRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
     } else {
-        renderState_.tabBarRect = {};
+        renderThread_->renderState().tabBarRect = {};
     }
 
     // Active tab pane info
-    renderState_.panes.clear();
-    renderState_.hasOverlay = false;
-    renderState_.overlay = nullptr;
-    renderState_.focusedPaneId = -1;
+    renderThread_->renderState().panes.clear();
+    renderThread_->renderState().hasOverlay = false;
+    renderThread_->renderState().overlay = nullptr;
+    renderThread_->renderState().focusedPaneId = -1;
 
     if (tab) {
-        renderState_.focusedPaneId = tab->layout()->focusedPaneId();
+        renderThread_->renderState().focusedPaneId = tab->layout()->focusedPaneId();
 
         if (tab->hasOverlay()) {
-            renderState_.hasOverlay = true;
-            renderState_.overlay = tab->topOverlay();
+            renderThread_->renderState().hasOverlay = true;
+            renderThread_->renderState().overlay = tab->topOverlay();
 
             // Resize overlay to match content area (excludes tab bar + padding).
             // Done here on the main thread so the render thread never mutates
             // terminal state.
-            const PaneRect& tbRect = renderState_.tabBarRect;
+            const PaneRect& tbRect = renderThread_->renderState().tabBarRect;
             PaneRect fullRect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
             if (!tbRect.isEmpty()) {
                 if (tabBarConfig_.position == "top") {
@@ -310,9 +307,9 @@ void PlatformDawn::buildRenderFrameState()
             float usableH = std::max(0.0f, static_cast<float>(fullRect.h) - padTop_ - padBottom_);
             int wantCols = std::max(1, static_cast<int>(usableW / charWidth_));
             int wantRows = std::max(1, static_cast<int>(usableH / lineHeight_));
-            if (renderState_.overlay->width() != wantCols ||
-                renderState_.overlay->height() != wantRows) {
-                renderState_.overlay->resize(wantCols, wantRows);
+            if (renderThread_->renderState().overlay->width() != wantCols ||
+                renderThread_->renderState().overlay->height() != wantRows) {
+                renderThread_->renderState().overlay->resize(wantCols, wantRows);
             }
         } else {
             for (auto& panePtr : tab->layout()->panes()) {
@@ -334,13 +331,13 @@ void PlatformDawn::buildRenderFrameState()
                     pi.term = popup.terminal.get();
                     rpi.popups.push_back(std::move(pi));
                 }
-                renderState_.panes.push_back(std::move(rpi));
+                renderThread_->renderState().panes.push_back(std::move(rpi));
             }
         }
     }
 
     // Tab bar data (all tabs)
-    renderState_.tabs.clear();
+    renderThread_->renderState().tabs.clear();
     auto& allTabs = tabManager_->tabs();
     for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
         Tab* t = allTabs[i].get();
@@ -351,29 +348,29 @@ void PlatformDawn::buildRenderFrameState()
         Pane* fp = t->layout()->focusedPane();
         rti.progressState = fp ? fp->progressState() : 0;
         rti.progressPct   = fp ? fp->progressPct() : 0;
-        renderState_.tabs.push_back(std::move(rti));
+        renderThread_->renderState().tabs.push_back(std::move(rti));
     }
 
     // Divider geometry
-    renderState_.dividerGeoms.clear();
-    if (tab && !renderState_.hasOverlay) {
+    renderThread_->renderState().dividerGeoms.clear();
+    if (tab && !renderThread_->renderState().hasOverlay) {
         for (auto& panePtr : tab->layout()->panes()) {
             // Copy from the pending divider updates if any, otherwise leave empty
         }
     }
 
     // --- Tab bar layout (text → cell computation) ---
-    renderState_.tabBarCells.clear();
-    renderState_.tabBarColRanges.clear();
-    renderState_.tabBarCols = 0;
+    renderThread_->renderState().tabBarCells.clear();
+    renderThread_->renderState().tabBarColRanges.clear();
+    renderThread_->renderState().tabBarCols = 0;
 
-    if (!renderState_.tabBarVisible || renderState_.tabs.empty() ||
-        renderState_.tabBarRect.isEmpty() || renderState_.tabBarCharWidth <= 0) {
+    if (!renderThread_->renderState().tabBarVisible || renderThread_->renderState().tabs.empty() ||
+        renderThread_->renderState().tabBarRect.isEmpty() || renderThread_->renderState().tabBarCharWidth <= 0) {
         return;
     }
 
-    int cols = std::max(1, static_cast<int>(renderState_.tabBarRect.w / renderState_.tabBarCharWidth));
-    renderState_.tabBarCols = cols;
+    int cols = std::max(1, static_cast<int>(renderThread_->renderState().tabBarRect.w / renderThread_->renderState().tabBarCharWidth));
+    renderThread_->renderState().tabBarCols = cols;
 
     // Also update the main-thread-owned members used by resolveTabBarClickIndex
     tabBarCols_ = cols;
@@ -415,7 +412,7 @@ void PlatformDawn::buildRenderFrameState()
         int idx;
         if (st == 3) {
             int period = 2 * (kAnimCount - 1);
-            int pos = renderState_.tabBarAnimFrame % period;
+            int pos = renderThread_->renderState().tabBarAnimFrame % period;
             idx = (pos < kAnimCount) ? pos : period - pos;
         } else if (st == 1 || st == 2) {
             idx = std::clamp(pct * kAnimCount / 100, 0, kAnimCount - 1);
@@ -426,15 +423,15 @@ void PlatformDawn::buildRenderFrameState()
     // Build per-tab info
     struct TI { std::string prefix; std::string title; std::string text; int width; bool isActive; uint32_t bgColor, fgColor; };
     std::vector<TI> tabInfos;
-    for (int i = 0; i < static_cast<int>(renderState_.tabs.size()); ++i) {
-        const auto& rtab = renderState_.tabs[i];
-        bool isActive = (i == renderState_.activeTabIdx);
+    for (int i = 0; i < static_cast<int>(renderThread_->renderState().tabs.size()); ++i) {
+        const auto& rtab = renderThread_->renderState().tabs[i];
+        bool isActive = (i == renderThread_->renderState().activeTabIdx);
         TI ti;
         ti.isActive = isActive;
-        ti.bgColor = isActive ? renderState_.tbActiveBgColor : renderState_.tbInactiveBgColor;
-        ti.fgColor = isActive ? renderState_.tbActiveFgColor : renderState_.tbInactiveFgColor;
+        ti.bgColor = isActive ? renderThread_->renderState().tbActiveBgColor : renderThread_->renderState().tbInactiveBgColor;
+        ti.fgColor = isActive ? renderThread_->renderState().tbActiveFgColor : renderThread_->renderState().tbInactiveFgColor;
         ti.prefix = " ";
-        std::string pg = renderState_.progressIconEnabled ? progressGlyph(rtab) : "";
+        std::string pg = renderThread_->renderState().progressIconEnabled ? progressGlyph(rtab) : "";
         if (!pg.empty()) { ti.prefix += pg; ti.prefix += " "; }
         if (!rtab.icon.empty()) { ti.prefix += rtab.icon; ti.prefix += " "; }
         ti.prefix += "["; ti.prefix += std::to_string(i + 1); ti.prefix += "] ";
@@ -446,7 +443,7 @@ void PlatformDawn::buildRenderFrameState()
     int sepWidth = 1;
 
     // Truncation loop
-    int maxTitleLen = renderState_.maxTitleLength > 0 ? renderState_.maxTitleLength : 9999;
+    int maxTitleLen = renderThread_->renderState().maxTitleLength > 0 ? renderThread_->renderState().maxTitleLength : 9999;
     for (;;) {
         int total = 0;
         for (int i = 0; i < numTabs; ++i) {
@@ -466,7 +463,7 @@ void PlatformDawn::buildRenderFrameState()
     int visStart = 0, visEnd = numTabs;
     bool overflowLeft = false, overflowRight = false;
     if (totalWidth > cols && numTabs > 1) {
-        int ati = renderState_.activeTabIdx;
+        int ati = renderThread_->renderState().activeTabIdx;
         if (ati < 0 || ati >= numTabs) ati = 0;
         visStart = ati; visEnd = ati + 1;
         int used = tabInfos[ati].width + sepWidth;
@@ -492,29 +489,29 @@ void PlatformDawn::buildRenderFrameState()
     }
 
     // Build cell array
-    renderState_.tabBarCells.resize(cols);
-    for (auto& c : renderState_.tabBarCells) {
+    renderThread_->renderState().tabBarCells.resize(cols);
+    for (auto& c : renderThread_->renderState().tabBarCells) {
         c.ch.clear();
-        c.fgColor = renderState_.tbInactiveFgColor;
-        c.bgColor = renderState_.tbBgColor;
+        c.fgColor = renderThread_->renderState().tbInactiveFgColor;
+        c.bgColor = renderThread_->renderState().tbBgColor;
     }
 
     auto placeCell = [&](int& col, const std::string& ch, uint32_t fg, uint32_t bg) {
         if (col >= cols) return;
-        renderState_.tabBarCells[col] = {ch, fg, bg};
+        renderThread_->renderState().tabBarCells[col] = {ch, fg, bg};
         col++;
     };
 
     int col = 0;
     if (overflowLeft) {
-        placeCell(col, "\xe2\x97\x80", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
-        placeCell(col, " ", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
+        placeCell(col, "\xe2\x97\x80", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
+        placeCell(col, " ", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
     }
 
     // Powerline separator
     const std::string SEP_RIGHT = "\xee\x82\xb0";
 
-    renderState_.tabBarColRanges.assign(renderState_.tabs.size(), {-1, -1});
+    renderThread_->renderState().tabBarColRanges.assign(renderThread_->renderState().tabs.size(), {-1, -1});
     for (int i = visStart; i < visEnd; ++i) {
         auto& ti = tabInfos[i];
         int startCol = col;
@@ -525,17 +522,17 @@ void PlatformDawn::buildRenderFrameState()
             placeCell(col, ch, ti.fgColor, ti.bgColor);
             p += len;
         }
-        uint32_t nextBg = (i + 1 < visEnd) ? tabInfos[i + 1].bgColor : renderState_.tbBgColor;
+        uint32_t nextBg = (i + 1 < visEnd) ? tabInfos[i + 1].bgColor : renderThread_->renderState().tbBgColor;
         placeCell(col, SEP_RIGHT, ti.bgColor, nextBg);
-        renderState_.tabBarColRanges[i] = {startCol, col};
+        renderThread_->renderState().tabBarColRanges[i] = {startCol, col};
     }
 
     // Also update main-thread-owned col ranges for click handling
-    tabBarColRanges_ = renderState_.tabBarColRanges;
+    tabBarColRanges_ = renderThread_->renderState().tabBarColRanges;
 
     if (overflowRight && col + 2 <= cols) {
-        placeCell(col, " ", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
-        placeCell(col, "\xe2\x96\xb6", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
+        placeCell(col, " ", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
+        placeCell(col, "\xe2\x96\xb6", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
     }
 }
 
@@ -545,6 +542,23 @@ PlatformDawn::~PlatformDawn()
     // might be reading. RenderThread::stop() signals stop, wakes the
     // thread if idle, and joins.
     if (renderThread_) renderThread_->stop();
+
+    // Detach window callbacks before tearing down components they reference.
+    // Cocoa's -[NSWindow _close] fires windowDidResignKey synchronously,
+    // which routes through onFocus → activeTab() → tabManager_; with the
+    // callbacks cleared those spurious events become no-ops.
+    if (window_) {
+        window_->onKey = nullptr;
+        window_->onChar = nullptr;
+        window_->onFramebufferResize = nullptr;
+        window_->onContentScale = nullptr;
+        window_->onMouseButton = nullptr;
+        window_->onCursorPos = nullptr;
+        window_->onScroll = nullptr;
+        window_->onExpose = nullptr;
+        window_->onLiveResizeEnd = nullptr;
+        window_->onFocus = nullptr;
+    }
 
     // Destroy tabs (and their layouts/panes/terminals) before GPU resources.
     // Reset the TabManager entirely — it owns the tabs_ vector now.
@@ -602,7 +616,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 if (dy == 0) return;
                 // If the active terminal has mouse reporting, send wheel
                 // events to the application instead of scrolling the viewport.
-                std::lock_guard<std::mutex> plk(platformMutex_);
+                std::lock_guard<std::mutex> plk(renderThread_->mutex());
                 Tab* tab = activeTab();
                 if (tab) {
                     TerminalEmulator* term = nullptr;
@@ -641,14 +655,14 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 // Apply any debounced resize captured during the drag so the
                 // final frame reflects the true window geometry.
                 {
-                    std::lock_guard<std::mutex> plk(platformMutex_);
+                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
                     flushPendingFramebufferResize();
                 }
                 setNeedsRedraw();
             };
             window_->onFocus = [this](bool focused) {
                 windowHasFocus_ = focused;
-                pending_.focusChanged = true;
+                renderThread_->pending().focusChanged = true;
                 setNeedsRedraw();
                 Tab* t = activeTab();
                 if (!t) return;
@@ -902,7 +916,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     pcbs.onTerminalExited = [this](Terminal* t) {
         // Deferred: terminalExited fires from inside Terminal::readFromFD
         // (during parse, with Terminal mutex held). Running the structural
-        // mutation immediately would require acquiring platformMutex_ while
+        // mutation immediately would require acquiring renderThread_->mutex() while
         // holding Terminal mutex — the opposite of the render thread's
         // order and a deadlock. Queue and drain after parse.
         renderThread_->enqueueTerminalExit(t);
@@ -936,7 +950,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     // Init per-pane render state
     {
-        std::lock_guard<std::mutex> plk(platformMutex_);
+        std::lock_guard<std::mutex> plk(renderThread_->mutex());
         auto& rs = renderEngine_->paneRenderPrivateMap()[paneId];
         rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
     }
@@ -1036,7 +1050,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 TerminalEmulator* te = p->terminal();
                 if (te) {
                     int c = te->width(), r = te->height();
-                    std::lock_guard<std::mutex> plk(platformMutex_);
+                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
                     auto& rs2 = renderEngine_->paneRenderPrivateMap()[p->id()];
                     rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
                 }
@@ -1051,10 +1065,10 @@ void PlatformDawn::invalidateAllRowCaches()
     // Signal the render thread to invalidate all row caches on the next frame.
     // The render-private maps are only touched by the render thread, so we
     // communicate via the pending mutations flag.
-    pending_.invalidateAllRowCaches = true;
+    renderThread_->pending().invalidateAllRowCaches = true;
     for (auto& tab : tabManager_->tabs()) {
         for (auto& panePtr : tab->layout()->panes())
-            pending_.dirtyPanes.insert(panePtr->id());
+            renderThread_->pending().dirtyPanes.insert(panePtr->id());
     }
 }
 
@@ -1103,7 +1117,7 @@ void PlatformDawn::applyFontChange(const Config& config)
 
     // Tear down old font (GPU removal deferred to render thread)
     textSystem_.unregisterFont(fontName_);
-    pending_.mainFontRemoved = true;
+    renderThread_->pending().mainFontRemoved = true;
 
     // Re-register
     textSystem_.registerFont(fontName_, fontList, 48.0f);
@@ -1137,7 +1151,7 @@ void PlatformDawn::applyFontChange(const Config& config)
     charWidth_ = shaped.width;
     if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
 
-    pending_.mainFontAtlasChanged = true;
+    renderThread_->pending().mainFontAtlasChanged = true;
     invalidateAllRowCaches();
     applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
 
@@ -1176,13 +1190,13 @@ void PlatformDawn::onResizeDebounceFire(uint32_t w, uint32_t h)
     // The heavy work (terminal reflow, GPU buffer updates, dividers)
     // is deferred to onLiveResizeEnd → flushPendingFramebufferResize.
     {
-        std::lock_guard<std::mutex> plk(platformMutex_);
+        std::lock_guard<std::mutex> plk(renderThread_->mutex());
         fbWidth_  = w;
         fbHeight_ = h;
-        pending_.surfaceNeedsReconfigure = true;
-        pending_.viewportSizeChanged = true;
-        pending_.releaseAllPaneTextures = true;
-        pending_.releaseTabBarTexture = true;
+        renderThread_->pending().surfaceNeedsReconfigure = true;
+        renderThread_->pending().viewportSizeChanged = true;
+        renderThread_->pending().releaseAllPaneTextures = true;
+        renderThread_->pending().releaseTabBarTexture = true;
         tabBarDirty_ = true;
     }
     setNeedsRedraw();
@@ -1193,12 +1207,12 @@ void PlatformDawn::applyConfig(const Config& config)
 {
     spdlog::info("Config: hot-reload triggered");
 
-    // Hold platformMutex_ for the duration of the reload so that font
+    // Hold renderThread_->mutex() for the duration of the reload so that font
     // registration/unregistration in textSystem_ can't overlap with the
     // render thread's shapeRun/shapeText/getFont calls.
     // Internal helpers (applyFramebufferResize, refreshDividers, etc.)
     // expect the lock to be held already.
-    std::lock_guard<std::mutex> plk(platformMutex_);
+    std::lock_guard<std::mutex> plk(renderThread_->mutex());
 
     // Keybindings
     std::vector<Binding> allKey = defaultBindings();
@@ -1275,7 +1289,7 @@ void PlatformDawn::applyConfig(const Config& config)
     // Tab bar
     tabBarConfig_ = config.tab_bar;
     textSystem_.unregisterFont(tabBarFontName_);
-    pending_.tabBarFontRemoved = true;
+    renderThread_->pending().tabBarFontRemoved = true;
     initTabBar(config.tab_bar);
 
     // Font name or size change
@@ -1341,7 +1355,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 {
     if (width <= 0 || height <= 0) return;
 
-    std::lock_guard<std::mutex> plk(platformMutex_);
+    std::lock_guard<std::mutex> plk(renderThread_->mutex());
 
     // During a live window drag, debounce the full resize work (surface
     // reconfigure + layout recompute + pane/terminal reflow) to 25 ms.
@@ -1367,7 +1381,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
 void PlatformDawn::flushPendingFramebufferResize()
 {
-    // Called on main thread under platformMutex_ from onLiveResizeEnd.
+    // Called on main thread under renderThread_->mutex() from onLiveResizeEnd.
     if (!animScheduler_) return;
     uint32_t w = 0, h = 0;
     if (animScheduler_->takePendingResize(w, h)) {
@@ -1377,12 +1391,12 @@ void PlatformDawn::flushPendingFramebufferResize()
 
 void PlatformDawn::applyFramebufferResize(int width, int height)
 {
-    // Caller must hold platformMutex_.
+    // Caller must hold renderThread_->mutex().
     fbWidth_ = static_cast<uint32_t>(width);
     fbHeight_ = static_cast<uint32_t>(height);
 
-    pending_.surfaceNeedsReconfigure = true;
-    pending_.viewportSizeChanged = true;
+    renderThread_->pending().surfaceNeedsReconfigure = true;
+    renderThread_->pending().viewportSizeChanged = true;
     dividersDirty_ = true;
 
     // Clear divider buffers for all tabs — geometry is now stale
@@ -1406,14 +1420,14 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
 
             scriptEngine_.notifyPaneResized(pane->id(), cols, rows);
 
-            pending_.structuralOps.push_back(
+            renderThread_->pending().structuralOps.push_back(
                 PendingMutations::ResizePaneState{pane->id(), cols, rows});
         }
     }
 
     // Release all held textures — they're now the wrong size.
-    pending_.releaseAllPaneTextures = true;
-    pending_.releaseTabBarTexture = true;
+    renderThread_->pending().releaseAllPaneTextures = true;
+    renderThread_->pending().releaseTabBarTexture = true;
     tabBarDirty_ = true;
     if (Tab* active = activeTab()) tabManager_->refreshDividers(active);
     setNeedsRedraw();
@@ -1458,8 +1472,8 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
 
     const FontData* font = textSystem_.getFont(tabBarFontName_);
     if (font) {
-        // GPU upload deferred to render thread via pending_.tabBarFontAtlasChanged
-        pending_.tabBarFontAtlasChanged = true;
+        // GPU upload deferred to render thread via renderThread_->pending().tabBarFontAtlasChanged
+        renderThread_->pending().tabBarFontAtlasChanged = true;
         float scale = tabBarFontSize_ / font->baseSize;
         tabBarLineHeight_ = font->lineHeight * scale;
         const auto& shaped = textSystem_.shapeText(tabBarFontName_, "M", tabBarFontSize_);

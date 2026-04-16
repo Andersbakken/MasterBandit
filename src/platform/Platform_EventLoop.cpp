@@ -101,13 +101,25 @@ int PlatformDawn::exec()
                     auto* t = p->terminal();
                     auto* term = dynamic_cast<Terminal*>(t);
                     bool isFocused = tab->layout()->focusedPaneId() == paneId;
-                    return {
+                    Script::AppCallbacks::PaneInfo info {
                         t ? t->width() : 0, t ? t->height() : 0,
                         p->title(), p->cwd(),
                         term && term->masterFD() >= 0,
                         isFocused, p->focusedPopupId(),
                         term ? term->foregroundProcess() : std::string{}
                     };
+                    if (t && t->hasSelection()) {
+                        const auto& sel = t->selection();
+                        if (sel.valid && !sel.active) {
+                            const auto& doc = t->document();
+                            info.hasSelection = true;
+                            info.selectionStartRowId = doc.rowIdForAbs(sel.startAbsRow);
+                            info.selectionStartCol   = sel.startCol;
+                            info.selectionEndRowId   = doc.rowIdForAbs(sel.endAbsRow);
+                            info.selectionEndCol     = sel.endCol;
+                        }
+                    }
+                    return info;
                 }
             }
             return {};

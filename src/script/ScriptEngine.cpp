@@ -283,9 +283,9 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
                                        int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
     auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_UNDEFINED;
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
 
     const char* event = JS_ToCString(ctx, argv[0]);
@@ -340,9 +340,9 @@ static JSValue jsPaneRemoveEventListener(JSContext* ctx, JSValueConst this_val,
                                           int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
     auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane) return JS_UNDEFINED;
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
     std::string prop;
@@ -360,10 +360,10 @@ static JSValue jsPaneRemoveEventListener(JSContext* ctx, JSValueConst this_val,
 static JSValue jsPaneInject(JSContext* ctx, JSValueConst this_val,
                              int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_UNDEFINED;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
     REQUIRE_PERM(ctx, IoInject);
     auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_UNDEFINED;
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     size_t len;
     const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!str) return JS_EXCEPTION;
@@ -375,10 +375,10 @@ static JSValue jsPaneInject(JSContext* ctx, JSValueConst this_val,
 static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
                             int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_UNDEFINED;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "write requires (string)");
     REQUIRE_PERM(ctx, ShellWrite);
     auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_UNDEFINED;
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
     if (!eng->callbacks().paneHasPty(pane->id))
         return JS_ThrowTypeError(ctx, "pane has no PTY");
@@ -398,25 +398,27 @@ static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, 
 static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
                                       int argc, JSValueConst* argv)
 {
-    if (argc < 2) return JS_NewString(ctx, "");
+    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
     auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_NewString(ctx, "");
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
     if (!eng->callbacks().paneGetText) return JS_NewString(ctx, "");
     uint64_t startId = 0, endId = 0;
+    int32_t startCol = 0, endCol = 0;
     JS_ToIndex(ctx, &startId, argv[0]);
-    JS_ToIndex(ctx, &endId, argv[1]);
-    auto text = eng->callbacks().paneGetText(pane->id, startId, 0, endId,
-                                              std::numeric_limits<int>::max());
+    JS_ToInt32(ctx, &startCol, argv[1]);
+    JS_ToIndex(ctx, &endId, argv[2]);
+    JS_ToInt32(ctx, &endCol, argv[3]);
+    auto text = eng->callbacks().paneGetText(pane->id, startId, startCol, endId, endCol);
     return JS_NewStringLen(ctx, text.data(), text.size());
 }
 
 static JSValue jsPaneRowIdAt(JSContext* ctx, JSValueConst this_val,
                                int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_NULL;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
     auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_NULL;
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
     auto info = eng->callbacks().paneInfo(pane->id);
     int32_t screenRow = 0;
@@ -477,6 +479,11 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
             JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], getText));
         return arr;
     }
+    case 11: return JS_NewBool(ctx, info.hasSelection);
+    case 12: return info.hasSelection ? JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartRowId)) : JS_NULL;
+    case 13: return info.hasSelection ? JS_NewInt32(ctx, info.selectionStartCol) : JS_NULL;
+    case 14: return info.hasSelection ? JS_NewInt64(ctx, static_cast<int64_t>(info.selectionEndRowId)) : JS_NULL;
+    case 15: return info.hasSelection ? JS_NewInt32(ctx, info.selectionEndCol) : JS_NULL;
     default: return JS_UNDEFINED;
     }
 }
@@ -490,7 +497,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsPaneRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
-    JS_CFUNC_DEF("getTextFromRows", 2, jsPaneGetTextFromRows),
+    JS_CFUNC_DEF("getTextFromRows", 4, jsPaneGetTextFromRows),
     JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
@@ -505,6 +512,11 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
     JS_CGETSET_MAGIC_DEF("lastCommand", jsPaneGetProp, nullptr, 9),
     JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
+    JS_CGETSET_MAGIC_DEF("hasSelection",        jsPaneGetProp, nullptr, 11),
+    JS_CGETSET_MAGIC_DEF("selectionStartRowId",  jsPaneGetProp, nullptr, 12),
+    JS_CGETSET_MAGIC_DEF("selectionStartCol",    jsPaneGetProp, nullptr, 13),
+    JS_CGETSET_MAGIC_DEF("selectionEndRowId",    jsPaneGetProp, nullptr, 14),
+    JS_CGETSET_MAGIC_DEF("selectionEndCol",      jsPaneGetProp, nullptr, 15),
 };
 
 // ============================================================================
@@ -542,10 +554,10 @@ static JsPopupData* jsPopupGet(JSContext* ctx, JSValueConst val)
 static JSValue jsPopupInject(JSContext* ctx, JSValueConst this_val,
                               int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_UNDEFINED;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
     REQUIRE_PERM(ctx, IoInject);
     auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_UNDEFINED;
+    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
     size_t len;
     const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!str) return JS_EXCEPTION;
@@ -561,7 +573,7 @@ static JSValue jsPopupClose(JSContext* ctx, JSValueConst this_val,
 {
     REQUIRE_PERM(ctx, UiPopupDestroy);
     auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_UNDEFINED;
+    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
     engineFromCtx(ctx)->callbacks().destroyPopup(popup->paneId, popup->popupId);
     popup->alive = false;
 
@@ -583,9 +595,9 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
                                         int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
     auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_UNDEFINED;
+    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
 
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
@@ -635,9 +647,9 @@ static JSValue jsPopupRemoveEventListener(JSContext* ctx, JSValueConst this_val,
                                            int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
     auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup) return JS_UNDEFINED;
+    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
     std::string prop;
@@ -687,10 +699,10 @@ static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 static JSValue jsPopupResize(JSContext* ctx, JSValueConst this_val,
                               int argc, JSValueConst* argv)
 {
-    if (argc < 1 || !JS_IsObject(argv[0])) return JS_UNDEFINED;
+    if (argc < 1 || !JS_IsObject(argv[0])) return JS_ThrowTypeError(ctx, "resize requires ({x, y, w, h})");
     REQUIRE_PERM(ctx, UiPopupCreate);
     auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_UNDEFINED;
+    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
 
     int32_t x, y, w, h;
     JSValue v;
@@ -725,17 +737,17 @@ static const JSCFunctionListEntry jsPopupProto[] = {
 static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
                                   int argc, JSValueConst* argv)
 {
-    if (argc < 1 || !JS_IsObject(argv[0])) return JS_UNDEFINED;
+    if (argc < 1 || !JS_IsObject(argv[0])) return JS_ThrowTypeError(ctx, "createPopup requires ({id, x, y, w, h})");
     REQUIRE_PERM(ctx, UiPopupCreate);
     auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_UNDEFINED;
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
 
     const char* id = nullptr;
     JSValue idVal = JS_GetPropertyStr(ctx, argv[0], "id");
     if (JS_IsString(idVal)) id = JS_ToCString(ctx, idVal);
     JS_FreeValue(ctx, idVal);
-    if (!id) return JS_UNDEFINED;
+    if (!id) return JS_ThrowTypeError(ctx, "createPopup: missing 'id' property");
 
     int32_t x = 0, y = 0, w = 20, h = 5;
     JSValue v;
@@ -811,9 +823,9 @@ static JSValue jsOverlayAddEventListener(JSContext* ctx, JSValueConst this_val,
                                           int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
     auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_UNDEFINED;
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     Engine* eng = engineFromCtx(ctx);
 
     const char* event = JS_ToCString(ctx, argv[0]);
@@ -859,9 +871,9 @@ static JSValue jsOverlayRemoveEventListener(JSContext* ctx, JSValueConst this_va
                                              int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
     auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov) return JS_UNDEFINED;
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
     std::string prop;
@@ -879,10 +891,10 @@ static JSValue jsOverlayRemoveEventListener(JSContext* ctx, JSValueConst this_va
 static JSValue jsOverlayInject(JSContext* ctx, JSValueConst this_val,
                                 int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_UNDEFINED;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
     REQUIRE_PERM(ctx, IoInject);
     auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_UNDEFINED;
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     size_t len;
     const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!str) return JS_EXCEPTION;
@@ -894,10 +906,10 @@ static JSValue jsOverlayInject(JSContext* ctx, JSValueConst this_val,
 static JSValue jsOverlayWrite(JSContext* ctx, JSValueConst this_val,
                                int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_UNDEFINED;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "write requires (string)");
     REQUIRE_PERM(ctx, ShellWrite);
     auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_UNDEFINED;
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     Engine* eng = engineFromCtx(ctx);
     if (!eng->callbacks().overlayHasPty(ov->tabId))
         return JS_ThrowTypeError(ctx, "overlay has no PTY");
@@ -927,25 +939,27 @@ static JSValue jsOverlayGetProp(JSContext* ctx, JSValueConst this_val, int magic
 static JSValue jsOverlayGetTextFromRows(JSContext* ctx, JSValueConst this_val,
                                          int argc, JSValueConst* argv)
 {
-    if (argc < 2) return JS_NewString(ctx, "");
+    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
     auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_NewString(ctx, "");
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     Engine* eng = engineFromCtx(ctx);
     if (!eng->callbacks().overlayGetText) return JS_NewString(ctx, "");
     uint64_t startId = 0, endId = 0;
+    int32_t startCol = 0, endCol = 0;
     JS_ToIndex(ctx, &startId, argv[0]);
-    JS_ToIndex(ctx, &endId, argv[1]);
-    auto text = eng->callbacks().overlayGetText(ov->tabId, startId, 0, endId,
-                                                 std::numeric_limits<int>::max());
+    JS_ToInt32(ctx, &startCol, argv[1]);
+    JS_ToIndex(ctx, &endId, argv[2]);
+    JS_ToInt32(ctx, &endCol, argv[3]);
+    auto text = eng->callbacks().overlayGetText(ov->tabId, startId, startCol, endId, endCol);
     return JS_NewStringLen(ctx, text.data(), text.size());
 }
 
 static JSValue jsOverlayRowIdAt(JSContext* ctx, JSValueConst this_val,
                                   int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_NULL;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
     auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_NULL;
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     Engine* eng = engineFromCtx(ctx);
     if (!eng->callbacks().overlayRowIdAt) return JS_NULL;
     int32_t screenRow = 0;
@@ -963,7 +977,7 @@ static const JSCFunctionListEntry jsOverlayProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsOverlayRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsOverlayInject),
     JS_CFUNC_DEF("write", 1, jsOverlayWrite),
-    JS_CFUNC_DEF("getTextFromRows", 2, jsOverlayGetTextFromRows),
+    JS_CFUNC_DEF("getTextFromRows", 4, jsOverlayGetTextFromRows),
     JS_CFUNC_DEF("rowIdAt", 1, jsOverlayRowIdAt),
     JS_CFUNC_DEF("close", 0, jsOverlayClose),
     JS_CGETSET_MAGIC_DEF("cols", jsOverlayGetProp, nullptr, 0),
@@ -1005,9 +1019,9 @@ static JSValue jsTabAddEventListener(JSContext* ctx, JSValueConst this_val,
                                       int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
     auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
+    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
 
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
@@ -1032,9 +1046,9 @@ static JSValue jsTabRemoveEventListener(JSContext* ctx, JSValueConst this_val,
                                          int argc, JSValueConst* argv)
 {
     if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_UNDEFINED;
+        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
     auto* tab = jsTabGet(ctx, this_val);
-    if (!tab) return JS_UNDEFINED;
+    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
     std::string prop = std::string("__evt_") + event;
@@ -1101,7 +1115,7 @@ static JSValue jsTabCreateOverlay(JSContext* ctx, JSValueConst this_val,
 {
     REQUIRE_PERM(ctx, UiOverlayCreate);
     auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
+    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
     Engine* eng = engineFromCtx(ctx);
 
     JSValue overlayObj = jsOverlayNew(ctx, tab->id);
@@ -1113,7 +1127,7 @@ static JSValue jsTabCreateOverlay(JSContext* ctx, JSValueConst this_val,
 
     if (!ok) {
         JS_FreeValue(ctx, overlayObj);
-        return JS_UNDEFINED;
+        return JS_NULL;
     }
     registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(tab->id), overlayObj);
 
@@ -1130,7 +1144,7 @@ static JSValue jsTabCloseOverlay(JSContext* ctx, JSValueConst this_val,
 {
     REQUIRE_PERM(ctx, UiOverlayClose);
     auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
+    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
     engineFromCtx(ctx)->callbacks().popOverlay(tab->id);
     return JS_UNDEFINED;
 }
@@ -1141,7 +1155,7 @@ static JSValue jsTabClose(JSContext* ctx, JSValueConst this_val,
 {
     REQUIRE_PERM(ctx, TabsClose);
     auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
+    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
     engineFromCtx(ctx)->callbacks().closeTab(tab->id);
     tab->alive = false;
     return JS_UNDEFINED;
@@ -1166,7 +1180,7 @@ static const JSCFunctionListEntry jsTabProto[] = {
 static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
                                  int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_FALSE;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "invokeAction requires (name, ...args)");
     REQUIRE_PERM(ctx, ActionsInvoke);
     Engine* eng = engineFromCtx(ctx);
     const char* name = JS_ToCString(ctx, argv[0]);
@@ -1198,7 +1212,8 @@ static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
 static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
                                      int argc, JSValueConst* argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0])) return JS_UNDEFINED;
+    if (argc < 2 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "addEventListener requires (string, ...)");
 
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
@@ -1210,7 +1225,7 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
         // Three-arg form: ("action", "ActionName", fn)
         if (argc < 3 || !JS_IsString(argv[1]) || !JS_IsFunction(ctx, argv[2])) {
             JS_FreeCString(ctx, event);
-            return JS_UNDEFINED;
+            return JS_ThrowTypeError(ctx, "addEventListener('action', ...) requires (string, string, function)");
         }
         const char* actionName = JS_ToCString(ctx, argv[1]);
         if (!actionName) { JS_FreeCString(ctx, event); return JS_EXCEPTION; }
@@ -1221,7 +1236,7 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
         // Two-arg form: ("tabCreated", fn)
         if (!JS_IsFunction(ctx, argv[1])) {
             JS_FreeCString(ctx, event);
-            return JS_UNDEFINED;
+            return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
         }
         prop = std::string("__evt_") + event;
         callback = argv[1];
@@ -1247,7 +1262,8 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
 static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
                                         int argc, JSValueConst* argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0])) return JS_UNDEFINED;
+    if (argc < 2 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, ...)");
 
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
@@ -1257,7 +1273,7 @@ static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
     if (strcmp(event, "action") == 0) {
         if (argc < 3 || !JS_IsString(argv[1]) || !JS_IsFunction(ctx, argv[2])) {
             JS_FreeCString(ctx, event);
-            return JS_UNDEFINED;
+            return JS_ThrowTypeError(ctx, "removeEventListener('action', ...) requires (string, string, function)");
         }
         const char* actionName = JS_ToCString(ctx, argv[1]);
         if (!actionName) { JS_FreeCString(ctx, event); return JS_EXCEPTION; }
@@ -1265,7 +1281,7 @@ static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
         JS_FreeCString(ctx, actionName);
         callback = argv[2];
     } else {
-        if (!JS_IsFunction(ctx, argv[1])) { JS_FreeCString(ctx, event); return JS_UNDEFINED; }
+        if (!JS_IsFunction(ctx, argv[1])) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)"); }
         prop = std::string("__evt_") + event;
         callback = argv[1];
     }
@@ -1525,7 +1541,7 @@ static JSValue jsMbCloseTab(JSContext* ctx, JSValueConst, int argc, JSValueConst
 // mb.unloadScript(id)
 static JSValue jsMbUnloadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_UNDEFINED;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "unloadScript requires (id)");
     REQUIRE_PERM(ctx, ScriptsUnload);
     Engine* eng = engineFromCtx(ctx);
     int64_t id;
@@ -1539,7 +1555,8 @@ static JSValue jsMbExit(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
     Engine* eng = engineFromCtx(ctx);
     auto* inst = instanceFromCtx(ctx);
-    if (!inst || inst->builtIn) return JS_UNDEFINED; // built-ins can't self-unload
+    if (!inst) return JS_UNDEFINED;
+    if (inst->builtIn) return JS_ThrowTypeError(ctx, "built-in scripts cannot call exit()");
 
     InstanceId id = inst->id;
     if (eng->loop()) {
@@ -1567,7 +1584,7 @@ static JSValue jsMbSetNamespace(JSContext* ctx, JSValueConst, int argc, JSValueC
 
     Engine* eng = engineFromCtx(ctx);
     auto* inst = instanceFromCtx(ctx);
-    if (!inst) return JS_UNDEFINED;
+    if (!inst) return JS_ThrowTypeError(ctx, "no script instance");
 
     if (!eng->setNamespace(inst->id, nsStr))
         return JS_ThrowTypeError(ctx, "namespace '%s' is already taken or already set", nsStr.c_str());
@@ -1589,7 +1606,7 @@ static JSValue jsMbRegisterAction(JSContext* ctx, JSValueConst, int argc, JSValu
 
     Engine* eng = engineFromCtx(ctx);
     auto* inst = instanceFromCtx(ctx);
-    if (!inst) return JS_UNDEFINED;
+    if (!inst) return JS_ThrowTypeError(ctx, "no script instance");
 
     if (!eng->registerAction(inst->id, nameStr))
         return JS_ThrowTypeError(ctx, "registerAction failed: namespace not set or action already registered");
@@ -1601,8 +1618,9 @@ static JSValue jsMbRegisterAction(JSContext* ctx, JSValueConst, int argc, JSValu
 static JSValue jsOverlayClose(JSContext* ctx, JSValueConst this_val,
                                int, JSValueConst*)
 {
+    REQUIRE_PERM(ctx, UiOverlayClose);
     auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_UNDEFINED;
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     Engine* eng = engineFromCtx(ctx);
     eng->callbacks().popOverlay(ov->tabId);
     ov->alive = false;
@@ -2257,7 +2275,7 @@ void Engine::unregisterTcap(const std::string& name)
 static JSValue jsMbRegisterTcap(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     REQUIRE_PERM(ctx, ActionsInvoke);
-    if (argc < 1 || !JS_IsString(argv[0])) return JS_UNDEFINED;
+    if (argc < 2 || !JS_IsString(argv[0])) return JS_ThrowTypeError(ctx, "registerTcap requires (name, value)");
     const char* name = JS_ToCString(ctx, argv[0]);
     if (!name) return JS_EXCEPTION;
     std::string value;
@@ -2273,7 +2291,7 @@ static JSValue jsMbRegisterTcap(JSContext* ctx, JSValueConst, int argc, JSValueC
 static JSValue jsMbUnregisterTcap(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     REQUIRE_PERM(ctx, ActionsInvoke);
-    if (argc < 1 || !JS_IsString(argv[0])) return JS_UNDEFINED;
+    if (argc < 1 || !JS_IsString(argv[0])) return JS_ThrowTypeError(ctx, "unregisterTcap requires (name)");
     const char* name = JS_ToCString(ctx, argv[0]);
     if (!name) return JS_EXCEPTION;
     engineFromCtx(ctx)->unregisterTcap(name);

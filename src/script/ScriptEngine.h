@@ -60,7 +60,13 @@ struct AppCallbacks {
     // Invoke an action by name
     std::function<bool(const std::string&, const std::vector<std::string>&)> invokeAction;
     // Query pane info
-    struct PaneInfo { int cols; int rows; std::string title; std::string cwd; bool hasPty; bool focused; std::string focusedPopupId; std::string foregroundProcess; };
+    struct PaneInfo {
+        int cols; int rows; std::string title; std::string cwd;
+        bool hasPty; bool focused; std::string focusedPopupId; std::string foregroundProcess;
+        bool hasSelection = false;
+        uint64_t selectionStartRowId = 0; int selectionStartCol = 0;
+        uint64_t selectionEndRowId = 0;   int selectionEndCol = 0;
+    };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
     // entries (0 = all). Used by pane.commands / pane.lastCommand JS properties.

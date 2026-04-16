@@ -117,6 +117,16 @@ interface MbPane {
     readonly foregroundProcess: string;
     /** Active popups on this pane. */
     readonly popups: MbPopupInfo[];
+    /** True when a finalized (non-active) selection exists. */
+    readonly hasSelection: boolean;
+    /** Stable row ID of the selection start, or `null` if no selection. */
+    readonly selectionStartRowId: number | null;
+    /** Column of the selection start, or `null` if no selection. */
+    readonly selectionStartCol: number | null;
+    /** Stable row ID of the selection end, or `null` if no selection. */
+    readonly selectionEndRowId: number | null;
+    /** Column of the selection end, or `null` if no selection. */
+    readonly selectionEndCol: number | null;
     /**
      * Most recently completed command seen on this pane, or null. Requires
      * `shell.commands` permission (command records can contain secrets).
@@ -132,8 +142,9 @@ interface MbPane {
      * Extract plain UTF-8 text from a stable row-id range (inclusive on both
      * ends). Row IDs come from `MbCommand` fields or from `rowIdAt()`. Returns
      * an empty string if the start row has been evicted from the archive.
+     * `startCol`/`endCol` bound the columns on the first/last row.
      */
-    getTextFromRows(startRowId: number, endRowId: number): string;
+    getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /**
      * Return the stable row ID for a screen row (0 = top of visible screen).
      * Returns `null` if `screenRow` is out of range (≥ terminal height).
@@ -266,7 +277,7 @@ interface MbOverlay {
     close(): void;
 
     /** Extract plain text from a stable row-id range (inclusive). */
-    getTextFromRows(startRowId: number, endRowId: number): string;
+    getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /** Stable row ID for a screen row (0 = top). Returns null if out of range. */
     rowIdAt(screenRow: number): number | null;
 

@@ -1384,9 +1384,19 @@ void PlatformDawn::flushPendingFramebufferResize()
     // Called on main thread under renderThread_->mutex() from onLiveResizeEnd.
     if (!animScheduler_) return;
     uint32_t w = 0, h = 0;
-    if (animScheduler_->takePendingResize(w, h)) {
-        applyFramebufferResize(static_cast<int>(w), static_cast<int>(h));
+    if (!animScheduler_->takePendingResize(w, h)) {
+        // On XCB (and similar backends) the 25ms debounce timer fires before
+        // the 100ms live-resize-end timer, consuming pendingResizeW_/H_ via
+        // onResizeDebounceFire (lightweight surface reconfigure only).  When
+        // onLiveResizeEnd fires, takePendingResize finds nothing — but the
+        // full terminal reflow (and therefore SIGWINCH) was never done.
+        // Fall back to the current fb dimensions which onResizeDebounceFire
+        // kept up to date.
+        w = fbWidth_;
+        h = fbHeight_;
     }
+    if (w && h)
+        applyFramebufferResize(static_cast<int>(w), static_cast<int>(h));
 }
 
 void PlatformDawn::applyFramebufferResize(int width, int height)

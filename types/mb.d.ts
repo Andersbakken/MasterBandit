@@ -171,6 +171,15 @@ interface MbPane {
      * lazily-extracted `command`/`output` text. Requires `shell.commands` permission.
      */
     addEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
+
+    removeEventListener(event: "input",  fn: (data: string) => string | void): void;
+    removeEventListener(event: "output", fn: (data: string) => string | void): void;
+    removeEventListener(event: "mouse",  fn: (ev: MbMouseEvent) => void): void;
+    removeEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
+    removeEventListener(event: "destroyed", fn: () => void): void;
+    removeEventListener(event: "foregroundProcessChanged", fn: (processName: string) => void): void;
+    removeEventListener(event: `osc:${number}`, fn: (payload: string) => void): void;
+    removeEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
 }
 
 interface MbPopupInfo {
@@ -208,6 +217,10 @@ interface MbPopup {
     addEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
     /** Fired once when the popup is closed. */
     addEventListener(event: "destroyed", fn: () => void): void;
+
+    removeEventListener(event: "input", fn: (data: string) => void): void;
+    removeEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
+    removeEventListener(event: "destroyed", fn: () => void): void;
 }
 
 // ============================================================================
@@ -230,6 +243,10 @@ interface MbTab {
     addEventListener(event: "destroyed", fn: () => void): void;
     addEventListener(event: "overlayCreated", fn: (overlay: MbOverlay) => void): void;
     addEventListener(event: "overlayDestroyed", fn: () => void): void;
+
+    removeEventListener(event: "destroyed", fn: () => void): void;
+    removeEventListener(event: "overlayCreated", fn: (overlay: MbOverlay) => void): void;
+    removeEventListener(event: "overlayDestroyed", fn: () => void): void;
 }
 
 // ============================================================================
@@ -257,6 +274,10 @@ interface MbOverlay {
     addEventListener(event: "input", fn: (data: string) => void): void;
     addEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
     addEventListener(event: "destroyed", fn: () => void): void;
+
+    removeEventListener(event: "input", fn: (data: string) => void): void;
+    removeEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
+    removeEventListener(event: "destroyed", fn: () => void): void;
 }
 
 // ============================================================================
@@ -345,6 +366,12 @@ interface MbGlobal {
      */
     createSecureToken(length?: number): string;
 
+    // --- Custom terminal capabilities ---
+    /** Register a custom XTGETTCAP capability. */
+    registerTcap(name: string, value: string): void;
+    /** Remove a custom XTGETTCAP capability. */
+    unregisterTcap(name: string): void;
+
     // --- Lifecycle events ---
     /** Fires once per new pane. Fires on every loaded instance. */
     addEventListener(event: "paneCreated", fn: (pane: MbPane) => void): void;
@@ -362,6 +389,15 @@ interface MbGlobal {
      * matching entry. Built-in scripts only. Respond via `mb.approveScript`.
      */
     addEventListener(
+        event: "scriptPermissionRequired",
+        fn: (path: string, permissions: string, hash: string) => void
+    ): void;
+
+    removeEventListener(event: "paneCreated", fn: (pane: MbPane) => void): void;
+    removeEventListener(event: "tabCreated", fn: (tab: MbTab) => void): void;
+    removeEventListener(event: "action", fn: (actionName: string) => void): void;
+    removeEventListener(event: "action", actionName: string, fn: (...args: string[]) => void): void;
+    removeEventListener(
         event: "scriptPermissionRequired",
         fn: (path: string, permissions: string, hash: string) => void
     ): void;

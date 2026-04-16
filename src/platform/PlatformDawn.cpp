@@ -91,7 +91,7 @@ void PlatformDawn::postToMainThread(std::function<void()> fn)
 
 void PlatformDawn::drainDeferredMain()
 {
-    // Called on the main thread from onTick under platformMutex_.
+    // Called on the main thread from onTick (without platformMutex_).
     std::vector<std::function<void()>> pending;
     {
         std::lock_guard<std::mutex> lk(deferredMainMutex_);
@@ -502,8 +502,6 @@ void PlatformDawn::renderThreadMain()
             });
             renderWake_.store(false, std::memory_order_relaxed);
         }
-        if (renderStop_.load(std::memory_order_acquire)) return;
-
         if (renderStop_.load(std::memory_order_acquire)) return;
         // Tick Dawn on the render thread: drains device-side events
         // (completion callbacks, deferred destroys). Safe to run without

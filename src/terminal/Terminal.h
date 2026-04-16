@@ -2,6 +2,7 @@
 #include "TerminalEmulator.h"
 #include "TerminalOptions.h"
 #include <eventloop/EventLoop.h>
+#include <atomic>
 #include <vector>
 
 #define EINTRWRAP(ret, op) \
@@ -46,7 +47,7 @@ public:
     void resize(int width, int height) override;
 
     // Deferred TIOCSWINSZ: set by resize(), consumed by flushPendingResize()
-    bool hasResizePending() const { return mResizePending; }
+    bool hasResizePending() const { return mResizePending.load(std::memory_order_acquire); }
     void flushPendingResize();
 
 protected:
@@ -58,7 +59,7 @@ private:
     TerminalOptions mOptions;
     int mMasterFD { -1 };
     bool mHeadless { false };
-    bool mResizePending { false };
+    std::atomic<bool> mResizePending { false };
     pid_t mLastFgPgid { -1 };
     EventLoop* mLoop { nullptr };
     EventLoop::TimerId mWritePollId { 0 };

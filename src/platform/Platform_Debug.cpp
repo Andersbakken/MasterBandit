@@ -117,14 +117,14 @@ std::string PlatformDawn::statsJson(int id)
         glz::generic::array_t panesArr;
         for (auto& panePtr : tab->layout()->panes()) {
             int pid = panePtr->id();
-            auto it = paneRenderStates_.find(pid);
+            auto it = paneRenderPrivate_.find(pid);
             TerminalEmulator* term = panePtr->terminal();
             glz::generic::object_t paneObj;
             paneObj["id"]   = static_cast<double>(pid);
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);
             paneObj["rows"] = static_cast<double>(term ? term->height() : 0);
             paneObj["cwd"]  = panePtr->cwd();
-            if (it != paneRenderStates_.end()) {
+            if (it != paneRenderPrivate_.end()) {
                 const auto& rs = it->second;
                 paneObj["held_texture"] = rs.heldTexture != nullptr;
                 paneObj["texture_kb"]   = rs.heldTexture

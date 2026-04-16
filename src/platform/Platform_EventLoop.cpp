@@ -283,26 +283,16 @@ int PlatformDawn::exec()
                     pcbs.quit = [this]() { quit(); };
                     pcbs.onInput = std::move(onInput);
                     if (p->createPopup(popupId, x, y, w, h, std::move(pcbs))) {
-                        // Initialize popup render state
-                        std::string key = popupStateKey(paneId, popupId);
-                        PaneRenderState& prs = popupRenderStates_[key];
-                        size_t needed = static_cast<size_t>(w) * h;
-                        prs.resolvedCells.resize(needed);
-                        prs.rowShapingCache.resize(h);
-                        prs.dirty = true;
+                        // Queue popup render state creation
+                        pending_.structuralOps.push_back(
+                            PendingMutations::CreatePopupState{paneId, popupId, w, h});
                         // Dirty all popup render states for this pane on any content change.
-                        // onPopupEvent is a single slot on Pane so we can't key it per popup;
-                        // dirtying all of them is cheap and correct regardless of which fired.
                         p->onPopupEvent = [this, paneId]() {
-                            for (auto& [key, prs] : popupRenderStates_) {
-                                if (key.substr(0, key.find('/')) == std::to_string(paneId))
-                                    prs.dirty = true;
-                            }
+                            pending_.dirtyPanes.insert(paneId);
                             setNeedsRedraw();
                         };
                         // Dirty parent pane so the popup composite entry is added
-                        auto it = paneRenderStates_.find(paneId);
-                        if (it != paneRenderStates_.end()) it->second.dirty = true;
+                        pending_.dirtyPanes.insert(paneId);
                         setNeedsRedraw();
                         return true;
                     }
@@ -312,33 +302,25 @@ int PlatformDawn::exec()
             return false;
         };
         scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
-            deferIfRendering([this, paneId, popupId]() {
-                for (auto& tab : tabs_) {
-                    if (Pane* p = tab->layout()->pane(paneId)) {
-                        bool wasPopupFocused = (p->focusedPopupId() == popupId);
-                        p->destroyPopup(popupId);
-                        Terminal* t = p->terminal();
-                        if (wasPopupFocused && t && p->popups().empty())
-                            t->focusEvent(true);
-                        if (t) t->grid().markAllDirty();
-                        // Release popup render state (deferred — texture may still be in flight)
-                        std::string key = popupStateKey(paneId, popupId);
-                        auto pit = popupRenderStates_.find(key);
-                        if (pit != popupRenderStates_.end()) {
-                            if (pit->second.heldTexture)
-                                pendingTabBarRelease_.push_back(pit->second.heldTexture);
-                            for (auto* tx : pit->second.pendingRelease)
-                                pendingTabBarRelease_.push_back(tx);
-                            popupRenderStates_.erase(pit);
-                        }
-                        // Dirty parent pane so it re-renders without the popup composite entry
-                        auto it = paneRenderStates_.find(paneId);
-                        if (it != paneRenderStates_.end()) it->second.dirty = true;
-                        setNeedsRedraw();
-                        return;
-                    }
+            for (auto& tab : tabs_) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    bool wasPopupFocused = (p->focusedPopupId() == popupId);
+                    p->destroyPopup(popupId);
+                    Terminal* t = p->terminal();
+                    if (wasPopupFocused && t && p->popups().empty())
+                        t->focusEvent(true);
+                    if (t) t->grid().markAllDirty();
+                    // Queue popup render state cleanup
+                    std::string key = popupStateKey(paneId, popupId);
+                    pending_.structuralOps.push_back(
+                        PendingMutations::DestroyPopupState{paneId, popupId});
+                    pending_.releasePopupTextures.push_back(key);
+                    // Dirty parent pane
+                    pending_.dirtyPanes.insert(paneId);
+                    setNeedsRedraw();
+                    return;
                 }
-            });
+            }
         };
         scbs.resizePopup = [this](Script::PaneId paneId, const std::string& popupId,
                                    int x, int y, int w, int h) -> bool {
@@ -346,19 +328,11 @@ int PlatformDawn::exec()
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     if (p->resizePopup(popupId, x, y, w, h)) {
                         if (auto* t = p->terminal()) t->grid().markAllDirty();
-                        // Resize popup render state
+                        // Queue popup render state resize
+                        pending_.structuralOps.push_back(
+                            PendingMutations::ResizePopupState{paneId, popupId, w, h});
                         std::string key = popupStateKey(paneId, popupId);
-                        auto pit = popupRenderStates_.find(key);
-                        if (pit != popupRenderStates_.end()) {
-                            PaneRenderState& prs = pit->second;
-                            prs.resolvedCells.resize(static_cast<size_t>(w) * h);
-                            prs.rowShapingCache.assign(h, {});
-                            prs.dirty = true;
-                            if (prs.heldTexture) {
-                                prs.pendingRelease.push_back(prs.heldTexture);
-                                prs.heldTexture = nullptr;
-                            }
-                        }
+                        pending_.releasePopupTextures.push_back(key);
                         setNeedsRedraw();
                         return true;
                     }
@@ -475,16 +449,22 @@ int PlatformDawn::exec()
             for (auto& [fd, term] : ptyPolls_)
                 term->flushReadBuffer();
 
-            {
-                std::lock_guard<std::mutex> plk(platformMutex_);
-                drainDeferredMain();         // title / icon / cwd / progress / etc.
-                drainPendingExits();
-                drainPendingTeardowns();
-                scriptEngine_.executePendingJobs();
-                // Render thread may have requested an animation wakeup — wire
-                // the event-loop timer on the main thread.
-                applyPendingAnimationWakeup();
-            }
+            // Drain deferred callbacks (no platformMutex_ needed for the
+            // queue swap itself; each callback may acquire it as needed).
+            drainDeferredMain();         // title / icon / cwd / progress / etc.
+            drainPendingExits();
+            scriptEngine_.executePendingJobs();
+
+            // Apply all accumulated mutations to the shadow render state in
+            // one batch under platformMutex_.  This is the single point where
+            // the main thread and render thread synchronize on shared state.
+            applyPendingMutations();
+
+            // Render thread may have requested an animation wakeup — wire
+            // the event-loop timer on the main thread.
+            applyPendingAnimationWakeup();
+
+
 
             // device_.Tick() is called from the render thread (see
             // renderThreadMain). Calling it here while the render thread

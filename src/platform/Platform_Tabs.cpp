@@ -115,8 +115,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             // paneRenderStates_.dirty is deferred to main thread.
             setNeedsRedraw();
             postToMainThread([this, paneId] {
-                auto it = paneRenderStates_.find(paneId);
-                if (it != paneRenderStates_.end()) it->second.dirty = true;
+                pending_.dirtyPanes.insert(paneId);
             });
             break;
         case TerminalEmulator::VisibleBell:
@@ -348,9 +347,8 @@ void PlatformDawn::createTab()
     int cols = (pr.w > 0 && charWidth_ > 0) ? static_cast<int>((pr.w - padLeft_ - padRight_) / charWidth_) : 80;
     int rows = (pr.h > 0 && lineHeight_ > 0) ? static_cast<int>((pr.h - padTop_ - padBottom_) / lineHeight_) : 24;
 
-    auto& rs = paneRenderStates_[paneId];
-    rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
-    rs.dirty = true;
+    pending_.structuralOps.push_back(PendingMutations::CreatePaneState{paneId, cols, rows});
+    pending_.dirtyPanes.insert(paneId);
 
     terminal->resize(cols, rows);
     terminal->flushPendingResize(); // initial size — send immediately
@@ -383,47 +381,39 @@ void PlatformDawn::closeTab(int idx)
     if (tabs_.empty() || idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
     if (tabs_.size() == 1) return; // can't close the last tab
 
-    deferIfRendering([this, idx]() {
-        // Re-validate inside the deferred run: the tab index and tabs_ size
-        // are read at execution time (possibly a tick later than the enqueue).
-        if (tabs_.empty() || idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
-
-        // Stop PTY polls for all terminals in this tab
-        Tab* tab = tabs_[idx].get();
-        for (auto& panePtr : tab->layout()->panes()) {
-            if (auto* t = panePtr->terminal()) {
-                removePtyPoll(t->masterFD());
-            }
-            // Release pane and popup render states
-            auto it = paneRenderStates_.find(panePtr->id());
-            if (it != paneRenderStates_.end()) {
-                if (it->second.heldTexture)
-                    pendingTabBarRelease_.push_back(it->second.heldTexture);
-                for (auto* t2 : it->second.pendingRelease)
-                    pendingTabBarRelease_.push_back(t2);
-                paneRenderStates_.erase(it);
-            }
-            paneCursorStyle_.erase(panePtr->id());
-            releasePopupStates(panePtr.get());
-            scriptEngine_.notifyPaneDestroyed(panePtr->id());
+    // Stop PTY polls for all terminals in this tab
+    Tab* tab = tabs_[idx].get();
+    for (auto& panePtr : tab->layout()->panes()) {
+        if (auto* t = panePtr->terminal()) {
+            removePtyPoll(t->masterFD());
         }
+        // Queue render state cleanup
+        pending_.structuralOps.push_back(PendingMutations::DestroyPaneState{panePtr->id()});
+        for (const auto& popup : panePtr->popups()) {
+            std::string key = popupStateKey(panePtr->id(), popup.id);
+            pending_.releasePopupTextures.push_back(key);
+        }
+        paneCursorStyle_.erase(panePtr->id());
+        scriptEngine_.notifyPaneDestroyed(panePtr->id());
+    }
 
-        if (tab->hasOverlay())
-            scriptEngine_.notifyOverlayDestroyed(idx);
-        scriptEngine_.notifyTabDestroyed(idx);
+    if (tab->hasOverlay()) {
+        scriptEngine_.notifyOverlayDestroyed(idx);
+        pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
+    }
+    scriptEngine_.notifyTabDestroyed(idx);
 
-        tabs_.erase(tabs_.begin() + idx);
+    tabs_.erase(tabs_.begin() + idx);
 
-        // Adjust active tab index
-        if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
-            activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+    // Adjust active tab index
+    if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
+        activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
 
-        updateTabBarVisibility();
-        refreshPointerShape();
-        tabBarDirty_ = true;
-        setNeedsRedraw();
-        spdlog::info("Closed tab {}", idx + 1);
-    });
+    updateTabBarVisibility();
+    refreshPointerShape();
+    tabBarDirty_ = true;
+    setNeedsRedraw();
+    spdlog::info("Closed tab {}", idx + 1);
 }
 
 
@@ -455,7 +445,7 @@ void PlatformDawn::refreshDividers(Tab* tab)
 
     // Clear all divider VBs for this tab's panes
     for (auto& panePtr : layout->panes())
-        paneRenderStates_[panePtr->id()].dividerVB = {};
+        pending_.clearDividerPanes.push_back(panePtr->id());
 
     if (layout->panes().size() <= 1 || layout->isZoomed()) return;
 
@@ -466,16 +456,16 @@ void PlatformDawn::refreshDividers(Tab* tab)
     dividersDirty_ = true;
 
     for (auto& [paneId, dr] : dividers) {
-        auto it = paneRenderStates_.find(paneId);
-        if (it == paneRenderStates_.end()) continue;
-        auto& geom = it->second.dividerGeom;
-        geom.x = static_cast<float>(dr.x);
-        geom.y = static_cast<float>(dr.y);
-        geom.w = static_cast<float>(dr.w);
-        geom.h = static_cast<float>(dr.h);
-        geom.r = dividerR_; geom.g = dividerG_;
-        geom.b = dividerB_; geom.a = dividerA_;
-        geom.valid = true;
+        PendingMutations::DividerUpdate du;
+        du.paneId = paneId;
+        du.x = static_cast<float>(dr.x);
+        du.y = static_cast<float>(dr.y);
+        du.w = static_cast<float>(dr.w);
+        du.h = static_cast<float>(dr.h);
+        du.r = dividerR_; du.g = dividerG_;
+        du.b = dividerB_; du.a = dividerA_;
+        du.valid = true;
+        pending_.dividerUpdates.push_back(du);
     }
 }
 
@@ -484,7 +474,7 @@ void PlatformDawn::clearDividers(Tab* tab)
 {
     if (!tab) return;
     for (auto& panePtr : tab->layout()->panes())
-        paneRenderStates_[panePtr->id()].dividerVB = {};
+        pending_.clearDividerPanes.push_back(panePtr->id());
 }
 
 
@@ -561,14 +551,8 @@ void PlatformDawn::releaseTabTextures(Tab* tab)
 {
     if (!tab) return;
     for (auto& panePtr : tab->layout()->panes()) {
-        auto it = paneRenderStates_.find(panePtr->id());
-        if (it == paneRenderStates_.end()) continue;
-        PaneRenderState& rs = it->second;
-        if (rs.heldTexture) {
-            pendingTabBarRelease_.push_back(rs.heldTexture);
-            rs.heldTexture = nullptr;
-            rs.dirty = true;
-        }
+        pending_.releasePaneTextures.push_back(panePtr->id());
+        pending_.dirtyPanes.insert(panePtr->id());
     }
 }
 
@@ -584,16 +568,12 @@ void PlatformDawn::terminalExited(Terminal* terminal)
             int paneId = panePtr->id();
             removePtyPoll(terminal->masterFD());
 
-            auto it = paneRenderStates_.find(paneId);
-            if (it != paneRenderStates_.end()) {
-                if (it->second.heldTexture)
-                    pendingTabBarRelease_.push_back(it->second.heldTexture);
-                for (auto* tx : it->second.pendingRelease)
-                    pendingTabBarRelease_.push_back(tx);
-                paneRenderStates_.erase(it);
+            pending_.structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
+            for (const auto& popup : panePtr->popups()) {
+                std::string key = popupStateKey(paneId, popup.id);
+                pending_.releasePopupTextures.push_back(key);
             }
             paneCursorStyle_.erase(paneId);
-            releasePopupStates(panePtr.get());
 
             scriptEngine_.notifyPaneDestroyed(paneId);
 
@@ -670,9 +650,8 @@ void PlatformDawn::spawnTerminalForPane(Pane* pane, int tabIdx, const std::strin
     cols = std::max(cols, 1);
     rows = std::max(rows, 1);
 
-    auto& rs = paneRenderStates_[paneId];
-    rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
-    rs.dirty = true;
+    pending_.structuralOps.push_back(PendingMutations::CreatePaneState{paneId, cols, rows});
+    pending_.dirtyPanes.insert(paneId);
 
     terminal->resize(cols, rows);
     terminal->flushPendingResize(); // initial size — send immediately
@@ -702,13 +681,10 @@ void PlatformDawn::resizeAllPanesInTab(Tab* tab)
         int cols = std::max(term->width(),  1);
         int rows = std::max(term->height(), 1);
 
-        auto& rs = paneRenderStates_[pane->id()];
-        rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
-        rs.dirty = true;
-        if (rs.heldTexture) {
-            rs.pendingRelease.push_back(rs.heldTexture);
-            rs.heldTexture = nullptr;
-        }
+        pending_.structuralOps.push_back(
+            PendingMutations::ResizePaneState{pane->id(), cols, rows});
+        pending_.dirtyPanes.insert(pane->id());
+        pending_.releasePaneTextures.push_back(pane->id());
 
         // Terminal::resize() sets mResizePending if dims changed;
         // flushPendingResize() will send TIOCSWINSZ in the render loop.

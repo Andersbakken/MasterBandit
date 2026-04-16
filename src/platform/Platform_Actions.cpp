@@ -82,28 +82,23 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             if (!fp) return;
             int paneId = fp->id();
 
-            deferIfRendering([this, tab, layout, fp, paneId]() {
-                // Stop PTY poll and release render state
-                if (auto* t = fp->terminal()) {
-                    removePtyPoll(t->masterFD());
-                }
-                auto it = paneRenderStates_.find(paneId);
-                if (it != paneRenderStates_.end()) {
-                    if (it->second.heldTexture)
-                        pendingTabBarRelease_.push_back(it->second.heldTexture);
-                    for (auto* tx : it->second.pendingRelease)
-                        pendingTabBarRelease_.push_back(tx);
-                    paneRenderStates_.erase(it);
-                }
-                paneCursorStyle_.erase(paneId);
-                releasePopupStates(fp);
+            // Stop PTY poll and queue render state cleanup
+            if (auto* t = fp->terminal()) {
+                removePtyPoll(t->masterFD());
+            }
+            pending_.structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
+            // Queue popup render state cleanup for this pane
+            for (const auto& popup : fp->popups()) {
+                std::string key = popupStateKey(paneId, popup.id);
+                pending_.releasePopupTextures.push_back(key);
+            }
+            paneCursorStyle_.erase(paneId);
 
-                scriptEngine_.notifyPaneDestroyed(paneId);
-                layout->removePane(paneId);
-                resizeAllPanesInTab(tab);
-                notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
-                updateTabTitleFromFocusedPane(activeTabIdx_);
-            });
+            scriptEngine_.notifyPaneDestroyed(paneId);
+            layout->removePane(paneId);
+            resizeAllPanesInTab(tab);
+            notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
+            updateTabTitleFromFocusedPane(activeTabIdx_);
         },
         [&](const Action::ZoomPane&) {
             Tab* tab = activeTab();
@@ -286,8 +281,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 }
             }
             // Mark pane dirty so cursor position updates in the pane texture
-            auto it = paneRenderStates_.find(fp->id());
-            if (it != paneRenderStates_.end()) it->second.dirty = true;
+            pending_.dirtyPanes.insert(fp->id());
             setNeedsRedraw();
         },
         [&](const Action::ShowScrollback&) {
@@ -322,40 +316,28 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             TerminalCallbacks cbs;
             cbs.event = [this](TerminalEmulator*, int, void*) {
-                if (Tab* tab = activeTab())
-                    overlayRenderStates_[tab].dirty = true;
+                // Overlay uses a single PaneRenderPrivate (overlayRenderPrivate_),
+                // dirty is set via a general "overlay needs redraw" path.
                 setNeedsRedraw();
             };
 
             PlatformCallbacks pcbs;
             pcbs.onTerminalExited = [this, tab](Terminal* t) {
-                // Defer cleanup — we're called from Terminal::readFromFD,
-                // so we can't destroy the Terminal yet. Defer via a one-shot timer.
+                // Defer cleanup — we're called from Terminal::readFromFD.
                 int fd = t->masterFD();
                 eventLoop_->addTimer(0, false, [this, tab, fd]() {
-                    // Enter under platformMutex_ so deferIfRendering's
-                    // renderActive_ check is coherent with the render thread's
-                    // shaping-phase unlock window.
                     std::lock_guard<std::mutex> plk(platformMutex_);
-                    deferIfRendering([this, tab, fd]() {
-                        removePtyPoll(fd);
-                        for (int ti = 0; ti < static_cast<int>(tabs_.size()); ++ti) {
-                            if (tabs_[ti].get() == tab) {
-                                scriptEngine_.notifyOverlayDestroyed(ti);
-                                break;
-                            }
+                    removePtyPoll(fd);
+                    for (int ti = 0; ti < static_cast<int>(tabs_.size()); ++ti) {
+                        if (tabs_[ti].get() == tab) {
+                            scriptEngine_.notifyOverlayDestroyed(ti);
+                            break;
                         }
-                        tab->popOverlay();
-                        auto oit = overlayRenderStates_.find(tab);
-                        if (oit != overlayRenderStates_.end()) {
-                            if (oit->second.heldTexture) {
-                                oit->second.pendingRelease.push_back(oit->second.heldTexture);
-                            }
-                            overlayRenderStates_.erase(oit);
-                        }
-                        refreshPointerShape();
-                        setNeedsRedraw();
-                    });
+                    }
+                    tab->popOverlay();
+                    pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
+                    refreshPointerShape();
+                    setNeedsRedraw();
                 });
             };
             pcbs.quit = [this]() { quit(); };

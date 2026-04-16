@@ -11,22 +11,7 @@
 
 static void appendUtf8(std::string& s, uint32_t cp) { utf8::append(s, cp); }
 
-void PlatformDawn::releasePopupStates(Pane* pane)
-{
-    for (const auto& popup : pane->popups()) {
-        std::string key = popupStateKey(pane->id(), popup.id);
-        auto it = popupRenderStates_.find(key);
-        if (it != popupRenderStates_.end()) {
-            if (it->second.heldTexture)
-                pendingTabBarRelease_.push_back(it->second.heldTexture);
-            for (auto* tx : it->second.pendingRelease)
-                pendingTabBarRelease_.push_back(tx);
-            popupRenderStates_.erase(it);
-        }
-    }
-}
-
-void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, float scale,
+void PlatformDawn::resolveRow(PaneRenderPrivate& rs, int row, FontData* font, float scale,
                               float pixelOriginX, float pixelOriginY)
 {
     const TerminalSnapshot& snap = rs.snapshot;
@@ -103,7 +88,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
     auto getReplacementGlyph = [&]() -> const GlyphInfo* {
         if (replacementGlyphReady) return replacementGlyph.is_empty ? nullptr : &replacementGlyph;
         replacementGlyphReady = true;
-        const ShapedRun& rep = textSystem_.shapeRun(fontName_, replacementChar_, fontSize_, {});
+        const ShapedRun& rep = textSystem_.shapeRun(frameState_.fontName, replacementChar_, frameState_.fontSize, {});
         if (rep.glyphs.empty()) return nullptr;
         std::shared_lock lock(font->mutex);
         auto it = font->glyphs.find(rep.glyphs[0].glyphId);
@@ -112,7 +97,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
         return &replacementGlyph;
     };
 
-    float cellWidthPx = charWidth_;
+    float cellWidthPx = frameState_.charWidth;
     int col = 0;
     while (col < cols) {
         const Cell& cell = rowData[col];
@@ -188,7 +173,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
         FontStyle runStyle;
         runStyle.bold = runBold;
         runStyle.italic = runItalic;
-        const ShapedRun& shaped = textSystem_.shapeRun(fontName_, runText, fontSize_, runStyle, byteToCell);
+        const ShapedRun& shaped = textSystem_.shapeRun(frameState_.fontName, runText, frameState_.fontSize, runStyle, byteToCell);
 
         // Find contiguous RTL cell ranges for mirroring.
         // Build a map of which byteToCell indices are RTL.
@@ -290,10 +275,10 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
                 if (cellCol + 1 < cols && rowData[cellCol + 1].attrs.wideSpacer())
                     cellSpan = 2;
                 float cellPxW = static_cast<float>(cellSpan) * cellWidthPx;
-                float cellPxH = lineHeight_;
+                float cellPxH = frameState_.lineHeight;
 
                 // Try to acquire a tile in the atlas
-                auto result = renderer_.colrAtlas().acquireTile(colrKey, fontSize_);
+                auto result = renderer_.colrAtlas().acquireTile(colrKey, frameState_.fontSize);
                 if (result.tile) {
                     auto* tile = result.tile;
                     // New tile — need to rasterize
@@ -318,10 +303,10 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
                 }
 
                 // Always add a draw command (tile may already be cached)
-                auto* cached = renderer_.colrAtlas().findTile(colrKey, fontSize_);
+                auto* cached = renderer_.colrAtlas().findTile(colrKey, frameState_.fontSize);
                 if (cached) {
                     float px = pixelOriginX + static_cast<float>(cellCol) * cellWidthPx;
-                    float py = pixelOriginY + static_cast<float>(row) * lineHeight_;
+                    float py = pixelOriginY + static_cast<float>(row) * frameState_.lineHeight;
 
                     Renderer::ColrDrawCmd dcmd;
                     dcmd.x = px;
@@ -361,7 +346,7 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
             float adjustedX = glyphX;
             if (!sg.isSubstitution) {
                 float upemF = static_cast<float>(gi.upem);
-                float extMaxPx = gi.ext_max_x / upemF * fontSize_;
+                float extMaxPx = gi.ext_max_x / upemF * frameState_.fontSize;
                 if (extMaxPx > cellWidthPx) {
                     adjustedX -= (extMaxPx - cellWidthPx);
                 }
@@ -391,16 +376,26 @@ void PlatformDawn::resolveRow(PaneRenderState& rs, int row, FontData* font, floa
 
 void PlatformDawn::renderFrame()
 {
-    // Apply any pending surface reconfiguration before acquiring the swapchain
-    // image.  configureSurface() must only be called from the render thread.
-    if (!isHeadless() && surfaceNeedsReconfigure_.exchange(false, std::memory_order_acq_rel)) {
-        uint32_t w, h;
+    // Check for pending surface reconfiguration BEFORE acquiring the swapchain
+    // texture. configureSurface() invalidates existing textures, so it must
+    // happen before GetCurrentTexture.
+    if (!isHeadless()) {
+        bool needsReconfigure = false;
+        uint32_t w = 0, h = 0;
         {
             std::lock_guard<std::mutex> lk(platformMutex_);
-            w = fbWidth_;
-            h = fbHeight_;
+            needsReconfigure = renderState_.surfaceNeedsReconfigure;
+            if (needsReconfigure) {
+                renderState_.surfaceNeedsReconfigure = false;
+                w = fbWidth_;
+                h = fbHeight_;
+            }
+            if (renderState_.viewportSizeChanged) {
+                renderer_.setViewportSize(fbWidth_, fbHeight_);
+                renderState_.viewportSizeChanged = false;
+            }
         }
-        if (w && h) {
+        if (needsReconfigure && w && h) {
             configureSurface(w, h);
             renderer_.setViewportSize(w, h);
         }
@@ -440,37 +435,97 @@ void PlatformDawn::renderFrame()
 
     if (fbWidth_ == 0 || fbHeight_ == 0) return;
 
-    // If the surface texture is smaller than fbWidth_/fbHeight_ (can happen
-    // transiently when the main thread updates fb dimensions before the render
-    // thread reconfigures the surface), snap fb to the texture size for this
-    // frame to prevent out-of-bounds GPU copies.
+    // Snapshot the render state under plk (already held).
+    // Take a local copy so we can release the lock and use it for the rest
+    // of the frame without racing applyPendingMutations().
+    frameState_ = renderState_;
+
+    // Consume one-shot flags from the shared copy so the next frame doesn't
+    // re-process them.  frameState_ already has the originals.
+    renderState_.focusChanged = false;
+    renderState_.mainFontAtlasChanged = false;
+    renderState_.tabBarFontAtlasChanged = false;
+    renderState_.mainFontRemoved = false;
+    renderState_.tabBarFontRemoved = false;
+    renderState_.viewportSizeChanged = false;
+    renderState_.tabBarDirty = false;
+    renderState_.dividersDirty = false;
+
+    // From here on, use frameState_ (the local copy) — the lock will be released.
+    bool focusChanged = frameState_.focusChanged;
+    bool invalidateAllCaches = frameState_.mainFontAtlasChanged ||
+                               frameState_.tabBarFontAtlasChanged ||
+                               frameState_.mainFontRemoved ||
+                               frameState_.tabBarFontRemoved;
+
+    // Handle font atlas GPU work on the render thread
+    if (frameState_.mainFontRemoved) {
+        renderer_.removeFontAtlas(frameState_.fontName);
+    }
+    if (frameState_.mainFontAtlasChanged) {
+        const FontData* font2 = textSystem_.getFont(frameState_.fontName);
+        if (font2) renderer_.uploadFontAtlas(queue_, frameState_.fontName, *font2);
+    }
+    if (frameState_.tabBarFontRemoved) {
+        renderer_.removeFontAtlas(frameState_.tabBarFontName);
+    }
+    if (frameState_.tabBarFontAtlasChanged) {
+        const FontData* tbFont = textSystem_.getFont(frameState_.tabBarFontName);
+        if (tbFont) renderer_.uploadFontAtlas(queue_, frameState_.tabBarFontName, *tbFont);
+    }
+    if (frameState_.viewportSizeChanged) {
+        renderer_.setViewportSize(fbWidth_, fbHeight_);
+    }
+
+    // Ensure every pane in the shadow copy has a render-private entry
+    for (const auto& op : frameState_.panes) {
+        paneRenderPrivate_[op.id]; // default-constructs if missing
+    }
+
+    // If the surface texture doesn't match fbWidth_/fbHeight_, use texture
+    // dims for this frame only without writing back to shared state.
+    uint32_t frameFbW = fbWidth_, frameFbH = fbHeight_;
     if (!isHeadless() && compositeTarget) {
         uint32_t texW = compositeTarget.GetWidth();
         uint32_t texH = compositeTarget.GetHeight();
-        if (texW && texH && (texW != fbWidth_ || texH != fbHeight_)) {
-            fbWidth_  = texW;
-            fbHeight_ = texH;
+        if (texW && texH && (texW != frameFbW || texH != frameFbH)) {
+            frameFbW = texW;
+            frameFbH = texH;
             renderer_.setViewportSize(texW, texH);
-            surfaceNeedsReconfigure_.store(true, std::memory_order_release);
         }
     }
 
-    Tab* currentTab = activeTab();
-    if (!currentTab) return;
+    // Invalidate row caches if requested (font change, color reload)
+    if (invalidateAllCaches) {
+        for (auto& [id, rs] : paneRenderPrivate_) {
+            for (auto& row : rs.rowShapingCache) row.valid = false;
+            rs.dirty = true;
+        }
+        for (auto& [key, rs] : popupRenderPrivate_) {
+            for (auto& row : rs.rowShapingCache) row.valid = false;
+            rs.dirty = true;
+        }
+        {
+            auto& rs = overlayRenderPrivate_;
+            for (auto& row : rs.rowShapingCache) row.valid = false;
+            rs.dirty = true;
+        }
+    }
+
+    if (frameState_.panes.empty() && !frameState_.hasOverlay) return;
 
     needsRedraw_ = false;
-    bool focusChanged = focusChanged_.exchange(false);
     renderer_.colrAtlas().advanceGeneration();
 
     // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
     // events in this frame have been coalesced.
-    // During live resize, defer SIGWINCH so the shell doesn't redraw the prompt
-    // on every frame — send it once when the resize settles.
-    if (!window_ || !window_->inLiveResize()) {
-        for (auto& panePtr : currentTab->layout()->panes()) {
-            if (auto* t = panePtr->terminal())
-                t->flushPendingResize();
+    if (!frameState_.inLiveResize) {
+        for (const auto& rpi : frameState_.panes) {
+            if (rpi.term)
+                static_cast<Terminal*>(rpi.term)->flushPendingResize();
         }
+        if (frameState_.overlay)
+            static_cast<Terminal*>(frameState_.overlay)->flushPendingResize();
     }
 
     if (isHeadless()) {
@@ -486,10 +541,10 @@ void PlatformDawn::renderFrame()
         compositeTarget = headlessComposite_;
     }
 
-    FontData* font = const_cast<FontData*>(textSystem_.getFont(fontName_));
-    if (!font) { spdlog::error("renderFrame: font '{}' not found", fontName_); return; }
+    FontData* font = const_cast<FontData*>(textSystem_.getFont(frameState_.fontName));
+    if (!font) { spdlog::error("renderFrame: font '{}' not found", frameState_.fontName); return; }
 
-    float scale = fontSize_ / font->baseSize;
+    float scale = frameState_.fontSize / font->baseSize;
 
     // Drain deferred releases from GPU completion callbacks (thread-safe)
     {
@@ -506,11 +561,11 @@ void PlatformDawn::renderFrame()
 
     // If the focused pane changed, mark both old and new pane dirty so the
     // cursor switches between solid and hollow without waiting for other content.
-    int currentFocusedPaneId = currentTab->layout()->focusedPaneId();
+    int currentFocusedPaneId = frameState_.focusedPaneId;
     if (currentFocusedPaneId != lastFocusedPaneId_) {
         auto markDirty = [&](int id) {
-            auto it = paneRenderStates_.find(id);
-            if (it != paneRenderStates_.end()) it->second.dirty = true;
+            auto it = paneRenderPrivate_.find(id);
+            if (it != paneRenderPrivate_.end()) it->second.dirty = true;
         };
         markDirty(lastFocusedPaneId_);
         markDirty(currentFocusedPaneId);
@@ -519,17 +574,19 @@ void PlatformDawn::renderFrame()
         // Window gained/lost OS focus — the focused pane ID hasn't changed
         // but the cursor style (solid vs hollow) and tint depend on
         // windowHasFocus_, so mark the focused pane dirty.
-        auto it = paneRenderStates_.find(currentFocusedPaneId);
-        if (it != paneRenderStates_.end()) it->second.dirty = true;
+        auto it = paneRenderPrivate_.find(currentFocusedPaneId);
+        if (it != paneRenderPrivate_.end()) it->second.dirty = true;
     }
 
     // If an overlay is active, render it as a full-screen terminal instead of panes
     struct RenderTarget {
         TerminalEmulator* term;
-        PaneRenderState* rs;
+        PaneRenderPrivate* rs;
         PaneRect rect;
         bool isFocused;
-        Pane* pane = nullptr;       // null for overlays and popups
+        int paneId = -1;            // -1 for overlays
+        bool hasPopupFocus = false;  // true if a popup has focus in this pane
+        const RenderPaneInfo* paneInfo = nullptr; // for popup coverage check
         bool isPopup = false;
         float pixelOriginX = 0.0f; // for resolveRow (0,0 for popups — texture-local)
         float pixelOriginY = 0.0f;
@@ -538,69 +595,65 @@ void PlatformDawn::renderFrame()
     };
     std::vector<RenderTarget> renderTargets;
 
-    if (currentTab->hasOverlay()) {
-        Terminal* overlay = currentTab->topOverlay();
-        if (overlay) {
-            if (!window_ || !window_->inLiveResize())
-                overlay->flushPendingResize();
+    if (frameState_.hasOverlay && frameState_.overlay) {
+        TerminalEmulator* overlay = frameState_.overlay;
 
-            // Use layout content area (excludes tab bar)
-            PaneRect tbRect = currentTab->layout()->tabBarRect(fbWidth_, fbHeight_);
-            PaneRect fullRect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
-            if (!tbRect.isEmpty()) {
-                if (tabBarConfig_.position == "top") {
-                    fullRect.y = tbRect.h;
-                    fullRect.h -= tbRect.h;
-                } else {
-                    fullRect.h -= tbRect.h;
-                }
+        // Use layout content area (excludes tab bar)
+        const PaneRect& tbRect = frameState_.tabBarRect;
+        PaneRect fullRect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
+        if (!tbRect.isEmpty()) {
+            if (frameState_.tabBarPosition == "top") {
+                fullRect.y = tbRect.h;
+                fullRect.h -= tbRect.h;
+            } else {
+                fullRect.h -= tbRect.h;
             }
-            // Resize overlay to match content area
-            float usableW = std::max(0.0f, static_cast<float>(fullRect.w) - padLeft_ - padRight_);
-            float usableH = std::max(0.0f, static_cast<float>(fullRect.h) - padTop_ - padBottom_);
-            int wantCols = std::max(1, static_cast<int>(usableW / charWidth_));
-            int wantRows = std::max(1, static_cast<int>(usableH / lineHeight_));
-            if (overlay->width() != wantCols || overlay->height() != wantRows) {
-                overlay->resize(wantCols, wantRows);
-            }
-
-            auto& rs = overlayRenderStates_[currentTab];
-            int cols = overlay->width();
-            int rows = overlay->height();
-            if (cols > 0 && rows > 0) {
-                size_t needed = static_cast<size_t>(cols) * rows;
-                if (rs.resolvedCells.size() != needed) {
-                    rs.resolvedCells.resize(needed);
-                    rs.rowShapingCache.resize(rows);
-                    rs.dirty = true;
-                }
-            }
-            RenderTarget ot;
-            ot.term = overlay; ot.rs = &rs; ot.rect = fullRect; ot.isFocused = true;
-            ot.pixelOriginX = padLeft_; ot.pixelOriginY = padTop_;
-            renderTargets.push_back(std::move(ot));
         }
+        // Resize overlay to match content area
+        float usableW = std::max(0.0f, static_cast<float>(fullRect.w) - frameState_.padLeft - frameState_.padRight);
+        float usableH = std::max(0.0f, static_cast<float>(fullRect.h) - frameState_.padTop - frameState_.padBottom);
+        int wantCols = std::max(1, static_cast<int>(usableW / frameState_.charWidth));
+        int wantRows = std::max(1, static_cast<int>(usableH / frameState_.lineHeight));
+        if (overlay->width() != wantCols || overlay->height() != wantRows) {
+            overlay->resize(wantCols, wantRows);
+        }
+
+        auto& rs = overlayRenderPrivate_;
+        int cols = overlay->width();
+        int rows = overlay->height();
+        if (cols > 0 && rows > 0) {
+            size_t needed = static_cast<size_t>(cols) * rows;
+            if (rs.resolvedCells.size() != needed) {
+                rs.resolvedCells.resize(needed);
+                rs.rowShapingCache.resize(rows);
+                rs.dirty = true;
+            }
+        }
+        RenderTarget ot;
+        ot.term = overlay; ot.rs = &rs; ot.rect = fullRect; ot.isFocused = true;
+        ot.pixelOriginX = frameState_.padLeft; ot.pixelOriginY = frameState_.padTop;
+        renderTargets.push_back(std::move(ot));
     } else {
-        for (auto& panePtr : currentTab->layout()->panes()) {
-            Pane* pane = panePtr.get();
-            if (pane->rect().isEmpty()) continue;
-            Terminal* term = pane->terminal();
-            if (!term) continue;
-            bool focused = (pane->id() == currentTab->layout()->focusedPaneId()) && windowHasFocus_.load(std::memory_order_acquire);
+        for (const auto& rpi : frameState_.panes) {
+            if (rpi.rect.isEmpty()) continue;
+            if (!rpi.term) continue;
+            bool focused = (rpi.id == frameState_.focusedPaneId) && frameState_.windowHasFocus;
             RenderTarget pt;
-            pt.term = term; pt.rs = &paneRenderStates_[pane->id()];
-            pt.rect = pane->rect(); pt.isFocused = focused; pt.pane = pane;
-            pt.pixelOriginX = padLeft_; pt.pixelOriginY = padTop_;
+            pt.term = rpi.term; pt.rs = &paneRenderPrivate_[rpi.id];
+            pt.rect = rpi.rect; pt.isFocused = focused;
+            pt.paneId = rpi.id;
+            pt.hasPopupFocus = !rpi.focusedPopupId.empty();
+            pt.paneInfo = &rpi;
+            pt.pixelOriginX = frameState_.padLeft; pt.pixelOriginY = frameState_.padTop;
             renderTargets.push_back(std::move(pt));
         }
         // Add popup targets after all panes (composited on top)
-        for (auto& panePtr : currentTab->layout()->panes()) {
-            Pane* pane = panePtr.get();
-            for (const auto& popup : pane->popups()) {
-                if (!popup.terminal) continue;
-                TerminalEmulator* pterm = popup.terminal.get();
-                std::string key = popupStateKey(pane->id(), popup.id);
-                PaneRenderState& prs = popupRenderStates_[key];
+        for (const auto& rpi : frameState_.panes) {
+            for (const auto& popup : rpi.popups) {
+                if (!popup.term) continue;
+                TerminalEmulator* pterm = popup.term;
+                std::string key = popupStateKey(rpi.id, popup.id);
+                PaneRenderPrivate& prs = popupRenderPrivate_[key];
                 int pcols = pterm->width(), prows = pterm->height();
                 size_t needed = static_cast<size_t>(pcols) * prows;
                 if (prs.resolvedCells.size() != needed) {
@@ -610,16 +663,16 @@ void PlatformDawn::renderFrame()
                 }
                 // Popup texture rect: screen-absolute position, popup-sized
                 PaneRect popupRect;
-                popupRect.x = pane->rect().x + static_cast<int>(padLeft_) + static_cast<int>(popup.cellX * charWidth_);
-                popupRect.y = pane->rect().y + static_cast<int>(padTop_)  + static_cast<int>(popup.cellY * lineHeight_);
-                popupRect.w = static_cast<int>(popup.cellW * charWidth_);
-                popupRect.h = static_cast<int>(popup.cellH * lineHeight_);
+                popupRect.x = rpi.rect.x + static_cast<int>(frameState_.padLeft) + static_cast<int>(popup.cellX * frameState_.charWidth);
+                popupRect.y = rpi.rect.y + static_cast<int>(frameState_.padTop)  + static_cast<int>(popup.cellY * frameState_.lineHeight);
+                popupRect.w = static_cast<int>(popup.cellW * frameState_.charWidth);
+                popupRect.h = static_cast<int>(popup.cellH * frameState_.lineHeight);
                 RenderTarget pop;
                 pop.term = pterm; pop.rs = &prs; pop.rect = popupRect;
-                pop.isFocused = (pane->focusedPopupId() == popup.id);
+                pop.isFocused = (rpi.focusedPopupId == popup.id);
                 pop.isPopup = true;
                 pop.pixelOriginX = 0.0f; pop.pixelOriginY = 0.0f;
-                pop.popupParentPaneId = pane->id(); pop.popupId = popup.id;
+                pop.popupParentPaneId = rpi.id; pop.popupId = popup.id;
                 renderTargets.push_back(std::move(pop));
             }
         }
@@ -644,7 +697,7 @@ void PlatformDawn::renderFrame()
     for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
         auto& target = renderTargets[ti];
         TerminalEmulator* term = target.term;
-        PaneRenderState& rs = *target.rs;
+        PaneRenderPrivate& rs = *target.rs;
         if (target.rect.isEmpty()) {
             resolveInfos.push_back({ti, false, false, 0});
             continue;
@@ -675,18 +728,16 @@ void PlatformDawn::renderFrame()
 
         bool cursorMoved = (snap.cursorX != rs.lastCursorX || snap.cursorY != rs.lastCursorY ||
                             snap.cursorVisible != rs.lastCursorVisible);
-        // If cursor shape changed (e.g. RIS, DECSCUSR), reset blink to fully visible
-        if (snap.cursorShape != rs.lastCursorShape) {
-            cursorBlinkOpacity_.store(1.0f, std::memory_order_release);
-            cursorBlinkStep_ = 0;
-        }
+        // Cursor shape change detection — blink reset is handled by the
+        // main thread (the shape change originates from injectData on the
+        // main thread). We just track lastCursorShape for dirty detection.
         rs.lastCursorX = snap.cursorX;
         rs.lastCursorY = snap.cursorY;
         rs.lastCursorVisible = snap.cursorVisible;
         rs.lastCursorShape = snap.cursorShape;
 
         // Detect blink opacity change for a currently-blinking cursor.
-        float blinkOpacity = cursorBlinkOpacity_.load(std::memory_order_acquire);
+    float blinkOpacity = frameState_.cursorBlinkOpacity;
         bool cursorBlinkChanged = snap.cursorBlinking &&
                                   blinkOpacity != rs.lastCursorBlinkOpacity;
         rs.lastCursorBlinkOpacity = blinkOpacity;
@@ -756,7 +807,7 @@ void PlatformDawn::renderFrame()
     // Parallel resolve across all panes.
     //
     // Release platformMutex_ while shaping runs — this is the CPU-heavy
-    // phase that doesn't touch main-thread-shared PaneRenderState fields
+    // phase that doesn't touch main-thread-shared PaneRenderPrivate fields
     // (heldTexture / pendingRelease are untouched here; resolveRow reads
     // rs.snapshot, which is already populated, and writes
     // rs.rowShapingCache / rs.resolvedCells, which only the render thread
@@ -766,7 +817,6 @@ void PlatformDawn::renderFrame()
     // structural erasure while the render is holding raw Tab/Pane
     // pointers captured above. When we clear the flag, we wake the event
     // loop so the next tick drains any deferred exits promptly.
-    renderActive_.store(true, std::memory_order_release);
     plk.unlock();
 
     if (allWorkItems.size() > 4) {
@@ -787,33 +837,17 @@ void PlatformDawn::renderFrame()
         }
     }
 
-    plk.lock();
-    renderActive_.store(false, std::memory_order_release);
-    if (eventLoop_) eventLoop_->wakeup();
-
-    // Re-snap after shaping in case the main thread updated fb dimensions
-    // during the unlock window.
-    if (!isHeadless() && compositeTarget) {
-        uint32_t texW = compositeTarget.GetWidth();
-        uint32_t texH = compositeTarget.GetHeight();
-        if (texW && texH && (texW != fbWidth_ || texH != fbHeight_)) {
-            fbWidth_  = texW;
-            fbHeight_ = texH;
-            renderer_.setViewportSize(texW, texH);
-            surfaceNeedsReconfigure_.store(true, std::memory_order_release);
-        }
-    }
-
-    // (Dirty flags are cleared by TerminalSnapshot::update() under the
-    // Terminal mutex — nothing to do here.)
+    // No re-acquisition of platformMutex_ — the rest of the frame uses only
+    // render-private state, renderState_ (immutable after snapshot phase),
+    // and GPU objects.
 
     // --- Phase 2: Per-target GPU upload and rendering ---
 
-    float blinkOpacity = cursorBlinkOpacity_.load(std::memory_order_acquire);
+    float blinkOpacity = frameState_.cursorBlinkOpacity;
     for (int ti = 0; ti < static_cast<int>(renderTargets.size()); ++ti) {
         auto& target = renderTargets[ti];
         TerminalEmulator* term = target.term;
-        PaneRenderState& rs = *target.rs;
+        PaneRenderPrivate& rs = *target.rs;
         const PaneRect& paneRect = target.rect;
         if (paneRect.isEmpty()) continue;
         auto& info = resolveInfos[ti];
@@ -872,7 +906,7 @@ void PlatformDawn::renderFrame()
             // (Rows affected by selection changes are forced to re-resolve via
             // selectionChanged tracking in the pre-dispatch loop above.)
 
-            renderer_.updateFontAtlas(queue_, fontName_, *font);
+            renderer_.updateFontAtlas(queue_, frameState_.fontName, *font);
 
             // Collect image draw commands — one per (imageId, placementId) pair,
             // sorted by z-index. imgSplitText tracks where z >= 0 starts.
@@ -941,13 +975,13 @@ void PlatformDawn::renderFrame()
                     }
 
                     float imgW = dispCellW > 0
-                        ? static_cast<float>(dispCellW) * charWidth_
+                        ? static_cast<float>(dispCellW) * frameState_.charWidth
                         : static_cast<float>(view.pixelWidth);
                     float imgH = dispCellH > 0
-                        ? static_cast<float>(dispCellH) * lineHeight_
+                        ? static_cast<float>(dispCellH) * frameState_.lineHeight
                         : static_cast<float>(view.pixelHeight);
-                    float imgX = padLeft_ + static_cast<float>(ex->imageStartCol) * charWidth_ + subCellX;
-                    float imgY = padTop_ + (static_cast<float>(re.viewRow) - ex->imageOffsetRow) * lineHeight_ + subCellY;
+                    float imgX = frameState_.padLeft + static_cast<float>(ex->imageStartCol) * frameState_.charWidth + subCellX;
+                    float imgY = frameState_.padTop + (static_cast<float>(re.viewRow) - ex->imageOffsetRow) * frameState_.lineHeight + subCellY;
 
                     float x0 = std::max(imgX, 0.0f);
                     float y0 = std::max(imgY, 0.0f);
@@ -1009,12 +1043,12 @@ void PlatformDawn::renderFrame()
             TerminalComputeParams params = {};
             params.cols = static_cast<uint32_t>(snap.cols);
             params.rows = static_cast<uint32_t>(snap.rows);
-            params.cell_width = charWidth_;
-            params.cell_height = lineHeight_;
+            params.cell_width = frameState_.charWidth;
+            params.cell_height = frameState_.lineHeight;
             params.viewport_w = static_cast<float>(paneRect.w);
             params.viewport_h = static_cast<float>(paneRect.h);
             params.font_ascender = font->ascender * scale;
-            params.font_size = fontSize_;
+            params.font_size = frameState_.fontSize;
             params.pane_origin_x = target.pixelOriginX;
             params.pane_origin_y = target.pixelOriginY;
             params.max_text_vertices = cs->maxTextVertices;
@@ -1046,10 +1080,19 @@ void PlatformDawn::renderFrame()
                 // Main pane: suppress cursor only if a popup covers the cursor's
                 // cell (otherwise the cursor is visually unobstructed even when
                 // popups are open elsewhere in the pane).
-                bool popupHasFocus = target.pane && target.pane->focusedPopup() != nullptr;
+                bool popupHasFocus = target.hasPopupFocus;
                 int cursorViewRow = snap.cursorY + snap.viewportOffset;
-                bool cursorCovered = target.pane &&
-                    target.pane->isCellCoveredByPopup(snap.cursorX, cursorViewRow);
+                // Check if cursor cell is covered by any popup in this pane
+                bool cursorCovered = false;
+                if (target.paneInfo) {
+                    for (const auto& popup : target.paneInfo->popups) {
+                        if (snap.cursorX >= popup.cellX && snap.cursorX < popup.cellX + popup.cellW &&
+                            cursorViewRow >= popup.cellY && cursorViewRow < popup.cellY + popup.cellH) {
+                            cursorCovered = true;
+                            break;
+                        }
+                    }
+                }
                 if (!cursorCovered &&
                     snap.cursorVisible &&
                     snap.cursorX >= 0 && snap.cursorX < snap.cols &&
@@ -1093,11 +1136,11 @@ void PlatformDawn::renderFrame()
 
             // Rasterize any new COLRv1 glyphs before rendering the pane
             if (!colrRasterCmds.empty()) {
-                renderer_.rasterizeColrGlyphs(encoder, queue_, fontName_, colrRasterCmds);
+                renderer_.rasterizeColrGlyphs(encoder, queue_, frameState_.fontName, colrRasterCmds);
             }
 
-            const float* tint = isFocused ? activeTint_ : inactiveTint_;
-            renderer_.renderToPane(encoder, queue_, fontName_, params, cs, newTexture->view, tint, imageCmds, imgSplitText);
+            const float* tint = isFocused ? frameState_.activeTint : frameState_.inactiveTint;
+            renderer_.renderToPane(encoder, queue_, frameState_.fontName, params, cs, newTexture->view, tint, imageCmds, imgSplitText);
 
             // Render COLRv1 emoji quads on top
             if (!colrDrawCmds.empty()) {
@@ -1139,30 +1182,32 @@ void PlatformDawn::renderFrame()
     // that pane's cache on its next re-render, dropping the imageId, which is
     // when eviction actually happens.
     std::unordered_set<uint32_t> imagesToRetain;
-    for (const auto& [paneId, rs] : paneRenderStates_) {
+    for (const auto& [paneId, rs] : paneRenderPrivate_) {
         imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
                               rs.lastVisibleImageIds.end());
     }
-    for (const auto& [key, rs] : popupRenderStates_) {
+    for (const auto& [key, rs] : popupRenderPrivate_) {
         imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
                               rs.lastVisibleImageIds.end());
     }
-    for (const auto& [tab, rs] : overlayRenderStates_) {
+    // Overlay uses a single PaneRenderPrivate
+    {
+        const auto& rs = overlayRenderPrivate_;
         imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
                               rs.lastVisibleImageIds.end());
     }
     renderer_.retainImagesOnly(imagesToRetain);
 
     // Render tab bar if dirty or window focus changed (tint update)
-    if (tabBarVisible() && (tabBarDirty_ || focusChanged)) {
+    if (frameState_.tabBarVisible && (frameState_.tabBarDirty || focusChanged)) {
         renderTabBar();
+        frameState_.tabBarDirty = false;
     }
 
     // Add tab bar texture to composite entries
-    Tab* tabBarTab = activeTab();
-    if (tabBarTexture_ && tabBarTab) {
-        PaneRect tbRect = tabBarTab->layout()->tabBarRect(fbWidth_, fbHeight_);
-        if (!tbRect.isEmpty()) {
+    if (tabBarTexture_ && !frameState_.tabBarRect.isEmpty()) {
+        const PaneRect& tbRect = frameState_.tabBarRect;
+        {
             Renderer::CompositeEntry entry;
             entry.texture = tabBarTexture_->texture;
             entry.srcW = static_cast<uint32_t>(tbRect.w);
@@ -1181,45 +1226,45 @@ void PlatformDawn::renderFrame()
 
         // Flush deferred divider GPU state (viewport + per-pane geometry).
         // All GPU buffer writes happen here on the render thread, never on the main thread.
-        if (dividersDirty_ || focusChanged) {
-            const float* windowTint = windowHasFocus_.load(std::memory_order_acquire)
-                ? activeTint_ : inactiveTint_;
-            renderer_.updateDividerViewport(queue_, fbWidth_, fbHeight_, windowTint);
-            for (auto& panePtr : currentTab->layout()->panes()) {
-                auto it = paneRenderStates_.find(panePtr->id());
-                if (it == paneRenderStates_.end()) continue;
-                auto& geom = it->second.dividerGeom;
-                if (geom.valid) {
-                    renderer_.updateDividerBuffer(queue_, it->second.dividerVB,
-                        geom.x, geom.y, geom.w, geom.h,
-                        geom.r, geom.g, geom.b, geom.a);
-                }
+        if (frameState_.dividersDirty || focusChanged) {
+            const float* windowTint = frameState_.windowHasFocus
+                ? frameState_.activeTint : frameState_.inactiveTint;
+            renderer_.updateDividerViewport(queue_, frameFbW, frameFbH, windowTint);
+            for (const auto& rpi : frameState_.panes) {
+                int pid = rpi.id;
+                auto git = frameState_.dividerGeoms.find(pid);
+                if (git == frameState_.dividerGeoms.end() || !git->second.valid) continue;
+                auto& geom = git->second;
+                auto rit = paneRenderPrivate_.find(pid);
+                if (rit == paneRenderPrivate_.end()) continue;
+                renderer_.updateDividerBuffer(queue_, rit->second.dividerVB,
+                    geom.x, geom.y, geom.w, geom.h,
+                    geom.r, geom.g, geom.b, geom.a);
             }
-            dividersDirty_ = false;
+            frameState_.dividersDirty = false;
         }
 
         // Draw per-pane dividers
-        for (auto& panePtr : currentTab->layout()->panes()) {
-            auto it = paneRenderStates_.find(panePtr->id());
-            if (it == paneRenderStates_.end() || !it->second.dividerVB) continue;
+        for (const auto& rpi : frameState_.panes) {
+            auto it = paneRenderPrivate_.find(rpi.id);
+            if (it == paneRenderPrivate_.end() || !it->second.dividerVB) continue;
             renderer_.drawDivider(encoder, compositeTarget,
-                                   fbWidth_, fbHeight_, it->second.dividerVB);
+                                   frameFbW, frameFbH, it->second.dividerVB);
         }
 
         // Draw popup borders (cached GPU buffers, rebuilt on change)
-        if (!currentTab->hasOverlay()) {
-            for (auto& panePtr : currentTab->layout()->panes()) {
-                Pane* pane = panePtr.get();
-                auto rsIt = paneRenderStates_.find(pane->id());
-                if (rsIt == paneRenderStates_.end()) continue;
+        if (!frameState_.hasOverlay) {
+            for (const auto& rpi : frameState_.panes) {
+                auto rsIt = paneRenderPrivate_.find(rpi.id);
+                if (rsIt == paneRenderPrivate_.end()) continue;
                 auto& prs = rsIt->second;
 
                 // Sync cached borders with current popups
-                bool bordersChanged = prs.popupBorders.size() != pane->popups().size();
+                bool bordersChanged = prs.popupBorders.size() != rpi.popups.size();
                 if (!bordersChanged) {
-                    for (size_t i = 0; i < pane->popups().size(); ++i) {
+                    for (size_t i = 0; i < rpi.popups.size(); ++i) {
                         const auto& pb = prs.popupBorders[i];
-                        const auto& pp = pane->popups()[i];
+                        const auto& pp = rpi.popups[i];
                         if (pb.popupId != pp.id ||
                             pb.cellX != pp.cellX || pb.cellY != pp.cellY ||
                             pb.cellW != pp.cellW || pb.cellH != pp.cellH) {
@@ -1231,16 +1276,16 @@ void PlatformDawn::renderFrame()
 
                 if (bordersChanged) {
                     prs.popupBorders.clear();
-                    const PaneRect& pr = pane->rect();
-                    float bw = std::max(1.0f, static_cast<float>(dividerWidth_));
+                    const PaneRect& pr = rpi.rect;
+                    float bw = std::max(1.0f, static_cast<float>(frameState_.dividerWidth));
 
-                    for (const auto& popup : pane->popups()) {
-                        float px = pr.x + padLeft_ + popup.cellX * charWidth_;
-                        float py = pr.y + padTop_ + popup.cellY * lineHeight_;
-                        float pw = popup.cellW * charWidth_;
-                        float ph = popup.cellH * lineHeight_;
+                    for (const auto& popup : rpi.popups) {
+                        float px = pr.x + frameState_.padLeft + popup.cellX * frameState_.charWidth;
+                        float py = pr.y + frameState_.padTop + popup.cellY * frameState_.lineHeight;
+                        float pw = popup.cellW * frameState_.charWidth;
+                        float ph = popup.cellH * frameState_.lineHeight;
 
-                        PaneRenderState::PopupBorder pb;
+                        PaneRenderPrivate::PopupBorder pb;
                         pb.popupId = popup.id;
                         pb.cellX = popup.cellX;
                         pb.cellY = popup.cellY;
@@ -1248,40 +1293,40 @@ void PlatformDawn::renderFrame()
                         pb.cellH = popup.cellH;
                         renderer_.updateDividerBuffer(queue_, pb.top,
                             px - bw, py - bw, pw + 2 * bw, bw,
-                            dividerR_, dividerG_, dividerB_, dividerA_);
+                            frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
                         renderer_.updateDividerBuffer(queue_, pb.bottom,
                             px - bw, py + ph, pw + 2 * bw, bw,
-                            dividerR_, dividerG_, dividerB_, dividerA_);
+                            frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
                         renderer_.updateDividerBuffer(queue_, pb.left,
                             px - bw, py, bw, ph,
-                            dividerR_, dividerG_, dividerB_, dividerA_);
+                            frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
                         renderer_.updateDividerBuffer(queue_, pb.right,
                             px + pw, py, bw, ph,
-                            dividerR_, dividerG_, dividerB_, dividerA_);
+                            frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
                         prs.popupBorders.push_back(std::move(pb));
                     }
                 }
 
                 // Draw cached borders
                 for (const auto& pb : prs.popupBorders) {
-                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.top);
-                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.bottom);
-                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.left);
-                    renderer_.drawDivider(encoder, compositeTarget, fbWidth_, fbHeight_, pb.right);
+                    renderer_.drawDivider(encoder, compositeTarget, frameFbW, frameFbH, pb.top);
+                    renderer_.drawDivider(encoder, compositeTarget, frameFbW, frameFbH, pb.bottom);
+                    renderer_.drawDivider(encoder, compositeTarget, frameFbW, frameFbH, pb.left);
+                    renderer_.drawDivider(encoder, compositeTarget, frameFbW, frameFbH, pb.right);
                 }
             }
         }
 
         // Draw per-pane progress bars at top of pane
-        if (tabBarConfig_.progress_bar) for (auto& panePtr : currentTab->layout()->panes()) {
-            int st = panePtr->progressState();
+        if (frameState_.progressBarEnabled) for (const auto& rpi : frameState_.panes) {
+            int st = rpi.progressState;
             if (st == 0) continue;
-            const PaneRect& pr = panePtr->rect();
-            float barHeight = progressBarHeight_;
+            const PaneRect& pr = rpi.rect;
+            float barHeight = frameState_.progressBarHeight;
             float barY = static_cast<float>(pr.y);
             float barX = static_cast<float>(pr.x);
             float barW = static_cast<float>(pr.w);
-            float edgeSoft = 40.0f * contentScaleX_;
+            float edgeSoft = 40.0f * frameState_.contentScaleX;
 
             Renderer::ProgressBarParams pbp{};
             pbp.h = barHeight;
@@ -1289,7 +1334,7 @@ void PlatformDawn::renderFrame()
 
             if (st == 1 || st == 2) {
                 // Determinate: fill from left, sharp left edge, gradient right edge
-                float pct = std::clamp(static_cast<float>(panePtr->progressPct()) / 100.0f, 0.0f, 1.0f);
+                float pct = std::clamp(static_cast<float>(rpi.progressPct) / 100.0f, 0.0f, 1.0f);
                 pbp.x = barX;
                 pbp.y = barY;
                 pbp.w = barW;
@@ -1297,11 +1342,11 @@ void PlatformDawn::renderFrame()
                 pbp.edgeSoftness = edgeSoft;
                 pbp.softLeft = 0.0f;
                 pbp.softRight = 1.0f;
-                pbp.r = (st == 2) ? 0.8f : progressColorR_;
-                pbp.g = (st == 2) ? 0.2f : progressColorG_;
-                pbp.b = (st == 2) ? 0.2f : progressColorB_;
+                pbp.r = (st == 2) ? 0.8f : frameState_.progressColorR;
+                pbp.g = (st == 2) ? 0.2f : frameState_.progressColorG;
+                pbp.b = (st == 2) ? 0.2f : frameState_.progressColorB;
                 renderer_.drawProgressBar(encoder, queue_, compositeTarget,
-                                           fbWidth_, fbHeight_, pbp);
+                                           frameFbW, frameFbH, pbp);
             } else if (st == 3) {
                 // Indeterminate: sliding segment with gradient edges
                 double now = static_cast<double>(TerminalEmulator::mono()) / 1000.0;
@@ -1323,11 +1368,11 @@ void PlatformDawn::renderFrame()
                     pbp.edgeSoftness = edgeSoft;
                     pbp.softLeft = clippedLeft ? 0.0f : 1.0f;
                     pbp.softRight = clippedRight ? 0.0f : 1.0f;
-                    pbp.r = progressColorR_;
-                    pbp.g = progressColorG_;
-                    pbp.b = progressColorB_;
+                    pbp.r = frameState_.progressColorR;
+                    pbp.g = frameState_.progressColorG;
+                    pbp.b = frameState_.progressColorB;
                     renderer_.drawProgressBar(encoder, queue_, compositeTarget,
-                                               fbWidth_, fbHeight_, pbp);
+                                               frameFbW, frameFbH, pbp);
                 }
             }
         }
@@ -1335,13 +1380,13 @@ void PlatformDawn::renderFrame()
         if (pngNeeded) {
             // Resolve target texture based on IPC request
             wgpu::Texture srcTexture = compositeTarget;
-            uint32_t srcW = fbWidth_, srcH = fbHeight_;
+            uint32_t srcW = frameFbW, srcH = frameFbH;
 
             const auto& target = debugIPC_->pngTarget();
             if (target.starts_with("pane:")) {
                 int paneId = std::stoi(target.substr(5));
-                auto it = paneRenderStates_.find(paneId);
-                if (it != paneRenderStates_.end() && it->second.heldTexture) {
+                auto it = paneRenderPrivate_.find(paneId);
+                if (it != paneRenderPrivate_.end() && it->second.heldTexture) {
                     srcTexture = it->second.heldTexture->texture;
                     srcW = it->second.heldTexture->width;
                     srcH = it->second.heldTexture->height;
@@ -1356,10 +1401,10 @@ void PlatformDawn::renderFrame()
             uint32_t copyX = 0, copyY = 0, copyW = srcW, copyH = srcH;
             const auto& cellRect = debugIPC_->pngCellRect();
             if (cellRect.valid) {
-                copyX = static_cast<uint32_t>(cellRect.x * charWidth_ + padLeft_);
-                copyY = static_cast<uint32_t>(cellRect.y * lineHeight_ + padTop_);
-                copyW = static_cast<uint32_t>(cellRect.w * charWidth_);
-                copyH = static_cast<uint32_t>(cellRect.h * lineHeight_);
+                copyX = static_cast<uint32_t>(cellRect.x * frameState_.charWidth + frameState_.padLeft);
+                copyY = static_cast<uint32_t>(cellRect.y * frameState_.lineHeight + frameState_.padTop);
+                copyW = static_cast<uint32_t>(cellRect.w * frameState_.charWidth);
+                copyH = static_cast<uint32_t>(cellRect.h * frameState_.lineHeight);
                 // Clamp to texture bounds
                 if (copyX + copyW > srcW) copyW = srcW > copyX ? srcW - copyX : 0;
                 if (copyY + copyH > srcH) copyH = srcH > copyY ? srcH - copyY : 0;
@@ -1448,17 +1493,17 @@ void PlatformDawn::renderFrame()
 
         // Collect all pending releases from all panes, popups, and tab bar
         std::vector<PooledTexture*> toRelease;
-        for (auto& panePtr : currentTab->layout()->panes()) {
-            auto it = paneRenderStates_.find(panePtr->id());
-            if (it != paneRenderStates_.end()) {
+        for (const auto& rpi : frameState_.panes) {
+            auto it = paneRenderPrivate_.find(rpi.id);
+            if (it != paneRenderPrivate_.end()) {
                 toRelease.insert(toRelease.end(),
                     it->second.pendingRelease.begin(),
                     it->second.pendingRelease.end());
                 it->second.pendingRelease.clear();
             }
-            for (const auto& popup : panePtr->popups()) {
-                auto pit = popupRenderStates_.find(popupStateKey(panePtr->id(), popup.id));
-                if (pit != popupRenderStates_.end()) {
+            for (const auto& popup : rpi.popups) {
+                auto pit = popupRenderPrivate_.find(popupStateKey(rpi.id, popup.id));
+                if (pit != popupRenderPrivate_.end()) {
                     toRelease.insert(toRelease.end(),
                         pit->second.pendingRelease.begin(),
                         pit->second.pendingRelease.end());

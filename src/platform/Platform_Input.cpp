@@ -160,9 +160,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
                 // Lightweight update during live drag: signal the render thread
                 // to reconfigure the surface and release stale textures.
                 // The heavy work (terminal reflow, GPU buffer updates, dividers)
-                // is deferred to onLiveResizeEnd → flushPendingFramebufferResize
-                // so platformMutex_ is held only briefly here, keeping XSync
-                // counter acknowledgments prompt.
+                // is deferred to onLiveResizeEnd → flushPendingFramebufferResize.
                 bool didResize = false;
                 {
                     std::lock_guard<std::mutex> plk(platformMutex_);
@@ -170,21 +168,10 @@ void PlatformDawn::onFramebufferResize(int width, int height)
                     if (pendingResizeW_ && pendingResizeH_) {
                         fbWidth_  = pendingResizeW_;
                         fbHeight_ = pendingResizeH_;
-                        // Leave pendingResizeW_/H_ set so flushPendingFramebufferResize
-                        // can pass the final size to applyFramebufferResize.
-                        surfaceNeedsReconfigure_.store(true, std::memory_order_release);
-                        renderer_.setViewportSize(fbWidth_, fbHeight_);
-                        for (auto& [id, rs] : paneRenderStates_) {
-                            if (rs.heldTexture) {
-                                rs.pendingRelease.push_back(rs.heldTexture);
-                                rs.heldTexture = nullptr;
-                            }
-                            rs.dirty = true;
-                        }
-                        if (tabBarTexture_) {
-                            pendingTabBarRelease_.push_back(tabBarTexture_);
-                            tabBarTexture_ = nullptr;
-                        }
+                        pending_.surfaceNeedsReconfigure = true;
+                        pending_.viewportSizeChanged = true;
+                        pending_.releaseAllPaneTextures = true;
+                        pending_.releaseTabBarTexture = true;
                         tabBarDirty_ = true;
                         didResize = true;
                     }
@@ -227,8 +214,8 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     fbWidth_ = static_cast<uint32_t>(width);
     fbHeight_ = static_cast<uint32_t>(height);
 
-    surfaceNeedsReconfigure_.store(true, std::memory_order_release);
-    renderer_.setViewportSize(fbWidth_, fbHeight_);
+    pending_.surfaceNeedsReconfigure = true;
+    pending_.viewportSizeChanged = true;
     dividersDirty_ = true;
 
     // Clear divider buffers for all tabs — geometry is now stale
@@ -252,23 +239,14 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
 
             scriptEngine_.notifyPaneResized(pane->id(), cols, rows);
 
-            auto& rs = paneRenderStates_[pane->id()];
-            rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+            pending_.structuralOps.push_back(
+                PendingMutations::ResizePaneState{pane->id(), cols, rows});
         }
     }
 
-    // Release all held textures — they're now the wrong size for the new framebuffer.
-    for (auto& [id, rs] : paneRenderStates_) {
-        if (rs.heldTexture) {
-            rs.pendingRelease.push_back(rs.heldTexture);
-            rs.heldTexture = nullptr;
-        }
-        rs.dirty = true;
-    }
-    if (tabBarTexture_) {
-        pendingTabBarRelease_.push_back(tabBarTexture_);
-        tabBarTexture_ = nullptr;
-    }
+    // Release all held textures — they're now the wrong size.
+    pending_.releaseAllPaneTextures = true;
+    pending_.releaseTabBarTexture = true;
     tabBarDirty_ = true;
     if (Tab* active = activeTab()) refreshDividers(active);
     setNeedsRedraw();

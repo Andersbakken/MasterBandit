@@ -1,6 +1,7 @@
 #include "PlatformDawn.h"
 #include "Utils.h"
 #include "FontResolver.h"
+#include "Utf8.h"
 
 #ifdef __APPLE__
 #  include <mac/EventLoop_nsapp.h>
@@ -101,13 +102,6 @@ void PlatformDawn::drainDeferredMain()
 
 void PlatformDawn::drainPendingExits()
 {
-    // Called on the main thread from onTick under platformMutex_. Skip when
-    // the render thread has released platformMutex_ for its shaping section
-    // but is still holding raw Tab/Pane/Terminal pointers captured before
-    // the release — erasing now would dangle them. We'll retry on the next
-    // tick (render wakes the event loop when clearing renderActive_).
-    if (renderActive_.load(std::memory_order_acquire)) return;
-
     std::vector<Terminal*> exits;
     {
         std::lock_guard<std::mutex> lk(deferredExitMutex_);
@@ -116,30 +110,350 @@ void PlatformDawn::drainPendingExits()
     for (auto* t : exits) terminalExited(t);
 }
 
-void PlatformDawn::deferIfRendering(std::function<void()> fn)
+void PlatformDawn::buildRenderFrameState()
 {
-    // Main thread holds platformMutex_ here. If renderActive_ is clear, the
-    // render thread is not in its shaping-phase unlock window and can't
-    // acquire a new raw-pointer capture until it takes platformMutex_
-    // again — which is blocked by the caller. Safe to run `fn` directly.
-    if (!renderActive_.load(std::memory_order_acquire)) {
-        fn();
+    // Called under platformMutex_.  Rebuilds the shadow copy from live state.
+    Tab* tab = activeTab();
+    renderState_.activeTabIdx = activeTabIdx_;
+    renderState_.fbWidth  = fbWidth_;
+    renderState_.fbHeight = fbHeight_;
+    renderState_.charWidth  = charWidth_;
+    renderState_.lineHeight = lineHeight_;
+    renderState_.fontSize   = fontSize_;
+    renderState_.padLeft   = padLeft_;
+    renderState_.padTop    = padTop_;
+    renderState_.padRight  = padRight_;
+    renderState_.padBottom = padBottom_;
+    std::memcpy(renderState_.activeTint,   activeTint_,   sizeof(activeTint_));
+    std::memcpy(renderState_.inactiveTint, inactiveTint_, sizeof(inactiveTint_));
+    renderState_.tabBarVisible = tabBarVisible();
+    renderState_.tabBarPosition = tabBarConfig_.position;
+    renderState_.inLiveResize = window_ && window_->inLiveResize();
+    renderState_.windowHasFocus = windowHasFocus_;
+    renderState_.cursorBlinkOpacity = cursorBlinkOpacity_;
+
+    // Tab bar config values
+    renderState_.tbBgColor         = tbBgColor_;
+    renderState_.tbActiveBgColor   = tbActiveBgColor_;
+    renderState_.tbActiveFgColor   = tbActiveFgColor_;
+    renderState_.tbInactiveBgColor = tbInactiveBgColor_;
+    renderState_.tbInactiveFgColor = tbInactiveFgColor_;
+    renderState_.progressColorR    = progressColorR_;
+    renderState_.progressColorG    = progressColorG_;
+    renderState_.progressColorB    = progressColorB_;
+    renderState_.progressBarHeight = progressBarHeight_;
+    renderState_.progressBarEnabled = tabBarConfig_.progress_bar;
+    renderState_.progressIconEnabled = tabBarConfig_.progress_icon;
+    renderState_.maxTitleLength     = tabBarConfig_.max_title_length;
+
+    // Divider appearance
+    renderState_.dividerWidth = dividerWidth_;
+    renderState_.dividerR = dividerR_;
+    renderState_.dividerG = dividerG_;
+    renderState_.dividerB = dividerB_;
+    renderState_.dividerA = dividerA_;
+
+    // Font names and tab bar font metrics
+    renderState_.fontName = fontName_;
+    renderState_.tabBarFontName = tabBarFontName_;
+    renderState_.tabBarFontSize = tabBarFontSize_;
+    renderState_.tabBarCharWidth = tabBarCharWidth_;
+    renderState_.tabBarLineHeight = tabBarLineHeight_;
+
+    // Content scale
+    renderState_.contentScaleX = contentScaleX_;
+
+    // Tab bar animation
+    renderState_.tabBarAnimFrame = tabBarAnimFrame_;
+
+    // Tab bar rect from active tab's layout
+    if (tab) {
+        renderState_.tabBarRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
+    } else {
+        renderState_.tabBarRect = {};
+    }
+
+    // Active tab pane info
+    renderState_.panes.clear();
+    renderState_.hasOverlay = false;
+    renderState_.overlay = nullptr;
+    renderState_.focusedPaneId = -1;
+
+    if (tab) {
+        renderState_.focusedPaneId = tab->layout()->focusedPaneId();
+
+        if (tab->hasOverlay()) {
+            renderState_.hasOverlay = true;
+            renderState_.overlay = tab->topOverlay();
+        } else {
+            for (auto& panePtr : tab->layout()->panes()) {
+                Pane* pane = panePtr.get();
+                RenderPaneInfo rpi;
+                rpi.id = pane->id();
+                rpi.rect = pane->rect();
+                rpi.term = pane->terminal();
+                rpi.progressState = pane->progressState();
+                rpi.progressPct = pane->progressPct();
+                rpi.focusedPopupId = pane->focusedPopupId();
+                for (const auto& popup : pane->popups()) {
+                    RenderPanePopupInfo pi;
+                    pi.id = popup.id;
+                    pi.cellX = popup.cellX;
+                    pi.cellY = popup.cellY;
+                    pi.cellW = popup.cellW;
+                    pi.cellH = popup.cellH;
+                    pi.term = popup.terminal.get();
+                    rpi.popups.push_back(std::move(pi));
+                }
+                renderState_.panes.push_back(std::move(rpi));
+            }
+        }
+    }
+
+    // Tab bar data (all tabs)
+    renderState_.tabs.clear();
+    for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
+        Tab* t = tabs_[i].get();
+        RenderTabInfo rti;
+        rti.title = t->title();
+        rti.icon  = t->icon();
+        rti.focusedPaneId = t->layout()->focusedPaneId();
+        Pane* fp = t->layout()->focusedPane();
+        rti.progressState = fp ? fp->progressState() : 0;
+        rti.progressPct   = fp ? fp->progressPct() : 0;
+        renderState_.tabs.push_back(std::move(rti));
+    }
+
+    // Divider geometry
+    renderState_.dividerGeoms.clear();
+    if (tab && !renderState_.hasOverlay) {
+        for (auto& panePtr : tab->layout()->panes()) {
+            // Copy from the pending divider updates if any, otherwise leave empty
+        }
+    }
+
+    // --- Tab bar layout (text → cell computation) ---
+    renderState_.tabBarCells.clear();
+    renderState_.tabBarColRanges.clear();
+    renderState_.tabBarCols = 0;
+
+    if (!renderState_.tabBarVisible || renderState_.tabs.empty() ||
+        renderState_.tabBarRect.isEmpty() || renderState_.tabBarCharWidth <= 0) {
         return;
     }
-    pendingTeardowns_.push_back(std::move(fn));
+
+    int cols = std::max(1, static_cast<int>(renderState_.tabBarRect.w / renderState_.tabBarCharWidth));
+    renderState_.tabBarCols = cols;
+
+    // Also update the main-thread-owned members used by resolveTabBarClickIndex
+    tabBarCols_ = cols;
+
+    // Helpers
+    auto cpLen = [](const std::string& s) -> int {
+        int w = 0;
+        const char* p = s.c_str();
+        while (*p) { p += utf8::seqLen(static_cast<uint8_t>(*p)); w++; }
+        return w;
+    };
+    auto truncUtf8 = [](const std::string& s, int maxCp) -> std::string {
+        if (maxCp <= 0) return {};
+        int cp = 0;
+        const char* p = s.c_str();
+        while (*p && cp < maxCp) { p += utf8::seqLen(static_cast<uint8_t>(*p)); cp++; }
+        if (*p) return std::string(s.c_str(), p) + "\xe2\x80\xa6";
+        return s;
+    };
+
+    // Indeterminate animation glyphs
+    static const char32_t kAnimGlyphs[] = {
+        0xf0130, 0xf0a9e, 0xf0a9f, 0xf0aa0, 0xf0aa1,
+        0xf0aa2, 0xf0aa3, 0xf0aa4, 0xf0aa5
+    };
+    static constexpr int kAnimCount = 9;
+    auto cp32ToUtf8 = [](char32_t cp) -> std::string {
+        std::string s;
+        if (cp < 0x80) { s += static_cast<char>(cp); }
+        else if (cp < 0x800) { s += static_cast<char>(0xC0|(cp>>6)); s += static_cast<char>(0x80|(cp&0x3F)); }
+        else if (cp < 0x10000) { s += static_cast<char>(0xE0|(cp>>12)); s += static_cast<char>(0x80|((cp>>6)&0x3F)); s += static_cast<char>(0x80|(cp&0x3F)); }
+        else { s += static_cast<char>(0xF0|(cp>>18)); s += static_cast<char>(0x80|((cp>>12)&0x3F)); s += static_cast<char>(0x80|((cp>>6)&0x3F)); s += static_cast<char>(0x80|(cp&0x3F)); }
+        return s;
+    };
+    auto progressGlyph = [&](const RenderTabInfo& rti) -> std::string {
+        int st = rti.progressState;
+        int pct = rti.progressPct;
+        if (st == 0) return "";
+        int idx;
+        if (st == 3) {
+            int period = 2 * (kAnimCount - 1);
+            int pos = renderState_.tabBarAnimFrame % period;
+            idx = (pos < kAnimCount) ? pos : period - pos;
+        } else if (st == 1 || st == 2) {
+            idx = std::clamp(pct * kAnimCount / 100, 0, kAnimCount - 1);
+        } else return "";
+        return cp32ToUtf8(kAnimGlyphs[idx]);
+    };
+
+    // Build per-tab info
+    struct TI { std::string prefix; std::string title; std::string text; int width; bool isActive; uint32_t bgColor, fgColor; };
+    std::vector<TI> tabInfos;
+    for (int i = 0; i < static_cast<int>(renderState_.tabs.size()); ++i) {
+        const auto& rtab = renderState_.tabs[i];
+        bool isActive = (i == renderState_.activeTabIdx);
+        TI ti;
+        ti.isActive = isActive;
+        ti.bgColor = isActive ? renderState_.tbActiveBgColor : renderState_.tbInactiveBgColor;
+        ti.fgColor = isActive ? renderState_.tbActiveFgColor : renderState_.tbInactiveFgColor;
+        ti.prefix = " ";
+        std::string pg = renderState_.progressIconEnabled ? progressGlyph(rtab) : "";
+        if (!pg.empty()) { ti.prefix += pg; ti.prefix += " "; }
+        if (!rtab.icon.empty()) { ti.prefix += rtab.icon; ti.prefix += " "; }
+        ti.prefix += "["; ti.prefix += std::to_string(i + 1); ti.prefix += "] ";
+        ti.title = rtab.title;
+        tabInfos.push_back(std::move(ti));
+    }
+
+    int numTabs = static_cast<int>(tabInfos.size());
+    int sepWidth = 1;
+
+    // Truncation loop
+    int maxTitleLen = renderState_.maxTitleLength > 0 ? renderState_.maxTitleLength : 9999;
+    for (;;) {
+        int total = 0;
+        for (int i = 0; i < numTabs; ++i) {
+            std::string truncTitle = truncUtf8(tabInfos[i].title, maxTitleLen);
+            tabInfos[i].text = tabInfos[i].prefix + truncTitle + (truncTitle.empty() ? "" : " ");
+            if (tabInfos[i].text.back() != ' ') tabInfos[i].text += " ";
+            tabInfos[i].width = cpLen(tabInfos[i].text);
+            total += tabInfos[i].width + sepWidth;
+        }
+        if (total <= cols || maxTitleLen <= 0) break;
+        maxTitleLen--;
+    }
+
+    // Overflow detection
+    int totalWidth = 0;
+    for (auto& ti : tabInfos) totalWidth += ti.width + sepWidth;
+    int visStart = 0, visEnd = numTabs;
+    bool overflowLeft = false, overflowRight = false;
+    if (totalWidth > cols && numTabs > 1) {
+        int ati = renderState_.activeTabIdx;
+        if (ati < 0 || ati >= numTabs) ati = 0;
+        visStart = ati; visEnd = ati + 1;
+        int used = tabInfos[ati].width + sepWidth;
+        int indicatorWidth = 2;
+        while (visStart > 0 || visEnd < numTabs) {
+            bool expanded = false;
+            if (visEnd < numTabs) {
+                int need = tabInfos[visEnd].width + sepWidth + (visEnd + 1 < numTabs ? indicatorWidth : 0);
+                if (used + need + (visStart > 0 ? indicatorWidth : 0) <= cols) {
+                    used += tabInfos[visEnd].width + sepWidth; visEnd++; expanded = true;
+                }
+            }
+            if (visStart > 0) {
+                int need = tabInfos[visStart - 1].width + sepWidth + (visStart - 1 > 0 ? indicatorWidth : 0);
+                if (used + need + (visEnd < numTabs ? indicatorWidth : 0) <= cols) {
+                    visStart--; used += tabInfos[visStart].width + sepWidth; expanded = true;
+                }
+            }
+            if (!expanded) break;
+        }
+        overflowLeft = (visStart > 0);
+        overflowRight = (visEnd < numTabs);
+    }
+
+    // Build cell array
+    renderState_.tabBarCells.resize(cols);
+    for (auto& c : renderState_.tabBarCells) {
+        c.ch.clear();
+        c.fgColor = renderState_.tbInactiveFgColor;
+        c.bgColor = renderState_.tbBgColor;
+    }
+
+    auto placeCell = [&](int& col, const std::string& ch, uint32_t fg, uint32_t bg) {
+        if (col >= cols) return;
+        renderState_.tabBarCells[col] = {ch, fg, bg};
+        col++;
+    };
+
+    int col = 0;
+    if (overflowLeft) {
+        placeCell(col, "\xe2\x97\x80", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
+        placeCell(col, " ", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
+    }
+
+    // Powerline separator
+    const std::string SEP_RIGHT = "\xee\x82\xb0";
+
+    renderState_.tabBarColRanges.assign(renderState_.tabs.size(), {-1, -1});
+    for (int i = visStart; i < visEnd; ++i) {
+        auto& ti = tabInfos[i];
+        int startCol = col;
+        const char* p = ti.text.c_str();
+        while (*p && col < cols) {
+            int len = utf8::seqLen(static_cast<uint8_t>(*p));
+            std::string ch(p, static_cast<size_t>(len));
+            placeCell(col, ch, ti.fgColor, ti.bgColor);
+            p += len;
+        }
+        uint32_t nextBg = (i + 1 < visEnd) ? tabInfos[i + 1].bgColor : renderState_.tbBgColor;
+        placeCell(col, SEP_RIGHT, ti.bgColor, nextBg);
+        renderState_.tabBarColRanges[i] = {startCol, col};
+    }
+
+    // Also update main-thread-owned col ranges for click handling
+    tabBarColRanges_ = renderState_.tabBarColRanges;
+
+    if (overflowRight && col + 2 <= cols) {
+        placeCell(col, " ", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
+        placeCell(col, "\xe2\x96\xb6", renderState_.tbInactiveFgColor, renderState_.tbBgColor);
+    }
 }
 
-void PlatformDawn::drainPendingTeardowns()
+void PlatformDawn::applyPendingMutations()
 {
-    // Called on the main thread from onTick under platformMutex_. Same
-    // renderActive_ gate as drainPendingExits — retry next tick if the
-    // render thread is still mid-shaping.
-    if (renderActive_.load(std::memory_order_acquire)) return;
-    if (pendingTeardowns_.empty()) return;
+    // Called on the main thread at end of tick.  Acquires platformMutex_,
+    // transfers pending_ into renderState_, clears pending_.
+    std::lock_guard<std::mutex> plk(platformMutex_);
 
-    std::vector<std::function<void()>> fns;
-    fns.swap(pendingTeardowns_);
-    for (auto& fn : fns) fn();
+    // Transfer dirty flags
+    renderState_.tabBarDirty     |= pending_.tabBarDirty || tabBarDirty_;
+    renderState_.dividersDirty   |= pending_.dividersDirty || dividersDirty_;
+    renderState_.focusChanged    |= pending_.focusChanged;
+    renderState_.surfaceNeedsReconfigure |= pending_.surfaceNeedsReconfigure;
+
+    // Font atlas change flags
+    renderState_.mainFontAtlasChanged   |= pending_.mainFontAtlasChanged;
+    renderState_.tabBarFontAtlasChanged |= pending_.tabBarFontAtlasChanged;
+    renderState_.mainFontRemoved        |= pending_.mainFontRemoved;
+    renderState_.tabBarFontRemoved      |= pending_.tabBarFontRemoved;
+    renderState_.viewportSizeChanged    |= pending_.viewportSizeChanged;
+
+    // Rebuild the full shadow copy from live state.
+    // This is cheap — just copying scalars and building vectors of POD-ish structs.
+    buildRenderFrameState();
+
+    // Transfer per-pane dirty flags into renderState_ (the render thread
+    // will propagate them into PaneRenderPrivate at snapshot time).
+    // We store dirty pane IDs directly in the render state so the render
+    // thread can consume them.
+    for (int id : pending_.dirtyPanes) {
+        // Mark in render state — render thread picks up via a set
+        renderState_.dividerGeoms[id]; // ensure entry exists (noop if already there)
+    }
+
+    // Divider geometry updates
+    for (auto& du : pending_.dividerUpdates) {
+        DividerGeom& dg = renderState_.dividerGeoms[du.paneId];
+        dg.x = du.x; dg.y = du.y; dg.w = du.w; dg.h = du.h;
+        dg.r = du.r; dg.g = du.g; dg.b = du.b; dg.a = du.a;
+        dg.valid = du.valid;
+    }
+
+    // Clear main-thread-side flags that were transferred
+    tabBarDirty_   = false;
+    dividersDirty_ = false;
+
+    pending_.clear();
 }
 
 void PlatformDawn::wakeRenderThread()
@@ -202,11 +516,21 @@ PlatformDawn::~PlatformDawn()
     }
 
     // Release held textures before clearing pool
-    for (auto& [id, rs] : paneRenderStates_) {
+    for (auto& [id, rs] : paneRenderPrivate_) {
         if (rs.heldTexture) texturePool_.release(rs.heldTexture);
         for (auto* t : rs.pendingRelease) texturePool_.release(t);
     }
-    paneRenderStates_.clear();
+    paneRenderPrivate_.clear();
+    for (auto& [key, rs] : popupRenderPrivate_) {
+        if (rs.heldTexture) texturePool_.release(rs.heldTexture);
+        for (auto* t : rs.pendingRelease) texturePool_.release(t);
+    }
+    popupRenderPrivate_.clear();
+    if (overlayRenderPrivate_.heldTexture) {
+        texturePool_.release(overlayRenderPrivate_.heldTexture);
+        for (auto* t : overlayRenderPrivate_.pendingRelease)
+            texturePool_.release(t);
+    }
 
     // Release tab bar textures
     if (tabBarTexture_) { texturePool_.release(tabBarTexture_); tabBarTexture_ = nullptr; }
@@ -317,7 +641,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             };
             window_->onFocus = [this](bool focused) {
                 windowHasFocus_ = focused;
-                focusChanged_.store(true);
+                pending_.focusChanged = true;
                 setNeedsRedraw();
                 Tab* t = activeTab();
                 if (!t) return;
@@ -597,7 +921,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     if (rows < 1) rows = 24;
 
     // Init per-pane render state
-    auto& rs = paneRenderStates_[paneId];
+    auto& rs = paneRenderPrivate_[paneId];
     rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
 
     terminal->resize(cols, rows);
@@ -690,7 +1014,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 TerminalEmulator* te = p->terminal();
                 if (te) {
                     int c = te->width(), r = te->height();
-                    auto& rs2 = paneRenderStates_[p->id()];
+                    auto& rs2 = paneRenderPrivate_[p->id()];
                     rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
                 }
             }
@@ -738,17 +1062,13 @@ void PlatformDawn::configureSurface(uint32_t width, uint32_t height)
 
 void PlatformDawn::invalidateAllRowCaches()
 {
-    for (auto& [id, rs] : paneRenderStates_) {
-        for (auto& row : rs.rowShapingCache) row.valid = false;
-        rs.dirty = true;
-    }
-    for (auto& [tab, rs] : overlayRenderStates_) {
-        for (auto& row : rs.rowShapingCache) row.valid = false;
-        rs.dirty = true;
-    }
-    for (auto& [key, rs] : popupRenderStates_) {
-        for (auto& row : rs.rowShapingCache) row.valid = false;
-        rs.dirty = true;
+    // Signal the render thread to invalidate all row caches on the next frame.
+    // The render-private maps are only touched by the render thread, so we
+    // communicate via the pending mutations flag.
+    pending_.invalidateAllRowCaches = true;
+    for (auto& tab : tabs_) {
+        for (auto& panePtr : tab->layout()->panes())
+            pending_.dirtyPanes.insert(panePtr->id());
     }
 }
 
@@ -795,9 +1115,9 @@ void PlatformDawn::applyFontChange(const Config& config)
         }
     }
 
-    // Tear down old font
+    // Tear down old font (GPU removal deferred to render thread)
     textSystem_.unregisterFont(fontName_);
-    renderer_.removeFontAtlas(fontName_);
+    pending_.mainFontRemoved = true;
 
     // Re-register
     textSystem_.registerFont(fontName_, fontList, 48.0f);
@@ -831,7 +1151,7 @@ void PlatformDawn::applyFontChange(const Config& config)
     charWidth_ = shaped.width;
     if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
 
-    renderer_.uploadFontAtlas(queue_, fontName_, *font);
+    pending_.mainFontAtlasChanged = true;
     invalidateAllRowCaches();
     onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
 
@@ -870,7 +1190,7 @@ void PlatformDawn::applyBlinkConfig(int rate, int fps)
             // Fade-in phase: 0.0 → 1.0
             t = static_cast<float>(cursorBlinkStep_ - stepsPerPhase) / static_cast<float>(stepsPerPhase);
         }
-        cursorBlinkOpacity_.store(t, std::memory_order_release);
+        cursorBlinkOpacity_ = t;
 
         Tab* tab = activeTab();
         if (!tab) return;
@@ -900,7 +1220,7 @@ void PlatformDawn::resetCursorBlink()
 {
     if (cursorBlinkRate_ <= 0 || !cursorBlinkTimer_ || !eventLoop_) return;
     cursorBlinkStep_ = 0;
-    cursorBlinkOpacity_.store(1.0f, std::memory_order_release);
+    cursorBlinkOpacity_ = 1.0f;
     eventLoop_->restartTimer(cursorBlinkTimer_);
     setNeedsRedraw();
 }
@@ -1023,7 +1343,7 @@ void PlatformDawn::reloadConfigNow()
     // Tab bar
     tabBarConfig_ = config.tab_bar;
     textSystem_.unregisterFont(tabBarFontName_);
-    renderer_.removeFontAtlas(tabBarFontName_);
+    pending_.tabBarFontRemoved = true;
     initTabBar(config.tab_bar);
 
     // Font name or size change

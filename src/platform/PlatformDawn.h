@@ -7,6 +7,7 @@
 #include "Terminal.h"
 #include "TerminalSnapshot.h"
 #include "Renderer.h"
+#include "RenderSync.h"
 #include "TexturePool.h"
 #include "text.h"
 #include "DebugIPC.h"
@@ -166,10 +167,10 @@ private:
     EventLoop::TimerId         cursorBlinkTimer_ = 0;
     int                        cursorBlinkRate_ = 800;  // ms per phase
     int                        cursorBlinkFps_ = 10;    // animation fps
-    int                        cursorBlinkStep_ = 0;    // current step within cycle
+    int                        cursorBlinkStep_ = 0;      // current step within cycle
     int                        cursorBlinkTotalSteps_ = 0; // steps per full cycle
     // Written by the blink timer on the main thread, read by the render thread.
-    std::atomic<float>         cursorBlinkOpacity_ { 1.0f };
+    float                      cursorBlinkOpacity_ = 1.0f;
     void                       applyBlinkConfig(int rate, int fps);
     void                       resetCursorBlink();
 
@@ -189,10 +190,6 @@ private:
     uint32_t                   pendingResizeH_ = 0;
     void                       applyFramebufferResize(int width, int height);
     void                       flushPendingFramebufferResize();
-    // Set by applyFramebufferResize (main thread) when fbWidth_/fbHeight_ change.
-    // Consumed by the render thread at the top of renderFrame() so that
-    // surface_.Configure() is always called from the render thread only.
-    std::atomic<bool>          surfaceNeedsReconfigure_ { false };
     // Render thread requests an animation wakeup by setting this atomic.
     // Main thread consumes it in onTick and schedules the actual timer on
     // the event loop (thread-affine).
@@ -250,11 +247,8 @@ private:
 
     void notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn) {
         for (auto& tab : tabs_) {
-            for (auto& [paneId, _] : paneRenderStates_) {
-                Pane* pane = tab->layout()->pane(paneId);
-                if (pane) {
-                    if (auto* term = pane->terminal()) fn(term);
-                }
+            for (auto& panePtr : tab->layout()->panes()) {
+                if (auto* term = panePtr->terminal()) fn(term);
             }
         }
     }
@@ -287,14 +281,7 @@ private:
     uint32_t defaultBgColor_ = 0x00000000;
     std::atomic<bool> needsRedraw_ { true };
     std::atomic<int> pendingGpuCallbacks_ { 0 };
-    // True while the render thread is mid-frame with platformMutex_
-    // released (shaping dispatch section). Main thread's structural erases
-    // (drainPendingExits, releasePopupStates) check this and defer when
-    // set, because the render thread is holding raw Tab*/Pane*/Terminal*
-    // pointers captured under the lock at frame start.
-    std::atomic<bool> renderActive_ { false };
-    std::atomic<bool> windowHasFocus_ { true };
-    std::atomic<bool> focusChanged_ { false };
+    bool              windowHasFocus_ = true;
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;
 
@@ -302,70 +289,36 @@ private:
     double lastCursorX_ = 0.0, lastCursorY_ = 0.0;
     uint32_t heldButtons_ = 0;  // bitmask of Button values currently pressed
 
-    // Per-pane render state
-    struct PaneRenderState {
-        // Phase 1 render-thread decoupling: renderer reads terminal state from
-        // this snapshot, not the live Terminal. Populated once per frame via
-        // snapshot.update(*term). See RENDER_THREADING.md.
-        TerminalSnapshot snapshot;
-        std::vector<ResolvedCell> resolvedCells;
-        std::vector<GlyphEntry> glyphBuffer;
-        uint32_t totalGlyphs = 0;
-        int lastCursorX = -1, lastCursorY = -1;
-        bool lastCursorVisible = true;
-        int lastCursorShape = -1;
-        float lastCursorBlinkOpacity = 1.0f;  // last rendered blink opacity
-        // Image IDs visible in this pane as of its last re-render. Used to keep
-        // the GPU image cache resident for panes that aren't re-rendering this
-        // frame (heldTexture is displaying them; eviction would just force a
-        // re-upload on the next real render).
-        std::unordered_set<uint32_t> lastVisibleImageIds;
-        PooledTexture* heldTexture = nullptr;
-        // Written by main thread (lock-free — load/store atomic), read by
-        // render thread at frame start. Phase 6.1 shrunk the render-side
-        // lock; dirty is now observable across threads without platformMutex_.
-        std::atomic<bool> dirty { true };
-        std::vector<PooledTexture*> pendingRelease;
-        wgpu::Buffer dividerVB;
-        // CPU-side divider geometry — written by main thread, consumed by render thread.
-        struct DividerGeom {
-            float x = 0, y = 0, w = 0, h = 0;
-            float r = 0, g = 0, b = 0, a = 0;
-            bool valid = false;
-        } dividerGeom;
-        // Cached popup border buffers: 4 buffers (top/bottom/left/right) per popup
-        struct PopupBorder {
-            std::string popupId;
-            int cellX = 0, cellY = 0, cellW = 0, cellH = 0;
-            wgpu::Buffer top, bottom, left, right;
-        };
-        std::vector<PopupBorder> popupBorders;
-        int lastViewportOffset = 0;
-        int lastHistorySize = 0;
-        // Previous frame's selection — used to force re-resolve of
-        // newly-selected and newly-deselected rows in the snapshot world
-        // (selection mutations no longer mark grid rows dirty).
-        TerminalEmulator::Selection lastSelection{};
-
-        struct RowGlyphCache {
-            std::vector<GlyphEntry> glyphs;
-            std::vector<std::pair<uint32_t, uint32_t>> cellGlyphRanges;
-            std::vector<Renderer::ColrDrawCmd> colrDrawCmds;  // per-row COLR quads
-            std::vector<Renderer::ColrRasterCmd> colrRasterCmds;  // per-row new COLR tiles
-            bool valid = false;
-        };
-        std::vector<RowGlyphCache> rowShapingCache;
-    };
-    std::unordered_map<int, PaneRenderState> paneRenderStates_;
-    std::unordered_map<Tab*, PaneRenderState> overlayRenderStates_; // per-tab overlay render state
-    std::unordered_map<std::string, PaneRenderState> popupRenderStates_; // keyed by "<paneId>/<popupId>"
+    // Render-thread-only state — keyed by pane/popup/overlay ID.
+    // Only the render thread touches these; no lock needed.
+    std::unordered_map<int, PaneRenderPrivate> paneRenderPrivate_;
+    std::unordered_map<std::string, PaneRenderPrivate> popupRenderPrivate_; // keyed by "<paneId>/<popupId>"
+    PaneRenderPrivate overlayRenderPrivate_;  // single overlay per active tab
 
     static std::string popupStateKey(int paneId, const std::string& popupId) {
         return std::to_string(paneId) + "/" + popupId;
     }
-    void releasePopupStates(Pane* pane);
 
-    void resolveRow(PaneRenderState& rs, int row, FontData* font, float scale,
+    // Shadow copy of tab/pane structure for the render thread.
+    // Written by applyPendingMutations() under platformMutex_.
+    // Read by renderFrame() under the same mutex.
+    RenderFrameState renderState_;
+
+    // Per-frame local copy of renderState_, snapshotted under platformMutex_
+    // at the start of renderFrame(). Used for the remainder of the frame
+    // after the lock is released. Render-thread-only, no lock needed.
+    RenderFrameState frameState_;
+
+    // Main-thread-only mutation accumulator.  Written at scattered call
+    // sites without any lock; consumed by applyPendingMutations().
+    PendingMutations pending_;
+
+    // Build renderState_ from current tabs_/panes.  Called under platformMutex_.
+    void buildRenderFrameState();
+    // Apply pending_ into renderState_ under platformMutex_ at end of tick.
+    void applyPendingMutations();
+
+    void resolveRow(PaneRenderPrivate& rs, int row, FontData* font, float scale,
                     float pixelOriginX, float pixelOriginY);
 
     std::unordered_map<int, Terminal*> ptyPolls_;
@@ -381,7 +334,7 @@ private:
     int           tabBarCols_       = 0;
     PooledTexture* tabBarTexture_   = nullptr;
     bool          tabBarDirty_      = true;
-    std::atomic<bool> dividersDirty_ { true }; // set by main thread, consumed by render thread
+    bool          dividersDirty_    = true;
     // Column ranges for each tab in the rendered tab bar, for hit-testing.
     // Each pair is (startCol, endCol) — the range of columns occupied by that tab.
     std::vector<std::pair<int,int>> tabBarColRanges_;
@@ -433,25 +386,10 @@ private:
     std::vector<Terminal*>                pendingExits_;
     void drainPendingExits();
 
-    // User-initiated teardowns (ClosePane / closeTab / popup destroy / overlay
-    // destroy) can race the render thread's shaping phase: between
-    // Platform_Render.cpp's plk.unlock() and plk.lock(), render workers hold
-    // raw pointers into paneRenderStates_ / popupRenderStates_ / overlayRenderStates_.
-    // Erasing those entries during that window is UAF. deferIfRendering()
-    // runs `fn` immediately when renderActive_ is clear; otherwise it queues
-    // here and drainPendingTeardowns() (called from onTick under platformMutex_)
-    // runs them after the render thread releases the lock. Accessed only on
-    // the main thread under platformMutex_, so no separate mutex.
-    std::vector<std::function<void()>>    pendingTeardowns_;
-    void deferIfRendering(std::function<void()> fn);
-    void drainPendingTeardowns();
-
     // Generic main-thread post queue. Parse-time callbacks (title / icon /
     // cwd / progress / mouse-cursor-shape / foreground-process changes)
     // enqueue a lambda via postToMainThread(); drainDeferredMain() runs
-    // them on the main thread under platformMutex_ after parse completes.
-    // (std::move_only_function would let us capture move-only types but
-    // isn't in libc++ yet on AppleClang — std::function suffices.)
+    // them on the main thread after parse completes.
     std::mutex                            deferredMainMutex_;
     std::vector<std::function<void()>>    deferredMain_;
     void postToMainThread(std::function<void()> fn);

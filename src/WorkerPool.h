@@ -15,7 +15,7 @@ public:
         : workReady_(0), allDone_(0)
     {
         if (numThreads == 0)
-            numThreads = std::max(1u, std::thread::hardware_concurrency());
+            numThreads = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
         for (uint32_t i = 0; i < numThreads; ++i)
             threads_.emplace_back([this] { workerLoop(); });
     }

@@ -465,6 +465,13 @@ int PlatformDawn::exec()
             // render thread's use of frameState_ term pointers.
             applyPendingMutations();
 
+            // Flush any pending TIOCSWINSZ on the main thread so the render
+            // thread never mutates terminal state.
+            if (!window_ || !window_->inLiveResize()) {
+                for (auto& [fd, term] : ptyPolls_)
+                    term->flushPendingResize();
+            }
+
             // Render thread may have requested an animation wakeup — wire
             // the event-loop timer on the main thread.
             applyPendingAnimationWakeup();

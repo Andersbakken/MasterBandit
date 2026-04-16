@@ -517,17 +517,6 @@ void PlatformDawn::renderFrame()
     needsRedraw_ = false;
     renderer_.colrAtlas().advanceGeneration();
 
-    // Flush any pending TIOCSWINSZ — sends SIGWINCH once after all resize
-    // events in this frame have been coalesced.
-    if (!frameState_.inLiveResize) {
-        for (const auto& rpi : frameState_.panes) {
-            if (rpi.term)
-                static_cast<Terminal*>(rpi.term)->flushPendingResize();
-        }
-        if (frameState_.overlay)
-            static_cast<Terminal*>(frameState_.overlay)->flushPendingResize();
-    }
-
     if (isHeadless()) {
         if (!headlessComposite_) {
             wgpu::TextureDescriptor desc = {};

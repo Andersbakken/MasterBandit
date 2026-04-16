@@ -2,12 +2,19 @@
 
 #include <atomic>
 #include <sys/types.h>
+#include "ActionRouter.h"
+#include "AnimationScheduler.h"
+#include "ConfigLoader.h"
+#include "InputController.h"
 #include "InputTypes.h"
 #include "ClickDetector.h"
+#include "TabManager.h"
 #include "Terminal.h"
 #include "TerminalSnapshot.h"
 #include "Renderer.h"
+#include "RenderEngine.h"
 #include "RenderSync.h"
+#include "RenderThread.h"
 #include "TexturePool.h"
 #include "text.h"
 #include "DebugIPC.h"
@@ -81,9 +88,9 @@ public:
     void createTab();
     void closeTab(int idx);
 
-    wgpu::Device device() const { return device_; }
-    wgpu::Queue queue() const { return queue_; }
-    TexturePool& texturePool() { return texturePool_; }
+    wgpu::Device device() const { return renderEngine_ ? renderEngine_->device() : wgpu::Device{}; }
+    wgpu::Queue queue() const { return renderEngine_ ? renderEngine_->queue() : wgpu::Queue{}; }
+    TexturePool& texturePool() { return renderEngine_->texturePool(); }
     bool isHeadless() const { return flags_ & FlagHeadless; }
     bool hasFlag(Flag f) const { return flags_ & f; }
 
@@ -100,30 +107,12 @@ public:
 
     const std::string& exeDir() const { return exeDir_; }
 
-    // Input handlers (called from Window callbacks)
-    void onKey(int key, int scancode, int action, int mods);
-    void onChar(uint32_t codepoint);
     void onFramebufferResize(int width, int height);
     void adjustFontSize(float delta);
-    void onMouseButton(int button, int action, int mods);
-    void onCursorPos(double x, double y);
 
-    void renderFrame();
     void setNeedsRedraw();
 
-    // Map a CSS / kitty pointer name (from OSC 22) to a Window::CursorStyle.
-    // Empty string and unknown names fall back to the platform default arrow.
-    static Window::CursorStyle pointerShapeNameToCursorStyle(const std::string& name);
-
-    // Per-pane cached cursor style requested via OSC 22. Looked up on every
-    // mouse move (cheap unordered_map find). Absent entry / Arrow → fall back
-    // to the IBeam used for selection. Updated by the onMouseCursorShape
-    // terminal callback; erased on pane destruction.
-    std::unordered_map<int, Window::CursorStyle> paneCursorStyle_;
-    // Push the active tab's focused-pane cursor style to the window. Call
-    // after focus changes (pane- or tab-level) so the cursor updates without
-    // waiting for the next mouse-move event.
-    void refreshPointerShape();
+    InputController* inputController() { return inputController_.get(); }
 
     bool shouldClose() {
         if (isHeadless()) return false;
@@ -134,16 +123,6 @@ public:
     std::string statsJson(int id);
 
 private:
-    void configureSurface(uint32_t width, uint32_t height);
-
-    void addPtyPoll(int fd, Terminal* term);
-    void removePtyPoll(int fd);
-
-    // Dawn core
-    wgpu::Device device_;
-    wgpu::Queue queue_;
-    std::unique_ptr<dawn::native::Instance> nativeInstance_;
-    TexturePool texturePool_;
     int exitStatus_ = 0;
     bool running_ = false;
 
@@ -155,61 +134,35 @@ private:
     std::string testFontPath_;
     std::string testEmojiFontPath_;
     std::string testFallbackFontPath_;
-    wgpu::Texture headlessComposite_;  // offscreen composite target (headless, with CopyDst)
     std::unique_ptr<EventLoop> eventLoop_;
     std::unique_ptr<Window>    window_;
-    EventLoop::TimerId         configDebounceTimer_ = 0;
-    bool                       configDebounceActive_ = false;
 
-    // Cursor blink: a repeating timer fires at blink_fps rate, linearly
-    // fading the cursor opacity over blink_rate ms per phase. The render
-    // thread reads the opacity atomically.
-    EventLoop::TimerId         cursorBlinkTimer_ = 0;
-    int                        cursorBlinkRate_ = 800;  // ms per phase
-    int                        cursorBlinkFps_ = 10;    // animation fps
-    int                        cursorBlinkStep_ = 0;      // current step within cycle
-    int                        cursorBlinkTotalSteps_ = 0; // steps per full cycle
-    // Written by the blink timer on the main thread, read by the render thread.
-    float                      cursorBlinkOpacity_ = 1.0f;
-    void                       applyBlinkConfig(int rate, int fps);
-    void                       resetCursorBlink();
-
-    // Animation wakeup: one-shot timer scheduled for the next animated-image
-    // frame boundary. Avoids spinning the event loop at display refresh rate
-    // while waiting for the next tick.
-    EventLoop::TimerId         animationTimer_ = 0;
-    uint64_t                   animationTimerDueAt_ = 0;
-
-    // Resize coalescing (Phase 6). During a live window drag, Cocoa fires
-    // framebuffer-resize events at display cadence. Each triggers surface
-    // reconfigure + layout recompute + terminal reflow — expensive to run
-    // per frame. Debounce to 25 ms so a drag settles briefly before we do
-    // the work; on live-resize-end, flush immediately.
-    EventLoop::TimerId         resizeDebounceTimer_ = 0;
-    uint32_t                   pendingResizeW_ = 0;
-    uint32_t                   pendingResizeH_ = 0;
+    // Blink / animation wakeup / resize debounce timers live in
+    // AnimationScheduler. Opacity is snapshotted into RenderFrameState.
+    std::unique_ptr<AnimationScheduler> animScheduler_;
+    // Config hot-reload: owns the file watcher debounce timer and the
+    // reloadNow() entry point. Calls back into applyConfig() on success.
+    std::unique_ptr<ConfigLoader> configLoader_;
+    // Owns Dawn device/queue/surface, Renderer, TexturePool, and all
+    // render-thread-only state (pane/popup/overlay private state, frameState_,
+    // tab-bar GPU texture). Created early in ctor so accessors work.
+    std::unique_ptr<RenderEngine> renderEngine_;
+    void                       onBlinkTick();
+    void                       onResizeDebounceFire(uint32_t w, uint32_t h);
     void                       applyFramebufferResize(int width, int height);
     void                       flushPendingFramebufferResize();
-    // Render thread requests an animation wakeup by setting this atomic.
-    // Main thread consumes it in onTick and schedules the actual timer on
-    // the event loop (thread-affine).
-    std::atomic<uint64_t>      pendingAnimationDueAt_ { 0 };
-    void                       scheduleAnimationWakeup(uint64_t dueAt);
-    void                       applyPendingAnimationWakeup();
     std::string exeDir_;
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
 
-    // Tabs
-    std::vector<std::unique_ptr<Tab>> tabs_;
-    int activeTabIdx_ = 0;
-    int lastFocusedPaneId_ = -1;
+    // Tabs — owned by TabManager.
+    std::unique_ptr<TabManager> tabManager_;
 
     void updateTabBarVisibility() {
         if (tabBarConfig_.style != "auto") return;
         bool visible = tabBarVisible();
         int h = visible ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
-        for (auto& tab : tabs_) {
+        for (auto& tab : tabManager_->tabs()) {
             tab->layout()->setTabBar(h, tabBarConfig_.position);
             tab->layout()->computeRects(fbWidth_, fbHeight_);
             for (auto& p : tab->layout()->panes())
@@ -218,9 +171,10 @@ private:
         if (visible) {
             // Refresh tab titles from foreground process for tabs that
             // have no OSC title — the callback may have fired before the
-            // tab bar existed or before the tab was added to tabs_.
-            for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
-                Tab* tab = tabs_[i].get();
+            // tab bar existed or before the tab was added to tabs.
+            auto& tabs = tabManager_->tabs();
+            for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
+                Tab* tab = tabs[i].get();
                 Pane* fp = tab->layout()->focusedPane();
                 if (fp && fp->title().empty() && tab->title().empty()) {
                     if (auto* t = fp->terminal()) {
@@ -235,35 +189,19 @@ private:
 
     bool tabBarVisible() const {
         if (tabBarConfig_.style == "hidden") return false;
-        if (tabBarConfig_.style == "auto") return tabs_.size() > 1;
+        if (tabBarConfig_.style == "auto") return tabManager_->size() > 1;
         return true;
     }
 
-    Tab* activeTab() {
-        if (tabs_.empty() || activeTabIdx_ < 0 || activeTabIdx_ >= static_cast<int>(tabs_.size()))
-            return nullptr;
-        return tabs_[activeTabIdx_].get();
-    }
+    Tab* activeTab() { return tabManager_->activeTab(); }
 
     void notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn) {
-        for (auto& tab : tabs_) {
-            for (auto& panePtr : tab->layout()->panes()) {
-                if (auto* term = panePtr->terminal()) fn(term);
-            }
-        }
+        tabManager_->notifyAllTerminals(fn);
     }
 
-    Terminal* activeTerm() {
-        Tab* tab = activeTab();
-        if (!tab) return nullptr;
-        if (tab->hasOverlay()) return tab->topOverlay();
-        Pane* pane = tab->layout()->focusedPane();
-        return pane ? static_cast<Terminal*>(pane->activeTerm()) : nullptr;
-    }
+    Terminal* activeTerm() { return tabManager_->activeTerm(); }
 
     // Shared rendering state
-    wgpu::Surface surface_;
-    Renderer renderer_;
     TextSystem textSystem_;
     std::string fontName_ = "mono";
     float fontSize_ = 16.0f;
@@ -279,51 +217,31 @@ private:
     // Default colors
     uint32_t defaultFgColor_ = 0xFFDDDDDD;
     uint32_t defaultBgColor_ = 0x00000000;
-    std::atomic<bool> needsRedraw_ { true };
-    std::atomic<int> pendingGpuCallbacks_ { 0 };
     bool              windowHasFocus_ = true;
-    bool controlPressed_ = false;
-    uint32_t lastMods_ = 0;
-
-    // Tracked by onCursorPos / onMouseButton (replaces glfwGetCursorPos / glfwGetMouseButton)
-    double lastCursorX_ = 0.0, lastCursorY_ = 0.0;
-    uint32_t heldButtons_ = 0;  // bitmask of Button values currently pressed
-
-    // Render-thread-only state — keyed by pane/popup/overlay ID.
-    // Only the render thread touches these; no lock needed.
-    std::unordered_map<int, PaneRenderPrivate> paneRenderPrivate_;
-    std::unordered_map<std::string, PaneRenderPrivate> popupRenderPrivate_; // keyed by "<paneId>/<popupId>"
-    PaneRenderPrivate overlayRenderPrivate_;  // single overlay per active tab
 
     static std::string popupStateKey(int paneId, const std::string& popupId) {
         return std::to_string(paneId) + "/" + popupId;
     }
 
-    // Shadow copy of tab/pane structure for the render thread.
-    // Written by applyPendingMutations() under platformMutex_.
-    // Read by renderFrame() under the same mutex.
-    RenderFrameState renderState_;
+    // Owns the render worker thread, cross-thread mutation queues
+    // (pending_, renderState_), the coarse mutex serializing render reads
+    // vs main-thread structural mutations, and the deferred main/exit
+    // post queues. Constructed early so collaborator Hosts can capture
+    // its mutex()/pending()/renderState() references.
+    std::unique_ptr<RenderThread> renderThread_;
 
-    // Per-frame local copy of renderState_, snapshotted under platformMutex_
-    // at the start of renderFrame(). Used for the remainder of the frame
-    // after the lock is released. Render-thread-only, no lock needed.
-    RenderFrameState frameState_;
+    // References into the RenderThread's owned state. These let existing
+    // call sites read `platformMutex_`, `pending_`, `renderState_` without
+    // a sweep; the unique_ptr outlives every caller because it is reset
+    // last in the destructor.
+    std::mutex&        platformMutex_;
+    PendingMutations&  pending_;
+    RenderFrameState&  renderState_;
 
-    // Main-thread-only mutation accumulator.  Written at scattered call
-    // sites without any lock; consumed by applyPendingMutations().
-    PendingMutations pending_;
-
-    // Build renderState_ from current tabs_/panes.  Called under platformMutex_.
+    // Build renderState_ from current tabs_/panes.  Called under the
+    // render-thread mutex from RenderThread::applyPendingMutations(),
+    // which also performs the pending_ flag transfer.
     void buildRenderFrameState();
-    // Apply pending_ into renderState_ under platformMutex_ at end of tick.
-    void applyPendingMutations();
-
-    void resolveRow(PaneRenderPrivate& rs, int row, FontData* font, float scale,
-                    float pixelOriginX, float pixelOriginY);
-
-    std::unordered_map<int, Terminal*> ptyPolls_;
-
-    TerminalOptions terminalOptions_;
 
     // Tab bar
     TabBarConfig  tabBarConfig_;
@@ -332,7 +250,6 @@ private:
     float         tabBarCharWidth_  = 0.0f;
     float         tabBarLineHeight_ = 0.0f;
     int           tabBarCols_       = 0;
-    PooledTexture* tabBarTexture_   = nullptr;
     bool          tabBarDirty_      = true;
     bool          dividersDirty_    = true;
     // Column ranges for each tab in the rendered tab bar, for hit-testing.
@@ -340,60 +257,15 @@ private:
     std::vector<std::pair<int,int>> tabBarColRanges_;
     int           tabBarAnimFrame_  = 0;
     uint64_t      lastAnimTick_     = 0;
-    std::vector<PooledTexture*> pendingTabBarRelease_;
-    std::vector<ComputeState*> pendingComputeRelease_;
 
-    // Deferred release from GPU completion callbacks. The callbacks are
-    // registered via queue_.OnSubmittedWorkDone with CallbackMode::AllowSpontaneous,
-    // which means Dawn may fire them on its own completion thread even after
-    // ~PlatformDawn has run. Wrapping the mutex + vectors in a shared_ptr
-    // lets the state outlive the outer object: each callback captures a
-    // shared_ptr copy, so the state survives until the last callback fires.
-    // Raw pointers written into the vectors post-destructor are harmless —
-    // nobody observes them, and the shared state is torn down when its
-    // refcount drops.
-    struct DeferredReleaseState {
-        std::mutex mutex;
-        std::vector<PooledTexture*> textures;
-        std::vector<ComputeState*> compute;
-    };
-    std::shared_ptr<DeferredReleaseState> deferredReleaseState_
-        = std::make_shared<DeferredReleaseState>();
-
-    // Render thread. renderFrame() runs here, woken by main thread after
-    // parse / input / animation mutations. Coarse `platformMutex_` serializes
-    // render reads against main-thread structural mutations (tab/pane/popup
-    // create/destroy, tab switch, resize). Terminal state is separately
-    // protected by TerminalEmulator::mutex() — acquired briefly inside
-    // TerminalSnapshot::update().
-    std::mutex              platformMutex_;
-    std::mutex              renderCvMutex_;
-    std::condition_variable renderCv_;
-    std::atomic<bool>       renderWake_ { false };
-    std::atomic<bool>       renderStop_ { false };
-    std::thread             renderThread_;
-    void renderThreadMain();
-    void wakeRenderThread();
-
-    // Deferred structural mutations from parse callbacks. Parse runs on the
-    // main thread without `platformMutex_` held so the render thread can
-    // draw concurrently during a flood. Callbacks that mutate PlatformDawn
-    // structural state (notably `terminalExited`, which tears down a
-    // pane/tab) push themselves here; the queue drains after parse, under
-    // `platformMutex_`, avoiding the Terminal-mutex / platformMutex_ lock
-    // inversion a synchronous call would create.
-    std::mutex                            deferredExitMutex_;
-    std::vector<Terminal*>                pendingExits_;
-    void drainPendingExits();
-
-    // Generic main-thread post queue. Parse-time callbacks (title / icon /
-    // cwd / progress / mouse-cursor-shape / foreground-process changes)
-    // enqueue a lambda via postToMainThread(); drainDeferredMain() runs
-    // them on the main thread after parse completes.
-    std::mutex                            deferredMainMutex_;
-    std::vector<std::function<void()>>    deferredMain_;
-    void postToMainThread(std::function<void()> fn);
-    void drainDeferredMain();
+    // Thin forwarders that preserve existing call-site ergonomics.
+    void wakeRenderThread() { if (renderThread_) renderThread_->wake(); }
+    void postToMainThread(std::function<void()> fn) {
+        if (renderThread_) renderThread_->postToMain(std::move(fn));
+    }
+    void drainDeferredMain() { if (renderThread_) renderThread_->drainDeferredMain(); }
+    void drainPendingExits() { if (renderThread_) renderThread_->drainPendingExits(); }
+    void applyPendingMutations() { if (renderThread_) renderThread_->applyPendingMutations(); }
 
     // Pane divider colors
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;
@@ -416,62 +288,29 @@ private:
     float padLeft_ = 0, padTop_ = 0, padRight_ = 0, padBottom_ = 0;
 
     void initTabBar(const TabBarConfig& cfg);
-    void renderTabBar();
-    int  resolveTabBarClickIndex(double sx, double sy); // caller must hold platformMutex_
 
-    void reloadConfigNow();
+    void applyConfig(const Config& config);
     void applyFontChange(const Config& config);
     void invalidateAllRowCaches();
 
-    // Keybindings
-    std::vector<Binding> bindings_;
-    SequenceMatcher      sequenceMatcher_;
+    // Owns keyboard / mouse input state and dispatch.
+    std::unique_ptr<InputController> inputController_;
+
     void dispatchAction(const Action::Any& action);
-    void terminalExited(Terminal* terminal);
+    void executeAction(const Action::Any& action);
 
-    // Mouse bindings
-    std::vector<MouseBinding> mouseBindings_;
-    ClickDetector clickDetector_;
-    bool selectionDragActive_ = false;
-    bool selectionDragStarted_ = false;
-    double selectionDragOriginX_ = 0;
-    double selectionDragOriginY_ = 0;
-    EventLoop::TimerId autoScrollTimer_ = 0;
-    bool autoScrollTimerActive_ = false;
-    int  autoScrollDir_ = 0;  // +1 = scroll into history (up), -1 = toward live (down)
-    int  autoScrollCol_ = 0;  // column to use when synthesizing boundary move events
-    void startAutoScroll(int dir, int col);
-    void stopAutoScroll();
-    void doAutoScroll();
-    struct MouseContext {
-        int cellCol = 0, cellRow = 0;
-        int pixelX = 0, pixelY = 0;
-        int tabBarClickIndex = -1;
-        MouseButton button = MouseButton::Left;
-    } mouseCtx_;
-    MouseRegion hitTest(double sx, double sy);
-
-    // Action listeners
-    Action::Dispatcher actionDispatcher_;
-
-    // Worker pool for parallel row resolution
-    WorkerPool renderWorkers_;
+    // Typed dispatch entry. Owns the Action::Dispatcher listener registry
+    // and the post-dispatch observer-notify + script-microtask flush.
+    std::unique_ptr<ActionRouter> actionRouter_;
 
     // Script engine
     Script::Engine scriptEngine_;
 
-    // Callback/terminal helpers
+    // Callback/terminal helpers — stays on PlatformDawn because it
+    // closes over ~20 platform members (title/icon/cwd/progress/OSC/
+    // foreground-process/mouse-cursor-shape) that TabManager doesn't
+    // own. TabManager calls this via Host::buildTerminalCallbacks.
     TerminalCallbacks buildTerminalCallbacks(int paneId);
-
-    // Pane helpers
-    void spawnTerminalForPane(Pane* pane, int tabIdx, const std::string& cwd = {});
-    void resizeAllPanesInTab(Tab* tab);
-    void refreshDividers(Tab* tab);
-    void clearDividers(Tab* tab);
-    void releaseTabTextures(Tab* tab);
-    void updateTabTitleFromFocusedPane(int tabIdx);
-    void updateWindowTitle();
-    void notifyPaneFocusChange(Tab* tab, int prevId, int newId);
 };
 
 std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, uint32_t flags = PlatformDawn::FlagNone);

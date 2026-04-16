@@ -1,12 +1,16 @@
 set(PLATFORM_SOURCES
     PlatformDawn.cpp
     Platform_EventLoop.cpp
-    Platform_Input.cpp
     Platform_Actions.cpp
-    Platform_Render.cpp
     Platform_Tabs.cpp
-    Platform_TabBar.cpp
     Platform_Debug.cpp
+    ActionRouter.cpp
+    AnimationScheduler.cpp
+    ConfigLoader.cpp
+    InputController.cpp
+    RenderEngine.cpp
+    RenderThread.cpp
+    TabManager.cpp
     Renderer.cpp
     TexturePool.cpp
     ComputeStatePool.cpp

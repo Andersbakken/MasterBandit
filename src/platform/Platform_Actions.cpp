@@ -7,36 +7,42 @@
 
 void PlatformDawn::dispatchAction(const Action::Any& action)
 {
+    if (actionRouter_) actionRouter_->dispatch(action);
+    else executeAction(action);
+}
+
+void PlatformDawn::executeAction(const Action::Any& action)
+{
     std::visit(overloaded {
         [&](const Action::NewTab&)  { createTab(); },
-        [&](const Action::CloseTab& a) { closeTab(a.index >= 0 ? a.index : activeTabIdx_); },
+        [&](const Action::CloseTab& a) { closeTab(a.index >= 0 ? a.index : tabManager_->activeTabIdx()); },
         [&](const Action::ActivateTabRelative& a) {
-            int idx = activeTabIdx_ + a.delta;
-            if (idx >= 0 && idx < static_cast<int>(tabs_.size())) {
+            int idx = tabManager_->activeTabIdx() + a.delta;
+            if (idx >= 0 && idx < static_cast<int>(tabManager_->size())) {
                 if (Tab* prev = activeTab()) {
-                    clearDividers(prev);
-                    releaseTabTextures(prev);
+                    tabManager_->clearDividers(prev);
+                    tabManager_->releaseTabTextures(prev);
                 }
-                activeTabIdx_ = idx;
+                tabManager_->setActiveTabIdx(idx);
                 if (Tab* now = activeTab())
-                    refreshDividers(now);
-                updateWindowTitle();
-                refreshPointerShape();
+                    tabManager_->refreshDividers(now);
+                tabManager_->updateWindowTitle();
+                if (inputController_) inputController_->refreshPointerShape();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
             }
         },
         [&](const Action::ActivateTab& a) {
-            if (a.index >= 0 && a.index < static_cast<int>(tabs_.size())) {
+            if (a.index >= 0 && a.index < static_cast<int>(tabManager_->size())) {
                 if (Tab* prev = activeTab()) {
-                    clearDividers(prev);
-                    releaseTabTextures(prev);
+                    tabManager_->clearDividers(prev);
+                    tabManager_->releaseTabTextures(prev);
                 }
-                activeTabIdx_ = a.index;
+                tabManager_->setActiveTabIdx(a.index);
                 if (Tab* now = activeTab())
-                    refreshDividers(now);
-                updateWindowTitle();
-                refreshPointerShape();
+                    tabManager_->refreshDividers(now);
+                tabManager_->updateWindowTitle();
+                if (inputController_) inputController_->refreshPointerShape();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
             }
@@ -65,13 +71,13 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             if (!newPane) return;
 
             layout->computeRects(fbWidth_, fbHeight_);
-            int tabIdx = activeTabIdx_;
+            int tabIdx = tabManager_->activeTabIdx();
             int prevId = layout->focusedPaneId();
-            spawnTerminalForPane(newPane, tabIdx, paneProcessCWD(fp));
-            resizeAllPanesInTab(tab);
+            tabManager_->spawnTerminalForPane(newPane, tabIdx, paneProcessCWD(fp));
+            tabManager_->resizeAllPanesInTab(tab);
             layout->setFocusedPane(newId);
-            notifyPaneFocusChange(tab, prevId, newId);
-            updateTabTitleFromFocusedPane(activeTabIdx_);
+            tabManager_->notifyPaneFocusChange(tab, prevId, newId);
+            tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
         },
         [&](const Action::ClosePane&) {
             Tab* tab = activeTab();
@@ -84,7 +90,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             // Stop PTY poll and queue render state cleanup
             if (auto* t = fp->terminal()) {
-                removePtyPoll(t->masterFD());
+                tabManager_->removePtyPoll(t->masterFD());
             }
             pending_.structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
             // Queue popup render state cleanup for this pane
@@ -92,13 +98,13 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 std::string key = popupStateKey(paneId, popup.id);
                 pending_.releasePopupTextures.push_back(key);
             }
-            paneCursorStyle_.erase(paneId);
+            if (inputController_) inputController_->erasePaneCursorStyle(paneId);
 
             scriptEngine_.notifyPaneDestroyed(paneId);
             layout->removePane(paneId);
-            resizeAllPanesInTab(tab);
-            notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
-            updateTabTitleFromFocusedPane(activeTabIdx_);
+            tabManager_->resizeAllPanesInTab(tab);
+            tabManager_->notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
+            tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
         },
         [&](const Action::ZoomPane&) {
             Tab* tab = activeTab();
@@ -107,7 +113,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             Pane* fp = layout->focusedPane();
             if (!fp) return;
             layout->zoomPane(fp->id());
-            resizeAllPanesInTab(tab);
+            tabManager_->resizeAllPanesInTab(tab);
         },
         [&](const Action::FocusPane& a) {
             Tab* tab = activeTab();
@@ -127,8 +133,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 int next = ((cur + delta) % n + n) % n;
                 int prev = layout->focusedPaneId();
                 layout->setFocusedPane(panes[next]->id());
-                notifyPaneFocusChange(tab, prev, panes[next]->id());
-                updateTabTitleFromFocusedPane(activeTabIdx_);
+                tabManager_->notifyPaneFocusChange(tab, prev, panes[next]->id());
+                tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
                 setNeedsRedraw();
                 return;
             }
@@ -148,8 +154,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             if (targetId >= 0 && targetId != fp->id()) {
                 int prev = layout->focusedPaneId();
                 layout->setFocusedPane(targetId);
-                notifyPaneFocusChange(tab, prev, targetId);
-                updateTabTitleFromFocusedPane(activeTabIdx_);
+                tabManager_->notifyPaneFocusChange(tab, prev, targetId);
+                tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
                 setNeedsRedraw();
             }
         },
@@ -182,7 +188,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             default: return;
             }
             if (layout->growPane(fp->id(), splitDir, deltaPixels))
-                resizeAllPanesInTab(tab);
+                tabManager_->resizeAllPanesInTab(tab);
         },
         [&](const Action::Copy&) {
             Terminal* term = activeTerm();
@@ -218,13 +224,14 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
         [&](const Action::PopOverlay&) {
             Tab* tab = activeTab();
             if (tab && tab->hasOverlay()) {
-                scriptEngine_.notifyOverlayDestroyed(activeTabIdx_);
+                scriptEngine_.notifyOverlayDestroyed(tabManager_->activeTabIdx());
                 std::lock_guard<std::mutex> plk(platformMutex_);
                 tab->popOverlay();
                 renderState_.hasOverlay = false;
                 renderState_.overlay = nullptr;
+                if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
                 pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-                refreshPointerShape();
+                if (inputController_) inputController_->refreshPointerShape();
                 setNeedsRedraw();
             }
         },
@@ -315,7 +322,7 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
             ::close(tmpFd);
 
             // Spawn pager as overlay terminal
-            TerminalOptions opts = terminalOptions_;
+            TerminalOptions opts = tabManager_->terminalOptions();
             opts.command = "less -+F -R " + std::string(tmpPath) + "; rm -f " + std::string(tmpPath);
             opts.scrollbackLines = 0;
 
@@ -332,9 +339,10 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 int fd = t->masterFD();
                 eventLoop_->addTimer(0, false, [this, tab, fd]() {
                     std::lock_guard<std::mutex> plk(platformMutex_);
-                    removePtyPoll(fd);
-                    for (int ti = 0; ti < static_cast<int>(tabs_.size()); ++ti) {
-                        if (tabs_[ti].get() == tab) {
+                    tabManager_->removePtyPoll(fd);
+                    auto& tabsVec = tabManager_->tabs();
+                    for (int ti = 0; ti < static_cast<int>(tabsVec.size()); ++ti) {
+                        if (tabsVec[ti].get() == tab) {
                             scriptEngine_.notifyOverlayDestroyed(ti);
                             break;
                         }
@@ -345,14 +353,15 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                     // rebuilds the shadow copy via buildRenderFrameState().
                     renderState_.hasOverlay = false;
                     renderState_.overlay = nullptr;
+                    if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
                     pending_.structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-                    refreshPointerShape();
+                    if (inputController_) inputController_->refreshPointerShape();
                     setNeedsRedraw();
                 });
             };
             pcbs.quit = [this]() { quit(); };
             {
-                int tabIdx = activeTabIdx_;
+                int tabIdx = tabManager_->activeTabIdx();
                 pcbs.shouldFilterOutput = [this, tabIdx]() {
                     return scriptEngine_.hasOverlayOutputFilters(tabIdx);
                 };
@@ -380,13 +389,13 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
             if (!overlay->init(opts)) return;
 
-            addPtyPoll(overlay->masterFD(), overlay.get());
+            tabManager_->addPtyPoll(overlay->masterFD(), overlay.get());
             tab->pushOverlay(std::move(overlay));
-            scriptEngine_.notifyOverlayCreated(activeTabIdx_);
-            refreshPointerShape();  // overlay may want a different cursor
+            scriptEngine_.notifyOverlayCreated(tabManager_->activeTabIdx());
+            if (inputController_) inputController_->refreshPointerShape();  // overlay may want a different cursor
             setNeedsRedraw();
         },
-        [&](const Action::ReloadConfig&) { reloadConfigNow(); },
+        [&](const Action::ReloadConfig&) { if (configLoader_) configLoader_->reloadNow(); },
         [&](const Action::MouseSelection&) { /* TODO: wire up in mouse binding phase */ },
         [&](const Action::OpenHyperlink&) { /* TODO: wire up in mouse binding phase */ },
         [&](const Action::PasteSelection&) {
@@ -401,13 +410,8 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
                 spdlog::debug("ScriptAction '{}' not registered, ignoring", a.name);
                 return;
             }
-            // Notification to JS listeners happens via actionDispatcher_ below
+            // Notification to JS listeners happens via ActionRouter::dispatch
         },
     }, action);
-
-    actionDispatcher_.notify(action.index(), action);
-
-    // Flush JS microtasks so action listeners update state before the next render
-    scriptEngine_.executePendingJobs();
 }
 

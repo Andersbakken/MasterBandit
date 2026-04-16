@@ -26,7 +26,7 @@ std::string PlatformDawn::gridToJson(int id)
 {
     // Search for the pane across all tabs
     Pane* pane = nullptr;
-    for (auto& tabPtr : tabs_) {
+    for (auto& tabPtr : tabManager_->tabs()) {
         pane = tabPtr->layout()->pane(id);
         if (pane) break;
     }
@@ -77,8 +77,8 @@ std::string PlatformDawn::gridToJson(int id)
 
 std::string PlatformDawn::statsJson(int id)
 {
-    auto texStats     = texturePool_.stats();
-    auto computeStats = renderer_.computePool().stats();
+    auto texStats     = renderEngine_->texturePool().stats();
+    auto computeStats = renderEngine_->renderer().computePool().stats();
 
     glz::generic::object_t resp;
     resp["type"] = "stats";
@@ -112,30 +112,31 @@ std::string PlatformDawn::statsJson(int id)
     };
 
     glz::generic::array_t tabsArr;
-    for (int ti = 0; ti < static_cast<int>(tabs_.size()); ++ti) {
-        Tab* tab = tabs_[ti].get();
+    auto& allTabs = tabManager_->tabs();
+    int activeIdx = tabManager_->activeTabIdx();
+    for (int ti = 0; ti < static_cast<int>(allTabs.size()); ++ti) {
+        Tab* tab = allTabs[ti].get();
         glz::generic::array_t panesArr;
         for (auto& panePtr : tab->layout()->panes()) {
             int pid = panePtr->id();
-            auto it = paneRenderPrivate_.find(pid);
+            const PaneRenderPrivate* rs = renderEngine_->paneRenderPrivate(pid);
             TerminalEmulator* term = panePtr->terminal();
             glz::generic::object_t paneObj;
             paneObj["id"]   = static_cast<double>(pid);
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);
             paneObj["rows"] = static_cast<double>(term ? term->height() : 0);
             paneObj["cwd"]  = panePtr->cwd();
-            if (it != paneRenderPrivate_.end()) {
-                const auto& rs = it->second;
-                paneObj["held_texture"] = rs.heldTexture != nullptr;
-                paneObj["texture_kb"]   = rs.heldTexture
-                    ? toKB(rs.heldTexture->sizeBytes) : 0.0;
-                paneObj["has_divider"]  = rs.dividerVB != nullptr;
+            if (rs) {
+                paneObj["held_texture"] = rs->heldTexture != nullptr;
+                paneObj["texture_kb"]   = rs->heldTexture
+                    ? toKB(rs->heldTexture->sizeBytes) : 0.0;
+                paneObj["has_divider"]  = rs->dividerVB != nullptr;
             }
             panesArr.emplace_back(std::move(paneObj));
         }
         glz::generic::object_t tabObj;
         tabObj["index"]  = static_cast<double>(ti);
-        tabObj["active"] = (ti == activeTabIdx_);
+        tabObj["active"] = (ti == activeIdx);
         tabObj["panes"]  = std::move(panesArr);
         tabsArr.emplace_back(std::move(tabObj));
     }

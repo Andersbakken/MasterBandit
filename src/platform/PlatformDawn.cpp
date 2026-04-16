@@ -1,4 +1,8 @@
 #include "PlatformDawn.h"
+#include "ActionRouter.h"
+#include "AnimationScheduler.h"
+#include "ConfigLoader.h"
+#include "InputController.h"
 #include "Utils.h"
 #include "FontResolver.h"
 #include "Utf8.h"
@@ -25,6 +29,10 @@ static std::vector<uint8_t> loadFontFile(const std::string& path) { return io::l
 
 PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     : flags_(flags)
+    , renderThread_(std::make_unique<RenderThread>())
+    , platformMutex_(renderThread_->mutex())
+    , pending_(renderThread_->pending())
+    , renderState_(renderThread_->renderState())
 {
     try {
         auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true);
@@ -39,82 +47,181 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
 
     exeDir_ = fs::weakly_canonical(fs::path(argv[0])).parent_path().string();
 
-    nativeInstance_ = std::make_unique<dawn::native::Instance>();
-    wgpu::Instance instance(nativeInstance_->Get());
-
-    wgpu::RequestAdapterOptions adapterOpts = {};
-    adapterOpts.powerPreference = wgpu::PowerPreference::HighPerformance;
-
-    auto adapters = nativeInstance_->EnumerateAdapters(&adapterOpts);
-    if (adapters.empty()) {
-        spdlog::error("No suitable GPU adapter found");
-        return;
-    }
-
-    dawn::native::Adapter nativeAdapter = adapters[0];
-    wgpu::Adapter adapter(nativeAdapter.Get());
-
-    wgpu::AdapterInfo info = {};
-    adapter.GetInfo(&info);
-    spdlog::info("GPU Adapter: {}", std::string_view(info.device.data, info.device.length));
-
-    wgpu::DeviceDescriptor deviceDesc = {};
-    deviceDesc.SetUncapturedErrorCallback([](const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message) {
-        spdlog::error("Dawn error ({}): {}", static_cast<int>(type),
-            std::string_view(message.data, message.length));
-    });
-    deviceDesc.SetDeviceLostCallback(wgpu::CallbackMode::AllowSpontaneous,
-        [](const wgpu::Device&, wgpu::DeviceLostReason reason, wgpu::StringView message) {
-            if (reason == wgpu::DeviceLostReason::Destroyed) return;
-            spdlog::error("Device lost ({}): {}", static_cast<int>(reason),
-                std::string_view(message.data, message.length));
-        });
-
-    WGPUDevice rawDevice = nativeAdapter.CreateDevice(&deviceDesc);
-    if (!rawDevice) {
-        spdlog::error("Failed to create Dawn device");
-        return;
-    }
-    device_ = wgpu::Device::Acquire(rawDevice);
-    queue_ = device_.GetQueue();
-    texturePool_.init(device_, wgpu::TextureFormat::BGRA8Unorm);
-}
-
-void PlatformDawn::postToMainThread(std::function<void()> fn)
-{
+    renderEngine_ = std::make_unique<RenderEngine>();
+    inputController_ = std::make_unique<InputController>();
+    actionRouter_ = std::make_unique<ActionRouter>();
+    tabManager_ = std::make_unique<TabManager>();
     {
-        std::lock_guard<std::mutex> lk(deferredMainMutex_);
-        deferredMain_.push_back(std::move(fn));
+        TabManager::Host th;
+        th.platformMutex = &renderThread_->mutex();
+        th.scriptEngine = &scriptEngine_;
+        th.inputController = inputController_.get();
+        th.renderEngine = renderEngine_.get();
+        th.pending = &renderThread_->pending();
+        th.eventLoop = [this]() -> EventLoop* { return eventLoop_.get(); };
+        th.window = [this]() -> Window* { return window_.get(); };
+        th.headless = [this]() -> bool { return isHeadless(); };
+        th.tabBarVisible = [this]() -> bool { return tabBarVisible(); };
+        th.updateTabBarVisibility = [this]() { updateTabBarVisibility(); };
+        th.markTabBarDirty = [this]() { tabBarDirty_ = true; };
+        th.setNeedsRedraw = [this]() { setNeedsRedraw(); };
+        th.quit = [this]() { quit(); };
+        th.charWidth  = [this]() -> float { return charWidth_; };
+        th.lineHeight = [this]() -> float { return lineHeight_; };
+        th.padLeft    = [this]() -> float { return padLeft_; };
+        th.padTop     = [this]() -> float { return padTop_; };
+        th.padRight   = [this]() -> float { return padRight_; };
+        th.padBottom  = [this]() -> float { return padBottom_; };
+        th.fbWidth    = [this]() -> uint32_t { return fbWidth_; };
+        th.fbHeight   = [this]() -> uint32_t { return fbHeight_; };
+        th.dividerWidth     = [this]() -> int { return dividerWidth_; };
+        th.tabBarLineHeight = [this]() -> float { return tabBarLineHeight_; };
+        th.tabBarPosition   = [this]() -> std::string { return tabBarConfig_.position; };
+        th.dividerR = [this]() -> float { return dividerR_; };
+        th.dividerG = [this]() -> float { return dividerG_; };
+        th.dividerB = [this]() -> float { return dividerB_; };
+        th.dividerA = [this]() -> float { return dividerA_; };
+        th.queueTerminalExit = [this](Terminal* t) {
+            renderThread_->enqueueTerminalExit(t);
+        };
+        th.buildTerminalCallbacks = [this](int paneId) {
+            return buildTerminalCallbacks(paneId);
+        };
+        tabManager_->setHost(std::move(th));
     }
-    if (eventLoop_) eventLoop_->wakeup();
-}
-
-void PlatformDawn::drainDeferredMain()
-{
-    // Called on the main thread from onTick (without platformMutex_).
-    std::vector<std::function<void()>> pending;
     {
-        std::lock_guard<std::mutex> lk(deferredMainMutex_);
-        pending.swap(deferredMain_);
+        ActionRouter::Host rh;
+        rh.executeAction = [this](const Action::Any& a) { executeAction(a); };
+        rh.flushScriptJobs = [this]() { scriptEngine_.executePendingJobs(); };
+        actionRouter_->setHost(std::move(rh));
     }
-    for (auto& fn : pending) fn();
-}
-
-void PlatformDawn::drainPendingExits()
-{
-    std::vector<Terminal*> exits;
+    configLoader_ = std::make_unique<ConfigLoader>();
     {
-        std::lock_guard<std::mutex> lk(deferredExitMutex_);
-        exits.swap(pendingExits_);
+        InputController::Host ih;
+        ih.platformMutex = &renderThread_->mutex();
+        ih.headless = isHeadless();
+        ih.activeTab = [this]() -> Tab* { return activeTab(); };
+        ih.activeTerm = [this]() -> TerminalEmulator* {
+            return static_cast<TerminalEmulator*>(activeTerm());
+        };
+        ih.activeTabIdx = [this]() -> int { return tabManager_->activeTabIdx(); };
+        ih.dispatchAction = [this](const Action::Any& a) { dispatchAction(a); };
+        ih.setNeedsRedraw = [this]() { setNeedsRedraw(); };
+        ih.resetBlink = [this]() {
+            if (animScheduler_) animScheduler_->resetBlink();
+        };
+        ih.fbWidth = [this]() -> uint32_t { return fbWidth_; };
+        ih.fbHeight = [this]() -> uint32_t { return fbHeight_; };
+        ih.charWidth = [this]() -> float { return charWidth_; };
+        ih.lineHeight = [this]() -> float { return lineHeight_; };
+        ih.contentScaleX = [this]() -> float { return contentScaleX_; };
+        ih.contentScaleY = [this]() -> float { return contentScaleY_; };
+        ih.padLeft = [this]() -> float { return padLeft_; };
+        ih.padTop = [this]() -> float { return padTop_; };
+        ih.tabBarVisible = [this]() -> bool { return tabBarVisible(); };
+        ih.tabBarCharWidth = [this]() -> float { return tabBarCharWidth_; };
+        ih.tabBarColRanges = [this]() -> const std::vector<std::pair<int,int>>& {
+            return tabBarColRanges_;
+        };
+        ih.notifyPaneFocusChange = [this](Tab* t, int prev, int next) {
+            tabManager_->notifyPaneFocusChange(t, prev, next);
+        };
+        ih.updateTabTitleFromFocusedPane = [this](int tabIdx) {
+            tabManager_->updateTabTitleFromFocusedPane(tabIdx);
+        };
+        ih.scriptEngine = &scriptEngine_;
+        ih.eventLoop = [this]() -> EventLoop* { return eventLoop_.get(); };
+        ih.window = [this]() -> Window* { return window_.get(); };
+        inputController_->setHost(std::move(ih));
     }
-    for (auto* t : exits) terminalExited(t);
+
+    RenderEngine::Host host;
+    host.headless = isHeadless();
+    host.textSystem = &textSystem_;
+    host.snapshotUnderLock = [this](RenderFrameState& out) -> bool {
+        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        if (fbWidth_ == 0 || fbHeight_ == 0) return false;
+        RenderFrameState& rs = renderThread_->renderState();
+        out = rs;
+        // Consume one-shot flags so the next frame doesn't re-process them.
+        rs.focusChanged = false;
+        rs.mainFontAtlasChanged = false;
+        rs.tabBarFontAtlasChanged = false;
+        rs.mainFontRemoved = false;
+        rs.tabBarFontRemoved = false;
+        rs.viewportSizeChanged = false;
+        rs.tabBarDirty = false;
+        rs.dividersDirty = false;
+        return true;
+    };
+    host.takeSurfaceReconfigureRequest = [this]() -> std::tuple<bool, uint32_t, uint32_t> {
+        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        RenderFrameState& rs = renderThread_->renderState();
+        if (rs.surfaceNeedsReconfigure) {
+            rs.surfaceNeedsReconfigure = false;
+            return {true, fbWidth_, fbHeight_};
+        }
+        return {false, 0u, 0u};
+    };
+    host.takeViewportSizeChangedRequest = [this]() -> bool {
+        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        RenderFrameState& rs = renderThread_->renderState();
+        if (rs.viewportSizeChanged) {
+            rs.viewportSizeChanged = false;
+            return true;
+        }
+        return false;
+    };
+    host.currentFbSize = [this]() -> std::pair<uint32_t, uint32_t> {
+        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        return {fbWidth_, fbHeight_};
+    };
+    host.postToMain = [this](std::function<void()> fn) { renderThread_->postToMain(std::move(fn)); };
+    host.scheduleAnimationAt = [this](uint64_t dueAtNs) {
+        if (animScheduler_) animScheduler_->scheduleAnimationAt(dueAtNs);
+    };
+    host.debugIPC = [this]() -> DebugIPC* { return debugIPC_.get(); };
+    renderEngine_->setHost(std::move(host));
+
+    {
+        RenderThread::Host rtHost;
+        rtHost.eventLoop = [this]() -> EventLoop* { return eventLoop_.get(); };
+        rtHost.onFrame = [this]() {
+            if (!renderEngine_) return;
+            // Tick Dawn on the render thread: drains device-side events
+            // (completion callbacks, deferred destroys). Safe to run without
+            // the render-thread mutex because all GPU calls happen on this
+            // thread only.
+            renderEngine_->device().Tick();
+            // renderFrame manages the render-thread mutex internally via the
+            // Host snapshot callback — it releases the lock during shaping
+            // so input handlers / deferred callbacks on main thread can
+            // proceed concurrently with the CPU-heavy section.
+            renderEngine_->renderFrame();
+        };
+        rtHost.buildRenderFrameState = [this]() { buildRenderFrameState(); };
+        rtHost.onTerminalExit = [this](Terminal* t) {
+            if (tabManager_) tabManager_->terminalExited(t);
+        };
+        renderThread_->setHost(std::move(rtHost));
+    }
+
+    if (!renderEngine_->initGpu()) {
+        // initGpu already logged
+    }
 }
 
 void PlatformDawn::buildRenderFrameState()
 {
-    // Called under platformMutex_.  Rebuilds the shadow copy from live state.
+    // Called under the render-thread mutex. Rebuilds the shadow copy from
+    // live state and merges main-thread-owned dirty flags (tabBarDirty_,
+    // dividersDirty_) into renderState_.
+    renderState_.tabBarDirty   |= tabBarDirty_;
+    renderState_.dividersDirty |= dividersDirty_;
+    tabBarDirty_   = false;
+    dividersDirty_ = false;
     Tab* tab = activeTab();
-    renderState_.activeTabIdx = activeTabIdx_;
+    renderState_.activeTabIdx = tabManager_->activeTabIdx();
     renderState_.fbWidth  = fbWidth_;
     renderState_.fbHeight = fbHeight_;
     renderState_.charWidth  = charWidth_;
@@ -130,7 +237,7 @@ void PlatformDawn::buildRenderFrameState()
     renderState_.tabBarPosition = tabBarConfig_.position;
     renderState_.inLiveResize = window_ && window_->inLiveResize();
     renderState_.windowHasFocus = windowHasFocus_;
-    renderState_.cursorBlinkOpacity = cursorBlinkOpacity_;
+    renderState_.cursorBlinkOpacity = animScheduler_ ? animScheduler_->blinkOpacity() : 1.0f;
 
     // Tab bar config values
     renderState_.tbBgColor         = tbBgColor_;
@@ -234,8 +341,9 @@ void PlatformDawn::buildRenderFrameState()
 
     // Tab bar data (all tabs)
     renderState_.tabs.clear();
-    for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
-        Tab* t = tabs_[i].get();
+    auto& allTabs = tabManager_->tabs();
+    for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
+        Tab* t = allTabs[i].get();
         RenderTabInfo rti;
         rti.title = t->title();
         rti.icon  = t->icon();
@@ -431,153 +539,21 @@ void PlatformDawn::buildRenderFrameState()
     }
 }
 
-void PlatformDawn::applyPendingMutations()
-{
-    // Called on the main thread at end of tick.  Acquires platformMutex_,
-    // transfers pending_ into renderState_, clears pending_.
-    std::lock_guard<std::mutex> plk(platformMutex_);
-
-    // Drain terminal exits under the lock so that terminal destruction
-    // can't race the render thread's use of frameState_ term pointers.
-    drainPendingExits();
-
-    // Transfer dirty flags
-    renderState_.tabBarDirty     |= pending_.tabBarDirty || tabBarDirty_;
-    renderState_.dividersDirty   |= pending_.dividersDirty || dividersDirty_;
-    renderState_.focusChanged    |= pending_.focusChanged;
-    renderState_.surfaceNeedsReconfigure |= pending_.surfaceNeedsReconfigure;
-
-    // Font atlas change flags
-    renderState_.mainFontAtlasChanged   |= pending_.mainFontAtlasChanged;
-    renderState_.tabBarFontAtlasChanged |= pending_.tabBarFontAtlasChanged;
-    renderState_.mainFontRemoved        |= pending_.mainFontRemoved;
-    renderState_.tabBarFontRemoved      |= pending_.tabBarFontRemoved;
-    renderState_.viewportSizeChanged    |= pending_.viewportSizeChanged;
-
-    // Rebuild the full shadow copy from live state.
-    // This is cheap — just copying scalars and building vectors of POD-ish structs.
-    buildRenderFrameState();
-
-    // Transfer per-pane dirty flags into renderState_ (the render thread
-    // will propagate them into PaneRenderPrivate at snapshot time).
-    // We store dirty pane IDs directly in the render state so the render
-    // thread can consume them.
-    for (int id : pending_.dirtyPanes) {
-        // Mark in render state — render thread picks up via a set
-        renderState_.dividerGeoms[id]; // ensure entry exists (noop if already there)
-    }
-
-    // Divider geometry updates
-    for (auto& du : pending_.dividerUpdates) {
-        DividerGeom& dg = renderState_.dividerGeoms[du.paneId];
-        dg.x = du.x; dg.y = du.y; dg.w = du.w; dg.h = du.h;
-        dg.r = du.r; dg.g = du.g; dg.b = du.b; dg.a = du.a;
-        dg.valid = du.valid;
-    }
-
-    // Clear main-thread-side flags that were transferred
-    tabBarDirty_   = false;
-    dividersDirty_ = false;
-
-    pending_.clear();
-}
-
-void PlatformDawn::wakeRenderThread()
-{
-    {
-        std::lock_guard<std::mutex> lk(renderCvMutex_);
-        renderWake_.store(true, std::memory_order_release);
-    }
-    renderCv_.notify_one();
-}
-
-void PlatformDawn::renderThreadMain()
-{
-    while (true) {
-        {
-            std::unique_lock<std::mutex> lk(renderCvMutex_);
-            renderCv_.wait(lk, [this] {
-                return renderWake_.load(std::memory_order_acquire) ||
-                       renderStop_.load(std::memory_order_acquire);
-            });
-            renderWake_.store(false, std::memory_order_relaxed);
-        }
-        if (renderStop_.load(std::memory_order_acquire)) return;
-        // Tick Dawn on the render thread: drains device-side events
-        // (completion callbacks, deferred destroys). Safe to run without
-        // platformMutex_ because all GPU calls (queue.WriteBuffer,
-        // queue.Submit, etc.) happen on this thread only.
-        device_.Tick();
-        // renderFrame manages platformMutex_ internally — it releases the
-        // lock during shaping so input handlers / deferred callbacks on
-        // main thread can proceed concurrently with the CPU-heavy section.
-        renderFrame();
-    }
-}
-
 PlatformDawn::~PlatformDawn()
 {
     // Stop the render thread before destroying any Dawn / window state it
-    // might be reading. Signal stop, wake it if idle, join.
-    renderStop_.store(true, std::memory_order_release);
-    wakeRenderThread();
-    if (renderThread_.joinable()) renderThread_.join();
+    // might be reading. RenderThread::stop() signals stop, wakes the
+    // thread if idle, and joins.
+    if (renderThread_) renderThread_->stop();
 
-    // Drain any deferred releases that landed via GPU completion callbacks
-    // between the render thread exiting and now — they hold raw pointers
-    // into the texture / compute pools which are about to be destroyed.
-    // Callbacks that fire *after* this drain harmlessly append to the
-    // shared state (kept alive by lambda captures); their contents are
-    // never observed, and the dangling pointers they contain are never
-    // dereferenced.
-    {
-        auto& state = *deferredReleaseState_;
-        std::lock_guard<std::mutex> lock(state.mutex);
-        for (auto* t : state.textures) texturePool_.release(t);
-        state.textures.clear();
-        for (auto* cs : state.compute) renderer_.computePool().release(cs);
-        state.compute.clear();
+    // Destroy tabs (and their layouts/panes/terminals) before GPU resources.
+    // Reset the TabManager entirely — it owns the tabs_ vector now.
+    tabManager_.reset();
+
+    if (renderEngine_) {
+        renderEngine_->shutdown();
+        renderEngine_.reset();
     }
-
-    // Release held textures before clearing pool
-    for (auto& [id, rs] : paneRenderPrivate_) {
-        if (rs.heldTexture) texturePool_.release(rs.heldTexture);
-        for (auto* t : rs.pendingRelease) texturePool_.release(t);
-    }
-    paneRenderPrivate_.clear();
-    for (auto& [key, rs] : popupRenderPrivate_) {
-        if (rs.heldTexture) texturePool_.release(rs.heldTexture);
-        for (auto* t : rs.pendingRelease) texturePool_.release(t);
-    }
-    popupRenderPrivate_.clear();
-    if (overlayRenderPrivate_.heldTexture) {
-        texturePool_.release(overlayRenderPrivate_.heldTexture);
-        for (auto* t : overlayRenderPrivate_.pendingRelease)
-            texturePool_.release(t);
-    }
-
-    // Release tab bar textures
-    if (tabBarTexture_) { texturePool_.release(tabBarTexture_); tabBarTexture_ = nullptr; }
-    for (auto* t : pendingTabBarRelease_) texturePool_.release(t);
-    pendingTabBarRelease_.clear();
-
-    // Release headless composite texture
-    headlessComposite_ = nullptr;
-
-    // Release any pending compute states before destroying renderer
-    for (auto* cs : pendingComputeRelease_) renderer_.computePool().release(cs);
-    pendingComputeRelease_.clear();
-
-    // Destroy tabs (and their layouts/panes/terminals) before GPU resources
-    tabs_.clear();
-
-    surface_ = nullptr;
-
-    renderer_.destroy();
-    queue_ = {};
-    device_ = {};
-    texturePool_.clear();
-    nativeInstance_.reset();
 
     // Destroy the window (X11 connection) last — the nvidia driver
     // needs the display connection alive during Vulkan device teardown.
@@ -585,11 +561,15 @@ PlatformDawn::~PlatformDawn()
         window_->destroy();
         window_.reset();
     }
+
+    // Now safe to destroy the render thread component itself; the
+    // worker thread has already been joined above.
+    renderThread_.reset();
 }
 
 void PlatformDawn::createTerminal(const TerminalOptions& options)
 {
-    if (!device_) return;
+    if (!renderEngine_ || !renderEngine_->device()) return;
 
     // One-time platform initialization (window/surface in windowed mode, font/renderer in both)
     if (!platformInitialized_) {
@@ -607,17 +587,17 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
             // Wire up Window callbacks
             window_->onKey = [this](int key, int scancode, int action, int mods) {
-                onKey(key, scancode, action, mods);
+                inputController_->onKey(key, scancode, action, mods);
             };
-            window_->onChar = [this](uint32_t cp) { onChar(cp); };
+            window_->onChar = [this](uint32_t cp) { inputController_->onChar(cp); };
             window_->onFramebufferResize = [this](int w, int h) { onFramebufferResize(w, h); };
             window_->onContentScale = [this](float sx, float sy) {
                 contentScaleX_ = sx; contentScaleY_ = sy;
             };
             window_->onMouseButton = [this](int button, int action, int mods) {
-                onMouseButton(button, action, mods);
+                inputController_->onMouseButton(button, action, mods);
             };
-            window_->onCursorPos = [this](double x, double y) { onCursorPos(x, y); };
+            window_->onCursorPos = [this](double x, double y) { inputController_->onCursorPos(x, y); };
             window_->onScroll = [this](double /*dx*/, double dy) {
                 if (dy == 0) return;
                 // If the active terminal has mouse reporting, send wheel
@@ -635,17 +615,20 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                     }
                     if (term && term->mouseReportingActive()) {
                         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
-                        double relX = lastCursorX_ - pr.x;
-                        double relY = lastCursorY_ - pr.y;
+                        double lastCursorX = inputController_ ? inputController_->lastCursorX() : 0.0;
+                        double lastCursorY = inputController_ ? inputController_->lastCursorY() : 0.0;
+                        uint32_t lastMods = inputController_ ? inputController_->lastMods() : 0u;
+                        double relX = lastCursorX - pr.x;
+                        double relY = lastCursorY - pr.y;
                         MouseEvent mev;
                         mev.x = static_cast<int>(relX / charWidth_);
                         mev.y = static_cast<int>(relY / lineHeight_);
-                        mev.globalX = static_cast<int>(lastCursorX_);
-                        mev.globalY = static_cast<int>(lastCursorY_);
+                        mev.globalX = static_cast<int>(lastCursorX);
+                        mev.globalY = static_cast<int>(lastCursorY);
                         mev.pixelX = static_cast<int>(relX);
                         mev.pixelY = static_cast<int>(relY);
                         mev.button = (dy > 0) ? WheelUp : WheelDown;
-                        mev.modifiers = lastMods_;
+                        mev.modifiers = lastMods;
                         term->mousePressEvent(&mev);
                         return;
                     }
@@ -694,12 +677,11 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             fontSize_ = options.fontSize * xscale;
             baseFontSize_ = fontSize_;
 
-            surface_ = window_->createWgpuSurface(nativeInstance_->Get());
-            if (!surface_) {
+            if (!renderEngine_->createSurface(window_.get())) {
                 spdlog::error("Failed to create Dawn surface");
                 return;
             }
-            configureSurface(fbWidth_, fbHeight_);
+            renderEngine_->configureSurface(fbWidth_, fbHeight_);
 
             // Scale texture pool limit based on screen resolution.
             // A full-screen RGBA texture is w*h*4 bytes; allow 4x that for
@@ -714,7 +696,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                     size_t screenBytes = static_cast<size_t>(sw) * sh * 4;
                     limit = std::clamp(screenBytes * 4, kMinLimit, kMaxLimit);
                 }
-                texturePool_.setByteLimit(limit);
+                renderEngine_->texturePool().setByteLimit(limit);
                 spdlog::info("TexturePool: screen {}x{}, limit set to {:.0f} MB",
                              sw, sh, limit / (1024.0 * 1024.0));
             }
@@ -735,6 +717,17 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             contentScaleX_ = contentScaleY_ = 1.0f;
             fontSize_ = testFontSize_;
             baseFontSize_ = fontSize_;
+        }
+
+        {
+            AnimationScheduler::Host h;
+            h.eventLoop = eventLoop_.get();
+            h.onRedraw = [this]() { setNeedsRedraw(); };
+            h.onBlinkTick = [this]() { onBlinkTick(); };
+            h.onResizeDebounceFire = [this](uint32_t w, uint32_t rh) {
+                onResizeDebounceFire(w, rh);
+            };
+            animScheduler_ = std::make_unique<AnimationScheduler>(std::move(h));
         }
 
         // Load font
@@ -886,14 +879,13 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         if (!fs::exists(shaderDir)) {
             shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
         }
-        renderer_.init(device_, queue_, shaderDir, fbWidth_, fbHeight_);
-        renderer_.initProgressPipeline(device_, shaderDir);
-        renderer_.uploadFontAtlas(queue_, fontName_, *font);
+        renderEngine_->initRenderer(shaderDir, fbWidth_, fbHeight_);
+        renderEngine_->uploadFontAtlas(fontName_, *font);
 
         // Spawn the render thread once all Dawn/surface/font state is
         // initialized. It sits idle on the condition variable until the main
         // thread signals a wake after parse/input/animation mutations.
-        renderThread_ = std::thread([this] { renderThreadMain(); });
+        renderThread_->start();
     }
 
     // Create a layout and tab for this terminal
@@ -913,9 +905,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         // mutation immediately would require acquiring platformMutex_ while
         // holding Terminal mutex — the opposite of the render thread's
         // order and a deadlock. Queue and drain after parse.
-        std::lock_guard<std::mutex> lk(deferredExitMutex_);
-        pendingExits_.push_back(t);
-        if (eventLoop_) eventLoop_->wakeup();
+        renderThread_->enqueueTerminalExit(t);
     };
     pcbs.quit = [this]() { quit(); };
     auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
@@ -945,8 +935,11 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     if (rows < 1) rows = 24;
 
     // Init per-pane render state
-    auto& rs = paneRenderPrivate_[paneId];
-    rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+    {
+        std::lock_guard<std::mutex> plk(platformMutex_);
+        auto& rs = renderEngine_->paneRenderPrivateMap()[paneId];
+        rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+    }
 
     terminal->resize(cols, rows);
     terminal->flushPendingResize(); // initial size — send immediately
@@ -959,19 +952,18 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     pane->setTerminal(std::move(terminal));  // Pane owns the Terminal now
 
     if (eventLoop_) {
-        addPtyPoll(masterFD, termPtr);
+        tabManager_->addPtyPoll(masterFD, termPtr);
     }
 
     // Build and store tab
     auto tab = std::make_unique<Tab>(std::move(layout));
     tab->setTitle(pane->title());
-    activeTabIdx_ = static_cast<int>(tabs_.size());
-    tabs_.push_back(std::move(tab));
-    updateWindowTitle();
+    tabManager_->addInitialTab(std::move(tab));
+    tabManager_->updateWindowTitle();
 
     // Store options for future createTab() calls
-    if (tabs_.size() == 1) {
-        terminalOptions_ = options;
+    if (tabManager_->size() == 1) {
+        tabManager_->setTerminalOptions(options);
 
         // Parse padding (scale by content scale)
         padLeft_   = options.padding.left   * contentScaleX_;
@@ -986,14 +978,19 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     }
 
     // Initialize bindings and tab bar (only once, on first terminal creation)
-    if (tabs_.size() == 1) {
-        bindings_ = defaultBindings();
-        auto userBindings = parseBindings(options.keybindings);
-        bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
-
-        mouseBindings_ = defaultMouseBindings();
-        auto userMouseBindings = parseMouseBindings(options.mousebindings);
-        mouseBindings_.insert(mouseBindings_.end(), userMouseBindings.begin(), userMouseBindings.end());
+    if (tabManager_->size() == 1) {
+        {
+            std::vector<Binding> all = defaultBindings();
+            auto userBindings = parseBindings(options.keybindings);
+            all.insert(all.end(), userBindings.begin(), userBindings.end());
+            inputController_->setKeyBindings(std::move(all));
+        }
+        {
+            std::vector<MouseBinding> all = defaultMouseBindings();
+            auto userMouseBindings = parseMouseBindings(options.mousebindings);
+            all.insert(all.end(), userMouseBindings.begin(), userMouseBindings.end());
+            inputController_->setMouseBindings(std::move(all));
+        }
 
         // Divider color
         dividerWidth_ = std::max(0, options.dividerWidth);
@@ -1029,16 +1026,18 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         tabBarConfig_ = options.tabBar;
         initTabBar(options.tabBar);
         // Recompute rects with tab bar height applied
-        tabs_.back()->layout()->computeRects(fbWidth_, fbHeight_);
+        auto& tabsVec = tabManager_->tabs();
+        tabsVec.back()->layout()->computeRects(fbWidth_, fbHeight_);
         // Recompute cols/rows for this pane after layout adjustment
         {
-            Pane* p = tabs_.back()->layout()->focusedPane();
+            Pane* p = tabsVec.back()->layout()->focusedPane();
             if (p) {
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
                 TerminalEmulator* te = p->terminal();
                 if (te) {
                     int c = te->width(), r = te->height();
-                    auto& rs2 = paneRenderPrivate_[p->id()];
+                    std::lock_guard<std::mutex> plk(platformMutex_);
+                    auto& rs2 = renderEngine_->paneRenderPrivateMap()[p->id()];
                     rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
                 }
             }
@@ -1047,50 +1046,13 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
 }
 
-void PlatformDawn::configureSurface(uint32_t width, uint32_t height)
-{
-    wgpu::SurfaceConfiguration config = {};
-    config.device = device_;
-    config.format = wgpu::TextureFormat::BGRA8Unorm;
-    config.width = width;
-    config.height = height;
-    // Prefer non-blocking present modes: Mailbox → FifoRelaxed → Fifo.
-    // Dawn's vkAcquireNextImageKHR uses UINT64_MAX timeout, so Fifo can stall
-    // the render thread indefinitely if the compositor pauses frame consumption.
-    {
-        static wgpu::PresentMode chosenMode = wgpu::PresentMode::Undefined;
-        config.presentMode = wgpu::PresentMode::Fifo;
-        wgpu::SurfaceCapabilities caps = {};
-        if (surface_.GetCapabilities(device_.GetAdapter(), &caps) == wgpu::Status::Success) {
-            for (auto mode : { wgpu::PresentMode::Mailbox,
-                               wgpu::PresentMode::FifoRelaxed,
-                               wgpu::PresentMode::Fifo }) {
-                bool found = false;
-                for (size_t i = 0; i < caps.presentModeCount; ++i)
-                    if (caps.presentModes[i] == mode) { found = true; break; }
-                if (found) { config.presentMode = mode; break; }
-            }
-        }
-        if (config.presentMode != chosenMode) {
-            chosenMode = config.presentMode;
-            const char* name = config.presentMode == wgpu::PresentMode::Mailbox    ? "Mailbox"
-                             : config.presentMode == wgpu::PresentMode::FifoRelaxed ? "FifoRelaxed"
-                                                                                    : "Fifo";
-            spdlog::info("Surface present mode: {}", name);
-        }
-    }
-    config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
-    config.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
-    surface_.Configure(&config);
-}
-
 void PlatformDawn::invalidateAllRowCaches()
 {
     // Signal the render thread to invalidate all row caches on the next frame.
     // The render-private maps are only touched by the render thread, so we
     // communicate via the pending mutations flag.
     pending_.invalidateAllRowCaches = true;
-    for (auto& tab : tabs_) {
+    for (auto& tab : tabManager_->tabs()) {
         for (auto& panePtr : tab->layout()->panes())
             pending_.dirtyPanes.insert(panePtr->id());
     }
@@ -1163,7 +1125,7 @@ void PlatformDawn::applyFontChange(const Config& config)
     if (!nerdData.empty())
         textSystem_.addFallbackFont(fontName_, nerdData);
 
-    terminalOptions_.font = config.font;
+    tabManager_->terminalOptions().font = config.font;
 
     // Recalculate metrics
     const FontData* font = textSystem_.getFont(fontName_);
@@ -1182,120 +1144,54 @@ void PlatformDawn::applyFontChange(const Config& config)
     spdlog::info("Config reload: font changed to '{}'", fontPath);
 }
 
-void PlatformDawn::applyBlinkConfig(int rate, int fps)
+void PlatformDawn::onBlinkTick()
 {
-    if (!eventLoop_) {
-        cursorBlinkRate_ = rate;
-        cursorBlinkFps_ = fps;
+    Tab* tab = activeTab();
+    if (!tab) return;
+    auto wantsRedraw = [](TerminalEmulator* term) {
+        return term && term->cursorBlinking() && term->cursorVisible();
+    };
+    if (tab->hasOverlay()) {
+        if (wantsRedraw(tab->topOverlay())) setNeedsRedraw();
         return;
     }
-    if (cursorBlinkTimer_) {
-        eventLoop_->removeTimer(cursorBlinkTimer_);
-        cursorBlinkTimer_ = 0;
-    }
-    cursorBlinkRate_ = rate;
-    cursorBlinkFps_ = fps;
-    cursorBlinkOpacity_ = 1.0f;
-    cursorBlinkStep_ = 0;
-    if (rate <= 0 || fps <= 0) return;
-
-    int frameMs = 1000 / fps;
-    int stepsPerPhase = std::max(1, rate / frameMs);
-    cursorBlinkTotalSteps_ = stepsPerPhase * 2; // fade-out + fade-in
-
-    cursorBlinkTimer_ = eventLoop_->addTimer(static_cast<uint64_t>(frameMs), true, [this]() {
-        cursorBlinkStep_ = (cursorBlinkStep_ + 1) % cursorBlinkTotalSteps_;
-        int stepsPerPhase = cursorBlinkTotalSteps_ / 2;
-        float t;
-        if (cursorBlinkStep_ < stepsPerPhase) {
-            // Fade-out phase: 1.0 → 0.0
-            t = 1.0f - static_cast<float>(cursorBlinkStep_) / static_cast<float>(stepsPerPhase);
-        } else {
-            // Fade-in phase: 0.0 → 1.0
-            t = static_cast<float>(cursorBlinkStep_ - stepsPerPhase) / static_cast<float>(stepsPerPhase);
-        }
-        cursorBlinkOpacity_ = t;
-
-        Tab* tab = activeTab();
-        if (!tab) return;
-        auto wantsRedraw = [](TerminalEmulator* term) {
-            return term && term->cursorBlinking() && term->cursorVisible();
-        };
-        if (tab->hasOverlay()) {
-            if (wantsRedraw(tab->topOverlay())) setNeedsRedraw();
+    for (auto& panePtr : tab->layout()->panes()) {
+        if (wantsRedraw(panePtr->terminal())) {
+            setNeedsRedraw();
             return;
         }
-        for (auto& panePtr : tab->layout()->panes()) {
-            if (wantsRedraw(panePtr->terminal())) {
+        for (const auto& popup : panePtr->popups()) {
+            if (wantsRedraw(popup.terminal.get())) {
                 setNeedsRedraw();
                 return;
             }
-            for (const auto& popup : panePtr->popups()) {
-                if (wantsRedraw(popup.terminal.get())) {
-                    setNeedsRedraw();
-                    return;
-                }
-            }
         }
-    });
+    }
 }
 
-void PlatformDawn::resetCursorBlink()
+void PlatformDawn::onResizeDebounceFire(uint32_t w, uint32_t h)
 {
-    if (cursorBlinkRate_ <= 0 || !cursorBlinkTimer_ || !eventLoop_) return;
-    cursorBlinkStep_ = 0;
-    cursorBlinkOpacity_ = 1.0f;
-    eventLoop_->restartTimer(cursorBlinkTimer_);
+    // Lightweight update during live drag: signal the render thread
+    // to reconfigure the surface and release stale textures.
+    // The heavy work (terminal reflow, GPU buffer updates, dividers)
+    // is deferred to onLiveResizeEnd → flushPendingFramebufferResize.
+    {
+        std::lock_guard<std::mutex> plk(platformMutex_);
+        fbWidth_  = w;
+        fbHeight_ = h;
+        pending_.surfaceNeedsReconfigure = true;
+        pending_.viewportSizeChanged = true;
+        pending_.releaseAllPaneTextures = true;
+        pending_.releaseTabBarTexture = true;
+        tabBarDirty_ = true;
+    }
     setNeedsRedraw();
+    wakeRenderThread();
 }
 
-void PlatformDawn::scheduleAnimationWakeup(uint64_t dueAt)
-{
-    // Called from the render thread during renderFrame(). The event loop
-    // (addTimer / removeTimer) is not thread-safe, so we stash the request
-    // in an atomic and let the main thread's onTick wire it up via
-    // applyPendingAnimationWakeup(). Kick the event loop so onTick runs
-    // even when nothing else is happening.
-    pendingAnimationDueAt_.store(dueAt, std::memory_order_release);
-    if (eventLoop_) eventLoop_->wakeup();
-}
-
-void PlatformDawn::applyPendingAnimationWakeup()
-{
-    // Main thread only. Consume the atomic request stashed by the render
-    // thread and (re)arm the event loop timer.
-    uint64_t dueAt = pendingAnimationDueAt_.exchange(0, std::memory_order_acquire);
-    if (!dueAt || !eventLoop_) return;
-
-    uint64_t now = TerminalEmulator::mono();
-    if (dueAt <= now) {
-        if (animationTimer_) {
-            eventLoop_->removeTimer(animationTimer_);
-            animationTimer_ = 0;
-        }
-        animationTimerDueAt_ = 0;
-        setNeedsRedraw();
-        return;
-    }
-    // Skip reschedule if an equivalent timer is already pending.
-    if (animationTimer_ && animationTimerDueAt_ == dueAt) return;
-    if (animationTimer_) {
-        eventLoop_->removeTimer(animationTimer_);
-        animationTimer_ = 0;
-    }
-    animationTimerDueAt_ = dueAt;
-    uint64_t delay = dueAt - now;
-    animationTimer_ = eventLoop_->addTimer(delay, false, [this]() {
-        animationTimer_ = 0;
-        animationTimerDueAt_ = 0;
-        setNeedsRedraw();
-    });
-}
-
-void PlatformDawn::reloadConfigNow()
+void PlatformDawn::applyConfig(const Config& config)
 {
     spdlog::info("Config: hot-reload triggered");
-    Config config = loadConfig();
 
     // Hold platformMutex_ for the duration of the reload so that font
     // registration/unregistration in textSystem_ can't overlap with the
@@ -1305,16 +1201,21 @@ void PlatformDawn::reloadConfigNow()
     std::lock_guard<std::mutex> plk(platformMutex_);
 
     // Keybindings
-    bindings_ = defaultBindings();
+    std::vector<Binding> allKey = defaultBindings();
     auto userBindings = parseBindings(config.keybindings);
-    bindings_.insert(bindings_.end(), userBindings.begin(), userBindings.end());
-    mouseBindings_ = defaultMouseBindings();
+    allKey.insert(allKey.end(), userBindings.begin(), userBindings.end());
+    std::vector<MouseBinding> allMouse = defaultMouseBindings();
     auto userMouseBindings = parseMouseBindings(config.mousebindings);
-    mouseBindings_.insert(mouseBindings_.end(), userMouseBindings.begin(), userMouseBindings.end());
-    sequenceMatcher_.reset();
+    allMouse.insert(allMouse.end(), userMouseBindings.begin(), userMouseBindings.end());
+    if (inputController_) {
+        inputController_->setKeyBindings(std::move(allKey));
+        inputController_->setMouseBindings(std::move(allMouse));
+        inputController_->resetSequenceMatcher();
+    }
 
     // Colors
-    terminalOptions_.colors = config.colors;
+    TerminalOptions& opts = tabManager_->terminalOptions();
+    opts.colors = config.colors;
     defaultFgColor_ = color::parseHexRGBA(config.colors.foreground, 0xFFDDDDDD);
     defaultBgColor_ = color::parseHexRGBA(config.colors.background, 0x00000000);
     notifyAllTerminals([&config](TerminalEmulator* term) {
@@ -1323,11 +1224,11 @@ void PlatformDawn::reloadConfigNow()
     invalidateAllRowCaches();
 
     // Cursor
-    terminalOptions_.cursor = config.cursor;
+    opts.cursor = config.cursor;
     notifyAllTerminals([&config](TerminalEmulator* term) {
         term->applyCursorConfig(config.cursor);
     });
-    applyBlinkConfig(config.cursor.blink_rate, config.cursor.blink_fps);
+    if (animScheduler_) animScheduler_->applyBlinkConfig(config.cursor.blink_rate, config.cursor.blink_fps);
 
     // Divider
     dividerWidth_ = std::max(0, config.divider_width);
@@ -1336,17 +1237,17 @@ void PlatformDawn::reloadConfigNow()
         auto h = [&](int i) -> float { return std::stoul(dc.substr(i, 2), nullptr, 16) / 255.0f; };
         dividerR_ = h(1); dividerG_ = h(3); dividerB_ = h(5); dividerA_ = 1.0f;
     }
-    for (auto& t : tabs_) t->layout()->setDividerPixels(dividerWidth_);
-    terminalOptions_.dividerWidth = config.divider_width;
-    terminalOptions_.dividerColor = config.divider_color;
+    for (auto& t : tabManager_->tabs()) t->layout()->setDividerPixels(dividerWidth_);
+    opts.dividerWidth = config.divider_width;
+    opts.dividerColor = config.divider_color;
 
     // Tints
     applyTintColor(config.active_pane_tint,   config.active_pane_tint_alpha,   activeTint_);
     applyTintColor(config.inactive_pane_tint, config.inactive_pane_tint_alpha, inactiveTint_);
-    terminalOptions_.activePaneTint       = config.active_pane_tint;
-    terminalOptions_.activePaneTintAlpha  = config.active_pane_tint_alpha;
-    terminalOptions_.inactivePaneTint     = config.inactive_pane_tint;
-    terminalOptions_.inactivePaneTintAlpha= config.inactive_pane_tint_alpha;
+    opts.activePaneTint       = config.active_pane_tint;
+    opts.activePaneTintAlpha  = config.active_pane_tint_alpha;
+    opts.inactivePaneTint     = config.inactive_pane_tint;
+    opts.inactivePaneTintAlpha= config.inactive_pane_tint_alpha;
 
     // Padding
     float newPL = config.padding.left   * contentScaleX_;
@@ -1356,19 +1257,19 @@ void PlatformDawn::reloadConfigNow()
     bool paddingChanged = (newPL != padLeft_ || newPT != padTop_ ||
                            newPR != padRight_ || newPB != padBottom_);
     padLeft_ = newPL; padTop_ = newPT; padRight_ = newPR; padBottom_ = newPB;
-    terminalOptions_.padding = config.padding;
+    opts.padding = config.padding;
 
     // Replacement char
     if (!config.replacement_char.empty()) {
         replacementChar_ = config.replacement_char;
-        terminalOptions_.replacementChar = config.replacement_char;
+        opts.replacementChar = config.replacement_char;
     }
 
     // Bold strength (only if font isn't changing — applyFontChange handles it otherwise)
-    bool fontNameChanged = (config.font != terminalOptions_.font);
+    bool fontNameChanged = (config.font != opts.font);
     if (!fontNameChanged) {
         textSystem_.setBoldStrength(config.bold_strength, config.bold_strength);
-        terminalOptions_.boldStrength = config.bold_strength;
+        opts.boldStrength = config.bold_strength;
     }
 
     // Tab bar
@@ -1382,12 +1283,12 @@ void PlatformDawn::reloadConfigNow()
     if (fontNameChanged) {
         fontSize_ = newFontSize;
         baseFontSize_ = fontSize_;
-        terminalOptions_.fontSize = config.font_size;
+        opts.fontSize = config.font_size;
         applyFontChange(config);
     } else if (newFontSize != fontSize_) {
         fontSize_ = newFontSize;
         baseFontSize_ = fontSize_;
-        terminalOptions_.fontSize = config.font_size;
+        opts.fontSize = config.font_size;
         const FontData* font = textSystem_.getFont(fontName_);
         if (font) {
             float scale = fontSize_ / font->baseSize;
@@ -1405,6 +1306,193 @@ void PlatformDawn::reloadConfigNow()
     tabBarDirty_ = true;
     setNeedsRedraw();
     spdlog::info("Config reloaded: {} user keybindings", userBindings.size());
+}
+
+// ========================================================================
+// Framebuffer resize and font scaling
+// ========================================================================
+
+void PlatformDawn::adjustFontSize(float delta)
+{
+    float newSize;
+    if (delta == 0.0f) {
+        newSize = baseFontSize_; // reset
+    } else {
+        newSize = fontSize_ + delta * contentScaleX_;
+    }
+    if (newSize < 6.0f * contentScaleX_ || newSize > 72.0f * contentScaleX_) return;
+    fontSize_ = newSize;
+
+    // Recalculate metrics
+    const FontData* font = textSystem_.getFont(fontName_);
+    if (!font) return;
+    float scale = fontSize_ / font->baseSize;
+    lineHeight_ = font->lineHeight * scale;
+    const auto& shaped = textSystem_.shapeText(fontName_, "M", fontSize_);
+    charWidth_ = shaped.width;
+    if (charWidth_ < 1.0f) charWidth_ = fontSize_ * 0.6f;
+
+    // Trigger resize of all panes (recalculates grid dimensions)
+    onFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
+}
+
+
+void PlatformDawn::onFramebufferResize(int width, int height)
+{
+    if (width <= 0 || height <= 0) return;
+
+    std::lock_guard<std::mutex> plk(platformMutex_);
+
+    // During a live window drag, debounce the full resize work (surface
+    // reconfigure + layout recompute + pane/terminal reflow) to 25 ms.
+    // One-off resizes (first show, programmatic, live-resize end) apply
+    // immediately.
+    const bool live = window_ && window_->inLiveResize();
+    if (live) {
+        if (animScheduler_) {
+            animScheduler_->scheduleResize(static_cast<uint32_t>(width),
+                                           static_cast<uint32_t>(height));
+        }
+        // Even while debounced, update fbWidth_/fbHeight_ so other main-thread
+        // readers (tab bar layout, hit-testing) see the latest window size.
+        // The actual surface reconfigure + reflow happens when the timer fires.
+        fbWidth_  = static_cast<uint32_t>(width);
+        fbHeight_ = static_cast<uint32_t>(height);
+        setNeedsRedraw();
+        return;
+    }
+
+    applyFramebufferResize(width, height);
+}
+
+void PlatformDawn::flushPendingFramebufferResize()
+{
+    // Called on main thread under platformMutex_ from onLiveResizeEnd.
+    if (!animScheduler_) return;
+    uint32_t w = 0, h = 0;
+    if (animScheduler_->takePendingResize(w, h)) {
+        applyFramebufferResize(static_cast<int>(w), static_cast<int>(h));
+    }
+}
+
+void PlatformDawn::applyFramebufferResize(int width, int height)
+{
+    // Caller must hold platformMutex_.
+    fbWidth_ = static_cast<uint32_t>(width);
+    fbHeight_ = static_cast<uint32_t>(height);
+
+    pending_.surfaceNeedsReconfigure = true;
+    pending_.viewportSizeChanged = true;
+    dividersDirty_ = true;
+
+    // Clear divider buffers for all tabs — geometry is now stale
+    for (auto& tabPtr : tabManager_->tabs())
+        tabManager_->clearDividers(tabPtr.get());
+
+    for (auto& tabPtr : tabManager_->tabs()) {
+        tabPtr->layout()->computeRects(fbWidth_, fbHeight_);
+
+        for (auto& panePtr : tabPtr->layout()->panes()) {
+            Pane* pane = panePtr.get();
+            pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
+
+            TerminalEmulator* term = pane->terminal();
+            if (!term) continue;
+
+            int cols = term->width();
+            int rows = term->height();
+            if (cols < 1) cols = 1;
+            if (rows < 1) rows = 1;
+
+            scriptEngine_.notifyPaneResized(pane->id(), cols, rows);
+
+            pending_.structuralOps.push_back(
+                PendingMutations::ResizePaneState{pane->id(), cols, rows});
+        }
+    }
+
+    // Release all held textures — they're now the wrong size.
+    pending_.releaseAllPaneTextures = true;
+    pending_.releaseTabBarTexture = true;
+    tabBarDirty_ = true;
+    if (Tab* active = activeTab()) tabManager_->refreshDividers(active);
+    setNeedsRedraw();
+}
+
+// ========================================================================
+// Tab bar
+// ========================================================================
+
+namespace {
+uint32_t parseTabBarHexColor(const std::string& hex, uint32_t def = 0xFF000000) {
+    return color::parseHexRGBA(hex, def);
+}
+}
+
+void PlatformDawn::initTabBar(const TabBarConfig& cfg)
+{
+    if (cfg.style == "hidden") {
+        for (auto& tab : tabManager_->tabs())
+            tab->layout()->setTabBar(0, cfg.position);
+        return;
+    }
+
+    // For "auto" mode with 1 tab, still load fonts but set height to 0
+
+    // Resolve font
+    std::string fontPath = cfg.font.empty() ? primaryFontPath_
+                                             : resolveFontFamily(cfg.font);
+    if (fontPath.empty()) fontPath = primaryFontPath_;
+    float fontSize = (cfg.font_size > 0.0f) ? cfg.font_size * contentScaleX_ : fontSize_;
+    tabBarFontSize_ = fontSize;
+
+    auto fontData = loadFontFile(fontPath);
+    if (!fontData.empty()) {
+        std::vector<std::vector<uint8_t>> fl = {fontData};
+        auto nerdPath = (fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf").string();
+        auto nerdData = loadFontFile(nerdPath);
+        if (!nerdData.empty()) fl.push_back(std::move(nerdData));
+        textSystem_.registerFont(tabBarFontName_, fl, 48.0f);
+        textSystem_.setPrimaryFontPath(tabBarFontName_, fontPath);
+    }
+
+    const FontData* font = textSystem_.getFont(tabBarFontName_);
+    if (font) {
+        // GPU upload deferred to render thread via pending_.tabBarFontAtlasChanged
+        pending_.tabBarFontAtlasChanged = true;
+        float scale = tabBarFontSize_ / font->baseSize;
+        tabBarLineHeight_ = font->lineHeight * scale;
+        const auto& shaped = textSystem_.shapeText(tabBarFontName_, "M", tabBarFontSize_);
+        tabBarCharWidth_ = shaped.width;
+        if (tabBarCharWidth_ < 1.0f) tabBarCharWidth_ = tabBarFontSize_ * 0.6f;
+    } else {
+        tabBarLineHeight_ = lineHeight_;
+        tabBarCharWidth_  = charWidth_;
+    }
+
+    int tabBarH = tabBarVisible() ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
+    for (auto& tab : tabManager_->tabs())
+        tab->layout()->setTabBar(tabBarH, cfg.position);
+
+    // Parse colors
+    tbBgColor_         = parseTabBarHexColor(cfg.colors.background);
+    tbActiveBgColor_   = parseTabBarHexColor(cfg.colors.active_bg);
+    tbActiveFgColor_   = parseTabBarHexColor(cfg.colors.active_fg);
+    tbInactiveBgColor_ = parseTabBarHexColor(cfg.colors.inactive_bg);
+    tbInactiveFgColor_ = parseTabBarHexColor(cfg.colors.inactive_fg);
+
+    // Parse progress bar settings
+    progressBarHeight_ = cfg.progress_height * contentScaleX_;
+    {
+        uint8_t r, g, b;
+        if (color::parseHex(cfg.progress_color, r, g, b)) {
+            progressColorR_ = r / 255.0f;
+            progressColorG_ = g / 255.0f;
+            progressColorB_ = b / 255.0f;
+        }
+    }
+
+    tabBarDirty_ = true;
 }
 
 std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, uint32_t flags)

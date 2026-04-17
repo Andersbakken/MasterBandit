@@ -12,6 +12,7 @@ struct ResolvedCell {
     uint32_t fg_color;        // packed RGBA8
     uint32_t bg_color;        // packed RGBA8 (0 = default/transparent)
     uint32_t underline_info;  // bits 0-2: style (0=none, 1=straight, 2=double, 3=curly, 4=dotted)
+                              // bit 3: strikethrough
                               // bits 8-31: color packed RGB8 (0 = use fg_color)
 };
 static_assert(sizeof(ResolvedCell) == 20);

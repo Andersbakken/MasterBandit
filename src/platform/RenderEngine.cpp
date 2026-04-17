@@ -234,6 +234,14 @@ void RenderEngine::resolveRow(PaneRenderPrivate& rs, int row, FontData* font, fl
             std::swap(fg, bgOpaque);
             bg = bgOpaque;
         }
+        if (cell.attrs.dim()) {
+            // SGR 2 (faint/dim): halve the foreground RGB channels.
+            uint32_t r = (fg >>  0) & 0xFF;
+            uint32_t g = (fg >>  8) & 0xFF;
+            uint32_t b = (fg >> 16) & 0xFF;
+            uint32_t a = (fg >> 24) & 0xFF;
+            fg = (r / 2) | ((g / 2) << 8) | ((b / 2) << 16) | (a << 24);
+        }
 
         uint32_t ulInfo = 0;
         {
@@ -247,6 +255,9 @@ void RenderEngine::resolveRow(PaneRenderPrivate& rs, int row, FontData* font, fl
                 if (extra && extra->underlineColor) {
                     ulInfo |= (extra->underlineColor & 0x00FFFFFF) << 8;
                 }
+            }
+            if (cell.attrs.strikethrough()) {
+                ulInfo |= 0x08u; // bit 3: strikethrough
             }
         }
 

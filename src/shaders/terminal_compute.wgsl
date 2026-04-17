@@ -904,6 +904,23 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         text_verts[base_idx + 5u] = SlugVertexStorage(x0, y1, tc_x0, tc_y0, -1.0,  1.0, em_per_pos, ao, tint);
     }
 
+    // Strikethrough rendering (bit 3 of underline_info)
+    if ((cell.underline_info & 0x08u) != 0u) {
+        let sr = f32(cell.fg_color & 0xFFu) / 255.0;
+        let sg = f32((cell.fg_color >> 8u) & 0xFFu) / 255.0;
+        let sb = f32((cell.fg_color >> 16u) & 0xFFu) / 255.0;
+        let sa = f32((cell.fg_color >> 24u) & 0xFFu) / 255.0;
+        let st_t = 1.0; // strikethrough thickness
+        let st_y = base_y + params.cell_height * 0.5; // vertical center
+        let base_idx = atomicAdd(&counters[4], 6u);
+        rect_verts[base_idx + 0u] = RV(base_x, st_y, sr, sg, sb, sa);
+        rect_verts[base_idx + 1u] = RV(base_x + params.cell_width, st_y, sr, sg, sb, sa);
+        rect_verts[base_idx + 2u] = RV(base_x, st_y + st_t, sr, sg, sb, sa);
+        rect_verts[base_idx + 3u] = RV(base_x + params.cell_width, st_y, sr, sg, sb, sa);
+        rect_verts[base_idx + 4u] = RV(base_x + params.cell_width, st_y + st_t, sr, sg, sb, sa);
+        rect_verts[base_idx + 5u] = RV(base_x, st_y + st_t, sr, sg, sb, sa);
+    }
+
     // Underline rendering
     let ul_style = cell.underline_info & 0x07u;
     if (ul_style != 0u) {

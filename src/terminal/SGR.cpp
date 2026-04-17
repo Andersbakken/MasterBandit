@@ -11,26 +11,38 @@ void TerminalEmulator::processSGR()
 
     // Parse semicolon-delimited parameters from mEscapeBuffer[1..mEscapeIndex-2]
     // e.g. "[0;31m" -> params = {0, 31}
-    // Colon sub-params (e.g. "4:3") are encoded as negative: -4003
-    // meaning param 4 with sub-param 3.
-    struct SGRParam { int value; int subparam; }; // subparam = -1 if none
+    // Colon sub-params (e.g. "4:3" or "58:2::255:100:100") are stored in the
+    // subs[] array.  subCount == 0 means no colon subparams were present.
+    static constexpr int MaxSubs = 6; // enough for 58:2:CS:R:G:B
+    struct SGRParam {
+        int value;
+        int subs[MaxSubs];
+        int subCount;
+    };
     std::vector<SGRParam> params;
     {
         const char* start = mEscapeBuffer + 1;
         const char* end = mEscapeBuffer + mEscapeIndex - 1;
         if (start == end) {
-            params.push_back({0, -1});
+            params.push_back({0, {}, 0});
         } else {
             while (start < end) {
                 char* next;
                 long val = strtol(start, &next, 10);
-                int sub = -1;
-                if (next < end && *next == ':') {
-                    // Colon sub-parameter
+                SGRParam p;
+                p.value = static_cast<int>(val);
+                p.subCount = 0;
+                while (next < end && *next == ':' && p.subCount < MaxSubs) {
                     start = next + 1;
-                    sub = static_cast<int>(strtol(start, &next, 10));
+                    if (start < end && (*start == ':' || *start == ';' || *start == 'm')) {
+                        // Empty sub-param (e.g. the colorspace id in "58:2::R:G:B")
+                        p.subs[p.subCount++] = -1;
+                        next = const_cast<char*>(start);
+                    } else {
+                        p.subs[p.subCount++] = static_cast<int>(strtol(start, &next, 10));
+                    }
                 }
-                params.push_back({static_cast<int>(val), sub});
+                params.push_back(p);
                 if (next < end && *next == ';') {
                     start = next + 1;
                 } else {
@@ -51,13 +63,14 @@ void TerminalEmulator::processSGR()
         case 1: mState->currentAttrs.setBold(true); break;
         case 2: mState->currentAttrs.setDim(true); break;
         case 3: mState->currentAttrs.setItalic(true); break;
-        case 4: // Underline (with optional style sub-param)
-            if (params[i].subparam == 0) {
+        case 4: { // Underline (with optional style sub-param)
+            int style = params[i].subCount > 0 ? params[i].subs[0] : -1;
+            if (style == 0) {
                 mState->currentAttrs.setUnderline(false);
                 mState->currentAttrs.setUnderlineStyle(0);
             } else {
                 mState->currentAttrs.setUnderline(true);
-                switch (params[i].subparam) {
+                switch (style) {
                 case 1: case -1: mState->currentAttrs.setUnderlineStyle(0); break; // straight (default)
                 case 2: mState->currentAttrs.setUnderlineStyle(1); break; // double
                 case 3: mState->currentAttrs.setUnderlineStyle(2); break; // curly
@@ -67,6 +80,7 @@ void TerminalEmulator::processSGR()
                 }
             }
             break;
+        }
         case 5: mState->currentAttrs.setBlink(true); break;
         case 7: mState->currentAttrs.setInverse(true); break;
         case 8: mState->currentAttrs.setInvisible(true); break;
@@ -91,7 +105,24 @@ void TerminalEmulator::processSGR()
         }
 
         case 38: // Extended foreground
-            if (i + 1 < params.size()) {
+            if (params[i].subCount >= 2 && params[i].subs[0] == 5) {
+                // Colon form: 38:5:IDX
+                uint8_t r, g, b;
+                color256ToRGB(params[i].subs[1], r, g, b);
+                mState->currentAttrs.setFg(r, g, b);
+                mState->currentAttrs.setFgMode(CellAttrs::RGB);
+            } else if (params[i].subCount >= 4 && params[i].subs[0] == 2) {
+                // Colon form: 38:2:CS:R:G:B or 38:2:R:G:B
+                // If subCount >= 5, subs[1] is colorspace (ignored), R=subs[2..4]
+                // If subCount == 4, no colorspace, R=subs[1..3]
+                int off = params[i].subCount >= 5 ? 2 : 1;
+                mState->currentAttrs.setFg(
+                    static_cast<uint8_t>(params[i].subs[off] & 0xFF),
+                    static_cast<uint8_t>(params[i].subs[off + 1] & 0xFF),
+                    static_cast<uint8_t>(params[i].subs[off + 2] & 0xFF));
+                mState->currentAttrs.setFgMode(CellAttrs::RGB);
+            } else if (i + 1 < params.size()) {
+                // Semicolon form: 38;5;IDX or 38;2;R;G;B
                 if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
                     color256ToRGB(params[i + 2].value, r, g, b);
@@ -123,7 +154,22 @@ void TerminalEmulator::processSGR()
         }
 
         case 48: // Extended background
-            if (i + 1 < params.size()) {
+            if (params[i].subCount >= 2 && params[i].subs[0] == 5) {
+                // Colon form: 48:5:IDX
+                uint8_t r, g, b;
+                color256ToRGB(params[i].subs[1], r, g, b);
+                mState->currentAttrs.setBg(r, g, b);
+                mState->currentAttrs.setBgMode(CellAttrs::RGB);
+            } else if (params[i].subCount >= 4 && params[i].subs[0] == 2) {
+                // Colon form: 48:2:CS:R:G:B or 48:2:R:G:B
+                int off = params[i].subCount >= 5 ? 2 : 1;
+                mState->currentAttrs.setBg(
+                    static_cast<uint8_t>(params[i].subs[off] & 0xFF),
+                    static_cast<uint8_t>(params[i].subs[off + 1] & 0xFF),
+                    static_cast<uint8_t>(params[i].subs[off + 2] & 0xFF));
+                mState->currentAttrs.setBgMode(CellAttrs::RGB);
+            } else if (i + 1 < params.size()) {
+                // Semicolon form: 48;5;IDX or 48;2;R;G;B
                 if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
                     color256ToRGB(params[i + 2].value, r, g, b);
@@ -146,7 +192,23 @@ void TerminalEmulator::processSGR()
             break;
 
         case 58: // Underline color
-            if (i + 1 < params.size()) {
+            if (params[i].subCount >= 2 && params[i].subs[0] == 5) {
+                // Colon form: 58:5:IDX
+                uint8_t r, g, b;
+                color256ToRGB(params[i].subs[1], r, g, b);
+                mState->currentUnderlineColor = static_cast<uint32_t>(r)
+                    | (static_cast<uint32_t>(g) << 8)
+                    | (static_cast<uint32_t>(b) << 16)
+                    | 0xFF000000u;
+            } else if (params[i].subCount >= 4 && params[i].subs[0] == 2) {
+                // Colon form: 58:2:CS:R:G:B or 58:2:R:G:B
+                int off = params[i].subCount >= 5 ? 2 : 1;
+                mState->currentUnderlineColor = static_cast<uint32_t>(params[i].subs[off] & 0xFF)
+                    | (static_cast<uint32_t>(params[i].subs[off + 1] & 0xFF) << 8)
+                    | (static_cast<uint32_t>(params[i].subs[off + 2] & 0xFF) << 16)
+                    | 0xFF000000u;
+            } else if (i + 1 < params.size()) {
+                // Semicolon form: 58;5;IDX or 58;2;R;G;B
                 if (params[i + 1].value == 5 && i + 2 < params.size()) {
                     uint8_t r, g, b;
                     color256ToRGB(params[i + 2].value, r, g, b);

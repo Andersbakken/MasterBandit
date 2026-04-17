@@ -1874,8 +1874,10 @@ Engine::~Engine()
 {
     // Close any live WS servers + their lws context before runtime teardown.
     wsDestroyEngine(this);
-    for (auto& inst : instances_)
-        JS_FreeContext(inst.ctx);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        if (inst.ctx) JS_FreeContext(inst.ctx);
+    }
     if (rt_) JS_FreeRuntime(rt_);
 }
 
@@ -2091,9 +2093,13 @@ void Engine::unload(InstanceId id)
         // 6. Close any WS servers + connections owned by this instance.
         wsUnloadInstance(this, id);
 
-        // 7. Free context and remove instance
+        // 7. Free context and remove (or defer removal if iterating)
         JS_FreeContext(ctx);
-        instances_.erase(it);
+        if (iterating()) {
+            it->ctx = nullptr; // mark dead; IterGuard sweeps on unwind
+        } else {
+            instances_.erase(it);
+        }
         return;
     }
 }
@@ -2180,6 +2186,7 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     // script is loaded repeatedly — e.g. applet-loader handling repeated OSC 58237
     // triggers from multiple shells.
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         if (!inst.builtIn && inst.path == path
             && inst.contentHash == hash && inst.permissions == permissions) {
             sLog().info("ScriptEngine: identical reload of '{}' (id={}), no-op", path, inst.id);
@@ -2189,6 +2196,7 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
 
     // Unload any existing instance with the same path (content or perms differ)
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         if (inst.path == path && !inst.builtIn) {
             sLog().info("ScriptEngine: replacing existing instance of '{}'", path);
             unload(inst.id);
@@ -2358,9 +2366,10 @@ bool Engine::filterOverlayInput(TabId tab, std::string& data)
 // Pane objects are found via a __pane_registry global keyed by id.
 bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& data)
 {
+    IterGuard guard(this);
     bool modified = false;
     for (auto& inst : instances_) {
-
+        if (!inst.ctx) continue;
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
@@ -2411,9 +2420,10 @@ bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& da
 
 bool Engine::runOverlayFilters(TabId tab, const char* filterProp, std::string& data)
 {
+    IterGuard guard(this);
     bool modified = false;
     for (auto& inst : instances_) {
-
+        if (!inst.ctx) continue;
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__overlay_registry");
@@ -2468,8 +2478,10 @@ bool Engine::runOverlayFilters(TabId tab, const char* filterProp, std::string& d
 
 void Engine::notifyAction(const std::string& actionName)
 {
+    IterGuard guard(this);
     std::string prop = std::string("__evt_action_") + actionName;
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
@@ -2485,7 +2497,9 @@ void Engine::notifyPermissionRequired(const std::string& path,
                                        const std::string& permissions,
                                        const std::string& hash)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         if (!inst.builtIn) continue; // only built-in scripts see permission requests
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -2510,7 +2524,9 @@ void Engine::notifyPermissionRequired(const std::string& path,
 
 void Engine::notifyPaneCreated(TabId tab, PaneId pane)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
@@ -2531,7 +2547,9 @@ void Engine::notifyPaneDestroyed(PaneId pane)
 
 void Engine::notifyTabCreated(TabId tab)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
@@ -2552,7 +2570,9 @@ void Engine::notifyTabDestroyed(TabId tab)
 
 void Engine::notifyOverlayCreated(TabId tab)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -2575,8 +2595,10 @@ void Engine::notifyOverlayCreated(TabId tab)
 
 void Engine::notifyOverlayDestroyed(TabId tab)
 {
+    IterGuard guard(this);
     // Fire overlayDestroyed listeners on tab objects
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
 
         // Fire destroyed on overlay objects
@@ -2617,7 +2639,9 @@ void Engine::notifyOverlayDestroyed(TabId tab)
 
 void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -2641,9 +2665,11 @@ void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
 
 void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
 {
+    IterGuard guard(this);
     std::string prop = "__evt_osc:" + std::to_string(oscNum);
 
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -2685,7 +2711,9 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
 
 void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& processName)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
@@ -2755,11 +2783,13 @@ static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, 
 
 void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
 {
+    IterGuard guard(this);
     auto getText = callbacks_.paneGetText
         ? GetTextFn([this, pane](uint64_t s, int sc, uint64_t e, int ec) { return callbacks_.paneGetText(pane, s, sc, e, ec); })
         : GetTextFn{};
 
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
@@ -2781,7 +2811,9 @@ void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
 void Engine::deliverInput(const char* registryName, uint32_t key,
                            const char* data, size_t len)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, registryName);
         JS_FreeValue(inst.ctx, global);
@@ -2832,7 +2864,9 @@ void Engine::deliverInput(const char* registryName, uint32_t key,
 
 void Engine::deliverPopupInput(const std::string& regKey, const char* data, size_t len)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__popup_registry");
         JS_FreeValue(inst.ctx, global);
@@ -2876,9 +2910,11 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
                                      const std::string& type, int cellX, int cellY,
                                      int pixelX, int pixelY, int button)
 {
+    IterGuard guard(this);
     std::string regKey = std::to_string(pane) + ":" + popupId;
 
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__popup_registry");
         JS_FreeValue(inst.ctx, global);
@@ -2930,7 +2966,9 @@ void Engine::deliverMouseToRegistry(const char* registryName,
                                      uint32_t key, const std::string& type,
                                      int cellX, int cellY, int pixelX, int pixelY, int button)
 {
+    IterGuard guard(this);
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, registryName);
         JS_FreeValue(inst.ctx, global);
@@ -3003,10 +3041,12 @@ void Engine::executePendingJobs()
 
 void Engine::cleanupPane(PaneId pane)
 {
+    IterGuard guard(this);
     paneOutputFilterCount_.erase(pane);
     paneInputFilterCount_.erase(pane);
 
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -3035,10 +3075,12 @@ void Engine::cleanupPane(PaneId pane)
 
 void Engine::cleanupTab(TabId tab)
 {
+    IterGuard guard(this);
     overlayOutputFilterCount_.erase(tab);
     overlayInputFilterCount_.erase(tab);
 
     for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
 
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -3068,15 +3110,19 @@ void Engine::cleanupTab(TabId tab)
 
 Engine::Instance* Engine::findInstance(InstanceId id)
 {
-    for (auto& inst : instances_)
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         if (inst.id == id) return &inst;
+    }
     return nullptr;
 }
 
 Engine::Instance* Engine::findInstanceByCtx(JSContext* ctx)
 {
-    for (auto& inst : instances_)
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
         if (inst.ctx == ctx) return &inst;
+    }
     return nullptr;
 }
 
@@ -3112,6 +3158,7 @@ bool Engine::setNamespace(InstanceId id, const std::string& ns)
 
     // Check no other instance holds this namespace
     for (auto& other : instances_) {
+        if (!other.ctx) continue;
         if (other.id != id && other.ns == ns) return false;
     }
 

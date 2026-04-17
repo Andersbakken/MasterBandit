@@ -248,10 +248,36 @@ public:
     bool isActionRegistered(const std::string& fullName) const;
     const std::set<std::string>& registeredActions() const { return registeredActions_; }
 
+    // Re-entrancy guard for iterating instances_ while calling JS.
+    // While iterating, unload() nulls ctx instead of erasing. When the
+    // outermost guard destructs, deferred cleanups run and dead entries
+    // are swept.
+    bool iterating() const { return iterDepth_ > 0; }
+    void deferCleanup(std::function<void(Engine*)> fn) { deferredCleanups_.push_back(std::move(fn)); }
+
+    struct IterGuard {
+        Engine* eng;
+        IterGuard(Engine* e) : eng(e) { ++eng->iterDepth_; }
+        ~IterGuard() {
+            if (--eng->iterDepth_ == 0) {
+                // Run registered cleanups
+                auto fns = std::move(eng->deferredCleanups_);
+                eng->deferredCleanups_.clear();
+                for (auto& fn : fns) fn(eng);
+                // Sweep dead instances (ctx nulled by deferred unload)
+                std::erase_if(eng->instances_, [](const Instance& i) { return !i.ctx; });
+            }
+        }
+        IterGuard(const IterGuard&) = delete;
+        IterGuard& operator=(const IterGuard&) = delete;
+    };
+
 private:
     JSRuntime* rt_ = nullptr;
     EventLoop* loop_ = nullptr;
     std::deque<Instance> instances_; // deque for pointer stability
+    int iterDepth_ = 0; // >0 while iterating instances_ and calling JS
+    std::vector<std::function<void(Engine*)>> deferredCleanups_;
     InstanceId nextId_ = 1;
     uint32_t nextTimerId_ = 1;
     AppCallbacks callbacks_;

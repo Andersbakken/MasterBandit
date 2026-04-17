@@ -353,10 +353,7 @@ void TerminalEmulator::processStringSequence()
     }
 
     switch (oscNum) {
-    case 0:
-        spdlog::info("OSC 0 title set: \"{}\"", payload);
-        processOSC_Title(payload, true);
-        break;
+    case 0: processOSC_Title(payload, true); break;
     case 1:
         if (mIconStack.empty())
             mIconStack.emplace_back(payload);
@@ -364,10 +361,7 @@ void TerminalEmulator::processStringSequence()
             mIconStack.back() = std::string(payload);
         if (mCallbacks.onIconChanged) mCallbacks.onIconChanged(std::string(payload));
         break;
-    case 2:
-        spdlog::info("OSC 2 title set: \"{}\"", payload);
-        processOSC_Title(payload, true);
-        break;
+    case 2: processOSC_Title(payload, true); break;
     case 22: processOSC_PointerShape(payload); break;
     case 133: { // Shell integration (FinalTerm / semantic prompts / Per-Bothner spec)
         // OSC 133;<letter>[;<arg>][;<k>=<v>...]

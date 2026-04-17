@@ -628,6 +628,11 @@ private:
     std::vector<std::string> mTitleStack;
     static constexpr size_t TITLE_STACK_MAX = 10;
 
+    // Icon stack (XTWINOPS CSI 22/23 t + OSC 1)
+    // Stack top is always the current icon. Empty = no icon set.
+    std::vector<std::string> mIconStack;
+    static constexpr size_t ICON_STACK_MAX = 10;
+
     // Desktop notification accumulator (OSC 99)
     std::string mNotifyId;
     std::string mNotifyTitle;

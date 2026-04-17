@@ -1417,23 +1417,40 @@ void TerminalEmulator::processCSI()
         }
         break; }
     case 't': {
-        // XTWINOPS — only handle push/pop title (22/23)
+        // XTWINOPS — handle push/pop title/icon (22/23 with Ps: 0=both, 1=icon, 2=title)
         char* end;
         int op = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
+        int ps = 0; // default: both
+        if (*end == ';') ps = static_cast<int>(strtoul(end + 1, &end, 10));
+        const bool doIcon  = (ps == 0 || ps == 1);
+        const bool doTitle = (ps == 0 || ps == 2);
         if (op == 22) {
-            // Push title: duplicate top of stack
-            if (!mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX)
+            if (doTitle && !mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX)
                 mTitleStack.push_back(mTitleStack.back());
+            if (doIcon && !mIconStack.empty() && mIconStack.size() < ICON_STACK_MAX)
+                mIconStack.push_back(mIconStack.back());
         } else if (op == 23) {
-            // Pop title: restore previous, or clear if last entry
-            if (mTitleStack.size() > 1) {
-                mTitleStack.pop_back();
-                if (mCallbacks.onTitleChanged)
-                    mCallbacks.onTitleChanged(mTitleStack.back());
-            } else if (!mTitleStack.empty()) {
-                mTitleStack.clear();
-                if (mCallbacks.onTitleChanged)
-                    mCallbacks.onTitleChanged(std::string{});
+            if (doTitle) {
+                if (mTitleStack.size() > 1) {
+                    mTitleStack.pop_back();
+                    if (mCallbacks.onTitleChanged)
+                        mCallbacks.onTitleChanged(mTitleStack.back());
+                } else if (!mTitleStack.empty()) {
+                    mTitleStack.clear();
+                    if (mCallbacks.onTitleChanged)
+                        mCallbacks.onTitleChanged(std::string{});
+                }
+            }
+            if (doIcon) {
+                if (mIconStack.size() > 1) {
+                    mIconStack.pop_back();
+                    if (mCallbacks.onIconChanged)
+                        mCallbacks.onIconChanged(mIconStack.back());
+                } else if (!mIconStack.empty()) {
+                    mIconStack.clear();
+                    if (mCallbacks.onIconChanged)
+                        mCallbacks.onIconChanged(std::string{});
+                }
             }
         }
         break;

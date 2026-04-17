@@ -126,6 +126,94 @@ TEST_CASE("OSC 0 on empty stack creates first entry")
     CHECK(t.capturedTitle == "first");
 }
 
+// ── Icon stack (CSI 22;1 / 23;1 t) ──────────────────────────────────────────
+
+TEST_CASE("CSI 22;1t pushes icon, CSI 23;1t pops and restores")
+{
+    TestTerminal t;
+    t.osc("1;shell-icon");
+    CHECK(t.capturedIcon == "shell-icon");
+    t.csi("22;1t");
+    t.osc("1;jsh");
+    CHECK(t.capturedIcon == "jsh");
+    t.csi("23;1t");
+    CHECK(t.capturedIcon == "shell-icon");
+}
+
+TEST_CASE("CSI 23;1t on single-entry icon stack clears to empty")
+{
+    TestTerminal t;
+    t.osc("1;jsh");
+    CHECK(t.capturedIcon == "jsh");
+    t.csi("23;1t");
+    CHECK(t.capturedIcon.empty());
+}
+
+TEST_CASE("Icon push/pop is independent of title stack")
+{
+    TestTerminal t;
+    t.osc("2;title-a");
+    t.osc("1;icon-a");
+    t.csi("22;1t");           // push icon only
+    t.osc("1;icon-b");
+    CHECK(t.capturedTitle == "title-a");
+    CHECK(t.capturedIcon == "icon-b");
+    t.csi("23;1t");           // pop icon only
+    CHECK(t.capturedTitle == "title-a");
+    CHECK(t.capturedIcon == "icon-a");
+}
+
+TEST_CASE("CSI 22t / 23t with no Ps pushes and pops both stacks")
+{
+    TestTerminal t;
+    t.osc("2;title-a");
+    t.osc("1;icon-a");
+    t.csi("22t");             // push both
+    t.osc("2;title-b");
+    t.osc("1;icon-b");
+    CHECK(t.capturedTitle == "title-b");
+    CHECK(t.capturedIcon == "icon-b");
+    t.csi("23t");             // pop both
+    CHECK(t.capturedTitle == "title-a");
+    CHECK(t.capturedIcon == "icon-a");
+}
+
+TEST_CASE("CSI 22;0t / 23;0t explicitly pushes and pops both stacks")
+{
+    TestTerminal t;
+    t.osc("2;title-a");
+    t.osc("1;icon-a");
+    t.csi("22;0t");
+    t.osc("2;title-b");
+    t.osc("1;icon-b");
+    t.csi("23;0t");
+    CHECK(t.capturedTitle == "title-a");
+    CHECK(t.capturedIcon == "icon-a");
+}
+
+TEST_CASE("CSI 22;2t pushes only title, leaves icon untouched")
+{
+    TestTerminal t;
+    t.osc("2;title-a");
+    t.osc("1;icon-a");
+    t.csi("22;2t");           // push title only
+    t.osc("2;title-b");
+    t.osc("1;icon-b");
+    t.csi("23;2t");           // pop title only
+    CHECK(t.capturedTitle == "title-a");
+    CHECK(t.capturedIcon == "icon-b");
+}
+
+TEST_CASE("Push-icon on empty stack, set icon, pop-icon clears icon")
+{
+    TestTerminal t;
+    t.csi("22;1t");
+    t.osc("1;temp");
+    CHECK(t.capturedIcon == "temp");
+    t.csi("23;1t");
+    CHECK(t.capturedIcon.empty());
+}
+
 // ── OSC 7 (CWD) ─────────────────────────────────────────────────────────────
 
 TEST_CASE("OSC 7 extracts path from file URL")

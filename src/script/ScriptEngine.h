@@ -66,6 +66,7 @@ struct AppCallbacks {
         bool hasSelection = false;
         uint64_t selectionStartRowId = 0; int selectionStartCol = 0;
         uint64_t selectionEndRowId = 0;   int selectionEndCol = 0;
+        uint64_t cursorRowId = 0; int cursorCol = 0;
     };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`

@@ -60,15 +60,27 @@ interface MbMouseEvent {
 // ============================================================================
 
 /**
+ * A position within the terminal document.
+ *
+ * `rowId` is a stable monotonic identifier that survives scrolling into
+ * history. `absRow` is volatile (shifts as rows scroll) and is provided
+ * for convenience; prefer `rowId` for durable references.
+ */
+interface MbPosition {
+    /** Stable row ID — use with `pane.getTextFromRows()`. */
+    readonly rowId: number;
+    /** Volatile absolute row index at query time (archive + history + screen). */
+    readonly absRow: number;
+    /** Column index (0-based). */
+    readonly col: number;
+}
+
+/**
  * A single command executed in this pane, populated from OSC 133 markers.
  *
  * Text fields (`command`, `output`) are extracted lazily from the document at
  * query time rather than captured eagerly — they reflect the live cell content
  * and are not subject to a size cap.
- *
- * Row ID fields are stable monotonic identifiers that survive scrolling into
- * history. Absolute-row fields are volatile (they shift as rows scroll) and
- * are provided for convenience; prefer row IDs for durable references.
  */
 interface MbCommand {
     /** Monotonic per-pane id. */
@@ -85,20 +97,14 @@ interface MbCommand {
     readonly startMs: number;
     /** Monotonic milliseconds when `D` fired (command finished). */
     readonly endMs: number;
-    /** Stable row IDs — use with `pane.getTextFromRows()` for custom extractions. */
-    readonly promptStartRowId: number;
-    readonly commandStartRowId: number;
-    readonly outputStartRowId: number;
-    readonly outputEndRowId: number;
-    /** Volatile absolute row indices at query time (archive + history + screen). */
-    readonly promptStartAbsRow: number;
-    readonly promptStartCol: number;
-    readonly commandStartAbsRow: number;
-    readonly commandStartCol: number;
-    readonly outputStartAbsRow: number;
-    readonly outputStartCol: number;
-    readonly outputEndAbsRow: number;
-    readonly outputEndCol: number;
+    /** Position of the prompt marker (OSC 133;A). */
+    readonly promptStart: MbPosition;
+    /** Position where the command text begins (OSC 133;B). */
+    readonly commandStart: MbPosition;
+    /** Position where command output begins (OSC 133;C). */
+    readonly outputStart: MbPosition;
+    /** Position where command output ends (OSC 133;D). */
+    readonly outputEnd: MbPosition;
 }
 
 interface MbPane {
@@ -117,16 +123,18 @@ interface MbPane {
     readonly foregroundProcess: string;
     /** Active popups on this pane. */
     readonly popups: MbPopupInfo[];
-    /** True when a finalized (non-active) selection exists. */
-    readonly hasSelection: boolean;
-    /** Stable row ID of the selection start, or `null` if no selection. */
-    readonly selectionStartRowId: number | null;
-    /** Column of the selection start, or `null` if no selection. */
-    readonly selectionStartCol: number | null;
-    /** Stable row ID of the selection end, or `null` if no selection. */
-    readonly selectionEndRowId: number | null;
-    /** Column of the selection end, or `null` if no selection. */
-    readonly selectionEndCol: number | null;
+    /** Current text selection, or `null` if nothing is selected. */
+    readonly selection: {
+        readonly startRowId: number;
+        readonly startCol: number;
+        readonly endRowId: number;
+        readonly endCol: number;
+    } | null;
+    /** Current cursor position. */
+    readonly cursor: {
+        readonly rowId: number;
+        readonly col: number;
+    };
     /**
      * Most recently completed command seen on this pane, or null. Requires
      * `shell.commands` permission (command records can contain secrets).

@@ -479,11 +479,21 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
             JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], getText));
         return arr;
     }
-    case 11: return JS_NewBool(ctx, info.hasSelection);
-    case 12: return info.hasSelection ? JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartRowId)) : JS_NULL;
-    case 13: return info.hasSelection ? JS_NewInt32(ctx, info.selectionStartCol) : JS_NULL;
-    case 14: return info.hasSelection ? JS_NewInt64(ctx, static_cast<int64_t>(info.selectionEndRowId)) : JS_NULL;
-    case 15: return info.hasSelection ? JS_NewInt32(ctx, info.selectionEndCol) : JS_NULL;
+    case 11: { // selection → { startRowId, startCol, endRowId, endCol } | null
+        if (!info.hasSelection) return JS_NULL;
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartRowId)));
+        JS_SetPropertyStr(ctx, obj, "startCol",   JS_NewInt32(ctx, info.selectionStartCol));
+        JS_SetPropertyStr(ctx, obj, "endRowId",   JS_NewInt64(ctx, static_cast<int64_t>(info.selectionEndRowId)));
+        JS_SetPropertyStr(ctx, obj, "endCol",     JS_NewInt32(ctx, info.selectionEndCol));
+        return obj;
+    }
+    case 12: { // cursor → { rowId, col }
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "rowId", JS_NewInt64(ctx, static_cast<int64_t>(info.cursorRowId)));
+        JS_SetPropertyStr(ctx, obj, "col",   JS_NewInt32(ctx, info.cursorCol));
+        return obj;
+    }
     default: return JS_UNDEFINED;
     }
 }
@@ -512,11 +522,8 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
     JS_CGETSET_MAGIC_DEF("lastCommand", jsPaneGetProp, nullptr, 9),
     JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
-    JS_CGETSET_MAGIC_DEF("hasSelection",        jsPaneGetProp, nullptr, 11),
-    JS_CGETSET_MAGIC_DEF("selectionStartRowId",  jsPaneGetProp, nullptr, 12),
-    JS_CGETSET_MAGIC_DEF("selectionStartCol",    jsPaneGetProp, nullptr, 13),
-    JS_CGETSET_MAGIC_DEF("selectionEndRowId",    jsPaneGetProp, nullptr, 14),
-    JS_CGETSET_MAGIC_DEF("selectionEndCol",      jsPaneGetProp, nullptr, 15),
+    JS_CGETSET_MAGIC_DEF("selection", jsPaneGetProp, nullptr, 11),
+    JS_CGETSET_MAGIC_DEF("cursor",    jsPaneGetProp, nullptr, 12),
 };
 
 // ============================================================================
@@ -2730,20 +2737,19 @@ static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, 
         JS_SetPropertyStr(ctx, obj, "output",  JS_NewString(ctx, ""));
     }
 
-    // Row IDs (stable)
-    JS_SetPropertyStr(ctx, obj, "promptStartRowId",  JS_NewInt64(ctx, static_cast<int64_t>(p.promptStartRowId)));
-    JS_SetPropertyStr(ctx, obj, "commandStartRowId", JS_NewInt64(ctx, static_cast<int64_t>(p.commandStartRowId)));
-    JS_SetPropertyStr(ctx, obj, "outputStartRowId",  JS_NewInt64(ctx, static_cast<int64_t>(p.outputStartRowId)));
-    JS_SetPropertyStr(ctx, obj, "outputEndRowId",    JS_NewInt64(ctx, static_cast<int64_t>(p.outputEndRowId)));
-    // Volatile abs rows (for position navigation)
-    JS_SetPropertyStr(ctx, obj, "promptStartAbsRow",  JS_NewInt32(ctx, p.promptStartAbsRow));
-    JS_SetPropertyStr(ctx, obj, "promptStartCol",     JS_NewInt32(ctx, p.promptStartCol));
-    JS_SetPropertyStr(ctx, obj, "commandStartAbsRow", JS_NewInt32(ctx, p.commandStartAbsRow));
-    JS_SetPropertyStr(ctx, obj, "commandStartCol",    JS_NewInt32(ctx, p.commandStartCol));
-    JS_SetPropertyStr(ctx, obj, "outputStartAbsRow",  JS_NewInt32(ctx, p.outputStartAbsRow));
-    JS_SetPropertyStr(ctx, obj, "outputStartCol",     JS_NewInt32(ctx, p.outputStartCol));
-    JS_SetPropertyStr(ctx, obj, "outputEndAbsRow",    JS_NewInt32(ctx, p.outputEndAbsRow));
-    JS_SetPropertyStr(ctx, obj, "outputEndCol",       JS_NewInt32(ctx, p.outputEndCol));
+    // Nested position objects: prompt, commandStart, outputStart, outputEnd
+    // Each has { rowId, absRow, col }.
+    auto makePos = [&](uint64_t rowId, int absRow, int col) {
+        JSValue pos = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, pos, "rowId",  JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
+        JS_SetPropertyStr(ctx, pos, "absRow", JS_NewInt32(ctx, absRow));
+        JS_SetPropertyStr(ctx, pos, "col",    JS_NewInt32(ctx, col));
+        return pos;
+    };
+    JS_SetPropertyStr(ctx, obj, "promptStart",  makePos(p.promptStartRowId,  p.promptStartAbsRow,  p.promptStartCol));
+    JS_SetPropertyStr(ctx, obj, "commandStart", makePos(p.commandStartRowId, p.commandStartAbsRow, p.commandStartCol));
+    JS_SetPropertyStr(ctx, obj, "outputStart",  makePos(p.outputStartRowId,  p.outputStartAbsRow,  p.outputStartCol));
+    JS_SetPropertyStr(ctx, obj, "outputEnd",    makePos(p.outputEndRowId,    p.outputEndAbsRow,    p.outputEndCol));
     return obj;
 }
 

@@ -108,15 +108,20 @@ int PlatformDawn::exec()
                         isFocused, p->focusedPopupId(),
                         term ? term->foregroundProcess() : std::string{}
                     };
-                    if (t && t->hasSelection()) {
-                        const auto& sel = t->selection();
-                        if (sel.valid && !sel.active) {
-                            const auto& doc = t->document();
-                            info.hasSelection = true;
-                            info.selectionStartRowId = doc.rowIdForAbs(sel.startAbsRow);
-                            info.selectionStartCol   = sel.startCol;
-                            info.selectionEndRowId   = doc.rowIdForAbs(sel.endAbsRow);
-                            info.selectionEndCol     = sel.endCol;
+                    if (t) {
+                        const auto& doc = t->document();
+                        int absRow = doc.historySize() + t->cursorY();
+                        info.cursorRowId = doc.rowIdForAbs(absRow);
+                        info.cursorCol   = t->cursorX();
+                        if (t->hasSelection()) {
+                            const auto& sel = t->selection();
+                            if (sel.valid && !sel.active) {
+                                info.hasSelection = true;
+                                info.selectionStartRowId = doc.rowIdForAbs(sel.startAbsRow);
+                                info.selectionStartCol   = sel.startCol;
+                                info.selectionEndRowId   = doc.rowIdForAbs(sel.endAbsRow);
+                                info.selectionEndCol     = sel.endCol;
+                            }
                         }
                     }
                     return info;

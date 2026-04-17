@@ -116,11 +116,16 @@ int PlatformDawn::exec()
                         if (t->hasSelection()) {
                             const auto& sel = t->selection();
                             if (sel.valid && !sel.active) {
+                                int r0 = sel.startAbsRow, c0 = sel.startCol;
+                                int r1 = sel.endAbsRow,   c1 = sel.endCol;
+                                if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+                                    std::swap(r0, r1); std::swap(c0, c1);
+                                }
                                 info.hasSelection = true;
-                                info.selectionStartRowId = doc.rowIdForAbs(sel.startAbsRow);
-                                info.selectionStartCol   = sel.startCol;
-                                info.selectionEndRowId   = doc.rowIdForAbs(sel.endAbsRow);
-                                info.selectionEndCol     = sel.endCol;
+                                info.selectionStartRowId = doc.rowIdForAbs(r0);
+                                info.selectionStartCol   = c0;
+                                info.selectionEndRowId   = doc.rowIdForAbs(r1);
+                                info.selectionEndCol     = c1 + 1; // exclusive, matches getTextFromRows
                             }
                         }
                     }

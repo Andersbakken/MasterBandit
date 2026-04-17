@@ -96,6 +96,7 @@
 - [x] Scrollback pager — Cmd+F (macOS), Ctrl+Shift+F (Linux). Opens `less -R` in overlay with serialized scrollback.
 - [ ] Prompt navigation mode — enter a mode that highlights the current command's output (dim everything else, like iTerm). Previous/next keybinds to cycle between prompts. Copy output of highlighted command. Requires per-row tinting in the compute shader. Exit on Escape.
 - [ ] Select command output — select output of a specific command (between OSC 133 C and next A). Needs a way to target which command (click, or previous/next navigation).
+- [ ] Click-to-highlight OSC 133 command region — clicking anywhere inside a shell command's span (prompt A → output end D) visually highlights the whole region (prompt + input + output), making command boundaries visible. Requires per-row tinting in the compute shader and hit-testing against `CommandRecord` row-id spans from the ring. Highlight clears on click outside any region or on Escape.
 
 ## Configuration
 

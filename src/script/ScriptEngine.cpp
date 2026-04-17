@@ -309,6 +309,11 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
         if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
         prop = "__mouse_listeners";
         registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+    } else if (strcmp(event, "mousemove") == 0) {
+        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        prop = "__evt_mousemove";
+        eng->addPaneMouseMoveListener(pane->id, instId);
+        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
     } else if (strcmp(event, "commandComplete") == 0) {
         if (!checkPerm(ctx, Perm::ShellReadCommands)) {
             JS_FreeCString(ctx, event);
@@ -433,6 +438,51 @@ static JSValue jsPaneRowIdAt(JSContext* ctx, JSValueConst this_val,
     return JS_NewInt64(ctx, static_cast<int64_t>(*result));
 }
 
+static JSValue jsPaneLinkAt(JSContext* ctx, JSValueConst this_val,
+                            int argc, JSValueConst* argv)
+{
+    if (argc < 2) return JS_ThrowTypeError(ctx, "linkAt requires (rowId, col)");
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneUrlAt) return JS_NULL;
+    uint64_t rowId = 0;
+    int32_t col = 0;
+    JS_ToIndex(ctx, &rowId, argv[0]);
+    JS_ToInt32(ctx, &col, argv[1]);
+    auto url = eng->callbacks().paneUrlAt(pane->id, rowId, col);
+    if (url.empty()) return JS_NULL;
+    return JS_NewStringLen(ctx, url.data(), url.size());
+}
+
+static JSValue jsPaneGetLinksFromRows(JSContext* ctx, JSValueConst this_val,
+                                       int argc, JSValueConst* argv)
+{
+    if (argc < 2) return JS_ThrowTypeError(ctx, "getLinksFromRows requires (startRowId, endRowId, limit?)");
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneGetLinksFromRows) return JS_NewArray(ctx);
+    uint64_t startId = 0, endId = 0;
+    int32_t limit = 0;
+    JS_ToIndex(ctx, &startId, argv[0]);
+    JS_ToIndex(ctx, &endId, argv[1]);
+    if (argc >= 3) JS_ToInt32(ctx, &limit, argv[2]);
+    auto links = eng->callbacks().paneGetLinksFromRows(pane->id, startId, endId, limit);
+    JSValue arr = JS_NewArray(ctx);
+    for (size_t i = 0; i < links.size(); ++i) {
+        const auto& l = links[i];
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "url", JS_NewStringLen(ctx, l.url.data(), l.url.size()));
+        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(l.startRowId)));
+        JS_SetPropertyStr(ctx, obj, "startCol", JS_NewInt32(ctx, l.startCol));
+        JS_SetPropertyStr(ctx, obj, "endRowId", JS_NewInt64(ctx, static_cast<int64_t>(l.endRowId)));
+        JS_SetPropertyStr(ctx, obj, "endCol", JS_NewInt32(ctx, l.endCol));
+        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), obj);
+    }
+    return arr;
+}
+
 static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
     auto* pane = jsPaneGet(ctx, this_val);
@@ -480,6 +530,7 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         return arr;
     }
     case 11: { // selection → { startRowId, startCol, endRowId, endCol } | null
+        REQUIRE_PERM(ctx, PaneSelection);
         if (!info.hasSelection) return JS_NULL;
         JSValue obj = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartRowId)));
@@ -489,9 +540,21 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         return obj;
     }
     case 12: { // cursor → { rowId, col }
+        REQUIRE_PERM(ctx, PaneSelection);
         JSValue obj = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, obj, "rowId", JS_NewInt64(ctx, static_cast<int64_t>(info.cursorRowId)));
         JS_SetPropertyStr(ctx, obj, "col",   JS_NewInt32(ctx, info.cursorCol));
+        return obj;
+    }
+    case 13: return JS_NewInt64(ctx, static_cast<int64_t>(info.oldestRowId));
+    case 14: return JS_NewInt64(ctx, static_cast<int64_t>(info.newestRowId));
+    case 15: { // mousePosition → { cellX, cellY, pixelX, pixelY } | null
+        if (!info.mouseInPane) return JS_NULL;
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "cellX",  JS_NewInt32(ctx, info.mouseCellX));
+        JS_SetPropertyStr(ctx, obj, "cellY",  JS_NewInt32(ctx, info.mouseCellY));
+        JS_SetPropertyStr(ctx, obj, "pixelX", JS_NewInt32(ctx, info.mousePixelX));
+        JS_SetPropertyStr(ctx, obj, "pixelY", JS_NewInt32(ctx, info.mousePixelY));
         return obj;
     }
     default: return JS_UNDEFINED;
@@ -508,6 +571,8 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
     JS_CFUNC_DEF("getTextFromRows", 4, jsPaneGetTextFromRows),
+    JS_CFUNC_DEF("getLinksFromRows", 2, jsPaneGetLinksFromRows),
+    JS_CFUNC_DEF("linkAt", 2, jsPaneLinkAt),
     JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
@@ -522,8 +587,11 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
     JS_CGETSET_MAGIC_DEF("lastCommand", jsPaneGetProp, nullptr, 9),
     JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
-    JS_CGETSET_MAGIC_DEF("selection", jsPaneGetProp, nullptr, 11),
-    JS_CGETSET_MAGIC_DEF("cursor",    jsPaneGetProp, nullptr, 12),
+    JS_CGETSET_MAGIC_DEF("selection",    jsPaneGetProp, nullptr, 11),
+    JS_CGETSET_MAGIC_DEF("cursor",      jsPaneGetProp, nullptr, 12),
+    JS_CGETSET_MAGIC_DEF("oldestRowId",     jsPaneGetProp, nullptr, 13),
+    JS_CGETSET_MAGIC_DEF("newestRowId",     jsPaneGetProp, nullptr, 14),
+    JS_CGETSET_MAGIC_DEF("mousePosition",   jsPaneGetProp, nullptr, 15),
 };
 
 // ============================================================================
@@ -1947,6 +2015,41 @@ JSContext* Engine::createContext()
 static JSValue jsMbRegisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 static JSValue jsMbUnregisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 
+// mb.getClipboard(source?) -> string.  source = "clipboard" | "primary" (default "clipboard")
+static JSValue jsMbGetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ClipboardRead);
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().getClipboard) return JS_NewString(ctx, "");
+    std::string source = "clipboard";
+    if (argc >= 1 && JS_IsString(argv[0])) {
+        const char* s = JS_ToCString(ctx, argv[0]);
+        if (s) { source = s; JS_FreeCString(ctx, s); }
+    }
+    auto text = eng->callbacks().getClipboard(source);
+    return JS_NewStringLen(ctx, text.data(), text.size());
+}
+
+// mb.setClipboard(text, source?).  source = "clipboard" | "primary" (default "clipboard")
+static JSValue jsMbSetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_ThrowTypeError(ctx, "setClipboard requires (text, source?)");
+    REQUIRE_PERM(ctx, ClipboardWrite);
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().setClipboard) return JS_UNDEFINED;
+    size_t len;
+    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) return JS_EXCEPTION;
+    std::string source = "clipboard";
+    if (argc >= 2 && JS_IsString(argv[1])) {
+        const char* s = JS_ToCString(ctx, argv[1]);
+        if (s) { source = s; JS_FreeCString(ctx, s); }
+    }
+    eng->callbacks().setClipboard(source, std::string(str, len));
+    JS_FreeCString(ctx, str);
+    return JS_UNDEFINED;
+}
+
 void Engine::setupGlobals(JSContext* ctx, InstanceId id)
 {
     JSValue global = JS_GetGlobalObject(ctx);
@@ -1991,6 +2094,10 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbRegisterTcap, "registerTcap", 2));
     JS_SetPropertyStr(ctx, mb, "unregisterTcap",
         JS_NewCFunction(ctx, jsMbUnregisterTcap, "unregisterTcap", 1));
+    JS_SetPropertyStr(ctx, mb, "getClipboard",
+        JS_NewCFunction(ctx, jsMbGetClipboard, "getClipboard", 0));
+    JS_SetPropertyStr(ctx, mb, "setClipboard",
+        JS_NewCFunction(ctx, jsMbSetClipboard, "setClipboard", 1));
     JS_SetPropertyStr(ctx, global, "mb", mb);
     JS_FreeValue(ctx, global);
 }
@@ -2077,6 +2184,11 @@ void Engine::unload(InstanceId id)
             auto fc = overlayInputFilterCount_.find(tab);
             if (fc != overlayInputFilterCount_.end() && --fc->second <= 0)
                 overlayInputFilterCount_.erase(fc);
+        }
+        for (auto pane : it->paneMouseMoveListeners) {
+            auto fc = paneMouseMoveCount_.find(pane);
+            if (fc != paneMouseMoveCount_.end() && --fc->second <= 0)
+                paneMouseMoveCount_.erase(fc);
         }
 
         // 5. Remove registered actions for this instance's namespace
@@ -2328,6 +2440,12 @@ bool Engine::hasPaneInputFilters(PaneId pane) const
 {
     auto it = paneInputFilterCount_.find(pane);
     return it != paneInputFilterCount_.end() && it->second > 0;
+}
+
+bool Engine::hasPaneMouseMoveListeners(PaneId pane) const
+{
+    auto it = paneMouseMoveCount_.find(pane);
+    return it != paneMouseMoveCount_.end() && it->second > 0;
 }
 
 bool Engine::hasOverlayOutputFilters(TabId tab) const
@@ -2725,6 +2843,81 @@ void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& proc
             JSValue arg = JS_NewString(inst.ctx, processName.c_str());
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyPaneFocusChanged(PaneId pane, bool focused)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_focusChanged");
+            JSValue arg = JS_NewBool(inst.ctx, focused);
+            enqueueListeners(inst.ctx, arr, 1, &arg);
+            JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyFocusedPopupChanged(PaneId pane, const std::string& popupId)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_focusedPopupChanged");
+            JSValue arg = popupId.empty() ? JS_NULL : JS_NewString(inst.ctx, popupId.c_str());
+            enqueueListeners(inst.ctx, arr, 1, &arg);
+            JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, int pixelY)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_mousemove");
+            if (!JS_IsUndefined(arr)) {
+                JSValue ev = JS_NewObject(inst.ctx);
+                JS_SetPropertyStr(inst.ctx, ev, "cellX",  JS_NewInt32(inst.ctx, cellX));
+                JS_SetPropertyStr(inst.ctx, ev, "cellY",  JS_NewInt32(inst.ctx, cellY));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
+                enqueueListeners(inst.ctx, arr, 1, &ev);
+                JS_FreeValue(inst.ctx, ev);
+            }
             JS_FreeValue(inst.ctx, arr);
         }
         JS_FreeValue(inst.ctx, paneObj);
@@ -3136,6 +3329,12 @@ void Engine::addPaneInputFilter(PaneId pane, InstanceId instId) {
     paneInputFilterCount_[pane]++;
     if (auto* inst = findInstance(instId))
         inst->paneInputFilters.push_back(pane);
+}
+
+void Engine::addPaneMouseMoveListener(PaneId pane, InstanceId instId) {
+    paneMouseMoveCount_[pane]++;
+    if (auto* inst = findInstance(instId))
+        inst->paneMouseMoveListeners.push_back(pane);
 }
 
 void Engine::addOverlayOutputFilter(TabId tab, InstanceId instId) {

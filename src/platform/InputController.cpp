@@ -551,6 +551,25 @@ void InputController::onCursorPos(double x, double y)
         }
     }
 
+    // Notify JS mousemove listeners for the hovered pane
+    if (!tab->hasOverlay() && host_.scriptEngine) {
+        int hoveredPaneId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+        if (hoveredPaneId >= 0 && host_.scriptEngine->hasPaneMouseMoveListeners(hoveredPaneId)) {
+            Pane* hp = tab->layout()->pane(hoveredPaneId);
+            if (hp) {
+                PaneRect hpr = hp->rect();
+                double hrx = sx - hpr.x;
+                double hry = sy - hpr.y;
+                host_.scriptEngine->notifyPaneMouseMove(
+                    hoveredPaneId,
+                    static_cast<int>(hrx / charWidth),
+                    static_cast<int>(hry / lineHeight),
+                    static_cast<int>(hrx),
+                    static_cast<int>(hry));
+            }
+        }
+    }
+
     PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
     double relX = sx - pr.x;
     double relY = sy - pr.y;

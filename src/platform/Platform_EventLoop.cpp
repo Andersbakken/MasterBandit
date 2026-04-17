@@ -113,6 +113,9 @@ int PlatformDawn::exec()
                         int absRow = doc.historySize() + t->cursorY();
                         info.cursorRowId = doc.rowIdForAbs(absRow);
                         info.cursorCol   = t->cursorX();
+                        info.oldestRowId = doc.rowIdForAbs(0);
+                        int total = static_cast<int>(doc.archiveSize()) + doc.historySize() + t->height();
+                        info.newestRowId = doc.rowIdForAbs(total - 1);
                         if (t->hasSelection()) {
                             const auto& sel = t->selection();
                             if (sel.valid && !sel.active) {
@@ -127,6 +130,21 @@ int PlatformDawn::exec()
                                 info.selectionEndRowId   = doc.rowIdForAbs(r1);
                                 info.selectionEndCol     = c1 + 1; // exclusive, matches getTextFromRows
                             }
+                        }
+                    }
+                    // Mouse position relative to this pane
+                    if (inputController_) {
+                        PaneRect pr = p->rect();
+                        double sx = inputController_->lastCursorX() * contentScaleX_;
+                        double sy = inputController_->lastCursorY() * contentScaleY_;
+                        double relX = sx - pr.x;
+                        double relY = sy - pr.y;
+                        if (relX >= 0 && relX < pr.w && relY >= 0 && relY < pr.h) {
+                            info.mouseInPane = true;
+                            info.mouseCellX  = static_cast<int>(relX / charWidth_);
+                            info.mouseCellY  = static_cast<int>(relY / lineHeight_);
+                            info.mousePixelX = static_cast<int>(relX);
+                            info.mousePixelY = static_cast<int>(relY);
                         }
                     }
                     return info;
@@ -383,6 +401,98 @@ int PlatformDawn::exec()
                     return;
                 }
             }
+        };
+        scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t rowId, int col) -> std::string {
+            for (auto& tab : tabManager_->tabs()) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    auto* te = p->terminal();
+                    if (!te) return {};
+                    const auto& doc = te->document();
+                    int abs = doc.absForRowId(rowId);
+                    if (abs < 0) return {};
+                    int screenRow = abs - doc.historySize();
+                    // getExtra works on screen rows; for history rows we need historyExtras
+                    const CellExtra* ex = nullptr;
+                    if (screenRow >= 0 && screenRow < te->height()) {
+                        ex = doc.getExtra(col, screenRow);
+                    } else if (abs < doc.historySize()) {
+                        auto* extras = doc.historyExtras(abs);
+                        if (extras) {
+                            auto it = extras->find(col);
+                            if (it != extras->end()) ex = &it->second;
+                        }
+                    }
+                    if (ex && ex->hyperlinkId) {
+                        const std::string* uri = te->hyperlinkURI(ex->hyperlinkId);
+                        if (uri) return *uri;
+                    }
+                    return {};
+                }
+            }
+            return {};
+        };
+        scbs.paneGetLinksFromRows = [this](Script::PaneId paneId, uint64_t startRowId, uint64_t endRowId, int limit)
+            -> std::vector<Script::AppCallbacks::LinkInfo>
+        {
+            std::vector<Script::AppCallbacks::LinkInfo> result;
+            for (auto& tab : tabManager_->tabs()) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    auto* te = p->terminal();
+                    if (!te) return result;
+                    const auto& doc = te->document();
+                    int startAbs = doc.absForRowId(startRowId);
+                    int endAbs   = doc.absForRowId(endRowId);
+                    if (startAbs < 0) return result;
+                    if (endAbs < 0) endAbs = doc.archiveSize() + doc.historySize() + te->height() - 1;
+
+                    int histSize = doc.historySize();
+                    int cols = te->width();
+                    uint32_t prevLinkId = 0;
+
+                    for (int abs = startAbs; abs <= endAbs; ++abs) {
+                        const std::unordered_map<int, CellExtra>* extras = nullptr;
+                        int screenRow = abs - histSize;
+                        if (screenRow >= 0 && screenRow < te->height())
+                            extras = doc.viewportExtras(screenRow, 0);
+                        else if (abs < doc.archiveSize() + histSize)
+                            extras = doc.historyExtras(abs);
+                        if (!extras) { prevLinkId = 0; continue; }
+
+                        for (int col = 0; col < cols; ++col) {
+                            auto it = extras->find(col);
+                            uint32_t linkId = (it != extras->end()) ? it->second.hyperlinkId : 0;
+                            if (linkId == 0) { prevLinkId = 0; continue; }
+                            if (linkId == prevLinkId) {
+                                // Extend current link span
+                                if (!result.empty()) {
+                                    result.back().endRowId = doc.rowIdForAbs(abs);
+                                    result.back().endCol = col + 1;
+                                }
+                                continue;
+                            }
+                            // New link
+                            const std::string* uri = te->hyperlinkURI(linkId);
+                            if (!uri) { prevLinkId = 0; continue; }
+                            result.push_back({*uri, doc.rowIdForAbs(abs), col, doc.rowIdForAbs(abs), col + 1});
+                            prevLinkId = linkId;
+                            if (limit > 0 && static_cast<int>(result.size()) >= limit) return result;
+                        }
+                        prevLinkId = 0; // reset across rows
+                    }
+                    return result;
+                }
+            }
+            return result;
+        };
+        scbs.getClipboard = [this](const std::string& source) -> std::string {
+            if (!window_) return {};
+            if (source == "primary") return window_->getPrimarySelection();
+            return window_->getClipboard();
+        };
+        scbs.setClipboard = [this](const std::string& source, const std::string& text) {
+            if (!window_) return;
+            if (source == "primary") window_->setPrimarySelection(text);
+            else window_->setClipboard(text);
         };
         scriptEngine_.setCallbacks(std::move(scbs));
     }

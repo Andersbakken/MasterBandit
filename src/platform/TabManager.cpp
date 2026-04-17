@@ -188,14 +188,17 @@ void TabManager::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
     if (prevId >= 0) {
         Pane* p = tab->layout()->pane(prevId);
         if (p) {
-            // Clear popup focus when pane loses focus
+            if (!p->focusedPopupId().empty() && host_.scriptEngine)
+                host_.scriptEngine->notifyFocusedPopupChanged(prevId, "");
             p->clearFocusedPopup();
             if (p->terminal()) p->terminal()->focusEvent(false);
         }
+        if (host_.scriptEngine) host_.scriptEngine->notifyPaneFocusChanged(prevId, false);
     }
     if (newId >= 0) {
         Pane* p = tab->layout()->pane(newId);
         if (p && p->terminal()) p->terminal()->focusEvent(true);
+        if (host_.scriptEngine) host_.scriptEngine->notifyPaneFocusChanged(newId, true);
     }
     if (host_.inputController) host_.inputController->refreshPointerShape();
 }

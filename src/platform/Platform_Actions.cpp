@@ -277,6 +277,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 // No popup focused — focus first popup
                 fp->setFocusedPopup(popups.front().id);
                 if (mainTerm) mainTerm->focusEvent(false);
+                scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups.front().id);
             } else {
                 // Find current popup index, cycle to next or back to main
                 int cur = -1;
@@ -287,9 +288,11 @@ void PlatformDawn::executeAction(const Action::Any& action)
                     // Last popup or not found — back to main terminal
                     fp->clearFocusedPopup();
                     if (mainTerm) mainTerm->focusEvent(true);
+                    scriptEngine_.notifyFocusedPopupChanged(fp->id(), "");
                 } else {
                     fp->setFocusedPopup(popups[cur + 1].id);
                     // Focus moves between popups — main terminal stays unfocused
+                    scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups[cur + 1].id);
                 }
             }
             // Mark pane dirty so cursor position updates in the pane texture

@@ -67,6 +67,10 @@ struct AppCallbacks {
         uint64_t selectionStartRowId = 0; int selectionStartCol = 0;
         uint64_t selectionEndRowId = 0;   int selectionEndCol = 0;
         uint64_t cursorRowId = 0; int cursorCol = 0;
+        uint64_t oldestRowId = 0; uint64_t newestRowId = 0;
+        bool mouseInPane = false;
+        int mouseCellX = 0; int mouseCellY = 0;
+        int mousePixelX = 0; int mousePixelY = 0;
     };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
@@ -108,6 +112,18 @@ struct AppCallbacks {
     std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h)> resizePopup;
     // Inject data into a popup's terminal.
     std::function<void(PaneId, const std::string& id, const std::string& data)> injectPopupData;
+    // Clipboard access. source is "clipboard" or "primary".
+    std::function<std::string(const std::string& source)> getClipboard;
+    std::function<void(const std::string& source, const std::string& text)> setClipboard;
+    // URL at a cell position (returns empty string if none).
+    std::function<std::string(PaneId, uint64_t rowId, int col)> paneUrlAt;
+    // Hyperlinks within a row-id range.
+    struct LinkInfo {
+        std::string url;
+        uint64_t startRowId; int startCol;
+        uint64_t endRowId;   int endCol;
+    };
+    std::function<std::vector<LinkInfo>(PaneId, uint64_t startRowId, uint64_t endRowId, int limit)> paneGetLinksFromRows;
 };
 
 class Engine {
@@ -168,6 +184,7 @@ public:
 
     bool hasPaneOutputFilters(PaneId pane) const;
     bool hasPaneInputFilters(PaneId pane) const;
+    bool hasPaneMouseMoveListeners(PaneId pane) const;
     bool hasOverlayOutputFilters(TabId tab) const;
     bool hasOverlayInputFilters(TabId tab) const;
 
@@ -182,6 +199,9 @@ public:
     void notifyOverlayDestroyed(TabId tab);
     void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
     void notifyForegroundProcessChanged(PaneId pane, const std::string& processName);
+    void notifyPaneFocusChanged(PaneId pane, bool focused);
+    void notifyFocusedPopupChanged(PaneId pane, const std::string& popupId);
+    void notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, int pixelY);
 
     void notifyCommandComplete(PaneId pane, const CommandInfo& rec);
 
@@ -206,6 +226,7 @@ public:
     const AppCallbacks& callbacks() const { return callbacks_; }
     void addPaneOutputFilter(PaneId pane, InstanceId instId);
     void addPaneInputFilter(PaneId pane, InstanceId instId);
+    void addPaneMouseMoveListener(PaneId pane, InstanceId instId);
     void addOverlayOutputFilter(TabId tab, InstanceId instId);
     void addOverlayInputFilter(TabId tab, InstanceId instId);
 
@@ -236,6 +257,7 @@ public:
         std::vector<TabId> ownedOverlays;
         std::vector<PaneId> paneOutputFilters; // panes with output filters from this instance
         std::vector<PaneId> paneInputFilters;
+        std::vector<PaneId> paneMouseMoveListeners;
         std::vector<TabId> overlayOutputFilters;
         std::vector<TabId> overlayInputFilters;
     };
@@ -304,6 +326,7 @@ private:
 
     std::unordered_map<PaneId, int> paneOutputFilterCount_;
     std::unordered_map<PaneId, int> paneInputFilterCount_;
+    std::unordered_map<PaneId, int> paneMouseMoveCount_;
     std::unordered_map<TabId, int> overlayOutputFilterCount_;
     std::unordered_map<TabId, int> overlayInputFilterCount_;
 

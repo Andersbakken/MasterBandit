@@ -31,6 +31,7 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"scripts",     Perm::GroupScripts},
     {"fs",          Perm::GroupFs},
     {"net",         Perm::GroupNet},
+    {"clipboard",   Perm::GroupClipboard},
     // Individual
     {"ui.overlay.create", Perm::UiOverlayCreate},
     {"ui.overlay.close",  Perm::UiOverlayClose},
@@ -49,6 +50,9 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"fs.read",           Perm::FsRead},
     {"fs.write",          Perm::FsWrite},
     {"net.listen.local",  Perm::NetListenLocal},
+    {"clipboard.read",    Perm::ClipboardRead},
+    {"clipboard.write",   Perm::ClipboardWrite},
+    {"pane.selection",    Perm::PaneSelection},
 };
 
 uint32_t parsePermissions(const std::string& permStr)
@@ -96,7 +100,8 @@ std::string permissionsToString(uint32_t perms)
         {Perm::GroupTabs,    "tabs"},
         {Perm::GroupScripts, "scripts"},
         {Perm::GroupFs,      "fs"},
-        {Perm::GroupNet,     "net"},
+        {Perm::GroupNet,       "net"},
+        {Perm::GroupClipboard, "clipboard"},
     };
 
     uint32_t remaining = perms;
@@ -127,6 +132,9 @@ std::string permissionsToString(uint32_t perms)
         {Perm::FsRead,          "fs.read"},
         {Perm::FsWrite,         "fs.write"},
         {Perm::NetListenLocal,  "net.listen.local"},
+        {Perm::ClipboardRead,   "clipboard.read"},
+        {Perm::ClipboardWrite,  "clipboard.write"},
+        {Perm::PaneSelection,   "pane.selection"},
     };
     for (const auto& b : bits) {
         if (remaining & b.bit) {

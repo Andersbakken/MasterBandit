@@ -35,6 +35,11 @@ enum Perm : uint32_t {
     FsWrite           = 1 << 14,  // read+write ~/.config/MasterBandit/<scriptname>/
     // net group
     NetListenLocal    = 1 << 15,  // bind WebSocket server on 127.0.0.1 or unix socket
+    // clipboard group
+    ClipboardRead     = 1 << 17,  // read system clipboard / primary selection
+    ClipboardWrite    = 1 << 18,  // write system clipboard / primary selection
+    // pane query group
+    PaneSelection     = 1 << 19,  // read pane.selection / pane.cursor
 
     // Group masks
     GroupUi      = UiOverlayCreate | UiOverlayClose | UiPopupCreate | UiPopupDestroy,
@@ -45,6 +50,7 @@ enum Perm : uint32_t {
     GroupScripts = ScriptsLoad | ScriptsUnload,
     GroupFs      = FsRead | FsWrite,
     GroupNet     = NetListenLocal,
+    GroupClipboard = ClipboardRead | ClipboardWrite,
 
     All          = 0xFFFFFFFF,
 };
@@ -64,7 +70,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 4;
+inline constexpr int kAllowlistVersion = 5;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

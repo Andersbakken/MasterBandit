@@ -199,6 +199,86 @@ TEST_CASE("OSC 8 with id= reuses same hyperlink entry")
     CHECK(exA->hyperlinkId == exB->hyperlinkId);
 }
 
+TEST_CASE("OSC 8 linkAt: hyperlink URI resolved from cell extra")
+{
+    TestTerminal t;
+    t.osc("8;;https://example.com");
+    t.feed("link");
+    t.osc("8;;");
+    t.feed(" plain");
+
+    const auto& doc = t.term.document();
+    // Row 0 is the only row, get its stable row ID
+    uint64_t rowId = doc.rowIdForAbs(doc.historySize());
+
+    // Cell 0 (inside link) should resolve to the URL
+    const CellExtra* ex0 = t.term.grid().getExtra(0, 0);
+    REQUIRE(ex0 != nullptr);
+    REQUIRE(ex0->hyperlinkId != 0);
+    const std::string* uri0 = t.term.hyperlinkURI(ex0->hyperlinkId);
+    REQUIRE(uri0 != nullptr);
+    CHECK(*uri0 == "https://example.com");
+
+    // Cell 3 (last char of "link") should also have it
+    const CellExtra* ex3 = t.term.grid().getExtra(3, 0);
+    REQUIRE(ex3 != nullptr);
+    CHECK(ex3->hyperlinkId != 0);
+
+    // Cell 5 (inside " plain") should not
+    const CellExtra* ex5 = t.term.grid().getExtra(5, 0);
+    CHECK((ex5 == nullptr || ex5->hyperlinkId == 0));
+}
+
+TEST_CASE("OSC 8 getLinksFromRows: multiple links on same row")
+{
+    TestTerminal t;
+    t.osc("8;;https://a.com");
+    t.feed("AA");
+    t.osc("8;;");
+    t.feed(" ");
+    t.osc("8;;https://b.com");
+    t.feed("BB");
+    t.osc("8;;");
+
+    // Verify two distinct hyperlinks exist
+    const CellExtra* exA = t.term.grid().getExtra(0, 0);
+    const CellExtra* exB = t.term.grid().getExtra(3, 0);
+    REQUIRE(exA != nullptr);
+    REQUIRE(exB != nullptr);
+    CHECK(exA->hyperlinkId != exB->hyperlinkId);
+
+    const std::string* uriA = t.term.hyperlinkURI(exA->hyperlinkId);
+    const std::string* uriB = t.term.hyperlinkURI(exB->hyperlinkId);
+    REQUIRE(uriA != nullptr);
+    REQUIRE(uriB != nullptr);
+    CHECK(*uriA == "https://a.com");
+    CHECK(*uriB == "https://b.com");
+
+    // Link A spans cols 0-1, link B spans cols 3-4
+    // Verify gap at col 2 has no link
+    const CellExtra* exGap = t.term.grid().getExtra(2, 0);
+    CHECK((exGap == nullptr || exGap->hyperlinkId == 0));
+}
+
+TEST_CASE("OSC 8 hyperlink spans multiple rows")
+{
+    TestTerminal t(10, 5); // narrow terminal
+    t.osc("8;;https://long.com");
+    t.feed("0123456789wrap"); // 14 chars on 10-col terminal wraps to row 2
+    t.osc("8;;");
+
+    // Row 0 cells should have the link
+    const CellExtra* ex0 = t.term.grid().getExtra(0, 0);
+    REQUIRE(ex0 != nullptr);
+    CHECK(ex0->hyperlinkId != 0);
+
+    // Row 1 (wrapped portion) should also have the link
+    const CellExtra* ex1 = t.term.grid().getExtra(0, 1);
+    REQUIRE(ex1 != nullptr);
+    CHECK(ex1->hyperlinkId != 0);
+    CHECK(ex0->hyperlinkId == ex1->hyperlinkId);
+}
+
 // ── OSC 99 (Desktop Notifications) ──────────────────────────────────────────
 
 TEST_CASE("OSC 99 fires notification on d=1")

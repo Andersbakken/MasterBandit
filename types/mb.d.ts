@@ -21,7 +21,7 @@
  */
 type MbPermission =
     // Groups
-    | "ui" | "io" | "shell" | "actions" | "tabs" | "scripts" | "fs" | "net"
+    | "ui" | "io" | "shell" | "actions" | "tabs" | "scripts" | "fs" | "net" | "clipboard"
     // Individual bits
     | "ui.overlay.create" | "ui.overlay.close"
     | "ui.popup.create"   | "ui.popup.destroy"
@@ -31,7 +31,9 @@ type MbPermission =
     | "tabs.create"       | "tabs.close"
     | "scripts.load"      | "scripts.unload"
     | "fs.read"           | "fs.write"
-    | "net.listen.local";
+    | "net.listen.local"
+    | "clipboard.read"    | "clipboard.write"
+    | "pane.selection";
 
 /** Comma-separated permission string, e.g. `"shell,net.listen.local"`. */
 type MbPermissionList = string;
@@ -39,6 +41,15 @@ type MbPermissionList = string;
 // ============================================================================
 // Mouse event
 // ============================================================================
+
+interface MbLinkInfo {
+    readonly url: string;
+    readonly startRowId: number;
+    readonly startCol: number;
+    readonly endRowId: number;
+    /** Exclusive — one past the last column of the link. */
+    readonly endCol: number;
+}
 
 interface MbMouseEvent {
     /** `"press"` | `"release"` (and possibly `"move"` for future use). */
@@ -124,10 +135,11 @@ interface MbPane {
     /** Active popups on this pane. */
     readonly popups: MbPopupInfo[];
     /**
-     * Current text selection, or `null` if nothing is selected.
+     * Current text selection, or `null` if nothing is selected or
+     * `pane.selection` permission not granted.
      * Start is always before or equal to end (normalized).
      * Column values are exclusive (one past the last selected column),
-     * matching `getTextFromRows` convention.
+     * matching `getTextFromRows` convention. Requires `pane.selection`.
      */
     readonly selection: {
         readonly startRowId: number;
@@ -136,11 +148,22 @@ interface MbPane {
         /** Exclusive — one past the last selected column. */
         readonly endCol: number;
     } | null;
-    /** Current cursor position. */
+    /** Current cursor position, or `null` if `pane.selection` permission not granted. Requires `pane.selection`. */
     readonly cursor: {
         readonly rowId: number;
         readonly col: number;
-    };
+    } | null;
+    /** Mouse position within this pane, or `null` if the mouse is outside. */
+    readonly mousePosition: {
+        readonly cellX: number;
+        readonly cellY: number;
+        readonly pixelX: number;
+        readonly pixelY: number;
+    } | null;
+    /** Stable row ID of the oldest row in the scrollback (archive + history + screen). */
+    readonly oldestRowId: number;
+    /** Stable row ID of the newest (bottom-most) row. */
+    readonly newestRowId: number;
     /**
      * Most recently completed command seen on this pane, or null. Requires
      * `shell.commands` permission (command records can contain secrets).
@@ -159,6 +182,16 @@ interface MbPane {
      * `startCol` is inclusive, `endCol` is exclusive (one past the last column).
      */
     getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
+    /**
+     * Return hyperlinks (OSC 8) within a row-id range. Each entry has the URL
+     * and the cell span it covers. `endCol` is exclusive. `limit` caps the
+     * number of results (0 = unlimited).
+     */
+    getLinksFromRows(startRowId: number, endRowId: number, limit?: number): MbLinkInfo[];
+    /**
+     * Return the URL (OSC 8 hyperlink) at a given cell, or `null` if none.
+     */
+    linkAt(rowId: number, col: number): string | null;
     /**
      * Return the stable row ID for a screen row (0 = top of visible screen).
      * Returns `null` if `screenRow` is out of range (≥ terminal height).
@@ -184,6 +217,12 @@ interface MbPane {
     addEventListener(event: "destroyed", fn: () => void): void;
     /** Fired when the pane's foreground process changes (e.g. shell → vim). */
     addEventListener(event: "foregroundProcessChanged", fn: (processName: string) => void): void;
+    /** Fired on mouse movement within the pane. Requires `ui`. */
+    addEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
+    /** Fired when the pane gains or loses focus. */
+    addEventListener(event: "focusChanged", fn: (focused: boolean) => void): void;
+    /** Fired when the focused popup changes. `popupId` is `null` when no popup is focused. */
+    addEventListener(event: "focusedPopupChanged", fn: (popupId: string | null) => void): void;
     /**
      * Fired when a handler-less OSC with the given number arrives. Payload is
      * the raw OSC body with the leading `N;` stripped. The event name is
@@ -203,6 +242,9 @@ interface MbPane {
     removeEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
     removeEventListener(event: "destroyed", fn: () => void): void;
     removeEventListener(event: "foregroundProcessChanged", fn: (processName: string) => void): void;
+    removeEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
+    removeEventListener(event: "focusChanged", fn: (focused: boolean) => void): void;
+    removeEventListener(event: "focusedPopupChanged", fn: (popupId: string | null) => void): void;
     removeEventListener(event: `osc:${number}`, fn: (payload: string) => void): void;
     removeEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
 }
@@ -396,6 +438,18 @@ interface MbGlobal {
     registerTcap(name: string, value: string): void;
     /** Remove a custom XTGETTCAP capability. */
     unregisterTcap(name: string): void;
+
+    // --- Clipboard ---
+    /**
+     * Read from the system clipboard. Requires `clipboard.read`.
+     * @param source `"clipboard"` (default) or `"primary"` (X11 primary selection).
+     */
+    getClipboard(source?: "clipboard" | "primary"): string;
+    /**
+     * Write to the system clipboard. Requires `clipboard.write`.
+     * @param source `"clipboard"` (default) or `"primary"` (X11 primary selection).
+     */
+    setClipboard(text: string, source?: "clipboard" | "primary"): void;
 
     // --- Lifecycle events ---
     /** Fires once per new pane. Fires on every loaded instance. */

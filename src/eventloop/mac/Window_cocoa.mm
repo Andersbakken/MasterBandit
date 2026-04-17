@@ -385,9 +385,15 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     }
     _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
 }
-- (void)mouseDragged:(NSEvent*)event  { [self mouseMoved:event]; }
-- (void)rightMouseDragged:(NSEvent*)event { [self mouseMoved:event]; }
-- (void)otherMouseDragged:(NSEvent*)event { [self mouseMoved:event]; }
+- (void)mouseDragged:(NSEvent*)event  { [self handleDrag:event]; }
+- (void)rightMouseDragged:(NSEvent*)event { [self handleDrag:event]; }
+- (void)otherMouseDragged:(NSEvent*)event { [self handleDrag:event]; }
+- (void)handleDrag:(NSEvent*)event {
+    // During drags, deliver coordinates even when outside the view bounds
+    // so that selection auto-scroll works when the mouse leaves the window.
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    _cppWindow->dispatchCursorPos(p.x, self.bounds.size.height - p.y);
+}
 
 - (void)scrollWheel:(NSEvent*)event {
     _cppWindow->dispatchScroll(event.scrollingDeltaX, event.scrollingDeltaY);

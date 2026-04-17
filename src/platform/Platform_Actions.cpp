@@ -110,7 +110,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             std::unique_ptr<Pane> extracted;
             uint64_t stamp = 0;
             {
-                std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 extracted = layout->extractPane(paneId);
                 if (extracted) {
                     // Drop the entry from the shadow copy so the next
@@ -252,7 +252,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             std::unique_ptr<Terminal> extracted;
             uint64_t stamp = 0;
             {
-                std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 extracted = tab->popOverlay();
                 renderThread_->renderState().hasOverlay = false;
                 renderThread_->renderState().overlay = nullptr;
@@ -372,7 +372,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
                     std::unique_ptr<Terminal> extracted;
                     uint64_t stamp = 0;
                     {
-                        std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                        std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                         tabManager_->removePtyPoll(fd);
                         auto& tabsVec = tabManager_->tabs();
                         for (int ti = 0; ti < static_cast<int>(tabsVec.size()); ++ti) {

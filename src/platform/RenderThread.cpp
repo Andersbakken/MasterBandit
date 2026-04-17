@@ -79,7 +79,7 @@ void RenderThread::applyPendingMutations()
 {
     // Called on the main thread at end of tick. Acquires mutex_,
     // transfers pending_ into renderState_, clears pending_.
-    std::lock_guard<std::mutex> plk(mutex_);
+    std::lock_guard<std::recursive_mutex> plk(mutex_);
 
     // Drain terminal exits under the lock so that terminal destruction
     // can't race the render thread's use of frameState_ term pointers.

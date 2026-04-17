@@ -44,7 +44,7 @@ public:
     struct Host {
         // Coarse lock; held by the main thread around structural mutations
         // so the render thread can't snapshot mid-change.
-        std::mutex* platformMutex = nullptr;
+        std::recursive_mutex* platformMutex = nullptr;
 
         // Script engine — notifications on tab/pane create/destroy,
         // resize, and input/output filter queries.

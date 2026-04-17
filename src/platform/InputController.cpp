@@ -74,7 +74,7 @@ Window::CursorStyle InputController::pointerShapeNameToCursorStyle(const std::st
 // — the Window backend (XCBWindow/CocoaWindow) does all conversion before calling here.
 void InputController::onKey(int key, int scancode, int action, int mods)
 {
-    std::lock_guard<std::mutex> plk(*host_.platformMutex);
+    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
     TerminalEmulator* term = host_.activeTerm();
     if (!term) return;
 
@@ -156,7 +156,7 @@ void InputController::onKey(int key, int scancode, int action, int mods)
 
 void InputController::onChar(uint32_t codepoint)
 {
-    std::lock_guard<std::mutex> plk(*host_.platformMutex);
+    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
     TerminalEmulator* term = host_.activeTerm();
     if (!term) return;
 
@@ -224,7 +224,7 @@ int InputController::resolveTabBarClickIndex(double sx, double sy)
 
 void InputController::onMouseButton(int button, int action, int mods)
 {
-    std::lock_guard<std::mutex> plk(*host_.platformMutex);
+    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
     Tab* tab = host_.activeTab();
     if (!tab) return;
 
@@ -505,7 +505,7 @@ void InputController::onMouseButton(int button, int action, int mods)
 
 void InputController::onCursorPos(double x, double y)
 {
-    std::lock_guard<std::mutex> plk(*host_.platformMutex);
+    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
     Tab* tab = host_.activeTab();
     if (!tab) return;
 

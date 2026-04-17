@@ -370,7 +370,7 @@ void TabManager::closeTab(int idx)
     std::unique_ptr<Tab> extracted;
     uint64_t stamp = 0;
     {
-        std::lock_guard<std::mutex> plk(*host_.platformMutex);
+        std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
         extracted = std::move(tabs_[idx]);
         tabs_.erase(tabs_.begin() + idx);
         if (activeTabIdx_ >= static_cast<int>(tabs_.size()))

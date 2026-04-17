@@ -26,7 +26,7 @@ class TerminalEmulator;
 class InputController {
 public:
     struct Host {
-        std::mutex* platformMutex = nullptr;
+        std::recursive_mutex* platformMutex = nullptr;
         Script::Engine* scriptEngine = nullptr;
 
         // EventLoop / Window exist only after createTerminal() initializes them;

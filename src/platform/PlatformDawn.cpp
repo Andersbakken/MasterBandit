@@ -141,7 +141,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     host.headless = isHeadless();
     host.textSystem = &textSystem_;
     host.snapshotUnderLock = [this](RenderFrameState& out) -> bool {
-        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
         if (fbWidth_ == 0 || fbHeight_ == 0) return false;
         RenderFrameState& rs = renderThread_->renderState();
         out = rs;
@@ -157,7 +157,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         return true;
     };
     host.takeSurfaceReconfigureRequest = [this]() -> std::tuple<bool, uint32_t, uint32_t> {
-        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
         RenderFrameState& rs = renderThread_->renderState();
         if (rs.surfaceNeedsReconfigure) {
             rs.surfaceNeedsReconfigure = false;
@@ -166,7 +166,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         return {false, 0u, 0u};
     };
     host.takeViewportSizeChangedRequest = [this]() -> bool {
-        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
         RenderFrameState& rs = renderThread_->renderState();
         if (rs.viewportSizeChanged) {
             rs.viewportSizeChanged = false;
@@ -175,7 +175,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         return false;
     };
     host.currentFbSize = [this]() -> std::pair<uint32_t, uint32_t> {
-        std::lock_guard<std::mutex> lk(renderThread_->mutex());
+        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
         return {fbWidth_, fbHeight_};
     };
     host.postToMain = [this](std::function<void()> fn) { renderThread_->postToMain(std::move(fn)); };
@@ -629,7 +629,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 if (dy == 0) return;
                 // If the active terminal has mouse reporting, send wheel
                 // events to the application instead of scrolling the viewport.
-                std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 Tab* tab = activeTab();
                 if (tab) {
                     TerminalEmulator* term = nullptr;
@@ -668,7 +668,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 // Apply any debounced resize captured during the drag so the
                 // final frame reflects the true window geometry.
                 {
-                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                     flushPendingFramebufferResize();
                 }
                 setNeedsRedraw();
@@ -963,7 +963,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     // Init per-pane render state
     {
-        std::lock_guard<std::mutex> plk(renderThread_->mutex());
+        std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
         auto& rs = renderEngine_->paneRenderPrivateMap()[paneId];
         rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
     }
@@ -1065,7 +1065,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 TerminalEmulator* te = p->terminal();
                 if (te) {
                     int c = te->width(), r = te->height();
-                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                     auto& rs2 = renderEngine_->paneRenderPrivateMap()[p->id()];
                     rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
                 }
@@ -1205,7 +1205,7 @@ void PlatformDawn::onResizeDebounceFire(uint32_t w, uint32_t h)
     // The heavy work (terminal reflow, GPU buffer updates, dividers)
     // is deferred to onLiveResizeEnd → flushPendingFramebufferResize.
     {
-        std::lock_guard<std::mutex> plk(renderThread_->mutex());
+        std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
         fbWidth_  = w;
         fbHeight_ = h;
         renderThread_->pending().surfaceNeedsReconfigure = true;
@@ -1227,7 +1227,7 @@ void PlatformDawn::applyConfig(const Config& config)
     // render thread's shapeRun/shapeText/getFont calls.
     // Internal helpers (applyFramebufferResize, refreshDividers, etc.)
     // expect the lock to be held already.
-    std::lock_guard<std::mutex> plk(renderThread_->mutex());
+    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
 
     // Keybindings
     std::vector<Binding> allKey = defaultBindings();
@@ -1375,7 +1375,7 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 {
     if (width <= 0 || height <= 0) return;
 
-    std::lock_guard<std::mutex> plk(renderThread_->mutex());
+    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
 
     // During a live window drag, debounce the full resize work (surface
     // reconfigure + layout recompute + pane/terminal reflow) to 25 ms.

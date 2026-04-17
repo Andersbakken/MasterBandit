@@ -291,7 +291,7 @@ int PlatformDawn::exec()
             std::unique_ptr<Terminal> extracted;
             uint64_t stamp = 0;
             {
-                std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 extracted = tab->popOverlay();
                 // Clear stale pointer in the shadow copy so the next
                 // snapshot doesn't hand the render thread a pointer into
@@ -369,7 +369,7 @@ int PlatformDawn::exec()
                 std::optional<PopupPane> extracted;
                 uint64_t stamp = 0;
                 {
-                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                     extracted = p->extractPopup(popupId);
                     if (!extracted) return;
                     // Mirror the removal into the shadow copy so the next
@@ -585,7 +585,7 @@ int PlatformDawn::exec()
             // state (notably terminalExited) defer to pendingExits_ and are
             // drained below under the lock.
             {
-                std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 // Advance progress animations
                 bool hasAnim = false;
                 for (auto& t : tabManager_->tabs()) {

@@ -91,7 +91,13 @@ private:
     // Shared state accessors — available to PlatformDawn via friendship.
     // Callers must hold mutex() except where noted by the existing thread
     // contract.
-    std::mutex& mutex() { return mutex_; }
+    //
+    // Recursive because some main-thread structural mutations re-enter
+    // through JS / Terminal callbacks while already holding the lock (e.g.
+    // InputController::onKey holds it across keyPressEvent, which may fire
+    // a popup input callback that closes the popup via
+    // scbs.destroyPopup → reacquires this mutex to extract + graveyard).
+    std::recursive_mutex& mutex() { return mutex_; }
     PendingMutations& pending() { return pending_; }
     RenderFrameState& renderState() { return renderState_; }
 
@@ -102,8 +108,8 @@ private:
     // Coarse mutex serializing render-thread reads against main-thread
     // structural mutations (tab/pane/popup create/destroy, tab switch,
     // resize). Terminal state is separately protected by
-    // TerminalEmulator::mutex().
-    std::mutex                      mutex_;
+    // TerminalEmulator::mutex(). Recursive — see the mutex() accessor.
+    std::recursive_mutex            mutex_;
     std::mutex                      renderCvMutex_;
     std::condition_variable         renderCv_;
     std::atomic<bool>               renderWake_ { false };

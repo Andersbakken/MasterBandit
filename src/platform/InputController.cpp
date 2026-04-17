@@ -260,13 +260,15 @@ void InputController::onMouseButton(int button, int action, int mods)
             : (fp2 ? static_cast<TerminalEmulator*>(fp2->terminal()) : nullptr);
         if (term2) {
             PaneRect pr = fp2 ? fp2->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
+            double cellRelX = sx - pr.x - padLeft;
+            double cellRelY = sy - pr.y - padTop;
             MouseEvent ev;
-            ev.x = static_cast<int>((sx - pr.x) / charWidth);
-            ev.y = static_cast<int>((sy - pr.y) / lineHeight);
+            ev.x = static_cast<int>(cellRelX / charWidth);
+            ev.y = static_cast<int>(cellRelY / lineHeight);
             ev.globalX = static_cast<int>(sx);
             ev.globalY = static_cast<int>(sy);
-            ev.pixelX = static_cast<int>(sx - pr.x);
-            ev.pixelY = static_cast<int>(sy - pr.y);
+            ev.pixelX = static_cast<int>(cellRelX);
+            ev.pixelY = static_cast<int>(cellRelY);
             ev.button = NoButton;
             ev.modifiers = lastMods_;
             term2->mouseReleaseEvent(&ev);
@@ -365,12 +367,13 @@ void InputController::onMouseButton(int button, int action, int mods)
     auto matched = matchMouseBinding(stroke, mouseBindings_);
 
     if (matched) {
-        // Compute cell coordinates relative to pane
+        // Compute cell coordinates relative to pane (subtract padding so col 0
+        // begins at the first cell, not the pane edge)
         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
-        double relX = sx - pr.x;
-        double relY = sy - pr.y;
-        int cellCol = static_cast<int>(relX / charWidth);
-        int cellRow = static_cast<int>(relY / lineHeight);
+        double cellRelX = sx - pr.x - padLeft;
+        double cellRelY = sy - pr.y - padTop;
+        int cellCol = static_cast<int>(cellRelX / charWidth);
+        int cellRow = static_cast<int>(cellRelY / lineHeight);
 
         // Populate mouseCtx_ before dispatching
         mouseCtx_.cellCol = cellCol;
@@ -478,16 +481,16 @@ void InputController::onMouseButton(int button, int action, int mods)
     // No binding match — if grabbed, forward to terminal's mouse reporting
     if (mode == MouseMode::Grabbed) {
         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
-        double relX = sx - pr.x;
-        double relY = sy - pr.y;
+        double cellRelX = sx - pr.x - padLeft;
+        double cellRelY = sy - pr.y - padTop;
 
         MouseEvent ev;
-        ev.x = static_cast<int>(relX / charWidth);
-        ev.y = static_cast<int>(relY / lineHeight);
+        ev.x = static_cast<int>(cellRelX / charWidth);
+        ev.y = static_cast<int>(cellRelY / lineHeight);
         ev.globalX = static_cast<int>(sx);
         ev.globalY = static_cast<int>(sy);
-        ev.pixelX = static_cast<int>(relX);
-        ev.pixelY = static_cast<int>(relY);
+        ev.pixelX = static_cast<int>(cellRelX);
+        ev.pixelY = static_cast<int>(cellRelY);
         ev.modifiers = lastMods_;
         switch (button) {
         case static_cast<int>(LeftButton):   ev.button = LeftButton; break;
@@ -520,6 +523,8 @@ void InputController::onCursorPos(double x, double y)
     const float contentScaleY = host_.contentScaleY();
     const float charWidth = host_.charWidth();
     const float lineHeight = host_.lineHeight();
+    const float padLeft = host_.padLeft();
+    const float padTop = host_.padTop();
     const uint32_t fbWidth = host_.fbWidth();
     const uint32_t fbHeight = host_.fbHeight();
 
@@ -558,31 +563,35 @@ void InputController::onCursorPos(double x, double y)
             Pane* hp = tab->layout()->pane(hoveredPaneId);
             if (hp) {
                 PaneRect hpr = hp->rect();
-                double hrx = sx - hpr.x;
-                double hry = sy - hpr.y;
+                double hcx = sx - hpr.x - padLeft;
+                double hcy = sy - hpr.y - padTop;
                 host_.scriptEngine->notifyPaneMouseMove(
                     hoveredPaneId,
-                    static_cast<int>(hrx / charWidth),
-                    static_cast<int>(hry / lineHeight),
-                    static_cast<int>(hrx),
-                    static_cast<int>(hry));
+                    static_cast<int>(hcx / charWidth),
+                    static_cast<int>(hcy / lineHeight),
+                    static_cast<int>(hcx),
+                    static_cast<int>(hcy));
             }
         }
     }
 
     PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
+    // relX/relY: pane-relative pixels (used for pane bounds tests).
+    // cellRelX/cellRelY: cell-grid-relative pixels (used for cell math + pixel reporting).
     double relX = sx - pr.x;
     double relY = sy - pr.y;
+    double cellRelX = relX - padLeft;
+    double cellRelY = relY - padTop;
 
     // Helper to build a MouseEvent from current state
     auto buildMouseEvent = [&]() {
         MouseEvent ev;
-        ev.x = static_cast<int>(relX / charWidth);
-        ev.y = static_cast<int>(relY / lineHeight);
+        ev.x = static_cast<int>(cellRelX / charWidth);
+        ev.y = static_cast<int>(cellRelY / lineHeight);
         ev.globalX = static_cast<int>(sx);
         ev.globalY = static_cast<int>(sy);
-        ev.pixelX = static_cast<int>(relX);
-        ev.pixelY = static_cast<int>(relY);
+        ev.pixelX = static_cast<int>(cellRelX);
+        ev.pixelY = static_cast<int>(cellRelY);
         ev.button = NoButton;
         ev.modifiers = lastMods_;
         if ((heldButtons_ & LeftButton) != 0)

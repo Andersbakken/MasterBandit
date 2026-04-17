@@ -123,11 +123,17 @@ interface MbPane {
     readonly foregroundProcess: string;
     /** Active popups on this pane. */
     readonly popups: MbPopupInfo[];
-    /** Current text selection, or `null` if nothing is selected. */
+    /**
+     * Current text selection, or `null` if nothing is selected.
+     * Start is always before or equal to end (normalized).
+     * Column values are exclusive (one past the last selected column),
+     * matching `getTextFromRows` convention.
+     */
     readonly selection: {
         readonly startRowId: number;
         readonly startCol: number;
         readonly endRowId: number;
+        /** Exclusive — one past the last selected column. */
         readonly endCol: number;
     } | null;
     /** Current cursor position. */
@@ -150,7 +156,7 @@ interface MbPane {
      * Extract plain UTF-8 text from a stable row-id range (inclusive on both
      * ends). Row IDs come from `MbCommand` fields or from `rowIdAt()`. Returns
      * an empty string if the start row has been evicted from the archive.
-     * `startCol`/`endCol` bound the columns on the first/last row.
+     * `startCol` is inclusive, `endCol` is exclusive (one past the last column).
      */
     getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /**
@@ -284,7 +290,7 @@ interface MbOverlay {
     /** Close this overlay. */
     close(): void;
 
-    /** Extract plain text from a stable row-id range (inclusive). */
+    /** Extract plain text from a stable row-id range. `startCol` inclusive, `endCol` exclusive. */
     getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /** Stable row ID for a screen row (0 = top). Returns null if out of range. */
     rowIdAt(screenRow: number): number | null;

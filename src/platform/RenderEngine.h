@@ -49,6 +49,13 @@ public:
         // DebugIPC* (may be null).
         std::function<DebugIPC*()> debugIPC;
 
+        // Called on the render thread at the end of every renderFrame()
+        // invocation (including early returns), after all local pointers
+        // into frameState_ have gone out of scope. Bumps the
+        // RenderThread::completedFrames() counter that the main-thread
+        // Graveyard uses to know when deferred objects are safe to free.
+        std::function<void()> notifyFrameCompleted;
+
         bool headless = false;
     };
 
@@ -92,13 +99,6 @@ public:
     const PaneRenderPrivate* paneRenderPrivate(int paneId) const {
         auto it = paneRenderPrivate_.find(paneId);
         return it == paneRenderPrivate_.end() ? nullptr : &it->second;
-    }
-
-    // Invoked from the main thread (under platformMutex_) when an overlay is
-    // popped, to clear any stale pointer cached in frameState_.
-    void clearOverlayFromFrameState() {
-        frameState_.hasOverlay = false;
-        frameState_.overlay = nullptr;
     }
 
     // Destroy all render-thread-owned resources. Must be called after the

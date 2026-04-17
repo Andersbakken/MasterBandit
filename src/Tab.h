@@ -24,7 +24,10 @@ public:
     // Full-screen overlay (kitty-style): covers the entire tab's layout area.
     // Not shown in the tab bar.
     void pushOverlay(std::unique_ptr<Terminal> t);
-    void popOverlay();
+    // Pop the top overlay and return it so the caller can stage it into
+    // the main-thread graveyard. Fires onOverlayPopped(masterFD) before
+    // returning. Returns nullptr if there is no overlay.
+    std::unique_ptr<Terminal> popOverlay();
     bool hasOverlay() const { return !overlays_.empty(); }
     Terminal* topOverlay();
 

@@ -101,7 +101,31 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (inputController_) inputController_->erasePaneCursorStyle(paneId);
 
             scriptEngine_.notifyPaneDestroyed(paneId);
-            layout->removePane(paneId);
+
+            // Extract the Pane under the render-thread mutex and stage it
+            // into the graveyard. The render thread may still hold raw
+            // pointers to this Pane's Terminal (and its popups' Terminals)
+            // from an in-flight frame; the stamp ensures we wait for that
+            // frame to complete before destructors run.
+            std::unique_ptr<Pane> extracted;
+            uint64_t stamp = 0;
+            {
+                std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                extracted = layout->extractPane(paneId);
+                if (extracted) {
+                    // Drop the entry from the shadow copy so the next
+                    // snapshot doesn't carry a dead pointer forward.
+                    auto& panes = renderThread_->renderState().panes;
+                    panes.erase(std::remove_if(panes.begin(), panes.end(),
+                        [paneId](const RenderPaneInfo& rpi) { return rpi.id == paneId; }),
+                        panes.end());
+                    if (renderThread_->renderState().focusedPaneId == paneId)
+                        renderThread_->renderState().focusedPaneId = layout->focusedPaneId();
+                }
+                stamp = renderThread_->completedFrames();
+            }
+            if (extracted) graveyard_.defer(std::move(extracted), stamp);
+
             tabManager_->resizeAllPanesInTab(tab);
             tabManager_->notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
             tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
@@ -223,17 +247,21 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::PushOverlay&) { /* TODO */ },
         [&](const Action::PopOverlay&) {
             Tab* tab = activeTab();
-            if (tab && tab->hasOverlay()) {
-                scriptEngine_.notifyOverlayDestroyed(tabManager_->activeTabIdx());
+            if (!tab || !tab->hasOverlay()) return;
+            scriptEngine_.notifyOverlayDestroyed(tabManager_->activeTabIdx());
+            std::unique_ptr<Terminal> extracted;
+            uint64_t stamp = 0;
+            {
                 std::lock_guard<std::mutex> plk(renderThread_->mutex());
-                tab->popOverlay();
+                extracted = tab->popOverlay();
                 renderThread_->renderState().hasOverlay = false;
                 renderThread_->renderState().overlay = nullptr;
-                if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
-                renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-                if (inputController_) inputController_->refreshPointerShape();
-                setNeedsRedraw();
+                stamp = renderThread_->completedFrames();
             }
+            if (extracted) graveyard_.defer(std::move(extracted), stamp);
+            renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
+            if (inputController_) inputController_->refreshPointerShape();
+            setNeedsRedraw();
         },
         [&](const Action::IncreaseFontSize&) { adjustFontSize(1.0f);  },
         [&](const Action::DecreaseFontSize&) { adjustFontSize(-1.0f); },
@@ -341,22 +369,24 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 // Defer cleanup — we're called from Terminal::readFromFD.
                 int fd = t->masterFD();
                 eventLoop_->addTimer(0, false, [this, tab, fd]() {
-                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
-                    tabManager_->removePtyPoll(fd);
-                    auto& tabsVec = tabManager_->tabs();
-                    for (int ti = 0; ti < static_cast<int>(tabsVec.size()); ++ti) {
-                        if (tabsVec[ti].get() == tab) {
-                            scriptEngine_.notifyOverlayDestroyed(ti);
-                            break;
+                    std::unique_ptr<Terminal> extracted;
+                    uint64_t stamp = 0;
+                    {
+                        std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                        tabManager_->removePtyPoll(fd);
+                        auto& tabsVec = tabManager_->tabs();
+                        for (int ti = 0; ti < static_cast<int>(tabsVec.size()); ++ti) {
+                            if (tabsVec[ti].get() == tab) {
+                                scriptEngine_.notifyOverlayDestroyed(ti);
+                                break;
+                            }
                         }
+                        extracted = tab->popOverlay();
+                        renderThread_->renderState().hasOverlay = false;
+                        renderThread_->renderState().overlay = nullptr;
+                        stamp = renderThread_->completedFrames();
                     }
-                    tab->popOverlay();
-                    // Clear stale pointer in renderThread_->renderState() immediately — the
-                    // render thread may wake before the next applyPendingMutations()
-                    // rebuilds the shadow copy via buildRenderFrameState().
-                    renderThread_->renderState().hasOverlay = false;
-                    renderThread_->renderState().overlay = nullptr;
-                    if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
+                    if (extracted) graveyard_.defer(std::move(extracted), stamp);
                     renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
                     if (inputController_) inputController_->refreshPointerShape();
                     setNeedsRedraw();

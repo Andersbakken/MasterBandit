@@ -80,14 +80,14 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
     return newId;
 }
 
-void Layout::removePane(int paneId)
+std::unique_ptr<Pane> Layout::extractPane(int paneId)
 {
-    if (!mRoot) return;
+    if (!mRoot) return nullptr;
 
     // Can't remove the last pane
     if (mRoot->isLeaf && mRoot->paneId == paneId) {
-        spdlog::warn("Layout::removePane: cannot remove last pane");
-        return;
+        spdlog::warn("Layout::extractPane: cannot remove last pane");
+        return nullptr;
     }
 
     // Find sibling before modifying the tree
@@ -95,11 +95,17 @@ void Layout::removePane(int paneId)
 
     removeLeafRecursive(mRoot, paneId);
 
-    // Remove from panes list
-    mPanes.erase(std::remove_if(mPanes.begin(), mPanes.end(),
-                                [paneId](const std::unique_ptr<Pane>& p) {
-                                    return p->id() == paneId;
-                                }), mPanes.end());
+    // Extract from panes list (move-out then erase, so the Pane survives
+    // for the caller to hand to the Graveyard).
+    std::unique_ptr<Pane> extracted;
+    auto it = std::find_if(mPanes.begin(), mPanes.end(),
+                           [paneId](const std::unique_ptr<Pane>& p) {
+                               return p->id() == paneId;
+                           });
+    if (it != mPanes.end()) {
+        extracted = std::move(*it);
+        mPanes.erase(it);
+    }
 
     if (mFocusedPaneId == paneId) {
         mFocusedPaneId = (newFocus >= 0) ? newFocus
@@ -108,6 +114,7 @@ void Layout::removePane(int paneId)
     if (mZoomedPaneId == paneId) {
         mZoomedPaneId = -1;
     }
+    return extracted;
 }
 
 bool Layout::removeLeafRecursive(std::unique_ptr<LayoutNode>& node, int paneId)

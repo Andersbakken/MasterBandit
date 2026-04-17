@@ -637,6 +637,15 @@ void RenderEngine::renderTabBar()
 
 void RenderEngine::renderFrame()
 {
+    // Bump the frame counter on every exit from this function (including
+    // early returns), after all locals that may alias frameState_ pointers
+    // have been destroyed. The Graveyard on the main thread waits for this
+    // counter to advance past an entry's stamp before freeing it.
+    struct FrameCompletionGuard {
+        const std::function<void()>* notify;
+        ~FrameCompletionGuard() { if (notify && *notify) (*notify)(); }
+    } frameGuard { &host_.notifyFrameCompleted };
+
     const bool headless = host_.headless;
 
     // Check for pending surface reconfiguration BEFORE acquiring the swapchain

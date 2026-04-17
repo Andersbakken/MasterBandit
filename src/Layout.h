@@ -30,8 +30,12 @@ public:
     // newIsFirst=true places the new pane as the first (left/top) child.
     int splitPane(int paneId, LayoutNode::Dir dir, float ratio = 0.5f, bool newIsFirst = false);
 
-    // Remove a pane; its sibling collapses up to fill the parent split
-    void removePane(int paneId);
+    // Remove a pane; its sibling collapses up to fill the parent split.
+    // Returns the extracted Pane so callers can defer its destruction
+    // (Terminal lifetime must extend past the render thread's current
+    // frame). Returns nullptr if the pane wasn't found or it would leave
+    // the tab empty.
+    std::unique_ptr<Pane> extractPane(int paneId);
 
     Pane* pane(int paneId);
     const std::vector<std::unique_ptr<Pane>>& panes() const { return mPanes; }

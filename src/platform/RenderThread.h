@@ -73,6 +73,20 @@ public:
     // renderState_, calls host_.buildRenderFrameState(), clears pending_.
     void applyPendingMutations();
 
+    // Number of renderFrame() invocations the render thread has completed.
+    // Used by Graveyard to defer destruction of Terminal-owning objects
+    // until at least one frame has ended since they were staged — which
+    // guarantees that any frame that held a raw pointer to them at stage
+    // time has returned and released its local frameState_ references.
+    // Incremented by the render thread at the end of each renderFrame via
+    // notifyFrameCompleted(). Read by the main thread.
+    uint64_t completedFrames() const {
+        return completedFrames_.load(std::memory_order_acquire);
+    }
+    void notifyFrameCompleted() {
+        completedFrames_.fetch_add(1, std::memory_order_release);
+    }
+
 private:
     // Shared state accessors — available to PlatformDawn via friendship.
     // Callers must hold mutex() except where noted by the existing thread
@@ -116,4 +130,7 @@ private:
     // parse completes.
     std::mutex                      deferredMainMutex_;
     std::vector<std::function<void()>> deferredMain_;
+
+    // Frame-completion counter. See completedFrames() / notifyFrameCompleted().
+    std::atomic<uint64_t>           completedFrames_ { 0 };
 };

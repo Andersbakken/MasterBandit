@@ -287,18 +287,23 @@ int PlatformDawn::exec()
         scbs.popOverlay = [this](Script::TabId tabId) {
             Tab* tab = tabManager_->tabAt(tabId);
             if (!tab) return;
-            if (tab->hasOverlay()) {
+            if (!tab->hasOverlay()) return;
+            std::unique_ptr<Terminal> extracted;
+            uint64_t stamp = 0;
+            {
                 std::lock_guard<std::mutex> plk(renderThread_->mutex());
-                tab->popOverlay();
-                // Clear stale pointer — render thread may read renderThread_->renderState()
-                // before the next buildRenderFrameState() runs.
+                extracted = tab->popOverlay();
+                // Clear stale pointer in the shadow copy so the next
+                // snapshot doesn't hand the render thread a pointer into
+                // the graveyard-bound Terminal.
                 renderThread_->renderState().hasOverlay = false;
                 renderThread_->renderState().overlay = nullptr;
-                if (renderEngine_) renderEngine_->clearOverlayFromFrameState();
-                renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-                if (tabId == tabManager_->activeTabIdx() && inputController_) inputController_->refreshPointerShape();
-                setNeedsRedraw();
+                stamp = renderThread_->completedFrames();
             }
+            if (extracted) graveyard_.defer(std::move(extracted), stamp);
+            renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
+            if (tabId == tabManager_->activeTabIdx() && inputController_) inputController_->refreshPointerShape();
+            setNeedsRedraw();
         };
         scbs.createTab = [this]() -> int {
             createTab();
@@ -352,23 +357,48 @@ int PlatformDawn::exec()
         };
         scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
             for (auto& tab : tabManager_->tabs()) {
-                if (Pane* p = tab->layout()->pane(paneId)) {
-                    bool wasPopupFocused = (p->focusedPopupId() == popupId);
-                    p->destroyPopup(popupId);
-                    Terminal* t = p->terminal();
-                    if (wasPopupFocused && t && p->popups().empty())
-                        t->focusEvent(true);
-                    if (t) t->grid().markAllDirty();
-                    // Queue popup render state cleanup
-                    std::string key = popupStateKey(paneId, popupId);
-                    renderThread_->pending().structuralOps.push_back(
-                        PendingMutations::DestroyPopupState{paneId, popupId});
-                    renderThread_->pending().releasePopupTextures.push_back(key);
-                    // Dirty parent pane
-                    renderThread_->pending().dirtyPanes.insert(paneId);
-                    setNeedsRedraw();
-                    return;
+                Pane* p = tab->layout()->pane(paneId);
+                if (!p) continue;
+                bool wasPopupFocused = (p->focusedPopupId() == popupId);
+
+                // Extract the popup and stage it into the graveyard under
+                // the render-thread mutex. The mutex ensures the render
+                // thread isn't currently snapshotting, and the stamp taken
+                // now will be surpassed once the frame that may already
+                // hold a raw pointer to this popup's Terminal completes.
+                std::optional<PopupPane> extracted;
+                uint64_t stamp = 0;
+                {
+                    std::lock_guard<std::mutex> plk(renderThread_->mutex());
+                    extracted = p->extractPopup(popupId);
+                    if (!extracted) return;
+                    // Mirror the removal into the shadow copy so the next
+                    // snapshot doesn't hand the render thread a pointer
+                    // into the extracted (graveyard-bound) Terminal.
+                    for (auto& rpi : renderThread_->renderState().panes) {
+                        if (rpi.id != paneId) continue;
+                        auto& popups = rpi.popups;
+                        popups.erase(std::remove_if(popups.begin(), popups.end(),
+                            [&popupId](const RenderPanePopupInfo& pi) { return pi.id == popupId; }),
+                            popups.end());
+                        if (rpi.focusedPopupId == popupId) rpi.focusedPopupId.clear();
+                        break;
+                    }
+                    stamp = renderThread_->completedFrames();
                 }
+                graveyard_.deferValue(std::move(*extracted), stamp);
+
+                Terminal* t = p->terminal();
+                if (wasPopupFocused && t && p->popups().empty())
+                    t->focusEvent(true);
+                if (t) t->grid().markAllDirty();
+                std::string key = popupStateKey(paneId, popupId);
+                renderThread_->pending().structuralOps.push_back(
+                    PendingMutations::DestroyPopupState{paneId, popupId});
+                renderThread_->pending().releasePopupTextures.push_back(key);
+                renderThread_->pending().dirtyPanes.insert(paneId);
+                setNeedsRedraw();
+                return;
             }
         };
         scbs.resizePopup = [this](Script::PaneId paneId, const std::string& popupId,
@@ -592,6 +622,15 @@ int PlatformDawn::exec()
             // inside the lock so that terminal destruction can't race the
             // render thread's use of frameState_ term pointers.
             applyPendingMutations();
+
+            // Free graveyard entries whose stamp has been surpassed by a
+            // completed render frame. Entries were staged from destroy
+            // sites under the render-thread mutex, so any frame in flight
+            // at stage time has advanced the counter by now; its
+            // frameState_ references are out of scope and the held
+            // Terminals can safely run their destructors.
+            if (renderThread_)
+                graveyard_.sweep(renderThread_->completedFrames());
 
             // Flush any pending TIOCSWINSZ on the main thread so the render
             // thread never mutates terminal state.

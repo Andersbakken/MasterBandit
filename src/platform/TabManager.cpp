@@ -1,5 +1,6 @@
 #include "TabManager.h"
 
+#include "Graveyard.h"
 #include "InputController.h"
 #include "Layout.h"
 #include "Pane.h"
@@ -12,6 +13,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cmath>
 
 static void collectFirstPaneDividers(const LayoutNode* node, int divPx,
@@ -335,13 +337,16 @@ void TabManager::closeTab(int idx)
     if (tabs_.empty() || idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
     if (tabs_.size() == 1) return; // can't close the last tab
 
-    // Stop PTY polls for all terminals in this tab
+    // Stop PTY polls for all terminals in this tab. Queue render state
+    // cleanup and fire script notifications before the Tab leaves its
+    // slot — scripts and structural-op consumers observe the pre-destroy
+    // state, while the actual C++ destruction is deferred via the
+    // graveyard below.
     Tab* tab = tabs_[idx].get();
     for (auto& panePtr : tab->layout()->panes()) {
         if (auto* t = panePtr->terminal()) {
             removePtyPoll(t->masterFD());
         }
-        // Queue render state cleanup
         host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{panePtr->id()});
         for (const auto& popup : panePtr->popups()) {
             std::string key = popupStateKey(panePtr->id(), popup.id);
@@ -357,11 +362,24 @@ void TabManager::closeTab(int idx)
     }
     if (host_.scriptEngine) host_.scriptEngine->notifyTabDestroyed(idx);
 
-    tabs_.erase(tabs_.begin() + idx);
-
-    // Adjust active tab index
-    if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
-        activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+    // Extract the Tab under the render-thread mutex, rebuild the shadow
+    // copy to reflect the new active tab, and stage the extracted Tab
+    // into the graveyard. The render thread may still hold raw pointers
+    // to any Terminal inside this tab from an in-flight frame; the stamp
+    // waits for that frame to end before destructors run.
+    std::unique_ptr<Tab> extracted;
+    uint64_t stamp = 0;
+    {
+        std::lock_guard<std::mutex> plk(*host_.platformMutex);
+        extracted = std::move(tabs_[idx]);
+        tabs_.erase(tabs_.begin() + idx);
+        if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
+            activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+        if (host_.buildRenderFrameState) host_.buildRenderFrameState();
+        stamp = host_.completedFrames ? host_.completedFrames() : 0;
+    }
+    if (extracted && host_.graveyard)
+        host_.graveyard->defer(std::move(extracted), stamp);
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
     if (host_.inputController) host_.inputController->refreshPointerShape();
@@ -373,7 +391,9 @@ void TabManager::closeTab(int idx)
 
 void TabManager::terminalExited(Terminal* terminal)
 {
-    // Find which tab and pane owns this terminal
+    // Called from drainPendingExits() under the render-thread mutex, so
+    // the render thread cannot be snapshotting while we mutate live state.
+    // The platformMutex is already held by our caller.
     for (int tabIdx = 0; tabIdx < static_cast<int>(tabs_.size()); ++tabIdx) {
         Tab* tab = tabs_[tabIdx].get();
         for (auto& panePtr : tab->layout()->panes()) {
@@ -392,23 +412,43 @@ void TabManager::terminalExited(Terminal* terminal)
             if (host_.scriptEngine) host_.scriptEngine->notifyPaneDestroyed(paneId);
 
             if (tab->layout()->panes().size() <= 1) {
-                // Last pane in the tab — close the tab
+                // Last pane in the tab — close the whole tab. Extract and
+                // stage into the graveyard so the render thread's
+                // in-flight frame can finish using its frameState_ pointers.
                 if (tab->hasOverlay() && host_.scriptEngine)
                     host_.scriptEngine->notifyOverlayDestroyed(tabIdx);
                 if (host_.scriptEngine) host_.scriptEngine->notifyTabDestroyed(tabIdx);
+
+                std::unique_ptr<Tab> extractedTab = std::move(tabs_[tabIdx]);
                 tabs_.erase(tabs_.begin() + tabIdx);
                 if (tabs_.empty()) {
+                    if (host_.graveyard)
+                        host_.graveyard->defer(std::move(extractedTab),
+                            host_.completedFrames ? host_.completedFrames() : 0);
                     if (host_.quit) host_.quit();
                     return;
                 }
                 if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
                     activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
+                // Refresh the shadow copy to reflect the new active tab
+                // before we release the mutex.
+                if (host_.buildRenderFrameState) host_.buildRenderFrameState();
+                uint64_t stamp = host_.completedFrames ? host_.completedFrames() : 0;
+                if (host_.graveyard)
+                    host_.graveyard->defer(std::move(extractedTab), stamp);
+
                 if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
                 updateWindowTitle();
                 if (host_.inputController) host_.inputController->refreshPointerShape();
                 if (host_.markTabBarDirty) host_.markTabBarDirty();
             } else {
-                tab->layout()->removePane(paneId);
+                std::unique_ptr<Pane> extractedPane = tab->layout()->extractPane(paneId);
+                if (extractedPane) {
+                    if (host_.buildRenderFrameState) host_.buildRenderFrameState();
+                    uint64_t stamp = host_.completedFrames ? host_.completedFrames() : 0;
+                    if (host_.graveyard)
+                        host_.graveyard->defer(std::move(extractedPane), stamp);
+                }
                 resizeAllPanesInTab(tab);
                 notifyPaneFocusChange(tab, -1, tab->layout()->focusedPaneId());
                 updateTabTitleFromFocusedPane(tabIdx);

@@ -84,6 +84,11 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         th.buildTerminalCallbacks = [this](int paneId) {
             return buildTerminalCallbacks(paneId);
         };
+        th.graveyard = &graveyard_;
+        th.completedFrames = [this]() -> uint64_t {
+            return renderThread_->completedFrames();
+        };
+        th.buildRenderFrameState = [this]() { buildRenderFrameState(); };
         tabManager_->setHost(std::move(th));
     }
     {
@@ -178,6 +183,9 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         if (animScheduler_) animScheduler_->scheduleAnimationAt(dueAtNs);
     };
     host.debugIPC = [this]() -> DebugIPC* { return debugIPC_.get(); };
+    host.notifyFrameCompleted = [this]() {
+        if (renderThread_) renderThread_->notifyFrameCompleted();
+    };
     renderEngine_->setHost(std::move(host));
 
     {
@@ -552,6 +560,10 @@ PlatformDawn::~PlatformDawn()
         window_->onLiveResizeEnd = nullptr;
         window_->onFocus = nullptr;
     }
+
+    // Render thread is joined; anything still deferred can now run its
+    // destructors on the main thread with no concurrent access.
+    graveyard_.drainAll();
 
     // Destroy tabs (and their layouts/panes/terminals) before GPU resources.
     // Reset the TabManager entirely — it owns the tabs_ vector now.

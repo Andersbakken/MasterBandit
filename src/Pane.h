@@ -3,6 +3,7 @@
 #include "Terminal.h"
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,7 +36,10 @@ public:
     // Popup panes — script-driven floating cell grids
     PopupPane* createPopup(const std::string& id, int x, int y, int w, int h,
                            PlatformCallbacks pcbs);
-    void destroyPopup(const std::string& id);
+    // Move the popup out of this Pane so its Terminal can be staged into
+    // the main-thread graveyard (deferred destruction). Returns the moved
+    // PopupPane on success, or std::nullopt if no popup with that id exists.
+    std::optional<PopupPane> extractPopup(const std::string& id);
     bool resizePopup(const std::string& id, int x, int y, int w, int h);
     PopupPane* findPopup(const std::string& id);
     const std::vector<PopupPane>& popups() const { return mPopups; }

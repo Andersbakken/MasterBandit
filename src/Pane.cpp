@@ -95,13 +95,15 @@ bool Pane::resizePopup(const std::string& id, int x, int y, int w, int h)
     return true;
 }
 
-void Pane::destroyPopup(const std::string& id)
+std::optional<PopupPane> Pane::extractPopup(const std::string& id)
 {
-    if (mFocusedPopupId == id) mFocusedPopupId.clear();
     auto it = std::find_if(mPopups.begin(), mPopups.end(),
                            [&id](const PopupPane& p) { return p.id == id; });
-    if (it == mPopups.end()) return;
-    spdlog::info("Pane: destroyed popup '{}'", id);
+    if (it == mPopups.end()) return std::nullopt;
+    PopupPane popup = std::move(*it);
     mPopups.erase(it);
+    if (mFocusedPopupId == id) mFocusedPopupId.clear();
+    spdlog::info("Pane: extracted popup '{}'", id);
+    return popup;
 }
 

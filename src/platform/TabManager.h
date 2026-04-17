@@ -5,6 +5,7 @@
 #include "Terminal.h"
 #include "TerminalOptions.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include <vector>
 
 class EventLoop;
+class Graveyard;
 class InputController;
 class Pane;
 class RenderEngine;
@@ -96,6 +98,25 @@ public:
         // because it closes over ~20 platform members (title, icon,
         // CWD, progress, OSC, foreground-process, mouse-cursor-shape).
         std::function<TerminalCallbacks(int paneId)> buildTerminalCallbacks;
+
+        // Main-thread graveyard for deferred destruction of Panes / Tabs /
+        // overlays / PopupPanes. The Terminals they own must outlive the
+        // render thread's current frame; the graveyard stamps each entry
+        // with the current frame counter and sweeps once the counter has
+        // advanced. platformMutex must be held when staging entries.
+        Graveyard* graveyard = nullptr;
+
+        // Read the render thread's completedFrames() counter. Used to
+        // stamp graveyard entries. Should be read under platformMutex so
+        // any frame in flight at the moment of staging has counter
+        // <= stamp, and its completion will advance it past the stamp.
+        std::function<uint64_t()> completedFrames;
+
+        // Rebuild the render shadow copy from live state. Called under
+        // platformMutex from structural mutation sites (tab close, pane
+        // close) so the next render snapshot doesn't pick up dead
+        // Terminal pointers between the mutation and applyPendingMutations().
+        std::function<void()> buildRenderFrameState;
     };
 
     TabManager() = default;

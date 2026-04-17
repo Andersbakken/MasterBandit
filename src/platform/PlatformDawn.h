@@ -5,6 +5,7 @@
 #include "ActionRouter.h"
 #include "AnimationScheduler.h"
 #include "ConfigLoader.h"
+#include "Graveyard.h"
 #include "InputController.h"
 #include "InputTypes.h"
 #include "ClickDetector.h"
@@ -226,6 +227,13 @@ private:
     // Owns the render worker thread, coarse mutex, pending mutations,
     // renderState shadow copy, and the deferred main/exit queues.
     std::unique_ptr<RenderThread> renderThread_;
+
+    // Deferred destruction of Terminal-owning objects. Entries are
+    // stamped with the render thread's frame counter at stage time
+    // (under renderThread_->mutex()) and freed on the main thread once
+    // that counter has advanced — i.e. the render thread has finished
+    // any frame that could have held a raw pointer to them.
+    Graveyard graveyard_;
 
     // Build the renderState shadow copy from current tabs_/panes.
     // Called under the render-thread mutex from

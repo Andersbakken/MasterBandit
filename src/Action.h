@@ -53,6 +53,10 @@ enum class SelectionType { Normal, Word, Line, Extend, Rectangle };
 struct MouseSelection      { SelectionType type; };
 struct OpenHyperlink       {};
 struct PasteSelection      {};
+// Set the OSC 133 selected-command highlight to the command containing the
+// click's row (or clear it if the row has no command). Fires from the mouse
+// binding path so it can use the click's cell coordinates.
+struct SelectCommand       {};
 
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
@@ -64,7 +68,7 @@ using Any = std::variant<
     ScrollToPrompt, SelectCommandOutput, ShowScrollback,
     CopyLastCommand, CopyDocument,
     FocusPopup, ReloadConfig, ScriptAction,
-    MouseSelection, OpenHyperlink, PasteSelection
+    MouseSelection, OpenHyperlink, PasteSelection, SelectCommand
 >;
 
 // Action type identity is the variant index.

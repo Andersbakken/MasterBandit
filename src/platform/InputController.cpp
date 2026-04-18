@@ -92,7 +92,8 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     if (action != static_cast<int>(KeyAction_Release)) {
         auto result = sequenceMatcher_.advance({k, lastMods_}, bindings_);
         if (result.result == SequenceMatcher::Result::Match) {
-            host_.dispatchAction(*result.action);
+            for (const auto& act : result.actions)
+                host_.dispatchAction(act);
             return;
         }
         if (result.result == SequenceMatcher::Result::Prefix) {
@@ -387,9 +388,9 @@ void InputController::onMouseButton(int button, int action, int mods)
     stroke.mode   = mode;
     stroke.region = region;
 
-    auto matched = matchMouseBinding(stroke, mouseBindings_);
+    auto matched = matchMouseBindings(stroke, mouseBindings_);
 
-    if (matched) {
+    if (!matched.empty()) {
         // Compute cell coordinates relative to pane (subtract padding so col 0
         // begins at the first cell, not the pane edge)
         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
@@ -398,7 +399,6 @@ void InputController::onMouseButton(int button, int action, int mods)
         int cellCol = static_cast<int>(cellRelX / charWidth);
         int cellRow = static_cast<int>(cellRelY / lineHeight);
 
-        // Populate mouseCtx_ before dispatching
         mouseCtx_.cellCol = cellCol;
         mouseCtx_.cellRow = cellRow;
         mouseCtx_.pixelX  = static_cast<int>(sx);
@@ -408,106 +408,105 @@ void InputController::onMouseButton(int button, int action, int mods)
             ? resolveTabBarClickIndex(sx, sy)
             : -1;
 
-        Action::Any act = *matched;
-
-        // Resolve ActivateTab{-1} / CloseTab{-1} using tab bar click index
-        if (auto* at = std::get_if<Action::ActivateTab>(&act)) {
-            if (at->index == -1) at->index = mouseCtx_.tabBarClickIndex;
-            if (at->index < 0) return; // no tab hit
-        }
-        if (auto* ct = std::get_if<Action::CloseTab>(&act)) {
-            if (ct->index == -1) ct->index = mouseCtx_.tabBarClickIndex;
-            if (ct->index < 0) return; // no tab hit
-        }
-
-        // MouseSelection: dispatch based on selection type
-        if (auto* ms = std::get_if<Action::MouseSelection>(&act)) {
-            int col = mouseCtx_.cellCol, row = mouseCtx_.cellRow;
-            int absRow = term->document().historySize() - term->viewportOffset() + row;
-
-            switch (ms->type) {
-            case Action::SelectionType::Normal: {
-                // Arm pending selection via mousePressEvent
-                PaneRect pr2 = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
-                (void)pr2;
-                MouseEvent ev;
-                ev.x = col; ev.y = row;
-                ev.globalX = static_cast<int>(sx);
-                ev.globalY = static_cast<int>(sy);
-                ev.modifiers = lastMods_;
-                ev.button = LeftButton;
-                ev.buttons = ev.button;
-                term->mousePressEvent(&ev);
-                selectionDragActive_ = true;
-                selectionDragOriginX_ = sx;
-                selectionDragOriginY_ = sy;
-                selectionDragStarted_ = false;
-                break;
+        for (Action::Any& act : matched) {
+            // Resolve ActivateTab{-1} / CloseTab{-1} using tab bar click index
+            if (auto* at = std::get_if<Action::ActivateTab>(&act)) {
+                if (at->index == -1) at->index = mouseCtx_.tabBarClickIndex;
+                if (at->index < 0) continue; // no tab hit
             }
-            case Action::SelectionType::Word:
-                term->startWordSelection(col, absRow);
-#if defined(__linux__)
-                if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
-#endif
-                break;
-            case Action::SelectionType::Line:
-                term->startLineSelection(absRow);
-#if defined(__linux__)
-                if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
-#endif
-                break;
-            case Action::SelectionType::Extend:
-                term->extendSelection(col, absRow);
-#if defined(__linux__)
-                if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
-#endif
-                break;
-            case Action::SelectionType::Rectangle:
-                term->startRectangleSelection(col, absRow);
-                selectionDragActive_ = true;
-                break;
+            if (auto* ct = std::get_if<Action::CloseTab>(&act)) {
+                if (ct->index == -1) ct->index = mouseCtx_.tabBarClickIndex;
+                if (ct->index < 0) continue; // no tab hit
             }
-        }
 
-        // OpenHyperlink: resolve hyperlink at cell position; if none, fall
-        // through to OSC 133 command selection at that row.
-        if (std::holds_alternative<Action::OpenHyperlink>(act)) {
-            int col = cellCol, row = cellRow;
-            if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
-                const CellExtra* extra = term->grid().getExtra(col, row);
-                if (extra && extra->hyperlinkId) {
-                    const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
-                    if (uri && !uri->empty()) {
-                        platformOpenURL(*uri);
-                        return;
+            // MouseSelection: dispatch based on selection type
+            if (auto* ms = std::get_if<Action::MouseSelection>(&act)) {
+                int col = mouseCtx_.cellCol, row = mouseCtx_.cellRow;
+                int absRow = term->document().historySize() - term->viewportOffset() + row;
+
+                switch (ms->type) {
+                case Action::SelectionType::Normal: {
+                    // Arm pending selection via mousePressEvent
+                    MouseEvent ev;
+                    ev.x = col; ev.y = row;
+                    ev.globalX = static_cast<int>(sx);
+                    ev.globalY = static_cast<int>(sy);
+                    ev.modifiers = lastMods_;
+                    ev.button = LeftButton;
+                    ev.buttons = ev.button;
+                    term->mousePressEvent(&ev);
+                    selectionDragActive_ = true;
+                    selectionDragOriginX_ = sx;
+                    selectionDragOriginY_ = sy;
+                    selectionDragStarted_ = false;
+                    break;
+                }
+                case Action::SelectionType::Word:
+                    term->startWordSelection(col, absRow);
+#if defined(__linux__)
+                    if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
+#endif
+                    break;
+                case Action::SelectionType::Line:
+                    term->startLineSelection(absRow);
+#if defined(__linux__)
+                    if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
+#endif
+                    break;
+                case Action::SelectionType::Extend:
+                    term->extendSelection(col, absRow);
+#if defined(__linux__)
+                    if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
+#endif
+                    break;
+                case Action::SelectionType::Rectangle:
+                    term->startRectangleSelection(col, absRow);
+                    selectionDragActive_ = true;
+                    break;
+                }
+                continue;
+            }
+
+            // OpenHyperlink: resolve hyperlink at cell position; no-op when
+            // no URL is present. Command selection is a separate action.
+            if (std::holds_alternative<Action::OpenHyperlink>(act)) {
+                int col = cellCol, row = cellRow;
+                if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
+                    const CellExtra* extra = term->grid().getExtra(col, row);
+                    if (extra && extra->hyperlinkId) {
+                        const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
+                        if (uri && !uri->empty())
+                            platformOpenURL(*uri);
                     }
                 }
+                continue;
             }
-            // No hyperlink: select the OSC 133 command containing this row,
-            // or clear selection if none. Skipped on alt screen (commands
-            // only exist on the main screen's Document).
-            if (!term->usingAltScreen() && row >= 0 && row < term->height()) {
-                int absRow = term->document().historySize() - term->viewportOffset() + row;
-                uint64_t rowId = term->document().rowIdForAbs(absRow);
-                const auto* rec = term->commandForRowId(rowId);
-                term->setSelectedCommand(rec ? std::optional<uint64_t>{rec->id} : std::nullopt);
-            }
-            return;
-        }
 
-        // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere
-        if (std::holds_alternative<Action::PasteSelection>(act)) {
-            auto* t = dynamic_cast<Terminal*>(term);
-            if (t && window) {
-                // Primary selection on Linux, clipboard elsewhere
-                std::string text = window->getPrimarySelection();
-                if (text.empty()) text = window->getClipboard();
-                if (!text.empty()) t->pasteText(text);
+            // SelectCommand: set OSC 133 highlight to the command containing
+            // this row (or clear if none). Skipped on alt screen.
+            if (std::holds_alternative<Action::SelectCommand>(act)) {
+                if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
+                    int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
+                    uint64_t rowId = term->document().rowIdForAbs(absRow);
+                    const auto* rec = term->commandForRowId(rowId);
+                    term->setSelectedCommand(rec ? std::optional<uint64_t>{rec->id} : std::nullopt);
+                }
+                continue;
             }
-            return;
-        }
 
-        host_.dispatchAction(act);
+            // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere
+            if (std::holds_alternative<Action::PasteSelection>(act)) {
+                auto* t = dynamic_cast<Terminal*>(term);
+                if (t && window) {
+                    std::string text = window->getPrimarySelection();
+                    if (text.empty()) text = window->getClipboard();
+                    if (!text.empty()) t->pasteText(text);
+                }
+                continue;
+            }
+
+            host_.dispatchAction(act);
+        }
         return;
     }
 
@@ -687,16 +686,17 @@ void InputController::onCursorPos(double x, double y)
             stroke.mode   = mode;
             stroke.region = region;
 
-            auto matched = matchMouseBinding(stroke, mouseBindings_);
-            if (matched) {
-                // For drag bindings (e.g. MouseSelection with Drag),
-                // arm selection and let terminal handle subsequent moves
-                if (std::holds_alternative<Action::MouseSelection>(*matched)) {
+            auto matched = matchMouseBindings(stroke, mouseBindings_);
+            if (!matched.empty()) {
+                // Drag bindings are rare and overlapping ones on the same
+                // stroke don't compose cleanly — use the first match only.
+                const Action::Any& act = matched.front();
+                if (std::holds_alternative<Action::MouseSelection>(act)) {
                     MouseEvent ev = buildMouseEvent();
                     term->mousePressEvent(&ev);
                     selectionDragActive_ = true;
                 } else {
-                    host_.dispatchAction(*matched);
+                    host_.dispatchAction(act);
                 }
                 return;
             }

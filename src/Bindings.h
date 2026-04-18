@@ -68,8 +68,12 @@ struct MouseBinding {
 
 std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfig>& configs);
 std::vector<MouseBinding> defaultMouseBindings();
-std::optional<Action::Any> matchMouseBinding(const MouseStroke& stroke,
-                                              const std::vector<MouseBinding>& bindings);
+// Returns every action bound to this stroke, in declaration order. Callers
+// run them in sequence; binding two actions to the same stroke is supported
+// so e.g. Cmd+Click can both open a hyperlink and select the containing
+// OSC 133 command.
+std::vector<Action::Any> matchMouseBindings(const MouseStroke& stroke,
+                                            const std::vector<MouseBinding>& bindings);
 
 // Sequence state machine: accumulates keypresses and matches against a binding table.
 class SequenceMatcher {
@@ -77,8 +81,12 @@ public:
     enum class Result { Match, Prefix, NoMatch };
 
     struct MatchResult {
-        Result                    result;
-        std::optional<Action::Any> action; // populated on Match
+        Result                     result;
+        // Every binding whose key sequence equals the accumulated chord, in
+        // declaration order. Empty for Prefix/NoMatch. Multiple entries are
+        // supported — binding the same stroke twice fires both actions, same
+        // model as matchMouseBindings.
+        std::vector<Action::Any>   actions;
     };
 
     // Feed the next keystroke. Returns the match status.

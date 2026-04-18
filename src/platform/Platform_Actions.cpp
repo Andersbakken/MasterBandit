@@ -438,6 +438,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::ReloadConfig&) { if (configLoader_) configLoader_->reloadNow(); },
         [&](const Action::MouseSelection&) { /* TODO: wire up in mouse binding phase */ },
         [&](const Action::OpenHyperlink&) { /* TODO: wire up in mouse binding phase */ },
+        [&](const Action::SelectCommand&) { /* mouse-bound only; no-op via generic dispatch */ },
         [&](const Action::PasteSelection&) {
             Terminal* term = activeTerm();
             if (!term || !window_) return;

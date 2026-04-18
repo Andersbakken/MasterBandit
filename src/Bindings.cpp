@@ -212,6 +212,7 @@ std::optional<Action::Any> parseAction(const std::string& name,
     }
     if (name == "open_hyperlink")  return Action::OpenHyperlink{};
     if (name == "paste_selection") return Action::PasteSelection{};
+    if (name == "select_command")  return Action::SelectCommand{};
 
     // Script actions: any name containing a '.' is treated as namespace.action
     if (name.find('.') != std::string::npos)
@@ -347,7 +348,7 @@ SequenceMatcher::MatchResult SequenceMatcher::advance(
 {
     current_.push_back(ks);
 
-    const Action::Any* exactMatch = nullptr;
+    std::vector<Action::Any> exactMatches;
     bool hasPrefix = false;
 
     for (const auto& b : bindings) {
@@ -357,18 +358,17 @@ SequenceMatcher::MatchResult SequenceMatcher::advance(
             if (!(b.keys[i] == current_[i])) { match = false; break; }
         }
         if (!match) continue;
-        if (b.keys.size() == current_.size()) exactMatch = &b.action;
-        else                                   hasPrefix  = true;
+        if (b.keys.size() == current_.size()) exactMatches.push_back(b.action);
+        else                                   hasPrefix = true;
     }
 
-    if (exactMatch) {
-        Action::Any action = *exactMatch;
+    if (!exactMatches.empty()) {
         reset();
-        return {Result::Match, std::move(action)};
+        return {Result::Match, std::move(exactMatches)};
     }
-    if (hasPrefix) return {Result::Prefix, std::nullopt};
+    if (hasPrefix) return {Result::Prefix, {}};
     reset();
-    return {Result::NoMatch, std::nullopt};
+    return {Result::NoMatch, {}};
 }
 
 void SequenceMatcher::reset()
@@ -506,13 +506,20 @@ std::vector<MouseBinding> defaultMouseBindings()
         {{MouseButton::Middle, 0, MouseEventType::Click, MouseMode::Ungrabbed, MouseRegion::Pane},
          Action::PasteSelection{}},
 
-        // Hyperlink open
+        // Hyperlink open + OSC 133 command select on the same gesture. Both
+        // fire; OpenHyperlink opens a URL when one is under the cursor (and
+        // nothing else on a plain row), SelectCommand sets the highlight
+        // unconditionally.
 #ifdef __APPLE__
         {{MouseButton::Left, MetaModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
          Action::OpenHyperlink{}},
+        {{MouseButton::Left, MetaModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
+         Action::SelectCommand{}},
 #else
         {{MouseButton::Left, CtrlModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
          Action::OpenHyperlink{}},
+        {{MouseButton::Left, CtrlModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
+         Action::SelectCommand{}},
 #endif
 
         // Tab bar
@@ -523,12 +530,13 @@ std::vector<MouseBinding> defaultMouseBindings()
     };
 }
 
-std::optional<Action::Any> matchMouseBinding(const MouseStroke& stroke,
-                                              const std::vector<MouseBinding>& bindings)
+std::vector<Action::Any> matchMouseBindings(const MouseStroke& stroke,
+                                            const std::vector<MouseBinding>& bindings)
 {
+    std::vector<Action::Any> result;
     for (const auto& b : bindings) {
         if (b.trigger.matches(stroke))
-            return b.action;
+            result.push_back(b.action);
     }
-    return std::nullopt;
+    return result;
 }

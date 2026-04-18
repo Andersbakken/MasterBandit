@@ -487,8 +487,8 @@ void InputController::onMouseButton(int button, int action, int mods)
             if (std::holds_alternative<Action::SelectCommand>(act)) {
                 if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
                     int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
-                    uint64_t rowId = term->document().rowIdForAbs(absRow);
-                    const auto* rec = term->commandForRowId(rowId);
+                    uint64_t lineId = term->document().lineIdForAbs(absRow);
+                    const auto* rec = term->commandForLineId(lineId);
                     term->setSelectedCommand(rec ? std::optional<uint64_t>{rec->id} : std::nullopt);
                 }
                 continue;

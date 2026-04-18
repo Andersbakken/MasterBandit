@@ -270,3 +270,46 @@ TEST_CASE("archive: resize preserves archived content" * doctest::test_suite("ar
     }
     CHECK(found);
 }
+
+// ============================================================================
+// Archive re-serialization under width-change reflow
+// ============================================================================
+
+TEST_CASE("archive: width-change reflow doesn't duplicate archive content"
+          * doctest::test_suite("archive"))
+{
+    // Feed enough distinct lines that many end up in archive.
+    TestTerminal t(20, 5);
+    t.term.resetScrollback(3);
+
+    for (int i = 0; i < 12; ++i) t.feed(lineText(i) + "\r\n");
+
+    const auto& doc = t.term.document();
+    int preArchiveSize = doc.archiveSize();
+    // historySize() already includes archive, so total abs = historySize + screenHeight.
+    int preTotal = doc.historySize() + t.term.height();
+    REQUIRE(preArchiveSize > 0);
+
+    // Reflow to a narrower width — archive rows are re-parsed, re-wrapped,
+    // and (pre-fix) would have been pushed back into archive alongside the
+    // stale originals, doubling the content. With the fix, archive is
+    // rebuilt authoritatively.
+    t.term.resize(10, 5);
+
+    int postTotal = doc.historySize() + t.term.height();
+    // The content is all ~5-char lines that still fit in width 10, so row
+    // count should be approximately preserved. Before the fix, archive
+    // would contain both old-width originals and new-width re-pushes,
+    // inflating postTotal substantially.
+    CHECK(postTotal <= preTotal + t.term.height()); // small slack for reflow
+
+    // Line ids must remain monotonic non-decreasing across the full abs
+    // range. Archive duplication would have placed older (smaller) IDs
+    // after larger ones in the deque, breaking sortedness.
+    uint64_t prev = 0;
+    for (int abs = 0; abs < postTotal; ++abs) {
+        uint64_t id = doc.lineIdForAbs(abs);
+        CHECK(id >= prev);
+        prev = id;
+    }
+}

@@ -33,11 +33,11 @@ struct CommandInfo {
     std::optional<int> exitCode;
     uint64_t startMs = 0;
     uint64_t endMs = 0;
-    // Stable row IDs for lazy text extraction via paneGetText/overlayGetText.
-    uint64_t promptStartRowId = 0;
-    uint64_t commandStartRowId = 0;
-    uint64_t outputStartRowId = 0;
-    uint64_t outputEndRowId = 0;
+    // Stable logical-line IDs for lazy text extraction.
+    uint64_t promptStartLineId = 0;
+    uint64_t commandStartLineId = 0;
+    uint64_t outputStartLineId = 0;
+    uint64_t outputEndLineId = 0;
     // Volatile abs rows at query time (for JS position properties).
     int promptStartAbsRow = -1, promptStartCol = -1;
     int commandStartAbsRow = -1, commandStartCol = -1;
@@ -64,10 +64,10 @@ struct AppCallbacks {
         int cols; int rows; std::string title; std::string cwd;
         bool hasPty; bool focused; std::string focusedPopupId; std::string foregroundProcess;
         bool hasSelection = false;
-        uint64_t selectionStartRowId = 0; int selectionStartCol = 0;
-        uint64_t selectionEndRowId = 0;   int selectionEndCol = 0;
-        uint64_t cursorRowId = 0; int cursorCol = 0;
-        uint64_t oldestRowId = 0; uint64_t newestRowId = 0;
+        uint64_t selectionStartLineId = 0; int selectionStartCol = 0;
+        uint64_t selectionEndLineId = 0;   int selectionEndCol = 0;
+        uint64_t cursorLineId = 0; int cursorCol = 0;
+        uint64_t oldestLineId = 0; uint64_t newestLineId = 0;
         bool mouseInPane = false;
         int mouseCellX = 0; int mouseCellY = 0;
         int mousePixelX = 0; int mousePixelY = 0;
@@ -89,8 +89,9 @@ struct AppCallbacks {
     std::function<std::string(TabId, uint64_t startRowId, int startCol,
                               uint64_t endRowId, int endCol)> overlayGetText;
     // Returns the stable row ID for a screen row, or nullopt if out of range.
-    std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneRowIdAt;
-    std::function<std::optional<uint64_t>(TabId, int screenRow)> overlayRowIdAt;
+    // Resolve the logical-line id for a screen row position.
+    std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneLineIdAt;
+    std::function<std::optional<uint64_t>(TabId, int screenRow)> overlayLineIdAt;
     // Query overlay info
     struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
     std::function<OverlayInfo(TabId)> overlayInfo;
@@ -121,14 +122,14 @@ struct AppCallbacks {
     std::function<std::string(const std::string& source)> getClipboard;
     std::function<void(const std::string& source, const std::string& text)> setClipboard;
     // URL at a cell position (returns empty string if none).
-    std::function<std::string(PaneId, uint64_t rowId, int col)> paneUrlAt;
-    // Hyperlinks within a row-id range.
+    std::function<std::string(PaneId, uint64_t lineId, int col)> paneUrlAt;
+    // Hyperlinks within a logical-line range.
     struct LinkInfo {
         std::string url;
-        uint64_t startRowId; int startCol;
-        uint64_t endRowId;   int endCol;
+        uint64_t startLineId; int startCol;
+        uint64_t endLineId;   int endCol;
     };
-    std::function<std::vector<LinkInfo>(PaneId, uint64_t startRowId, uint64_t endRowId, int limit)> paneGetLinksFromRows;
+    std::function<std::vector<LinkInfo>(PaneId, uint64_t startLineId, uint64_t endLineId, int limit)> paneGetLinksFromRows;
 };
 
 class Engine {

@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <set>
 
 TEST_CASE("reflow: shrink joins nothing without soft wrap")
 {
@@ -228,3 +229,142 @@ TEST_CASE("reflow: history rows participate in reflow")
     // History should contain the reflowed lines
     // Screen shows the last 2 rows
 }
+
+TEST_CASE("line ids: unique across initial screen")
+{
+    TestTerminal t(20, 5);
+    const auto& doc = t.term.document();
+    std::set<uint64_t> seen;
+    for (int r = 0; r < 5; ++r) {
+        uint64_t id = doc.lineIdForAbs(r);
+        CHECK(id != 0);
+        CHECK(seen.insert(id).second); // never duplicated
+    }
+}
+
+TEST_CASE("line ids: stable across scrolling")
+{
+    TestTerminal t(10, 3);
+    t.feed("one\n");
+    t.feed("two\n");
+    t.feed("three\n");
+    // Capture the id for "one" (now at abs 0 in history)
+    uint64_t oneId = t.term.document().lineIdForAbs(0);
+    CHECK(oneId != 0);
+    // More scrolling — "one" is still retained in scrollback
+    t.feed("four\n");
+    t.feed("five\n");
+    // Abs positions shifted, but the id for "one" still points at it.
+    int firstAbs = t.term.document().firstAbsOfLine(oneId);
+    REQUIRE(firstAbs >= 0);
+    CHECK(t.term.document().lineIdForAbs(firstAbs) == oneId);
+}
+
+TEST_CASE("line ids: survive width-change reflow (shrink)")
+{
+    TestTerminal t(10, 3);
+    t.feed("LINE1\nLINE2\nLINE3\n");
+    uint64_t idL1 = t.term.document().lineIdForAbs(0);
+    uint64_t idL2 = t.term.document().lineIdForAbs(1);
+    uint64_t idL3 = t.term.document().lineIdForAbs(2);
+    CHECK(idL1 != 0);
+    CHECK(idL2 != 0);
+    CHECK(idL3 != 0);
+    t.term.resize(3, 3); // shrink causes wrap
+    // Original ids should still resolve to some abs row. Content verification
+    // isn't needed here — just that the ids are still present somewhere.
+    CHECK(t.term.document().firstAbsOfLine(idL1) >= 0);
+    CHECK(t.term.document().firstAbsOfLine(idL2) >= 0);
+    CHECK(t.term.document().firstAbsOfLine(idL3) >= 0);
+}
+
+TEST_CASE("line ids: survive width-change reflow (grow)")
+{
+    TestTerminal t(4, 3);
+    t.feed("ABCDEFGH\n"); // wraps at 4 cols into two rows
+    uint64_t rowA = t.term.document().lineIdForAbs(0);
+    uint64_t rowB = t.term.document().lineIdForAbs(1);
+    CHECK(rowA != 0);
+    CHECK(rowB != 0);
+    t.term.resize(10, 3); // grow un-wraps
+    // At least one of the original ids should survive — when source rows
+    // merge into one dst row, the first src wins.
+    bool anySurvived =
+        t.term.document().firstAbsOfLine(rowA) >= 0 ||
+        t.term.document().firstAbsOfLine(rowB) >= 0;
+    CHECK(anySurvived);
+}
+
+TEST_CASE("line ids: vector is monotonic non-decreasing after complex edits")
+{
+    // Mix of autowraps, newlines, scrolls, and reflow to exercise all paths.
+    TestTerminal t(6, 4);
+    t.feed("HELLO WORLD\n");       // autowraps at width 6
+    t.feed("foo\n");
+    t.feed("bar\n");
+    t.feed("baz\n");
+    t.feed("AAAAAAAAAAA\n");       // more wraps
+    t.term.resize(4, 4);           // narrow reflow
+    t.term.resize(12, 4);          // wide reflow (un-wraps)
+    t.feed("last\n");
+
+    const auto& doc = t.term.document();
+    int total = doc.archiveSize() + doc.historySize() + 4;
+    uint64_t prev = 0;
+    for (int abs = 0; abs < total; ++abs) {
+        uint64_t id = doc.lineIdForAbs(abs);
+        CHECK(id >= prev); // non-decreasing
+        prev = id;
+    }
+}
+
+TEST_CASE("line ids: autowrap continuation shares one id per logical line")
+{
+    TestTerminal t(4, 3);
+    // "ABCDEFGH" at width 4 autowraps into two physical rows, both part of
+    // the same logical line. They must share a line id.
+    t.feed("ABCDEFGH");
+    const auto& doc = t.term.document();
+    uint64_t idRow0 = doc.lineIdForAbs(0);
+    uint64_t idRow1 = doc.lineIdForAbs(1);
+    CHECK(idRow0 != 0);
+    CHECK(idRow0 == idRow1);
+}
+
+TEST_CASE("line ids: survive autowrap then un-wrap reflow")
+{
+    TestTerminal t(4, 3);
+    t.feed("ABCDEFGH"); // wraps into 2 rows at width 4
+    const auto& doc = t.term.document();
+    uint64_t logicalId = doc.lineIdForAbs(0);
+    CHECK(logicalId == doc.lineIdForAbs(1)); // shared
+    // Widen so the line un-wraps into one physical row.
+    t.term.resize(10, 3);
+    // The logical line's id must still resolve; un-wrapping doesn't drop it.
+    CHECK(doc.firstAbsOfLine(logicalId) >= 0);
+    CHECK(doc.lastAbsOfLine(logicalId) == doc.firstAbsOfLine(logicalId));
+}
+
+TEST_CASE("line ids: rows under OSC 133 regions resolvable after reflow")
+{
+    TestTerminal t(20, 5);
+    t.feed("\x1b]133;A\x1b\\$ ");
+    t.feed("\x1b]133;B\x1b\\ls");
+    t.feed("\x1b]133;C\x1b\\output1\r\noutput2\r\n");
+    t.feed("\x1b]133;D;0\x1b\\");
+
+    REQUIRE(t.term.commands().size() == 1);
+    const auto& doc = t.term.document();
+    const auto& cmd = t.term.commands()[0];
+    uint64_t promptLineId = cmd.promptStartLineId;
+    uint64_t outputEndLineId = cmd.outputEndLineId;
+    CHECK(promptLineId != 0);
+    CHECK(outputEndLineId != 0);
+
+    // Resize to narrower; prompt and output lines wrap.
+    t.term.resize(8, 5);
+    // The captured line ids should still resolve to valid abs rows.
+    CHECK(doc.firstAbsOfLine(promptLineId) >= 0);
+    CHECK(doc.firstAbsOfLine(outputEndLineId) >= 0);
+}
+

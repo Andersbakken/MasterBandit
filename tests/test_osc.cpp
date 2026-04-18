@@ -296,8 +296,9 @@ TEST_CASE("OSC 8 linkAt: hyperlink URI resolved from cell extra")
     t.feed(" plain");
 
     const auto& doc = t.term.document();
-    // Row 0 is the only row, get its stable row ID
-    uint64_t rowId = doc.rowIdForAbs(doc.historySize());
+    // Row 0 is the only row, get its stable line ID
+    uint64_t lineId = doc.lineIdForAbs(doc.historySize());
+    (void)lineId;
 
     // Cell 0 (inside link) should resolve to the URL
     const CellExtra* ex0 = t.term.grid().getExtra(0, 0);

@@ -111,11 +111,11 @@ int PlatformDawn::exec()
                     if (t) {
                         const auto& doc = t->document();
                         int absRow = doc.historySize() + t->cursorY();
-                        info.cursorRowId = doc.rowIdForAbs(absRow);
-                        info.cursorCol   = t->cursorX();
-                        info.oldestRowId = doc.rowIdForAbs(0);
+                        info.cursorLineId = doc.lineIdForAbs(absRow);
+                        info.cursorCol    = t->cursorX();
+                        info.oldestLineId = doc.lineIdForAbs(0);
                         int total = static_cast<int>(doc.archiveSize()) + doc.historySize() + t->height();
-                        info.newestRowId = doc.rowIdForAbs(total - 1);
+                        info.newestLineId = doc.lineIdForAbs(total - 1);
                         if (t->hasSelection()) {
                             const auto& sel = t->selection();
                             if (sel.valid && !sel.active) {
@@ -125,10 +125,10 @@ int PlatformDawn::exec()
                                     std::swap(r0, r1); std::swap(c0, c1);
                                 }
                                 info.hasSelection = true;
-                                info.selectionStartRowId = doc.rowIdForAbs(r0);
-                                info.selectionStartCol   = c0;
-                                info.selectionEndRowId   = doc.rowIdForAbs(r1);
-                                info.selectionEndCol     = c1 + 1; // exclusive, matches getTextFromRows
+                                info.selectionStartLineId = doc.lineIdForAbs(r0);
+                                info.selectionStartCol    = c0;
+                                info.selectionEndLineId   = doc.lineIdForAbs(r1);
+                                info.selectionEndCol      = c1 + 1; // exclusive
                             }
                         }
                         info.selectedCommandId = t->selectedCommandId();
@@ -173,12 +173,12 @@ int PlatformDawn::exec()
                     Script::CommandInfo info{
                         r.id, r.cwd, r.exitCode,
                         r.startMs, r.endMs,
-                        r.promptStartRowId, r.commandStartRowId,
-                        r.outputStartRowId, r.outputEndRowId,
-                        doc.absForRowId(r.promptStartRowId),  r.promptStartCol,
-                        doc.absForRowId(r.commandStartRowId), r.commandStartCol,
-                        doc.absForRowId(r.outputStartRowId),  r.outputStartCol,
-                        doc.absForRowId(r.outputEndRowId),    r.outputEndCol
+                        r.promptStartLineId, r.commandStartLineId,
+                        r.outputStartLineId, r.outputEndLineId,
+                        doc.firstAbsOfLine(r.promptStartLineId),  r.promptStartCol,
+                        doc.firstAbsOfLine(r.commandStartLineId), r.commandStartCol,
+                        doc.firstAbsOfLine(r.outputStartLineId),  r.outputStartCol,
+                        doc.lastAbsOfLine(r.outputEndLineId),     r.outputEndCol
                     };
                     result.push_back(std::move(info));
                 }
@@ -199,44 +199,44 @@ int PlatformDawn::exec()
             }
             return false;
         };
-        scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startRowId, int startCol,
-                                  uint64_t endRowId, int endCol) -> std::string {
+        scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startLineId, int startCol,
+                                  uint64_t endLineId, int endCol) -> std::string {
             for (auto& tab : tabManager_->tabs()) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     if (TerminalEmulator* te = p->terminal())
-                        return te->document().getTextFromRows(startRowId, endRowId, startCol, endCol);
+                        return te->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
                 }
             }
             return {};
         };
-        scbs.overlayGetText = [this](Script::TabId tabId, uint64_t startRowId, int startCol,
-                                     uint64_t endRowId, int endCol) -> std::string {
+        scbs.overlayGetText = [this](Script::TabId tabId, uint64_t startLineId, int startCol,
+                                     uint64_t endLineId, int endCol) -> std::string {
             if (Tab* tab = tabManager_->tabAt(tabId)) {
                 if (auto* ov = tab->topOverlay())
-                    return ov->document().getTextFromRows(startRowId, endRowId, startCol, endCol);
+                    return ov->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
             }
             return {};
         };
-        scbs.paneRowIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
+        scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
             for (auto& tab : tabManager_->tabs()) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     if (TerminalEmulator* te = p->terminal()) {
                         const auto& doc = te->document();
                         if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
                         int abs = doc.historySize() + screenRow;
-                        return doc.rowIdForAbs(abs);
+                        return doc.lineIdForAbs(abs);
                     }
                 }
             }
             return std::nullopt;
         };
-        scbs.overlayRowIdAt = [this](Script::TabId tabId, int screenRow) -> std::optional<uint64_t> {
+        scbs.overlayLineIdAt = [this](Script::TabId tabId, int screenRow) -> std::optional<uint64_t> {
             if (Tab* tab = tabManager_->tabAt(tabId)) {
                 if (auto* ov = tab->topOverlay()) {
                     const auto& doc = ov->document();
                     if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
                     int abs = doc.historySize() + screenRow;
-                    return doc.rowIdForAbs(abs);
+                    return doc.lineIdForAbs(abs);
                 }
             }
             return std::nullopt;
@@ -444,13 +444,13 @@ int PlatformDawn::exec()
                 }
             }
         };
-        scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t rowId, int col) -> std::string {
+        scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string {
             for (auto& tab : tabManager_->tabs()) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     auto* te = p->terminal();
                     if (!te) return {};
                     const auto& doc = te->document();
-                    int abs = doc.absForRowId(rowId);
+                    int abs = doc.firstAbsOfLine(lineId);
                     if (abs < 0) return {};
                     int screenRow = abs - doc.historySize();
                     // getExtra works on screen rows; for history rows we need historyExtras
@@ -473,7 +473,7 @@ int PlatformDawn::exec()
             }
             return {};
         };
-        scbs.paneGetLinksFromRows = [this](Script::PaneId paneId, uint64_t startRowId, uint64_t endRowId, int limit)
+        scbs.paneGetLinksFromRows = [this](Script::PaneId paneId, uint64_t startLineId, uint64_t endLineId, int limit)
             -> std::vector<Script::AppCallbacks::LinkInfo>
         {
             std::vector<Script::AppCallbacks::LinkInfo> result;
@@ -482,8 +482,8 @@ int PlatformDawn::exec()
                     auto* te = p->terminal();
                     if (!te) return result;
                     const auto& doc = te->document();
-                    int startAbs = doc.absForRowId(startRowId);
-                    int endAbs   = doc.absForRowId(endRowId);
+                    int startAbs = doc.firstAbsOfLine(startLineId);
+                    int endAbs   = doc.lastAbsOfLine(endLineId);
                     if (startAbs < 0) return result;
                     if (endAbs < 0) endAbs = doc.archiveSize() + doc.historySize() + te->height() - 1;
 
@@ -507,7 +507,7 @@ int PlatformDawn::exec()
                             if (linkId == prevLinkId) {
                                 // Extend current link span
                                 if (!result.empty()) {
-                                    result.back().endRowId = doc.rowIdForAbs(abs);
+                                    result.back().endLineId = doc.lineIdForAbs(abs);
                                     result.back().endCol = col + 1;
                                 }
                                 continue;
@@ -515,7 +515,7 @@ int PlatformDawn::exec()
                             // New link
                             const std::string* uri = te->hyperlinkURI(linkId);
                             if (!uri) { prevLinkId = 0; continue; }
-                            result.push_back({*uri, doc.rowIdForAbs(abs), col, doc.rowIdForAbs(abs), col + 1});
+                            result.push_back({*uri, doc.lineIdForAbs(abs), col, doc.lineIdForAbs(abs), col + 1});
                             prevLinkId = linkId;
                             if (limit > 0 && static_cast<int>(result.size()) >= limit) return result;
                         }

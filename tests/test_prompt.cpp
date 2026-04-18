@@ -11,8 +11,8 @@ static std::string recordCommandText(const TerminalEmulator& term,
                                       const TerminalEmulator::CommandRecord& r)
 {
     if (r.commandStartCol < 0) return {};
-    auto text = term.document().getTextFromRows(r.commandStartRowId, r.outputStartRowId,
-                                                r.commandStartCol, r.outputStartCol);
+    auto text = term.document().getTextFromLines(r.commandStartLineId, r.outputStartLineId,
+                                                 r.commandStartCol, r.outputStartCol);
     while (!text.empty() && (text.back() == ' ' || text.back() == '\n' ||
                               text.back() == '\r' || text.back() == '\t'))
         text.pop_back();
@@ -23,8 +23,8 @@ static std::string recordOutputText(const TerminalEmulator& term,
                                      const TerminalEmulator::CommandRecord& r)
 {
     if (r.outputStartCol < 0) return {};
-    return term.document().getTextFromRows(r.outputStartRowId, r.outputEndRowId,
-                                           r.outputStartCol, r.outputEndCol);
+    return term.document().getTextFromLines(r.outputStartLineId, r.outputEndLineId,
+                                            r.outputStartCol, r.outputEndCol);
 }
 
 // === OSC 133 marker storage ===
@@ -435,8 +435,8 @@ TEST_CASE("OSC 133: commandComplete callback fires with the record")
             fired = true;
             seenId = r->id;
             seenExit = r->exitCode;
-            seenCmdRowId = r->commandStartRowId;
-            seenOutRowId = r->outputStartRowId;
+            seenCmdRowId = r->commandStartLineId;
+            seenOutRowId = r->outputStartLineId;
         }
     };
 
@@ -632,7 +632,7 @@ TEST_CASE("OSC 133: command ring retains > 256 records when archive has room")
     CHECK(t.term.commands().size() == 300u);
 }
 
-TEST_CASE("OSC 133: commandForRowId hits the containing record")
+TEST_CASE("OSC 133: commandForLineId hits the containing record")
 {
     TestTerminal t(40, 8);
     osc133(t, "A"); t.feed("$ ");
@@ -648,16 +648,16 @@ TEST_CASE("OSC 133: commandForRowId hits the containing record")
     const auto& r0 = t.term.commands()[0];
     const auto& r1 = t.term.commands()[1];
 
-    const auto* hit0 = t.term.commandForRowId(r0.promptStartRowId);
+    const auto* hit0 = t.term.commandForLineId(r0.promptStartLineId);
     REQUIRE(hit0 != nullptr);
     CHECK(hit0->id == r0.id);
 
-    const auto* hit1 = t.term.commandForRowId(r1.outputEndRowId);
+    const auto* hit1 = t.term.commandForLineId(r1.outputEndLineId);
     REQUIRE(hit1 != nullptr);
     CHECK(hit1->id == r1.id);
 
     // Below oldest prompt: no hit.
-    CHECK(t.term.commandForRowId(r0.promptStartRowId - 1) == nullptr);
+    CHECK(t.term.commandForLineId(r0.promptStartLineId - 1) == nullptr);
 }
 
 TEST_CASE("OSC 133: setSelectedCommand populates selectedCommandId")

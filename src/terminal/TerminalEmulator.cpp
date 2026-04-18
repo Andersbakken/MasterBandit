@@ -293,7 +293,7 @@ void TerminalEmulator::scrollToPrompt(int direction)
     if (mSelectedCommandId) {
         for (const auto& r : mCommandRing) {
             if (r.id != *mSelectedCommandId) continue;
-            int abs = mDocument.absForRowId(r.promptStartRowId);
+            int abs = mDocument.firstAbsOfLine(r.promptStartLineId);
             if (abs >= 0) currentAbsRow = abs;
             break;
         }
@@ -325,8 +325,8 @@ void TerminalEmulator::scrollToPrompt(int direction)
     };
 
     auto selectCommandAt = [&](int absRow) {
-        uint64_t rowId = mDocument.rowIdForAbs(absRow);
-        if (const auto* rec = commandForRowId(rowId)) {
+        uint64_t lineId = mDocument.lineIdForAbs(absRow);
+        if (const auto* rec = commandForLineId(lineId)) {
             setSelectedCommand(rec->id);
         }
     };
@@ -411,15 +411,15 @@ TerminalEmulator::CommandRecord* TerminalEmulator::inProgressCommandMut()
 
 void TerminalEmulator::startCommand(int absRow, int col)
 {
-    uint64_t rowId = mDocument.rowIdForAbs(absRow);
+    uint64_t lineId = mDocument.lineIdForAbs(absRow);
     if (CommandRecord* existing = inProgressCommandMut()) {
         if (existing->outputStartCol < 0) {
             // Collapse case: shell re-emits A before output has begun. This is a
             // prompt redraw (multi-line header collapses into one line) — relocate
             // the in-flight record instead of creating a new one.
-            existing->promptStartRowId  = rowId;
-            existing->promptStartCol    = col;
-            existing->commandStartRowId = 0; existing->commandStartCol = -1;
+            existing->promptStartLineId  = lineId;
+            existing->promptStartCol     = col;
+            existing->commandStartLineId = 0; existing->commandStartCol = -1;
             return;
         }
         // Output already started but no D seen — shell moved on (cancelled or
@@ -428,32 +428,36 @@ void TerminalEmulator::startCommand(int absRow, int col)
         finishCommand(absRow, col, std::nullopt);
     }
     CommandRecord r;
-    r.id                = mNextCommandId++;
-    r.promptStartRowId  = rowId;
-    r.promptStartCol    = col;
-    r.cwd               = mCurrentCwd;
+    r.id                 = mNextCommandId++;
+    r.promptStartLineId  = lineId;
+    r.promptStartCol     = col;
+    r.cwd                = mCurrentCwd;
     mCommandRing.push_back(std::move(r));
     mCommandInProgress = true;
 }
 
-const TerminalEmulator::CommandRecord* TerminalEmulator::commandForRowId(uint64_t rowId) const
+const TerminalEmulator::CommandRecord* TerminalEmulator::commandForLineId(uint64_t lineId) const
 {
     auto it = std::upper_bound(
-        mCommandRing.begin(), mCommandRing.end(), rowId,
-        [](uint64_t id, const CommandRecord& r) { return id < r.promptStartRowId; });
+        mCommandRing.begin(), mCommandRing.end(), lineId,
+        [](uint64_t id, const CommandRecord& r) { return id < r.promptStartLineId; });
     if (it == mCommandRing.begin()) return nullptr;
     --it;
     const CommandRecord& r = *it;
     if (r.complete)
-        return rowId <= r.outputEndRowId ? &r : nullptr;
-    // In-flight tail: accept any row at or past the prompt.
+        return lineId <= r.outputEndLineId ? &r : nullptr;
+    // In-flight tail: accept any line at or past the prompt.
     return &r;
 }
 
 void TerminalEmulator::pruneCommandRing()
 {
-    const uint64_t floor = mDocument.rowIdForAbs(0);
-    while (!mCommandRing.empty() && mCommandRing.front().promptStartRowId < floor) {
+    // Drop records whose prompt line has evicted past the archive cap.
+    // A line id that no longer resolves to any row is gone for good.
+    while (!mCommandRing.empty()) {
+        uint64_t promptId = mCommandRing.front().promptStartLineId;
+        if (promptId == 0) break;
+        if (mDocument.firstAbsOfLine(promptId) >= 0) break;
         mCommandRing.pop_front();
     }
     if (mSelectedCommandId) {
@@ -483,8 +487,8 @@ void TerminalEmulator::setSelectedCommand(std::optional<uint64_t> commandId)
 void TerminalEmulator::markCommandInput(int absRow, int col)
 {
     if (CommandRecord* r = inProgressCommandMut()) {
-        r->commandStartRowId = mDocument.rowIdForAbs(absRow);
-        r->commandStartCol   = col;
+        r->commandStartLineId = mDocument.lineIdForAbs(absRow);
+        r->commandStartCol    = col;
     }
 }
 
@@ -492,17 +496,17 @@ void TerminalEmulator::markCommandOutput(int absRow, int col)
 {
     CommandRecord* r = inProgressCommandMut();
     if (!r) return;
-    r->outputStartRowId = mDocument.rowIdForAbs(absRow);
-    r->outputStartCol   = col;
-    r->startMs          = mono();
+    r->outputStartLineId = mDocument.lineIdForAbs(absRow);
+    r->outputStartCol    = col;
+    r->startMs           = mono();
 }
 
 void TerminalEmulator::finishCommand(int absRow, int col, std::optional<int> exitCode)
 {
     CommandRecord* r = inProgressCommandMut();
     if (!r) { mCommandInProgress = false; return; }
-    r->outputEndRowId = mDocument.rowIdForAbs(absRow);
-    r->outputEndCol   = col;
+    r->outputEndLineId = mDocument.lineIdForAbs(absRow);
+    r->outputEndCol    = col;
     r->endMs          = mono();
     r->exitCode       = exitCode;
     r->complete       = true;
@@ -588,6 +592,14 @@ void TerminalEmulator::advanceCursorToNewLine()
     if (mState->cursorY >= mState->scrollBottom) {
         mState->cursorY = mState->scrollBottom - 1;
         scrollUpInRegion(1);
+    }
+    // Unify line ids across the autowrap: the new cursor row is a
+    // continuation of the previous logical line. Without this, reflow that
+    // un-wraps the content back into one physical row would lose the
+    // trailing physical rows' ids.
+    if (!mUsingAltScreen) {
+        int curAbs = absoluteRowFromScreen(mState->cursorY);
+        mDocument.inheritLineIdFromAbove(curAbs);
     }
 }
 

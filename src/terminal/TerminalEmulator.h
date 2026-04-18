@@ -202,18 +202,19 @@ public:
     SemanticMode semanticMode() const { return mSemanticMode; }
 
     // One executed command, built up from OSC 133 markers. Coordinates are
-    // stored as stable row ids (assigned by Document); convert to current
-    // abs-rows via `document().absForRowId(id)` when you need to navigate.
-    // Archive-head eviction past a row makes its id "stale" — lookup returns -1.
-    // Cell content mutation (shell redraw) does not affect row ids.
+    // stored as logical-line ids from Document (see Document::lineIdForAbs).
+    // Line ids survive scroll, tier-1/tier-2 migration, AND width-change
+    // reflow. They only go stale when the line evicts past the archive cap,
+    // in which case Document::firstAbsOfLine returns -1.
+    // Cell content mutation (shell redraw) does not affect line ids.
     struct CommandRecord {
         uint64_t id = 0;
-        // Stable row ids from Document — resolve to current abs-row at query time.
-        // Text is extracted lazily via Document::getTextFromRows rather than captured here.
-        uint64_t promptStartRowId = 0;
-        uint64_t commandStartRowId = 0;
-        uint64_t outputStartRowId = 0;
-        uint64_t outputEndRowId = 0;
+        // Logical-line ids from Document — resolve to current abs-row at
+        // query time via Document::firstAbsOfLine / lastAbsOfLine.
+        uint64_t promptStartLineId = 0;
+        uint64_t commandStartLineId = 0;
+        uint64_t outputStartLineId = 0;
+        uint64_t outputEndLineId = 0;
         int promptStartCol = -1;
         int commandStartCol = -1;
         int outputStartCol = -1;
@@ -227,11 +228,11 @@ public:
     const std::deque<CommandRecord>& commands() const { return mCommandRing; }
     const CommandRecord* lastCommand() const;   // most recently completed record (skipping any in-flight tail), nullptr if none
 
-    // Hit-test: find the command whose row span contains this stable row id.
-    // Rows above the oldest prompt or between complete commands return nullptr.
-    // O(log N) via binary search — ring stays sorted by promptStartRowId by
+    // Hit-test: find the command whose logical-line span contains this id.
+    // Lines above the oldest prompt or between complete commands return nullptr.
+    // O(log N) via binary search — ring stays sorted by promptStartLineId by
     // construction (startCommand only appends, pruneCommandRing only pops front).
-    const CommandRecord* commandForRowId(uint64_t rowId) const;
+    const CommandRecord* commandForLineId(uint64_t lineId) const;
 
     // Selection of a single command region (OSC 133-scoped). Mutations go
     // through setSelectedCommand so the render thread can observe via snapshot.

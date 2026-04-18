@@ -43,12 +43,12 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
                     Script::CommandInfo info{
                         recCopy.id, recCopy.cwd, recCopy.exitCode,
                         recCopy.startMs, recCopy.endMs,
-                        recCopy.promptStartRowId, recCopy.commandStartRowId,
-                        recCopy.outputStartRowId, recCopy.outputEndRowId,
-                        doc.absForRowId(recCopy.promptStartRowId),  recCopy.promptStartCol,
-                        doc.absForRowId(recCopy.commandStartRowId), recCopy.commandStartCol,
-                        doc.absForRowId(recCopy.outputStartRowId),  recCopy.outputStartCol,
-                        doc.absForRowId(recCopy.outputEndRowId),    recCopy.outputEndCol
+                        recCopy.promptStartLineId, recCopy.commandStartLineId,
+                        recCopy.outputStartLineId, recCopy.outputEndLineId,
+                        doc.firstAbsOfLine(recCopy.promptStartLineId),  recCopy.promptStartCol,
+                        doc.firstAbsOfLine(recCopy.commandStartLineId), recCopy.commandStartCol,
+                        doc.firstAbsOfLine(recCopy.outputStartLineId),  recCopy.outputStartCol,
+                        doc.lastAbsOfLine(recCopy.outputEndLineId),     recCopy.outputEndCol
                     };
                     scriptEngine_.notifyCommandComplete(paneId, info);
                 });

@@ -143,6 +143,11 @@ Document::Document(int cols, int screenHeight, int tier1Capacity, int maxArchive
     allDirty_ = true;
     ringHead_ = screenHeight_; // screen rows are [0..screenHeight_-1], head is past them
     historyCount_ = 0;
+    // Mint one id per initial screen row — they all start as independent
+    // logical lines (no soft-wrap yet).
+    rowLineId_.clear();
+    for (int i = 0; i < screenHeight_; ++i)
+        rowLineId_.push_back(mintLineId());
 }
 
 Document::~Document() {
@@ -158,7 +163,8 @@ Document::Document(Document&& o) noexcept
     , segments_(std::move(o.segments_))
     , ringExtras_(std::move(o.ringExtras_))
     , continued_(std::move(o.continued_))
-    , rowIdBase_(o.rowIdBase_)
+    , rowLineId_(std::move(o.rowLineId_))
+    , nextLineId_(o.nextLineId_)
     , dirty_(std::move(o.dirty_))
     , allDirty_(o.allDirty_)
     , archive_(std::move(o.archive_))
@@ -181,7 +187,8 @@ Document& Document::operator=(Document&& o) noexcept {
     segments_     = std::move(o.segments_);
     ringExtras_   = std::move(o.ringExtras_);
     continued_    = std::move(o.continued_);
-    rowIdBase_    = o.rowIdBase_;
+    rowLineId_    = std::move(o.rowLineId_);
+    nextLineId_   = o.nextLineId_;
     dirty_        = std::move(o.dirty_);
     allDirty_     = o.allDirty_;
     archive_      = std::move(o.archive_);
@@ -219,7 +226,8 @@ void Document::evictToArchive() {
     continued_[oldest] = false;
     if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
         archive_.pop_front();
-        ++rowIdBase_;
+        // Line id deque shrinks: the archive head row is no longer reachable.
+        if (!rowLineId_.empty()) rowLineId_.pop_front();
     }
     historyCount_--;
 }
@@ -367,6 +375,8 @@ void Document::scrollUp(int top, int bottom, int n) {
             clearPhysicalRow(ringHead_);
             ringHead_ = (ringHead_ + 1) & ringMask();
             historyCount_++;
+            // New row appended at the max abs — fresh line id.
+            rowLineId_.push_back(mintLineId());
         }
         markAllDirty();
     } else if (top == 0) {
@@ -388,6 +398,7 @@ void Document::scrollUp(int top, int bottom, int n) {
             clearPhysicalRow(ringHead_);
             ringHead_ = (ringHead_ + 1) & ringMask();
             historyCount_++;
+            rowLineId_.push_back(mintLineId());
         }
 
         // Restore frozen rows at their screen positions
@@ -539,6 +550,11 @@ void Document::clearHistory() {
     archive_.clear();
     historyCount_ = 0;
     parseBuffer_.clear();
+    // Drop all line ids except those for current screen rows.
+    if (static_cast<int>(rowLineId_.size()) > screenHeight_) {
+        int drop = static_cast<int>(rowLineId_.size()) - screenHeight_;
+        rowLineId_.erase(rowLineId_.begin(), rowLineId_.begin() + drop);
+    }
 }
 
 // --- Viewport ---
@@ -597,27 +613,43 @@ bool Document::isHistoryRowContinued(int idx) const {
     return continued_[historyTier1ToPhysical(tier1Idx)];
 }
 
-uint64_t Document::rowIdForAbs(int abs) const {
-    if (abs < 0) return 0;
-    return rowIdBase_ + static_cast<uint64_t>(abs);
+uint64_t Document::lineIdForAbs(int abs) const {
+    if (abs < 0 || abs >= static_cast<int>(rowLineId_.size())) return 0;
+    return rowLineId_[abs];
 }
 
-int Document::absForRowId(uint64_t id) const {
-    if (id < rowIdBase_) return -1;
-    uint64_t diff = id - rowIdBase_;
-    int total = static_cast<int>(archive_.size()) + historyCount_ + screenHeight_;
-    if (diff >= static_cast<uint64_t>(total)) return -1;
-    return static_cast<int>(diff);
+int Document::firstAbsOfLine(uint64_t id) const {
+    if (id == 0) return -1;
+    auto it = std::lower_bound(rowLineId_.begin(), rowLineId_.end(), id);
+    if (it == rowLineId_.end() || *it != id) return -1;
+    return static_cast<int>(it - rowLineId_.begin());
 }
 
-std::string Document::getTextFromRows(uint64_t startRowId, uint64_t endRowId,
-                                       int startCol, int endCol) const
+int Document::lastAbsOfLine(uint64_t id) const {
+    if (id == 0) return -1;
+    auto it = std::upper_bound(rowLineId_.begin(), rowLineId_.end(), id);
+    if (it == rowLineId_.begin()) return -1;
+    --it;
+    if (*it != id) return -1;
+    return static_cast<int>(it - rowLineId_.begin());
+}
+
+uint64_t Document::newestLineId() const {
+    return rowLineId_.empty() ? 0 : rowLineId_.back();
+}
+
+void Document::inheritLineIdFromAbove(int abs) {
+    if (abs <= 0 || abs >= static_cast<int>(rowLineId_.size())) return;
+    rowLineId_[abs] = rowLineId_[abs - 1];
+}
+
+std::string Document::getTextFromLines(uint64_t startLineId, uint64_t endLineId,
+                                        int startCol, int endCol) const
 {
-    int startAbs = absForRowId(startRowId);
-    int endAbs   = absForRowId(endRowId);
+    int startAbs = firstAbsOfLine(startLineId);
+    int endAbs   = lastAbsOfLine(endLineId);
     if (startAbs < 0) return {};
     if (endAbs < 0) {
-        // End row evicted — clamp to last available row.
         int total = static_cast<int>(archive_.size()) + historyCount_ + screenHeight_;
         endAbs = total - 1;
     }
@@ -643,25 +675,16 @@ std::string Document::getTextFromRows(uint64_t startRowId, uint64_t endRowId,
 
         int colStart = (abs == startAbs) ? std::max(0, startCol) : 0;
         int colEnd   = (abs == endAbs)   ? std::min(cols_, endCol == std::numeric_limits<int>::max() ? cols_ : endCol) : cols_;
-
-        // Trim trailing blanks.
-        int effective = colEnd;
-        while (effective > colStart && row[effective - 1].wc == 0) --effective;
-
-        for (int c = colStart; c < effective; ++c) {
-            char32_t ch = row[c].wc ? row[c].wc : U' ';
-            char buf[4]; int n = 0;
-            if      (ch < 0x80)    { buf[n++] = static_cast<char>(ch); }
-            else if (ch < 0x800)   { buf[n++] = static_cast<char>(0xC0 | (ch >> 6));
-                                     buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
-            else if (ch < 0x10000) { buf[n++] = static_cast<char>(0xE0 | (ch >> 12));
-                                     buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                                     buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
-            else                   { buf[n++] = static_cast<char>(0xF0 | (ch >> 18));
-                                     buf[n++] = static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
-                                     buf[n++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                                     buf[n++] = static_cast<char>(0x80 | (ch & 0x3F)); }
-            out.append(buf, n);
+        while (colEnd > colStart && row[colEnd - 1].wc == 0) colEnd--;
+        for (int c = colStart; c < colEnd; ++c) {
+            char32_t cp = row[c].wc;
+            if (cp == 0) { out += ' '; continue; }
+            if (cp < 0x80) out += static_cast<char>(cp);
+            else {
+                char buf[4];
+                int n = utf8::encode(cp, buf);
+                out.append(buf, n);
+            }
         }
         if (abs < endAbs) out += '\n';
     }
@@ -672,6 +695,7 @@ std::string Document::getTextFromRows(uint64_t startRowId, uint64_t endRowId,
 
 void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
     if (newCols == cols_ && newRows == screenHeight_) return;
+    const bool colsChanged = (newCols != cols_);
 
     // Handle initial construction (empty document, from default constructor path)
     if (ringCapacity_ == 0) {
@@ -689,11 +713,20 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         allDirty_ = true;
         ringHead_ = screenHeight_;
         historyCount_ = 0;
+        rowLineId_.clear();
+        for (int i = 0; i < screenHeight_; ++i) rowLineId_.push_back(mintLineId());
         return;
     }
 
     if (newCols != cols_) {
         // === Column change: full reflow ===
+
+        // Snapshot pre-reflow line ids so we can preserve them on dst rows.
+        // dstSrcIdx[dst] records the src row that contributed that dst row;
+        // we map src → savedLineIds[src] at the end.
+        std::deque<uint64_t> savedLineIds = rowLineId_;
+        int preArchiveSize = static_cast<int>(archive_.size());
+        int archivePopsInReflow = 0;
 
         // Step 1: Collect all source rows in order (archive → tier-1 history → screen)
         // Trim trailing empty screen rows (below cursor) — they're just padding
@@ -750,14 +783,18 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         std::vector<Cell> dstCells;
         std::vector<bool> dstContinued;
         std::vector<std::unordered_map<int, CellExtra>> dstExtras;
+        std::vector<int> dstSrcIdx;  // source row index that contributed each dst row (first cell wins)
 
         int dstRow = 0;
         int dstCol = 0;
+        int currentSrcIdx = 0;
 
         auto startNewDstRow = [&]() {
             dstCells.resize(static_cast<size_t>(dstRow + 1) * newCols);
             dstExtras.resize(dstRow + 1);
             dstContinued.resize(dstRow + 1, false);
+            if (static_cast<int>(dstSrcIdx.size()) <= dstRow)
+                dstSrcIdx.resize(dstRow + 1, -1);
         };
 
         auto finishDstRow = [&](bool cont) {
@@ -778,6 +815,12 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             srcIdx++;
 
             for (int ri = logStart; ri <= logEnd; ++ri) {
+                currentSrcIdx = ri;
+                // Stamp the current dst row with this src index if it hasn't
+                // already been claimed (first src wins when multiple sources
+                // merge into one dst row).
+                if (dstRow < static_cast<int>(dstSrcIdx.size()) && dstSrcIdx[dstRow] == -1)
+                    dstSrcIdx[dstRow] = ri;
                 SrcRow sr = getSrcRow(ri);
                 int effectiveWidth = sr.cols;
                 if (ri == logEnd) {
@@ -863,6 +906,22 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
 
         int totalDstRows = dstRow;
 
+        // Propagate -1 sentinels in dstSrcIdx — wrap-created rows inside a
+        // src's cell loop inherit the src index of the row immediately above.
+        // First row's -1 (unlikely) falls back to 0.
+        if (!dstSrcIdx.empty() && dstSrcIdx[0] == -1) dstSrcIdx[0] = 0;
+        for (int i = 1; i < static_cast<int>(dstSrcIdx.size()); ++i) {
+            if (dstSrcIdx[i] == -1) dstSrcIdx[i] = dstSrcIdx[i - 1];
+        }
+
+        // Pre-existing archive content has been fully consumed as source and
+        // re-serialized into dstCells. Clear it so subsequent push_back
+        // installs the new-width versions without duplicating the old ones.
+        // (Originally this clear was missing, producing stale old-width
+        // entries at the head of archive_ after reflow.)
+        archive_.clear();
+        preArchiveSize = 0;
+
         // Step 4: Install into ring
         int newScreenRows = newRows;
         int newHistoryCount = std::max(0, totalDstRows - newScreenRows);
@@ -874,7 +933,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                 archive_.push_back({serializeRow(rowCells, newCols), dstContinued[i]});
                 if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
                     archive_.pop_front();
-                    ++rowIdBase_;
+                    ++archivePopsInReflow;
                 }
             }
             if (cursor) cursor->dstY -= archiveEvict;
@@ -921,6 +980,47 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         historyCount_ = newHistoryCount;
         screenHeight_ = newRows;
 
+        // Rebuild rowLineId_ preserving source IDs through the reflow.
+        // Archive position i corresponds to overall index i + archivePopsInReflow
+        // in the pre-reflow numbering: <preArchiveSize originals, then new-pushes from dst[0..archiveEvict)>.
+        // Ring positions map to dst rows [archiveEvict, archiveEvict + ringTotal).
+        // When a src row spans multiple dst rows, dstSrcIdx records the same src
+        // index on each — duplicates in rowLineId_ are allowed; binary search
+        // (lower_bound) still returns the first occurrence, which is correct.
+        {
+            std::deque<uint64_t> newLineIds;
+            int postArchiveSize = static_cast<int>(archive_.size());
+            auto idForDst = [&](int dstIdx) -> uint64_t {
+                if (dstIdx < 0 || dstIdx >= static_cast<int>(dstSrcIdx.size()))
+                    return mintLineId();
+                int srcIdx = dstSrcIdx[dstIdx];
+                if (srcIdx < 0 || srcIdx >= static_cast<int>(savedLineIds.size()))
+                    return mintLineId();
+                return savedLineIds[srcIdx];
+            };
+            for (int i = 0; i < postArchiveSize; ++i) {
+                int overall = i + archivePopsInReflow;
+                if (overall < preArchiveSize) {
+                    newLineIds.push_back(savedLineIds[overall]);
+                } else {
+                    newLineIds.push_back(idForDst(overall - preArchiveSize));
+                }
+            }
+            int ringTotalNow = historyCount_ + screenHeight_;
+            int dstBase = std::max(0, archiveEvict);
+            // Only ring slots that received actual dst content inherit their
+            // src's line id; excess slots at the tail are freshly-blanked
+            // screen rows and get new ids.
+            int ringContentRows = std::min(ringTotalNow, std::max(0, totalDstRows - dstBase));
+            for (int i = 0; i < ringContentRows; ++i) {
+                newLineIds.push_back(idForDst(dstBase + i));
+            }
+            for (int i = ringContentRows; i < ringTotalNow; ++i) {
+                newLineIds.push_back(mintLineId());
+            }
+            rowLineId_ = std::move(newLineIds);
+        }
+
     } else if (newRows != screenHeight_) {
         // Height-only change: no reflow needed
         if (newRows < screenHeight_) {
@@ -963,6 +1063,19 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             int newCap = roundUpPow2(needed + SEG_SIZE);
             growRingGeneral(newCap);
         }
+    }
+
+    // Ensure rowLineId_ matches final total row count. For width-change reflow
+    // this wipes and re-mints IDs (reflow breaks per-row identity for now —
+    // preserving IDs across width reflow is a planned follow-up). For
+    // height-only change, existing IDs are kept; only the screen growth/
+    // shrink adjusts at the tail.
+    // Width-change branch rebuilds rowLineId_ itself via dstSrcIdx; for
+    // height-only change we only need to top up (grow) or trim (shrink).
+    if (!colsChanged) {
+        int totalAbs = static_cast<int>(archive_.size()) + historyCount_ + screenHeight_;
+        while (static_cast<int>(rowLineId_.size()) < totalAbs) rowLineId_.push_back(mintLineId());
+        while (static_cast<int>(rowLineId_.size()) > totalAbs) rowLineId_.pop_back();
     }
 
     dirty_.assign(screenHeight_, true);

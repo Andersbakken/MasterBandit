@@ -73,25 +73,43 @@ public:
     void setRowContinued(int screenRow, bool v);
     bool isHistoryRowContinued(int idx) const; // idx 0 = oldest (archive + tier-1)
 
-    // --- Stable monotonic row ids ---
+    // --- Logical-line IDs ---
     //
-    // Each row in the structure has a logical id that doesn't change as the row
-    // scrolls through archive / tier-1 / screen. IDs are assigned implicitly by
-    // absolute position: `rowIdForAbs(abs) = rowIdBase_ + abs`. Archive-head
-    // eviction bumps `rowIdBase_` so that remaining rows' ids stay constant
-    // while their abs-row numbers shift down. Reflow on resize does NOT preserve
-    // ids (rows split/merge and logical identity breaks); callers treat ids
-    // from before a resize as best-effort.
-    uint64_t rowIdForAbs(int abs) const;
-    // Returns -1 if the row has been evicted from archive or is otherwise gone.
-    int absForRowId(uint64_t id) const;
+    // Each logical line (a soft-wrap chain of physical rows terminated by a
+    // hard newline) gets a monotonic 64-bit identifier at write time. IDs
+    // survive reflow (content is unchanged; only the number of physical rows
+    // representing it may change) and stay with the line until its last
+    // surviving row evicts past the archive cap. Reuse of IDs never happens.
+    //
+    // Storage: `rowLineId_` is a flat deque indexed by current abs row. Each
+    // entry is the ID of the logical line that row belongs to. Entries are
+    // non-decreasing, so firstAbsOfLine / lastAbsOfLine use binary search.
 
-    // Extract plain UTF-8 text from a stable row-id range (inclusive on both ends).
-    // startCol/endCol bound the columns on the first/last row; pass 0 and INT_MAX
-    // for full rows. Rows evicted past the archive cap are skipped silently.
-    std::string getTextFromRows(uint64_t startRowId, uint64_t endRowId,
-                                int startCol = 0,
-                                int endCol = std::numeric_limits<int>::max()) const;
+    // Line id for the logical line containing this abs row. 0 if abs is
+    // out of range.
+    uint64_t lineIdForAbs(int abs) const;
+    // First abs row of the given logical line, or -1 if the line has no
+    // surviving physical rows.
+    int firstAbsOfLine(uint64_t id) const;
+    // Last abs row of the given logical line, or -1 if not found.
+    int lastAbsOfLine(uint64_t id) const;
+    // Most recently minted line id (the id of the row currently at max abs).
+    uint64_t newestLineId() const;
+
+    // Mark a physical row as the autowrap continuation of the row above —
+    // copies the predecessor's line id so the entire logical line shares one
+    // id. Called by TerminalEmulator::advanceCursorToNewLine immediately
+    // after the cursor lands on the new row.
+    void inheritLineIdFromAbove(int abs);
+
+    // Extract plain UTF-8 text from a logical-line-id range (inclusive).
+    // startLineId maps to firstAbsOfLine, endLineId to lastAbsOfLine — a
+    // multi-row wrapped line is covered end-to-end. startCol/endCol bound
+    // the first/last row's columns; pass 0 and INT_MAX for full rows.
+    // Lines evicted past the archive cap are skipped silently.
+    std::string getTextFromLines(uint64_t startLineId, uint64_t endLineId,
+                                 int startCol = 0,
+                                 int endCol = std::numeric_limits<int>::max()) const;
 
 private:
     // Segmented ring buffer: each segment holds SEG_SIZE rows of cols_ cells.
@@ -117,9 +135,13 @@ private:
         return segments_[p >> SEG_SHIFT] + (p & SEG_MASK) * cols_;
     }
 
-    // Row-id base: the id of the row currently at abs-row 0. Increments when
-    // the oldest archive row evicts (so remaining rows' ids stay stable).
-    uint64_t rowIdBase_ = 0;
+    // Logical-line ids, indexed by current abs row. Flat deque (not circular).
+    // Length always equals archive_.size() + historyCount_ + screenHeight_.
+    // Non-decreasing because IDs mint in write order which matches abs order.
+    std::deque<uint64_t> rowLineId_;
+    uint64_t nextLineId_ = 1;
+    // Mint a fresh ID (never reuses).
+    uint64_t mintLineId() { return nextLineId_++; }
 
     // Dirty tracking (screen-relative)
     std::vector<bool> dirty_;

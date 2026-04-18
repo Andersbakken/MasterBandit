@@ -287,9 +287,9 @@ void PlatformDawn::executeAction(const Action::Any& action)
             const auto* cmd = term->lastCommand();
             if (!cmd || !cmd->complete) return;
             // Extract from prompt start through output end (prompt + input + output).
-            std::string text = term->document().getTextFromRows(
-                cmd->promptStartRowId, cmd->outputEndRowId,
-                cmd->promptStartCol,   cmd->outputEndCol);
+            std::string text = term->document().getTextFromLines(
+                cmd->promptStartLineId, cmd->outputEndLineId,
+                cmd->promptStartCol,    cmd->outputEndCol);
             if (!text.empty() && window_) window_->setClipboard(text);
         },
         [&](const Action::CopyDocument&) {

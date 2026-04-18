@@ -59,12 +59,27 @@ int PlatformDawn::exec()
             for (auto& tab : tabManager_->tabs()) {
                 if (Pane* p = tab->layout()->pane(paneId)) {
                     if (auto* t = p->terminal())
-                        t->pasteText(data);
+                        t->writeText(data);
                     return;
                 }
             }
         };
         scbs.writeOverlayToShell = [this](Script::TabId tabId, const std::string& data) {
+            if (Tab* tab = tabManager_->tabAt(tabId)) {
+                if (auto* ov = tab->topOverlay())
+                    ov->writeText(data);
+            }
+        };
+        scbs.pastePaneText = [this](Script::PaneId paneId, const std::string& data) {
+            for (auto& tab : tabManager_->tabs()) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (auto* t = p->terminal())
+                        t->pasteText(data);
+                    return;
+                }
+            }
+        };
+        scbs.pasteOverlayText = [this](Script::TabId tabId, const std::string& data) {
             if (Tab* tab = tabManager_->tabAt(tabId)) {
                 if (auto* ov = tab->topOverlay())
                     ov->pasteText(data);

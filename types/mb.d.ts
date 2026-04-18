@@ -221,8 +221,22 @@ interface MbPane {
 
     /** Emit data into the terminal emulator (as if the PTY wrote it). Requires `io.inject`. */
     inject(data: string): void;
-    /** Write data to the PTY master (shell stdin). Requires `shell.write`. Throws if no PTY. */
+    /**
+     * Write raw bytes to the PTY master (shell stdin). No bracketed-paste
+     * wrapping — use this for synthetic keystrokes, OSC responses, or any
+     * payload that isn't semantically a user paste. Requires `shell.write`.
+     * Throws if no PTY.
+     */
     write(data: string): void;
+    /**
+     * Paste text to the PTY master. When the terminal has DECSET 2004
+     * (bracketed paste mode) active, `data` is wrapped in `\x1b[200~` /
+     * `\x1b[201~` so the shell's paste handling (quoting, auto-suggest
+     * suppression, multiline confirmation, etc.) kicks in. When mode 2004
+     * is inactive, behaves like `write()`. Requires `shell.write`. Throws
+     * if no PTY.
+     */
+    paste(data: string): void;
     /** Create a popup on this pane. Requires `ui.popup.create`. Returns null on failure. */
     createPopup(opts: { id: string; x: number; y: number; w: number; h: number }): MbPopup | null;
 
@@ -355,8 +369,13 @@ interface MbOverlay {
 
     /** Emit data into the overlay's terminal. */
     inject(data: string): void;
-    /** Write to the overlay's PTY if it has one. */
+    /** Write raw bytes to the overlay's PTY. No bracketed-paste wrapping. */
     write(data: string): void;
+    /**
+     * Paste text to the overlay's PTY — wraps in `\x1b[200~` / `\x1b[201~`
+     * when the overlay has DECSET 2004 active, otherwise same as `write()`.
+     */
+    paste(data: string): void;
     /** Close this overlay. */
     close(): void;
 

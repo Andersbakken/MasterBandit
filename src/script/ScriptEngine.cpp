@@ -395,6 +395,24 @@ static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue jsPanePaste(JSContext* ctx, JSValueConst this_val,
+                            int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_ThrowTypeError(ctx, "paste requires (string)");
+    REQUIRE_PERM(ctx, ShellWrite);
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneHasPty(pane->id))
+        return JS_ThrowTypeError(ctx, "pane has no PTY");
+    size_t len;
+    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) return JS_EXCEPTION;
+    eng->callbacks().pastePaneText(pane->id, std::string(str, len));
+    JS_FreeCString(ctx, str);
+    return JS_UNDEFINED;
+}
+
 // getText extracts text from a logical-line-id range with col bounds.
 using GetTextFn = std::function<std::string(uint64_t startLineId, int startCol,
                                              uint64_t endLineId, int endCol)>;
@@ -642,6 +660,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsPaneRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
+    JS_CFUNC_DEF("paste", 1, jsPanePaste),
     JS_CFUNC_DEF("getTextFromRows", 4, jsPaneGetTextFromRows),
     JS_CFUNC_DEF("getLinksFromRows", 2, jsPaneGetLinksFromRows),
     JS_CFUNC_DEF("linkAt", 2, jsPaneLinkAt),
@@ -1070,6 +1089,24 @@ static JSValue jsOverlayWrite(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue jsOverlayPaste(JSContext* ctx, JSValueConst this_val,
+                               int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_ThrowTypeError(ctx, "paste requires (string)");
+    REQUIRE_PERM(ctx, ShellWrite);
+    auto* ov = jsOverlayGet(ctx, this_val);
+    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().overlayHasPty(ov->tabId))
+        return JS_ThrowTypeError(ctx, "overlay has no PTY");
+    size_t len;
+    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) return JS_EXCEPTION;
+    eng->callbacks().pasteOverlayText(ov->tabId, std::string(str, len));
+    JS_FreeCString(ctx, str);
+    return JS_UNDEFINED;
+}
+
 static JSValue jsOverlayGetProp(JSContext* ctx, JSValueConst this_val, int magic)
 {
     auto* ov = jsOverlayGet(ctx, this_val);
@@ -1126,6 +1163,7 @@ static const JSCFunctionListEntry jsOverlayProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsOverlayRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsOverlayInject),
     JS_CFUNC_DEF("write", 1, jsOverlayWrite),
+    JS_CFUNC_DEF("paste", 1, jsOverlayPaste),
     JS_CFUNC_DEF("getTextFromRows", 4, jsOverlayGetTextFromRows),
     JS_CFUNC_DEF("rowIdAt", 1, jsOverlayRowIdAt),
     JS_CFUNC_DEF("close", 0, jsOverlayClose),

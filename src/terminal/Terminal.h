@@ -40,7 +40,13 @@ public:
     void readFromFD();
     void flushReadBuffer();
     void flushWriteQueue();
+    // Paste: wraps in \x1b[200~/\x1b[201~ when DECSET 2004 is active on the
+    // terminal. Use for real clipboard/selection pastes so the shell's paste
+    // handling (quoting, auto-suggest suppression, etc.) takes effect.
     void pasteText(const std::string& text);
+    // Write: raw send to the PTY, no bracketing. Use for synthetic keystrokes,
+    // OSC responses, or anything that isn't semantically a user paste.
+    void writeText(const std::string& text) { writeToPTY(text.data(), text.size()); }
 
     // Query the foreground process name via tcgetpgrp + platform process lookup
     std::string foregroundProcess() const;

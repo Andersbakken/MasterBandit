@@ -50,9 +50,15 @@ struct AppCallbacks {
     // Inject data directly into a terminal emulator (bypass PTY)
     std::function<void(PaneId, const std::string&)> injectPaneData;
     std::function<void(TabId, const std::string&)> injectOverlayData;
-    // Write to PTY master fd (shell stdin)
+    // Write to PTY master fd (shell stdin) — raw bytes, no bracketing.
     std::function<void(PaneId, const std::string&)> writePaneToShell;
     std::function<void(TabId, const std::string&)> writeOverlayToShell;
+    // Paste to PTY master fd — wraps in \x1b[200~/\x1b[201~ when the terminal
+    // currently has DECSET 2004 active (bracketed paste mode). Use for
+    // content the user is pasting from elsewhere; use writePaneToShell /
+    // writeOverlayToShell for synthetic keystrokes or OSC responses.
+    std::function<void(PaneId, const std::string&)> pastePaneText;
+    std::function<void(TabId, const std::string&)> pasteOverlayText;
     // Check if a PTY exists
     std::function<bool(PaneId)> paneHasPty;
     std::function<bool(TabId)> overlayHasPty;

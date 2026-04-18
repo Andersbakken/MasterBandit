@@ -73,12 +73,14 @@ interface MbMouseEvent {
 /**
  * A position within the terminal document.
  *
- * `rowId` is a stable monotonic identifier that survives scrolling into
- * history. `absRow` is volatile (shifts as rows scroll) and is provided
- * for convenience; prefer `rowId` for durable references.
+ * `rowId` is a stable monotonic identifier for the logical line containing
+ * this position. It survives scrolling into history AND width-change reflow
+ * — a soft-wrapped line keeps one `rowId` across all its physical rows.
+ * `absRow` is volatile (shifts as rows scroll) and is provided for
+ * convenience; prefer `rowId` for durable references.
  */
 interface MbPosition {
-    /** Stable row ID — use with `pane.getTextFromRows()`. */
+    /** Stable logical-line ID — use with `pane.getTextFromRows()`. */
     readonly rowId: number;
     /** Volatile absolute row index at query time (archive + history + screen). */
     readonly absRow: number;
@@ -160,10 +162,18 @@ interface MbPane {
         readonly pixelX: number;
         readonly pixelY: number;
     } | null;
-    /** Stable row ID of the oldest row in the scrollback (archive + history + screen). */
+    /** Stable row ID of the oldest line in the scrollback (archive + history + screen). */
     readonly oldestRowId: number;
-    /** Stable row ID of the newest (bottom-most) row. */
+    /** Stable row ID of the newest (bottom-most) line. */
     readonly newestRowId: number;
+    /**
+     * ID of the currently highlighted OSC 133 command (set via click,
+     * keyboard nav, or `selectCommand`), or `null` if none. Cleared on
+     * Escape (no modifiers) and on alt-screen entry. Requires
+     * `shell.commands`. Subscribe to `commandSelectionChanged` for a
+     * push signal.
+     */
+    readonly selectedCommandId: number | null;
     /**
      * Most recently completed command seen on this pane, or null. Requires
      * `shell.commands` permission (command records can contain secrets).
@@ -177,9 +187,12 @@ interface MbPane {
 
     /**
      * Extract plain UTF-8 text from a stable row-id range (inclusive on both
-     * ends). Row IDs come from `MbCommand` fields or from `rowIdAt()`. Returns
-     * an empty string if the start row has been evicted from the archive.
-     * `startCol` is inclusive, `endCol` is exclusive (one past the last column).
+     * ends). `startRowId` maps to the first abs row of that logical line;
+     * `endRowId` maps to the last abs row of that logical line — so a
+     * wrapped line is covered end-to-end at the current width. IDs come from
+     * `MbCommand` fields or from `rowIdAt()`. Returns an empty string if the
+     * start line has been evicted from the archive. `startCol` is inclusive,
+     * `endCol` is exclusive (one past the last column).
      */
     getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /**
@@ -197,6 +210,12 @@ interface MbPane {
      * Returns `null` if `screenRow` is out of range (≥ terminal height).
      */
     rowIdAt(screenRow: number): number | null;
+    /**
+     * Set (or clear with `null`) the OSC 133 command selection highlight.
+     * `id` must refer to a live command in `pane.commands`; unknown ids are
+     * silently treated as `null`. Requires `shell.commands`.
+     */
+    selectCommand(id: number | null): void;
 
     /** Emit data into the terminal emulator (as if the PTY wrote it). Requires `io.inject`. */
     inject(data: string): void;
@@ -231,10 +250,16 @@ interface MbPane {
     addEventListener(event: `osc:${number}`, fn: (payload: string) => void): void;
     /**
      * Fires once per completed shell command (OSC 133;D arrival). The callback
-     * receives an `MbCommand` record with exit code, timing, cwd, row IDs, and
+     * receives an `MbCommand` record with exit code, timing, cwd, line IDs, and
      * lazily-extracted `command`/`output` text. Requires `shell.commands` permission.
      */
     addEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
+    /**
+     * Fires when the pane's OSC 133 command selection changes (click,
+     * keyboard nav, Escape, script `selectCommand`, or alt-screen entry).
+     * Payload is the new selected command id or `null` when cleared.
+     */
+    addEventListener(event: "commandSelectionChanged", fn: (commandId: number | null) => void): void;
 
     removeEventListener(event: "input",  fn: (data: string) => string | void): void;
     removeEventListener(event: "output", fn: (data: string) => string | void): void;
@@ -247,6 +272,7 @@ interface MbPane {
     removeEventListener(event: "focusedPopupChanged", fn: (popupId: string | null) => void): void;
     removeEventListener(event: `osc:${number}`, fn: (payload: string) => void): void;
     removeEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
+    removeEventListener(event: "commandSelectionChanged", fn: (commandId: number | null) => void): void;
 }
 
 interface MbPopupInfo {

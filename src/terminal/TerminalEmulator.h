@@ -188,7 +188,8 @@ public:
         Update,
         ScrollbackChanged,
         VisibleBell,
-        CommandComplete          // payload: const CommandRecord*
+        CommandComplete,         // payload: const CommandRecord*
+        CommandSelectionChanged  // payload: nullptr; read selectedCommandId() for new value
     };
 
     // Semantic mode transitioned by OSC 133 A/B/C/D; tracks "what is the terminal

@@ -400,10 +400,10 @@ using GetTextFn = std::function<std::string(uint64_t startLineId, int startCol,
                                              uint64_t endLineId, int endCol)>;
 static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, const GetTextFn& getText);
 
-static JSValue jsPaneGetTextFromLines(JSContext* ctx, JSValueConst this_val,
-                                       int argc, JSValueConst* argv)
+static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
+                                      int argc, JSValueConst* argv)
 {
-    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromLines requires (startLineId, startCol, endLineId, endCol)");
+    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -418,10 +418,10 @@ static JSValue jsPaneGetTextFromLines(JSContext* ctx, JSValueConst this_val,
     return JS_NewStringLen(ctx, text.data(), text.size());
 }
 
-static JSValue jsPaneLineIdAt(JSContext* ctx, JSValueConst this_val,
-                               int argc, JSValueConst* argv)
+static JSValue jsPaneRowIdAt(JSContext* ctx, JSValueConst this_val,
+                              int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "lineIdAt requires (screenRow)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -438,7 +438,7 @@ static JSValue jsPaneLineIdAt(JSContext* ctx, JSValueConst this_val,
 static JSValue jsPaneLinkAt(JSContext* ctx, JSValueConst this_val,
                             int argc, JSValueConst* argv)
 {
-    if (argc < 2) return JS_ThrowTypeError(ctx, "linkAt requires (lineId, col)");
+    if (argc < 2) return JS_ThrowTypeError(ctx, "linkAt requires (rowId, col)");
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -452,10 +452,10 @@ static JSValue jsPaneLinkAt(JSContext* ctx, JSValueConst this_val,
     return JS_NewStringLen(ctx, url.data(), url.size());
 }
 
-static JSValue jsPaneGetLinksFromLines(JSContext* ctx, JSValueConst this_val,
-                                        int argc, JSValueConst* argv)
+static JSValue jsPaneGetLinksFromRows(JSContext* ctx, JSValueConst this_val,
+                                       int argc, JSValueConst* argv)
 {
-    if (argc < 2) return JS_ThrowTypeError(ctx, "getLinksFromLines requires (startLineId, endLineId, limit?)");
+    if (argc < 2) return JS_ThrowTypeError(ctx, "getLinksFromRows requires (startRowId, endRowId, limit?)");
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -471,9 +471,9 @@ static JSValue jsPaneGetLinksFromLines(JSContext* ctx, JSValueConst this_val,
         const auto& l = links[i];
         JSValue obj = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, obj, "url", JS_NewStringLen(ctx, l.url.data(), l.url.size()));
-        JS_SetPropertyStr(ctx, obj, "startLineId", JS_NewInt64(ctx, static_cast<int64_t>(l.startLineId)));
+        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(l.startLineId)));
         JS_SetPropertyStr(ctx, obj, "startCol", JS_NewInt32(ctx, l.startCol));
-        JS_SetPropertyStr(ctx, obj, "endLineId", JS_NewInt64(ctx, static_cast<int64_t>(l.endLineId)));
+        JS_SetPropertyStr(ctx, obj, "endRowId", JS_NewInt64(ctx, static_cast<int64_t>(l.endLineId)));
         JS_SetPropertyStr(ctx, obj, "endCol", JS_NewInt32(ctx, l.endCol));
         JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), obj);
     }
@@ -526,21 +526,21 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
             JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], getText));
         return arr;
     }
-    case 11: { // selection → { startLineId, startCol, endLineId, endCol } | null
+    case 11: { // selection → { startRowId, startCol, endRowId, endCol } | null
         REQUIRE_PERM(ctx, PaneSelection);
         if (!info.hasSelection) return JS_NULL;
         JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "startLineId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartLineId)));
-        JS_SetPropertyStr(ctx, obj, "startCol",    JS_NewInt32(ctx, info.selectionStartCol));
-        JS_SetPropertyStr(ctx, obj, "endLineId",   JS_NewInt64(ctx, static_cast<int64_t>(info.selectionEndLineId)));
-        JS_SetPropertyStr(ctx, obj, "endCol",      JS_NewInt32(ctx, info.selectionEndCol));
+        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartLineId)));
+        JS_SetPropertyStr(ctx, obj, "startCol",   JS_NewInt32(ctx, info.selectionStartCol));
+        JS_SetPropertyStr(ctx, obj, "endRowId",   JS_NewInt64(ctx, static_cast<int64_t>(info.selectionEndLineId)));
+        JS_SetPropertyStr(ctx, obj, "endCol",     JS_NewInt32(ctx, info.selectionEndCol));
         return obj;
     }
-    case 12: { // cursor → { lineId, col }
+    case 12: { // cursor → { rowId, col }
         REQUIRE_PERM(ctx, PaneSelection);
         JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "lineId", JS_NewInt64(ctx, static_cast<int64_t>(info.cursorLineId)));
-        JS_SetPropertyStr(ctx, obj, "col",    JS_NewInt32(ctx, info.cursorCol));
+        JS_SetPropertyStr(ctx, obj, "rowId", JS_NewInt64(ctx, static_cast<int64_t>(info.cursorLineId)));
+        JS_SetPropertyStr(ctx, obj, "col",   JS_NewInt32(ctx, info.cursorCol));
         return obj;
     }
     case 13: return JS_NewInt64(ctx, static_cast<int64_t>(info.oldestLineId));
@@ -596,10 +596,10 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsPaneRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
-    JS_CFUNC_DEF("getTextFromLines", 4, jsPaneGetTextFromLines),
-    JS_CFUNC_DEF("getLinksFromLines", 2, jsPaneGetLinksFromLines),
+    JS_CFUNC_DEF("getTextFromRows", 4, jsPaneGetTextFromRows),
+    JS_CFUNC_DEF("getLinksFromRows", 2, jsPaneGetLinksFromRows),
     JS_CFUNC_DEF("linkAt", 2, jsPaneLinkAt),
-    JS_CFUNC_DEF("lineIdAt", 1, jsPaneLineIdAt),
+    JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("cols", jsPaneGetProp, nullptr, 1),
@@ -615,8 +615,8 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
     JS_CGETSET_MAGIC_DEF("selection",    jsPaneGetProp, nullptr, 11),
     JS_CGETSET_MAGIC_DEF("cursor",      jsPaneGetProp, nullptr, 12),
-    JS_CGETSET_MAGIC_DEF("oldestLineId",    jsPaneGetProp, nullptr, 13),
-    JS_CGETSET_MAGIC_DEF("newestLineId",    jsPaneGetProp, nullptr, 14),
+    JS_CGETSET_MAGIC_DEF("oldestRowId",     jsPaneGetProp, nullptr, 13),
+    JS_CGETSET_MAGIC_DEF("newestRowId",     jsPaneGetProp, nullptr, 14),
     JS_CGETSET_MAGIC_DEF("mousePosition",   jsPaneGetProp, nullptr, 15),
     JS_CGETSET_MAGIC_DEF("selectedCommandId", jsPaneGetProp, nullptr, 16),
     JS_CFUNC_DEF("selectCommand", 1, jsPaneSelectCommand),
@@ -1039,10 +1039,10 @@ static JSValue jsOverlayGetProp(JSContext* ctx, JSValueConst this_val, int magic
     }
 }
 
-static JSValue jsOverlayGetTextFromLines(JSContext* ctx, JSValueConst this_val,
-                                          int argc, JSValueConst* argv)
+static JSValue jsOverlayGetTextFromRows(JSContext* ctx, JSValueConst this_val,
+                                         int argc, JSValueConst* argv)
 {
-    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromLines requires (startLineId, startCol, endLineId, endCol)");
+    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
     auto* ov = jsOverlayGet(ctx, this_val);
     if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -1057,10 +1057,10 @@ static JSValue jsOverlayGetTextFromLines(JSContext* ctx, JSValueConst this_val,
     return JS_NewStringLen(ctx, text.data(), text.size());
 }
 
-static JSValue jsOverlayLineIdAt(JSContext* ctx, JSValueConst this_val,
-                                  int argc, JSValueConst* argv)
+static JSValue jsOverlayRowIdAt(JSContext* ctx, JSValueConst this_val,
+                                 int argc, JSValueConst* argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "lineIdAt requires (screenRow)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
     auto* ov = jsOverlayGet(ctx, this_val);
     if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -1080,8 +1080,8 @@ static const JSCFunctionListEntry jsOverlayProto[] = {
     JS_CFUNC_DEF("removeEventListener", 2, jsOverlayRemoveEventListener),
     JS_CFUNC_DEF("inject", 1, jsOverlayInject),
     JS_CFUNC_DEF("write", 1, jsOverlayWrite),
-    JS_CFUNC_DEF("getTextFromLines", 4, jsOverlayGetTextFromLines),
-    JS_CFUNC_DEF("lineIdAt", 1, jsOverlayLineIdAt),
+    JS_CFUNC_DEF("getTextFromRows", 4, jsOverlayGetTextFromRows),
+    JS_CFUNC_DEF("rowIdAt", 1, jsOverlayRowIdAt),
     JS_CFUNC_DEF("close", 0, jsOverlayClose),
     JS_CGETSET_MAGIC_DEF("cols", jsOverlayGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("rows", jsOverlayGetProp, nullptr, 1),
@@ -2987,11 +2987,12 @@ static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, 
     }
 
     // Nested position objects: prompt, commandStart, outputStart, outputEnd.
-    // lineId is the stable logical-line identifier (reflow-invariant);
-    // absRow is the resolved abs at query time (may shift on the next reflow).
-    auto makePos = [&](uint64_t lineId, int absRow, int col) {
+    // rowId is the stable logical-line identifier (reflow-invariant, shared
+    // across all physical rows of a soft-wrapped line). absRow is the
+    // resolved abs at query time (may shift on the next reflow).
+    auto makePos = [&](uint64_t rowId, int absRow, int col) {
         JSValue pos = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, pos, "lineId", JS_NewInt64(ctx, static_cast<int64_t>(lineId)));
+        JS_SetPropertyStr(ctx, pos, "rowId",  JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
         JS_SetPropertyStr(ctx, pos, "absRow", JS_NewInt32(ctx, absRow));
         JS_SetPropertyStr(ctx, pos, "col",    JS_NewInt32(ctx, col));
         return pos;
@@ -3021,6 +3022,31 @@ void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_commandComplete");
             JSValue arg = buildCommandObject(inst.ctx, rec, getText);
+            enqueueListeners(inst.ctx, arr, 1, &arg);
+            JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> commandId)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_commandSelectionChanged");
+            JSValue arg = commandId
+                ? JS_NewInt64(inst.ctx, static_cast<int64_t>(*commandId))
+                : JS_NULL;
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);
             JS_FreeValue(inst.ctx, arr);

@@ -83,6 +83,41 @@ Two-tier design.
 
 Tier 1 overflow pushes the oldest row into Tier 2 before reuse.
 
+### Stable logical-line IDs
+
+Every logical line (a soft-wrap chain terminated by a hard newline) gets a
+unique monotonic 64-bit ID at write time, stored in a flat `std::deque<uint64_t>
+rowLineId_` parallel to the abs-row space (`archive_ + tier-1 + screen`).
+
+**Invariants:**
+- Unique per logical line. Autowrap continuations inherit the predecessor's ID
+  via `inheritLineIdFromAbove`, so multiple physical rows comprising one
+  logical line share one ID.
+- Monotonic non-decreasing across abs positions — enables O(log N) binary
+  search via `firstAbsOfLine` / `lastAbsOfLine`.
+- Survives scroll, tier-1 → tier-2 migration, width-change reflow, and
+  height-only resize.
+- Invalidated only when the line itself evicts past the archive cap.
+
+**Reflow propagation.** During width-change reflow the rebuild carries each
+source row's ID through via a `dstSrcIdx` vector (first-src-wins when multiple
+sources merge into one dst row, with post-pass propagation of wrap-created
+rows). Fresh mints are only used for the blank ring tail post-reflow, and
+those mints are always strictly greater than any pre-reflow ID (from the
+monotonic counter), preserving sortedness.
+
+**Content extraction.** `Document::getTextFromLines(startLineId, endLineId,
+startCol, endCol)` resolves via `firstAbsOfLine` / `lastAbsOfLine`, so a
+multi-row wrapped line is covered end-to-end at the current width regardless
+of how it was wrapped when the line ID was captured.
+
+**JS exposure.** `CommandInfo`, `pane.cursor.rowId`,
+`pane.selection.startRowId/endRowId`, `pane.oldestRowId/newestRowId`,
+`pane.rowIdAt(row)`, `pane.getTextFromRows(...)`,
+`pane.getLinksFromRows(...)` all expose these line-identifying IDs
+(named `rowId` in the JS API for continuity) as stable handles safe to
+hold across async boundaries.
+
 ---
 
 ## 4. Run-Based Shaping & Ligatures (implemented)
@@ -292,7 +327,16 @@ line feeds do not set it. The flag is serialized in tier-2 `ArchivedRow`.
    a padding space. Wide spacer cells are regenerated.
 4. Cursor position tracked during the copy via `CursorTrack` (source absolute
    row+col → destination absolute row+col).
-5. Result installed as new ring. Excess history evicted to tier-2 archive.
+5. `dstSrcIdx` records the source row each dst row came from (first-src-wins;
+   wrap-created rows inherit via a post-pass propagation of -1 sentinels).
+6. Pre-existing `archive_` is cleared after being consumed as source, then
+   refilled authoritatively from dst rows that exceed tier-1 capacity.
+   (Before this clear, the archive duplicated content — stale old-width
+   entries at the front plus re-wrapped dst rows appended, breaking both
+   rendering and line-id monotonicity.)
+7. Result installed as new ring. Line IDs rebuilt by mapping each dst row to
+   `savedLineIds[dstSrcIdx[i]]`; blank ring tail gets fresh mints from the
+   monotonic counter (guaranteed > all saved IDs). Vector stays non-decreasing.
 
 **Cursor beyond content**: if the cursor was at/past the last content line
 (e.g. at a prompt with rprompt), the cursor is placed at the end of content
@@ -319,25 +363,42 @@ in the Document ring buffer (`promptKind_` vector).
 - `C` — command output starts
 - `D` — command finished (with exit code); stored on the per-command `CommandRecord`
 
-**Per-command record**: a bounded ring (~256 entries) of `CommandRecord` tracks
-exit code, timing, captured command text, captured output, and working directory
-per completed command. Cells also keep the per-cell `semanticType` tag (Output /
-Input / Prompt) in `CellAttrs` so content survives reflow and tier-2 archival —
-the serializer re-emits `\e]133;A/B/C\e\\` transitions at segment boundaries and
-the parser restores them on reload. Older commands that age out of the ring keep
-their cell tags but lose their per-command record.
+**Per-command record**: an uncapped `std::deque<CommandRecord>` tracks exit
+code, timing, captured command text (lazy via `getTextFromLines`), captured
+output (lazy), and working directory per completed command. Each record stores
+line IDs (`promptStartLineId`, `commandStartLineId`, `outputStartLineId`,
+`outputEndLineId`) rather than positional row IDs, so references survive
+reflow. Ring prunes in lockstep with archive eviction: a record is dropped
+only when `Document::firstAbsOfLine(promptStartLineId)` returns -1 (line fully
+evicted). Cells also keep the per-cell `semanticType` tag (Output / Input /
+Prompt) in `CellAttrs` so content survives reflow and tier-2 archival — the
+serializer re-emits `\e]133;A/B/C\e\\` transitions at segment boundaries and
+the parser restores them on reload.
 
 **Features using markers**:
 - **Jump to prompt**: `scrollToPrompt(direction)` scans history + screen for
-  `PromptStart` markers and scrolls the viewport. Keybindings: Cmd+Up/Down
-  (macOS), Ctrl+Alt+Z/X (Linux).
+  `PromptStart` markers, scrolls the viewport, and sets `mSelectedCommandId`
+  to the landed-on command. Navigation is relative to the current selection
+  when one exists, not the viewport top. Keybindings: Cmd+Up/Down (macOS),
+  Ctrl+Alt+Z/X (Linux).
+- **Click-to-select** (Cmd+Click / Ctrl+Click): hits `commandForLineId` and
+  sets `mSelectedCommandId`. The render path resolves the selection to abs
+  rows via `firstAbsOfLine`/`lastAbsOfLine` each frame and the compute
+  shader emits a 4-rect outline via new `TerminalComputeParams.selection_*`
+  fields. Outline color is `command_outline_color` in config; live-reload
+  repaints held textures. Escape (no modifiers) clears the selection when
+  one exists. Alt-screen entry clears the selection. Split as
+  `Action::SelectCommand` distinct from `Action::OpenHyperlink` — default
+  bindings fire both on the same stroke.
 - **Select command output**: `selectCommandOutput()` finds the `OutputStart`
   region around the viewport center and selects all text to the next
   `PromptStart`.
 - **Prompt-aware reflow**: when OSC 133 markers are present, prompt lines can
   be blanked before reflow to prevent rprompt content from causing wrapping.
-- **Scripting**: `pane.lastCommand`, `pane.commands`, and the `commandComplete`
-  event expose the command ring to JS.
+- **Scripting**: `pane.lastCommand`, `pane.commands`, `pane.selectedCommandId`,
+  `pane.selectCommand(id)`, `commandComplete` event, and
+  `commandSelectionChanged` event expose the command ring to JS. Command
+  objects carry `rowId` handles on their position fields.
 
 **Requires shell integration**: the shell must emit OSC 133 sequences. Kitty
 auto-injects these via `ZDOTDIR` hijacking; we don't yet (planned).

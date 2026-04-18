@@ -210,6 +210,10 @@ public:
     void notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, int pixelY);
 
     void notifyCommandComplete(PaneId pane, const CommandInfo& rec);
+    // Fires when a pane's OSC 133 selected command changes (via click,
+    // keyboard nav, Escape, or script API). Payload is the new command
+    // id, or null when cleared.
+    void notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> commandId);
 
     // Deliver input to listeners on registered objects across all contexts.
     void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);

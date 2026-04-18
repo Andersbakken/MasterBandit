@@ -264,6 +264,7 @@ void PlatformDawn::buildRenderFrameState()
     renderThread_->renderState().dividerG = dividerG_;
     renderThread_->renderState().dividerB = dividerB_;
     renderThread_->renderState().dividerA = dividerA_;
+    renderThread_->renderState().commandOutlineColor = commandOutlineColor_;
 
     // Font names and tab bar font metrics
     renderThread_->renderState().fontName = fontName_;
@@ -1266,6 +1267,18 @@ void PlatformDawn::applyConfig(const Config& config)
     if (dc.size() == 7 && dc[0] == '#') {
         auto h = [&](int i) -> float { return std::stoul(dc.substr(i, 2), nullptr, 16) / 255.0f; };
         dividerR_ = h(1); dividerG_ = h(3); dividerB_ = h(5); dividerA_ = 1.0f;
+    }
+
+    // OSC 133 outline color — parse "#rrggbb" into packed ABGR u32 matching
+    // the compute shader's unpack (byte 0 = R, byte 3 = A).
+    {
+        const std::string& oc = config.command_outline_color;
+        if (oc.size() == 7 && oc[0] == '#') {
+            auto b = [&](int i) -> uint32_t {
+                return static_cast<uint32_t>(std::stoul(oc.substr(i, 2), nullptr, 16));
+            };
+            commandOutlineColor_ = b(1) | (b(3) << 8) | (b(5) << 16) | (0xFFu << 24);
+        }
     }
     for (auto& t : tabManager_->tabs()) t->layout()->setDividerPixels(dividerWidth_);
     opts.dividerWidth = config.divider_width;

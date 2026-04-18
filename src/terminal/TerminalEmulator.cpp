@@ -481,7 +481,10 @@ void TerminalEmulator::setSelectedCommand(std::optional<uint64_t> commandId)
     }
     if (mSelectedCommandId == commandId) return;
     mSelectedCommandId = commandId;
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    if (mCallbacks.event) {
+        mCallbacks.event(this, static_cast<int>(CommandSelectionChanged), nullptr);
+        mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    }
 }
 
 void TerminalEmulator::markCommandInput(int absRow, int col)
@@ -1898,6 +1901,9 @@ void TerminalEmulator::onAction(const Action *action)
             for (int r = 0; r < mAltGrid.rows(); ++r) mAltGrid.clearRow(r);
             mAltGrid.markAllDirty();
             clearSelection();
+            // OSC 133 command selection is a main-screen concept; clear it
+            // so scripts don't see a stale id while the alt screen is up.
+            mSelectedCommandId.reset();
             break;
         case 1004: mState->focusReporting = true; break;
         case 2004: mState->bracketedPaste = true; break;

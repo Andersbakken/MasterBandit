@@ -128,11 +128,13 @@ Wire format shells should emit:
 \e]133;L\e\\          fresh-line (emit \r\n if not at column 0)
 ```
 
-MB records stable row IDs for each OSC 133 zone boundary (`promptStartRowId`,
-`commandStartRowId`, `outputStartRowId`, `outputEndRowId`). The `command` and
-`output` text fields are extracted lazily from the document at query time —
-they are never truncated and reflect the live cell content. The `cwd` field
-snaps the most recent OSC 7 value at `A` time.
+MB records stable row IDs for each OSC 133 zone boundary — the command
+object's `promptStart`, `commandStart`, `outputStart`, and `outputEnd` each
+carry a `rowId` (plus convenience `absRow` at query time and `col`). A
+`rowId` identifies the logical line, so it's stable across width-change
+reflow. The `command` and `output` text fields are extracted lazily from the
+document at query time — they are never truncated and reflect the live cell
+content. The `cwd` field snaps the most recent OSC 7 value at `A` time.
 
 ```ts
 pane.addEventListener("commandComplete", (cmd) => {
@@ -154,15 +156,19 @@ You can extract text from any row-id range, not just command zones:
 
 ```ts
 // Get text from a command's full span (prompt + input + output)
-const fullText = pane.getTextFromRows(cmd.promptStartRowId, cmd.outputEndRowId);
+const fullText = pane.getTextFromRows(
+    cmd.promptStart.rowId, cmd.promptStart.col,
+    cmd.outputEnd.rowId,   cmd.outputEnd.col);
 
 // Get the row ID at a given screen row (null if out of range)
 const rowId = pane.rowIdAt(0); // top of visible screen
 ```
 
-Row IDs are stable monotonic integers that survive scrolling. Use them to
-anchor a position in the document and re-read text at any later time (as long
-as the row hasn't been evicted from the archive).
+Row IDs are stable monotonic integers identifying logical lines. They survive
+scrolling AND width-change reflow — a soft-wrapped logical line keeps one ID
+shared across all its physical rows. Use them to anchor a position in the
+document and re-read text at any later time (as long as the line hasn't been
+evicted from the archive).
 
 **Permission required: `shell.commands`.** Reading `pane.lastCommand`,
 iterating `pane.commands`, and subscribing to `commandComplete` all require

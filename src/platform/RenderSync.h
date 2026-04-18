@@ -124,6 +124,10 @@ struct RenderFrameState {
     float dividerWidth = 0;
     float dividerR = 0, dividerG = 0, dividerB = 0, dividerA = 0;
 
+    // OSC 133 selected-command outline color, packed RGBA8 (ABGR byte order
+    // matching compute shader's unpacking of selection_outline_color).
+    uint32_t commandOutlineColor = 0xFFAACCFFu;
+
     // Font names (for GPU atlas ops and shaping)
     std::string fontName;
     std::string tabBarFontName;
@@ -176,6 +180,7 @@ struct PaneRenderPrivate {
     int lastHistorySize = 0;
     TerminalEmulator::Selection lastSelection{};
     std::optional<TerminalSnapshot::SelectedCommandRegion> lastSelectedCommand;
+    uint32_t lastCommandOutlineColor = 0;
 
     struct RowGlyphCache {
         std::vector<GlyphEntry> glyphs;

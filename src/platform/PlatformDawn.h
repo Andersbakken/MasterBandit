@@ -268,6 +268,9 @@ private:
     // Pane divider colors
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;
     int   dividerWidth_ = 1;
+    // OSC 133 selected-command outline (packed RGBA8, ABGR byte order for
+    // compute shader unpacking).
+    uint32_t commandOutlineColor_ = 0xFFAACCFFu;
 
     // Pane tints
     float activeTint_[4]   = {1.0f, 1.0f, 1.0f, 1.0f};

@@ -54,6 +54,19 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
                 });
             }
             break;
+        case TerminalEmulator::CommandSelectionChanged:
+            // Dispatch to the script engine on the main thread — the live
+            // selection id is read fresh inside the lambda so late-arriving
+            // events see the final state even if multiple fire in a row.
+            postToMainThread([this, paneId] {
+                TerminalEmulator* te = nullptr;
+                for (auto& tab : tabManager_->tabs()) {
+                    if (auto* p = tab->layout()->pane(paneId)) { te = p->terminal(); break; }
+                }
+                if (!te) return;
+                scriptEngine_.notifyCommandSelectionChanged(paneId, te->selectedCommandId());
+            });
+            break;
         }
     };
 

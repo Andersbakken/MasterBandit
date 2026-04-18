@@ -959,9 +959,18 @@ void RenderEngine::renderFrame()
               rs.lastSelectedCommand->endCol      != snap.selectedCommand->endCol));
         rs.lastSelectedCommand = snap.selectedCommand;
 
+        // If the outline color in config changed (via live reload) and this
+        // pane currently has a selection, we need to re-render to repaint
+        // the outline with the new color.
+        bool outlineColorChanged =
+            snap.selectedCommand.has_value() &&
+            rs.lastCommandOutlineColor != frameState_.commandOutlineColor;
+        rs.lastCommandOutlineColor = frameState_.commandOutlineColor;
+
         bool needsRender = rs.dirty || anyRowDirty || cursorMoved ||
                            cursorBlinkChanged || animationAdvanced ||
-                           selectionChanged || commandSelectionChanged || !rs.heldTexture;
+                           selectionChanged || commandSelectionChanged ||
+                           outlineColorChanged || !rs.heldTexture;
 
         if (snap.syncOutputActive && rs.heldTexture)
             needsRender = false;
@@ -1239,7 +1248,7 @@ void RenderEngine::renderFrame()
                     params.selection_start_row    = static_cast<uint32_t>(clampedStart);
                     params.selection_end_row      = static_cast<uint32_t>(clampedEnd);
                     params.selection_outline_flags = flags;
-                    params.selection_outline_color = 0xFFAACCFFu; // light blue, ABGR packing
+                    params.selection_outline_color = frameState_.commandOutlineColor;
                 }
             }
 

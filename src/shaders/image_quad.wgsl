@@ -6,6 +6,9 @@ struct Params {
     _pad0: f32,
     _pad1: f32,
     pane_tint: vec4f,
+    // OSC 133 dim: .x = factor (0 = disabled, <1 = multiplier for non-selected rows),
+    // .y = selection_y_min (pixels), .z = selection_y_max (pixels).
+    dim_params: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -30,5 +33,7 @@ struct VsOut {
 
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4f {
     var c = textureSample(img_texture, img_sampler, in.uv);
-    return vec4f(c.rgb * params.pane_tint.rgb, c.a * params.pane_tint.a);
+    let inside = in.pos.y >= params.dim_params.y && in.pos.y < params.dim_params.z;
+    let dim = select(params.dim_params.x, 1.0, inside);
+    return vec4f(c.rgb * params.pane_tint.rgb * dim, c.a * params.pane_tint.a);
 }

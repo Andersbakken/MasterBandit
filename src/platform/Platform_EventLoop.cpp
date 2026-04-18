@@ -573,13 +573,16 @@ int PlatformDawn::exec()
         scriptEngine_.loadController(scriptsDir + "command-palette.js");
     }
 
-    // Config file watcher with 300ms debounce
+    // Config file watcher with 300ms debounce + initial apply so that fields
+    // not already plumbed through TerminalOptions (OSC 133 dim factor, etc.)
+    // pick up user values at startup, not just on hot-reload.
     if (configLoader_) {
         ConfigLoader::Host ch;
         ch.eventLoop = eventLoop_.get();
         ch.applyConfig = [this](const Config& c) { applyConfig(c); };
         configLoader_->setHost(std::move(ch));
         configLoader_->installFileWatch(configFilePath());
+        configLoader_->reloadNow();
     }
 
     // Set up the per-iteration tick

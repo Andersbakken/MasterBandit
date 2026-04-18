@@ -66,6 +66,17 @@ public:
     void uploadGlyphs(wgpu::Queue& queue, ComputeState* state,
                       const GlyphEntry* glyphs, uint32_t count);
 
+    // OSC 133 dim: non-selected rows are multiplied by `factor` in the fragment
+    // shader (branchless — always multiplies). `factor == 1.0` is the
+    // multiplicative identity (no dim). `yMin`/`yMax` are fragment-pixel
+    // boundaries: fragments with position.y in [yMin, yMax) are left untouched
+    // (multiplied by 1.0 instead of factor).
+    struct DimParams {
+        float factor = 1.0f;
+        float yMin = 0.0f;
+        float yMax = 0.0f;
+    };
+
     // Render terminal content to an externally-provided texture from the TexturePool.
     // pane_tint: RGBA multiplier applied to all rendered content (1,1,1,1 = no tint).
     // imageCmds must be sorted by zIndex. splitBelowText is the index where
@@ -76,6 +87,7 @@ public:
                       ComputeState* computeState,
                       wgpu::TextureView target,
                       const float pane_tint[4],
+                      const DimParams& dim,
                       const std::vector<ImageDrawCmd>& imageCmds = {},
                       size_t imgSplitText = 0);
 
@@ -156,6 +168,7 @@ public:
                       wgpu::TextureView target,
                       float paneWidth, float paneHeight,
                       const float* tint,
+                      const DimParams& dim,
                       const std::vector<ImageDrawCmd>& cmds,
                       size_t start = 0, size_t count = std::numeric_limits<size_t>::max());
 
@@ -183,6 +196,7 @@ public:
                          wgpu::TextureView target,
                          float viewport_w, float viewport_h,
                          const float* tint,
+                         const DimParams& dim,
                          const std::vector<ColrDrawCmd>& cmds);
 
     ColrAtlas& colrAtlas() { return colrAtlas_; }

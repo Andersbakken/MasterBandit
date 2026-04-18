@@ -127,6 +127,8 @@ struct RenderFrameState {
     // OSC 133 selected-command outline color, packed RGBA8 (ABGR byte order
     // matching compute shader's unpacking of selection_outline_color).
     uint32_t commandOutlineColor = 0xFFAACCFFu;
+    // OSC 133 dim factor for non-selected rows (0 = disabled; 0.4 typical).
+    float commandDimFactor = 0.0f;
 
     // Font names (for GPU atlas ops and shaping)
     std::string fontName;

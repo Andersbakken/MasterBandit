@@ -26,6 +26,10 @@ struct TextUniforms {
     gamma: f32,
     stem_darkening: f32,
     pane_tint: vec4f,
+    // OSC 133 dim: .x = factor (0 = disabled, <1 = multiplier for non-selected rows),
+    // .y = selection_y_min (pixels), .z = selection_y_max (pixels). Fragments with
+    // position.y < y_min or position.y >= y_max have their rgb multiplied by factor.
+    dim_params: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: TextUniforms;
@@ -68,5 +72,10 @@ fn fs_main(in: VSOutput) -> @location(0) vec4f {
     if (coverage < 0.01) {
         discard;
     }
-    return vec4f(in.tint.rgb * uniforms.pane_tint.rgb, in.tint.a * coverage);
+    // Branchless dim: select(factor, 1.0, inside) → fragments outside the
+    // selection are scaled by factor, inside by 1.0. When factor==1.0 the
+    // whole expression is a no-op.
+    let inside = in.position.y >= uniforms.dim_params.y && in.position.y < uniforms.dim_params.z;
+    let dim = select(uniforms.dim_params.x, 1.0, inside);
+    return vec4f(in.tint.rgb * uniforms.pane_tint.rgb * dim, in.tint.a * coverage);
 }

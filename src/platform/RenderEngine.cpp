@@ -625,7 +625,7 @@ void RenderEngine::renderTabBar()
     wgpu::CommandEncoder encoder = device_.CreateCommandEncoder(&encDesc);
     const float* windowTint = frameState_.windowHasFocus
         ? frameState_.activeTint : frameState_.inactiveTint;
-    renderer_.renderToPane(encoder, queue_, frameState_.tabBarFontName, params, cs, newTexture->view, windowTint, {});
+    renderer_.renderToPane(encoder, queue_, frameState_.tabBarFontName, params, cs, newTexture->view, windowTint, Renderer::DimParams{}, {});
     wgpu::CommandBuffer commands = encoder.Finish();
     queue_.Submit(1, &commands);
     pendingComputeRelease_.push_back(cs);
@@ -1321,12 +1321,34 @@ void RenderEngine::renderFrame()
             }
 
             const float* tint = isFocused ? frameState_.activeTint : frameState_.inactiveTint;
-            renderer_.renderToPane(encoder, queue_, frameState_.fontName, params, cs, newTexture->view, tint, imageCmds, imgSplitText);
+
+            // OSC 133 dim: non-selected rows get rgb multiplied by commandDimFactor.
+            // yMin/yMax are fragment-pixel Y bounds matching the clamped selection
+            // range; anything outside is dimmed. If the selection is entirely off
+            // the viewport, collapse the interval so every fragment is dimmed.
+            Renderer::DimParams dim;
+            if (snap.selectedCommand && frameState_.commandDimFactor > 0.0f) {
+                dim.factor = frameState_.commandDimFactor;
+                int origin = snap.historySize - snap.viewportOffset;
+                int startView = snap.selectedCommand->startAbsRow - origin;
+                int endView   = snap.selectedCommand->endAbsRow   - origin;
+                if (endView < 0 || startView >= snap.rows) {
+                    dim.yMin = 0.0f;
+                    dim.yMax = 0.0f; // pos.y >= 0 always dims
+                } else {
+                    int clampedStart = std::max(0, startView);
+                    int clampedEnd   = std::min(snap.rows - 1, endView);
+                    dim.yMin = target.pixelOriginY + static_cast<float>(clampedStart) * frameState_.lineHeight;
+                    dim.yMax = target.pixelOriginY + static_cast<float>(clampedEnd + 1) * frameState_.lineHeight;
+                }
+            }
+
+            renderer_.renderToPane(encoder, queue_, frameState_.fontName, params, cs, newTexture->view, tint, dim, imageCmds, imgSplitText);
 
             if (!colrDrawCmds.empty()) {
                 renderer_.renderColrQuads(encoder, queue_, newTexture->view,
                                           params.viewport_w, params.viewport_h,
-                                          tint, colrDrawCmds);
+                                          tint, dim, colrDrawCmds);
             }
 
             wgpu::CommandBuffer commands = encoder.Finish();

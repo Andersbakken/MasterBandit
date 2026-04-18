@@ -183,15 +183,16 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
     // Rect uniform buffer (viewport)
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = 32; // vec2f viewport + vec2f pad + vec4f pane_tint
+        desc.size = 48; // vec2f viewport + vec2f pad + vec4f pane_tint + vec4f dim_params
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         rectUniformBuffer_ = device_.CreateBuffer(&desc);
 
-        float uniforms[8] = {
+        float uniforms[12] = {
             static_cast<float>(viewportW_),
             static_cast<float>(viewportH_),
             0.0f, 0.0f,
-            1.0f, 1.0f, 1.0f, 1.0f  // pane_tint default = no tint
+            1.0f, 1.0f, 1.0f, 1.0f, // pane_tint default = no tint
+            1.0f, 0.0f, 0.0f, 0.0f  // dim_params: factor=1 is identity → no-op multiply
         };
         queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
     }
@@ -201,7 +202,7 @@ void Renderer::init(wgpu::Device& device, wgpu::Queue& queue,
         wgpu::BindGroupEntry bindings[1] = {};
         bindings[0].binding = 0;
         bindings[0].buffer = rectUniformBuffer_;
-        bindings[0].size = 32;
+        bindings[0].size = 48;
 
         wgpu::BindGroupDescriptor bgDesc = {};
         bgDesc.layout = rectBindGroupLayout_;
@@ -250,16 +251,17 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     gpu.uploadedVersion = version;
 
     // Uniform buffer: mat4x4f mvp + vec2f viewport + f32 gamma + f32 stem_darkening
+    //                 + vec4f pane_tint + vec4f dim_params
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = 96;
+        desc.size = 112;
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         gpu.uniformBuffer = device_.CreateBuffer(&desc);
 
         float w = static_cast<float>(viewportW_);
         float h = static_cast<float>(viewportH_);
         // clang-format off
-        float uniforms[24] = {
+        float uniforms[28] = {
             2.0f/w,  0.0f,    0.0f, 0.0f,
             0.0f,   -2.0f/h,  0.0f, 0.0f,
             0.0f,    0.0f,    1.0f, 0.0f,
@@ -267,7 +269,8 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
             w, h,
             1.0f,
             1.0f,
-            0.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 0.0f, // pane_tint
+            1.0f, 0.0f, 0.0f, 0.0f, // dim_params: factor=1 is identity
         };
         // clang-format on
         queue.WriteBuffer(gpu.uniformBuffer, 0, uniforms, sizeof(uniforms));
@@ -277,7 +280,7 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     wgpu::BindGroupEntry bindings[2] = {};
     bindings[0].binding = 0;
     bindings[0].buffer = gpu.uniformBuffer;
-    bindings[0].size = 96;
+    bindings[0].size = 112;
     bindings[1].binding = 1;
     bindings[1].buffer = gpu.storageBuffer;
     bindings[1].size = static_cast<uint64_t>(capacity) * 4 * sizeof(int32_t);
@@ -713,7 +716,7 @@ void Renderer::initImagePipeline(wgpu::Device& device, const std::string& shader
     // Uniform buffer (viewport size)
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = 32; // vec2f + padding + vec4f pane_tint
+        desc.size = 48; // vec2f + padding + vec4f pane_tint + vec4f dim_params
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         imageUniformBuffer_ = device.CreateBuffer(&desc);
     }
@@ -784,7 +787,7 @@ void Renderer::useImageFrame(wgpu::Queue& queue, uint32_t imageId,
         wgpu::BindGroupEntry bindings[3] = {};
         bindings[0].binding = 0;
         bindings[0].buffer = imageUniformBuffer_;
-        bindings[0].size = 32;
+        bindings[0].size = 48;
         bindings[1].binding = 1;
         bindings[1].textureView = slot.view;
         bindings[2].binding = 2;
@@ -827,6 +830,7 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              wgpu::TextureView target,
                              float paneWidth, float paneHeight,
                              const float* tint,
+                             const DimParams& dim,
                              const std::vector<ImageDrawCmd>& cmds,
                              size_t rangeStart, size_t rangeCount)
 {
@@ -834,9 +838,10 @@ void Renderer::renderImages(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     size_t rangeEnd = std::min(rangeStart + rangeCount, cmds.size());
     if (rangeStart >= rangeEnd) return;
 
-    // Update viewport + pane_tint uniform
-    float uniforms[8] = { paneWidth, paneHeight, 0, 0,
-                           tint[0], tint[1], tint[2], tint[3] };
+    // Update viewport + pane_tint + dim_params uniform
+    float uniforms[12] = { paneWidth, paneHeight, 0, 0,
+                           tint[0], tint[1], tint[2], tint[3],
+                           dim.factor, dim.yMin, dim.yMax, 0.0f };
     queue.WriteBuffer(imageUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
     wgpu::RenderPassColorAttachment att = {};
@@ -909,6 +914,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
                              ComputeState* computeState,
                              wgpu::TextureView target,
                              const float pane_tint[4],
+                             const DimParams& dim,
                              const std::vector<ImageDrawCmd>& imageCmds,
                              size_t imgSplitText)
 {
@@ -922,12 +928,13 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
     {
         float w = params.viewport_w;
         float h = params.viewport_h;
-        float uniforms[8] = { w, h, 0.0f, 0.0f,
-                               pane_tint[0], pane_tint[1], pane_tint[2], pane_tint[3] };
+        float uniforms[12] = { w, h, 0.0f, 0.0f,
+                               pane_tint[0], pane_tint[1], pane_tint[2], pane_tint[3],
+                               dim.factor, dim.yMin, dim.yMax, 0.0f };
         queue.WriteBuffer(rectUniformBuffer_, 0, uniforms, sizeof(uniforms));
 
         FontGPU& gpu = fontIt->second;
-        float textUniforms[24] = {
+        float textUniforms[28] = {
             2.0f/w,  0.0f,    0.0f, 0.0f,
             0.0f,   -2.0f/h,  0.0f, 0.0f,
             0.0f,    0.0f,    1.0f, 0.0f,
@@ -936,6 +943,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
             1.0f,
             1.0f,
             pane_tint[0], pane_tint[1], pane_tint[2], pane_tint[3],
+            dim.factor, dim.yMin, dim.yMax, 0.0f,
         };
         queue.WriteBuffer(gpu.uniformBuffer, 0, textUniforms, sizeof(textUniforms));
     }
@@ -994,7 +1002,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 
     // Below-text images (z < 0) — between backgrounds and text
     if (imgSplitText > 0)
-        renderImages(encoder, queue, target, contentW, contentH, pane_tint, imageCmds, 0, imgSplitText);
+        renderImages(encoder, queue, target, contentW, contentH, pane_tint, dim, imageCmds, 0, imgSplitText);
 
     // Text pass
     {
@@ -1016,7 +1024,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder& encoder, wgpu::Queue& queue,
 
     // Above-text images (z >= 0) — after text
     if (imgSplitText < imageCmds.size())
-        renderImages(encoder, queue, target, contentW, contentH, pane_tint, imageCmds, imgSplitText);
+        renderImages(encoder, queue, target, contentW, contentH, pane_tint, dim, imageCmds, imgSplitText);
 }
 
 void Renderer::composite(wgpu::CommandEncoder& encoder,
@@ -1075,19 +1083,20 @@ void Renderer::updateDividerViewport(wgpu::Queue& queue, uint32_t fbWidth, uint3
 
     static constexpr float kNoTint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     if (!tint) tint = kNoTint;
-    float uniforms[8] = { static_cast<float>(fbWidth), static_cast<float>(fbHeight),
-                           0.0f, 0.0f, tint[0], tint[1], tint[2], tint[3] };
+    float uniforms[12] = { static_cast<float>(fbWidth), static_cast<float>(fbHeight),
+                           0.0f, 0.0f, tint[0], tint[1], tint[2], tint[3],
+                           1.0f, 0.0f, 0.0f, 0.0f }; // dim_params: factor=1 = no dim
 
     if (!dividerUniformBuffer_) {
         wgpu::BufferDescriptor desc = {};
-        desc.size  = 32; // matches RectUniforms: vec2f viewport + vec2f pad + vec4f pane_tint
+        desc.size  = 48; // matches RectUniforms: vec2f viewport + vec2f pad + vec4f pane_tint + vec4f dim_params
         desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
         dividerUniformBuffer_ = device_.CreateBuffer(&desc);
 
         wgpu::BindGroupEntry entry = {};
         entry.binding = 0;
         entry.buffer  = dividerUniformBuffer_;
-        entry.size    = 32;
+        entry.size    = 48;
         wgpu::BindGroupDescriptor bgDesc = {};
         bgDesc.layout     = rectBindGroupLayout_;
         bgDesc.entryCount = 1;
@@ -1264,7 +1273,7 @@ void Renderer::ensureColrBucket(wgpu::CommandEncoder& encoder, wgpu::Queue& queu
         wgpu::BindGroupEntry bindings[3] = {};
         bindings[0].binding = 0;
         bindings[0].buffer = imageUniformBuffer_;
-        bindings[0].size = 32;
+        bindings[0].size = 48;
         bindings[1].binding = 1;
         bindings[1].textureView = bg.view;
         bindings[2].binding = 2;
@@ -1469,15 +1478,17 @@ void Renderer::renderColrQuads(wgpu::CommandEncoder& encoder, wgpu::Queue& queue
                                 wgpu::TextureView target,
                                 float viewport_w, float viewport_h,
                                 const float* tint,
+                                const DimParams& dim,
                                 const std::vector<ColrDrawCmd>& cmds)
 {
     if (!imagePipelineReady_ || cmds.empty()) return;
 
-    // Update viewport + pane_tint uniform (Params struct: f32, f32, vec4f = 8 floats)
-    float uniforms[8] = {
+    // Update viewport + pane_tint + dim_params uniform
+    float uniforms[12] = {
         viewport_w, viewport_h,
         0, 0,  // padding to align vec4f
-        tint[0], tint[1], tint[2], tint[3]
+        tint[0], tint[1], tint[2], tint[3],
+        dim.factor, dim.yMin, dim.yMax, 0.0f
     };
     queue.WriteBuffer(imageUniformBuffer_, 0, uniforms, sizeof(uniforms));
 

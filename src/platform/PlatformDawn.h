@@ -271,6 +271,8 @@ private:
     // OSC 133 selected-command outline (packed RGBA8, ABGR byte order for
     // compute shader unpacking).
     uint32_t commandOutlineColor_ = 0xFFAACCFFu;
+    // OSC 133 non-selected row dim factor (0 = disabled).
+    float commandDimFactor_ = 0.0f;
 
     // Pane tints
     float activeTint_[4]   = {1.0f, 1.0f, 1.0f, 1.0f};

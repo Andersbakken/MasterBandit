@@ -182,6 +182,7 @@ struct Config {
     float active_pane_tint_alpha = 0.0f;
     std::string replacement_char = "\xEF\xBF\xBD"; // U+FFFD, shown for unrenderable glyphs
     std::string command_outline_color = "#aaccff"; // OSC 133 command highlight outline
+    float command_dim_factor = 0.7f; // OSC 133: 0 = off, 0.7 = dim non-selected rows to 70%
 
     struct glaze {
         using T = Config;
@@ -203,7 +204,8 @@ struct Config {
             "active_pane_tint", &T::active_pane_tint,
             "active_pane_tint_alpha", &T::active_pane_tint_alpha,
             "replacement_char", &T::replacement_char,
-            "command_outline_color", &T::command_outline_color
+            "command_outline_color", &T::command_outline_color,
+            "command_dim_factor", &T::command_dim_factor
         );
     };
 };

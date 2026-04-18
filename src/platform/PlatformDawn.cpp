@@ -265,6 +265,7 @@ void PlatformDawn::buildRenderFrameState()
     renderThread_->renderState().dividerB = dividerB_;
     renderThread_->renderState().dividerA = dividerA_;
     renderThread_->renderState().commandOutlineColor = commandOutlineColor_;
+    renderThread_->renderState().commandDimFactor = commandDimFactor_;
 
     // Font names and tab bar font metrics
     renderThread_->renderState().fontName = fontName_;
@@ -1280,6 +1281,7 @@ void PlatformDawn::applyConfig(const Config& config)
             commandOutlineColor_ = b(1) | (b(3) << 8) | (b(5) << 16) | (0xFFu << 24);
         }
     }
+    commandDimFactor_ = std::clamp(config.command_dim_factor, 0.0f, 1.0f);
     for (auto& t : tabManager_->tabs()) t->layout()->setDividerPixels(dividerWidth_);
     opts.dividerWidth = config.divider_width;
     opts.dividerColor = config.divider_color;

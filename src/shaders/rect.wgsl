@@ -17,6 +17,9 @@ struct RectUniforms {
     viewport:   vec2f,
     _pad:       vec2f,
     pane_tint:  vec4f,
+    // OSC 133 dim: .x = factor (0 = disabled, <1 = multiplier for non-selected rows),
+    // .y = selection_y_min (pixels), .z = selection_y_max (pixels).
+    dim_params: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: RectUniforms;
@@ -36,7 +39,9 @@ fn vs_main(in: VSInput) -> VSOutput {
 fn fs_main(in: VSOutput) -> @location(0) vec4f {
     let d = min(in.edge_dist.x, in.edge_dist.y);
     let aa = smoothstep(0.0, 1.0, d);
+    let inside = in.position.y >= uniforms.dim_params.y && in.position.y < uniforms.dim_params.z;
+    let dim = select(uniforms.dim_params.x, 1.0, inside);
     var c = in.color * uniforms.pane_tint;
-    c.a *= aa;
+    c = vec4f(c.rgb * dim, c.a * aa);
     return c;
 }

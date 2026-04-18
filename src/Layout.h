@@ -73,11 +73,13 @@ public:
     // dividerPixels: width/height of each divider in pixels.
     std::vector<PaneRect> dividerRects(int dividerPixels) const;
 
-    // Grow the pane by deltaPixels toward the given split axis.
-    // Finds the nearest containing split of type splitDir and adjusts its ratio
-    // so the current pane grows (positive delta) or shrinks (negative delta).
-    // Returns false if no relevant split was found.
-    bool growPane(int paneId, LayoutNode::Dir splitDir, int deltaPixels);
+    // Move the pane's boundary on `axis` by `pixelDelta` pixels.
+    // Prefers the trailing boundary (right for Horizontal, bottom for Vertical);
+    // falls back to the leading boundary when the pane has no trailing split
+    // on that axis (e.g. rightmost / bottommost pane). pixelDelta is signed:
+    // positive = rightward (Horizontal) or downward (Vertical).
+    // Returns false if no applicable split was found on that axis.
+    bool resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta);
 
     const LayoutNode* root() const { return mRoot.get(); }
 

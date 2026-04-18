@@ -251,50 +251,45 @@ static bool subtreeContains(int paneId, const LayoutNode* node)
            subtreeContains(paneId, node->second.get());
 }
 
-struct SplitFind { LayoutNode* node; bool inFirst; };
-
-static std::optional<SplitFind> findSplitContaining(
-    int paneId, LayoutNode::Dir dir, LayoutNode* node)
+// Find the deepest ancestor split on `axis` where paneId is reachable through
+// the first (preferFirst=true) or second (preferFirst=false) subtree. The
+// first-child case corresponds to the pane's trailing (right/bottom) boundary;
+// the second-child case corresponds to its leading (left/top) boundary.
+static LayoutNode* findBoundarySplit(int paneId, LayoutNode::Dir axis,
+                                     LayoutNode* node, bool preferFirst)
 {
-    if (!node || node->isLeaf) return std::nullopt;
+    if (!node || node->isLeaf) return nullptr;
 
     bool firstHas  = subtreeContains(paneId, node->first.get());
     bool secondHas = subtreeContains(paneId, node->second.get());
 
-    if (node->dir == dir) {
-        if (firstHas) {
-            // Prefer a closer split inside first subtree
-            auto inner = findSplitContaining(paneId, dir, node->first.get());
-            return inner ? inner : SplitFind{node, true};
-        }
-        if (secondHas) {
-            auto inner = findSplitContaining(paneId, dir, node->second.get());
-            return inner ? inner : SplitFind{node, false};
-        }
-    } else {
-        if (firstHas)  return findSplitContaining(paneId, dir, node->first.get());
-        if (secondHas) return findSplitContaining(paneId, dir, node->second.get());
+    LayoutNode* child = firstHas ? node->first.get()
+                       : (secondHas ? node->second.get() : nullptr);
+    if (LayoutNode* deeper = findBoundarySplit(paneId, axis, child, preferFirst))
+        return deeper;
+
+    if (node->dir == axis) {
+        if (preferFirst  && firstHas)  return node;
+        if (!preferFirst && secondHas) return node;
     }
-    return std::nullopt;
+    return nullptr;
 }
 
-bool Layout::growPane(int paneId, LayoutNode::Dir splitDir, int deltaPixels)
+bool Layout::resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta)
 {
-    auto result = findSplitContaining(paneId, splitDir, mRoot.get());
-    if (!result) return false;
+    // Prefer the trailing boundary (pane is first child of the split).
+    LayoutNode* split = findBoundarySplit(paneId, axis, mRoot.get(), /*preferFirst*/true);
+    if (!split)
+        split = findBoundarySplit(paneId, axis, mRoot.get(), /*preferFirst*/false);
+    if (!split) return false;
 
-    LayoutNode* splitNode = result->node;
-    float totalDim = (splitDir == LayoutNode::Dir::Horizontal)
-                     ? static_cast<float>(splitNode->rect.w)
-                     : static_cast<float>(splitNode->rect.h);
+    float totalDim = (axis == LayoutNode::Dir::Horizontal)
+                     ? static_cast<float>(split->rect.w)
+                     : static_cast<float>(split->rect.h);
     if (totalDim <= 0.0f) return false;
 
-    float deltaRatio = static_cast<float>(deltaPixels) / totalDim;
-    // If pane is in first (left/top) child: growing it increases ratio.
-    // If pane is in second (right/bottom) child: growing it decreases ratio.
-    if (!result->inFirst) deltaRatio = -deltaRatio;
-
-    splitNode->ratio = std::clamp(splitNode->ratio + deltaRatio, 0.05f, 0.95f);
+    float deltaRatio = static_cast<float>(pixelDelta) / totalDim;
+    split->ratio = std::clamp(split->ratio + deltaRatio, 0.05f, 0.95f);
     return true;
 }
 

@@ -166,12 +166,15 @@ void PlatformDawn::executeAction(const Action::Any& action)
             Pane* fp = layout->focusedPane();
             if (!fp) return;
             const PaneRect& r = fp->rect();
+            // Step past the divider gap; +1 alone lands inside the divider
+            // and paneAtPixel returns -1.
+            const int step = layout->dividerPixels() + 1;
             int px = 0, py = 0;
             switch (a.dir) {
-            case Action::Direction::Left:  px = r.x - 1;       py = r.y + r.h / 2; break;
-            case Action::Direction::Right: px = r.x + r.w + 1; py = r.y + r.h / 2; break;
-            case Action::Direction::Up:    px = r.x + r.w / 2; py = r.y - 1;       break;
-            case Action::Direction::Down:  px = r.x + r.w / 2; py = r.y + r.h + 1; break;
+            case Action::Direction::Left:  px = r.x - step;       py = r.y + r.h / 2; break;
+            case Action::Direction::Right: px = r.x + r.w + step; py = r.y + r.h / 2; break;
+            case Action::Direction::Up:    px = r.x + r.w / 2;    py = r.y - step;    break;
+            case Action::Direction::Down:  px = r.x + r.w / 2;    py = r.y + r.h + step; break;
             default: return;
             }
             int targetId = layout->paneAtPixel(px, py);
@@ -184,34 +187,38 @@ void PlatformDawn::executeAction(const Action::Any& action)
             }
         },
         [&](const Action::AdjustPaneSize& a) {
+            // tmux-style semantics: direction names which way the relevant
+            // boundary moves. Prefer the trailing (right/bottom) boundary;
+            // fall back to the leading boundary on edge panes. This lets
+            // every direction key do something meaningful on every pane.
             Tab* tab = activeTab();
             if (!tab) return;
             Layout* layout = tab->layout();
             Pane* fp = layout->focusedPane();
             if (!fp) return;
 
-            LayoutNode::Dir splitDir;
-            int deltaPixels;
+            LayoutNode::Dir axis;
+            int pixelDelta;
             switch (a.dir) {
             case Action::Direction::Left:
-                splitDir   = LayoutNode::Dir::Horizontal;
-                deltaPixels = -static_cast<int>(a.amount * charWidth_);
+                axis = LayoutNode::Dir::Horizontal;
+                pixelDelta = -static_cast<int>(a.amount * charWidth_);
                 break;
             case Action::Direction::Right:
-                splitDir   = LayoutNode::Dir::Horizontal;
-                deltaPixels = static_cast<int>(a.amount * charWidth_);
+                axis = LayoutNode::Dir::Horizontal;
+                pixelDelta = static_cast<int>(a.amount * charWidth_);
                 break;
             case Action::Direction::Up:
-                splitDir   = LayoutNode::Dir::Vertical;
-                deltaPixels = -static_cast<int>(a.amount * lineHeight_);
+                axis = LayoutNode::Dir::Vertical;
+                pixelDelta = -static_cast<int>(a.amount * lineHeight_);
                 break;
             case Action::Direction::Down:
-                splitDir   = LayoutNode::Dir::Vertical;
-                deltaPixels = static_cast<int>(a.amount * lineHeight_);
+                axis = LayoutNode::Dir::Vertical;
+                pixelDelta = static_cast<int>(a.amount * lineHeight_);
                 break;
             default: return;
             }
-            if (layout->growPane(fp->id(), splitDir, deltaPixels))
+            if (layout->resizePaneEdge(fp->id(), axis, pixelDelta))
                 tabManager_->resizeAllPanesInTab(tab);
         },
         [&](const Action::Copy&) {

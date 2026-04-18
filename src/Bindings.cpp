@@ -154,13 +154,15 @@ std::optional<Action::Any> parseAction(const std::string& name,
         return std::nullopt;
     }
     if (name == "adjust_pane_size") {
-        if (args.size() < 2) {
-            spdlog::warn("Bindings: adjust_pane_size requires direction and amount args");
+        if (args.empty()) {
+            spdlog::warn("Bindings: adjust_pane_size requires a direction arg");
             return std::nullopt;
         }
         std::string d = toLower(args[0]);
         int amount = 1;
-        try { amount = std::stoi(args[1]); } catch (...) {}
+        if (args.size() >= 2) {
+            try { amount = std::stoi(args[1]); } catch (...) {}
+        }
         if (d == "left")  return Action::AdjustPaneSize{Action::Direction::Left,  amount};
         if (d == "right") return Action::AdjustPaneSize{Action::Direction::Right, amount};
         if (d == "up")    return Action::AdjustPaneSize{Action::Direction::Up,    amount};

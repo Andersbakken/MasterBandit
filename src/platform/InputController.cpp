@@ -195,7 +195,16 @@ MouseRegion InputController::hitTest(double sx, double sy)
             return MouseRegion::TabBar;
     }
 
-    // TODO: divider hit-test
+    // Divider hit-test — suppresses pane-selection and terminal forwarding when
+    // the click lands on a split divider rather than inside a pane.
+    const int divPx = tab->layout()->dividerPixels();
+    if (divPx > 0 && !tab->layout()->isZoomed()) {
+        for (const auto& r : tab->layout()->dividerRects(divPx)) {
+            if (sx >= r.x && sx < r.x + r.w &&
+                sy >= r.y && sy < r.y + r.h)
+                return MouseRegion::Divider;
+        }
+    }
     return MouseRegion::Pane;
 }
 
@@ -286,6 +295,11 @@ void InputController::onMouseButton(int button, int action, int mods)
 
     // 1. Hit test — determine region
     MouseRegion region = hitTest(sx, sy);
+
+    // Divider clicks are not pane input: don't switch focus, don't feed the
+    // click detector (would poison subsequent double/triple-click timing),
+    // don't start selection, don't forward to terminal mouse reporting.
+    if (region == MouseRegion::Divider) return;
 
     // 2. Click on inactive pane — switch focus (side effect)
     if (action == static_cast<int>(KeyAction_Press) && region == MouseRegion::Pane && !tab->hasOverlay()) {
@@ -478,8 +492,9 @@ void InputController::onMouseButton(int button, int action, int mods)
         return;
     }
 
-    // No binding match — if grabbed, forward to terminal's mouse reporting
-    if (mode == MouseMode::Grabbed) {
+    // No binding match — if grabbed, forward to terminal's mouse reporting.
+    // Skip when the click landed on a divider — the pane shouldn't see it.
+    if (mode == MouseMode::Grabbed && region == MouseRegion::Pane) {
         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
         double cellRelX = sx - pr.x - padLeft;
         double cellRelY = sy - pr.y - padTop;

@@ -1242,6 +1242,7 @@ void PlatformDawn::applyConfig(const Config& config)
         inputController_->setKeyBindings(std::move(allKey));
         inputController_->setMouseBindings(std::move(allMouse));
         inputController_->resetSequenceMatcher();
+        inputController_->setAltSendsEsc(config.alt_sends_esc);
     }
 
     // Colors

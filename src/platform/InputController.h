@@ -88,6 +88,11 @@ public:
     void setKeyBindings(std::vector<Binding> bindings) { bindings_ = std::move(bindings); }
     void setMouseBindings(std::vector<MouseBinding> bindings) { mouseBindings_ = std::move(bindings); }
     void resetSequenceMatcher() { sequenceMatcher_.reset(); }
+    // When true (xterm default), Alt+<printable> in legacy keyboard mode sends
+    // ESC-prefix + the layout-correct base char instead of whatever the OS's
+    // text input system would compose (on macOS this saves e.g. Alt+B from
+    // producing "∫" when the user actually wants readline word-nav).
+    void setAltSendsEsc(bool v) { altSendsEsc_ = v; }
 
     // Per-pane cursor style (set from OSC 22 terminal callback, read on every
     // mouse move). Erased when a pane is destroyed.
@@ -150,6 +155,11 @@ private:
 
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;
+    // When onKey consumes an Alt+printable by sending ESC-prefix + char, the
+    // follow-up onChar (from the OS text-input path) must be dropped so the
+    // shell doesn't see the character twice.
+    bool suppressNextChar_ = false;
+    bool altSendsEsc_ = true;
     double lastCursorX_ = 0.0;
     double lastCursorY_ = 0.0;
     uint32_t heldButtons_ = 0;

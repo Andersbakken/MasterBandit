@@ -154,6 +154,25 @@ void InputController::onKey(int key, int scancode, int action, int mods)
         return;
     }
 
+    // Alt+printable → ESC prefix (xterm convention, required for readline
+    // word-nav like M-b / M-f). We have to handle it here rather than in
+    // onChar because on macOS the OS text-input system composes option+letter
+    // into a different character (e.g. Alt+B → "∫") by the time onChar fires.
+    // Use the window's keyName(scancode), which returns the layout-correct
+    // base character regardless of current modifier state, so Dvorak etc.
+    // stay correct. suppressNextChar_ prevents the OS's composed char from
+    // reaching the PTY as a duplicate.
+    if (altSendsEsc_ && (lastMods_ & AltModifier) && !(lastMods_ & CtrlModifier) &&
+        window && key < 0x01000000 && k != Key_unknown) {
+        std::string base = window->keyName(scancode);
+        if (!base.empty() && static_cast<unsigned char>(base[0]) >= 0x20) {
+            ev.text = "\x1b" + base;
+            term->keyPressEvent(&ev);
+            suppressNextChar_ = true;
+            return;
+        }
+    }
+
     // Special (non-printable) keys have values >= 0x01000000
     if (k != Key_unknown && key >= 0x01000000) {
         spdlog::debug("onKey: non-printable key=0x{:x}, dispatching", static_cast<int>(k));
@@ -178,6 +197,13 @@ void InputController::onChar(uint32_t codepoint)
     if (term->kittyFlags() != 0) return;
 
     if (controlPressed_) return;
+
+    // If onKey already sent this keystroke as an ESC-prefixed Alt sequence,
+    // drop the OS's composed follow-up char (Alt+B → "∫" on macOS, etc.).
+    if (suppressNextChar_) {
+        suppressNextChar_ = false;
+        return;
+    }
 
     KeyEvent ev;
     ev.key = Key_unknown;

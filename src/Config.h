@@ -183,6 +183,7 @@ struct Config {
     std::string replacement_char = "\xEF\xBF\xBD"; // U+FFFD, shown for unrenderable glyphs
     std::string command_outline_color = "#aaccff"; // OSC 133 command highlight outline
     float command_dim_factor = 0.7f; // OSC 133: 1.0 = off (identity), 0.7 = dim non-selected rows to 70%
+    bool alt_sends_esc = true;        // Alt+<printable> sends ESC-prefix (xterm convention) instead of the composed character
 
     struct glaze {
         using T = Config;
@@ -205,7 +206,8 @@ struct Config {
             "active_pane_tint_alpha", &T::active_pane_tint_alpha,
             "replacement_char", &T::replacement_char,
             "command_outline_color", &T::command_outline_color,
-            "command_dim_factor", &T::command_dim_factor
+            "command_dim_factor", &T::command_dim_factor,
+            "alt_sends_esc", &T::alt_sends_esc
         );
     };
 };

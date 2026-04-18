@@ -29,7 +29,7 @@ struct GlyphEntry {
 };
 static_assert(sizeof(GlyphEntry) == 32);
 
-// Compute shader uniform params (60 bytes)
+// Compute shader uniform params (76 bytes)
 struct TerminalComputeParams {
     uint32_t cols;
     uint32_t rows;
@@ -41,14 +41,23 @@ struct TerminalComputeParams {
     float    font_size;
     float    pane_origin_x;
     float    pane_origin_y;
-    // Cursor (0=none, 1=solid, 2=hollow)
+    // Cursor (0=none, 1=solid, 2=hollow, 3=underline, 4=bar)
     uint32_t cursor_col;
     uint32_t cursor_row;
     uint32_t cursor_type;
     uint32_t cursor_color; // packed RGBA8
     uint32_t max_text_vertices;  // safety cap for text vertex emission
+    // OSC 133 selected-command outline. Rows are viewport-relative.
+    // outline_color == 0 disables the outline (no rects emitted).
+    // outline_flags bit 0 = draw top edge, bit 1 = draw bottom edge;
+    // left/right always drawn when outline_color != 0. Clearing top/bottom
+    // handles the case where the selection extends past the visible viewport.
+    uint32_t selection_start_row;
+    uint32_t selection_end_row;
+    uint32_t selection_outline_flags;
+    uint32_t selection_outline_color;
 };
-static_assert(sizeof(TerminalComputeParams) == 60);
+static_assert(sizeof(TerminalComputeParams) == 76);
 
 // Per-glyph info for the COLRv1 rasterizer compute shader (48 bytes)
 struct ColrGlyphInfoGPU {

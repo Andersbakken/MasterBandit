@@ -616,6 +616,96 @@ TEST_CASE("OSC 133: lastCommand returns most recent completed")
     CHECK(t.term.lastCommand()->exitCode.value() == 1);
 }
 
+// === Uncapped command ring + selected-command highlight ===
+
+TEST_CASE("OSC 133: command ring retains > 256 records when archive has room")
+{
+    TestTerminal t(40, 3);
+    // Feed 300 quick commands; each takes 1 screen row (prompt + output wrap).
+    // With the default 4096-row tier-1 archive, nothing evicts past the floor.
+    for (int i = 0; i < 300; ++i) {
+        osc133(t, "A"); osc133(t, "B"); osc133(t, "C");
+        osc133(t, "D;0");
+        t.feed("\r\n");
+    }
+    // Old behavior capped at 256. New behavior: keeps all while archive room exists.
+    CHECK(t.term.commands().size() == 300u);
+}
+
+TEST_CASE("OSC 133: commandForRowId hits the containing record")
+{
+    TestTerminal t(40, 8);
+    osc133(t, "A"); t.feed("$ ");
+    osc133(t, "B"); t.feed("cmd1");
+    osc133(t, "C"); t.feed("out1\r\n");
+    osc133(t, "D;0");
+    osc133(t, "A"); t.feed("$ ");
+    osc133(t, "B"); t.feed("cmd2");
+    osc133(t, "C"); t.feed("out2\r\n");
+    osc133(t, "D;1");
+
+    REQUIRE(t.term.commands().size() == 2);
+    const auto& r0 = t.term.commands()[0];
+    const auto& r1 = t.term.commands()[1];
+
+    const auto* hit0 = t.term.commandForRowId(r0.promptStartRowId);
+    REQUIRE(hit0 != nullptr);
+    CHECK(hit0->id == r0.id);
+
+    const auto* hit1 = t.term.commandForRowId(r1.outputEndRowId);
+    REQUIRE(hit1 != nullptr);
+    CHECK(hit1->id == r1.id);
+
+    // Below oldest prompt: no hit.
+    CHECK(t.term.commandForRowId(r0.promptStartRowId - 1) == nullptr);
+}
+
+TEST_CASE("OSC 133: setSelectedCommand populates selectedCommandId")
+{
+    TestTerminal t(40, 5);
+    osc133(t, "A"); osc133(t, "B"); t.feed("cmd");
+    osc133(t, "C"); osc133(t, "D;0");
+
+    REQUIRE(t.term.commands().size() == 1);
+    uint64_t id = t.term.commands()[0].id;
+
+    CHECK_FALSE(t.term.selectedCommandId().has_value());
+    t.term.setSelectedCommand(id);
+    REQUIRE(t.term.selectedCommandId().has_value());
+    CHECK(*t.term.selectedCommandId() == id);
+
+    t.term.setSelectedCommand(std::nullopt);
+    CHECK_FALSE(t.term.selectedCommandId().has_value());
+}
+
+TEST_CASE("OSC 133: setSelectedCommand rejects unknown id")
+{
+    TestTerminal t(40, 5);
+    osc133(t, "A"); osc133(t, "B"); osc133(t, "C"); osc133(t, "D;0");
+    t.term.setSelectedCommand(uint64_t{99999});
+    CHECK_FALSE(t.term.selectedCommandId().has_value());
+}
+
+TEST_CASE("OSC 133: scrollToPrompt sets selection on landed command")
+{
+    TestTerminal t(20, 3);
+    osc133(t, "A"); t.feed("$ cmd1\r\n");
+    osc133(t, "C"); t.feed("o1\r\n");
+    osc133(t, "D;0");
+    osc133(t, "A"); t.feed("$ cmd2\r\n");
+    osc133(t, "C"); t.feed("o2\r\n");
+    osc133(t, "D;0");
+    osc133(t, "A"); t.feed("$ ");
+
+    REQUIRE(t.term.commands().size() == 3);
+    // scrollToPrompt walks strictly above the first visible row, so landing
+    // happens on the most recent prompt in history (cmd1's row, which has
+    // scrolled off the top of the 3-row viewport).
+    t.term.scrollToPrompt(-1);
+    REQUIRE(t.term.selectedCommandId().has_value());
+    CHECK(*t.term.selectedCommandId() == t.term.commands()[0].id);
+}
+
 // === REP tests (added here since they were missed from test file) ===
 
 TEST_CASE("REP: wide character repeat")

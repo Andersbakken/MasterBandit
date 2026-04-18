@@ -67,6 +67,43 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     // Selection: copy by value. Cheap; re-evaluated every frame.
     selection = term.selection();
 
+    // OSC 133 selected command region. Resolve row ids to current absolute
+    // rows under the mutex; a pruned command id clears to nullopt inside
+    // pruneCommandRing, so a stale id won't reach us here normally.
+    selectedCommand.reset();
+    if (auto idOpt = term.selectedCommandId(); idOpt && !term.usingAltScreen()) {
+        const Document& dref = term.document();
+        for (const auto& r : term.commands()) {
+            if (r.id != *idOpt) continue;
+            int startAbs = dref.absForRowId(r.promptStartRowId);
+            int endAbs;
+            int endCol;
+            if (r.complete) {
+                endAbs = dref.absForRowId(r.outputEndRowId);
+                endCol = r.outputEndCol;
+                // Shells typically emit D in precmd, i.e. at col 0 of the next
+                // prompt row, so outputEndRowId points one row past the actual
+                // last output line. Roll it back when that's the case.
+                if (endCol == 0 && endAbs > startAbs) {
+                    endAbs -= 1;
+                    endCol = term.width();
+                }
+            } else {
+                endAbs = newHistory + term.cursorY();
+                endCol = term.cursorX();
+            }
+            if (startAbs >= 0 && endAbs >= 0) {
+                selectedCommand = SelectedCommandRegion{
+                    startAbs,
+                    std::max(0, r.promptStartCol),
+                    endAbs,
+                    endCol,
+                };
+            }
+            break;
+        }
+    }
+
     const size_t cellCount = static_cast<size_t>(rows) * static_cast<size_t>(cols);
     cells.resize(cellCount);
     rowDirty.assign(static_cast<size_t>(rows), 0);

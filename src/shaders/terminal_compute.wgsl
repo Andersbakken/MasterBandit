@@ -16,6 +16,10 @@ struct TerminalParams {
     cursor_type: u32,   // 0=none 1=solid 2=hollow 3=underline 4=bar
     cursor_color: u32,  // packed RGBA8
     max_text_vertices: u32, // safety cap for text vertex emission
+    selection_start_row: u32,
+    selection_end_row: u32,
+    selection_outline_flags: u32, // bit 0=top, bit 1=bottom; left/right always drawn when color!=0
+    selection_outline_color: u32, // packed RGBA8; 0 disables outline
 };
 
 struct ResolvedCellGPU {
@@ -223,6 +227,74 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             rect_verts[base_idx + 3u] = RV(x0+t, y0, cr, cg, cb, ca);
             rect_verts[base_idx + 4u] = RV(x0+t, y1, cr, cg, cb, ca);
             rect_verts[base_idx + 5u] = RV(x0,   y1, cr, cg, cb, ca);
+        }
+    }
+
+    // OSC 133 selected-command outline — emitted once by idx == 0.
+    if (idx == 0u && params.selection_outline_color != 0u) {
+        let sr = f32(params.selection_start_row);
+        let er = f32(params.selection_end_row);
+        let or_r = f32((params.selection_outline_color >> 0u)  & 0xFFu) / 255.0;
+        let or_g = f32((params.selection_outline_color >> 8u)  & 0xFFu) / 255.0;
+        let or_b = f32((params.selection_outline_color >> 16u) & 0xFFu) / 255.0;
+        let or_a = f32((params.selection_outline_color >> 24u) & 0xFFu) / 255.0;
+        let ot = 2.0; // outline thickness in pixels
+
+        let ox0 = params.pane_origin_x;
+        let ox1 = params.pane_origin_x + params.viewport_w;
+        let oy0 = params.pane_origin_y + sr * params.cell_height;
+        let oy1 = params.pane_origin_y + (er + 1.0) * params.cell_height;
+
+        let has_top    = (params.selection_outline_flags & 1u) != 0u;
+        let has_bottom = (params.selection_outline_flags & 2u) != 0u;
+
+        var rect_count = 2u; // left + right always
+        if (has_top)    { rect_count += 1u; }
+        if (has_bottom) { rect_count += 1u; }
+
+        let obase = atomicAdd(&counters[4], rect_count * 6u);
+        var oi = 0u;
+
+        if (has_top) {
+            let b = obase + oi * 6u;
+            rect_verts[b + 0u] = RV(ox0, oy0,      or_r, or_g, or_b, or_a);
+            rect_verts[b + 1u] = RV(ox1, oy0,      or_r, or_g, or_b, or_a);
+            rect_verts[b + 2u] = RV(ox0, oy0 + ot, or_r, or_g, or_b, or_a);
+            rect_verts[b + 3u] = RV(ox1, oy0,      or_r, or_g, or_b, or_a);
+            rect_verts[b + 4u] = RV(ox1, oy0 + ot, or_r, or_g, or_b, or_a);
+            rect_verts[b + 5u] = RV(ox0, oy0 + ot, or_r, or_g, or_b, or_a);
+            oi += 1u;
+        }
+        if (has_bottom) {
+            let b = obase + oi * 6u;
+            rect_verts[b + 0u] = RV(ox0, oy1 - ot, or_r, or_g, or_b, or_a);
+            rect_verts[b + 1u] = RV(ox1, oy1 - ot, or_r, or_g, or_b, or_a);
+            rect_verts[b + 2u] = RV(ox0, oy1,      or_r, or_g, or_b, or_a);
+            rect_verts[b + 3u] = RV(ox1, oy1 - ot, or_r, or_g, or_b, or_a);
+            rect_verts[b + 4u] = RV(ox1, oy1,      or_r, or_g, or_b, or_a);
+            rect_verts[b + 5u] = RV(ox0, oy1,      or_r, or_g, or_b, or_a);
+            oi += 1u;
+        }
+        // Left edge
+        {
+            let b = obase + oi * 6u;
+            rect_verts[b + 0u] = RV(ox0,      oy0, or_r, or_g, or_b, or_a);
+            rect_verts[b + 1u] = RV(ox0 + ot, oy0, or_r, or_g, or_b, or_a);
+            rect_verts[b + 2u] = RV(ox0,      oy1, or_r, or_g, or_b, or_a);
+            rect_verts[b + 3u] = RV(ox0 + ot, oy0, or_r, or_g, or_b, or_a);
+            rect_verts[b + 4u] = RV(ox0 + ot, oy1, or_r, or_g, or_b, or_a);
+            rect_verts[b + 5u] = RV(ox0,      oy1, or_r, or_g, or_b, or_a);
+            oi += 1u;
+        }
+        // Right edge
+        {
+            let b = obase + oi * 6u;
+            rect_verts[b + 0u] = RV(ox1 - ot, oy0, or_r, or_g, or_b, or_a);
+            rect_verts[b + 1u] = RV(ox1,      oy0, or_r, or_g, or_b, or_a);
+            rect_verts[b + 2u] = RV(ox1 - ot, oy1, or_r, or_g, or_b, or_a);
+            rect_verts[b + 3u] = RV(ox1,      oy0, or_r, or_g, or_b, or_a);
+            rect_verts[b + 4u] = RV(ox1,      oy1, or_r, or_g, or_b, or_a);
+            rect_verts[b + 5u] = RV(ox1 - ot, oy1, or_r, or_g, or_b, or_a);
         }
     }
 

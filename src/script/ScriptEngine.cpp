@@ -557,8 +557,37 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         JS_SetPropertyStr(ctx, obj, "pixelY", JS_NewInt32(ctx, info.mousePixelY));
         return obj;
     }
+    case 16: { // selectedCommandId → number | null (gated on shell.commands, matching .commands)
+        if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+            scheduleTermination(ctx);
+            return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+        }
+        if (!info.selectedCommandId) return JS_NULL;
+        return JS_NewInt64(ctx, static_cast<int64_t>(*info.selectedCommandId));
+    }
     default: return JS_UNDEFINED;
     }
+}
+
+static JSValue jsPaneSelectCommand(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_UNDEFINED;
+    if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+        scheduleTermination(ctx);
+        return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+    }
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneSetSelectedCommand) return JS_UNDEFINED;
+    std::optional<uint64_t> id;
+    if (argc >= 1 && !JS_IsNull(argv[0]) && !JS_IsUndefined(argv[0])) {
+        int64_t v = 0;
+        if (JS_ToInt64(ctx, &v, argv[0]) < 0) return JS_EXCEPTION;
+        if (v < 0) return JS_ThrowRangeError(ctx, "selectCommand: id must be non-negative");
+        id = static_cast<uint64_t>(v);
+    }
+    eng->callbacks().paneSetSelectedCommand(pane->id, id);
+    return JS_UNDEFINED;
 }
 
 // Forward declarations — defined after Popup class
@@ -592,6 +621,8 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("oldestRowId",     jsPaneGetProp, nullptr, 13),
     JS_CGETSET_MAGIC_DEF("newestRowId",     jsPaneGetProp, nullptr, 14),
     JS_CGETSET_MAGIC_DEF("mousePosition",   jsPaneGetProp, nullptr, 15),
+    JS_CGETSET_MAGIC_DEF("selectedCommandId", jsPaneGetProp, nullptr, 16),
+    JS_CFUNC_DEF("selectCommand", 1, jsPaneSelectCommand),
 };
 
 // ============================================================================

@@ -4,6 +4,7 @@
 #include <TerminalEmulator.h>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -53,6 +54,18 @@ struct TerminalSnapshot {
     // be evaluated without calling back into Terminal.
     TerminalEmulator::Selection selection {};
     bool isCellSelected(int col, int absRow) const;
+
+    // OSC 133 command highlight. Populated when a CommandRecord is selected
+    // via Cmd+Click or keyboard nav. Resolved to absolute rows at snapshot
+    // time; renderer converts to viewport-relative using historySize and
+    // viewportOffset (same math as isCellSelected). Cleared on alt screen.
+    struct SelectedCommandRegion {
+        int startAbsRow;
+        int startCol;
+        int endAbsRow;
+        int endCol;
+    };
+    std::optional<SelectedCommandRegion> selectedCommand;
 
     // Per-image view for rendering and animation scheduling. Populated from
     // TerminalEmulator::imageRegistry() during update() with the subset of

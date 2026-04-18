@@ -227,6 +227,19 @@ public:
     const std::deque<CommandRecord>& commands() const { return mCommandRing; }
     const CommandRecord* lastCommand() const;   // most recently completed record (skipping any in-flight tail), nullptr if none
 
+    // Hit-test: find the command whose row span contains this stable row id.
+    // Rows above the oldest prompt or between complete commands return nullptr.
+    // O(log N) via binary search — ring stays sorted by promptStartRowId by
+    // construction (startCommand only appends, pruneCommandRing only pops front).
+    const CommandRecord* commandForRowId(uint64_t rowId) const;
+
+    // Selection of a single command region (OSC 133-scoped). Mutations go
+    // through setSelectedCommand so the render thread can observe via snapshot.
+    // The id references CommandRecord::id; if the id no longer exists in the
+    // ring (command evicted), the selection clears on the next pruneCommandRing.
+    std::optional<uint64_t> selectedCommandId() const { return mSelectedCommandId; }
+    void setSelectedCommand(std::optional<uint64_t> commandId);
+
     struct Action
     {
         enum Type {
@@ -640,11 +653,11 @@ private:
 
     // OSC 133 shell-integration state.
     SemanticMode mSemanticMode { SemanticMode::Inactive };
-    std::deque<CommandRecord> mCommandRing;   // last N completed + in-progress
-    static constexpr size_t COMMAND_RING_MAX = 256;
+    std::deque<CommandRecord> mCommandRing;   // all records whose prompt row is still retained
     uint64_t mNextCommandId { 1 };
     bool mCommandInProgress { false };        // true between A and D (or N)
     std::string mCurrentCwd;                  // last OSC 7 value (for command records)
+    std::optional<uint64_t> mSelectedCommandId;  // id of command currently highlighted via click or keyboard nav
 
     int absoluteRowFromScreen(int screenRow) const;
     CommandRecord* inProgressCommandMut();    // nullptr if no in-progress record
@@ -652,6 +665,9 @@ private:
     void markCommandInput(int absRow, int col);
     void markCommandOutput(int absRow, int col);
     void finishCommand(int absRow, int col, std::optional<int> exitCode);
+    // Drop front records whose prompt row has fallen past Document's archive cap.
+    // Called after operations that may evict archive rows (parse batch, resize).
+    void pruneCommandRing();
 
     // Default colors (OSC 10/11/12)
     DefaultColors mDefaultColors;

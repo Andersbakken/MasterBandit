@@ -131,6 +131,7 @@ int PlatformDawn::exec()
                                 info.selectionEndCol     = c1 + 1; // exclusive, matches getTextFromRows
                             }
                         }
+                        info.selectedCommandId = t->selectedCommandId();
                     }
                     // Mouse position relative to this pane
                     if (inputController_) {
@@ -186,6 +187,17 @@ int PlatformDawn::exec()
                 break;
             }
             return result;
+        };
+        scbs.paneSetSelectedCommand = [this](Script::PaneId paneId, std::optional<uint64_t> id) -> bool {
+            for (auto& tab : tabManager_->tabs()) {
+                if (Pane* p = tab->layout()->pane(paneId)) {
+                    if (TerminalEmulator* te = p->terminal()) {
+                        te->setSelectedCommand(id);
+                        return !id.has_value() || te->selectedCommandId() == id;
+                    }
+                }
+            }
+            return false;
         };
         scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startRowId, int startCol,
                                   uint64_t endRowId, int endCol) -> std::string {

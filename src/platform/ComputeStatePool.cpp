@@ -177,10 +177,11 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
         state->computeTextVertBuffer = device.CreateBuffer(&desc);
         state->maxTextVertices = initTextVerts;
     }
-    // Rect vertex buffer: backgrounds (6/cell) + procedural glyphs (up to 48/cell for braille/octant) + cursor (24)
+    // Rect vertex buffer: backgrounds (6/cell) + procedural glyphs (up to 48/cell for braille/octant)
+    // + cursor (24) + OSC 133 selection outline (24).
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size  = (static_cast<uint64_t>(cells) * 54 + 24) * RECT_VERTEX_SIZE;
+        desc.size  = (static_cast<uint64_t>(cells) * 54 + 48) * RECT_VERTEX_SIZE;
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
         state->computeRectVertBuffer = device.CreateBuffer(&desc);
     }
@@ -205,7 +206,7 @@ ComputeState* ComputeStatePool::allocate(uint32_t cells)
         static_cast<size_t>(cells) * sizeof(ResolvedCell) +
         static_cast<size_t>(cells) * sizeof(GlyphEntry) +
         static_cast<size_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE +
-        (static_cast<size_t>(cells) * 30 + 24) * RECT_VERTEX_SIZE +
+        (static_cast<size_t>(cells) * 30 + 48) * RECT_VERTEX_SIZE +
         32 + 256; // indirect + params
 
     rebuildBindGroup(state.get());

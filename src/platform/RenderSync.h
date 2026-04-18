@@ -175,6 +175,7 @@ struct PaneRenderPrivate {
     int lastViewportOffset = 0;
     int lastHistorySize = 0;
     TerminalEmulator::Selection lastSelection{};
+    std::optional<TerminalSnapshot::SelectedCommandRegion> lastSelectedCommand;
 
     struct RowGlyphCache {
         std::vector<GlyphEntry> glyphs;

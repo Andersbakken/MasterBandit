@@ -71,11 +71,16 @@ struct AppCallbacks {
         bool mouseInPane = false;
         int mouseCellX = 0; int mouseCellY = 0;
         int mousePixelX = 0; int mousePixelY = 0;
+        std::optional<uint64_t> selectedCommandId;
     };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
     // entries (0 = all). Used by pane.commands / pane.lastCommand JS properties.
     std::function<std::vector<CommandInfo>(PaneId, int limit)> paneCommands;
+    // Set (or clear with nullopt) the pane's OSC 133 selected command.
+    // Returns false if the command id is not present in the ring or the pane
+    // is not found.
+    std::function<bool(PaneId, std::optional<uint64_t>)> paneSetSelectedCommand;
     // Extract plain text from a row-id range in a pane's or overlay's document.
     // startCol/endCol bound which columns are included on the first/last row;
     // pass 0 and INT_MAX (or std::numeric_limits<int>::max()) for full rows.

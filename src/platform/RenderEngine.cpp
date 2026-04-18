@@ -950,9 +950,18 @@ void RenderEngine::renderFrame()
             ls.mode     != cs.mode;
         rs.lastSelection = cs;
 
+        bool commandSelectionChanged =
+            rs.lastSelectedCommand.has_value() != snap.selectedCommand.has_value() ||
+            (rs.lastSelectedCommand && snap.selectedCommand &&
+             (rs.lastSelectedCommand->startAbsRow != snap.selectedCommand->startAbsRow ||
+              rs.lastSelectedCommand->endAbsRow   != snap.selectedCommand->endAbsRow   ||
+              rs.lastSelectedCommand->startCol    != snap.selectedCommand->startCol    ||
+              rs.lastSelectedCommand->endCol      != snap.selectedCommand->endCol));
+        rs.lastSelectedCommand = snap.selectedCommand;
+
         bool needsRender = rs.dirty || anyRowDirty || cursorMoved ||
                            cursorBlinkChanged || animationAdvanced ||
-                           selectionChanged || !rs.heldTexture;
+                           selectionChanged || commandSelectionChanged || !rs.heldTexture;
 
         if (snap.syncOutputActive && rs.heldTexture)
             needsRender = false;
@@ -1209,6 +1218,30 @@ void RenderEngine::renderFrame()
                      | (static_cast<uint32_t>(dc.cursorB) << 16)
                      | (static_cast<uint32_t>(alpha) << 24);
             };
+
+            // OSC 133 command outline — pass row range + edge flags. Rows
+            // are viewport-relative; out-of-view edges are dropped via flags
+            // so the outline stays visible even if partially scrolled away.
+            params.selection_start_row    = 0;
+            params.selection_end_row      = 0;
+            params.selection_outline_flags = 0;
+            params.selection_outline_color = 0;
+            if (snap.selectedCommand) {
+                int origin = snap.historySize - snap.viewportOffset;
+                int startView = snap.selectedCommand->startAbsRow - origin;
+                int endView   = snap.selectedCommand->endAbsRow   - origin;
+                if (endView >= 0 && startView < snap.rows) {
+                    int clampedStart = std::max(0, startView);
+                    int clampedEnd   = std::min(snap.rows - 1, endView);
+                    uint32_t flags = 0;
+                    if (startView >= 0)          flags |= 0x1u;
+                    if (endView   <  snap.rows)  flags |= 0x2u;
+                    params.selection_start_row    = static_cast<uint32_t>(clampedStart);
+                    params.selection_end_row      = static_cast<uint32_t>(clampedEnd);
+                    params.selection_outline_flags = flags;
+                    params.selection_outline_color = 0xFFAACCFFu; // light blue, ABGR packing
+                }
+            }
 
             params.cursor_type = 0;
             if (target.isPopup) {

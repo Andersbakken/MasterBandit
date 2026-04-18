@@ -100,6 +100,15 @@ void InputController::onKey(int key, int scancode, int action, int mods)
         }
     }
 
+    // OSC 133 highlight: Escape (no modifiers) clears the selected command
+    // region and is swallowed. Only takes effect while a command is selected,
+    // so normal Escape delivery to TUI apps is preserved at other times.
+    if (action != static_cast<int>(KeyAction_Release) &&
+        k == Key_Escape && mods == 0 && term->selectedCommandId()) {
+        term->setSelectedCommand(std::nullopt);
+        return;
+    }
+
     // Reset viewport to live when typing (not on release, not for bindings)
     if (action != static_cast<int>(KeyAction_Release)) {
         term->resetViewport();
@@ -460,7 +469,8 @@ void InputController::onMouseButton(int button, int action, int mods)
             }
         }
 
-        // OpenHyperlink: resolve hyperlink at cell position
+        // OpenHyperlink: resolve hyperlink at cell position; if none, fall
+        // through to OSC 133 command selection at that row.
         if (std::holds_alternative<Action::OpenHyperlink>(act)) {
             int col = cellCol, row = cellRow;
             if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
@@ -473,7 +483,16 @@ void InputController::onMouseButton(int button, int action, int mods)
                     }
                 }
             }
-            return; // no hyperlink found, nothing to do
+            // No hyperlink: select the OSC 133 command containing this row,
+            // or clear selection if none. Skipped on alt screen (commands
+            // only exist on the main screen's Document).
+            if (!term->usingAltScreen() && row >= 0 && row < term->height()) {
+                int absRow = term->document().historySize() - term->viewportOffset() + row;
+                uint64_t rowId = term->document().rowIdForAbs(absRow);
+                const auto* rec = term->commandForRowId(rowId);
+                term->setSelectedCommand(rec ? std::optional<uint64_t>{rec->id} : std::nullopt);
+            }
+            return;
         }
 
         // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere

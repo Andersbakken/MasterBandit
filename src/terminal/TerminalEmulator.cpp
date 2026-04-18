@@ -204,6 +204,7 @@ void TerminalEmulator::resize(int width, int height)
     mState->savedCursorY = std::min(mState->savedCursorY, height - 1);
     mState->savedWrapPending = false;
     clearSelection();
+    pruneCommandRing();
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
@@ -284,7 +285,19 @@ void TerminalEmulator::scrollToPrompt(int direction)
     // A "prompt-start row" is a row tagged Prompt whose predecessor is not.
     int histSize = mDocument.historySize();
     int totalRows = histSize + mHeight;
+    // Navigation is relative to the currently selected command when one
+    // exists, otherwise relative to the top of the viewport. This matches
+    // iTerm: pressing Cmd+Up after clicking a command jumps to the one
+    // immediately above the selection rather than re-finding the same prompt.
     int currentAbsRow = histSize - mViewportOffset;
+    if (mSelectedCommandId) {
+        for (const auto& r : mCommandRing) {
+            if (r.id != *mSelectedCommandId) continue;
+            int abs = mDocument.absForRowId(r.promptStartRowId);
+            if (abs >= 0) currentAbsRow = abs;
+            break;
+        }
+    }
 
     auto getRow = [&](int absRow) -> const Cell* {
         return absRow < histSize
@@ -311,13 +324,20 @@ void TerminalEmulator::scrollToPrompt(int direction)
         }
     };
 
+    auto selectCommandAt = [&](int absRow) {
+        uint64_t rowId = mDocument.rowIdForAbs(absRow);
+        if (const auto* rec = commandForRowId(rowId)) {
+            setSelectedCommand(rec->id);
+        }
+    };
+
     if (direction < 0) {
         for (int r = currentAbsRow - 1; r >= 0; --r) {
-            if (isPromptStart(r)) { scrollTo(r); return; }
+            if (isPromptStart(r)) { scrollTo(r); selectCommandAt(r); return; }
         }
     } else {
         for (int r = currentAbsRow + 1; r < totalRows; ++r) {
-            if (isPromptStart(r)) { scrollTo(r); return; }
+            if (isPromptStart(r)) { scrollTo(r); selectCommandAt(r); return; }
         }
         resetViewport();
     }
@@ -413,8 +433,51 @@ void TerminalEmulator::startCommand(int absRow, int col)
     r.promptStartCol    = col;
     r.cwd               = mCurrentCwd;
     mCommandRing.push_back(std::move(r));
-    while (mCommandRing.size() > COMMAND_RING_MAX) mCommandRing.pop_front();
     mCommandInProgress = true;
+}
+
+const TerminalEmulator::CommandRecord* TerminalEmulator::commandForRowId(uint64_t rowId) const
+{
+    auto it = std::upper_bound(
+        mCommandRing.begin(), mCommandRing.end(), rowId,
+        [](uint64_t id, const CommandRecord& r) { return id < r.promptStartRowId; });
+    if (it == mCommandRing.begin()) return nullptr;
+    --it;
+    const CommandRecord& r = *it;
+    if (r.complete)
+        return rowId <= r.outputEndRowId ? &r : nullptr;
+    // In-flight tail: accept any row at or past the prompt.
+    return &r;
+}
+
+void TerminalEmulator::pruneCommandRing()
+{
+    const uint64_t floor = mDocument.rowIdForAbs(0);
+    while (!mCommandRing.empty() && mCommandRing.front().promptStartRowId < floor) {
+        mCommandRing.pop_front();
+    }
+    if (mSelectedCommandId) {
+        bool stillPresent = false;
+        for (const auto& r : mCommandRing) {
+            if (r.id == *mSelectedCommandId) { stillPresent = true; break; }
+        }
+        if (!stillPresent) mSelectedCommandId.reset();
+    }
+}
+
+void TerminalEmulator::setSelectedCommand(std::optional<uint64_t> commandId)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    if (commandId) {
+        bool found = false;
+        for (const auto& r : mCommandRing) {
+            if (r.id == *commandId) { found = true; break; }
+        }
+        if (!found) commandId.reset();
+    }
+    if (mSelectedCommandId == commandId) return;
+    mSelectedCommandId = commandId;
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
 void TerminalEmulator::markCommandInput(int absRow, int col)
@@ -996,6 +1059,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
             break;
         }
     }
+
+    pruneCommandRing();
 
     // Suppress render updates during chunked image transfer to avoid
     // vsync-blocking the event loop while the PTY still has data to deliver.

@@ -25,8 +25,9 @@ using PaneId = int;
 using TabId = int;
 
 // OSC 133 command record as surfaced to scripts — shared between AppCallbacks
-// (for pane.commands / lastCommand queries) and Engine::notifyCommandComplete
-// (for the event payload). Kept at namespace scope so forward declarations work.
+// (for pane.commands / pane.selectedCommand queries) and
+// Engine::notifyCommandComplete (for the event payload). Kept at namespace
+// scope so forward declarations work.
 struct CommandInfo {
     uint64_t id = 0;
     std::string cwd;
@@ -75,7 +76,7 @@ struct AppCallbacks {
     };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
-    // entries (0 = all). Used by pane.commands / pane.lastCommand JS properties.
+    // entries (0 = all). Used by pane.commands / pane.selectedCommand JS properties.
     std::function<std::vector<CommandInfo>(PaneId, int limit)> paneCommands;
     // Set (or clear with nullopt) the pane's OSC 133 selected command.
     // Returns false if the command id is not present in the ring or the pane

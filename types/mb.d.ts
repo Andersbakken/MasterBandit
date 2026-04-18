@@ -175,10 +175,12 @@ interface MbPane {
      */
     readonly selectedCommandId: number | null;
     /**
-     * Most recently completed command seen on this pane, or null. Requires
-     * `shell.commands` permission (command records can contain secrets).
+     * Full record of the OSC 133 command currently highlighted on this pane
+     * (see `selectedCommandId`), or `null` if nothing is selected. The object
+     * is the same shape as entries in `commands` — `command` and `output` are
+     * lazy getters that decode on first access. Requires `shell.commands`.
      */
-    readonly lastCommand: MbCommand | null;
+    readonly selectedCommand: MbCommand | null;
     /**
      * Bounded ring of recently completed commands (oldest first, most recent
      * last). Requires `shell.commands` permission.

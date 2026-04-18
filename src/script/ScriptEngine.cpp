@@ -398,7 +398,50 @@ static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
 // getText extracts text from a logical-line-id range with col bounds.
 using GetTextFn = std::function<std::string(uint64_t startLineId, int startCol,
                                              uint64_t endLineId, int endCol)>;
-static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, const GetTextFn& getText);
+
+// ----- Command object class -----
+//
+// Each entry in pane.commands / pane.selectedCommand / commandComplete event
+// is an instance of a JS class ("Command") backed by CmdObjData. Scalar
+// properties (id, cwd, exitCode, timings, position objects) are cheap getters
+// that read from the opaque struct. The two expensive properties (.command
+// and .output) decode text on first access and cache the resulting JSValue,
+// so iterating with `.map(c => c.id)` / `.find(c => c.id === X)` never pays
+// the text-extraction cost.
+//
+// Class id + finalizer + class def are declared up here (near other class
+// infra) so the Engine ctor can reference them. The getter body, proto table,
+// and buildCommandObject live together further down.
+
+struct CmdObjData {
+    Script::CommandInfo info;
+    Script::PaneId paneId;
+    // Sentinel means "not decoded yet". Freed via JS_FreeValueRT in finalizer.
+    JSValue cachedCommand = JS_UNINITIALIZED;
+    JSValue cachedOutput  = JS_UNINITIALIZED;
+};
+
+static JSClassID jsCommandClassId;
+
+static void jsCommandFinalize(JSRuntime* rt, JSValue val)
+{
+    auto* d = static_cast<CmdObjData*>(JS_GetOpaque(val, jsCommandClassId));
+    if (!d) return;
+    JS_FreeValueRT(rt, d->cachedCommand);
+    JS_FreeValueRT(rt, d->cachedOutput);
+    delete d;
+}
+
+static JSClassDef jsCommandClassDef = { "Command", jsCommandFinalize };
+
+// Forward-declare so createContext() can install it as the class proto.
+extern const JSCFunctionListEntry jsCommandProto[];
+extern const size_t jsCommandProtoCount;
+
+// Callers pass the owning paneId; at property-access time the getter uses
+// engineFromCtx(ctx) + Engine::callbacks().paneGetText(paneId, ..), which
+// safely returns an empty string if the pane has been destroyed.
+static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, PaneId paneId);
 
 static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
                                       int argc, JSValueConst* argv)
@@ -498,18 +541,24 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
                  ? JS_NULL
                  : JS_NewString(ctx, info.focusedPopupId.c_str());
     case 8: return JS_NewString(ctx, info.foregroundProcess.c_str());
-    case 9: { // lastCommand — gated on shell.commands.
+    case 9: { // selectedCommand — full record of the OSC 133 command currently
+              // highlighted via Cmd+click / Cmd+double-click / scroll_to_prompt,
+              // or null if no selection. Gated on shell.commands (same as .commands
+              // and .selectedCommandId — both of which expose the same underlying
+              // id, just in lighter form).
         if (!checkPerm(ctx, Perm::ShellReadCommands)) {
             scheduleTermination(ctx);
             return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
         }
+        if (!info.selectedCommandId) return JS_NULL;
         if (!eng->callbacks().paneCommands) return JS_NULL;
-        auto list = eng->callbacks().paneCommands(pane->id, 1);
-        if (list.empty()) return JS_NULL;
-        auto getText = eng->callbacks().paneGetText
-            ? GetTextFn([eng, id = pane->id](uint64_t s, int sc, uint64_t e, int ec) { return eng->callbacks().paneGetText(id, s, sc, e, ec); })
-            : GetTextFn{};
-        return buildCommandObject(ctx, list.back(), getText);
+        auto list = eng->callbacks().paneCommands(pane->id, 0);
+        uint64_t target = *info.selectedCommandId;
+        for (const auto& rec : list) {
+            if (rec.id == target)
+                return buildCommandObject(ctx, rec, pane->id);
+        }
+        return JS_NULL;
     }
     case 10: { // commands — gated on shell.commands.
         if (!checkPerm(ctx, Perm::ShellReadCommands)) {
@@ -519,11 +568,8 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         JSValue arr = JS_NewArray(ctx);
         if (!eng->callbacks().paneCommands) return arr;
         auto list = eng->callbacks().paneCommands(pane->id, 0);
-        auto getText = eng->callbacks().paneGetText
-            ? GetTextFn([eng, id = pane->id](uint64_t s, int sc, uint64_t e, int ec) { return eng->callbacks().paneGetText(id, s, sc, e, ec); })
-            : GetTextFn{};
         for (size_t i = 0; i < list.size(); ++i)
-            JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], getText));
+            JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], pane->id));
         return arr;
     }
     case 11: { // selection → { startRowId, startCol, endRowId, endCol } | null
@@ -611,7 +657,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("focusedPopupId", jsPaneGetProp, nullptr, 7),
     JS_CGETSET_MAGIC_DEF("foregroundProcess", jsPaneGetProp, nullptr, 8),
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
-    JS_CGETSET_MAGIC_DEF("lastCommand", jsPaneGetProp, nullptr, 9),
+    JS_CGETSET_MAGIC_DEF("selectedCommand", jsPaneGetProp, nullptr, 9),
     JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
     JS_CGETSET_MAGIC_DEF("selection",    jsPaneGetProp, nullptr, 11),
     JS_CGETSET_MAGIC_DEF("cursor",      jsPaneGetProp, nullptr, 12),
@@ -1964,6 +2010,9 @@ Engine::Engine()
 
     JS_NewClassID(rt_, &jsPopupClassId);
     JS_NewClass(rt_, jsPopupClassId, &jsPopupClassDef);
+
+    JS_NewClassID(rt_, &jsCommandClassId);
+    JS_NewClass(rt_, jsCommandClassId, &jsCommandClassDef);
 }
 
 Engine::~Engine()
@@ -2002,6 +2051,10 @@ JSContext* Engine::createContext()
     JS_SetPropertyFunctionList(ctx, popupProto,
         jsPopupProto, sizeof(jsPopupProto) / sizeof(jsPopupProto[0]));
     JS_SetClassProto(ctx, jsPopupClassId, popupProto);
+
+    JSValue commandProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, commandProto, jsCommandProto, jsCommandProtoCount);
+    JS_SetClassProto(ctx, jsCommandClassId, commandProto);
 
     // Timer globals
     JSValue global = JS_GetGlobalObject(ctx);
@@ -2953,64 +3006,102 @@ void Engine::notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, 
     }
 }
 
-// Build the JS object exposed to commandComplete listeners (and pane.commands / lastCommand).
-// getText is called lazily to extract command/output text — pass {} to omit text fields.
-static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, const GetTextFn& getText)
+// ----- Command class getter body + proto table -----
+// (class id / finalizer / class def are declared near the top of the file
+// so the Engine ctor can reference them.)
+
+static JSValue jsCmdMakePos(JSContext* ctx, uint64_t rowId, int absRow, int col)
 {
-    JSValue obj = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, obj, "id",  JS_NewInt64(ctx, static_cast<int64_t>(p.id)));
-    JS_SetPropertyStr(ctx, obj, "cwd", JS_NewStringLen(ctx, p.cwd.data(), p.cwd.size()));
-    if (p.exitCode.has_value())
-        JS_SetPropertyStr(ctx, obj, "exitCode", JS_NewInt32(ctx, *p.exitCode));
-    else
-        JS_SetPropertyStr(ctx, obj, "exitCode", JS_NULL);
-    JS_SetPropertyStr(ctx, obj, "startMs", JS_NewInt64(ctx, static_cast<int64_t>(p.startMs)));
-    JS_SetPropertyStr(ctx, obj, "endMs",   JS_NewInt64(ctx, static_cast<int64_t>(p.endMs)));
+    JSValue pos = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, pos, "rowId",  JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
+    JS_SetPropertyStr(ctx, pos, "absRow", JS_NewInt32(ctx, absRow));
+    JS_SetPropertyStr(ctx, pos, "col",    JS_NewInt32(ctx, col));
+    return pos;
+}
 
-    // Lazy text extraction with col bounds so prompt/command/output on the same row
-    // are correctly separated (commandStartCol..outputStartCol for the input zone, etc.)
-    if (getText) {
-        std::string cmd = (p.commandStartCol >= 0 && p.outputStartLineId)
-            ? getText(p.commandStartLineId, p.commandStartCol,
-                      p.outputStartLineId,  p.outputStartCol) : std::string{};
-        while (!cmd.empty() && (cmd.back() == ' ' || cmd.back() == '\n' ||
-                                 cmd.back() == '\r' || cmd.back() == '\t'))
-            cmd.pop_back();
-        std::string out = (p.outputStartCol >= 0 && p.outputEndLineId)
-            ? getText(p.outputStartLineId, p.outputStartCol,
-                      p.outputEndLineId,   p.outputEndCol) : std::string{};
-        JS_SetPropertyStr(ctx, obj, "command", JS_NewStringLen(ctx, cmd.data(), cmd.size()));
-        JS_SetPropertyStr(ctx, obj, "output",  JS_NewStringLen(ctx, out.data(), out.size()));
-    } else {
-        JS_SetPropertyStr(ctx, obj, "command", JS_NewString(ctx, ""));
-        JS_SetPropertyStr(ctx, obj, "output",  JS_NewString(ctx, ""));
+// Magic numbers map to property names in jsCommandProto below.
+static JSValue jsCmdGet(JSContext* ctx, JSValueConst this_val, int magic)
+{
+    auto* d = static_cast<CmdObjData*>(JS_GetOpaque2(ctx, this_val, jsCommandClassId));
+    if (!d) return JS_EXCEPTION;
+    switch (magic) {
+        case 0: return JS_NewInt64(ctx, static_cast<int64_t>(d->info.id));
+        case 1: return JS_NewStringLen(ctx, d->info.cwd.data(), d->info.cwd.size());
+        case 2: return d->info.exitCode.has_value()
+                     ? JS_NewInt32(ctx, *d->info.exitCode)
+                     : JS_NULL;
+        case 3: return JS_NewInt64(ctx, static_cast<int64_t>(d->info.startMs));
+        case 4: return JS_NewInt64(ctx, static_cast<int64_t>(d->info.endMs));
+        case 5: { // command text — lazy
+            if (JS_IsUninitialized(d->cachedCommand)) {
+                Engine* eng = engineFromCtx(ctx);
+                if (eng && eng->callbacks().paneGetText &&
+                    d->info.commandStartCol >= 0 && d->info.outputStartLineId) {
+                    std::string s = eng->callbacks().paneGetText(
+                        d->paneId, d->info.commandStartLineId, d->info.commandStartCol,
+                        d->info.outputStartLineId, d->info.outputStartCol);
+                    while (!s.empty() && (s.back() == ' ' || s.back() == '\n' ||
+                                          s.back() == '\r' || s.back() == '\t'))
+                        s.pop_back();
+                    d->cachedCommand = JS_NewStringLen(ctx, s.data(), s.size());
+                } else {
+                    d->cachedCommand = JS_NewString(ctx, "");
+                }
+            }
+            return JS_DupValue(ctx, d->cachedCommand);
+        }
+        case 6: { // output text — lazy
+            if (JS_IsUninitialized(d->cachedOutput)) {
+                Engine* eng = engineFromCtx(ctx);
+                if (eng && eng->callbacks().paneGetText &&
+                    d->info.outputStartCol >= 0 && d->info.outputEndLineId) {
+                    std::string s = eng->callbacks().paneGetText(
+                        d->paneId, d->info.outputStartLineId, d->info.outputStartCol,
+                        d->info.outputEndLineId, d->info.outputEndCol);
+                    d->cachedOutput = JS_NewStringLen(ctx, s.data(), s.size());
+                } else {
+                    d->cachedOutput = JS_NewString(ctx, "");
+                }
+            }
+            return JS_DupValue(ctx, d->cachedOutput);
+        }
+        // rowId is the stable logical-line identifier (reflow-invariant, shared
+        // across all physical rows of a soft-wrapped line). absRow is the
+        // resolved abs at object-build time (may shift on the next reflow).
+        case 7:  return jsCmdMakePos(ctx, d->info.promptStartLineId,  d->info.promptStartAbsRow,  d->info.promptStartCol);
+        case 8:  return jsCmdMakePos(ctx, d->info.commandStartLineId, d->info.commandStartAbsRow, d->info.commandStartCol);
+        case 9:  return jsCmdMakePos(ctx, d->info.outputStartLineId,  d->info.outputStartAbsRow,  d->info.outputStartCol);
+        case 10: return jsCmdMakePos(ctx, d->info.outputEndLineId,    d->info.outputEndAbsRow,    d->info.outputEndCol);
+        default: return JS_UNDEFINED;
     }
+}
 
-    // Nested position objects: prompt, commandStart, outputStart, outputEnd.
-    // rowId is the stable logical-line identifier (reflow-invariant, shared
-    // across all physical rows of a soft-wrapped line). absRow is the
-    // resolved abs at query time (may shift on the next reflow).
-    auto makePos = [&](uint64_t rowId, int absRow, int col) {
-        JSValue pos = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, pos, "rowId",  JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
-        JS_SetPropertyStr(ctx, pos, "absRow", JS_NewInt32(ctx, absRow));
-        JS_SetPropertyStr(ctx, pos, "col",    JS_NewInt32(ctx, col));
-        return pos;
-    };
-    JS_SetPropertyStr(ctx, obj, "promptStart",  makePos(p.promptStartLineId,  p.promptStartAbsRow,  p.promptStartCol));
-    JS_SetPropertyStr(ctx, obj, "commandStart", makePos(p.commandStartLineId, p.commandStartAbsRow, p.commandStartCol));
-    JS_SetPropertyStr(ctx, obj, "outputStart",  makePos(p.outputStartLineId,  p.outputStartAbsRow,  p.outputStartCol));
-    JS_SetPropertyStr(ctx, obj, "outputEnd",    makePos(p.outputEndLineId,    p.outputEndAbsRow,    p.outputEndCol));
+const JSCFunctionListEntry jsCommandProto[] = {
+    JS_CGETSET_MAGIC_DEF("id",           jsCmdGet, nullptr,  0),
+    JS_CGETSET_MAGIC_DEF("cwd",          jsCmdGet, nullptr,  1),
+    JS_CGETSET_MAGIC_DEF("exitCode",     jsCmdGet, nullptr,  2),
+    JS_CGETSET_MAGIC_DEF("startMs",      jsCmdGet, nullptr,  3),
+    JS_CGETSET_MAGIC_DEF("endMs",        jsCmdGet, nullptr,  4),
+    JS_CGETSET_MAGIC_DEF("command",      jsCmdGet, nullptr,  5),
+    JS_CGETSET_MAGIC_DEF("output",       jsCmdGet, nullptr,  6),
+    JS_CGETSET_MAGIC_DEF("promptStart",  jsCmdGet, nullptr,  7),
+    JS_CGETSET_MAGIC_DEF("commandStart", jsCmdGet, nullptr,  8),
+    JS_CGETSET_MAGIC_DEF("outputStart",  jsCmdGet, nullptr,  9),
+    JS_CGETSET_MAGIC_DEF("outputEnd",    jsCmdGet, nullptr, 10),
+};
+const size_t jsCommandProtoCount = sizeof(jsCommandProto) / sizeof(jsCommandProto[0]);
+
+static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, PaneId paneId)
+{
+    JSValue obj = JS_NewObjectClass(ctx, jsCommandClassId);
+    if (JS_IsException(obj)) return obj;
+    JS_SetOpaque(obj, new CmdObjData{p, paneId, JS_UNINITIALIZED, JS_UNINITIALIZED});
     return obj;
 }
 
 void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
 {
     IterGuard guard(this);
-    auto getText = callbacks_.paneGetText
-        ? GetTextFn([this, pane](uint64_t s, int sc, uint64_t e, int ec) { return callbacks_.paneGetText(pane, s, sc, e, ec); })
-        : GetTextFn{};
-
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
@@ -3021,7 +3112,7 @@ void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
         JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_commandComplete");
-            JSValue arg = buildCommandObject(inst.ctx, rec, getText);
+            JSValue arg = buildCommandObject(inst.ctx, rec, pane);
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);
             JS_FreeValue(inst.ctx, arr);

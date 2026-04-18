@@ -450,6 +450,59 @@ const TerminalEmulator::CommandRecord* TerminalEmulator::commandForLineId(uint64
     return &r;
 }
 
+const TerminalEmulator::CommandRecord* TerminalEmulator::commandForId(uint64_t commandId) const
+{
+    // Ring is sorted by id (monotonic mNextCommandId++ at startCommand; only
+    // append + front-pop), so binary search works.
+    auto it = std::lower_bound(
+        mCommandRing.begin(), mCommandRing.end(), commandId,
+        [](const CommandRecord& r, uint64_t id) { return r.id < id; });
+    if (it == mCommandRing.end() || it->id != commandId) return nullptr;
+    return &*it;
+}
+
+void TerminalEmulator::selectCommandOutputForRecord(const CommandRecord* rec)
+{
+    if (!rec) return;
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+
+    // Selection spans the same range the outline rectangle draws:
+    // prompt start through output end. Resolve line ids to current absolute
+    // rows. -1 means the line evicted past the archive cap.
+    int startAbs = mDocument.firstAbsOfLine(rec->promptStartLineId);
+    int endAbs;
+    int endCol;
+    if (rec->complete) {
+        endAbs = mDocument.lastAbsOfLine(rec->outputEndLineId);
+        endCol = rec->outputEndCol;
+        // Shells typically emit D in precmd, i.e. at col 0 of the next prompt
+        // row, so outputEndLineId points one row past the actual last output
+        // line. Roll it back when that's the case. Same fixup as
+        // TerminalSnapshot's SelectedCommandRegion.
+        if (endCol == 0 && endAbs > startAbs) {
+            endAbs -= 1;
+            endCol = mWidth;
+        }
+    } else {
+        // In-flight tail: extend to cursor.
+        endAbs = mDocument.historySize() + cursorY();
+        endCol = cursorX();
+    }
+    if (startAbs < 0 || endAbs < 0 || endAbs < startAbs) return;
+
+    int startCol = std::max(0, rec->promptStartCol);
+
+    startSelection(startCol, startAbs);
+    updateSelection(endCol, endAbs);
+    finalizeSelection();
+
+    std::string text = selectedText();
+    if (!text.empty() && mCallbacks.copyToClipboard) {
+        mCallbacks.copyToClipboard(text);
+    }
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+}
+
 void TerminalEmulator::pruneCommandRing()
 {
     // Drop records whose prompt line has evicted past the archive cap.

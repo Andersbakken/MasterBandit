@@ -43,6 +43,7 @@ struct ScrollToPrompt      { int direction = -1; }; // -1 = previous, +1 = next
 struct SelectCommandOutput   {};
 struct ShowScrollback        {};
 struct CopyLastCommand       {}; // prompt + input + output of last command to clipboard
+struct CopySelectedCommandOutput {}; // output of currently selected OSC 133 command (no-op if none)
 struct CopyDocument          {}; // entire scrollback + screen as plain text to clipboard
 struct FocusPopup          {}; // Cycle focus: main terminal → popup1 → popup2 → ... → main
 struct ReloadConfig        {};
@@ -66,7 +67,7 @@ using Any = std::variant<
     PushOverlay, PopOverlay,
     IncreaseFontSize, DecreaseFontSize, ResetFontSize,
     ScrollToPrompt, SelectCommandOutput, ShowScrollback,
-    CopyLastCommand, CopyDocument,
+    CopyLastCommand, CopySelectedCommandOutput, CopyDocument,
     FocusPopup, ReloadConfig, ScriptAction,
     MouseSelection, OpenHyperlink, PasteSelection, SelectCommand
 >;

@@ -1327,7 +1327,7 @@ void RenderEngine::renderFrame()
             // range; anything outside is dimmed. If the selection is entirely off
             // the viewport, collapse the interval so every fragment is dimmed.
             Renderer::DimParams dim;
-            if (snap.selectedCommand && frameState_.commandDimFactor > 0.0f) {
+            if (snap.selectedCommand) {
                 dim.factor = frameState_.commandDimFactor;
                 int origin = snap.historySize - snap.viewportOffset;
                 int startView = snap.selectedCommand->startAbsRow - origin;

@@ -494,6 +494,20 @@ void InputController::onMouseButton(int button, int action, int mods)
                 continue;
             }
 
+            // SelectCommandOutput on the mouse path: hit-test the clicked row to
+            // find its command and convert the output range into a text
+            // selection. Falling through to the generic dispatch would instead
+            // use the viewport-center heuristic, which is wrong for a click.
+            if (std::holds_alternative<Action::SelectCommandOutput>(act)) {
+                if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
+                    int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
+                    uint64_t lineId = term->document().lineIdForAbs(absRow);
+                    const auto* rec = term->commandForLineId(lineId);
+                    if (rec) term->selectCommandOutputForRecord(rec);
+                }
+                continue;
+            }
+
             // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere
             if (std::holds_alternative<Action::PasteSelection>(act)) {
                 auto* t = dynamic_cast<Terminal*>(term);

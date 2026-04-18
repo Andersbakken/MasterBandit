@@ -292,6 +292,18 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 cmd->promptStartCol,    cmd->outputEndCol);
             if (!text.empty() && window_) window_->setClipboard(text);
         },
+        [&](const Action::CopySelectedCommandOutput&) {
+            Terminal* term = activeTerm();
+            if (!term) return;
+            auto id = term->selectedCommandId();
+            if (!id) return;
+            const auto* cmd = term->commandForId(*id);
+            if (!cmd) return;
+            std::string text = term->document().getTextFromLines(
+                cmd->outputStartLineId, cmd->outputEndLineId,
+                cmd->outputStartCol,    cmd->outputEndCol);
+            if (!text.empty() && window_) window_->setClipboard(text);
+        },
         [&](const Action::CopyDocument&) {
             Terminal* term = activeTerm();
             if (!term) return;

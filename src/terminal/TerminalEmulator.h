@@ -235,6 +235,17 @@ public:
     // construction (startCommand only appends, pruneCommandRing only pops front).
     const CommandRecord* commandForLineId(uint64_t lineId) const;
 
+    // Look up a record by its CommandRecord::id. O(log N) binary search — the
+    // ring is sorted by id (monotonic mNextCommandId++ at startCommand; only
+    // append + front-pop). Returns nullptr if the id isn't in the ring.
+    const CommandRecord* commandForId(uint64_t commandId) const;
+
+    // Select the given command's output region as a text selection and auto-copy
+    // to clipboard (same semantics as selectCommandOutput()). Used by mouse paths
+    // that already know which command was clicked, avoiding the viewport-center
+    // heuristic. No-op if rec is null or its lines have been evicted.
+    void selectCommandOutputForRecord(const CommandRecord* rec);
+
     // Selection of a single command region (OSC 133-scoped). Mutations go
     // through setSelectedCommand so the render thread can observe via snapshot.
     // The id references CommandRecord::id; if the id no longer exists in the

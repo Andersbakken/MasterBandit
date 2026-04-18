@@ -196,6 +196,7 @@ std::optional<Action::Any> parseAction(const std::string& name,
     if (name == "select_command_output")     return Action::SelectCommandOutput{};
     if (name == "show_scrollback")           return Action::ShowScrollback{};
     if (name == "copy_last_command")         return Action::CopyLastCommand{};
+    if (name == "copy_selected_command_output") return Action::CopySelectedCommandOutput{};
     if (name == "copy_document")             return Action::CopyDocument{};
     if (name == "reload_config")            return Action::ReloadConfig{};
 
@@ -515,11 +516,17 @@ std::vector<MouseBinding> defaultMouseBindings()
          Action::OpenHyperlink{}},
         {{MouseButton::Left, MetaModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
          Action::SelectCommand{}},
+        // Cmd+double-click promotes the OSC 133 outline into a real text selection
+        // over the clicked command's output rows (and auto-copies to clipboard).
+        {{MouseButton::Left, MetaModifier, MouseEventType::DoublePress, MouseMode::Any, MouseRegion::Pane},
+         Action::SelectCommandOutput{}},
 #else
         {{MouseButton::Left, CtrlModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
          Action::OpenHyperlink{}},
         {{MouseButton::Left, CtrlModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
          Action::SelectCommand{}},
+        {{MouseButton::Left, CtrlModifier, MouseEventType::DoublePress, MouseMode::Any, MouseRegion::Pane},
+         Action::SelectCommandOutput{}},
 #endif
 
         // Tab bar

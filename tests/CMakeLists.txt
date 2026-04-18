@@ -18,6 +18,7 @@ set(TEST_SOURCES
     test_inverse.cpp
     test_selection.cpp
     test_shaping.cpp
+    test_font_fallback.cpp
     test_kitty_keyboard.cpp
     test_reflow.cpp
     test_prompt.cpp

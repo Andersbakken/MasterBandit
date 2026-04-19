@@ -721,6 +721,13 @@ TEST_CASE("OSC 133: scrollToPrompt sets selection on landed command")
     t.term.scrollToPrompt(+1);
     REQUIRE(t.term.selectedCommandId().has_value());
     CHECK(*t.term.selectedCommandId() == t.term.commands()[0].id);
+
+    // At the oldest, Cmd+Up wraps around to the newest.
+    t.term.scrollToPrompt(-1);
+    CHECK(*t.term.selectedCommandId() == t.term.commands()[2].id);
+    // At the newest, Cmd+Down wraps around to the oldest.
+    t.term.scrollToPrompt(+1);
+    CHECK(*t.term.selectedCommandId() == t.term.commands()[0].id);
 }
 
 // === REP tests (added here since they were missed from test file) ===

@@ -304,6 +304,14 @@ void TerminalEmulator::scrollToPrompt(int direction)
         }
     };
 
+    auto land = [&](const CommandRecord& r) {
+        int abs = mDocument.firstAbsOfLine(r.promptStartLineId);
+        if (abs < 0) return false;
+        scrollTo(abs);
+        setSelectedCommand(r.id);
+        return true;
+    };
+
     if (direction < 0) {
         // Walk ring backwards, land on first prompt strictly above currentAbsRow.
         for (auto it = mCommandRing.rbegin(); it != mCommandRing.rend(); ++it) {
@@ -314,6 +322,10 @@ void TerminalEmulator::scrollToPrompt(int direction)
                 return;
             }
         }
+        // No prompt above: wrap to the newest (last) command.
+        for (auto it = mCommandRing.rbegin(); it != mCommandRing.rend(); ++it) {
+            if (land(*it)) return;
+        }
     } else {
         for (const auto& r : mCommandRing) {
             int abs = mDocument.firstAbsOfLine(r.promptStartLineId);
@@ -323,7 +335,10 @@ void TerminalEmulator::scrollToPrompt(int direction)
                 return;
             }
         }
-        resetViewport();
+        // No prompt below: wrap to the oldest (first) command.
+        for (const auto& r : mCommandRing) {
+            if (land(r)) return;
+        }
     }
 }
 

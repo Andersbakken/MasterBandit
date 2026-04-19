@@ -1,6 +1,10 @@
 #include "RenderThread.h"
 
+#include "Utils.h"  // overloaded<> helper for std::visit
+
 #include <eventloop/EventLoop.h>
+
+#include <variant>
 
 RenderThread::RenderThread() = default;
 
@@ -99,6 +103,44 @@ void RenderThread::applyPendingMutations()
     renderState_.mainFontRemoved        |= pending_.mainFontRemoved;
     renderState_.tabBarFontRemoved      |= pending_.tabBarFontRemoved;
     renderState_.viewportSizeChanged    |= pending_.viewportSizeChanged;
+
+    // Texture / row-cache release requests. Accumulate: if multiple ticks
+    // elapse between render frames, every request still reaches the render
+    // thread on the next snapshot.
+    renderState_.releasePaneTextureIds.insert(
+        renderState_.releasePaneTextureIds.end(),
+        pending_.releasePaneTextures.begin(),
+        pending_.releasePaneTextures.end());
+    renderState_.releasePopupTextureKeys.insert(
+        renderState_.releasePopupTextureKeys.end(),
+        pending_.releasePopupTextures.begin(),
+        pending_.releasePopupTextures.end());
+    renderState_.releaseAllPaneTextures |= pending_.releaseAllPaneTextures;
+    renderState_.releaseTabBarTexture   |= pending_.releaseTabBarTexture;
+    renderState_.invalidateAllRowCaches |= pending_.invalidateAllRowCaches;
+
+    // Distill structural ops down to destroys. Create* and Resize* are
+    // redundant with the auto-heal path in renderFrame (first-use sizing),
+    // so we only need to propagate the removals.
+    for (const auto& op : pending_.structuralOps) {
+        std::visit(overloaded {
+            [&](const PendingMutations::CreatePaneState&)  {},
+            [&](const PendingMutations::ResizePaneState&)  {},
+            [&](const PendingMutations::CreatePopupState&) {},
+            [&](const PendingMutations::ResizePopupState&) {},
+            [&](const PendingMutations::CreateOverlayState&) {},
+            [&](const PendingMutations::DestroyPaneState& d) {
+                renderState_.destroyedPaneIds.push_back(d.paneId);
+            },
+            [&](const PendingMutations::DestroyPopupState& d) {
+                renderState_.destroyedPopupKeys.push_back(
+                    std::to_string(d.paneId) + "/" + d.popupId);
+            },
+            [&](const PendingMutations::DestroyOverlayState&) {
+                renderState_.destroyedOverlay = true;
+            },
+        }, op);
+    }
 
     // Rebuild the full shadow copy from live state.
     if (host_.buildRenderFrameState) host_.buildRenderFrameState();

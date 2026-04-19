@@ -167,6 +167,8 @@ void RenderEngine::shutdown()
     if (tabBarTexture_) { texturePool_.release(tabBarTexture_); tabBarTexture_ = nullptr; }
     for (auto* t : pendingTabBarRelease_) texturePool_.release(t);
     pendingTabBarRelease_.clear();
+    for (auto* t : pendingDestroyRelease_) texturePool_.release(t);
+    pendingDestroyRelease_.clear();
 
     // Release headless composite texture
     headlessComposite_ = nullptr;
@@ -694,7 +696,8 @@ void RenderEngine::renderFrame()
     bool invalidateAllCaches = frameState_.mainFontAtlasChanged ||
                                frameState_.tabBarFontAtlasChanged ||
                                frameState_.mainFontRemoved ||
-                               frameState_.tabBarFontRemoved;
+                               frameState_.tabBarFontRemoved ||
+                               frameState_.invalidateAllRowCaches;
 
     // Handle font atlas GPU work on the render thread
     if (frameState_.mainFontRemoved) {
@@ -731,6 +734,92 @@ void RenderEngine::renderFrame()
             frameFbH = texH;
             renderer_.setViewportSize(texW, texH);
         }
+    }
+
+    // Drop held textures whose content is no longer trusted (tab switch,
+    // framebuffer resize, font change). Setting dirty forces the next
+    // render pass to acquire a fresh texture and re-shape all rows; the
+    // old heldTexture moves to pendingRelease where the regular deferred
+    // drain returns it to the pool after the GPU is done with it.
+    auto dropHeldTexture = [](PaneRenderPrivate& rs) {
+        if (rs.heldTexture) {
+            rs.pendingRelease.push_back(rs.heldTexture);
+            rs.heldTexture = nullptr;
+        }
+        rs.dirty = true;
+    };
+    if (frameState_.releaseAllPaneTextures) {
+        for (auto& [id, rs] : paneRenderPrivate_) dropHeldTexture(rs);
+        for (auto& [key, rs] : popupRenderPrivate_) dropHeldTexture(rs);
+        dropHeldTexture(overlayRenderPrivate_);
+    } else {
+        for (int paneId : frameState_.releasePaneTextureIds) {
+            auto it = paneRenderPrivate_.find(paneId);
+            if (it != paneRenderPrivate_.end()) dropHeldTexture(it->second);
+            // Popups hang off a pane; release their textures too. Keys are
+            // "paneId/popupId" — match by prefix.
+            std::string prefix = std::to_string(paneId) + "/";
+            for (auto& [key, rs] : popupRenderPrivate_) {
+                if (key.compare(0, prefix.size(), prefix) == 0) dropHeldTexture(rs);
+            }
+        }
+        for (const auto& key : frameState_.releasePopupTextureKeys) {
+            auto it = popupRenderPrivate_.find(key);
+            if (it != popupRenderPrivate_.end()) dropHeldTexture(it->second);
+        }
+    }
+    if (frameState_.releaseTabBarTexture && tabBarTexture_) {
+        pendingTabBarRelease_.push_back(tabBarTexture_);
+        tabBarTexture_ = nullptr;
+        frameState_.tabBarDirty = true;
+    }
+
+    // Process destroys. Extract heldTexture + pendingRelease into a
+    // RenderEngine-level staging list so the regular deferred-release
+    // path still sees them after the entry is gone from the map. The
+    // staging list is drained at the same OnSubmittedWorkDone site as
+    // per-entry pendingRelease below.
+    auto extractReleases = [this](PaneRenderPrivate& rs) {
+        if (rs.heldTexture) pendingDestroyRelease_.push_back(rs.heldTexture);
+        pendingDestroyRelease_.insert(pendingDestroyRelease_.end(),
+            rs.pendingRelease.begin(), rs.pendingRelease.end());
+        rs.heldTexture = nullptr;
+        rs.pendingRelease.clear();
+    };
+    for (int paneId : frameState_.destroyedPaneIds) {
+        // Drop any popups that belonged to this pane first.
+        std::string prefix = std::to_string(paneId) + "/";
+        for (auto it = popupRenderPrivate_.begin(); it != popupRenderPrivate_.end(); ) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                extractReleases(it->second);
+                it = popupRenderPrivate_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        auto it = paneRenderPrivate_.find(paneId);
+        if (it != paneRenderPrivate_.end()) {
+            extractReleases(it->second);
+            paneRenderPrivate_.erase(it);
+        }
+    }
+    for (const auto& key : frameState_.destroyedPopupKeys) {
+        auto it = popupRenderPrivate_.find(key);
+        if (it != popupRenderPrivate_.end()) {
+            extractReleases(it->second);
+            popupRenderPrivate_.erase(it);
+        }
+    }
+    if (frameState_.destroyedOverlay) {
+        extractReleases(overlayRenderPrivate_);
+        // Overlay is a singleton (not map-keyed), so we don't erase; we
+        // just wipe its cached state so the next overlay that's created
+        // starts clean.
+        overlayRenderPrivate_.resolvedCells.clear();
+        overlayRenderPrivate_.glyphBuffer.clear();
+        overlayRenderPrivate_.rowShapingCache.clear();
+        overlayRenderPrivate_.totalGlyphs = 0;
+        overlayRenderPrivate_.dirty = true;
     }
 
     if (invalidateAllCaches) {
@@ -1665,27 +1754,23 @@ void RenderEngine::renderFrame()
             queue_.Submit(1, &commands);
         }
 
+        // Drain every pending-release list, not just the active tab's.
+        // Panes belonging to inactive tabs can accumulate textures here
+        // (from tab-switch texture drops); without this they'd sit until
+        // the tab reactivates, leaking pool capacity.
         std::vector<PooledTexture*> toRelease;
-        for (const auto& rpi : frameState_.panes) {
-            auto it = paneRenderPrivate_.find(rpi.id);
-            if (it != paneRenderPrivate_.end()) {
-                toRelease.insert(toRelease.end(),
-                    it->second.pendingRelease.begin(),
-                    it->second.pendingRelease.end());
-                it->second.pendingRelease.clear();
-            }
-            for (const auto& popup : rpi.popups) {
-                auto pit = popupRenderPrivate_.find(popupStateKey(rpi.id, popup.id));
-                if (pit != popupRenderPrivate_.end()) {
-                    toRelease.insert(toRelease.end(),
-                        pit->second.pendingRelease.begin(),
-                        pit->second.pendingRelease.end());
-                    pit->second.pendingRelease.clear();
-                }
-            }
-        }
+        auto drainPendingRelease = [&](PaneRenderPrivate& rs) {
+            toRelease.insert(toRelease.end(),
+                rs.pendingRelease.begin(), rs.pendingRelease.end());
+            rs.pendingRelease.clear();
+        };
+        for (auto& [id, rs] : paneRenderPrivate_) drainPendingRelease(rs);
+        for (auto& [key, rs] : popupRenderPrivate_) drainPendingRelease(rs);
+        drainPendingRelease(overlayRenderPrivate_);
         toRelease.insert(toRelease.end(), pendingTabBarRelease_.begin(), pendingTabBarRelease_.end());
         pendingTabBarRelease_.clear();
+        toRelease.insert(toRelease.end(), pendingDestroyRelease_.begin(), pendingDestroyRelease_.end());
+        pendingDestroyRelease_.clear();
         auto texturesToRelease = toRelease;
         auto computeToRelease  = pendingComputeRelease_;
         pendingComputeRelease_.clear();

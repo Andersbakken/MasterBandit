@@ -120,6 +120,23 @@ struct RenderFrameState {
     // Window in live resize — render thread defers SIGWINCH
     bool inLiveResize = false;
 
+    // Texture / cache release requests for the next frame. One-shot:
+    // consumed and cleared by snapshotUnderLock so the render thread acts
+    // on each request exactly once.
+    std::vector<int> releasePaneTextureIds;
+    std::vector<std::string> releasePopupTextureKeys;
+    bool releaseAllPaneTextures = false;
+    bool releaseTabBarTexture = false;
+    bool invalidateAllRowCaches = false;
+
+    // Structural destroys accumulated from main-thread pane/popup/overlay
+    // destruction. The render thread erases the matching render-private
+    // entries and releases their GPU resources. One-shot, cleared by
+    // snapshotUnderLock.
+    std::vector<int> destroyedPaneIds;
+    std::vector<std::string> destroyedPopupKeys;
+    bool destroyedOverlay = false;
+
     // Divider appearance
     float dividerWidth = 0;
     float dividerR = 0, dividerG = 0, dividerB = 0, dividerA = 0;

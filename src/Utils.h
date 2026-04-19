@@ -8,6 +8,11 @@
 #include <string_view>
 #include <vector>
 
+// Overloaded helper for std::visit. Lets call sites write
+// std::visit(overloaded{[](A){...}, [](B){...}}, v).
+template<class... Ts>
+struct overloaded : Ts... { using Ts::operator()...; };
+
 namespace base64 {
 
 inline std::vector<uint8_t> decode(std::string_view input)

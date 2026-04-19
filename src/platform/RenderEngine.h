@@ -138,6 +138,12 @@ private:
     std::vector<PooledTexture*> pendingTabBarRelease_;
     std::vector<ComputeState*> pendingComputeRelease_;
 
+    // Textures extracted from destroyed render-private entries in the
+    // current frame. The entries are erased before end-of-frame, so their
+    // pendingRelease lists wouldn't be reachable by the map-walk drain;
+    // we stash the handles here instead and merge at the drain site.
+    std::vector<PooledTexture*> pendingDestroyRelease_;
+
     std::atomic<bool> needsRedraw_ { true };
     std::atomic<int> pendingGpuCallbacks_ { 0 };
 

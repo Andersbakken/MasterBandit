@@ -154,6 +154,14 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         rs.viewportSizeChanged = false;
         rs.tabBarDirty = false;
         rs.dividersDirty = false;
+        rs.releasePaneTextureIds.clear();
+        rs.releasePopupTextureKeys.clear();
+        rs.releaseAllPaneTextures = false;
+        rs.releaseTabBarTexture = false;
+        rs.invalidateAllRowCaches = false;
+        rs.destroyedPaneIds.clear();
+        rs.destroyedPopupKeys.clear();
+        rs.destroyedOverlay = false;
         return true;
     };
     host.takeSurfaceReconfigureRequest = [this]() -> std::tuple<bool, uint32_t, uint32_t> {

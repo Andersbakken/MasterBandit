@@ -1,4 +1,6 @@
 #pragma once
+#include "Utils.h"  // overloaded<> helper for std::visit
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -6,10 +8,6 @@
 #include <string_view>
 #include <variant>
 #include <vector>
-
-// Overloaded helper for std::visit
-template<class... Ts>
-struct overloaded : Ts... { using Ts::operator()...; };
 
 namespace Action {
 

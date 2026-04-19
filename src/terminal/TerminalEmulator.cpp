@@ -268,50 +268,30 @@ void TerminalEmulator::resetViewport()
     }
 }
 
-// Helper: semantic type of the first non-blank cell in a row, or the first cell
-// if all blank. Returns Output for rows that have never seen OSC 133 content.
-static CellAttrs::SemanticType rowSemanticType(const Cell* row, int cols)
-{
-    for (int c = 0; c < cols; ++c) {
-        if (row[c].wc != 0) return row[c].attrs.semanticType();
-    }
-    return row[0].attrs.semanticType();
-}
-
 void TerminalEmulator::scrollToPrompt(int direction)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    // Walk cell tags directly — reflow-correct because tags ride with cells.
-    // A "prompt-start row" is a row tagged Prompt whose predecessor is not.
+    // Navigate via the command ring — same source Cmd+click uses, so both
+    // paths agree on what "a prompt" is. Walking cell tags (as we used to)
+    // could miss blocks where rowSemanticType's first-non-blank heuristic
+    // picked a non-Prompt cell (shells that emit blank/continuation lines
+    // with mixed tags, or where the prompt's visible text is short).
+    if (mCommandRing.empty()) { resetViewport(); return; }
+
     int histSize = mDocument.historySize();
-    int totalRows = histSize + mHeight;
     // Navigation is relative to the currently selected command when one
-    // exists, otherwise relative to the top of the viewport. This matches
-    // iTerm: pressing Cmd+Up after clicking a command jumps to the one
-    // immediately above the selection rather than re-finding the same prompt.
-    int currentAbsRow = histSize - mViewportOffset;
+    // exists. With no selection, anchor at the edge opposite to the
+    // direction so the first press lands on the correct end of the command
+    // list: Cmd+Up starts past the end → most recent command, Cmd+Down
+    // starts before the start → first (oldest) command. Using viewport-top
+    // instead would skip on-screen prompts when live-tailing.
+    int currentAbsRow = (direction < 0) ? (histSize + mHeight) : -1;
     if (mSelectedCommandId) {
-        for (const auto& r : mCommandRing) {
-            if (r.id != *mSelectedCommandId) continue;
-            int abs = mDocument.firstAbsOfLine(r.promptStartLineId);
+        if (const auto* rec = commandForId(*mSelectedCommandId)) {
+            int abs = mDocument.firstAbsOfLine(rec->promptStartLineId);
             if (abs >= 0) currentAbsRow = abs;
-            break;
         }
     }
-
-    auto getRow = [&](int absRow) -> const Cell* {
-        return absRow < histSize
-            ? mDocument.historyRow(absRow)
-            : mDocument.row(absRow - histSize);
-    };
-
-    auto isPromptStart = [&](int absRow) {
-        const Cell* row = getRow(absRow);
-        if (!row || rowSemanticType(row, mWidth) != CellAttrs::Prompt) return false;
-        if (absRow == 0) return true;
-        const Cell* prev = getRow(absRow - 1);
-        return !prev || rowSemanticType(prev, mWidth) != CellAttrs::Prompt;
-    };
 
     auto scrollTo = [&](int targetAbsRow) {
         int newOffset = histSize - targetAbsRow;
@@ -324,20 +304,24 @@ void TerminalEmulator::scrollToPrompt(int direction)
         }
     };
 
-    auto selectCommandAt = [&](int absRow) {
-        uint64_t lineId = mDocument.lineIdForAbs(absRow);
-        if (const auto* rec = commandForLineId(lineId)) {
-            setSelectedCommand(rec->id);
-        }
-    };
-
     if (direction < 0) {
-        for (int r = currentAbsRow - 1; r >= 0; --r) {
-            if (isPromptStart(r)) { scrollTo(r); selectCommandAt(r); return; }
+        // Walk ring backwards, land on first prompt strictly above currentAbsRow.
+        for (auto it = mCommandRing.rbegin(); it != mCommandRing.rend(); ++it) {
+            int abs = mDocument.firstAbsOfLine(it->promptStartLineId);
+            if (abs >= 0 && abs < currentAbsRow) {
+                scrollTo(abs);
+                setSelectedCommand(it->id);
+                return;
+            }
         }
     } else {
-        for (int r = currentAbsRow + 1; r < totalRows; ++r) {
-            if (isPromptStart(r)) { scrollTo(r); selectCommandAt(r); return; }
+        for (const auto& r : mCommandRing) {
+            int abs = mDocument.firstAbsOfLine(r.promptStartLineId);
+            if (abs >= 0 && abs > currentAbsRow) {
+                scrollTo(abs);
+                setSelectedCommand(r.id);
+                return;
+            }
         }
         resetViewport();
     }
@@ -345,40 +329,12 @@ void TerminalEmulator::scrollToPrompt(int direction)
 
 void TerminalEmulator::selectCommandOutput()
 {
+    // Keyboard entry point — operate on the currently highlighted OSC 133
+    // command. If nothing is highlighted, no-op (caller should select first
+    // via Cmd+click, Cmd+Up/Down, or the Cmd+double-click mouse binding).
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    // Walk cells around the viewport pivot to find a contiguous Output region.
-    int histSize = mDocument.historySize();
-    int totalRows = histSize + mHeight;
-    int pivot = histSize - mViewportOffset + (mHeight / 2);
-    if (pivot < 0 || pivot >= totalRows) return;
-
-    auto getRow = [&](int absRow) -> const Cell* {
-        return absRow < histSize
-            ? mDocument.historyRow(absRow)
-            : mDocument.row(absRow - histSize);
-    };
-    auto rowType = [&](int absRow) -> CellAttrs::SemanticType {
-        const Cell* row = getRow(absRow);
-        return row ? rowSemanticType(row, mWidth) : CellAttrs::Output;
-    };
-
-    // Pivot must be on an Output row to anchor a selection.
-    if (rowType(pivot) != CellAttrs::Output) return;
-
-    int outStart = pivot;
-    while (outStart > 0 && rowType(outStart - 1) == CellAttrs::Output) --outStart;
-    int outEnd = pivot;
-    while (outEnd + 1 < totalRows && rowType(outEnd + 1) == CellAttrs::Output) ++outEnd;
-
-    startSelection(0, outStart);
-    updateSelection(mWidth - 1, outEnd);
-    finalizeSelection();
-
-    std::string text = selectedText();
-    if (!text.empty() && mCallbacks.copyToClipboard) {
-        mCallbacks.copyToClipboard(text);
-    }
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    if (!mSelectedCommandId) return;
+    selectCommandOutputForRecord(commandForId(*mSelectedCommandId));
 }
 
 // ============================================================================

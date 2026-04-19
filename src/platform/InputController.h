@@ -155,10 +155,6 @@ private:
 
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;
-    // When onKey consumes an Alt+printable by sending ESC-prefix + char, the
-    // follow-up onChar (from the OS text-input path) must be dropped so the
-    // shell doesn't see the character twice.
-    bool suppressNextChar_ = false;
     bool altSendsEsc_ = true;
     double lastCursorX_ = 0.0;
     double lastCursorY_ = 0.0;

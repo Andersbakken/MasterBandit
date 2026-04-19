@@ -1244,6 +1244,7 @@ void PlatformDawn::applyConfig(const Config& config)
         inputController_->resetSequenceMatcher();
         inputController_->setAltSendsEsc(config.alt_sends_esc);
     }
+    if (window_) window_->setAltSendsEsc(config.alt_sends_esc);
 
     // Colors
     TerminalOptions& opts = tabManager_->terminalOptions();

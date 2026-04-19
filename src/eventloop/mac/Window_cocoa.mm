@@ -255,7 +255,17 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 // ---------- keyboard ----------
 
 - (void)keyDown:(NSEvent*)event {
-    [self interpretKeyEvents:@[event]];  // drives NSTextInputClient for IME
+    // When Option is held without Cmd and the terminal wants Alt+letter to
+    // send ESC-prefix (xterm convention / readline word-nav), skip
+    // NSTextInputClient. That prevents the OS from composing Option+B into
+    // "∫" and reaching insertText:, which would race with the explicit
+    // dispatchKey that follows and leak one composed character per press.
+    BOOL optHeld = (event.modifierFlags & NSEventModifierFlagOption) != 0;
+    BOOL cmdHeld = (event.modifierFlags & NSEventModifierFlagCommand) != 0;
+    BOOL skipIME = optHeld && !cmdHeld && _cppWindow->altSendsEsc();
+    if (!skipIME) {
+        [self interpretKeyEvents:@[event]];  // drives NSTextInputClient for IME
+    }
 
     Key k = macKeyToKey(event.keyCode);
     unsigned int mods = nsModsToModifiers(event.modifierFlags);

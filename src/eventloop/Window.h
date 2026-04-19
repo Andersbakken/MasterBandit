@@ -32,6 +32,13 @@ public:
     virtual std::string keyName(int keycode) const { (void)keycode; return {}; }
     virtual uint32_t shiftedKeyCodepoint(int keycode) const { (void)keycode; return 0; }
 
+    // When true, the macOS backend skips NSTextInputClient processing for
+    // Option+<letter> so the OS doesn't compose the "option character" (∫,
+    // ƒ, etc.) — the terminal will send ESC+<letter> via the legacy key
+    // path instead. No-op on platforms where Alt+letter already reaches
+    // onChar as a plain character (Linux/XCB).
+    virtual void setAltSendsEsc(bool v) { (void)v; }
+
     // WebGPU surface
     virtual wgpu::Surface createWgpuSurface(wgpu::Instance instance) = 0;
 

@@ -35,6 +35,9 @@ public:
     std::string keyName(int keycode) const override;
     uint32_t shiftedKeyCodepoint(int keycode) const override;
 
+    void setAltSendsEsc(bool v) override { altSendsEsc_ = v; }
+    bool altSendsEsc() const { return altSendsEsc_; }
+
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
     void setCursorStyle(CursorStyle shape) override;
 
@@ -55,4 +58,5 @@ private:
     NSWindow* nsWindow_  = nullptr;
     MBView*   mbView_    = nullptr;
     bool      shouldClose_ = false;
+    bool      altSendsEsc_ = true;
 };

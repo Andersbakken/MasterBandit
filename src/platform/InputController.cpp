@@ -160,15 +160,15 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     // into a different character (e.g. Alt+B → "∫") by the time onChar fires.
     // Use the window's keyName(scancode), which returns the layout-correct
     // base character regardless of current modifier state, so Dvorak etc.
-    // stay correct. suppressNextChar_ prevents the OS's composed char from
-    // reaching the PTY as a duplicate.
+    // stay correct. The duplicate onChar (from the OS text path on Linux, or
+    // from a non-skipped interpretKeyEvents on macOS) is dropped by the
+    // AltModifier guard in onChar below.
     if (altSendsEsc_ && (lastMods_ & AltModifier) && !(lastMods_ & CtrlModifier) &&
         window && key < 0x01000000 && k != Key_unknown) {
         std::string base = window->keyName(scancode);
         if (!base.empty() && static_cast<unsigned char>(base[0]) >= 0x20) {
             ev.text = "\x1b" + base;
             term->keyPressEvent(&ev);
-            suppressNextChar_ = true;
             return;
         }
     }
@@ -198,12 +198,12 @@ void InputController::onChar(uint32_t codepoint)
 
     if (controlPressed_) return;
 
-    // If onKey already sent this keystroke as an ESC-prefixed Alt sequence,
-    // drop the OS's composed follow-up char (Alt+B → "∫" on macOS, etc.).
-    if (suppressNextChar_) {
-        suppressNextChar_ = false;
+    // When alt_sends_esc is on and Alt is held, onKey has already emitted
+    // ESC+<base-char>. The OS text path still fires onChar (Linux always;
+    // macOS only when skip-IME in Window_cocoa didn't catch it). Drop it
+    // so the shell doesn't see the character twice.
+    if (altSendsEsc_ && (lastMods_ & AltModifier) && !(lastMods_ & CtrlModifier))
         return;
-    }
 
     KeyEvent ev;
     ev.key = Key_unknown;

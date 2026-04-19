@@ -108,7 +108,7 @@ TEST_CASE("scrollToPrompt: next with no more prompts resets viewport")
 
 // === Command output selection ===
 
-TEST_CASE("selectCommandOutput: selects output region")
+TEST_CASE("selectCommandOutput: selects output region of selected command")
 {
     TestTerminal t(20, 5);
     osc133(t, "A");
@@ -118,7 +118,14 @@ TEST_CASE("selectCommandOutput: selects output region")
     osc133(t, "A");
     t.feed("$ ");
 
-    // Viewport center is row 2, which is in the output region
+    // Keyboard entry point requires a selected command (set via Cmd+click,
+    // Cmd+Up/Down, or the mouse gesture). Without one, it's a no-op.
+    t.term.selectCommandOutput();
+    CHECK(!t.term.hasSelection());
+
+    // With the first command selected, the output range becomes a text selection.
+    REQUIRE(!t.term.commands().empty());
+    t.term.setSelectedCommand(t.term.commands().front().id);
     t.term.selectCommandOutput();
     CHECK(t.term.hasSelection());
 }
@@ -698,10 +705,20 @@ TEST_CASE("OSC 133: scrollToPrompt sets selection on landed command")
     osc133(t, "A"); t.feed("$ ");
 
     REQUIRE(t.term.commands().size() == 3);
-    // scrollToPrompt walks strictly above the first visible row, so landing
-    // happens on the most recent prompt in history (cmd1's row, which has
-    // scrolled off the top of the 3-row viewport).
+    // With no selection, Cmd+Up anchors past the end of content so it lands
+    // on the most recent command (the in-flight one at "$ ").
     t.term.scrollToPrompt(-1);
+    REQUIRE(t.term.selectedCommandId().has_value());
+    CHECK(*t.term.selectedCommandId() == t.term.commands()[2].id);
+
+    // Another Cmd+Up steps backward from the selection to the previous prompt.
+    t.term.scrollToPrompt(-1);
+    CHECK(*t.term.selectedCommandId() == t.term.commands()[1].id);
+
+    // Clear the selection. Cmd+Down with no selection anchors before the
+    // start so it lands on the oldest command.
+    t.term.setSelectedCommand(std::nullopt);
+    t.term.scrollToPrompt(+1);
     REQUIRE(t.term.selectedCommandId().has_value());
     CHECK(*t.term.selectedCommandId() == t.term.commands()[0].id);
 }

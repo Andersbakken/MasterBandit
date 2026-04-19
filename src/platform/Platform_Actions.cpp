@@ -275,7 +275,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::ResetFontSize&)    { adjustFontSize(0.0f);  },
         [&](const Action::ScrollToPrompt& a) {
             Terminal* term = activeTerm();
-            if (term) term->scrollToPrompt(a.direction);
+            if (term) term->scrollToPrompt(a.direction, commandNavigationWrap_);
         },
         [&](const Action::SelectCommandOutput&) {
             Terminal* term = activeTerm();

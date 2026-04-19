@@ -268,7 +268,7 @@ void TerminalEmulator::resetViewport()
     }
 }
 
-void TerminalEmulator::scrollToPrompt(int direction)
+void TerminalEmulator::scrollToPrompt(int direction, bool wrap)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // Navigate via the command ring — same source Cmd+click uses, so both
@@ -322,9 +322,11 @@ void TerminalEmulator::scrollToPrompt(int direction)
                 return;
             }
         }
-        // No prompt above: wrap to the newest (last) command.
-        for (auto it = mCommandRing.rbegin(); it != mCommandRing.rend(); ++it) {
-            if (land(*it)) return;
+        if (wrap) {
+            // No prompt above: wrap to the newest (last) command.
+            for (auto it = mCommandRing.rbegin(); it != mCommandRing.rend(); ++it) {
+                if (land(*it)) return;
+            }
         }
     } else {
         for (const auto& r : mCommandRing) {
@@ -335,9 +337,11 @@ void TerminalEmulator::scrollToPrompt(int direction)
                 return;
             }
         }
-        // No prompt below: wrap to the oldest (first) command.
-        for (const auto& r : mCommandRing) {
-            if (land(r)) return;
+        if (wrap) {
+            // No prompt below: wrap to the oldest (first) command.
+            for (const auto& r : mCommandRing) {
+                if (land(r)) return;
+            }
         }
     }
 }

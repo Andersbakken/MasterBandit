@@ -180,7 +180,10 @@ public:
     void scrollViewport(int delta);
     void resetViewport();
     int viewportOffset() const { return mViewportOffset; }
-    void scrollToPrompt(int direction); // -1 = previous, +1 = next
+    // direction = -1 (previous) or +1 (next). wrap = whether to cycle past
+    // the ends of the command ring (true → Cmd+Up at oldest wraps to newest,
+    // Cmd+Down at newest wraps to oldest; false → clamps at ends).
+    void scrollToPrompt(int direction, bool wrap = true);
     void selectCommandOutput();         // select output around current viewport position
     std::string serializeScrollback() const; // serialize all content for pager
 

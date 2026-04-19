@@ -273,6 +273,8 @@ private:
     uint32_t commandOutlineColor_ = 0xFFAACCFFu;
     // OSC 133 non-selected row dim factor (0 = disabled).
     float commandDimFactor_ = 0.0f;
+    // When true, Cmd+Up at oldest wraps to newest and vice versa; false clamps.
+    bool commandNavigationWrap_ = true;
 
     // Pane tints
     float activeTint_[4]   = {1.0f, 1.0f, 1.0f, 1.0f};

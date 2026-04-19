@@ -184,6 +184,7 @@ struct Config {
     std::string command_outline_color = "#aaccff"; // OSC 133 command highlight outline
     float command_dim_factor = 0.7f; // OSC 133: 1.0 = off (identity), 0.7 = dim non-selected rows to 70%
     bool alt_sends_esc = true;        // Alt+<printable> sends ESC-prefix (xterm convention) instead of the composed character
+    bool command_navigation_wrap = true; // Cmd+Up at oldest wraps to newest; Cmd+Down at newest wraps to oldest
 
     struct glaze {
         using T = Config;
@@ -207,7 +208,8 @@ struct Config {
             "replacement_char", &T::replacement_char,
             "command_outline_color", &T::command_outline_color,
             "command_dim_factor", &T::command_dim_factor,
-            "alt_sends_esc", &T::alt_sends_esc
+            "alt_sends_esc", &T::alt_sends_esc,
+            "command_navigation_wrap", &T::command_navigation_wrap
         );
     };
 };

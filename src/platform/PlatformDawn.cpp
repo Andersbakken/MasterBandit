@@ -1284,6 +1284,7 @@ void PlatformDawn::applyConfig(const Config& config)
         }
     }
     commandDimFactor_ = std::clamp(config.command_dim_factor, 0.0f, 1.0f);
+    commandNavigationWrap_ = config.command_navigation_wrap;
     for (auto& t : tabManager_->tabs()) t->layout()->setDividerPixels(dividerWidth_);
     opts.dividerWidth = config.divider_width;
     opts.dividerColor = config.divider_color;

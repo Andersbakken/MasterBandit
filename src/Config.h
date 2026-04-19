@@ -185,6 +185,7 @@ struct Config {
     float command_dim_factor = 0.7f; // OSC 133: 1.0 = off (identity), 0.7 = dim non-selected rows to 70%
     bool alt_sends_esc = true;        // Alt+<printable> sends ESC-prefix (xterm convention) instead of the composed character
     bool command_navigation_wrap = true; // Cmd+Up at oldest wraps to newest; Cmd+Down at newest wraps to oldest
+    int  key_sequence_timeout_ms = 0; // Multi-key binding timeout in ms (0 = disabled). Aborts an in-progress sequence after idle.
 
     struct glaze {
         using T = Config;
@@ -209,7 +210,8 @@ struct Config {
             "command_outline_color", &T::command_outline_color,
             "command_dim_factor", &T::command_dim_factor,
             "alt_sends_esc", &T::alt_sends_esc,
-            "command_navigation_wrap", &T::command_navigation_wrap
+            "command_navigation_wrap", &T::command_navigation_wrap,
+            "key_sequence_timeout_ms", &T::key_sequence_timeout_ms
         );
     };
 };

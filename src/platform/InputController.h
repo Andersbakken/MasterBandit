@@ -93,6 +93,10 @@ public:
     // text input system would compose (on macOS this saves e.g. Alt+B from
     // producing "∫" when the user actually wants readline word-nav).
     void setAltSendsEsc(bool v) { altSendsEsc_ = v; }
+    // Multi-key sequence idle timeout in ms (0 disables). When a binding is
+    // mid-sequence and no key arrives within this window, the matcher is
+    // reset and the accumulated prefix keys are resent to the PTY.
+    void setKeySequenceTimeoutMs(int ms) { sequenceTimeoutMs_ = ms; }
 
     // Per-pane cursor style (set from OSC 22 terminal callback, read on every
     // mouse move). Erased when a pane is destroyed.
@@ -156,6 +160,22 @@ private:
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;
     bool altSendsEsc_ = true;
+
+    // Keys swallowed while a multi-key binding is partially matched. Resent
+    // to the PTY (via replayPendingSequenceKey) when the sequence aborts
+    // on an unmatched follow-up key so prefix keys don't get lost. Each
+    // entry is the full onKey arg tuple so we can re-synthesize the
+    // shell-bound bytes accurately.
+    struct PendingKey { int key; int scancode; int action; int mods; };
+    std::vector<PendingKey> pendingSequenceKeys_;
+    void replayPendingSequenceKey(const PendingKey& p);
+
+    // Sequence timeout state.
+    int      sequenceTimeoutMs_ = 0;
+    uint32_t sequenceTimerId_ = 0; // 0 = not running
+    void scheduleSequenceTimeout();
+    void cancelSequenceTimeout();
+    void onSequenceTimeout();
     double lastCursorX_ = 0.0;
     double lastCursorY_ = 0.0;
     uint32_t heldButtons_ = 0;

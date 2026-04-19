@@ -92,12 +92,28 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     if (action != static_cast<int>(KeyAction_Release)) {
         auto result = sequenceMatcher_.advance({k, lastMods_}, bindings_);
         if (result.result == SequenceMatcher::Result::Match) {
+            pendingSequenceKeys_.clear();
+            cancelSequenceTimeout();
             for (const auto& act : result.actions)
                 host_.dispatchAction(act);
             return;
         }
         if (result.result == SequenceMatcher::Result::Prefix) {
+            pendingSequenceKeys_.push_back({key, scancode, action, mods});
+            scheduleSequenceTimeout();
             return;
+        }
+        // NoMatch: if the sequence had accumulated a prefix, resend those
+        // keys to the shell so the user's keystrokes aren't silently lost
+        // when they abort a multi-key binding. The current (failing) key
+        // falls through to normal processing below.
+        cancelSequenceTimeout();
+        if (!result.abortedPrefix.empty()) {
+            auto pending = std::move(pendingSequenceKeys_);
+            pendingSequenceKeys_.clear();
+            for (const auto& p : pending) {
+                replayPendingSequenceKey(p);
+            }
         }
     }
 
@@ -847,4 +863,113 @@ void InputController::refreshPointerShape()
     window->setCursorStyle(it != paneCursorStyle_.end()
         ? it->second
         : Window::CursorStyle::IBeam);
+}
+
+// Resend a swallowed prefix key to the PTY, matching the same payload onKey
+// would have produced for that keystroke (minus the sequence-matcher step).
+// Mirrors the branches of onKey but with the legacy printable-key path
+// synthesizing text from keyName() — no onChar will follow, so we send
+// directly instead of deferring.
+void InputController::replayPendingSequenceKey(const PendingKey& p)
+{
+    TerminalEmulator* term = host_.activeTerm();
+    if (!term) return;
+    Window* window = host_.window ? host_.window() : nullptr;
+
+    Key k = static_cast<Key>(p.key);
+    KeyEvent ev;
+    ev.key = k;
+    ev.modifiers = static_cast<uint32_t>(p.mods);
+    ev.action = KeyAction_Press;
+    ev.count = 1;
+
+    const bool ctrl = (p.mods & CtrlModifier) != 0;
+
+    if (term->kittyFlags() != 0) {
+        if (ctrl && ((p.key >= Key_A && p.key <= Key_Z) || (p.key >= 0x61 && p.key <= 0x7a))) {
+            char ch = (p.key >= 0x61) ? static_cast<char>(p.key) : static_cast<char>(p.key - Key_A + 'a');
+            ev.text = std::string(1, ch);
+        } else if (p.key >= Key_Space && p.key <= Key_AsciiTilde) {
+            std::string name = window ? window->keyName(p.scancode) : std::string{};
+            if (!name.empty()) ev.text = name;
+        }
+        if (window) ev.shiftedKey = window->shiftedKeyCodepoint(p.scancode);
+        term->keyPressEvent(&ev);
+        return;
+    }
+
+    // Legacy: ctrl+letter
+    if (ctrl && ((p.key >= Key_A && p.key <= Key_Z) || (p.key >= 0x61 && p.key <= 0x7a))) {
+        int offset = (p.key >= 0x61) ? (p.key - 0x61) : (p.key - Key_A);
+        ev.text = std::string(1, static_cast<char>(offset + 1));
+        term->keyPressEvent(&ev);
+        return;
+    }
+
+    // Legacy: alt+printable with altSendsEsc
+    if (altSendsEsc_ && (p.mods & AltModifier) && !(p.mods & CtrlModifier) &&
+        window && p.key < 0x01000000 && k != Key_unknown) {
+        std::string base = window->keyName(p.scancode);
+        if (!base.empty() && static_cast<unsigned char>(base[0]) >= 0x20) {
+            ev.text = "\x1b" + base;
+            term->keyPressEvent(&ev);
+            return;
+        }
+    }
+
+    // Legacy: special key (handled by the switch inside keyPressEvent).
+    if (k != Key_unknown && p.key >= 0x01000000) {
+        term->keyPressEvent(&ev);
+        return;
+    }
+
+    // Legacy: plain printable. Normal onKey defers to onChar; for replay
+    // we synthesize text from keyName so the character reaches the shell.
+    if (window) {
+        std::string name = window->keyName(p.scancode);
+        if (!name.empty()) {
+            ev.text = name;
+            term->keyPressEvent(&ev);
+        }
+    }
+}
+
+void InputController::scheduleSequenceTimeout()
+{
+    if (sequenceTimeoutMs_ <= 0) return;
+    EventLoop* loop = host_.eventLoop ? host_.eventLoop() : nullptr;
+    if (!loop) return;
+    cancelSequenceTimeout();
+    sequenceTimerId_ = loop->addTimer(
+        static_cast<uint64_t>(sequenceTimeoutMs_), false,
+        [this]() { onSequenceTimeout(); });
+}
+
+void InputController::cancelSequenceTimeout()
+{
+    if (sequenceTimerId_ == 0) return;
+    if (host_.eventLoop) {
+        if (EventLoop* loop = host_.eventLoop()) {
+            loop->removeTimer(sequenceTimerId_);
+        }
+    }
+    sequenceTimerId_ = 0;
+}
+
+void InputController::onSequenceTimeout()
+{
+    // The timer fires on the main/event-loop thread, same as onKey, so we
+    // take the platform mutex to serialize with any in-flight input.
+    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
+    sequenceTimerId_ = 0;
+    if (pendingSequenceKeys_.empty()) {
+        sequenceMatcher_.reset();
+        return;
+    }
+    auto pending = std::move(pendingSequenceKeys_);
+    pendingSequenceKeys_.clear();
+    sequenceMatcher_.reset();
+    for (const auto& p : pending) {
+        replayPendingSequenceKey(p);
+    }
 }

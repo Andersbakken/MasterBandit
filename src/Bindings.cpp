@@ -365,11 +365,17 @@ SequenceMatcher::MatchResult SequenceMatcher::advance(
 
     if (!exactMatches.empty()) {
         reset();
-        return {Result::Match, std::move(exactMatches)};
+        return {Result::Match, std::move(exactMatches), {}};
     }
-    if (hasPrefix) return {Result::Prefix, {}};
+    if (hasPrefix) return {Result::Prefix, {}, {}};
+    // NoMatch: hand back the prefix keys that got swallowed before this one
+    // (current_ still includes the failing key at its tail; exclude it).
+    std::vector<KeyStroke> aborted;
+    if (current_.size() > 1) {
+        aborted.assign(current_.begin(), current_.end() - 1);
+    }
     reset();
-    return {Result::NoMatch, {}};
+    return {Result::NoMatch, {}, std::move(aborted)};
 }
 
 void SequenceMatcher::reset()

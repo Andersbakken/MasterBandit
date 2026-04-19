@@ -1243,6 +1243,7 @@ void PlatformDawn::applyConfig(const Config& config)
         inputController_->setMouseBindings(std::move(allMouse));
         inputController_->resetSequenceMatcher();
         inputController_->setAltSendsEsc(config.alt_sends_esc);
+        inputController_->setKeySequenceTimeoutMs(config.key_sequence_timeout_ms);
     }
     if (window_) window_->setAltSendsEsc(config.alt_sends_esc);
 

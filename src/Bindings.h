@@ -87,6 +87,13 @@ public:
         // supported — binding the same stroke twice fires both actions, same
         // model as matchMouseBindings.
         std::vector<Action::Any>   actions;
+        // On NoMatch after one or more Prefix steps, holds the prefix
+        // keys that were swallowed (all accumulated keys except the one
+        // that caused the NoMatch). The caller can resend these to the
+        // shell so prefix keystrokes aren't silently lost when the user
+        // aborts a multi-key binding. Empty for Match/Prefix, and empty
+        // for NoMatch at the root of the sequence.
+        std::vector<KeyStroke>     abortedPrefix;
     };
 
     // Feed the next keystroke. Returns the match status.

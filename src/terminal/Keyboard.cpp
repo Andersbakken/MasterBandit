@@ -3,16 +3,34 @@
 #include <spdlog/spdlog.h>
 #include <cstdio>
 
+static bool isModifierKey(Key k)
+{
+    switch (k) {
+    case Key_Shift: case Key_Shift_L: case Key_Shift_R:
+    case Key_Control: case Key_Control_L: case Key_Control_R:
+    case Key_Alt: case Key_Alt_L: case Key_Alt_R:
+    case Key_Meta: case Key_Super_L: case Key_Super_R:
+    case Key_Hyper_L: case Key_Hyper_R:
+    case Key_CapsLock: case Key_NumLock:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void TerminalEmulator::keyPressEvent(const KeyEvent *event)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     resetViewport();
     // Typing anywhere clears any existing text selection (matches iTerm /
     // WezTerm / most GUI editors — a selection is stale the moment you
-    // start typing). Release events don't reach here in legacy mode, and
-    // in Kitty mode modifier-only events rarely fire keyPressEvent unless
-    // REPORT_ALL_KEYS is on, so this doesn't clear on plain Shift/Ctrl.
-    if (hasSelection()) clearSelection();
+    // start typing). But modifier-only presses (Shift, Cmd, Ctrl, Alt
+    // alone) should not clear — otherwise tapping Cmd before Cmd+T would
+    // wipe the selection before the binding even fires. Bindings that
+    // match short-circuit earlier in InputController::onKey and never
+    // reach here, so any event we see is either PTY-bound typing or a
+    // bare modifier press we should ignore.
+    if (hasSelection() && !isModifierKey(event->key)) clearSelection();
 
     spdlog::debug("keyPressEvent: key=0x{:x} text='{}' ({} bytes) count={} mods=0x{:x} action={}",
                   static_cast<int>(event->key),
@@ -200,21 +218,6 @@ static uint32_t kittyFunctionalCode(Key k)
     case Key_Super_R:   return 57450;
     case Key_Hyper_R:   return 57451;
     default:            return 0;
-    }
-}
-
-static bool isModifierKey(Key k)
-{
-    switch (k) {
-    case Key_Shift: case Key_Shift_L: case Key_Shift_R:
-    case Key_Control: case Key_Control_L: case Key_Control_R:
-    case Key_Alt: case Key_Alt_L: case Key_Alt_R:
-    case Key_Meta: case Key_Super_L: case Key_Super_R:
-    case Key_Hyper_L: case Key_Hyper_R:
-    case Key_CapsLock: case Key_NumLock:
-        return true;
-    default:
-        return false;
     }
 }
 

@@ -7,6 +7,12 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     resetViewport();
+    // Typing anywhere clears any existing text selection (matches iTerm /
+    // WezTerm / most GUI editors — a selection is stale the moment you
+    // start typing). Release events don't reach here in legacy mode, and
+    // in Kitty mode modifier-only events rarely fire keyPressEvent unless
+    // REPORT_ALL_KEYS is on, so this doesn't clear on plain Shift/Ctrl.
+    if (hasSelection()) clearSelection();
 
     spdlog::debug("keyPressEvent: key=0x{:x} text='{}' ({} bytes) count={} mods=0x{:x} action={}",
                   static_cast<int>(event->key),

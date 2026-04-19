@@ -1,7 +1,7 @@
 add_library(terminal OBJECT
     Terminal.cpp
     TerminalEmulator.cpp
-    KittyKeyboard.cpp
+    Keyboard.cpp
     MouseAndSelection.cpp
     SGR.cpp
     OSC.cpp

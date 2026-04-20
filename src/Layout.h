@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pane.h"
+#include "Terminal.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,27 +23,38 @@ class Layout {
 public:
     Layout();
 
-    // Create the initial pane (must be called once before use)
-    Pane* createPane();
+    // Allocate a fresh pane ID and create the root tree node for it.
+    // Must be called once before use. No Terminal is inserted yet — call
+    // insertTerminal() afterward to populate the slot. Returns the pane ID.
+    int createPane();
 
     // Split the pane containing paneId along dir; returns the new pane's id.
+    // The new slot has no Terminal yet — call insertTerminal() to populate it.
     // newIsFirst=true places the new pane as the first (left/top) child.
     int splitPane(int paneId, LayoutNode::Dir dir, float ratio = 0.5f, bool newIsFirst = false);
 
+    // Insert a Terminal into a slot created by splitPane(). Sets the pane ID
+    // on the Terminal. Returns the Terminal pointer for convenience.
+    Terminal* insertTerminal(int paneId, std::unique_ptr<Terminal> t);
+
     // Remove a pane; its sibling collapses up to fill the parent split.
-    // Returns the extracted Pane so callers can defer its destruction
+    // Returns the extracted Terminal so callers can defer its destruction
     // (Terminal lifetime must extend past the render thread's current
     // frame). Returns nullptr if the pane wasn't found or it would leave
     // the tab empty.
-    std::unique_ptr<Pane> extractPane(int paneId);
+    std::unique_ptr<Terminal> extractPane(int paneId);
 
-    Pane* pane(int paneId);
-    const std::vector<std::unique_ptr<Pane>>& panes() const { return mPanes; }
+    Terminal* pane(int paneId);
+    const std::vector<std::unique_ptr<Terminal>>& panes() const { return mPanes; }
+
+    // Return the pixel rect for the layout node with the given pane ID.
+    // Useful for reading geometry before a Terminal has been inserted.
+    PaneRect nodeRect(int paneId) const;
 
     // Focus
     int focusedPaneId() const { return mFocusedPaneId; }
     void setFocusedPane(int id);
-    Pane* focusedPane();
+    Terminal* focusedPane();
 
     // Zoom: the zoomed pane gets the full window rect; others get zero area.
     // Calling zoomPane with the already-zoomed id toggles zoom off.
@@ -90,7 +101,7 @@ private:
     bool removeLeafRecursive(std::unique_ptr<LayoutNode>& node, int paneId);
 
     std::unique_ptr<LayoutNode> mRoot;
-    std::vector<std::unique_ptr<Pane>> mPanes;
+    std::vector<std::unique_ptr<Terminal>> mPanes;
     int mFocusedPaneId { -1 };
     int mZoomedPaneId { -1 };
     int tabBarHeight_ { 0 };

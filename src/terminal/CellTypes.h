@@ -104,5 +104,6 @@ struct CellExtra {
     uint32_t imageOffsetRow { 0 };
     uint32_t hyperlinkId { 0 };      // OSC 8: index into hyperlink registry
     uint32_t underlineColor { 0 };   // SGR 58: packed RGBA8, 0 = use fg color
+    uint32_t embeddedTerminalId { 0 }; // nonzero = this row anchors an embedded Terminal (inline applet)
     std::vector<char32_t> combiningCps; // grapheme cluster continuation codepoints (ZWJ, combiners, VS16, etc.)
 };

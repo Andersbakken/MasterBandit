@@ -38,7 +38,6 @@ set(TEST_SOURCES
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp
-    ../src/Pane.cpp
     ../src/Layout.cpp
 )
 

@@ -25,14 +25,13 @@ static std::string sanitizeUtf8(const std::string& in)
 std::string PlatformDawn::gridToJson(int id)
 {
     // Search for the pane across all tabs
-    Pane* pane = nullptr;
+    Terminal* pane = nullptr;
     for (auto& tabPtr : tabManager_->tabs()) {
         pane = tabPtr->layout()->pane(id);
         if (pane) break;
     }
     if (!pane) return {};
-    TerminalEmulator* term = pane->terminal();
-    if (!term) return {};
+    TerminalEmulator* term = pane;
 
     const IGrid& g = term->grid();
 
@@ -120,7 +119,7 @@ std::string PlatformDawn::statsJson(int id)
         for (auto& panePtr : tab->layout()->panes()) {
             int pid = panePtr->id();
             const PaneRenderPrivate* rs = renderEngine_->paneRenderPrivate(pid);
-            TerminalEmulator* term = panePtr->terminal();
+            Terminal* term = panePtr.get();
             glz::generic::object_t paneObj;
             paneObj["id"]   = static_cast<double>(pid);
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);

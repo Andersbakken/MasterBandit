@@ -16,7 +16,6 @@
 class EventLoop;
 class Graveyard;
 class InputController;
-class Pane;
 class RenderEngine;
 class TerminalEmulator;
 class Window;
@@ -100,7 +99,7 @@ public:
         std::function<TerminalCallbacks(int paneId)> buildTerminalCallbacks;
 
         // Main-thread graveyard for deferred destruction of Panes / Tabs /
-        // overlays / PopupPanes. The Terminals they own must outlive the
+        // overlays / Terminals. The Terminals they own must outlive the
         // render thread's current frame; the graveyard stamps each entry
         // with the current frame counter and sweeps once the counter has
         // advanced. platformMutex must be held when staging entries.
@@ -173,7 +172,7 @@ public:
     void terminalExited(Terminal* terminal);
 
     // --- Pane helpers ---
-    void spawnTerminalForPane(Pane* pane, int tabIdx, const std::string& cwd = {});
+    void spawnTerminalForPane(int paneId, int tabIdx, const std::string& cwd = {});
     void resizeAllPanesInTab(Tab* tab);
     void refreshDividers(Tab* tab);
     void clearDividers(Tab* tab);

@@ -51,7 +51,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             Tab* tab = activeTab();
             if (!tab) return;
             Layout* layout = tab->layout();
-            Pane* fp = layout->focusedPane();
+            Terminal* fp = layout->focusedPane();
             if (!fp) return;
 
             LayoutNode::Dir dir;
@@ -67,13 +67,10 @@ void PlatformDawn::executeAction(const Action::Any& action)
             int newId = layout->splitPane(fp->id(), dir, 0.5f, newIsFirst);
             if (newId < 0) return;
 
-            Pane* newPane = layout->pane(newId);
-            if (!newPane) return;
-
             layout->computeRects(fbWidth_, fbHeight_);
             int tabIdx = tabManager_->activeTabIdx();
             int prevId = layout->focusedPaneId();
-            tabManager_->spawnTerminalForPane(newPane, tabIdx, paneProcessCWD(fp));
+            tabManager_->spawnTerminalForPane(newId, tabIdx, paneProcessCWD(fp));
             tabManager_->resizeAllPanesInTab(tab);
             layout->setFocusedPane(newId);
             tabManager_->notifyPaneFocusChange(tab, prevId, newId);
@@ -84,30 +81,28 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (!tab) return;
             Layout* layout = tab->layout();
             if (layout->panes().size() <= 1) return; // keep last pane
-            Pane* fp = layout->focusedPane();
+            Terminal* fp = layout->focusedPane();
             if (!fp) return;
             int paneId = fp->id();
 
             // Stop PTY poll and queue render state cleanup
-            if (auto* t = fp->terminal()) {
-                tabManager_->removePtyPoll(t->masterFD());
-            }
+            tabManager_->removePtyPoll(fp->masterFD());
             renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
             // Queue popup render state cleanup for this pane
             for (const auto& popup : fp->popups()) {
-                std::string key = popupStateKey(paneId, popup.id);
+                std::string key = popupStateKey(paneId, popup->popupId());
                 renderThread_->pending().releasePopupTextures.push_back(key);
             }
             if (inputController_) inputController_->erasePaneCursorStyle(paneId);
 
             scriptEngine_.notifyPaneDestroyed(paneId);
 
-            // Extract the Pane under the render-thread mutex and stage it
+            // Extract the Terminal under the render-thread mutex and stage it
             // into the graveyard. The render thread may still hold raw
-            // pointers to this Pane's Terminal (and its popups' Terminals)
+            // pointers to this Terminal (and its popups' Terminals)
             // from an in-flight frame; the stamp ensures we wait for that
             // frame to complete before destructors run.
-            std::unique_ptr<Pane> extracted;
+            std::unique_ptr<Terminal> extracted;
             uint64_t stamp = 0;
             {
                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
@@ -134,7 +129,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             Tab* tab = activeTab();
             if (!tab) return;
             Layout* layout = tab->layout();
-            Pane* fp = layout->focusedPane();
+            Terminal* fp = layout->focusedPane();
             if (!fp) return;
             layout->zoomPane(fp->id());
             tabManager_->resizeAllPanesInTab(tab);
@@ -163,7 +158,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 return;
             }
 
-            Pane* fp = layout->focusedPane();
+            Terminal* fp = layout->focusedPane();
             if (!fp) return;
             const PaneRect& r = fp->rect();
             // Step past the divider gap; +1 alone lands inside the divider
@@ -194,7 +189,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             Tab* tab = activeTab();
             if (!tab) return;
             Layout* layout = tab->layout();
-            Pane* fp = layout->focusedPane();
+            Terminal* fp = layout->focusedPane();
             if (!fp) return;
 
             LayoutNode::Dir axis;
@@ -313,33 +308,32 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::FocusPopup&) {
             Tab* tab = activeTab();
             if (!tab || tab->hasOverlay()) return;
-            Pane* fp = tab->layout()->focusedPane();
+            Terminal* fp = tab->layout()->focusedPane();
             if (!fp || fp->popups().empty()) return;
 
             const auto& popups = fp->popups();
             const std::string& curFocus = fp->focusedPopupId();
 
-            Terminal* mainTerm = fp->terminal();
             if (curFocus.empty()) {
                 // No popup focused — focus first popup
-                fp->setFocusedPopup(popups.front().id);
-                if (mainTerm) mainTerm->focusEvent(false);
-                scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups.front().id);
+                fp->setFocusedPopup(popups.front()->popupId());
+                fp->focusEvent(false);
+                scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups.front()->popupId());
             } else {
                 // Find current popup index, cycle to next or back to main
                 int cur = -1;
                 for (int i = 0; i < static_cast<int>(popups.size()); ++i) {
-                    if (popups[i].id == curFocus) { cur = i; break; }
+                    if (popups[i]->popupId() == curFocus) { cur = i; break; }
                 }
                 if (cur < 0 || cur + 1 >= static_cast<int>(popups.size())) {
                     // Last popup or not found — back to main terminal
                     fp->clearFocusedPopup();
-                    if (mainTerm) mainTerm->focusEvent(true);
+                    fp->focusEvent(true);
                     scriptEngine_.notifyFocusedPopupChanged(fp->id(), "");
                 } else {
-                    fp->setFocusedPopup(popups[cur + 1].id);
+                    fp->setFocusedPopup(popups[cur + 1]->popupId());
                     // Focus moves between popups — main terminal stays unfocused
-                    scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups[cur + 1].id);
+                    scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups[cur + 1]->popupId());
                 }
             }
             // Mark pane dirty so cursor position updates in the pane texture

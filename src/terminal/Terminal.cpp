@@ -360,3 +360,103 @@ std::string Terminal::foregroundProcess() const
     return name;
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// Pixel rect / resize to fit
+// ---------------------------------------------------------------------------
+
+void Terminal::resizeToRect(float charW, float lineH,
+                            float padL, float padT, float padR, float padB)
+{
+    if (mRect.isEmpty()) return;
+    float usableW = std::max(0.0f, static_cast<float>(mRect.w) - padL - padR);
+    float usableH = std::max(0.0f, static_cast<float>(mRect.h) - padT - padB);
+    int cols = std::max(1, static_cast<int>(usableW / charW));
+    int rows = std::max(1, static_cast<int>(usableH / lineH));
+    resize(cols, rows);
+}
+
+// ---------------------------------------------------------------------------
+// Popup children
+// ---------------------------------------------------------------------------
+
+Terminal* Terminal::createPopup(const std::string& id, int x, int y, int w, int h,
+                                PlatformCallbacks pcbs)
+{
+    if (findPopup(id)) {
+        spdlog::warn("Terminal: popup '{}' already exists", id);
+        return nullptr;
+    }
+
+    TerminalCallbacks cbs;
+    cbs.event = [this](TerminalEmulator*, int, void*) {
+        if (onPopupEvent) onPopupEvent();
+    };
+
+    auto popup = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+    TerminalOptions opts;
+    opts.scrollbackLines = 0;
+    popup->initHeadless(opts);
+    popup->resize(w, h);
+    popup->setCellPosition(x, y, w, h);
+
+    spdlog::info("Terminal: created popup '{}' at ({},{}) {}x{}", id, x, y, w, h);
+    popup->setId(-1); // popups don't get a pane ID; they're identified by string id
+    popup->setPopupId(id);
+    mPopups.push_back(std::move(popup));
+    return mPopups.back().get();
+}
+
+std::unique_ptr<Terminal> Terminal::extractPopup(const std::string& id)
+{
+    auto it = std::find_if(mPopups.begin(), mPopups.end(),
+                           [&id](const std::unique_ptr<Terminal>& p) {
+                               return p->popupId() == id;
+                           });
+    if (it == mPopups.end()) return nullptr;
+    auto popup = std::move(*it);
+    mPopups.erase(it);
+    if (mFocusedPopupId == id) mFocusedPopupId.clear();
+    spdlog::info("Terminal: extracted popup '{}'", id);
+    return popup;
+}
+
+bool Terminal::resizePopup(const std::string& id, int x, int y, int w, int h)
+{
+    auto* p = findPopup(id);
+    if (!p) return false;
+    p->setCellPosition(x, y, w, h);
+    p->resize(w, h);
+    return true;
+}
+
+Terminal* Terminal::findPopup(const std::string& id)
+{
+    for (auto& p : mPopups)
+        if (p->popupId() == id) return p.get();
+    return nullptr;
+}
+
+bool Terminal::isCellCoveredByPopup(int col, int row) const
+{
+    for (const auto& p : mPopups) {
+        if (col >= p->cellX() && col < p->cellX() + p->cellW() &&
+            row >= p->cellY() && row < p->cellY() + p->cellH()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Terminal* Terminal::focusedPopup()
+{
+    if (mFocusedPopupId.empty()) return nullptr;
+    return findPopup(mFocusedPopupId);
+}
+
+TerminalEmulator* Terminal::activeTerm()
+{
+    if (auto* pp = focusedPopup())
+        return pp;
+    return this;
+}

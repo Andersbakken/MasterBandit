@@ -9,7 +9,7 @@
 // and does all GPU work lockfree using PaneRenderPrivate (render-thread-only).
 
 #include "ComputeTypes.h"
-#include "Pane.h"
+#include "Terminal.h"
 #include "TerminalSnapshot.h"
 #include "TexturePool.h"
 #include "Renderer.h"
@@ -33,7 +33,7 @@
 struct RenderPanePopupInfo {
     std::string id;
     int cellX = 0, cellY = 0, cellW = 0, cellH = 0;
-    TerminalEmulator* term = nullptr;   // raw ptr into PopupPane::terminal
+    TerminalEmulator* term = nullptr;   // raw ptr into popup Terminal child
 };
 
 struct RenderPaneInfo {

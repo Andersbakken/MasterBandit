@@ -26,12 +26,9 @@ static int siblingPaneId(int paneId, const LayoutNode* node)
     return siblingPaneId(paneId, node->second.get());
 }
 
-Pane* Layout::createPane()
+int Layout::createPane()
 {
     int id = sGlobalPaneId++;
-    auto pane = std::make_unique<Pane>(id);
-    Pane* ptr = pane.get();
-    mPanes.push_back(std::move(pane));
 
     if (!mRoot) {
         // First pane becomes the root leaf
@@ -41,7 +38,7 @@ Pane* Layout::createPane()
         mFocusedPaneId = id;
     }
 
-    return ptr;
+    return id;
 }
 
 int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFirst)
@@ -53,8 +50,8 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
     }
 
     int newId = sGlobalPaneId++;
-    auto newPane = std::make_unique<Pane>(newId);
-    mPanes.push_back(std::move(newPane));
+    // No Terminal inserted yet — caller must call insertTerminal(newId, ...)
+    // after computing rects and building the real Terminal.
 
     auto existingLeaf = std::make_unique<LayoutNode>();
     existingLeaf->isLeaf = true;
@@ -80,7 +77,15 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
     return newId;
 }
 
-std::unique_ptr<Pane> Layout::extractPane(int paneId)
+Terminal* Layout::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
+{
+    t->setId(paneId);
+    Terminal* ptr = t.get();
+    mPanes.push_back(std::move(t));
+    return ptr;
+}
+
+std::unique_ptr<Terminal> Layout::extractPane(int paneId)
 {
     if (!mRoot) return nullptr;
 
@@ -95,11 +100,11 @@ std::unique_ptr<Pane> Layout::extractPane(int paneId)
 
     removeLeafRecursive(mRoot, paneId);
 
-    // Extract from panes list (move-out then erase, so the Pane survives
+    // Extract from panes list (move-out then erase, so the Terminal survives
     // for the caller to hand to the Graveyard).
-    std::unique_ptr<Pane> extracted;
+    std::unique_ptr<Terminal> extracted;
     auto it = std::find_if(mPanes.begin(), mPanes.end(),
-                           [paneId](const std::unique_ptr<Pane>& p) {
+                           [paneId](const std::unique_ptr<Terminal>& p) {
                                return p->id() == paneId;
                            });
     if (it != mPanes.end()) {
@@ -136,19 +141,27 @@ bool Layout::removeLeafRecursive(std::unique_ptr<LayoutNode>& node, int paneId)
            removeLeafRecursive(node->second, paneId);
 }
 
-Pane* Layout::pane(int paneId)
+Terminal* Layout::pane(int paneId)
 {
     for (auto& p : mPanes)
         if (p->id() == paneId) return p.get();
     return nullptr;
 }
 
-void Layout::setFocusedPane(int id)
+PaneRect Layout::nodeRect(int paneId) const
 {
-    if (pane(id)) mFocusedPaneId = id;
+    auto* node = const_cast<Layout*>(this)->findLeafForPane(paneId, const_cast<LayoutNode*>(mRoot.get()));
+    return node ? node->rect : PaneRect{};
 }
 
-Pane* Layout::focusedPane()
+void Layout::setFocusedPane(int id)
+{
+    // Accept the ID if a Terminal exists OR if the ID is in the layout tree
+    // (splitPane creates tree nodes before insertTerminal populates the vector).
+    if (pane(id) || findLeafForPane(id, mRoot.get())) mFocusedPaneId = id;
+}
+
+Terminal* Layout::focusedPane()
 {
     return pane(mFocusedPaneId);
 }
@@ -211,7 +224,7 @@ void Layout::computeRectsRecursive(LayoutNode* node, PaneRect rect)
     node->rect = rect;
 
     if (node->isLeaf) {
-        if (Pane* p = pane(node->paneId))
+        if (Terminal* p = pane(node->paneId))
             p->setRect(rect);
         return;
     }

@@ -36,7 +36,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
                 postToMainThread([this, paneId, recCopy = std::move(recCopy)] {
                     TerminalEmulator* te = nullptr;
                     for (auto& tab : tabManager_->tabs()) {
-                        if (auto* p = tab->layout()->pane(paneId)) { te = p->terminal(); break; }
+                        if (auto* p = tab->layout()->pane(paneId)) { te = p; break; }
                     }
                     if (!te) return;
                     const auto& doc = te->document();
@@ -59,9 +59,9 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             // selection id is read fresh inside the lambda so late-arriving
             // events see the final state even if multiple fire in a row.
             postToMainThread([this, paneId] {
-                TerminalEmulator* te = nullptr;
+                Terminal* te = nullptr;
                 for (auto& tab : tabManager_->tabs()) {
-                    if (auto* p = tab->layout()->pane(paneId)) { te = p->terminal(); break; }
+                    if (auto* p = tab->layout()->pane(paneId)) { te = p; break; }
                 }
                 if (!te) return;
                 scriptEngine_.notifyCommandSelectionChanged(paneId, te->selectedCommandId());
@@ -92,7 +92,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             int tabIdx = -1;
             Tab* t = tabManager_->findTabForPane(paneId, &tabIdx);
             if (!t) return;
-            if (Pane* p = t->layout()->pane(paneId)) p->setTitle(title);
+            if (Terminal* p = t->layout()->pane(paneId)) p->setTitle(title);
             if (t->layout()->focusedPaneId() == paneId) {
                 t->setTitle(title);
                 if (tabIdx == tabManager_->activeTabIdx()) tabManager_->updateWindowTitle();
@@ -107,7 +107,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             int tabIdx = -1;
             Tab* t = tabManager_->findTabForPane(paneId, &tabIdx);
             if (!t) return;
-            if (Pane* p = t->layout()->pane(paneId)) p->setIcon(icon);
+            if (Terminal* p = t->layout()->pane(paneId)) p->setIcon(icon);
             if (t->layout()->focusedPaneId() == paneId) {
                 t->setIcon(icon);
                 if (tabIdx == tabManager_->activeTabIdx()) tabManager_->updateWindowTitle();
@@ -121,7 +121,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         postToMainThread([this, paneId, state, pct] {
             Tab* t = tabManager_->findTabForPane(paneId);
             if (!t) return;
-            if (Pane* p = t->layout()->pane(paneId)) {
+            if (Terminal* p = t->layout()->pane(paneId)) {
                 p->setProgress(state, pct);
                 tabBarDirty_ = true;
                 setNeedsRedraw();
@@ -137,7 +137,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         postToMainThread([this, paneId, dir] {
             Tab* t = tabManager_->findTabForPane(paneId);
             if (!t) return;
-            if (Pane* p = t->layout()->pane(paneId)) p->setCWD(dir);
+            if (Terminal* p = t->layout()->pane(paneId)) p->setCWD(dir);
         });
     };
 
@@ -196,7 +196,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             int tabIdx = -1;
             Tab* t = tabManager_->findTabForPane(paneId, &tabIdx);
             if (!t) return;
-            Pane* p = t->layout()->pane(paneId);
+            Terminal* p = t->layout()->pane(paneId);
             if (p && p->title().empty() && t->layout()->focusedPaneId() == paneId) {
                 t->setTitle(proc);
                 if (tabIdx == tabManager_->activeTabIdx()) tabManager_->updateWindowTitle();

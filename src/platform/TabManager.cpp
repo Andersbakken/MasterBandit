@@ -3,7 +3,6 @@
 #include "Graveyard.h"
 #include "InputController.h"
 #include "Layout.h"
-#include "Pane.h"
 #include "PlatformUtils.h"
 #include "ScriptEngine.h"
 #include "Terminal.h"
@@ -50,7 +49,7 @@ Terminal* TabManager::activeTerm()
     Tab* tab = activeTab();
     if (!tab) return nullptr;
     if (tab->hasOverlay()) return tab->topOverlay();
-    Pane* pane = tab->layout()->focusedPane();
+    Terminal* pane = tab->layout()->focusedPane();
     return pane ? static_cast<Terminal*>(pane->activeTerm()) : nullptr;
 }
 
@@ -59,7 +58,7 @@ void TabManager::notifyAllTerminals(const std::function<void(TerminalEmulator*)>
 {
     for (auto& tab : tabs_) {
         for (auto& panePtr : tab->layout()->panes()) {
-            if (auto* term = panePtr->terminal()) fn(term);
+            fn(panePtr.get());
         }
     }
 }
@@ -89,7 +88,7 @@ void TabManager::updateWindowTitle()
     if (host_.headless && host_.headless()) return;
     Tab* t = activeTab();
     if (!t) return;
-    Pane* fp = t->layout()->focusedPane();
+    Terminal* fp = t->layout()->focusedPane();
     if (!fp) return;
     const std::string& icon = fp->icon();
     // Prefer the pane's OSC-set title; fall back to the tab title (e.g. foreground process name)
@@ -188,18 +187,18 @@ void TabManager::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
 {
     if (!tab) return;
     if (prevId >= 0) {
-        Pane* p = tab->layout()->pane(prevId);
+        Terminal* p = tab->layout()->pane(prevId);
         if (p) {
             if (!p->focusedPopupId().empty() && host_.scriptEngine)
                 host_.scriptEngine->notifyFocusedPopupChanged(prevId, "");
             p->clearFocusedPopup();
-            if (p->terminal()) p->terminal()->focusEvent(false);
+            p->focusEvent(false);
         }
         if (host_.scriptEngine) host_.scriptEngine->notifyPaneFocusChanged(prevId, false);
     }
     if (newId >= 0) {
-        Pane* p = tab->layout()->pane(newId);
-        if (p && p->terminal()) p->terminal()->focusEvent(true);
+        Terminal* p = tab->layout()->pane(newId);
+        if (p) p->focusEvent(true);
         if (host_.scriptEngine) host_.scriptEngine->notifyPaneFocusChanged(newId, true);
     }
     if (host_.inputController) host_.inputController->refreshPointerShape();
@@ -210,7 +209,7 @@ void TabManager::updateTabTitleFromFocusedPane(int tabIdx)
 {
     if (tabIdx < 0 || tabIdx >= static_cast<int>(tabs_.size())) return;
     Tab* tab = tabs_[tabIdx].get();
-    Pane* fp = tab->layout()->focusedPane();
+    Terminal* fp = tab->layout()->focusedPane();
     if (!fp) return;
 
     const std::string& title = fp->title();
@@ -244,23 +243,23 @@ void TabManager::createTab()
     const uint32_t fbHeight = host_.fbHeight ? host_.fbHeight() : 0;
     const int divW = host_.dividerWidth ? host_.dividerWidth() : 0;
 
+    // Inherit CWD from the focused pane of the active tab
+    auto opts = terminalOptions_;
+    if (Tab* at = activeTab()) {
+        if (Terminal* fp = at->layout()->focusedPane()) {
+            std::string cwd = paneProcessCWD(fp);
+            if (!cwd.empty()) opts.cwd = cwd;
+        }
+    }
+
     auto layout = std::make_unique<Layout>();
     layout->setDividerPixels(divW);
-    Pane* pane = layout->createPane();
-    layout->setFocusedPane(pane->id());
 
-    // Apply tab bar height to the new layout
-    const bool barVisible = host_.tabBarVisible ? host_.tabBarVisible() : false;
-    const float tbLine = host_.tabBarLineHeight ? host_.tabBarLineHeight() : 0.0f;
-    if (barVisible && tbLine > 0.0f) {
-        std::string pos = host_.tabBarPosition ? host_.tabBarPosition() : "top";
-        layout->setTabBar(static_cast<int>(std::ceil(tbLine)), pos);
-    }
-    layout->computeRects(fbWidth, fbHeight);
+    // Allocate an ID and tree node — no Terminal created yet.
+    int paneId = layout->createPane();
+    layout->setFocusedPane(paneId);
 
-    int paneId = pane->id();
-    int tabIdx = static_cast<int>(tabs_.size());
-
+    // Build the Terminal with callbacks that capture the pane ID.
     auto cbs = host_.buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
     pcbs.onTerminalExited = [this](Terminal* t) {
@@ -280,16 +279,8 @@ void TabManager::createTab()
     pcbs.filterInput = [scriptEngine, paneId](std::string& data) {
         scriptEngine->filterPaneInput(paneId, data);
     };
-    auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
-    // Inherit CWD from the focused pane of the active tab
-    auto opts = terminalOptions_;
-    if (Tab* at = activeTab()) {
-        if (Pane* fp = at->layout()->focusedPane()) {
-            std::string cwd = paneProcessCWD(fp);
-            if (!cwd.empty()) opts.cwd = cwd;
-        }
-    }
 
+    auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
     terminal->applyColorScheme(opts.colors);
     terminal->applyCursorConfig(opts.cursor);
     if (!terminal->init(opts)) {
@@ -297,10 +288,20 @@ void TabManager::createTab()
         return;
     }
 
-    const PaneRect& pr = pane->rect();
+    // Apply tab bar height to the new layout
+    const bool barVisible = host_.tabBarVisible ? host_.tabBarVisible() : false;
+    const float tbLine = host_.tabBarLineHeight ? host_.tabBarLineHeight() : 0.0f;
+    if (barVisible && tbLine > 0.0f) {
+        std::string pos = host_.tabBarPosition ? host_.tabBarPosition() : "top";
+        layout->setTabBar(static_cast<int>(std::ceil(tbLine)), pos);
+    }
+    layout->computeRects(fbWidth, fbHeight);
+
+    const PaneRect& pr = layout->nodeRect(paneId);
     int cols = (pr.w > 0 && charWidth > 0) ? static_cast<int>((pr.w - padLeft - padRight) / charWidth) : 80;
     int rows = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
 
+    int tabIdx = static_cast<int>(tabs_.size());
     host_.pending->structuralOps.push_back(PendingMutations::CreatePaneState{paneId, cols, rows});
     host_.pending->dirtyPanes.insert(paneId);
 
@@ -309,12 +310,12 @@ void TabManager::createTab()
 
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();
-    pane->setTerminal(std::move(terminal));
+    layout->insertTerminal(paneId, std::move(terminal));
     addPtyPoll(masterFD, termPtr);
 
     activeTabIdx_ = tabIdx;
     auto tab = std::make_unique<Tab>(std::move(layout));
-    tab->setTitle(pane->title());
+    tab->setTitle(termPtr->title());
     tabs_.push_back(std::move(tab));
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
@@ -344,12 +345,10 @@ void TabManager::closeTab(int idx)
     // graveyard below.
     Tab* tab = tabs_[idx].get();
     for (auto& panePtr : tab->layout()->panes()) {
-        if (auto* t = panePtr->terminal()) {
-            removePtyPoll(t->masterFD());
-        }
+        removePtyPoll(panePtr->masterFD());
         host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{panePtr->id()});
         for (const auto& popup : panePtr->popups()) {
-            std::string key = popupStateKey(panePtr->id(), popup.id);
+            std::string key = popupStateKey(panePtr->id(), popup->popupId());
             host_.pending->releasePopupTextures.push_back(key);
         }
         if (host_.inputController) host_.inputController->erasePaneCursorStyle(panePtr->id());
@@ -397,14 +396,14 @@ void TabManager::terminalExited(Terminal* terminal)
     for (int tabIdx = 0; tabIdx < static_cast<int>(tabs_.size()); ++tabIdx) {
         Tab* tab = tabs_[tabIdx].get();
         for (auto& panePtr : tab->layout()->panes()) {
-            if (panePtr->terminal() != terminal) continue;
+            if (panePtr.get() != terminal) continue;
 
             int paneId = panePtr->id();
             removePtyPoll(terminal->masterFD());
 
             host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
             for (const auto& popup : panePtr->popups()) {
-                std::string key = popupStateKey(paneId, popup.id);
+                std::string key = popupStateKey(paneId, popup->popupId());
                 host_.pending->releasePopupTextures.push_back(key);
             }
             if (host_.inputController) host_.inputController->erasePaneCursorStyle(paneId);
@@ -442,7 +441,7 @@ void TabManager::terminalExited(Terminal* terminal)
                 if (host_.inputController) host_.inputController->refreshPointerShape();
                 if (host_.markTabBarDirty) host_.markTabBarDirty();
             } else {
-                std::unique_ptr<Pane> extractedPane = tab->layout()->extractPane(paneId);
+                std::unique_ptr<Terminal> extractedPane = tab->layout()->extractPane(paneId);
                 if (extractedPane) {
                     if (host_.buildRenderFrameState) host_.buildRenderFrameState();
                     uint64_t stamp = host_.completedFrames ? host_.completedFrames() : 0;
@@ -463,10 +462,8 @@ void TabManager::terminalExited(Terminal* terminal)
 }
 
 
-void TabManager::spawnTerminalForPane(Pane* pane, int tabIdx, const std::string& cwd)
+void TabManager::spawnTerminalForPane(int paneId, int tabIdx, const std::string& cwd)
 {
-    int paneId = pane->id();
-
     const float charWidth  = host_.charWidth ? host_.charWidth() : 0.0f;
     const float lineHeight = host_.lineHeight ? host_.lineHeight() : 0.0f;
     const float padLeft    = host_.padLeft ? host_.padLeft() : 0.0f;
@@ -504,7 +501,12 @@ void TabManager::spawnTerminalForPane(Pane* pane, int tabIdx, const std::string&
         return;
     }
 
-    const PaneRect& pr = pane->rect();
+    // Read geometry from the layout tree node (Terminal may not exist yet)
+    PaneRect pr;
+    for (auto& t : tabs_) {
+        pr = t->layout()->nodeRect(paneId);
+        if (!pr.isEmpty()) break;
+    }
     int cols = (pr.w > 0 && charWidth > 0)  ? static_cast<int>((pr.w - padLeft - padRight) / charWidth)  : 80;
     int rows = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
     cols = std::max(cols, 1);
@@ -518,7 +520,13 @@ void TabManager::spawnTerminalForPane(Pane* pane, int tabIdx, const std::string&
 
     int masterFD = terminal->masterFD();
     Terminal* termPtr = terminal.get();
-    pane->setTerminal(std::move(terminal));
+
+    // Insert the Terminal into the layout slot created by splitPane()
+    for (auto& t : tabs_) {
+        if (t->layout()->nodeRect(paneId).isEmpty()) continue;
+        t->layout()->insertTerminal(paneId, std::move(terminal));
+        break;
+    }
     addPtyPoll(masterFD, termPtr);
 
     if (host_.scriptEngine) host_.scriptEngine->notifyPaneCreated(tabIdx, paneId);
@@ -542,14 +550,11 @@ void TabManager::resizeAllPanesInTab(Tab* tab)
     tab->layout()->computeRects(fbWidth, fbHeight);
 
     for (auto& panePtr : tab->layout()->panes()) {
-        Pane* pane = panePtr.get();
+        Terminal* pane = panePtr.get();
         pane->resizeToRect(charWidth, lineHeight, padLeft, padTop, padRight, padBottom);
 
-        Terminal* term = pane->terminal();
-        if (!term) continue;
-
-        int cols = std::max(term->width(),  1);
-        int rows = std::max(term->height(), 1);
+        int cols = std::max(pane->width(),  1);
+        int rows = std::max(pane->height(), 1);
 
         host_.pending->structuralOps.push_back(
             PendingMutations::ResizePaneState{pane->id(), cols, rows});

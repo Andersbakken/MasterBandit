@@ -331,22 +331,22 @@ void PlatformDawn::buildRenderFrameState()
             }
         } else {
             for (auto& panePtr : tab->layout()->panes()) {
-                Pane* pane = panePtr.get();
+                Terminal* pane = panePtr.get();
                 RenderPaneInfo rpi;
                 rpi.id = pane->id();
                 rpi.rect = pane->rect();
-                rpi.term = pane->terminal();
+                rpi.term = pane;
                 rpi.progressState = pane->progressState();
                 rpi.progressPct = pane->progressPct();
                 rpi.focusedPopupId = pane->focusedPopupId();
                 for (const auto& popup : pane->popups()) {
                     RenderPanePopupInfo pi;
-                    pi.id = popup.id;
-                    pi.cellX = popup.cellX;
-                    pi.cellY = popup.cellY;
-                    pi.cellW = popup.cellW;
-                    pi.cellH = popup.cellH;
-                    pi.term = popup.terminal.get();
+                    pi.id = popup->popupId();
+                    pi.cellX = popup->cellX();
+                    pi.cellY = popup->cellY();
+                    pi.cellW = popup->cellW();
+                    pi.cellH = popup->cellH();
+                    pi.term = popup.get();
                     rpi.popups.push_back(std::move(pi));
                 }
                 renderThread_->renderState().panes.push_back(std::move(rpi));
@@ -363,7 +363,7 @@ void PlatformDawn::buildRenderFrameState()
         rti.title = t->title();
         rti.icon  = t->icon();
         rti.focusedPaneId = t->layout()->focusedPaneId();
-        Pane* fp = t->layout()->focusedPane();
+        Terminal* fp = t->layout()->focusedPane();
         rti.progressState = fp ? fp->progressState() : 0;
         rti.progressPct   = fp ? fp->progressPct() : 0;
         renderThread_->renderState().tabs.push_back(std::move(rti));
@@ -643,12 +643,12 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 Tab* tab = activeTab();
                 if (tab) {
                     TerminalEmulator* term = nullptr;
-                    Pane* fp = nullptr;
+                    Terminal* fp = nullptr;
                     if (tab->hasOverlay()) {
                         term = tab->topOverlay();
                     } else {
                         fp = tab->layout()->focusedPane();
-                        if (fp) term = fp->terminal();
+                        term = fp;
                     }
                     if (term && term->mouseReportingActive()) {
                         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
@@ -691,8 +691,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 if (!t) return;
                 if (t->hasOverlay()) {
                     t->topOverlay()->focusEvent(focused);
-                } else if (Pane* fp = t->layout()->focusedPane()) {
-                    if (fp->terminal()) fp->terminal()->focusEvent(focused);
+                } else if (Terminal* fp = t->layout()->focusedPane()) {
+                    fp->focusEvent(focused);
                 }
                 setNeedsRedraw();
             };
@@ -928,11 +928,9 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     // Create a layout and tab for this terminal
     auto layout = std::make_unique<Layout>();
     layout->setDividerPixels(dividerWidth_);
-    Pane* pane = layout->createPane();
-    layout->setFocusedPane(pane->id());
+    int paneId = layout->createPane();
+    layout->setFocusedPane(paneId);
     layout->computeRects(fbWidth_, fbHeight_);
-
-    int paneId = pane->id();
 
     auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
@@ -962,8 +960,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         padBottom_ = options.padding.bottom * contentScaleX_;
     }
 
-    // Compute cols/rows from pane rect
-    const PaneRect& pr = pane->rect();
+    // Compute cols/rows from layout tree node rect
+    const PaneRect pr = layout->nodeRect(paneId);
     float usableW = std::max(0.0f, static_cast<float>(pr.w > 0 ? pr.w : fbWidth_) - padLeft_ - padRight_);
     float usableH = std::max(0.0f, static_cast<float>(pr.h > 0 ? pr.h : fbHeight_) - padTop_ - padBottom_);
     int cols = (charWidth_ > 0) ? static_cast<int>(usableW / charWidth_) : 80;
@@ -986,7 +984,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     // Title will be set by foreground process detection on first PTY read
 
-    pane->setTerminal(std::move(terminal));  // Pane owns the Terminal now
+    layout->insertTerminal(paneId, std::move(terminal));
 
     if (eventLoop_) {
         tabManager_->addPtyPoll(masterFD, termPtr);
@@ -994,7 +992,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     // Build and store tab
     auto tab = std::make_unique<Tab>(std::move(layout));
-    tab->setTitle(pane->title());
+    tab->setTitle(termPtr->title());
     tabManager_->addInitialTab(std::move(tab));
     tabManager_->updateWindowTitle();
 
@@ -1069,16 +1067,13 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         tabsVec.back()->layout()->computeRects(fbWidth_, fbHeight_);
         // Recompute cols/rows for this pane after layout adjustment
         {
-            Pane* p = tabsVec.back()->layout()->focusedPane();
+            Terminal* p = tabsVec.back()->layout()->focusedPane();
             if (p) {
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
-                TerminalEmulator* te = p->terminal();
-                if (te) {
-                    int c = te->width(), r = te->height();
-                    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                    auto& rs2 = renderEngine_->paneRenderPrivateMap()[p->id()];
-                    rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
-                }
+                int c = p->width(), r = p->height();
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
+                auto& rs2 = renderEngine_->paneRenderPrivateMap()[p->id()];
+                rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
             }
         }
     }
@@ -1195,12 +1190,12 @@ void PlatformDawn::onBlinkTick()
         return;
     }
     for (auto& panePtr : tab->layout()->panes()) {
-        if (wantsRedraw(panePtr->terminal())) {
+        if (wantsRedraw(panePtr.get())) {
             setNeedsRedraw();
             return;
         }
         for (const auto& popup : panePtr->popups()) {
-            if (wantsRedraw(popup.terminal.get())) {
+            if (wantsRedraw(popup.get())) {
                 setNeedsRedraw();
                 return;
             }
@@ -1464,14 +1459,11 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
         tabPtr->layout()->computeRects(fbWidth_, fbHeight_);
 
         for (auto& panePtr : tabPtr->layout()->panes()) {
-            Pane* pane = panePtr.get();
+            Terminal* pane = panePtr.get();
             pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
-            TerminalEmulator* term = pane->terminal();
-            if (!term) continue;
-
-            int cols = term->width();
-            int rows = term->height();
+            int cols = pane->width();
+            int rows = pane->height();
             if (cols < 1) cols = 1;
             if (rows < 1) rows = 1;
 

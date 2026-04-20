@@ -1,7 +1,6 @@
 #include "InputController.h"
 
 #include "Layout.h"
-#include "Pane.h"
 #include "ScriptEngine.h"
 #include "Tab.h"
 #include "Terminal.h"
@@ -315,10 +314,10 @@ void InputController::onMouseButton(int button, int action, int mods)
     if (action == static_cast<int>(KeyAction_Release) && selectionDragActive_) {
         selectionDragActive_ = false;
         stopAutoScroll();
-        Pane* fp2 = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
+        Terminal* fp2 = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
         TerminalEmulator* term2 = tab->hasOverlay()
             ? static_cast<TerminalEmulator*>(tab->topOverlay())
-            : (fp2 ? static_cast<TerminalEmulator*>(fp2->terminal()) : nullptr);
+            : static_cast<TerminalEmulator*>(fp2);
         if (term2) {
             PaneRect pr = fp2 ? fp2->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
             double cellRelX = sx - pr.x - padLeft;
@@ -366,23 +365,23 @@ void InputController::onMouseButton(int button, int action, int mods)
 
     // 2b. Check if click lands inside a popup — deliver mouse event to JS
     if (region == MouseRegion::Pane && !tab->hasOverlay()) {
-        Pane* clickPane = tab->layout()->focusedPane();
+        Terminal* clickPane = tab->layout()->focusedPane();
         if (clickPane) {
             const PaneRect& pr = clickPane->rect();
             int cellCol = static_cast<int>((sx - pr.x - padLeft) / charWidth);
             int cellRow = static_cast<int>((sy - pr.y - padTop) / lineHeight);
             for (const auto& popup : clickPane->popups()) {
-                if (cellCol >= popup.cellX && cellCol < popup.cellX + popup.cellW &&
-                    cellRow >= popup.cellY && cellRow < popup.cellY + popup.cellH) {
-                    int relCol = cellCol - popup.cellX;
-                    int relRow = cellRow - popup.cellY;
+                if (cellCol >= popup->cellX() && cellCol < popup->cellX() + popup->cellW() &&
+                    cellRow >= popup->cellY() && cellRow < popup->cellY() + popup->cellH()) {
+                    int relCol = cellCol - popup->cellX();
+                    int relRow = cellRow - popup->cellY();
 
                     // Deliver mouse event to JS popup listeners
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
                     int btn = (button == static_cast<int>(LeftButton)) ? 0
                             : (button == static_cast<int>(RightButton)) ? 1 : 2;
                     host_.scriptEngine->deliverPopupMouseEvent(
-                        clickPane->id(), popup.id, type,
+                        clickPane->id(), popup->popupId(), type,
                         relCol, relRow,
                         static_cast<int>(sx), static_cast<int>(sy), btn);
                     host_.scriptEngine->executePendingJobs();
@@ -413,10 +412,10 @@ void InputController::onMouseButton(int button, int action, int mods)
     }
 
     // 5. Resolve focused pane and terminal
-    Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
+    Terminal* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
-        : (fp ? static_cast<TerminalEmulator*>(fp->terminal()) : nullptr);
+        : static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
     // 6. Determine mouse mode
@@ -602,10 +601,10 @@ void InputController::onCursorPos(double x, double y)
     if (!tab) return;
 
     Window* window = host_.window ? host_.window() : nullptr;
-    Pane* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
+    Terminal* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
-        : (fp ? static_cast<TerminalEmulator*>(fp->terminal()) : nullptr);
+        : static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
     const float contentScaleX = host_.contentScaleX();
@@ -649,7 +648,7 @@ void InputController::onCursorPos(double x, double y)
     if (!tab->hasOverlay() && host_.scriptEngine) {
         int hoveredPaneId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
         if (hoveredPaneId >= 0 && host_.scriptEngine->hasPaneMouseMoveListeners(hoveredPaneId)) {
-            Pane* hp = tab->layout()->pane(hoveredPaneId);
+            Terminal* hp = tab->layout()->pane(hoveredPaneId);
             if (hp) {
                 PaneRect hpr = hp->rect();
                 double hcx = sx - hpr.x - padLeft;
@@ -806,8 +805,8 @@ void InputController::doAutoScroll()
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
         : [&]() -> TerminalEmulator* {
-            Pane* fp = tab->layout()->focusedPane();
-            return fp ? static_cast<TerminalEmulator*>(fp->terminal()) : nullptr;
+            Terminal* fp = tab->layout()->focusedPane();
+            return static_cast<TerminalEmulator*>(fp);
           }();
     if (!term) { stopAutoScroll(); return; }
 
@@ -856,8 +855,10 @@ void InputController::refreshPointerShape()
     if (!tab->hasOverlay()) {
         paneId = tab->layout()->paneAtPixel(static_cast<int>(sx),
                                             static_cast<int>(sy));
-        if (paneId < 0 && tab->layout()->focusedPane())
-            paneId = tab->layout()->focusedPane()->id();
+        if (paneId < 0) {
+            Terminal* focPane = tab->layout()->focusedPane();
+            if (focPane) paneId = focPane->id();
+        }
     }
     auto it = paneCursorStyle_.find(paneId);
     window->setCursorStyle(it != paneCursorStyle_.end()

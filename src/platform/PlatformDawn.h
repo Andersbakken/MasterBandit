@@ -21,7 +21,6 @@
 #include "DebugIPC.h"
 #include "FontFallback.h"
 #include "Layout.h"
-#include "Pane.h"
 #include "Tab.h"
 #include "Action.h"
 #include "Bindings.h"
@@ -176,13 +175,11 @@ private:
             auto& tabs = tabManager_->tabs();
             for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
                 Tab* tab = tabs[i].get();
-                Pane* fp = tab->layout()->focusedPane();
+                Terminal* fp = tab->layout()->focusedPane();
                 if (fp && fp->title().empty() && tab->title().empty()) {
-                    if (auto* t = fp->terminal()) {
-                        std::string proc = t->foregroundProcess();
-                        if (!proc.empty())
-                            tab->setTitle(proc);
-                    }
+                    std::string proc = fp->foregroundProcess();
+                    if (!proc.empty())
+                        tab->setTitle(proc);
                 }
             }
         }

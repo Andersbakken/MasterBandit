@@ -249,7 +249,12 @@ void Terminal::writeToPTY(const char* data, size_t len)
         int ret;
         EINTRWRAP(ret, ::write(mMasterFD, data, len));
         if (ret == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            // Kernel PTY buffer full: fall through to queue the rest so
+            // we pick up where we left off on the next Writable poll. A
+            // `return` here (prior bug) silently dropped bytes mid-paste
+            // — which manifested as partial pastes (bracketed-paste end
+            // marker arriving early to apps like Claude Code).
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             // EIO = slave end closed (child process exited). Treat any
             // unrecoverable write error as terminal exit, matching the
             // readFromFD path. Drop remaining bytes; markExited unwatches

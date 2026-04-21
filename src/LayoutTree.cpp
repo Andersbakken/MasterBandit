@@ -1,0 +1,356 @@
+#include "LayoutTree.h"
+
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <type_traits>
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+static std::vector<ChildSlot>* childrenOf(Node* n)
+{
+    if (!n) return nullptr;
+    return std::visit([](auto& d) -> std::vector<ChildSlot>* {
+        using T = std::decay_t<decltype(d)>;
+        if constexpr (std::is_same_v<T, ContainerData>) return &d.children;
+        else if constexpr (std::is_same_v<T, StackData>) return &d.children;
+        else return nullptr;
+    }, n->data);
+}
+
+// ---------------------------------------------------------------------------
+// Node creation
+// ---------------------------------------------------------------------------
+
+Uuid LayoutTree::createTerminal()
+{
+    Uuid id = Uuid::generate();
+    auto n = std::make_unique<Node>();
+    n->id = id;
+    n->data = TerminalData{};
+    nodes_.emplace(id, std::move(n));
+    return id;
+}
+
+Uuid LayoutTree::createContainer(SplitDir dir)
+{
+    Uuid id = Uuid::generate();
+    auto n = std::make_unique<Node>();
+    n->id = id;
+    n->data = ContainerData{ dir, {} };
+    nodes_.emplace(id, std::move(n));
+    return id;
+}
+
+Uuid LayoutTree::createStack()
+{
+    Uuid id = Uuid::generate();
+    auto n = std::make_unique<Node>();
+    n->id = id;
+    n->data = StackData{};
+    nodes_.emplace(id, std::move(n));
+    return id;
+}
+
+Uuid LayoutTree::createTabBar()
+{
+    Uuid id = Uuid::generate();
+    auto n = std::make_unique<Node>();
+    n->id = id;
+    n->data = TabBarData{};
+    nodes_.emplace(id, std::move(n));
+    return id;
+}
+
+// ---------------------------------------------------------------------------
+// Root / lookup
+// ---------------------------------------------------------------------------
+
+bool LayoutTree::setRoot(Uuid id)
+{
+    Node* n = node(id);
+    if (!n) {
+        spdlog::warn("LayoutTree::setRoot: unknown node {}", id.toString());
+        return false;
+    }
+    if (!n->parent.isNil()) {
+        spdlog::warn("LayoutTree::setRoot: node {} already has parent {}",
+                     id.toString(), n->parent.toString());
+        return false;
+    }
+    root_ = id;
+    return true;
+}
+
+Node* LayoutTree::node(Uuid id)
+{
+    auto it = nodes_.find(id);
+    return it == nodes_.end() ? nullptr : it->second.get();
+}
+
+const Node* LayoutTree::node(Uuid id) const
+{
+    auto it = nodes_.find(id);
+    return it == nodes_.end() ? nullptr : it->second.get();
+}
+
+// ---------------------------------------------------------------------------
+// Child management
+// ---------------------------------------------------------------------------
+
+bool LayoutTree::appendChild(Uuid parent, ChildSlot slot)
+{
+    Node* p = node(parent);
+    if (!p) {
+        spdlog::warn("LayoutTree::appendChild: parent {} not found", parent.toString());
+        return false;
+    }
+    auto* kids = childrenOf(p);
+    if (!kids) {
+        spdlog::warn("LayoutTree::appendChild: parent {} is a leaf (not Container/Stack)",
+                     parent.toString());
+        return false;
+    }
+    Node* c = node(slot.id);
+    if (!c) {
+        spdlog::warn("LayoutTree::appendChild: child {} not found", slot.id.toString());
+        return false;
+    }
+    if (!c->parent.isNil()) {
+        spdlog::warn("LayoutTree::appendChild: child {} already has parent {}",
+                     slot.id.toString(), c->parent.toString());
+        return false;
+    }
+    c->parent = parent;
+    kids->push_back(slot);
+
+    // Stack: if no active child set yet, the first appended becomes active.
+    if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild.isNil()) {
+        sd->activeChild = slot.id;
+    }
+    return true;
+}
+
+bool LayoutTree::removeChild(Uuid parent, Uuid child)
+{
+    Node* p = node(parent);
+    if (!p) return false;
+    auto* kids = childrenOf(p);
+    if (!kids) return false;
+
+    auto it = std::find_if(kids->begin(), kids->end(),
+                           [&](const ChildSlot& s) { return s.id == child; });
+    if (it == kids->end()) return false;
+    kids->erase(it);
+
+    Node* c = node(child);
+    if (c) c->parent = {};
+
+    if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild == child) {
+        sd->activeChild = kids->empty() ? Uuid{} : kids->front().id;
+    }
+    return true;
+}
+
+bool LayoutTree::setActiveChild(Uuid stack, Uuid child)
+{
+    Node* s = node(stack);
+    if (!s) return false;
+    auto* sd = std::get_if<StackData>(&s->data);
+    if (!sd) {
+        spdlog::warn("LayoutTree::setActiveChild: node {} is not a Stack", stack.toString());
+        return false;
+    }
+    auto it = std::find_if(sd->children.begin(), sd->children.end(),
+                           [&](const ChildSlot& s) { return s.id == child; });
+    if (it == sd->children.end()) {
+        spdlog::warn("LayoutTree::setActiveChild: {} is not a child of stack {}",
+                     child.toString(), stack.toString());
+        return false;
+    }
+    sd->activeChild = child;
+    return true;
+}
+
+bool LayoutTree::setTabBarStack(Uuid tabBar, Uuid stack)
+{
+    Node* b = node(tabBar);
+    if (!b) return false;
+    auto* bd = std::get_if<TabBarData>(&b->data);
+    if (!bd) {
+        spdlog::warn("LayoutTree::setTabBarStack: node {} is not a TabBar", tabBar.toString());
+        return false;
+    }
+    // Validate target: either nil (clear the binding) or an existing Stack.
+    if (!stack.isNil()) {
+        Node* s = node(stack);
+        if (!s) {
+            spdlog::warn("LayoutTree::setTabBarStack: stack {} not found", stack.toString());
+            return false;
+        }
+        if (!std::holds_alternative<StackData>(s->data)) {
+            spdlog::warn("LayoutTree::setTabBarStack: node {} is not a Stack", stack.toString());
+            return false;
+        }
+    }
+    bd->boundStack = stack;
+    return true;
+}
+
+void LayoutTree::setLabel(Uuid id, std::string label)
+{
+    if (Node* n = node(id)) n->label = std::move(label);
+}
+
+void LayoutTree::destroyNode(Uuid id)
+{
+    Node* n = node(id);
+    if (!n) return;
+
+    // Recurse into children first so destruction happens bottom-up.
+    if (auto* kids = childrenOf(n)) {
+        // Copy the child IDs because destroyNode mutates the parent's list
+        // via removeChild -> erase, invalidating iterators.
+        std::vector<Uuid> ids;
+        ids.reserve(kids->size());
+        for (const auto& s : *kids) ids.push_back(s.id);
+        for (Uuid cid : ids) destroyNode(cid);
+    }
+
+    // Detach from parent.
+    if (!n->parent.isNil()) {
+        removeChild(n->parent, id);
+    }
+
+    if (root_ == id) root_ = Uuid{};
+    nodes_.erase(id);
+    // Any TabBar referencing this node becomes dangling; that's intentional —
+    // computeRects ignores TabBar.boundStack entirely, so render simply sees
+    // an empty bar. Sweeping is the renderer's job on its next frame.
+}
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+static void layoutSubtree(const LayoutTree& tree, Uuid id, LayoutRect rect,
+                          int cellW, int cellH,
+                          std::unordered_map<Uuid, LayoutRect, UuidHash>& out)
+{
+    const Node* n = tree.node(id);
+    if (!n) return;
+    out[id] = rect;
+
+    std::visit([&](const auto& d) {
+        using T = std::decay_t<decltype(d)>;
+
+        if constexpr (std::is_same_v<T, ContainerData>) {
+            const bool horizontal = d.dir == SplitDir::Horizontal;
+            const int available = horizontal ? rect.w : rect.h;
+            int cellSize = horizontal ? cellW : cellH;
+            if (cellSize <= 0) cellSize = 1;
+
+            const size_t n = d.children.size();
+            if (n == 0) return;
+
+            std::vector<int>  sizes(n, 0);
+            std::vector<int>  mins(n, 0);
+            std::vector<bool> fixed(n, false);
+            int totalFixed   = 0;
+            int totalStretch = 0;
+
+            for (size_t i = 0; i < n; ++i) {
+                const auto& s = d.children[i];
+                mins[i] = std::max(0, s.minCells) * cellSize;
+                if (s.fixedCells > 0) {
+                    sizes[i] = s.fixedCells * cellSize;
+                    totalFixed += sizes[i];
+                    fixed[i] = true;
+                } else {
+                    totalStretch += std::max(0, s.stretch);
+                }
+            }
+
+            int remaining = available - totalFixed;
+            if (remaining < 0) remaining = 0;
+
+            if (totalStretch > 0 && remaining > 0) {
+                for (size_t i = 0; i < n; ++i) {
+                    if (fixed[i]) continue;
+                    const auto& s = d.children[i];
+                    int want = static_cast<int>(
+                        (static_cast<long long>(remaining) *
+                         std::max(0, s.stretch)) / totalStretch);
+                    if (s.maxCells > 0) {
+                        int maxPx = s.maxCells * cellSize;
+                        if (want > maxPx) want = maxPx;
+                    }
+                    if (want < mins[i]) want = mins[i];
+                    sizes[i] = want;
+                }
+            } else {
+                // No stretch budget: flexible children collapse to min.
+                for (size_t i = 0; i < n; ++i) {
+                    if (!fixed[i]) sizes[i] = mins[i];
+                }
+            }
+
+            // --- Overflow policy: shrink trailing children to reclaim excess,
+            // walking backward until the excess is zero. Each child shrinks
+            // by at most its own current size (going to zero counts as
+            // "clipped"). If excess is still > 0 after zeroing everything
+            // that's "shrink-below-min" against the only remaining nonzero
+            // child — which can only happen if the first child's own size
+            // already exceeds the window, and we stop there. ---
+            int total = 0;
+            for (int s : sizes) total += s;
+            if (total > available) {
+                int excess = total - available;
+                for (size_t i = n; i-- > 0 && excess > 0; ) {
+                    int take = std::min(sizes[i], excess);
+                    sizes[i] -= take;
+                    excess   -= take;
+                }
+            } else if (total < available) {
+                // Distribute leftover to the last flexible, nonzero-stretch
+                // child. This keeps pixel-perfect rect sums without relying
+                // on float division rounding behavior.
+                int leftover = available - total;
+                for (size_t i = n; i-- > 0; ) {
+                    if (!fixed[i] && d.children[i].stretch > 0) {
+                        sizes[i] += leftover;
+                        break;
+                    }
+                }
+            }
+
+            int cursor = horizontal ? rect.x : rect.y;
+            for (size_t i = 0; i < n; ++i) {
+                LayoutRect r = rect;
+                if (horizontal) { r.x = cursor; r.w = sizes[i]; }
+                else            { r.y = cursor; r.h = sizes[i]; }
+                cursor += sizes[i];
+                if (!r.isEmpty()) {
+                    layoutSubtree(tree, d.children[i].id, r, cellW, cellH, out);
+                }
+            }
+        }
+        else if constexpr (std::is_same_v<T, StackData>) {
+            if (!d.activeChild.isNil()) {
+                layoutSubtree(tree, d.activeChild, rect, cellW, cellH, out);
+            }
+        }
+        // Terminal / TabBar: leaves; already emitted their own rect above.
+    }, n->data);
+}
+
+std::unordered_map<Uuid, LayoutRect, UuidHash> LayoutTree::computeRects(
+    LayoutRect window, int cellW, int cellH) const
+{
+    std::unordered_map<Uuid, LayoutRect, UuidHash> out;
+    if (root_.isNil() || window.isEmpty()) return out;
+    layoutSubtree(*this, root_, window, cellW, cellH, out);
+    return out;
+}

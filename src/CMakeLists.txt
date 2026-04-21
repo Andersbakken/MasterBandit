@@ -21,6 +21,7 @@ add_executable(mb
     script/ScriptWsModule.cpp
     ClickDetector.cpp
     Uuid.cpp
+    LayoutTree.cpp
 )
 
 target_include_directories(mb PRIVATE

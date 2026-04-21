@@ -35,10 +35,13 @@ set(TEST_SOURCES
     test_popup.cpp
     test_tabs.cpp
     test_charset.cpp
+    test_layout_tree.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp
     ../src/Layout.cpp
+    ../src/LayoutTree.cpp
+    ../src/Uuid.cpp
 )
 
 if(APPLE)

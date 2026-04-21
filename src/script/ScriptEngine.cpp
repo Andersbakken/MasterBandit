@@ -1808,6 +1808,16 @@ static JSValue jsMbExit(JSContext* ctx, JSValueConst, int, JSValueConst*)
     return JS_UNDEFINED;
 }
 
+// mb.quit() — quit the application. Distinct from mb.exit() (which only
+// unloads the calling script instance). Used by the default UI controller
+// when the last terminal has exited.
+static JSValue jsMbQuit(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    Engine* eng = engineFromCtx(ctx);
+    if (eng && eng->callbacks().quit) eng->callbacks().quit();
+    return JS_UNDEFINED;
+}
+
 // mb.setNamespace(name) — claim a namespace for this script instance
 static JSValue jsMbSetNamespace(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -2279,6 +2289,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbRegisterAction, "registerAction", 1));
     JS_SetPropertyStr(ctx, mb, "exit",
         JS_NewCFunction(ctx, jsMbExit, "exit", 0));
+    JS_SetPropertyStr(ctx, mb, "quit",
+        JS_NewCFunction(ctx, jsMbQuit, "quit", 0));
     JS_SetPropertyStr(ctx, mb, "registerTcap",
         JS_NewCFunction(ctx, jsMbRegisterTcap, "registerTcap", 2));
     JS_SetPropertyStr(ctx, mb, "unregisterTcap",

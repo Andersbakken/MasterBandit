@@ -226,7 +226,17 @@ public:
     int  findPaneIdByNodeId(Uuid nodeId);
 
     // Called from the onTerminalExited deferred drain in PlatformDawn.
+    // Resolves the Terminal's nodeId and delegates to killTerminal.
     void terminalExited(Terminal* terminal);
+
+    // Synchronous Terminal kill: remove PTY poll, queue render-state cleanup,
+    // extract from Script::Engine's map, graveyard with the current frame
+    // stamp, and fire the `terminalExited` JS event. The Terminal's tree
+    // node is left in place — the JS controller is responsible for removing
+    // it (via closePane / removeNode) and deciding whether to close the
+    // enclosing tab or quit. Caller must hold host_.platformMutex.
+    // Returns true when a matching live Terminal was found and killed.
+    bool killTerminal(Uuid nodeId);
 
     // --- Pane helpers ---
     void spawnTerminalForPane(int paneId, int tabIdx, const std::string& cwd = {});

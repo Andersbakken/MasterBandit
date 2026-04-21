@@ -38,7 +38,11 @@ mb.actions.register('splitPane', ({dir}) => {
 mb.actions.register('closePane', () => {
     const fp = mb.layout.focusedPane();
     if (!fp) return;
-    mb.layout.closePane(fp.id);
+    // Kill the Terminal; the `terminalExited` listener below drives the
+    // tree removal and any tab/quit cascade. Keeping the user-keybind and
+    // shell-exit paths on the same flow means there's only one place where
+    // the empty-tab / last-tab policy is expressed.
+    mb.layout.killTerminal(fp.id);
 });
 
 mb.actions.register('zoomPane', () => {
@@ -54,9 +58,25 @@ mb.actions.register('adjustPaneSize', ({dir, amount}) => {
 });
 
 mb.addEventListener('terminalExited', ({paneId, paneNodeId}) => {
-    // Observation only for now; native cascade handles the close. Once the
-    // controller fully owns pane lifecycle, call mb.layout.closePane(paneId).
-    console.log(`default-ui: terminalExited paneId=${paneId} nodeId=${paneNodeId}`);
+    // Invariant at entry: Terminal is graveyarded; its tree node is still
+    // present. Remove the node. If its enclosing tab ends up empty, close
+    // the tab too. If that was the last tab, quit.
+    mb.layout.closePane(paneId);
+
+    // Walk tabs: find the one containing no live panes. (The killed pane
+    // is already filtered out of mb.tabs[i].panes — `panes` reflects live
+    // Terminals only.)
+    const tabs = mb.tabs;
+    let emptyIdx = -1;
+    for (let i = 0; i < tabs.length; i++) {
+        if (tabs[i].panes.length === 0) { emptyIdx = i; break; }
+    }
+    if (emptyIdx < 0) return;
+    if (tabs.length <= 1) {
+        mb.quit();
+    } else {
+        mb.layout.closeTab(emptyIdx);
+    }
 });
 
 console.log('default-ui: loaded');

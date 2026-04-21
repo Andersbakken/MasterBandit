@@ -43,6 +43,7 @@ set(TEST_SOURCES
     ../src/Layout.cpp
     ../src/LayoutTree.cpp
     ../src/Uuid.cpp
+    ../src/script/ScriptEngine_Terminals.cpp
 )
 
 if(APPLE)

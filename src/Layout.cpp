@@ -274,11 +274,11 @@ Terminal* Layout::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
 
 std::unique_ptr<Terminal> Layout::extractPane(int paneId)
 {
-    if (paneOrder_.size() <= 1) {
-        spdlog::warn("Layout::extractPane: cannot remove last pane");
-        return nullptr;
-    }
-
+    // Historically this refused to remove the last pane (Layout with zero
+    // panes was considered invalid). The tree-cutover moves that policy
+    // into the JS controller — an empty tab is a legal transient state that
+    // the controller resolves by closing the tab / quitting. Layout's job
+    // is now structural only.
     auto pit = paneIdToUuid_.find(paneId);
     if (pit == paneIdToUuid_.end()) return nullptr;
     Uuid target = pit->second;

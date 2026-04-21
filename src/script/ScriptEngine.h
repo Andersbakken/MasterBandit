@@ -131,6 +131,15 @@ struct AppCallbacks {
     // Close a tab by index.
     std::function<void(int)> closeTab;
 
+    // Synchronously kill a Terminal by its tree-node UUID. Extracts the
+    // Terminal from the engine map, graveyards it, and fires the
+    // `terminalExited` event. Tree node is left in place for JS to remove.
+    // Returns true when a matching live Terminal was found and killed.
+    std::function<bool(Uuid)> killTerminalByNodeId;
+
+    // Quit the application. Trivial — wraps PlatformDawn's quit path.
+    std::function<void()> quit;
+
     // JS-facing primitives. Each maps 1:1 to a TabManager method; they're
     // wired through AppCallbacks so ScriptLayoutBindings can stay decoupled
     // from the platform layer.

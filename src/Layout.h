@@ -75,6 +75,16 @@ public:
 
     Terminal* pane(int paneId);
 
+    // True when `paneId` still has a slot in this Layout — independent of
+    // whether the Terminal is alive. After a killTerminal the Terminal is
+    // gone from the engine map but its slot and tree node remain until the
+    // controller removes the node via extractPane. Callers that want
+    // "which tab owns this slot" use this; callers that want "which tab
+    // has a live Terminal for this paneId" use pane().
+    bool hasPaneSlot(int paneId) const {
+        return paneIdToUuid_.count(paneId) > 0;
+    }
+
     // Returns pointers to the Terminals attached to this Layout, in
     // insertion order. Ownership lives on Script::Engine; these pointers
     // are valid until extractPane / closeTab fires. Built on demand (O(n)

@@ -42,8 +42,11 @@ void TabManager::notifyAllTerminals(const std::function<void(TerminalEmulator*)>
 
 Tab* TabManager::findTabForPane(int paneId, int* outTabIdx)
 {
+    // hasPaneSlot (not pane()) so a killed-but-not-yet-removed Terminal's
+    // enclosing Tab is still resolvable — the controller needs it to drive
+    // tree removal in response to `terminalExited`.
     for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
-        if (tabs_[i]->layout()->pane(paneId)) {
+        if (tabs_[i]->layout()->hasPaneSlot(paneId)) {
             if (outTabIdx) *outTabIdx = i;
             return tabs_[i].get();
         }
@@ -423,93 +426,49 @@ void TabManager::terminalExited(Terminal* terminal)
     // Called from drainPendingExits() under the render-thread mutex, so
     // the render thread cannot be snapshotting while we mutate live state.
     // The platformMutex is already held by our caller.
-    Uuid exitedNodeId = terminal->nodeId();
-    for (int tabIdx = 0; tabIdx < static_cast<int>(tabs_.size()); ++tabIdx) {
-        Tab* tab = tabs_[tabIdx].get();
-        auto tabPanes = tab->layout()->panes();
-        Terminal* match = nullptr;
-        for (Terminal* panePtr : tabPanes) {
-            if (panePtr == terminal) { match = panePtr; break; }
-        }
-        if (!match) continue;
+    //
+    // Shell-exit path: the PTY is closed, the child has exited. Kill the
+    // Terminal synchronously (extract + graveyard + fire event) and let JS
+    // decide whether to remove the tree node, close the tab, or quit.
+    if (!terminal) return;
+    killTerminal(terminal->nodeId());
+}
 
-        int paneId = match->id();
-        if (host_.scriptEngine)
-            host_.scriptEngine->notifyTerminalExited(paneId, match->nodeId());
+bool TabManager::killTerminal(Uuid nodeId)
+{
+    // Caller must hold host_.platformMutex — this mutates live state the
+    // render thread observes through the shadow copy.
+    if (nodeId.isNil() || !host_.scriptEngine) return false;
+    Terminal* terminal = host_.scriptEngine->terminal(nodeId);
+    if (!terminal) return false; // already killed or never inserted
 
-        removePtyPoll(terminal->masterFD());
+    int paneId = terminal->id();
 
-        host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
-        for (const auto& popup : match->popups()) {
-            std::string key = popupStateKey(paneId, popup->popupId());
-            host_.pending->releasePopupTextures.push_back(key);
-        }
-        if (host_.inputController) host_.inputController->erasePaneCursorStyle(paneId);
-
-        if (host_.scriptEngine)
-            host_.scriptEngine->notifyPaneDestroyed(paneId, match->nodeId());
-
-        if (tabPanes.size() <= 1) {
-            // Last pane in the tab — close the whole tab. The sole Terminal
-            // lives on Script::Engine's map; pull it out so we can graveyard
-            // it separately from the Tab (whose Layout no longer owns the
-            // Terminal itself).
-            if (tab->hasOverlay() && host_.scriptEngine)
-                host_.scriptEngine->notifyOverlayDestroyed(tabIdx);
-            if (host_.scriptEngine)
-                host_.scriptEngine->notifyTabDestroyed(tabIdx,
-                                                       tab->layout()->subtreeRoot());
-
-            std::unique_ptr<Terminal> extractedTerminal;
-            if (host_.scriptEngine)
-                extractedTerminal = host_.scriptEngine->extractTerminal(exitedNodeId);
-
-            std::unique_ptr<Tab> extractedTab = std::move(tabs_[tabIdx]);
-            tabs_.erase(tabs_.begin() + tabIdx);
-            if (tabs_.empty()) {
-                uint64_t stamp = host_.completedFrames ? host_.completedFrames() : 0;
-                if (host_.graveyard) {
-                    if (extractedTerminal)
-                        host_.graveyard->defer(std::move(extractedTerminal), stamp);
-                    host_.graveyard->defer(std::move(extractedTab), stamp);
-                }
-                if (host_.quit) host_.quit();
-                return;
-            }
-            if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
-                activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
-            // Refresh the shadow copy to reflect the new active tab
-            // before we release the mutex.
-            if (host_.buildRenderFrameState) host_.buildRenderFrameState();
-            uint64_t stamp = host_.completedFrames ? host_.completedFrames() : 0;
-            if (host_.graveyard) {
-                if (extractedTerminal)
-                    host_.graveyard->defer(std::move(extractedTerminal), stamp);
-                host_.graveyard->defer(std::move(extractedTab), stamp);
-            }
-
-            if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
-            updateWindowTitle();
-            if (host_.inputController) host_.inputController->refreshPointerShape();
-            if (host_.markTabBarDirty) host_.markTabBarDirty();
-        } else {
-            std::unique_ptr<Terminal> extractedPane = tab->layout()->extractPane(paneId);
-            if (extractedPane) {
-                if (host_.buildRenderFrameState) host_.buildRenderFrameState();
-                uint64_t stamp = host_.completedFrames ? host_.completedFrames() : 0;
-                if (host_.graveyard)
-                    host_.graveyard->defer(std::move(extractedPane), stamp);
-            }
-            resizeAllPanesInTab(tab);
-            notifyPaneFocusChange(tab, -1, tab->layout()->focusedPaneId());
-            updateTabTitleFromFocusedPane(tabIdx);
-        }
-
-        if (host_.setNeedsRedraw) host_.setNeedsRedraw();
-        return;
+    // Release PTY poll + render-state slots.
+    removePtyPoll(terminal->masterFD());
+    host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
+    for (const auto& popup : terminal->popups()) {
+        std::string key = popupStateKey(paneId, popup->popupId());
+        host_.pending->releasePopupTextures.push_back(key);
     }
-    // Fallback: terminal not found in any pane
-    if (host_.quit) host_.quit();
+    if (host_.inputController) host_.inputController->erasePaneCursorStyle(paneId);
+
+    // Transfer ownership out of the engine map, rebuild the render-thread
+    // shadow copy so the now-dead Terminal isn't observed next frame, stamp
+    // with the completed-frame counter, and graveyard. The tree node stays;
+    // JS will remove it (or keep it) in response to the event.
+    std::unique_ptr<Terminal> extracted = host_.scriptEngine->extractTerminal(nodeId);
+    if (host_.buildRenderFrameState) host_.buildRenderFrameState();
+    uint64_t stamp = host_.completedFrames ? host_.completedFrames() : 0;
+    if (extracted && host_.graveyard)
+        host_.graveyard->defer(std::move(extracted), stamp);
+
+    // Fire the event after extract+graveyard so the invariant holds for JS:
+    // "Terminal is graveyarded, tree node is still present."
+    host_.scriptEngine->notifyTerminalExited(paneId, nodeId);
+
+    if (host_.setNeedsRedraw) host_.setNeedsRedraw();
+    return true;
 }
 
 
@@ -788,20 +747,31 @@ bool TabManager::closePaneById(int paneId)
     Tab* tab = findTabForPane(paneId, &tabIdx);
     if (!tab) return false;
     Layout* layout = tab->layout();
-    if (layout->panes().size() <= 1) return false; // keep last pane
+
+    // Two callers land here:
+    //   1. User-triggered closePane (keybind / action) — Terminal is live,
+    //      do the full PTY teardown + notify + graveyard.
+    //   2. Terminal already killed (controller handling a `terminalExited`
+    //      event) — Terminal is already graveyarded, fp is null, we only
+    //      need to remove the tree node.
+    // The "keep last pane" policy is no longer enforced here: the JS
+    // controller decides whether to close the tab / quit when a tab goes
+    // empty.
     Terminal* fp = layout->pane(paneId);
-    if (!fp) return false;
+    Uuid nodeId{};
+    if (fp) {
+        nodeId = fp->nodeId();
+        removePtyPoll(fp->masterFD());
+        host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
+        for (const auto& popup : fp->popups()) {
+            std::string key = std::to_string(paneId) + "/" + popup->popupId();
+            host_.pending->releasePopupTextures.push_back(key);
+        }
+        if (host_.inputController) host_.inputController->erasePaneCursorStyle(paneId);
 
-    removePtyPoll(fp->masterFD());
-    host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
-    for (const auto& popup : fp->popups()) {
-        std::string key = std::to_string(paneId) + "/" + popup->popupId();
-        host_.pending->releasePopupTextures.push_back(key);
+        if (host_.scriptEngine)
+            host_.scriptEngine->notifyPaneDestroyed(paneId, nodeId);
     }
-    if (host_.inputController) host_.inputController->erasePaneCursorStyle(paneId);
-
-    if (host_.scriptEngine)
-        host_.scriptEngine->notifyPaneDestroyed(paneId, fp->nodeId());
 
     std::unique_ptr<Terminal> extracted;
     uint64_t stamp = 0;
@@ -813,6 +783,13 @@ bool TabManager::closePaneById(int paneId)
     }
     if (extracted && host_.graveyard)
         host_.graveyard->defer(std::move(extracted), stamp);
+
+    // Skip resize/focus chrome when the tab is now empty — there is nothing
+    // to size or focus, and the controller will shortly close the tab.
+    if (layout->panes().empty()) {
+        if (host_.setNeedsRedraw) host_.setNeedsRedraw();
+        return true;
+    }
 
     resizeAllPanesInTab(tab);
     notifyPaneFocusChange(tab, -1, layout->focusedPaneId());

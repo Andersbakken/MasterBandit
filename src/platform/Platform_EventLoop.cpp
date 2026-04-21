@@ -345,6 +345,14 @@ int PlatformDawn::exec()
         scbs.closePane = [this](int paneId) {
             return tabManager_->closePaneById(paneId);
         };
+        scbs.killTerminalByNodeId = [this](Uuid nodeId) {
+            // TabManager::killTerminal mutates live state the render thread
+            // observes, so take the platform/render mutex around it (same
+            // invariant as closeTab / closePaneById).
+            std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
+            return tabManager_->killTerminal(nodeId);
+        };
+        scbs.quit = [this]() { quit(); };
         scbs.createTerminalInContainer = [this](const std::string& parentNodeId,
                                                  const std::string& cwd)
                 -> Script::AppCallbacks::NewPane {

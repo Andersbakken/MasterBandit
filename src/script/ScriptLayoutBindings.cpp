@@ -368,6 +368,38 @@ JSValue jsLayoutClosePane(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
     return JS_NewBool(ctx, ok);
 }
 
+// mb.layout.killTerminal(idOrNodeId) — synchronously kill a Terminal. The
+// Terminal is extracted from the engine map and graveyarded; its tree node
+// remains in place so the JS controller can remove it (or transform the tab)
+// in response to the `terminalExited` event.
+JSValue jsLayoutKillTerminal(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify))
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "killTerminal(idOrNodeId)");
+    auto* eng = engineFromCtx(ctx);
+    Uuid nodeId;
+    if (JS_IsNumber(argv[0])) {
+        // Integer paneId → look up nodeId via paneInfo.
+        int paneId = -1;
+        if (JS_ToInt32(ctx, &paneId, argv[0]) != 0) return JS_EXCEPTION;
+        if (eng->callbacks().paneInfo) {
+            auto info = eng->callbacks().paneInfo(paneId);
+            if (!info.nodeId.empty()) nodeId = Uuid::fromString(info.nodeId);
+        }
+    } else if (JS_IsString(argv[0])) {
+        size_t len = 0;
+        const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
+        if (!s) return JS_EXCEPTION;
+        nodeId = Uuid::fromString(std::string_view(s, len));
+        JS_FreeCString(ctx, s);
+    }
+    if (nodeId.isNil()) return JS_FALSE;
+    bool ok = eng->callbacks().killTerminalByNodeId &&
+              eng->callbacks().killTerminalByNodeId(nodeId);
+    return JS_NewBool(ctx, ok);
+}
+
 JSValue jsLayoutCloseTab(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
@@ -715,6 +747,8 @@ void installLayoutBindings(Engine&, JSContext* ctx, JSValue mb)
         JS_NewCFunction(ctx, jsLayoutFocusPane, "focusPane", 1));
     JS_SetPropertyStr(ctx, layout, "closePane",
         JS_NewCFunction(ctx, jsLayoutClosePane, "closePane", 1));
+    JS_SetPropertyStr(ctx, layout, "killTerminal",
+        JS_NewCFunction(ctx, jsLayoutKillTerminal, "killTerminal", 1));
     JS_SetPropertyStr(ctx, layout, "splitPane",
         JS_NewCFunction(ctx, jsLayoutSplitPane, "splitPane", 3));
     JS_SetPropertyStr(ctx, layout, "setZoom",

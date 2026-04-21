@@ -380,8 +380,14 @@ static void layoutSubtree(const LayoutTree& tree, Uuid id, LayoutRect rect,
 std::unordered_map<Uuid, LayoutRect, UuidHash> LayoutTree::computeRects(
     LayoutRect window, int cellW, int cellH) const
 {
+    return computeRectsFrom(root_, window, cellW, cellH);
+}
+
+std::unordered_map<Uuid, LayoutRect, UuidHash> LayoutTree::computeRectsFrom(
+    Uuid start, LayoutRect window, int cellW, int cellH) const
+{
     std::unordered_map<Uuid, LayoutRect, UuidHash> out;
-    if (root_.isNil() || window.isEmpty()) return out;
-    layoutSubtree(*this, root_, window, cellW, cellH, out);
+    if (start.isNil() || window.isEmpty()) return out;
+    layoutSubtree(*this, start, window, cellW, cellH, out);
     return out;
 }

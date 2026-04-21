@@ -925,8 +925,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         renderThread_->start();
     }
 
-    // Create a layout and tab for this terminal
-    auto layout = std::make_unique<Layout>();
+    // Create a layout and tab for this terminal. Layout's subtree lives in
+    // the shared LayoutTree on the script Engine so JS and native agree on
+    // structure.
+    auto layout = std::make_unique<Layout>(&scriptEngine_.layoutTree());
     layout->setDividerPixels(dividerWidth_);
     int paneId = layout->createPane();
     layout->setFocusedPane(paneId);

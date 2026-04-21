@@ -130,7 +130,7 @@ public:
     std::vector<std::unique_ptr<Tab>>& tabs() { return tabs_; }
     const std::vector<std::unique_ptr<Tab>>& tabs() const { return tabs_; }
     int activeTabIdx() const { return activeTabIdx_; }
-    void setActiveTabIdx(int idx) { activeTabIdx_ = idx; }
+    void setActiveTabIdx(int idx);
     size_t size() const { return tabs_.size(); }
 
     Tab* activeTab() {
@@ -159,6 +159,11 @@ public:
     std::unordered_map<int, Terminal*>& ptyPolls() { return ptyPolls_; }
     void addPtyPoll(int fd, Terminal* term);
     void removePtyPoll(int fd);
+
+    // Attach `tab`'s Layout subtree to the shared tree's root Stack as a
+    // direct child, optionally also setting it as the Stack's activeChild.
+    // No-op when there is no Script::Engine (test paths).
+    void attachLayoutSubtree(Tab* tab, bool activate);
 
     // --- Tab lifecycle ---
     // Add a pre-built tab and mark it as active. Used by the one-shot

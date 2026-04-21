@@ -13,16 +13,40 @@
 static int sGlobalPaneId = 0;
 
 Layout::Layout()
+    : ownedTree_(std::make_unique<LayoutTree>()),
+      tree_(ownedTree_.get())
 {
-    // Each Layout owns its own LayoutTree subtree. The root is a horizontal
-    // Container by default; splitPane(Vertical) on the sole child rewraps
-    // the root if needed. "Horizontal" here just means "lays out children
-    // left-to-right" — irrelevant while there's only one child.
-    subtreeRoot_ = tree_.createContainer(SplitDir::Horizontal);
-    tree_.setRoot(subtreeRoot_);
+    // Owned-tree path (tests). Create the root Container and set it as the
+    // tree's root; the tree is purely this Layout's territory.
+    subtreeRoot_ = tree_->createContainer(SplitDir::Horizontal);
+    tree_->setRoot(subtreeRoot_);
 }
 
-Layout::~Layout() = default;
+Layout::Layout(LayoutTree* shared)
+{
+    if (shared) {
+        tree_ = shared;
+        // Shared-tree path (production). This Layout's subtree is an orphan
+        // Container node in the shared tree; someone higher up (TabManager
+        // when it lands the tab-stack unification) is responsible for
+        // attaching it to a parent so JS / renderer can walk a rooted tree.
+        subtreeRoot_ = tree_->createContainer(SplitDir::Horizontal);
+    } else {
+        ownedTree_ = std::make_unique<LayoutTree>();
+        tree_ = ownedTree_.get();
+        subtreeRoot_ = tree_->createContainer(SplitDir::Horizontal);
+        tree_->setRoot(subtreeRoot_);
+    }
+}
+
+Layout::~Layout()
+{
+    // Drop the subtree from whichever tree hosts us. For the owned-tree case
+    // this is just cleanup (the tree is about to die anyway); for the shared
+    // case this deletes the node and detaches from any parent that may have
+    // attached it.
+    if (tree_) tree_->destroyNode(subtreeRoot_);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,7 +54,7 @@ Layout::~Layout() = default;
 
 int Layout::leftmostPaneIdInSubtree(Uuid root) const
 {
-    const Node* n = tree_.node(root);
+    const Node* n = tree_->node(root);
     if (!n) return -1;
     // Terminal leaf → return its pane id.
     if (std::holds_alternative<TerminalData>(n->data)) {
@@ -74,11 +98,11 @@ int Layout::createPane()
     // leaf; subsequent calls just allocate an ID for callers that haven't
     // built a pane yet (the pattern is createPane-then-insertTerminal for
     // the first pane, and splitPane for every one after that).
-    Node* rootNode = tree_.node(subtreeRoot_);
+    Node* rootNode = tree_->node(subtreeRoot_);
     auto* rootData = rootNode ? std::get_if<ContainerData>(&rootNode->data) : nullptr;
     if (rootData && rootData->children.empty()) {
-        Uuid u = tree_.createTerminal();
-        tree_.appendChild(subtreeRoot_, ChildSlot{u, /*stretch=*/1});
+        Uuid u = tree_->createTerminal();
+        tree_->appendChild(subtreeRoot_, ChildSlot{u, /*stretch=*/1});
         paneIdToUuid_[id] = u;
         uuidToPaneId_[u]  = id;
         mFocusedPaneId = id;
@@ -94,13 +118,13 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
         return -1;
     }
     Uuid target = pit->second;
-    Node* targetNode = tree_.node(target);
+    Node* targetNode = tree_->node(target);
     if (!targetNode) return -1;
 
     // Allocate the new pane's id + tree node up front so we can fail
     // cleanly without half-mutated state.
     int newId = sGlobalPaneId++;
-    Uuid newPaneUuid = tree_.createTerminal();
+    Uuid newPaneUuid = tree_->createTerminal();
     paneIdToUuid_[newId]         = newPaneUuid;
     uuidToPaneId_[newPaneUuid]   = newId;
 
@@ -112,7 +136,7 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
     // takes over the target's slot, then place the existing target + the
     // new pane as its children. Matches the binary-split tree's output
     // structure (every split = one internal node with exactly two leaves).
-    Uuid wrapper = tree_.createContainer(sd);
+    Uuid wrapper = tree_->createContainer(sd);
 
     if (targetNode->parent.isNil()) {
         // Target is the root (subtreeRoot_'s direct sole child). Under the
@@ -130,7 +154,7 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
     // Without this, a second split of a non-50/50-sized pane would collapse
     // the pane's ratio back to the default.
     ChildSlot wrapperSlot{wrapper, 1, 0, 0, 0};
-    if (Node* parentMut = tree_.node(targetNode->parent)) {
+    if (Node* parentMut = tree_->node(targetNode->parent)) {
         auto* cdMut = std::get_if<ContainerData>(&parentMut->data);
         if (cdMut) {
             for (const auto& s : cdMut->children) {
@@ -144,18 +168,18 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
             }
         }
     }
-    if (!tree_.replaceChild(targetNode->parent, target, wrapperSlot)) {
+    if (!tree_->replaceChild(targetNode->parent, target, wrapperSlot)) {
         spdlog::warn("Layout::splitPane: replaceChild failed");
         return -1;
     }
 
     // Now attach target + new leaf inside the wrapper, in the requested order.
     if (newIsFirst) {
-        tree_.appendChild(wrapper, ChildSlot{newPaneUuid, newStretch});
-        tree_.appendChild(wrapper, ChildSlot{target,      oldStretch});
+        tree_->appendChild(wrapper, ChildSlot{newPaneUuid, newStretch});
+        tree_->appendChild(wrapper, ChildSlot{target,      oldStretch});
     } else {
-        tree_.appendChild(wrapper, ChildSlot{target,      oldStretch});
-        tree_.appendChild(wrapper, ChildSlot{newPaneUuid, newStretch});
+        tree_->appendChild(wrapper, ChildSlot{target,      oldStretch});
+        tree_->appendChild(wrapper, ChildSlot{newPaneUuid, newStretch});
     }
 
     return newId;
@@ -180,14 +204,14 @@ std::unique_ptr<Terminal> Layout::extractPane(int paneId)
     auto pit = paneIdToUuid_.find(paneId);
     if (pit == paneIdToUuid_.end()) return nullptr;
     Uuid target = pit->second;
-    Node* targetNode = tree_.node(target);
+    Node* targetNode = tree_->node(target);
     if (!targetNode) return nullptr;
     Uuid parentUuid = targetNode->parent;
     if (parentUuid.isNil()) return nullptr; // root leaf, can't extract
 
     // Remove from tree.
-    tree_.removeChild(parentUuid, target);
-    tree_.destroyNode(target);
+    tree_->removeChild(parentUuid, target);
+    tree_->destroyNode(target);
     paneIdToUuid_.erase(paneId);
     uuidToPaneId_.erase(target);
 
@@ -197,7 +221,7 @@ std::unique_ptr<Terminal> Layout::extractPane(int paneId)
     // containers appear on the spine — but stop at subtreeRoot_ (root stays).
     Uuid walk = parentUuid;
     while (!walk.isNil() && walk != subtreeRoot_) {
-        Node* n = tree_.node(walk);
+        Node* n = tree_->node(walk);
         if (!n) break;
         auto* cd = std::get_if<ContainerData>(&n->data);
         if (!cd || cd->children.size() != 1) break;
@@ -207,12 +231,12 @@ std::unique_ptr<Terminal> Layout::extractPane(int paneId)
         // Preserve the sole child's slot stretch? Use stretch=1 on the
         // promotion slot to match the default sibling behavior.
         // Detach the only child from its current parent before replaceChild.
-        tree_.removeChild(walk, onlyChild);
-        if (!tree_.replaceChild(grand, walk, ChildSlot{onlyChild, 1})) {
+        tree_->removeChild(walk, onlyChild);
+        if (!tree_->replaceChild(grand, walk, ChildSlot{onlyChild, 1})) {
             spdlog::warn("Layout::extractPane: collapse replaceChild failed");
             break;
         }
-        tree_.destroyNode(walk);
+        tree_->destroyNode(walk);
         walk = grand;
     }
 
@@ -253,7 +277,7 @@ PaneRect Layout::nodeRect(int paneId) const
     // Re-run layout with the last known framebuffer dims so callers can query
     // rects before their Terminal exists (splitPane-then-insertTerminal path).
     if (lastFbW_ == 0 || lastFbH_ == 0) return {};
-    auto rects = tree_.computeRects(LayoutRect{0, 0,
+    auto rects = tree_->computeRectsFrom(subtreeRoot_, LayoutRect{0, 0,
                                                static_cast<int>(lastFbW_),
                                                static_cast<int>(lastFbH_)},
                                     /*cellW=*/1, /*cellH=*/1);
@@ -334,7 +358,7 @@ void Layout::computeRects(uint32_t windowW, uint32_t windowH)
 
     // Normal path: run tree layout, then copy rects to each Terminal so every
     // existing reader of pane->rect() sees the right geometry.
-    auto rects = tree_.computeRects(
+    auto rects = tree_->computeRectsFrom(subtreeRoot_, 
         LayoutRect{content.x, content.y, content.w, content.h},
         /*cellW=*/1, /*cellH=*/1);
 
@@ -394,12 +418,12 @@ Layout::dividersWithOwnerPanes(int dividerPixels) const
         if (tabBarPosition_ == "top") { content.y += tabBarHeight_; content.h -= tabBarHeight_; }
         else                          {                               content.h -= tabBarHeight_; }
     }
-    auto rects = tree_.computeRects(
+    auto rects = tree_->computeRectsFrom(subtreeRoot_, 
         LayoutRect{content.x, content.y, content.w, content.h}, 1, 1);
 
     // Recursive walk with explicit first-leaf lookup.
     std::function<void(Uuid)> walk = [&](Uuid id) {
-        const Node* n = tree_.node(id);
+        const Node* n = tree_->node(id);
         if (!n) return;
         if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
             for (const auto& s : cd->children) walk(s.id);
@@ -442,9 +466,9 @@ bool Layout::resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta)
     // and one neighbor so the edge shifts by pixelDelta.
     Uuid cur = target;
     while (true) {
-        const Node* n = tree_.node(cur);
+        const Node* n = tree_->node(cur);
         if (!n || n->parent.isNil()) return false;
-        const Node* p = tree_.node(n->parent);
+        const Node* p = tree_->node(n->parent);
         if (!p) return false;
         const auto* cd = std::get_if<ContainerData>(&p->data);
         if (!cd) return false;
@@ -474,7 +498,7 @@ bool Layout::resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta)
             if (tabBarPosition_ == "top") { content.y += tabBarHeight_; content.h -= tabBarHeight_; }
             else                          {                               content.h -= tabBarHeight_; }
         }
-        auto rects = tree_.computeRects(
+        auto rects = tree_->computeRectsFrom(subtreeRoot_, 
             LayoutRect{content.x, content.y, content.w, content.h}, 1, 1);
 
         auto ra = rects.find(cd->children[idx].id);
@@ -494,7 +518,7 @@ bool Layout::resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta)
         // engine uses integer stretch ratios, map new pixel sizes to
         // proportional stretch values. We keep the rest of the container's
         // children untouched.
-        Node* pMut = tree_.node(n->parent);
+        Node* pMut = tree_->node(n->parent);
         if (!pMut) return false;
         auto* cdMut = std::get_if<ContainerData>(&pMut->data);
         if (!cdMut) return false;

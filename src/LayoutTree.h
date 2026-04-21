@@ -118,11 +118,18 @@ public:
     const Node* node(Uuid id) const;
 
     // --- Layout ---
-    // Compute rects for the whole tree. Nodes not present in the returned map
-    // are "not visible this frame" — that includes non-active Stack children
-    // and container children that clipped to zero area.
+    // Compute rects for the whole tree starting from root(). Nodes not in the
+    // returned map are "not visible this frame" — non-active Stack children
+    // and container children that clipped to zero area. Returns empty when
+    // root is nil.
     std::unordered_map<Uuid, LayoutRect, UuidHash> computeRects(
         LayoutRect window, int cellW, int cellH) const;
+
+    // Same as computeRects but rooted at an arbitrary node in the tree.
+    // Used by Layout to lay out its own subtree inside a shared tree that
+    // doesn't (yet) have the subtree hooked up under the tree root.
+    std::unordered_map<Uuid, LayoutRect, UuidHash> computeRectsFrom(
+        Uuid start, LayoutRect window, int cellW, int cellH) const;
 
 private:
     std::unordered_map<Uuid, std::unique_ptr<Node>, UuidHash> nodes_;

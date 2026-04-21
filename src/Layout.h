@@ -19,7 +19,16 @@ struct LayoutNode {
 
 class Layout {
 public:
+    // Default ctor: Layout owns its own LayoutTree. Used by test fixtures
+    // where there is no Engine.
     Layout();
+
+    // Production ctor: Layout's subtree lives inside the provided shared tree
+    // (Engine's, reachable from both JS bindings and platform code). `shared`
+    // must outlive this Layout. Passing nullptr falls back to the owned-tree
+    // behavior so callers don't have to special-case missing engines.
+    explicit Layout(LayoutTree* shared);
+
     ~Layout();
 
     // Allocate a fresh pane ID. On first call (empty Layout), also creates the
@@ -97,6 +106,11 @@ public:
     // Returns false if no applicable container was found.
     bool resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta);
 
+    // UUID of this Layout's root Container in the shared tree. Non-owning
+    // callers (TabManager, ScriptEngine) use this to hook the subtree under a
+    // higher-level parent or reference it from JS by UUID string.
+    Uuid subtreeRoot() const { return subtreeRoot_; }
+
 private:
     int leftmostPaneIdInSubtree(Uuid root) const;
     void ratioToStretch(float ratio, bool newIsFirst, int& newStretch, int& oldStretch) const;
@@ -104,7 +118,11 @@ private:
         return d == LayoutNode::Dir::Horizontal ? SplitDir::Horizontal : SplitDir::Vertical;
     }
 
-    LayoutTree tree_;
+    // Either ownedTree_ holds the tree (default-ctor path) and tree_ points
+    // at it, or ownedTree_ is null and tree_ points at an external tree
+    // (production path). All other methods go through `tree_` uniformly.
+    std::unique_ptr<LayoutTree> ownedTree_;
+    LayoutTree* tree_ = nullptr;
     Uuid subtreeRoot_;
 
     std::unordered_map<int, Uuid>           paneIdToUuid_;

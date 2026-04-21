@@ -2045,6 +2045,13 @@ static JSValue jsConsoleError(JSContext* ctx, JSValueConst, int argc, JSValueCon
 Engine::Engine()
     : layoutTree_(std::make_unique<LayoutTree>())
 {
+    // One Stack holds each tab's Layout subtree as a direct child; the
+    // Stack's activeChild tracks the currently active tab. Created up front
+    // and set as the tree's root so `mb.layout.getRoot()` returns something
+    // meaningful from the first JS call onward.
+    layoutRootStack_ = layoutTree_->createStack();
+    layoutTree_->setRoot(layoutRootStack_);
+
     rt_ = JS_NewRuntime();
     JS_SetRuntimeOpaque(rt_, this);
 

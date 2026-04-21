@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ScriptPermissions.h"
+#include "Uuid.h"
 
 #include <quickjs.h>
 
@@ -290,11 +291,17 @@ public:
     const std::set<std::string>& registeredActions() const { return registeredActions_; }
 
     // --- UI layout tree ---
-    // Shared, window-level LayoutTree — the `mb.layout` JS surface reads and
-    // mutates this directly. Not yet connected to the actual rendering path;
-    // that cutover happens when Layout/TabManager are replaced.
+    // Shared, window-level LayoutTree — the `mb.layout` JS surface and the
+    // native Layout class both operate on this tree. Each Layout owns a
+    // Container subtree inside it; those subtrees are parented under
+    // `layoutRootStack()`, which represents the set of tabs (one tab = one
+    // child of the Stack, activeChild = active tab).
     ::LayoutTree&       layoutTree()       { return *layoutTree_; }
     const ::LayoutTree& layoutTree() const { return *layoutTree_; }
+
+    // Root Stack holding each Tab's Layout subtree as a direct child.
+    // Established in the Engine constructor and set as the tree's root.
+    Uuid layoutRootStack() const { return layoutRootStack_; }
 
     // Re-entrancy guard for iterating instances_ while calling JS.
     // While iterating, unload() nulls ctx instead of erasing. When the
@@ -324,6 +331,7 @@ private:
     JSRuntime* rt_ = nullptr;
     EventLoop* loop_ = nullptr;
     std::unique_ptr<::LayoutTree> layoutTree_;
+    Uuid                          layoutRootStack_;
     std::deque<Instance> instances_; // deque for pointer stability
     int iterDepth_ = 0; // >0 while iterating instances_ and calling JS
     std::vector<std::function<void(Engine*)>> deferredCleanups_;

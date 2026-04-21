@@ -52,10 +52,38 @@ Tab* TabManager::findTabForPane(int paneId, int* outTabIdx)
 }
 
 
+void TabManager::setActiveTabIdx(int idx)
+{
+    activeTabIdx_ = idx;
+    // Keep the shared tree's root Stack activeChild in sync with the visible
+    // tab so JS observers see a consistent view.
+    if (host_.scriptEngine &&
+        idx >= 0 && idx < static_cast<int>(tabs_.size())) {
+        Uuid sub = tabs_[idx]->layout()->subtreeRoot();
+        if (!sub.isNil()) {
+            host_.scriptEngine->layoutTree().setActiveChild(
+                host_.scriptEngine->layoutRootStack(), sub);
+        }
+    }
+}
+
+void TabManager::attachLayoutSubtree(Tab* tab, bool activate)
+{
+    if (!tab || !host_.scriptEngine) return;
+    LayoutTree& tree = host_.scriptEngine->layoutTree();
+    Uuid rootStack = host_.scriptEngine->layoutRootStack();
+    Uuid sub = tab->layout()->subtreeRoot();
+    if (sub.isNil()) return;
+    tree.appendChild(rootStack, ChildSlot{sub, /*stretch=*/1});
+    if (activate) tree.setActiveChild(rootStack, sub);
+}
+
 void TabManager::addInitialTab(std::unique_ptr<Tab> tab)
 {
     activeTabIdx_ = static_cast<int>(tabs_.size());
+    Tab* raw = tab.get();
     tabs_.push_back(std::move(tab));
+    attachLayoutSubtree(raw, /*activate=*/true);
 }
 
 
@@ -227,7 +255,11 @@ void TabManager::createTab()
         }
     }
 
-    auto layout = std::make_unique<Layout>();
+    // Layout's subtree lives in the shared LayoutTree on the Engine, so JS
+    // bindings and native code see the same structural state.
+    auto layout = std::make_unique<Layout>(host_.scriptEngine
+                                           ? &host_.scriptEngine->layoutTree()
+                                           : nullptr);
     layout->setDividerPixels(divW);
 
     // Allocate an ID and tree node — no Terminal created yet.
@@ -291,7 +323,9 @@ void TabManager::createTab()
     activeTabIdx_ = tabIdx;
     auto tab = std::make_unique<Tab>(std::move(layout));
     tab->setTitle(termPtr->title());
+    Tab* tabRaw = tab.get();
     tabs_.push_back(std::move(tab));
+    attachLayoutSubtree(tabRaw, /*activate=*/true);
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
     updateWindowTitle();

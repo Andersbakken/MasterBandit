@@ -155,6 +155,11 @@ private:
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
 
+    // Script engine. Declared BEFORE tabManager_ so it outlives the Tabs/
+    // Layouts during destruction — Layouts hold pointers into
+    // scriptEngine_.layoutTree() and destroyNode their subtrees on teardown.
+    Script::Engine scriptEngine_;
+
     // Tabs — owned by TabManager.
     std::unique_ptr<TabManager> tabManager_;
 
@@ -304,9 +309,6 @@ private:
     // Typed dispatch entry. Owns the Action::Dispatcher listener registry
     // and the post-dispatch observer-notify + script-microtask flush.
     std::unique_ptr<ActionRouter> actionRouter_;
-
-    // Script engine
-    Script::Engine scriptEngine_;
 
     // Callback/terminal helpers — stays on PlatformDawn because it
     // closes over ~20 platform members (title/icon/cwd/progress/OSC/

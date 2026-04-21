@@ -1,9 +1,22 @@
 #include "PlatformDawn.h"
 #include "PlatformUtils.h"
 #include "Config.h"
+#include <quickjs.h>
 #include <unistd.h>
 
-
+namespace {
+const char* directionName(Action::Direction d) {
+    switch (d) {
+    case Action::Direction::Left:  return "left";
+    case Action::Direction::Right: return "right";
+    case Action::Direction::Up:    return "up";
+    case Action::Direction::Down:  return "down";
+    case Action::Direction::Next:  return "next";
+    case Action::Direction::Prev:  return "prev";
+    }
+    return "unknown";
+}
+} // namespace
 
 void PlatformDawn::dispatchAction(const Action::Any& action)
 {
@@ -13,127 +26,51 @@ void PlatformDawn::dispatchAction(const Action::Any& action)
 
 void PlatformDawn::executeAction(const Action::Any& action)
 {
+    // JS-owned actions: default-ui.js is the sole implementation. Missing
+    // handler is an error — the controller is required to register for every
+    // action in this group.
+    auto invokeOrLog = [&](const char* name,
+                           const std::function<JSValue(JSContext*)>& args) {
+        if (!scriptEngine_.invokeActionHandler(name, args))
+            spdlog::error("no controller handler for action '{}'", name);
+    };
+
     std::visit(overloaded {
-        [&](const Action::NewTab&)  { createTab(); },
-        [&](const Action::CloseTab& a) { closeTab(a.index >= 0 ? a.index : tabManager_->activeTabIdx()); },
+        [&](const Action::NewTab&) { invokeOrLog("newTab", nullptr); },
+        [&](const Action::CloseTab& a) {
+            const int idx = a.index;
+            invokeOrLog("closeTab", [idx](JSContext* ctx) {
+                JSValue o = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, o, "index", JS_NewInt32(ctx, idx));
+                return o;
+            });
+        },
         [&](const Action::ActivateTabRelative& a) {
-            int idx = tabManager_->activeTabIdx() + a.delta;
-            if (idx >= 0 && idx < static_cast<int>(tabManager_->size())) {
-                if (Tab* prev = activeTab()) {
-                    tabManager_->clearDividers(prev);
-                    tabManager_->releaseTabTextures(prev);
-                }
-                tabManager_->setActiveTabIdx(idx);
-                if (Tab* now = activeTab())
-                    tabManager_->refreshDividers(now);
-                tabManager_->updateWindowTitle();
-                if (inputController_) inputController_->refreshPointerShape();
-                tabBarDirty_ = true;
-                setNeedsRedraw();
-            }
+            const int delta = a.delta;
+            invokeOrLog("activateTabRelative", [delta](JSContext* ctx) {
+                JSValue o = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, o, "delta", JS_NewInt32(ctx, delta));
+                return o;
+            });
         },
         [&](const Action::ActivateTab& a) {
-            if (a.index >= 0 && a.index < static_cast<int>(tabManager_->size())) {
-                if (Tab* prev = activeTab()) {
-                    tabManager_->clearDividers(prev);
-                    tabManager_->releaseTabTextures(prev);
-                }
-                tabManager_->setActiveTabIdx(a.index);
-                if (Tab* now = activeTab())
-                    tabManager_->refreshDividers(now);
-                tabManager_->updateWindowTitle();
-                if (inputController_) inputController_->refreshPointerShape();
-                tabBarDirty_ = true;
-                setNeedsRedraw();
-            }
+            const int idx = a.index;
+            invokeOrLog("activateTab", [idx](JSContext* ctx) {
+                JSValue o = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, o, "index", JS_NewInt32(ctx, idx));
+                return o;
+            });
         },
         [&](const Action::SplitPane& a) {
-            Tab* tab = activeTab();
-            if (!tab) return;
-            Layout* layout = tab->layout();
-            Terminal* fp = layout->focusedPane();
-            if (!fp) return;
-
-            LayoutNode::Dir dir;
-            bool newIsFirst = false;
-            switch (a.dir) {
-            case Action::Direction::Right: dir = LayoutNode::Dir::Horizontal; break;
-            case Action::Direction::Left:  dir = LayoutNode::Dir::Horizontal; newIsFirst = true; break;
-            case Action::Direction::Down:  dir = LayoutNode::Dir::Vertical;   break;
-            case Action::Direction::Up:    dir = LayoutNode::Dir::Vertical;   newIsFirst = true; break;
-            default: return;
-            }
-
-            int newId = layout->splitPane(fp->id(), dir, 0.5f, newIsFirst);
-            if (newId < 0) return;
-
-            layout->computeRects(fbWidth_, fbHeight_);
-            int tabIdx = tabManager_->activeTabIdx();
-            int prevId = layout->focusedPaneId();
-            tabManager_->spawnTerminalForPane(newId, tabIdx, paneProcessCWD(fp));
-            tabManager_->resizeAllPanesInTab(tab);
-            layout->setFocusedPane(newId);
-            tabManager_->notifyPaneFocusChange(tab, prevId, newId);
-            tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
+            const char* dirStr = directionName(a.dir);
+            invokeOrLog("splitPane", [dirStr](JSContext* ctx) {
+                JSValue o = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, o, "dir", JS_NewString(ctx, dirStr));
+                return o;
+            });
         },
-        [&](const Action::ClosePane&) {
-            Tab* tab = activeTab();
-            if (!tab) return;
-            Layout* layout = tab->layout();
-            if (layout->panes().size() <= 1) return; // keep last pane
-            Terminal* fp = layout->focusedPane();
-            if (!fp) return;
-            int paneId = fp->id();
-
-            // Stop PTY poll and queue render state cleanup
-            tabManager_->removePtyPoll(fp->masterFD());
-            renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
-            // Queue popup render state cleanup for this pane
-            for (const auto& popup : fp->popups()) {
-                std::string key = popupStateKey(paneId, popup->popupId());
-                renderThread_->pending().releasePopupTextures.push_back(key);
-            }
-            if (inputController_) inputController_->erasePaneCursorStyle(paneId);
-
-            scriptEngine_.notifyPaneDestroyed(paneId);
-
-            // Extract the Terminal under the render-thread mutex and stage it
-            // into the graveyard. The render thread may still hold raw
-            // pointers to this Terminal (and its popups' Terminals)
-            // from an in-flight frame; the stamp ensures we wait for that
-            // frame to complete before destructors run.
-            std::unique_ptr<Terminal> extracted;
-            uint64_t stamp = 0;
-            {
-                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                extracted = layout->extractPane(paneId);
-                if (extracted) {
-                    // Drop the entry from the shadow copy so the next
-                    // snapshot doesn't carry a dead pointer forward.
-                    auto& panes = renderThread_->renderState().panes;
-                    panes.erase(std::remove_if(panes.begin(), panes.end(),
-                        [paneId](const RenderPaneInfo& rpi) { return rpi.id == paneId; }),
-                        panes.end());
-                    if (renderThread_->renderState().focusedPaneId == paneId)
-                        renderThread_->renderState().focusedPaneId = layout->focusedPaneId();
-                }
-                stamp = renderThread_->completedFrames();
-            }
-            if (extracted) graveyard_.defer(std::move(extracted), stamp);
-
-            tabManager_->resizeAllPanesInTab(tab);
-            tabManager_->notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
-            tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
-        },
-        [&](const Action::ZoomPane&) {
-            Tab* tab = activeTab();
-            if (!tab) return;
-            Layout* layout = tab->layout();
-            Terminal* fp = layout->focusedPane();
-            if (!fp) return;
-            layout->zoomPane(fp->id());
-            tabManager_->resizeAllPanesInTab(tab);
-        },
+        [&](const Action::ClosePane&) { invokeOrLog("closePane", nullptr); },
+        [&](const Action::ZoomPane&)  { invokeOrLog("zoomPane",  nullptr); },
         [&](const Action::FocusPane& a) {
             Tab* tab = activeTab();
             if (!tab) return;
@@ -182,39 +119,14 @@ void PlatformDawn::executeAction(const Action::Any& action)
             }
         },
         [&](const Action::AdjustPaneSize& a) {
-            // tmux-style semantics: direction names which way the relevant
-            // boundary moves. Prefer the trailing (right/bottom) boundary;
-            // fall back to the leading boundary on edge panes. This lets
-            // every direction key do something meaningful on every pane.
-            Tab* tab = activeTab();
-            if (!tab) return;
-            Layout* layout = tab->layout();
-            Terminal* fp = layout->focusedPane();
-            if (!fp) return;
-
-            LayoutNode::Dir axis;
-            int pixelDelta;
-            switch (a.dir) {
-            case Action::Direction::Left:
-                axis = LayoutNode::Dir::Horizontal;
-                pixelDelta = -static_cast<int>(a.amount * charWidth_);
-                break;
-            case Action::Direction::Right:
-                axis = LayoutNode::Dir::Horizontal;
-                pixelDelta = static_cast<int>(a.amount * charWidth_);
-                break;
-            case Action::Direction::Up:
-                axis = LayoutNode::Dir::Vertical;
-                pixelDelta = -static_cast<int>(a.amount * lineHeight_);
-                break;
-            case Action::Direction::Down:
-                axis = LayoutNode::Dir::Vertical;
-                pixelDelta = static_cast<int>(a.amount * lineHeight_);
-                break;
-            default: return;
-            }
-            if (layout->resizePaneEdge(fp->id(), axis, pixelDelta))
-                tabManager_->resizeAllPanesInTab(tab);
+            const char* dirStr = directionName(a.dir);
+            const int amount = a.amount;
+            invokeOrLog("adjustPaneSize", [dirStr, amount](JSContext* ctx) {
+                JSValue o = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, o, "dir", JS_NewString(ctx, dirStr));
+                JS_SetPropertyStr(ctx, o, "amount", JS_NewInt32(ctx, amount));
+                return o;
+            });
         },
         [&](const Action::Copy&) {
             Terminal* term = activeTerm();
@@ -306,6 +218,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (!text.empty() && window_) window_->setClipboard(text);
         },
         [&](const Action::FocusPopup&) {
+            if (scriptEngine_.invokeActionHandler("focusPopup", nullptr)) return;
             Tab* tab = activeTab();
             if (!tab || tab->hasOverlay()) return;
             Terminal* fp = tab->layout()->focusedPane();

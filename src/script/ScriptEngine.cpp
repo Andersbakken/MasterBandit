@@ -1570,7 +1570,11 @@ static std::string toLabel(std::string_view name) {
     return result;
 }
 
-// mb.actions -> array of {name, label, builtin, args?} objects
+static JSValue jsMbActionsRegister(JSContext*, JSValueConst, int, JSValueConst*);
+static JSValue jsMbActionsUnregister(JSContext*, JSValueConst, int, JSValueConst*);
+
+// mb.actions -> array of {name, label, builtin, args?} objects plus
+// register/unregister methods for handler ownership of JS-owned actions.
 static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
     Engine* eng = engineFromCtx(ctx);
@@ -1626,6 +1630,15 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
         JS_SetPropertyStr(ctx, obj, "builtin", JS_FALSE);
         JS_SetPropertyUint32(ctx, arr, idx++, obj);
     }
+
+    // Attach handler-registry methods to the returned array. The array is
+    // regenerated on every `mb.actions` access, but consumers that capture it
+    // into a local (`const a = mb.actions; a.register(...)`) still have the
+    // methods bound.
+    JS_SetPropertyStr(ctx, arr, "register",
+        JS_NewCFunction(ctx, jsMbActionsRegister, "register", 2));
+    JS_SetPropertyStr(ctx, arr, "unregister",
+        JS_NewCFunction(ctx, jsMbActionsUnregister, "unregister", 1));
 
     return arr;
 }
@@ -2373,10 +2386,20 @@ void Engine::unload(InstanceId id)
             }
         }
 
-        // 6. Close any WS servers + connections owned by this instance.
+        // 6. Drop any action handlers registered by this instance.
+        for (auto ahit = actionHandlers_.begin(); ahit != actionHandlers_.end(); ) {
+            if (ahit->second.id == id) {
+                JS_FreeValue(ahit->second.ctx, ahit->second.fn);
+                ahit = actionHandlers_.erase(ahit);
+            } else {
+                ++ahit;
+            }
+        }
+
+        // 7. Close any WS servers + connections owned by this instance.
         wsUnloadInstance(this, id);
 
-        // 7. Free context and remove (or defer removal if iterating)
+        // 8. Free context and remove (or defer removal if iterating)
         JS_FreeContext(ctx);
         if (iterating()) {
             it->ctx = nullptr; // mark dead; IterGuard sweeps on unwind
@@ -2593,6 +2616,32 @@ static JSValue jsMbUnregisterTcap(JSContext* ctx, JSValueConst, int argc, JSValu
     const char* name = JS_ToCString(ctx, argv[0]);
     if (!name) return JS_EXCEPTION;
     engineFromCtx(ctx)->unregisterTcap(name);
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsMbActionsRegister(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, LayoutModify);
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_ThrowTypeError(ctx, "mb.actions.register(name, fn)");
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_EXCEPTION;
+    auto* inst = instanceFromCtx(ctx);
+    if (!inst) { JS_FreeCString(ctx, name); return JS_ThrowTypeError(ctx, "no instance"); }
+    engineFromCtx(ctx)->registerActionHandler(inst->id, name, argv[1]);
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsMbActionsUnregister(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, LayoutModify);
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "mb.actions.unregister(name)");
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_EXCEPTION;
+    engineFromCtx(ctx)->unregisterActionHandler(name);
     JS_FreeCString(ctx, name);
     return JS_UNDEFINED;
 }
@@ -2829,8 +2878,31 @@ void Engine::notifyPaneCreated(TabId tab, PaneId pane)
     }
 }
 
-void Engine::notifyPaneDestroyed(PaneId pane)
+void Engine::notifyPaneDestroyed(PaneId pane, Uuid nodeId)
 {
+    // Fan out to JS listeners before cleanup — the handle is gone by the
+    // time the listener fires, so the payload is (id, nodeId) scalars, not
+    // a Pane object (mirrors the convention in TODO.md:165).
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_paneDestroyed");
+        JSValue args[2] = {
+            JS_NewInt32(inst.ctx, pane),
+            nodeId.isNil()
+              ? JS_NULL
+              : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36),
+        };
+        enqueueListeners(inst.ctx, arr, 2, args);
+        JS_FreeValue(inst.ctx, args[0]);
+        JS_FreeValue(inst.ctx, args[1]);
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global);
+    }
+
     cleanupPane(pane);
 }
 
@@ -2852,9 +2924,50 @@ void Engine::notifyTabCreated(TabId tab)
     }
 }
 
-void Engine::notifyTabDestroyed(TabId tab)
+void Engine::notifyTabDestroyed(TabId tab, Uuid nodeId)
 {
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabDestroyed");
+        JSValue args[2] = {
+            JS_NewInt32(inst.ctx, tab),
+            nodeId.isNil()
+              ? JS_NULL
+              : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36),
+        };
+        enqueueListeners(inst.ctx, arr, 2, args);
+        JS_FreeValue(inst.ctx, args[0]);
+        JS_FreeValue(inst.ctx, args[1]);
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global);
+    }
+
     cleanupTab(tab);
+}
+
+void Engine::notifyTerminalExited(PaneId pane, Uuid nodeId)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_terminalExited");
+        JSValue payload = JS_NewObject(inst.ctx);
+        JS_SetPropertyStr(inst.ctx, payload, "paneId", JS_NewInt32(inst.ctx, pane));
+        JS_SetPropertyStr(inst.ctx, payload, "paneNodeId",
+            nodeId.isNil() ? JS_NULL
+                           : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36));
+        enqueueListeners(inst.ctx, arr, 1, &payload);
+        JS_FreeValue(inst.ctx, payload);
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global);
+    }
 }
 
 void Engine::notifyOverlayCreated(TabId tab)
@@ -3619,6 +3732,52 @@ bool Engine::registerAction(InstanceId id, const std::string& name)
 bool Engine::isActionRegistered(const std::string& fullName) const
 {
     return registeredActions_.count(fullName) > 0;
+}
+
+bool Engine::registerActionHandler(InstanceId id, const std::string& name, JSValue fn)
+{
+    Instance* inst = findInstance(id);
+    if (!inst || !inst->ctx) return false;
+    auto it = actionHandlers_.find(name);
+    if (it != actionHandlers_.end()) {
+        JS_FreeValue(it->second.ctx, it->second.fn);
+        it->second = ActionHandler{id, inst->ctx, JS_DupValue(inst->ctx, fn)};
+    } else {
+        actionHandlers_.emplace(name,
+            ActionHandler{id, inst->ctx, JS_DupValue(inst->ctx, fn)});
+    }
+    return true;
+}
+
+bool Engine::unregisterActionHandler(const std::string& name)
+{
+    auto it = actionHandlers_.find(name);
+    if (it == actionHandlers_.end()) return false;
+    JS_FreeValue(it->second.ctx, it->second.fn);
+    actionHandlers_.erase(it);
+    return true;
+}
+
+bool Engine::invokeActionHandler(const std::string& name,
+                                 const std::function<JSValue(JSContext*)>& buildArgs)
+{
+    auto it = actionHandlers_.find(name);
+    if (it == actionHandlers_.end()) return false;
+    JSContext* ctx = it->second.ctx;
+    JSValue fn = JS_DupValue(ctx, it->second.fn); // protect against re-entry unregister
+    JSValue args = buildArgs ? buildArgs(ctx) : JS_UNDEFINED;
+    JSValue result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &args);
+    if (JS_IsException(result)) {
+        JSValue exc = JS_GetException(ctx);
+        const char* s = JS_ToCString(ctx, exc);
+        sLog().error("action handler '{}' threw: {}", name, s ? s : "(unknown)");
+        if (s) JS_FreeCString(ctx, s);
+        JS_FreeValue(ctx, exc);
+    }
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, args);
+    JS_FreeValue(ctx, fn);
+    return true;
 }
 
 } // namespace Script

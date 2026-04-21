@@ -185,6 +185,59 @@ int Layout::splitPane(int paneId, LayoutNode::Dir dir, float ratio, bool newIsFi
     return newId;
 }
 
+int Layout::allocatePaneNode(Uuid* outNodeId)
+{
+    int id = sGlobalPaneId++;
+    Uuid u = tree_->createTerminal();
+    paneIdToUuid_[id] = u;
+    uuidToPaneId_[u]  = id;
+    if (outNodeId) *outNodeId = u;
+    return id;
+}
+
+bool Layout::splitByNodeId(Uuid existingChildNodeId, LayoutNode::Dir dir,
+                           Uuid newChildNodeId, bool newIsFirst)
+{
+    Node* target = tree_->node(existingChildNodeId);
+    if (!target) return false;
+    Node* incoming = tree_->node(newChildNodeId);
+    if (!incoming) return false;
+    if (target->parent.isNil()) return false;
+    if (!incoming->parent.isNil()) return false; // must be orphan
+
+    SplitDir sd = convertDir(dir);
+    Uuid wrapper = tree_->createContainer(sd);
+
+    // Inherit the target slot's sizing properties onto the wrapper so adjacent
+    // siblings keep their relative proportions after the split (same logic as
+    // splitPane — just UUID-in instead of uuid-allocated-here).
+    ChildSlot wrapperSlot{wrapper, 1, 0, 0, 0};
+    if (Node* parentMut = tree_->node(target->parent)) {
+        if (auto* cd = std::get_if<ContainerData>(&parentMut->data)) {
+            for (const auto& s : cd->children) {
+                if (s.id == existingChildNodeId) {
+                    wrapperSlot.stretch    = s.stretch;
+                    wrapperSlot.minCells   = s.minCells;
+                    wrapperSlot.maxCells   = s.maxCells;
+                    wrapperSlot.fixedCells = s.fixedCells;
+                    break;
+                }
+            }
+        }
+    }
+    if (!tree_->replaceChild(target->parent, existingChildNodeId, wrapperSlot))
+        return false;
+
+    if (newIsFirst) {
+        tree_->appendChild(wrapper, ChildSlot{newChildNodeId,      1});
+        tree_->appendChild(wrapper, ChildSlot{existingChildNodeId, 1});
+    } else {
+        tree_->appendChild(wrapper, ChildSlot{existingChildNodeId, 1});
+        tree_->appendChild(wrapper, ChildSlot{newChildNodeId,      1});
+    }
+    return true;
+}
+
 Terminal* Layout::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
 {
     if (!t) return nullptr;

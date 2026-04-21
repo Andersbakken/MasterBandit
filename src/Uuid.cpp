@@ -84,7 +84,7 @@ std::string Uuid::toString() const
     std::string out(36, '-');
     size_t p = 0;
     for (size_t i = 0; i < 16; ++i) {
-        if (i == 4 || i == 6 || i == 8 || i == 10) { ++p; continue; }
+        if (p == 8 || p == 13 || p == 18 || p == 23) ++p; // leave '-' in place
         out[p++] = hex[b[i] >> 4];
         out[p++] = hex[b[i] & 0x0F];
     }

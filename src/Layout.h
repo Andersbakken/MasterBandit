@@ -41,6 +41,21 @@ public:
     // newIsFirst=true places the new pane as the first (left/top) child.
     int splitPane(int paneId, LayoutNode::Dir dir, float ratio = 0.5f, bool newIsFirst = false);
 
+    // Allocate a paneId and a Terminal tree node without attaching it as a
+    // child anywhere. The node is an orphan in the tree until someone calls
+    // LayoutTree::appendChild or splitByNodeId. Used by the JS-facing
+    // `mb.layout.createTerminal` primitive, which separates node creation
+    // from placement.
+    int allocatePaneNode(Uuid* outNodeId = nullptr);
+
+    // UUID-based variant of splitPane. Wraps `existingChildNodeId` in a new
+    // Container and places `newChildNodeId` alongside, preserving the target
+    // slot's stretch/min/max/fixed. Both ids must reference existing tree
+    // nodes; `newChildNodeId` must be an orphan (no parent). Returns false
+    // on any validation failure.
+    bool splitByNodeId(Uuid existingChildNodeId, LayoutNode::Dir dir,
+                       Uuid newChildNodeId, bool newIsFirst = false);
+
     // Attach a Terminal to a slot created by createPane() / splitPane().
     // Sets the pane ID on the Terminal. Returns the Terminal pointer.
     Terminal* insertTerminal(int paneId, std::unique_ptr<Terminal> t);

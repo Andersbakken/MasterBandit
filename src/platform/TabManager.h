@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Layout.h"
 #include "RenderSync.h"
 #include "Tab.h"
 #include "Terminal.h"
@@ -172,6 +173,57 @@ public:
 
     void createTab();
     void closeTab(int idx);
+
+    // --- JS-facing primitives (mb.layout.*) -------------------------------
+    // These factor out the pieces of the legacy createTab / closeTab /
+    // SplitPane / ClosePane flows so the default UI controller can compose
+    // them directly. `createTab()` / `closeTab(idx)` above are the all-in-one
+    // legacy paths kept alive as a fallback while actions migrate to JS.
+
+    // Build an empty Tab (no initial Terminal) and attach its Layout subtree
+    // under the shared tree's root Stack. Does NOT activate. Returns the new
+    // tab index; optionally fills outNodeId with the Layout's subtreeRoot
+    // UUID (the "tab node" surfaced to JS).
+    int createEmptyTab(Uuid* outNodeId = nullptr);
+
+    // Activate tab at `idx`, wrapping all the UI chrome updates (clear/refresh
+    // dividers, update window title, tab-bar dirty, redraw). No-op if `idx`
+    // is out of range.
+    void activateTabByIdx(int idx);
+
+    // Spawn a Terminal inside the Layout that owns `parentContainerNodeId`,
+    // append the new Terminal node as the container's last child, and fire
+    // `paneCreated`. On success returns true and fills `outPaneId` /
+    // `outNodeId`. `cwd` may be empty (Terminal uses its default).
+    bool createTerminalInContainer(Uuid parentContainerNodeId,
+                                   const std::string& cwd,
+                                   int* outPaneId,
+                                   Uuid* outNodeId);
+
+    // Wrap `existingPaneNodeId` in a new Container, place a freshly-spawned
+    // Terminal alongside, and fire `paneCreated`. Mirrors legacy SplitPane
+    // semantics but entirely UUID-driven.
+    bool splitPaneByNodeId(Uuid existingPaneNodeId, LayoutNode::Dir dir,
+                           float ratio, bool newIsFirst,
+                           int* outPaneId, Uuid* outNodeId);
+
+    // Close one pane (not the whole tab) — full teardown matching the
+    // legacy ClosePane action: PTY poll removal, render-state cleanup,
+    // cursor-style erase, paneDestroyed notify, tree removal, graveyard,
+    // resize + focus + title fixups.
+    bool closePaneById(int paneId);
+
+    // Set the focused pane in whichever tab contains it, with notify
+    // + title update + redraw. Returns false if pane not found.
+    bool focusPaneById(int paneId);
+
+    // Lookup helpers for the binding layer.
+    Tab* findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx = nullptr);
+    // Walk up from `nodeId`'s ancestors until we hit a Layout's subtreeRoot;
+    // returns the owning Tab (or nullptr).
+    Tab* findTabForNode(Uuid nodeId, int* outTabIdx = nullptr);
+    // Resolve a paneId given a Terminal's tree UUID (via Terminal::nodeId()).
+    int  findPaneIdByNodeId(Uuid nodeId);
 
     // Called from the onTerminalExited deferred drain in PlatformDawn.
     void terminalExited(Terminal* terminal);

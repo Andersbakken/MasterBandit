@@ -235,6 +235,51 @@ void LayoutTree::setLabel(Uuid id, std::string label)
     if (Node* n = node(id)) n->label = std::move(label);
 }
 
+namespace {
+ChildSlot* findSlot(std::vector<ChildSlot>* kids, Uuid child)
+{
+    if (!kids) return nullptr;
+    for (auto& s : *kids) if (s.id == child) return &s;
+    return nullptr;
+}
+} // namespace
+
+bool LayoutTree::setSlotStretch(Uuid parent, Uuid child, int stretch)
+{
+    Node* p = node(parent); if (!p) return false;
+    ChildSlot* s = findSlot(childrenOf(p), child);
+    if (!s) return false;
+    s->stretch = std::max(0, stretch);
+    return true;
+}
+
+bool LayoutTree::setSlotMinCells(Uuid parent, Uuid child, int minCells)
+{
+    Node* p = node(parent); if (!p) return false;
+    ChildSlot* s = findSlot(childrenOf(p), child);
+    if (!s) return false;
+    s->minCells = std::max(0, minCells);
+    return true;
+}
+
+bool LayoutTree::setSlotMaxCells(Uuid parent, Uuid child, int maxCells)
+{
+    Node* p = node(parent); if (!p) return false;
+    ChildSlot* s = findSlot(childrenOf(p), child);
+    if (!s) return false;
+    s->maxCells = std::max(0, maxCells);
+    return true;
+}
+
+bool LayoutTree::setSlotFixedCells(Uuid parent, Uuid child, int fixedCells)
+{
+    Node* p = node(parent); if (!p) return false;
+    ChildSlot* s = findSlot(childrenOf(p), child);
+    if (!s) return false;
+    s->fixedCells = std::max(0, fixedCells);
+    return true;
+}
+
 void LayoutTree::destroyNode(Uuid id)
 {
     Node* n = node(id);

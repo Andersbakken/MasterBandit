@@ -129,6 +129,34 @@ struct AppCallbacks {
     std::function<int()> createTab;
     // Close a tab by index.
     std::function<void(int)> closeTab;
+
+    // JS-facing primitives. Each maps 1:1 to a TabManager method; they're
+    // wired through AppCallbacks so ScriptLayoutBindings can stay decoupled
+    // from the platform layer.
+    struct NewPane { int paneId; std::string nodeId; bool ok; };
+    // Empty-tab variant. Returns {tabIdx, subtreeRoot uuid string}.
+    std::function<std::pair<int, std::string>()> createEmptyTab;
+    std::function<void(int)> activateTab;
+    std::function<bool(int)> focusPane;
+    std::function<bool(int)> closePane;
+    // Spawn a Terminal inside the Layout that owns `parentContainerNodeId`;
+    // append the new Terminal node as the container's last child.
+    std::function<NewPane(const std::string& parentContainerNodeId,
+                          const std::string& cwd)> createTerminalInContainer;
+    // Wrap `existingPaneNodeId` in a new Container and spawn a Terminal as
+    // the sibling. `dir` is "horizontal" or "vertical".
+    std::function<NewPane(const std::string& existingPaneNodeId,
+                          const std::string& dir,
+                          bool newIsFirst)> splitPaneByNodeId;
+    // Set the zoomed pane (empty string clears). Operates on the focused
+    // tab's Layout by resolving the nodeId to a paneId.
+    std::function<bool(const std::string& paneNodeIdOrEmpty)> setZoom;
+    // Move the boundary of `paneNodeId`'s slot by `amount` cells in `dir`.
+    // `dir` is one of "left"/"right"/"up"/"down"; positive cells grow the
+    // pane in that direction. Resolves pane → pixel delta via font metrics
+    // native-side.
+    std::function<bool(const std::string& paneNodeId,
+                       const std::string& dir, int amount)> adjustPaneSize;
     // Query popups on a pane.
     struct PopupInfo { std::string id; int x; int y; int w; int h; bool focused; };
     std::function<std::vector<PopupInfo>(PaneId)> panePopups;
@@ -220,9 +248,16 @@ public:
     // --- Async events (enqueued as microtasks) ---
     void notifyAction(const std::string& actionName);
     void notifyPaneCreated(TabId tab, PaneId pane);
-    void notifyPaneDestroyed(PaneId pane);
+    // nodeId is the UUID of the destroyed Terminal's tree node — passed through
+    // so listeners can correlate with handles they captured from paneCreated.
+    // Empty UUID is allowed (paths that don't have the UUID handy still work).
+    void notifyPaneDestroyed(PaneId pane, Uuid nodeId = {});
     void notifyTabCreated(TabId tab);
-    void notifyTabDestroyed(TabId tab);
+    void notifyTabDestroyed(TabId tab, Uuid nodeId = {});
+    // Fired before the native cleanup cascade so listeners see the live
+    // pane/tab state. Exit code / signal are not plumbed yet — the v1
+    // payload is {paneId, paneNodeId}.
+    void notifyTerminalExited(PaneId pane, Uuid nodeId = {});
     void notifyPaneResized(PaneId pane, int cols, int rows);
     void notifyOverlayCreated(TabId tab);
     void notifyOverlayDestroyed(TabId tab);
@@ -303,6 +338,21 @@ public:
     bool isActionRegistered(const std::string& fullName) const;
     const std::set<std::string>& registeredActions() const { return registeredActions_; }
 
+    // Named-action handlers for JS-owned actions (NewTab, SplitPane, etc.).
+    // Unlike addEventListener/notifyAction, which observe, a handler *owns* the
+    // action: at most one handler per name; registration replaces the prior.
+    // Native dispatch calls invokeActionHandler instead of running a built-in.
+    bool registerActionHandler(InstanceId id, const std::string& name, JSValue fn);
+    bool unregisterActionHandler(const std::string& name);
+    // Returns true if a handler was found and called (regardless of whether
+    // the handler threw). Returns false if no handler is registered — the
+    // caller (Platform_Actions) logs an error in that case.
+    // `buildArgs` is invoked with the handler's own JSContext so native
+    // callers don't need to know which context owns the handler. It should
+    // return an owning JSValue that the engine passes as the single arg.
+    bool invokeActionHandler(const std::string& name,
+                             const std::function<JSValue(JSContext*)>& buildArgs);
+
     // --- UI layout tree ---
     // Shared, window-level LayoutTree — the `mb.layout` JS surface and the
     // native Layout class both operate on this tree. Each Layout owns a
@@ -369,6 +419,13 @@ private:
 
     std::set<std::string> registeredActions_; // "namespace.action" strings
     std::unordered_map<std::string, std::string> customTcaps_; // XTGETTCAP name → value
+
+    struct ActionHandler {
+        InstanceId id;
+        JSContext* ctx;
+        JSValue    fn; // owning ref; freed on replace / unregister / unload
+    };
+    std::unordered_map<std::string, ActionHandler> actionHandlers_;
 
     std::unordered_map<uint32_t, JsTimer> jsTimers_;
 

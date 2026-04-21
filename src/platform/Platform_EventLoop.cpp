@@ -330,6 +330,89 @@ int PlatformDawn::exec()
         scbs.closeTab = [this](int tabId) {
             closeTab(tabId);
         };
+        scbs.createEmptyTab = [this]() -> std::pair<int, std::string> {
+            Uuid nodeId;
+            int idx = tabManager_->createEmptyTab(&nodeId);
+            return {idx, nodeId.isNil() ? std::string{} : nodeId.toString()};
+        };
+        scbs.activateTab = [this](int idx) {
+            tabManager_->activateTabByIdx(idx);
+            tabBarDirty_ = true;
+        };
+        scbs.focusPane = [this](int paneId) {
+            return tabManager_->focusPaneById(paneId);
+        };
+        scbs.closePane = [this](int paneId) {
+            return tabManager_->closePaneById(paneId);
+        };
+        scbs.createTerminalInContainer = [this](const std::string& parentNodeId,
+                                                 const std::string& cwd)
+                -> Script::AppCallbacks::NewPane {
+            Uuid p = Uuid::fromString(parentNodeId);
+            if (p.isNil()) return {-1, {}, false};
+            int paneId = -1; Uuid n;
+            bool ok = tabManager_->createTerminalInContainer(p, cwd, &paneId, &n);
+            return {paneId, n.isNil() ? std::string{} : n.toString(), ok};
+        };
+        scbs.splitPaneByNodeId = [this](const std::string& existingNodeId,
+                                         const std::string& dir,
+                                         bool newIsFirst)
+                -> Script::AppCallbacks::NewPane {
+            Uuid p = Uuid::fromString(existingNodeId);
+            if (p.isNil()) return {-1, {}, false};
+            LayoutNode::Dir d = (dir == "vertical" || dir == "v")
+                ? LayoutNode::Dir::Vertical : LayoutNode::Dir::Horizontal;
+            int paneId = -1; Uuid n;
+            bool ok = tabManager_->splitPaneByNodeId(p, d, /*ratio=*/0.5f,
+                                                     newIsFirst, &paneId, &n);
+            return {paneId, n.isNil() ? std::string{} : n.toString(), ok};
+        };
+        scbs.adjustPaneSize = [this](const std::string& paneNodeId,
+                                      const std::string& dir, int amount) -> bool {
+            Uuid u = Uuid::fromString(paneNodeId);
+            if (u.isNil()) return false;
+            int paneId = tabManager_->findPaneIdByNodeId(u);
+            if (paneId < 0) return false;
+            int tabIdx = -1;
+            Tab* tab = tabManager_->findTabForPane(paneId, &tabIdx);
+            if (!tab) return false;
+            LayoutNode::Dir axis;
+            int pixelDelta;
+            if (dir == "left") {
+                axis = LayoutNode::Dir::Horizontal;
+                pixelDelta = -static_cast<int>(amount * charWidth_);
+            } else if (dir == "right") {
+                axis = LayoutNode::Dir::Horizontal;
+                pixelDelta = static_cast<int>(amount * charWidth_);
+            } else if (dir == "up") {
+                axis = LayoutNode::Dir::Vertical;
+                pixelDelta = -static_cast<int>(amount * lineHeight_);
+            } else if (dir == "down") {
+                axis = LayoutNode::Dir::Vertical;
+                pixelDelta = static_cast<int>(amount * lineHeight_);
+            } else {
+                return false;
+            }
+            if (!tab->layout()->resizePaneEdge(paneId, axis, pixelDelta)) return false;
+            tabManager_->resizeAllPanesInTab(tab);
+            return true;
+        };
+        scbs.setZoom = [this](const std::string& paneNodeIdOrEmpty) -> bool {
+            Tab* tab = activeTab();
+            if (!tab) return false;
+            if (paneNodeIdOrEmpty.empty()) {
+                tab->layout()->unzoom();
+                tabManager_->resizeAllPanesInTab(tab);
+                return true;
+            }
+            Uuid u = Uuid::fromString(paneNodeIdOrEmpty);
+            if (u.isNil()) return false;
+            int paneId = tabManager_->findPaneIdByNodeId(u);
+            if (paneId < 0) return false;
+            tab->layout()->zoomPane(paneId);
+            tabManager_->resizeAllPanesInTab(tab);
+            return true;
+        };
         scbs.panePopups = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::PopupInfo> {
             std::vector<Script::AppCallbacks::PopupInfo> result;
             for (auto& tab : tabManager_->tabs()) {
@@ -566,12 +649,19 @@ int PlatformDawn::exec()
             scriptEngine_.setConfigDir(configDir);
     }
 
-    // Load built-in scripts
+    // Load built-in scripts. default-ui.js is mandatory — it owns the
+    // JS-policy action handlers (NewTab, SplitPane, ClosePane, etc.) and the
+    // terminalExited cascade. A failed load means those actions have no
+    // handler, so we refuse to start rather than run in a broken state.
     {
         std::string scriptsDir = exeDir_ + "/scripts/";
         scriptEngine_.setBuiltinModulesDir(scriptsDir + "modules");
         scriptEngine_.loadController(scriptsDir + "applet-loader.js");
         scriptEngine_.loadController(scriptsDir + "command-palette.js");
+        if (scriptEngine_.loadController(scriptsDir + "default-ui.js") == 0) {
+            spdlog::critical("failed to load default-ui.js from '{}'", scriptsDir);
+            std::exit(1);
+        }
     }
 
     // Config file watcher with 300ms debounce + initial apply so that fields

@@ -107,6 +107,15 @@ public:
     bool setTabBarStack(Uuid tabBar, Uuid stack); // stack must be kind Stack
     void setLabel(Uuid node, std::string label);
 
+    // Per-slot sizing knobs (mb.layout.setSlot{Stretch,Fixed,Min,Max}).
+    // `parent` must be a Container or Stack that contains `child` directly.
+    // fixedCells == 0 disables fixed mode for that slot; otherwise stretch is
+    // ignored in that axis. Returns false on any validation failure.
+    bool setSlotStretch(Uuid parent, Uuid child, int stretch);
+    bool setSlotMinCells(Uuid parent, Uuid child, int minCells);
+    bool setSlotMaxCells(Uuid parent, Uuid child, int maxCells);
+    bool setSlotFixedCells(Uuid parent, Uuid child, int fixedCells);
+
     // Destroy a node and, recursively, every descendant referenced through
     // Container/Stack child lists. Also clears root_ if root is destroyed.
     // TabBar bindings pointing at a destroyed Stack go dangling (not erased);

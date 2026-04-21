@@ -170,7 +170,7 @@ private:
         for (auto& tab : tabManager_->tabs()) {
             tab->layout()->setTabBar(h, tabBarConfig_.position);
             tab->layout()->computeRects(fbWidth_, fbHeight_);
-            for (auto& p : tab->layout()->panes())
+            for (Terminal* p : tab->layout()->panes())
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
         }
         if (visible) {

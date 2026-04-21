@@ -1,5 +1,7 @@
 #include "Layout.h"
 
+#include "script/ScriptEngine.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -22,7 +24,8 @@ Layout::Layout()
     tree_->setRoot(subtreeRoot_);
 }
 
-Layout::Layout(LayoutTree* shared)
+Layout::Layout(LayoutTree* shared, Script::Engine* engine)
+    : engine_(engine)
 {
     if (shared) {
         tree_ = shared;
@@ -41,6 +44,15 @@ Layout::Layout(LayoutTree* shared)
 
 Layout::~Layout()
 {
+    // The Terminals we hooked into Script::Engine's map live by Uuid keys.
+    // We don't auto-extract them here — TabManager's closeTab / closePaneById
+    // paths are responsible for moving Terminals into the graveyard with the
+    // correct render-frame stamp BEFORE a Tab's Layout destructs. If a Layout
+    // is destroyed without that prelude (e.g. plain delete outside TabManager),
+    // the Terminals stay in the engine map with no owning Layout — which is
+    // a controller bug, not something ~Layout can safely paper over (the
+    // render thread may still be reading those pointers).
+    //
     // Drop the subtree from whichever tree hosts us. For the owned-tree case
     // this is just cleanup (the tree is about to die anyway); for the shared
     // case this deletes the node and detaches from any parent that may have
@@ -241,20 +253,28 @@ bool Layout::splitByNodeId(Uuid existingChildNodeId, LayoutNode::Dir dir,
 Terminal* Layout::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
 {
     if (!t) return nullptr;
+    if (!engine_) {
+        spdlog::error("Layout::insertTerminal: no Script::Engine configured; "
+                      "Terminal for pane {} dropped", paneId);
+        return nullptr;
+    }
+    auto uit = paneIdToUuid_.find(paneId);
+    if (uit == paneIdToUuid_.end()) {
+        spdlog::warn("Layout::insertTerminal: pane {} has no tree node", paneId);
+        return nullptr;
+    }
     t->setId(paneId);
     // Thread the tree-node UUID onto the Terminal so any downstream consumer
     // (ScriptEngine surfaces it as pane.nodeId) can find the node in the
     // shared tree without going back through Layout's id↔uuid map.
-    auto it = paneIdToUuid_.find(paneId);
-    if (it != paneIdToUuid_.end()) t->setNodeId(it->second);
-    Terminal* raw = t.get();
-    mPanes.push_back(std::move(t));
-    return raw;
+    t->setNodeId(uit->second);
+    paneOrder_.push_back(paneId);
+    return engine_->insertTerminal(uit->second, std::move(t));
 }
 
 std::unique_ptr<Terminal> Layout::extractPane(int paneId)
 {
-    if (mPanes.size() <= 1) {
+    if (paneOrder_.size() <= 1) {
         spdlog::warn("Layout::extractPane: cannot remove last pane");
         return nullptr;
     }
@@ -298,24 +318,26 @@ std::unique_ptr<Terminal> Layout::extractPane(int paneId)
         walk = grand;
     }
 
-    // Pop the Terminal out of mPanes and return it.
-    auto it = std::find_if(mPanes.begin(), mPanes.end(),
-                           [&](const std::unique_ptr<Terminal>& p) { return p && p->id() == paneId; });
-    if (it == mPanes.end()) return nullptr;
-    std::unique_ptr<Terminal> extracted = std::move(*it);
-    mPanes.erase(it);
+    // Remove from ordering index.
+    paneOrder_.erase(std::remove(paneOrder_.begin(), paneOrder_.end(), paneId),
+                     paneOrder_.end());
 
     // Focus handoff: if the extracted pane was focused, pick the first
     // remaining pane (matches today's "focus transfers to sibling" UX
-    // approximately — the first pane in mPanes is a reasonable default).
+    // approximately — the first paneOrder_ entry is a reasonable default).
     if (mFocusedPaneId == paneId) {
-        mFocusedPaneId = mPanes.empty() ? -1 : mPanes.front()->id();
+        mFocusedPaneId = paneOrder_.empty() ? -1 : paneOrder_.front();
     }
     if (mZoomedPaneId == paneId) {
         mZoomedPaneId = -1;
     }
 
-    return extracted;
+    // Pull Terminal ownership back from the engine map. If the Terminal
+    // was never inserted (engine_ missing or insertTerminal refused), this
+    // returns nullptr — still correct, the caller just has nothing to
+    // graveyard.
+    if (engine_) return engine_->extractTerminal(target);
+    return nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,8 +346,23 @@ std::unique_ptr<Terminal> Layout::extractPane(int paneId)
 
 Terminal* Layout::pane(int paneId)
 {
-    for (auto& p : mPanes) if (p && p->id() == paneId) return p.get();
-    return nullptr;
+    if (!engine_) return nullptr;
+    auto it = paneIdToUuid_.find(paneId);
+    if (it == paneIdToUuid_.end()) return nullptr;
+    return engine_->terminal(it->second);
+}
+
+std::vector<Terminal*> Layout::panes() const
+{
+    std::vector<Terminal*> out;
+    if (!engine_) return out;
+    out.reserve(paneOrder_.size());
+    for (int id : paneOrder_) {
+        auto uit = paneIdToUuid_.find(id);
+        if (uit == paneIdToUuid_.end()) continue;
+        if (Terminal* t = engine_->terminal(uit->second)) out.push_back(t);
+    }
+    return out;
 }
 
 PaneRect Layout::nodeRect(int paneId) const
@@ -403,9 +440,10 @@ void Layout::computeRects(uint32_t windowW, uint32_t windowH)
     // Zoom short-circuits: the zoomed pane gets the whole content rect; every
     // other pane's rect is zeroed (matches the old computeRects zoom path).
     if (mZoomedPaneId >= 0) {
-        for (auto& panePtr : mPanes) {
+        for (int id : paneOrder_) {
+            Terminal* panePtr = pane(id);
             if (!panePtr) continue;
-            if (panePtr->id() == mZoomedPaneId) {
+            if (id == mZoomedPaneId) {
                 panePtr->setRect({content.x, content.y, content.w, content.h});
             } else {
                 panePtr->setRect({0, 0, 0, 0});
@@ -416,13 +454,14 @@ void Layout::computeRects(uint32_t windowW, uint32_t windowH)
 
     // Normal path: run tree layout, then copy rects to each Terminal so every
     // existing reader of pane->rect() sees the right geometry.
-    auto rects = tree_->computeRectsFrom(subtreeRoot_, 
+    auto rects = tree_->computeRectsFrom(subtreeRoot_,
         LayoutRect{content.x, content.y, content.w, content.h},
         /*cellW=*/1, /*cellH=*/1);
 
-    for (auto& panePtr : mPanes) {
+    for (int id : paneOrder_) {
+        Terminal* panePtr = pane(id);
         if (!panePtr) continue;
-        auto uit = paneIdToUuid_.find(panePtr->id());
+        auto uit = paneIdToUuid_.find(id);
         if (uit == paneIdToUuid_.end()) { panePtr->setRect({0, 0, 0, 0}); continue; }
         auto rit = rects.find(uit->second);
         if (rit == rects.end()) { panePtr->setRect({0, 0, 0, 0}); continue; }
@@ -436,12 +475,16 @@ void Layout::computeRects(uint32_t windowW, uint32_t windowH)
 
 int Layout::paneAtPixel(int px, int py) const
 {
-    for (const auto& panePtr : mPanes) {
+    if (!engine_) return -1;
+    for (int id : paneOrder_) {
+        auto uit = paneIdToUuid_.find(id);
+        if (uit == paneIdToUuid_.end()) continue;
+        Terminal* panePtr = engine_->terminal(uit->second);
         if (!panePtr) continue;
         const PaneRect& r = panePtr->rect();
         if (r.isEmpty()) continue;
         if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) {
-            return panePtr->id();
+            return id;
         }
     }
     return -1;
@@ -463,7 +506,7 @@ std::vector<PaneRect> Layout::dividerRects(int dividerPixels) const
 std::vector<std::pair<int, PaneRect>>
 Layout::dividersWithOwnerPanes(int dividerPixels) const
 {
-    if (dividerPixels <= 0 || mPanes.size() < 2) return {};
+    if (dividerPixels <= 0 || paneOrder_.size() < 2) return {};
     // Walk the tree: for each Container, for each inter-child boundary, the
     // divider's "owner" is the leftmost/topmost leaf under the "first" child.
     std::vector<std::pair<int, PaneRect>> out;

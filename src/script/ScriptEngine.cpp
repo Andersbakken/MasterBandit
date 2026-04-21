@@ -4,6 +4,7 @@
 #include "ScriptLayoutBindings.h"
 #include "Action.h"
 #include "LayoutTree.h"
+#include "Terminal.h"
 #include "Utils.h"
 #include "Uuid.h"
 
@@ -2123,6 +2124,13 @@ Engine::~Engine()
     }
     if (rt_) JS_FreeRuntime(rt_);
 }
+
+// Engine::terminal / insertTerminal / extractTerminal are defined inline in
+// the header so Layout.cpp (which tests link directly without pulling in
+// ScriptEngine.cpp's heavy deps on QuickJS / libwebsockets) can resolve the
+// symbols. Destruction of terminals_ is still anchored here via the
+// out-of-line ~Engine() since ScriptEngine.cpp includes Terminal.h, so
+// unique_ptr<Terminal>::~unique_ptr instantiates against the complete type.
 
 void Engine::setCallbacks(AppCallbacks cbs) { callbacks_ = std::move(cbs); }
 

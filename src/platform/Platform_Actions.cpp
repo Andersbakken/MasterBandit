@@ -77,7 +77,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             Layout* layout = tab->layout();
 
             if (a.dir == Action::Direction::Next || a.dir == Action::Direction::Prev) {
-                const auto& panes = layout->panes();
+                auto panes = layout->panes();
                 if (panes.size() <= 1) return;
                 int cur = -1;
                 for (int i = 0; i < static_cast<int>(panes.size()); ++i) {

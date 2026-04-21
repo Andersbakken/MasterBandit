@@ -116,10 +116,10 @@ std::string PlatformDawn::statsJson(int id)
     for (int ti = 0; ti < static_cast<int>(allTabs.size()); ++ti) {
         Tab* tab = allTabs[ti].get();
         glz::generic::array_t panesArr;
-        for (auto& panePtr : tab->layout()->panes()) {
+        for (Terminal* panePtr : tab->layout()->panes()) {
             int pid = panePtr->id();
             const PaneRenderPrivate* rs = renderEngine_->paneRenderPrivate(pid);
-            Terminal* term = panePtr.get();
+            Terminal* term = panePtr;
             glz::generic::object_t paneObj;
             paneObj["id"]   = static_cast<double>(pid);
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);

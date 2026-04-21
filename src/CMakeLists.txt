@@ -17,7 +17,8 @@ add_executable(mb
     main.cpp
     Tab.cpp Layout.cpp text.cpp ColrEncoder.cpp ColrAtlas.cpp
     DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp
-    script/ScriptEngine.cpp script/ScriptPermissions.cpp script/ScriptFsModule.cpp
+    script/ScriptEngine.cpp script/ScriptEngine_Terminals.cpp
+    script/ScriptPermissions.cpp script/ScriptFsModule.cpp
     script/ScriptWsModule.cpp script/ScriptLayoutBindings.cpp
     ClickDetector.cpp
     Uuid.cpp
@@ -34,36 +35,58 @@ target_include_directories(mb PRIVATE
 
 target_link_libraries(mb PRIVATE terminal platform eventloop glaze::glaze cxxopts::cxxopts qjs)
 
-# Copy shaders next to the executable
-file(GLOB SHADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")
+# Copy assets next to the executable.
+#
+# configure_file(... COPYONLY) only runs at cmake-configure time; if a source
+# asset changes, the build-side copy stays stale until someone re-runs cmake.
+# Use add_custom_command with DEPENDS so content changes trigger a re-copy on
+# every `cmake --build`. CONFIGURE_DEPENDS on each glob makes the build system
+# re-run cmake when a file is added or removed from the watched directory.
+set(COPIED_ASSETS)
+
+macro(mb_copy_asset SRC DST)
+    add_custom_command(
+        OUTPUT ${DST}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SRC} ${DST}
+        DEPENDS ${SRC}
+        VERBATIM
+    )
+    list(APPEND COPIED_ASSETS ${DST})
+endmacro()
+
+# Shaders
+file(GLOB SHADER_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")
 foreach(SHADER ${SHADER_FILES})
     get_filename_component(SHADER_NAME ${SHADER} NAME)
-    configure_file(${SHADER} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/${SHADER_NAME}" COPYONLY)
+    mb_copy_asset(${SHADER} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/${SHADER_NAME}")
 endforeach()
 
-# Copy bundled fonts next to the executable (preserving subdirectory structure)
-file(GLOB_RECURSE FONT_FILES "${CMAKE_SOURCE_DIR}/assets/fonts/**/*.ttf")
+# Bundled fonts (preserving subdirectory structure)
+file(GLOB_RECURSE FONT_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/fonts/**/*.ttf")
 foreach(FONT ${FONT_FILES})
     file(RELATIVE_PATH FONT_REL "${CMAKE_SOURCE_DIR}/assets/fonts" ${FONT})
-    configure_file(${FONT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/${FONT_REL}" COPYONLY)
+    mb_copy_asset(${FONT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/${FONT_REL}")
 endforeach()
 
-# Copy bundled scripts next to the executable
-file(GLOB SCRIPT_FILES "${CMAKE_SOURCE_DIR}/assets/scripts/*.js")
+# Bundled scripts
+file(GLOB SCRIPT_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/scripts/*.js")
 foreach(SCRIPT ${SCRIPT_FILES})
     get_filename_component(SCRIPT_NAME ${SCRIPT} NAME)
-    configure_file(${SCRIPT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/${SCRIPT_NAME}" COPYONLY)
+    mb_copy_asset(${SCRIPT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/${SCRIPT_NAME}")
 endforeach()
 
-# Copy bundled JS modules
-file(GLOB MODULE_FILES "${CMAKE_SOURCE_DIR}/assets/scripts/modules/*.js")
+# Bundled JS modules
+file(GLOB MODULE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/scripts/modules/*.js")
 foreach(MOD ${MODULE_FILES})
     get_filename_component(MOD_NAME ${MOD} NAME)
-    configure_file(${MOD} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/modules/${MOD_NAME}" COPYONLY)
+    mb_copy_asset(${MOD} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/modules/${MOD_NAME}")
 endforeach()
 
-# Copy hb-gpu WGSL helper shaders from harfbuzz source
-configure_file("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
-               "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-vertex.wgsl" COPYONLY)
-configure_file("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-fragment.wgsl"
-               "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-fragment.wgsl" COPYONLY)
+# hb-gpu WGSL helper shaders from harfbuzz source
+mb_copy_asset("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
+              "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-vertex.wgsl")
+mb_copy_asset("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-fragment.wgsl"
+              "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-fragment.wgsl")
+
+add_custom_target(mb_assets ALL DEPENDS ${COPIED_ASSETS})
+add_dependencies(mb mb_assets)

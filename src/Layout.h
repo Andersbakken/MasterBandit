@@ -9,6 +9,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace Script { class Engine; }
+
 // Carried forward only for the public Dir enum; the old binary-split tree
 // type was deleted when Layout was rebased on LayoutTree. Callers that used
 // `layout->root()` to walk the tree have been migrated to tree-walking
@@ -27,7 +29,12 @@ public:
     // (Engine's, reachable from both JS bindings and platform code). `shared`
     // must outlive this Layout. Passing nullptr falls back to the owned-tree
     // behavior so callers don't have to special-case missing engines.
-    explicit Layout(LayoutTree* shared);
+    //
+    // `engine` owns the map from tree-node Uuid → Terminal (see
+    // Script::Engine::terminals_). Null engine means insertTerminal is
+    // refused — tests that only construct a Layout without spawning panes.
+    Layout(LayoutTree* shared, Script::Engine* engine);
+    explicit Layout(LayoutTree* shared) : Layout(shared, nullptr) {}
 
     ~Layout();
 
@@ -67,7 +74,13 @@ public:
     std::unique_ptr<Terminal> extractPane(int paneId);
 
     Terminal* pane(int paneId);
-    const std::vector<std::unique_ptr<Terminal>>& panes() const { return mPanes; }
+
+    // Returns pointers to the Terminals attached to this Layout, in
+    // insertion order. Ownership lives on Script::Engine; these pointers
+    // are valid until extractPane / closeTab fires. Built on demand (O(n)
+    // in the number of panes in this Layout) — cache the result in a
+    // local if you iterate multiple times in a single call site.
+    std::vector<Terminal*> panes() const;
 
     // Return the pixel rect for the pane's tree slot. Useful for reading
     // geometry before a Terminal has been inserted (rects are populated by
@@ -143,7 +156,18 @@ private:
     std::unordered_map<int, Uuid>           paneIdToUuid_;
     std::unordered_map<Uuid, int, UuidHash> uuidToPaneId_;
 
-    std::vector<std::unique_ptr<Terminal>> mPanes;
+    // Insertion-ordered paneId list for stable iteration. The old mPanes
+    // vector implicitly provided this order; we preserve it explicitly
+    // since std::unordered_map's iteration order is not portable. Keep
+    // in sync with paneIdToUuid_ / uuidToPaneId_ from insertTerminal
+    // and extractPane.
+    std::vector<int> paneOrder_;
+
+    // Non-owning pointer to the Engine that owns the Terminal map. Null
+    // in test fixtures that construct a Layout with no Engine; in that
+    // case insertTerminal logs and refuses.
+    Script::Engine* engine_ = nullptr;
+
     int mFocusedPaneId = -1;
     int mZoomedPaneId  = -1;
 

@@ -20,6 +20,7 @@
 struct JSRuntime;
 struct JSContext;
 class LayoutTree;
+class Terminal;
 
 namespace Script {
 
@@ -366,6 +367,23 @@ public:
     // Established in the Engine constructor and set as the tree's root.
     Uuid layoutRootStack() const { return layoutRootStack_; }
 
+    // --- Terminal ownership (engine-wide) ---
+    // The single source of truth for pane Terminal lifetime. Keyed by the
+    // Terminal's tree-node UUID (same value as Terminal::nodeId()). Ownership
+    // used to live in Layout::mPanes; now Layouts just record paneId↔Uuid
+    // and resolve through the engine. Destroyed before layoutTree_ (terminals_
+    // is declared last in the member list).
+    //
+    // Defined in ScriptEngine_Terminals.cpp — a standalone TU that sees
+    // Terminal.h but doesn't drag in ScriptEngine.cpp's quickjs /
+    // libwebsockets dependencies. Both mb and mb-tests link it.
+    ::Terminal*                 terminal(Uuid nodeId);
+    const ::Terminal*           terminal(Uuid nodeId) const;
+    ::Terminal*                 insertTerminal(Uuid nodeId, std::unique_ptr<::Terminal> t);
+    std::unique_ptr<::Terminal> extractTerminal(Uuid nodeId);
+    const std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash>&
+                                terminals() const { return terminals_; }
+
     // Re-entrancy guard for iterating instances_ while calling JS.
     // While iterating, unload() nulls ctx instead of erasing. When the
     // outermost guard destructs, deferred cleanups run and dead entries
@@ -453,6 +471,11 @@ private:
     void cleanupPane(PaneId pane);
     void cleanupTab(TabId tab);
 
+    // Engine-wide Terminal map. Declared last so its destructor runs first,
+    // before layoutTree_ (Terminals reference their tree node by UUID; the
+    // tree must outlive the Terminals that point into it). Access goes
+    // through terminal() / insertTerminal() / extractTerminal() above.
+    std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> terminals_;
 };
 
 } // namespace Script

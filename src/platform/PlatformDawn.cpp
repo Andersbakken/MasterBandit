@@ -330,8 +330,7 @@ void PlatformDawn::buildRenderFrameState()
                 renderThread_->renderState().overlay->resize(wantCols, wantRows);
             }
         } else {
-            for (auto& panePtr : tab->layout()->panes()) {
-                Terminal* pane = panePtr.get();
+            for (Terminal* pane : tab->layout()->panes()) {
                 RenderPaneInfo rpi;
                 rpi.id = pane->id();
                 rpi.rect = pane->rect();
@@ -928,7 +927,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     // Create a layout and tab for this terminal. Layout's subtree lives in
     // the shared LayoutTree on the script Engine so JS and native agree on
     // structure.
-    auto layout = std::make_unique<Layout>(&scriptEngine_.layoutTree());
+    auto layout = std::make_unique<Layout>(&scriptEngine_.layoutTree(), &scriptEngine_);
     layout->setDividerPixels(dividerWidth_);
     int paneId = layout->createPane();
     layout->setFocusedPane(paneId);
@@ -1089,7 +1088,7 @@ void PlatformDawn::invalidateAllRowCaches()
     // communicate via the pending mutations flag.
     renderThread_->pending().invalidateAllRowCaches = true;
     for (auto& tab : tabManager_->tabs()) {
-        for (auto& panePtr : tab->layout()->panes())
+        for (Terminal* panePtr : tab->layout()->panes())
             renderThread_->pending().dirtyPanes.insert(panePtr->id());
     }
 }
@@ -1191,8 +1190,8 @@ void PlatformDawn::onBlinkTick()
         if (wantsRedraw(tab->topOverlay())) setNeedsRedraw();
         return;
     }
-    for (auto& panePtr : tab->layout()->panes()) {
-        if (wantsRedraw(panePtr.get())) {
+    for (Terminal* panePtr : tab->layout()->panes()) {
+        if (wantsRedraw(panePtr)) {
             setNeedsRedraw();
             return;
         }
@@ -1460,8 +1459,7 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     for (auto& tabPtr : tabManager_->tabs()) {
         tabPtr->layout()->computeRects(fbWidth_, fbHeight_);
 
-        for (auto& panePtr : tabPtr->layout()->panes()) {
-            Terminal* pane = panePtr.get();
+        for (Terminal* pane : tabPtr->layout()->panes()) {
             pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
             int cols = pane->width();

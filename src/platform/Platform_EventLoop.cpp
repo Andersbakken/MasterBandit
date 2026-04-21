@@ -262,7 +262,7 @@ int PlatformDawn::exec()
                 ti.active = (i == active);
                 ti.hasOverlay = allTabs[i]->hasOverlay();
                 ti.focusedPane = allTabs[i]->layout()->focusedPaneId();
-                for (auto& p : allTabs[i]->layout()->panes())
+                for (Terminal* p : allTabs[i]->layout()->panes())
                     ti.panes.push_back(p->id());
                 Uuid sub = allTabs[i]->layout()->subtreeRoot();
                 if (!sub.isNil()) ti.nodeId = sub.toString();
@@ -697,7 +697,7 @@ int PlatformDawn::exec()
                 // Advance progress animations
                 bool hasAnim = false;
                 for (auto& t : tabManager_->tabs()) {
-                    for (auto& panePtr : t->layout()->panes()) {
+                    for (Terminal* panePtr : t->layout()->panes()) {
                         if (panePtr->progressState() == 3) { hasAnim = true; break; }
                     }
                     if (hasAnim) break;

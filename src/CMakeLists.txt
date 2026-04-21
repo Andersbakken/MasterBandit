@@ -20,6 +20,7 @@ add_executable(mb
     script/ScriptEngine.cpp script/ScriptPermissions.cpp script/ScriptFsModule.cpp
     script/ScriptWsModule.cpp
     ClickDetector.cpp
+    Uuid.cpp
 )
 
 target_include_directories(mb PRIVATE

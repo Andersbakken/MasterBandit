@@ -13,8 +13,11 @@ struct TerminalParams {
     pane_origin_y: f32, // pixel Y offset of pane within window
     cursor_col: u32,
     cursor_row: u32,
-    cursor_type: u32,   // 0=none 1=solid 2=hollow 3=underline 4=bar
-    cursor_color: u32,  // packed RGBA8
+    cursor_type: u32,       // 0=none 1=solid 2=hollow 3=underline 4=bar
+    cursor_color: u32,      // packed RGBA8 — block/underline/bar fill, hollow outline
+    cursor_text_color: u32, // packed RGBA8 — glyph color used at the cursor cell
+                            // when cursor_type == 1 so the glyph stays legible on top
+                            // of the solid block. Ignored for other cursor types.
     max_text_vertices: u32, // safety cap for text vertex emission
     selection_start_row: u32,
     selection_end_row: u32,
@@ -298,8 +301,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
-    // Text glyphs — iterate cell's glyph list
-    let tint = cell.fg_color;
+    // Text glyphs — iterate cell's glyph list.
+    // Under a solid block cursor the glyph would sit on top of the cursor rect
+    // in its normal fg_color, which is often unreadable (e.g. white cursor on
+    // white text). Swap to cursor_text_color at that one cell so the glyph
+    // renders in a contrasting color. Only applies to cursor_type == 1 since
+    // hollow/underline/bar don't occlude the glyph.
+    var tint = cell.fg_color;
+    if (col == params.cursor_col && row == params.cursor_row && params.cursor_type == 1u) {
+        tint = params.cursor_text_color;
+    }
     let fg_r = f32((tint >> 0u) & 0xFFu) / 255.0;
     let fg_g = f32((tint >> 8u) & 0xFFu) / 255.0;
     let fg_b = f32((tint >> 16u) & 0xFFu) / 255.0;

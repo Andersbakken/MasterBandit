@@ -3,6 +3,7 @@
 #include "ScriptWsModule.h"
 #include "Action.h"
 #include "Utils.h"
+#include "Uuid.h"
 
 #include <quickjs.h>
 #include <spdlog/spdlog.h>
@@ -1600,6 +1601,15 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
     return arr;
 }
 
+// mb.createUuid() -> 36-char UUID v4 string ("xxxxxxxx-xxxx-4xxx-Nxxx-xxxxxxxxxxxx").
+// Ungated — providing randomness confers no capability. String form is the only
+// JS-safe representation; 128-bit integers don't round-trip through JS Number.
+static JSValue jsMbCreateUuid(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    std::string s = Uuid::generate().toString();
+    return JS_NewStringLen(ctx, s.data(), s.size());
+}
+
 // mb.createSecureToken(length = 32) -> hex string
 // Generates `length` cryptographically-secure random bytes and returns them as a 2*length
 // hex string. Ungated — providing randomness confers no capability.
@@ -2201,6 +2211,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
     JS_SetPropertyStr(ctx, mb, "createSecureToken",
         JS_NewCFunction(ctx, jsMbCreateSecureToken, "createSecureToken", 1));
+    JS_SetPropertyStr(ctx, mb, "createUuid",
+        JS_NewCFunction(ctx, jsMbCreateUuid, "createUuid", 0));
     JS_SetPropertyStr(ctx, mb, "approveScript",
         JS_NewCFunction(ctx, jsMbApproveScript, "approveScript", 2));
     JS_SetPropertyStr(ctx, mb, "setNamespace",

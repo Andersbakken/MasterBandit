@@ -45,7 +45,10 @@ struct TerminalComputeParams {
     uint32_t cursor_col;
     uint32_t cursor_row;
     uint32_t cursor_type;
-    uint32_t cursor_color; // packed RGBA8
+    uint32_t cursor_color;       // packed RGBA8 — block/underline/bar fill, hollow outline
+    uint32_t cursor_text_color;  // packed RGBA8 — glyph color at the cursor cell when
+                                 // cursor_type == 1 (solid block). Ignored for other
+                                 // cursor types since they don't occlude the glyph.
     uint32_t max_text_vertices;  // safety cap for text vertex emission
     // OSC 133 selected-command outline. Rows are viewport-relative.
     // outline_color == 0 disables the outline (no rects emitted).
@@ -57,7 +60,7 @@ struct TerminalComputeParams {
     uint32_t selection_outline_flags;
     uint32_t selection_outline_color;
 };
-static_assert(sizeof(TerminalComputeParams) == 76);
+static_assert(sizeof(TerminalComputeParams) == 80);
 
 // Per-glyph info for the COLRv1 rasterizer compute shader (48 bytes)
 struct ColrGlyphInfoGPU {

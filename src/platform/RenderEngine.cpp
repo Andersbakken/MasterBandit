@@ -1056,8 +1056,13 @@ void RenderEngine::renderFrame()
             rs.lastCommandOutlineColor != frameState_.commandOutlineColor;
         rs.lastCommandOutlineColor = frameState_.commandOutlineColor;
 
+        // Unfocused panes render the cursor as a stable hollow outline with
+        // no blink modulation (see cursor_type / packCursorColor selection in
+        // the per-target render path), so blink-opacity transitions produce
+        // pixel-identical output — invalidating on them is wasted work.
         bool needsRender = rs.dirty || anyRowDirty || cursorMoved ||
-                           cursorBlinkChanged || animationAdvanced ||
+                           (target.isFocused && cursorBlinkChanged) ||
+                           animationAdvanced ||
                            selectionChanged || commandSelectionChanged ||
                            outlineColorChanged || !rs.heldTexture;
 
@@ -1317,6 +1322,18 @@ void RenderEngine::renderFrame()
                      | (static_cast<uint32_t>(alpha) << 24);
             };
 
+            // Glyph color to use when a solid block cursor sits on top of the
+            // cell. Defaulted to the palette background, matching wezterm's
+            // classic-inversion default (cursor_fg = theme bg). A future config
+            // knob can override; for now the shader only reads this field when
+            // cursor_type == 1 so other cursor shapes pay no cost.
+            auto packCursorTextColor = [](const TerminalEmulator::DefaultColors& dc) {
+                return static_cast<uint32_t>(dc.bgR)
+                     | (static_cast<uint32_t>(dc.bgG) << 8)
+                     | (static_cast<uint32_t>(dc.bgB) << 16)
+                     | (static_cast<uint32_t>(0xFFu) << 24);
+            };
+
             // OSC 133 command outline — pass row range + edge flags. Rows
             // are viewport-relative; out-of-view edges are dropped via flags
             // so the outline stays visible even if partially scrolled away.
@@ -1350,6 +1367,7 @@ void RenderEngine::renderFrame()
                     params.cursor_row   = static_cast<uint32_t>(snap.cursorY);
                     bool blink = isFocused && snap.cursorBlinking;
                     params.cursor_color = packCursorColor(snap.defaults, blink);
+                    params.cursor_text_color = packCursorTextColor(snap.defaults);
                     params.cursor_type  = isFocused ? 1u : 2u;
                 }
             } else {
@@ -1373,6 +1391,7 @@ void RenderEngine::renderFrame()
                     params.cursor_row   = static_cast<uint32_t>(cursorViewRow);
                     bool blink = isFocused && !popupHasFocus && snap.cursorBlinking;
                     params.cursor_color = packCursorColor(snap.defaults, blink);
+                    params.cursor_text_color = packCursorTextColor(snap.defaults);
                     if (!isFocused || popupHasFocus) {
                         params.cursor_type = 2u;
                     } else {

@@ -154,6 +154,37 @@ bool LayoutTree::removeChild(Uuid parent, Uuid child)
     return true;
 }
 
+bool LayoutTree::replaceChild(Uuid parent, Uuid oldChild, ChildSlot newSlot)
+{
+    Node* p = node(parent);
+    if (!p) return false;
+    auto* kids = childrenOf(p);
+    if (!kids) return false;
+
+    auto it = std::find_if(kids->begin(), kids->end(),
+                           [&](const ChildSlot& s) { return s.id == oldChild; });
+    if (it == kids->end()) return false;
+
+    Node* newNode = node(newSlot.id);
+    if (!newNode) return false;
+    if (!newNode->parent.isNil()) {
+        spdlog::warn("LayoutTree::replaceChild: new node {} already has parent",
+                     newSlot.id.toString());
+        return false;
+    }
+
+    // Detach old, attach new in the same slot position.
+    Node* oldNode = node(oldChild);
+    if (oldNode) oldNode->parent = {};
+    *it = newSlot;
+    newNode->parent = parent;
+
+    if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild == oldChild) {
+        sd->activeChild = newSlot.id;
+    }
+    return true;
+}
+
 bool LayoutTree::setActiveChild(Uuid stack, Uuid child)
 {
     Node* s = node(stack);

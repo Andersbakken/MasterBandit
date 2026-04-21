@@ -96,6 +96,13 @@ public:
     // active child, the stack's activeChild clears.
     bool removeChild(Uuid parent, Uuid child);
 
+    // Replace `oldChild` in `parent`'s child list with `newSlot` (same
+    // position). `newSlot.id` must identify an orphan node (parent nil).
+    // The `oldChild` becomes an orphan. For a Stack whose activeChild was
+    // `oldChild`, the activeChild is retargeted to `newSlot.id`.
+    // Returns false on any kind/linkage violation.
+    bool replaceChild(Uuid parent, Uuid oldChild, ChildSlot newSlot);
+
     bool setActiveChild(Uuid stack, Uuid child);
     bool setTabBarStack(Uuid tabBar, Uuid stack); // stack must be kind Stack
     void setLabel(Uuid node, std::string label);

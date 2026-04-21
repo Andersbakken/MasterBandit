@@ -15,33 +15,9 @@
 #include <algorithm>
 #include <cmath>
 
-static void collectFirstPaneDividers(const LayoutNode* node, int divPx,
-                                      std::vector<std::pair<int, PaneRect>>& out)
-{
-    if (!node || node->isLeaf || divPx <= 0) return;
-    const PaneRect& r = node->rect;
-
-    // The "first" (left/top) child owns this divider.
-    int firstPaneId = -1;
-    const LayoutNode* first = node->first.get();
-    while (first && !first->isLeaf) first = first->first.get(); // leftmost leaf
-    if (first) firstPaneId = first->paneId;
-
-    if (firstPaneId >= 0) {
-        PaneRect divRect;
-        if (node->dir == LayoutNode::Dir::Horizontal) {
-            int splitX = node->first ? (node->first->rect.x + node->first->rect.w) : 0;
-            divRect = {splitX, r.y, divPx, r.h};
-        } else {
-            int splitY = node->first ? (node->first->rect.y + node->first->rect.h) : 0;
-            divRect = {r.x, splitY, r.w, divPx};
-        }
-        out.push_back({firstPaneId, divRect});
-    }
-
-    collectFirstPaneDividers(node->first.get(),  divPx, out);
-    collectFirstPaneDividers(node->second.get(), divPx, out);
-}
+// collectFirstPaneDividers used to walk Layout's legacy binary-split tree.
+// Now Layout::dividersWithOwnerPanes returns the same (firstLeafPaneId, rect)
+// pairs directly from the LayoutTree walk — see Layout.cpp.
 
 
 Terminal* TabManager::activeTerm()
@@ -138,9 +114,8 @@ void TabManager::refreshDividers(Tab* tab)
 
     if (layout->panes().size() <= 1 || layout->isZoomed()) return;
 
-    // Collect (paneId, dividerRect) for each split node
-    std::vector<std::pair<int, PaneRect>> dividers;
-    collectFirstPaneDividers(layout->root(), divPx, dividers);
+    // Collect (paneId, dividerRect) for each split boundary in the tree.
+    std::vector<std::pair<int, PaneRect>> dividers = layout->dividersWithOwnerPanes(divPx);
 
     host_.pending->dividersDirty = true;
 

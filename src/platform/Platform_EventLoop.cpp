@@ -342,13 +342,13 @@ int PlatformDawn::exec()
         scbs.focusPane = [this](int paneId) {
             return tabManager_->focusPaneById(paneId);
         };
-        scbs.closePane = [this](int paneId) {
-            return tabManager_->closePaneById(paneId);
+        scbs.removeNode = [this](Uuid nodeId) {
+            return tabManager_->removeNode(nodeId);
         };
         scbs.killTerminalByNodeId = [this](Uuid nodeId) {
             // TabManager::killTerminal mutates live state the render thread
             // observes, so take the platform/render mutex around it (same
-            // invariant as closeTab / closePaneById).
+            // invariant as closeTab / removeNode).
             std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
             return tabManager_->killTerminal(nodeId);
         };

@@ -207,11 +207,16 @@ public:
                            float ratio, bool newIsFirst,
                            int* outPaneId, Uuid* outNodeId);
 
-    // Close one pane (not the whole tab) — full teardown matching the
-    // legacy ClosePane action: PTY poll removal, render-state cleanup,
-    // cursor-style erase, paneDestroyed notify, tree removal, graveyard,
-    // resize + focus + title fixups.
-    bool closePaneById(int paneId);
+    // Remove a node (Terminal leaf, Container, or Stack) from its enclosing
+    // Tab's Layout tree. Refuses if any descendant Terminal is still live in
+    // the engine map — kill them via killTerminal first. Also refuses if
+    // `nodeId` is the Tab's subtreeRoot (use closeTab for that).
+    //
+    // Side effects: pane-index cleanup, focus/zoom fixup (handled inside
+    // Layout::removeNodeSubtree), shadow-copy rebuild, resize + focus-chrome
+    // refresh for the surviving tab content. Caller need not hold the
+    // platform mutex; this method takes it internally.
+    bool removeNode(Uuid nodeId);
 
     // Set the focused pane in whichever tab contains it, with notify
     // + title update + redraw. Returns false if pane not found.
@@ -233,7 +238,7 @@ public:
     // extract from Script::Engine's map, graveyard with the current frame
     // stamp, and fire the `terminalExited` JS event. The Terminal's tree
     // node is left in place — the JS controller is responsible for removing
-    // it (via closePane / removeNode) and deciding whether to close the
+    // it (via removeNode) and deciding whether to close the
     // enclosing tab or quit. Caller must hold host_.platformMutex.
     // Returns true when a matching live Terminal was found and killed.
     bool killTerminal(Uuid nodeId);

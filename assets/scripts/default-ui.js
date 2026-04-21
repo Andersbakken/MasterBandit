@@ -59,9 +59,11 @@ mb.actions.register('adjustPaneSize', ({dir, amount}) => {
 
 mb.addEventListener('terminalExited', ({paneId, paneNodeId}) => {
     // Invariant at entry: Terminal is graveyarded; its tree node is still
-    // present. Remove the node. If its enclosing tab ends up empty, close
-    // the tab too. If that was the last tab, quit.
-    mb.layout.closePane(paneId);
+    // present. Remove the node (structural-only — the Terminal is already
+    // gone so the "no live Terminals beneath" guard is satisfied). If its
+    // enclosing tab ends up empty, close the tab. If that was the last
+    // tab, quit.
+    mb.layout.removeNode(paneNodeId);
 
     // Walk tabs: find the one containing no live panes. (The killed pane
     // is already filtered out of mb.tabs[i].panes — `panes` reflects live

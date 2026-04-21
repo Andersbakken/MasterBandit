@@ -148,7 +148,10 @@ struct AppCallbacks {
     std::function<std::pair<int, std::string>()> createEmptyTab;
     std::function<void(int)> activateTab;
     std::function<bool(int)> focusPane;
-    std::function<bool(int)> closePane;
+    // Remove a tree node (Terminal leaf, Container, or Stack) from its
+    // enclosing Tab's Layout. Refuses if any descendant Terminal is still
+    // live — the controller must killTerminal first. See TabManager::removeNode.
+    std::function<bool(Uuid)> removeNode;
     // Spawn a Terminal inside the Layout that owns `parentContainerNodeId`;
     // append the new Terminal node as the container's last child.
     std::function<NewPane(const std::string& parentContainerNodeId,

@@ -741,48 +741,25 @@ bool TabManager::focusPaneById(int paneId)
     return true;
 }
 
-bool TabManager::closePaneById(int paneId)
+bool TabManager::removeNode(Uuid nodeId)
 {
     int tabIdx = -1;
-    Tab* tab = findTabForPane(paneId, &tabIdx);
+    Tab* tab = findTabForNode(nodeId, &tabIdx);
     if (!tab) return false;
     Layout* layout = tab->layout();
+    if (nodeId == layout->subtreeRoot()) return false;
 
-    // Two callers land here:
-    //   1. User-triggered closePane (keybind / action) — Terminal is live,
-    //      do the full PTY teardown + notify + graveyard.
-    //   2. Terminal already killed (controller handling a `terminalExited`
-    //      event) — Terminal is already graveyarded, fp is null, we only
-    //      need to remove the tree node.
-    // The "keep last pane" policy is no longer enforced here: the JS
-    // controller decides whether to close the tab / quit when a tab goes
-    // empty.
-    Terminal* fp = layout->pane(paneId);
-    Uuid nodeId{};
-    if (fp) {
-        nodeId = fp->nodeId();
-        removePtyPoll(fp->masterFD());
-        host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{paneId});
-        for (const auto& popup : fp->popups()) {
-            std::string key = std::to_string(paneId) + "/" + popup->popupId();
-            host_.pending->releasePopupTextures.push_back(key);
-        }
-        if (host_.inputController) host_.inputController->erasePaneCursorStyle(paneId);
-
-        if (host_.scriptEngine)
-            host_.scriptEngine->notifyPaneDestroyed(paneId, nodeId);
-    }
-
-    std::unique_ptr<Terminal> extracted;
-    uint64_t stamp = 0;
+    // Tree mutation under the platform mutex so the render thread's next
+    // frame doesn't snapshot a partially-removed subtree. Layout::
+    // removeNodeSubtree enforces the "no live Terminals beneath" guard; if
+    // it refuses, we haven't touched anything and can return false cleanly.
+    bool removed = false;
     {
         std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
-        extracted = layout->extractPane(paneId);
-        if (host_.buildRenderFrameState) host_.buildRenderFrameState();
-        stamp = host_.completedFrames ? host_.completedFrames() : 0;
+        removed = layout->removeNodeSubtree(nodeId);
+        if (removed && host_.buildRenderFrameState) host_.buildRenderFrameState();
     }
-    if (extracted && host_.graveyard)
-        host_.graveyard->defer(std::move(extracted), stamp);
+    if (!removed) return false;
 
     // Skip resize/focus chrome when the tab is now empty — there is nothing
     // to size or focus, and the controller will shortly close the tab.

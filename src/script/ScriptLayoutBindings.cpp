@@ -101,13 +101,10 @@ bool parseChildSlot(JSContext* ctx, JSValueConst opts, Uuid slotId, ChildSlot& o
 // ---------------------------------------------------------------------------
 // Node creation — all return a UUID string. Permission: layout.modify.
 // ---------------------------------------------------------------------------
-
-JSValue jsLayoutCreateTerminal(JSContext* ctx, JSValueConst, int, JSValueConst*)
-{
-    if (!checkPerm(ctx, Perm::LayoutModify))
-        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    return uuidToJs(ctx, engineFromCtx(ctx)->layoutTree().createTerminal());
-}
+//
+// Bare Terminal-node creation (no PTY) was previously exposed as
+// mb.layout.createTerminalNode. Dead after the composite createTerminal
+// shipped; removed with the tree cutover step 4.
 
 JSValue jsLayoutCreateContainer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -337,34 +334,34 @@ JSValue jsLayoutFocusPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
     return JS_NewBool(ctx, ok);
 }
 
-JSValue jsLayoutClosePane(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+// mb.layout.removeNode(idOrNodeId) — remove a tree node (Terminal leaf,
+// Container, or Stack). Structural-only: refuses if any descendant Terminal
+// is still live. Callers must killTerminal first for those. Accepts either
+// a string UUID (preferred — matches the other structural APIs) or an
+// integer paneId (resolved via paneInfo.nodeId).
+JSValue jsLayoutRemoveNode(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    if (argc < 1) return JS_ThrowTypeError(ctx, "closePane(idOrNodeId)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "removeNode(idOrNodeId)");
     auto* eng = engineFromCtx(ctx);
-    int paneId = -1;
+    Uuid nodeId;
     if (JS_IsNumber(argv[0])) {
+        int paneId = -1;
         if (JS_ToInt32(ctx, &paneId, argv[0]) != 0) return JS_EXCEPTION;
+        if (eng->callbacks().paneInfo) {
+            auto info = eng->callbacks().paneInfo(paneId);
+            if (!info.nodeId.empty()) nodeId = Uuid::fromString(info.nodeId);
+        }
     } else if (JS_IsString(argv[0])) {
         size_t len = 0;
         const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
         if (!s) return JS_EXCEPTION;
-        std::string want(s, len);
+        nodeId = Uuid::fromString(std::string_view(s, len));
         JS_FreeCString(ctx, s);
-        if (eng->callbacks().tabs && eng->callbacks().paneInfo) {
-            auto all = eng->callbacks().tabs();
-            for (const auto& t : all) {
-                for (int pid : t.panes) {
-                    auto pi = eng->callbacks().paneInfo(pid);
-                    if (pi.nodeId == want) { paneId = pid; break; }
-                }
-                if (paneId >= 0) break;
-            }
-        }
     }
-    if (paneId < 0) return JS_FALSE;
-    bool ok = eng->callbacks().closePane && eng->callbacks().closePane(paneId);
+    if (nodeId.isNil()) return JS_FALSE;
+    bool ok = eng->callbacks().removeNode && eng->callbacks().removeNode(nodeId);
     return JS_NewBool(ctx, ok);
 }
 
@@ -725,10 +722,6 @@ void installLayoutBindings(Engine&, JSContext* ctx, JSValue mb)
     // Composite createTerminal: spawns PTY, attaches under parentContainerNodeId.
     JS_SetPropertyStr(ctx, layout, "createTerminal",
         JS_NewCFunction(ctx, jsLayoutCreateTerminalComposite, "createTerminal", 2));
-    // Bare tree-node creation (no PTY). For specialized cases — normal
-    // controllers should use createTerminal.
-    JS_SetPropertyStr(ctx, layout, "createTerminalNode",
-        JS_NewCFunction(ctx, jsLayoutCreateTerminal, "createTerminalNode", 0));
     JS_SetPropertyStr(ctx, layout, "createContainer",
         JS_NewCFunction(ctx, jsLayoutCreateContainer, "createContainer", 1));
     JS_SetPropertyStr(ctx, layout, "createStack",
@@ -745,8 +738,8 @@ void installLayoutBindings(Engine&, JSContext* ctx, JSValue mb)
         JS_NewCFunction(ctx, jsLayoutActivateTab, "activateTab", 1));
     JS_SetPropertyStr(ctx, layout, "focusPane",
         JS_NewCFunction(ctx, jsLayoutFocusPane, "focusPane", 1));
-    JS_SetPropertyStr(ctx, layout, "closePane",
-        JS_NewCFunction(ctx, jsLayoutClosePane, "closePane", 1));
+    JS_SetPropertyStr(ctx, layout, "removeNode",
+        JS_NewCFunction(ctx, jsLayoutRemoveNode, "removeNode", 1));
     JS_SetPropertyStr(ctx, layout, "killTerminal",
         JS_NewCFunction(ctx, jsLayoutKillTerminal, "killTerminal", 1));
     JS_SetPropertyStr(ctx, layout, "splitPane",

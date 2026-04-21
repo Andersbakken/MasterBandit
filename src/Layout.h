@@ -67,18 +67,31 @@ public:
     // Sets the pane ID on the Terminal. Returns the Terminal pointer.
     Terminal* insertTerminal(int paneId, std::unique_ptr<Terminal> t);
 
-    // Remove a pane. Its sibling (under a binary-split parent) collapses up
-    // to fill the parent's slot. Returns the extracted Terminal so callers
-    // can defer destruction past the current render frame. Returns nullptr
-    // if the pane wasn't found or removing it would leave the tab empty.
-    std::unique_ptr<Terminal> extractPane(int paneId);
+    // Remove an arbitrary subtree from this Layout's tree. Works for any
+    // node kind (Terminal, Container, Stack). The "no live Terminals
+    // beneath" invariant is enforced: if any descendant Terminal node has
+    // a live Terminal in the engine map, the call refuses with false and
+    // the tree is unchanged. Callers that need to dismantle a tab's panes
+    // should first call killTerminal on each live Terminal.
+    //
+    // On success:
+    //   - Every descendant Terminal's paneId is removed from paneIdToUuid_,
+    //     uuidToPaneId_, and paneOrder_. Focus/zoom selections that pointed
+    //     at a removed pane are cleared.
+    //   - The subtree root is detached from its parent and destroyed
+    //     recursively (Container/Stack children die with it).
+    //   - Single-child Containers on the parent spine collapse, matching
+    //     the sibling-promotion rule that splits unwind cleanly.
+    // Refuses if nodeId is this Layout's subtreeRoot (the controller uses
+    // closeTab for that), or if the node is not found in this Layout.
+    bool removeNodeSubtree(Uuid nodeId);
 
     Terminal* pane(int paneId);
 
     // True when `paneId` still has a slot in this Layout — independent of
     // whether the Terminal is alive. After a killTerminal the Terminal is
     // gone from the engine map but its slot and tree node remain until the
-    // controller removes the node via extractPane. Callers that want
+    // controller removes the node via removeNodeSubtree. Callers that want
     // "which tab owns this slot" use this; callers that want "which tab
     // has a live Terminal for this paneId" use pane().
     bool hasPaneSlot(int paneId) const {
@@ -87,7 +100,7 @@ public:
 
     // Returns pointers to the Terminals attached to this Layout, in
     // insertion order. Ownership lives on Script::Engine; these pointers
-    // are valid until extractPane / closeTab fires. Built on demand (O(n)
+    // are valid until killTerminal / closeTab fires. Built on demand (O(n)
     // in the number of panes in this Layout) — cache the result in a
     // local if you iterate multiple times in a single call site.
     std::vector<Terminal*> panes() const;
@@ -170,7 +183,7 @@ private:
     // vector implicitly provided this order; we preserve it explicitly
     // since std::unordered_map's iteration order is not portable. Keep
     // in sync with paneIdToUuid_ / uuidToPaneId_ from insertTerminal
-    // and extractPane.
+    // and removeNodeSubtree.
     std::vector<int> paneOrder_;
 
     // Non-owning pointer to the Engine that owns the Terminal map. Null

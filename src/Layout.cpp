@@ -45,7 +45,7 @@ Layout::Layout(LayoutTree* shared, Script::Engine* engine)
 Layout::~Layout()
 {
     // The Terminals we hooked into Script::Engine's map live by Uuid keys.
-    // We don't auto-extract them here — TabManager's closeTab / closePaneById
+    // We don't auto-extract them here — TabManager's closeTab / killTerminal
     // paths are responsible for moving Terminals into the graveyard with the
     // correct render-frame stamp BEFORE a Tab's Layout destructs. If a Layout
     // is destroyed without that prelude (e.g. plain delete outside TabManager),
@@ -272,72 +272,74 @@ Terminal* Layout::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
     return engine_->insertTerminal(uit->second, std::move(t));
 }
 
-std::unique_ptr<Terminal> Layout::extractPane(int paneId)
+bool Layout::removeNodeSubtree(Uuid nodeId)
 {
-    // Historically this refused to remove the last pane (Layout with zero
-    // panes was considered invalid). The tree-cutover moves that policy
-    // into the JS controller — an empty tab is a legal transient state that
-    // the controller resolves by closing the tab / quitting. Layout's job
-    // is now structural only.
-    auto pit = paneIdToUuid_.find(paneId);
-    if (pit == paneIdToUuid_.end()) return nullptr;
-    Uuid target = pit->second;
-    Node* targetNode = tree_->node(target);
-    if (!targetNode) return nullptr;
-    Uuid parentUuid = targetNode->parent;
-    if (parentUuid.isNil()) return nullptr; // root leaf, can't extract
+    if (nodeId.isNil() || nodeId == subtreeRoot_) return false;
+    Node* target = tree_->node(nodeId);
+    if (!target) return false;
+    if (target->parent.isNil()) return false; // orphaned or not in a tree
 
-    // Remove from tree.
-    tree_->removeChild(parentUuid, target);
-    tree_->destroyNode(target);
-    paneIdToUuid_.erase(paneId);
-    uuidToPaneId_.erase(target);
+    // Walk the subtree. Collect Terminal descendants; if any is still live
+    // in the engine map, refuse so the caller must kill it first.
+    std::vector<Uuid> terminalNodes;
+    std::function<bool(Uuid)> walk = [&](Uuid id) -> bool {
+        const Node* n = tree_->node(id);
+        if (!n) return true;
+        if (n->kind() == NodeKind::Terminal) {
+            if (engine_ && engine_->terminal(id)) return false;
+            terminalNodes.push_back(id);
+            return true; // Terminal has no children to recurse into
+        }
+        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
+            for (const auto& s : cd->children) if (!walk(s.id)) return false;
+        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
+            for (const auto& c : sd->children) if (!walk(c.id)) return false;
+        }
+        return true;
+    };
+    if (!walk(nodeId)) return false;
 
-    // If the parent container now has exactly one child, collapse it by
-    // replacing the parent with its remaining child (matching the binary
-    // tree's "sibling takes over" behavior). Walk up as long as single-child
-    // containers appear on the spine — but stop at subtreeRoot_ (root stays).
-    Uuid walk = parentUuid;
-    while (!walk.isNil() && walk != subtreeRoot_) {
-        Node* n = tree_->node(walk);
+    // Strip index entries for every Terminal descendant. Focus/zoom clear if
+    // they pointed at a removed pane.
+    for (Uuid tn : terminalNodes) {
+        auto uit = uuidToPaneId_.find(tn);
+        if (uit == uuidToPaneId_.end()) continue;
+        int paneId = uit->second;
+        paneIdToUuid_.erase(paneId);
+        uuidToPaneId_.erase(uit);
+        paneOrder_.erase(std::remove(paneOrder_.begin(), paneOrder_.end(), paneId),
+                         paneOrder_.end());
+        if (mFocusedPaneId == paneId)
+            mFocusedPaneId = paneOrder_.empty() ? -1 : paneOrder_.front();
+        if (mZoomedPaneId == paneId) mZoomedPaneId = -1;
+    }
+
+    // Detach from parent and destroy the subtree.
+    Uuid parentUuid = target->parent;
+    tree_->removeChild(parentUuid, nodeId);
+    tree_->destroyNode(nodeId);
+
+    // Collapse single-child Containers up the spine so successive splits
+    // that get wound up don't leave layers of unary Containers behind.
+    Uuid cur = parentUuid;
+    while (!cur.isNil() && cur != subtreeRoot_) {
+        Node* n = tree_->node(cur);
         if (!n) break;
         auto* cd = std::get_if<ContainerData>(&n->data);
         if (!cd || cd->children.size() != 1) break;
         Uuid grand = n->parent;
         if (grand.isNil()) break;
         Uuid onlyChild = cd->children.front().id;
-        // Preserve the sole child's slot stretch? Use stretch=1 on the
-        // promotion slot to match the default sibling behavior.
-        // Detach the only child from its current parent before replaceChild.
-        tree_->removeChild(walk, onlyChild);
-        if (!tree_->replaceChild(grand, walk, ChildSlot{onlyChild, 1})) {
-            spdlog::warn("Layout::extractPane: collapse replaceChild failed");
+        tree_->removeChild(cur, onlyChild);
+        if (!tree_->replaceChild(grand, cur, ChildSlot{onlyChild, 1})) {
+            spdlog::warn("Layout::removeNodeSubtree: collapse replaceChild failed");
             break;
         }
-        tree_->destroyNode(walk);
-        walk = grand;
+        tree_->destroyNode(cur);
+        cur = grand;
     }
 
-    // Remove from ordering index.
-    paneOrder_.erase(std::remove(paneOrder_.begin(), paneOrder_.end(), paneId),
-                     paneOrder_.end());
-
-    // Focus handoff: if the extracted pane was focused, pick the first
-    // remaining pane (matches today's "focus transfers to sibling" UX
-    // approximately — the first paneOrder_ entry is a reasonable default).
-    if (mFocusedPaneId == paneId) {
-        mFocusedPaneId = paneOrder_.empty() ? -1 : paneOrder_.front();
-    }
-    if (mZoomedPaneId == paneId) {
-        mZoomedPaneId = -1;
-    }
-
-    // Pull Terminal ownership back from the engine map. If the Terminal
-    // was never inserted (engine_ missing or insertTerminal refused), this
-    // returns nullptr — still correct, the caller just has nothing to
-    // graveyard.
-    if (engine_) return engine_->extractTerminal(target);
-    return nullptr;
+    return true;
 }
 
 // ---------------------------------------------------------------------------

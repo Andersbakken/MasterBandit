@@ -1,7 +1,9 @@
 #include "ScriptEngine.h"
 #include "ScriptFsModule.h"
 #include "ScriptWsModule.h"
+#include "ScriptLayoutBindings.h"
 #include "Action.h"
+#include "LayoutTree.h"
 #include "Utils.h"
 #include "Uuid.h"
 
@@ -2041,6 +2043,7 @@ static JSValue jsConsoleError(JSContext* ctx, JSValueConst, int argc, JSValueCon
 // ============================================================================
 
 Engine::Engine()
+    : layoutTree_(std::make_unique<LayoutTree>())
 {
     rt_ = JS_NewRuntime();
     JS_SetRuntimeOpaque(rt_, this);
@@ -2229,6 +2232,9 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbGetClipboard, "getClipboard", 0));
     JS_SetPropertyStr(ctx, mb, "setClipboard",
         JS_NewCFunction(ctx, jsMbSetClipboard, "setClipboard", 1));
+
+    installLayoutBindings(*this, ctx, mb);
+
     JS_SetPropertyStr(ctx, global, "mb", mb);
     JS_FreeValue(ctx, global);
 }

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -17,6 +18,7 @@
 
 struct JSRuntime;
 struct JSContext;
+class LayoutTree;
 
 namespace Script {
 
@@ -287,6 +289,13 @@ public:
     bool isActionRegistered(const std::string& fullName) const;
     const std::set<std::string>& registeredActions() const { return registeredActions_; }
 
+    // --- UI layout tree ---
+    // Shared, window-level LayoutTree — the `mb.layout` JS surface reads and
+    // mutates this directly. Not yet connected to the actual rendering path;
+    // that cutover happens when Layout/TabManager are replaced.
+    ::LayoutTree&       layoutTree()       { return *layoutTree_; }
+    const ::LayoutTree& layoutTree() const { return *layoutTree_; }
+
     // Re-entrancy guard for iterating instances_ while calling JS.
     // While iterating, unload() nulls ctx instead of erasing. When the
     // outermost guard destructs, deferred cleanups run and dead entries
@@ -314,6 +323,7 @@ public:
 private:
     JSRuntime* rt_ = nullptr;
     EventLoop* loop_ = nullptr;
+    std::unique_ptr<::LayoutTree> layoutTree_;
     std::deque<Instance> instances_; // deque for pointer stability
     int iterDepth_ = 0; // >0 while iterating instances_ and calling JS
     std::vector<std::function<void(Engine*)>> deferredCleanups_;

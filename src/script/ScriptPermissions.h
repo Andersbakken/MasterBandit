@@ -40,6 +40,10 @@ enum Perm : uint32_t {
     ClipboardWrite    = 1 << 18,  // write system clipboard / primary selection
     // pane query group
     PaneSelection     = 1 << 19,  // read pane.selection / pane.cursor
+    // layout group — structural mutation of the UI tree (create/destroy nodes,
+    // reparent, change active children, bind TabBars). Read-only introspection
+    // (mb.layout.node, computeRects) is currently ungated.
+    LayoutModify      = 1 << 20,
 
     // Group masks
     GroupUi      = UiOverlayCreate | UiOverlayClose | UiPopupCreate | UiPopupDestroy,
@@ -51,6 +55,7 @@ enum Perm : uint32_t {
     GroupFs      = FsRead | FsWrite,
     GroupNet     = NetListenLocal,
     GroupClipboard = ClipboardRead | ClipboardWrite,
+    GroupLayout    = LayoutModify,
 
     All          = 0xFFFFFFFF,
 };
@@ -70,7 +75,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 5;
+inline constexpr int kAllowlistVersion = 6;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

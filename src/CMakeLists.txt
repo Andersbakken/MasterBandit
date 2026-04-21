@@ -18,7 +18,7 @@ add_executable(mb
     Tab.cpp Layout.cpp text.cpp ColrEncoder.cpp ColrAtlas.cpp
     DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp
     script/ScriptEngine.cpp script/ScriptPermissions.cpp script/ScriptFsModule.cpp
-    script/ScriptWsModule.cpp
+    script/ScriptWsModule.cpp script/ScriptLayoutBindings.cpp
     ClickDetector.cpp
     Uuid.cpp
     LayoutTree.cpp

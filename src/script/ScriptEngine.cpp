@@ -629,6 +629,13 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         if (!info.selectedCommandId) return JS_NULL;
         return JS_NewInt64(ctx, static_cast<int64_t>(*info.selectedCommandId));
     }
+    case 17: // nodeId → UUID string of this pane's Terminal node in the shared
+             // LayoutTree, or null if unattached. Ungated — UUIDs are just
+             // handles that round-trip through mb.layout.node(...), which has
+             // its own permission discipline for mutations.
+        return info.nodeId.empty()
+                 ? JS_NULL
+                 : JS_NewStringLen(ctx, info.nodeId.data(), info.nodeId.size());
     default: return JS_UNDEFINED;
     }
 }
@@ -687,6 +694,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("newestRowId",     jsPaneGetProp, nullptr, 14),
     JS_CGETSET_MAGIC_DEF("mousePosition",   jsPaneGetProp, nullptr, 15),
     JS_CGETSET_MAGIC_DEF("selectedCommandId", jsPaneGetProp, nullptr, 16),
+    JS_CGETSET_MAGIC_DEF("nodeId",            jsPaneGetProp, nullptr, 17),
     JS_CFUNC_DEF("selectCommand", 1, jsPaneSelectCommand),
 };
 
@@ -1267,6 +1275,24 @@ static JSValue jsTabGetId(JSContext* ctx, JSValueConst this_val)
     return JS_NewInt32(ctx, tab->id);
 }
 
+// tab.nodeId → UUID string of this tab's Container in the shared LayoutTree,
+// or null when the tab has no tree representation. Ungated — see pane.nodeId.
+static JSValue jsTabGetNodeId(JSContext* ctx, JSValueConst this_val)
+{
+    auto* tab = jsTabGet(ctx, this_val);
+    if (!tab || !tab->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    auto tabInfos = eng->callbacks().tabs();
+    for (auto& ti : tabInfos) {
+        if (ti.id == tab->id) {
+            return ti.nodeId.empty()
+                     ? JS_NULL
+                     : JS_NewStringLen(ctx, ti.nodeId.data(), ti.nodeId.size());
+        }
+    }
+    return JS_NULL;
+}
+
 // tab.panes — returns array of Pane objects
 static JSValue jsTabGetPanes(JSContext* ctx, JSValueConst this_val)
 {
@@ -1359,6 +1385,7 @@ static const JSCFunctionListEntry jsTabProto[] = {
     JS_CFUNC_DEF("close", 0, jsTabClose),
     JS_CGETSET_DEF("overlay", jsTabGetOverlay, nullptr),
     JS_CGETSET_DEF("id", jsTabGetId, nullptr),
+    JS_CGETSET_DEF("nodeId", jsTabGetNodeId, nullptr),
     JS_CGETSET_DEF("panes", jsTabGetPanes, nullptr),
     JS_CGETSET_DEF("activePane", jsTabGetActivePane, nullptr),
 };

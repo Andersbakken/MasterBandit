@@ -117,6 +117,8 @@ int PlatformDawn::exec()
                         isFocused, p->focusedPopupId(),
                         p->foregroundProcess()
                     };
+                    if (!p->nodeId().isNil())
+                        info.nodeId = p->nodeId().toString();
                     {
                         const auto& doc = p->document();
                         int absRow = doc.historySize() + p->cursorY();
@@ -262,6 +264,8 @@ int PlatformDawn::exec()
                 ti.focusedPane = allTabs[i]->layout()->focusedPaneId();
                 for (auto& p : allTabs[i]->layout()->panes())
                     ti.panes.push_back(p->id());
+                Uuid sub = allTabs[i]->layout()->subtreeRoot();
+                if (!sub.isNil()) ti.nodeId = sub.toString();
                 result.push_back(std::move(ti));
             }
             return result;

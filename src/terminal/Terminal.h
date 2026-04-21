@@ -1,6 +1,7 @@
 #pragma once
 #include "TerminalEmulator.h"
 #include "TerminalOptions.h"
+#include "Uuid.h"
 #include <eventloop/EventLoop.h>
 #include <atomic>
 #include <functional>
@@ -44,6 +45,13 @@ public:
     // --- Identity ---
     int id() const { return mId; }
     void setId(int id) { mId = id; }
+
+    // Stable UUID for this Terminal's node in the shared LayoutTree. Populated
+    // by Layout::insertTerminal once both the integer paneId and the tree
+    // node exist. Nil for Terminals that don't live in the tree (popups,
+    // overlays — those are attached below the tree, not as nodes in it).
+    Uuid nodeId() const { return mNodeId; }
+    void setNodeId(Uuid u) { mNodeId = u; }
 
     // --- PTY lifecycle ---
     bool init(const TerminalOptions& options);
@@ -137,6 +145,7 @@ private:
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
     int mId { -1 };
+    Uuid mNodeId;
     int mMasterFD { -1 };
     bool mHeadless { false };
     std::atomic<bool> mResizePending { false };

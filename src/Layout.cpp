@@ -189,6 +189,11 @@ Terminal* Layout::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
 {
     if (!t) return nullptr;
     t->setId(paneId);
+    // Thread the tree-node UUID onto the Terminal so any downstream consumer
+    // (ScriptEngine surfaces it as pane.nodeId) can find the node in the
+    // shared tree without going back through Layout's id↔uuid map.
+    auto it = paneIdToUuid_.find(paneId);
+    if (it != paneIdToUuid_.end()) t->setNodeId(it->second);
     Terminal* raw = t.get();
     mPanes.push_back(std::move(t));
     return raw;

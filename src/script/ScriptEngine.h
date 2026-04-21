@@ -82,6 +82,10 @@ struct AppCallbacks {
         int mouseCellX = 0; int mouseCellY = 0;
         int mousePixelX = 0; int mousePixelY = 0;
         std::optional<uint64_t> selectedCommandId;
+        // UUID string of this pane's Terminal node in the shared LayoutTree.
+        // Empty when the Terminal isn't attached to a tree node (shouldn't
+        // happen in production but stays empty safely).
+        std::string nodeId;
     };
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
@@ -106,7 +110,16 @@ struct AppCallbacks {
     struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
     std::function<OverlayInfo(TabId)> overlayInfo;
     // Query tab/pane structure
-    struct TabInfo { TabId id; bool active; std::vector<PaneId> panes; PaneId focusedPane; bool hasOverlay; };
+    struct TabInfo {
+        TabId id;
+        bool active;
+        std::vector<PaneId> panes;
+        PaneId focusedPane;
+        bool hasOverlay;
+        // UUID string of this Tab's root Container in the shared LayoutTree,
+        // or empty when the tab has no tree representation.
+        std::string nodeId;
+    };
     std::function<std::vector<TabInfo>()> tabs;
     // Create a headless overlay on a tab. onInput is called when user types into it.
     std::function<bool(TabId, std::function<void(const char*, size_t)> onInput)> createOverlay;

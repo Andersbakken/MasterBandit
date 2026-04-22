@@ -338,6 +338,32 @@ std::vector<Terminal*> Tab::panes() const
     return out;
 }
 
+std::vector<Terminal*> Tab::activePanes() const
+{
+    std::vector<Terminal*> out;
+    if (!valid()) return out;
+    const LayoutTree& tree = eng_->layoutTree();
+
+    std::function<void(Uuid)> walk = [&](Uuid id) {
+        const Node* n = tree.node(id);
+        if (!n) return;
+        if (n->kind() == NodeKind::Terminal) {
+            if (Terminal* t = eng_->terminal(id)) out.push_back(t);
+            return;
+        }
+        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
+            for (const auto& s : cd->children) walk(s.id);
+        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
+            // Only follow the activeChild so inactive siblings (e.g. the
+            // content Container while a pager overlay is on top) don't
+            // contribute to the visible-pane list.
+            if (!sd->activeChild.isNil()) walk(sd->activeChild);
+        }
+    };
+    walk(subtreeRoot_);
+    return out;
+}
+
 PaneRect Tab::nodeRect(int paneId) const
 {
     if (!valid()) return {};
@@ -513,7 +539,10 @@ std::vector<std::pair<int, PaneRect>>
 Tab::dividersWithOwnerPanes(int dividerPixelsParam) const
 {
     if (!valid() || dividerPixelsParam <= 0) return {};
-    auto liveTerminals = panes();
+    // Dividers are only drawn between visible panes — inactive Stack
+    // siblings (pager overlays, etc.) don't get rendered and thus can't
+    // be divided from their neighbours.
+    auto liveTerminals = activePanes();
     if (liveTerminals.size() < 2) return {};
 
     PaneRect content = contentRectFromFb(eng_->lastFbWidth(), eng_->lastFbHeight(),

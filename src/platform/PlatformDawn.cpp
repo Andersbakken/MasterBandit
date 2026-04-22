@@ -294,34 +294,36 @@ void PlatformDawn::buildRenderFrameState()
         renderThread_->renderState().tabBarRect = {};
     }
 
-    // Active tab pane info
+    // Active tab pane info. `activePanes()` walks the tab's subtree honouring
+    // Stack activeChild semantics — inactive Stack siblings (e.g. the content
+    // Container while a scrollback pager is on top) don't contribute. This
+    // replaces the pre-cutover path that iterated `TabManager::tabs_` and the
+    // overlay render pass (both deleted in earlier steps).
     renderThread_->renderState().panes.clear();
     renderThread_->renderState().focusedPaneId = -1;
 
     if (tab) {
         renderThread_->renderState().focusedPaneId = tab->layout()->focusedPaneId();
 
-        {
-            for (Terminal* pane : tab->layout()->panes()) {
-                RenderPaneInfo rpi;
-                rpi.id = pane->id();
-                rpi.rect = pane->rect();
-                rpi.term = pane;
-                rpi.progressState = pane->progressState();
-                rpi.progressPct = pane->progressPct();
-                rpi.focusedPopupId = pane->focusedPopupId();
-                for (const auto& popup : pane->popups()) {
-                    RenderPanePopupInfo pi;
-                    pi.id = popup->popupId();
-                    pi.cellX = popup->cellX();
-                    pi.cellY = popup->cellY();
-                    pi.cellW = popup->cellW();
-                    pi.cellH = popup->cellH();
-                    pi.term = popup.get();
-                    rpi.popups.push_back(std::move(pi));
-                }
-                renderThread_->renderState().panes.push_back(std::move(rpi));
+        for (Terminal* pane : tab->activePanes()) {
+            RenderPaneInfo rpi;
+            rpi.id = pane->id();
+            rpi.rect = pane->rect();
+            rpi.term = pane;
+            rpi.progressState = pane->progressState();
+            rpi.progressPct = pane->progressPct();
+            rpi.focusedPopupId = pane->focusedPopupId();
+            for (const auto& popup : pane->popups()) {
+                RenderPanePopupInfo pi;
+                pi.id = popup->popupId();
+                pi.cellX = popup->cellX();
+                pi.cellY = popup->cellY();
+                pi.cellW = popup->cellW();
+                pi.cellH = popup->cellH();
+                pi.term = popup.get();
+                rpi.popups.push_back(std::move(pi));
             }
+            renderThread_->renderState().panes.push_back(std::move(rpi));
         }
     }
 

@@ -91,7 +91,16 @@ public:
     // --- Pane queries -----------------------------------------------------
     Terminal* pane(int paneId);
     bool hasPaneSlot(int paneId) const; // slot exists, Terminal may be dead
-    std::vector<Terminal*> panes() const; // live Terminals in subtree (DFS)
+    // All live Terminals in the tab's subtree, DFS. Includes Terminals under
+    // inactive Stack siblings (e.g. a non-visible content Container while a
+    // pager overlay is active). Use for "every pane in this tab" work —
+    // resize cascade, close-tab teardown, per-pane callbacks.
+    std::vector<Terminal*> panes() const;
+    // Live Terminals that are actually visible given the tree's activeChild
+    // semantics — Stacks contribute only their activeChild's subtree, not
+    // all children. Use this for rendering / dividers / hit-testing paths
+    // where "what's on screen right now" matters.
+    std::vector<Terminal*> activePanes() const;
     PaneRect nodeRect(int paneId) const;
     int paneAtPixel(int px, int py) const;
 

@@ -24,13 +24,14 @@ struct LayoutNode {
 // geometry — lives on Script::Engine (or on the tree node's `label`).
 //
 // Tab is a lightweight value type: default-constructible (invalid), copyable,
-// movable. The underlying state is stable for as long as the engine still
-// tracks the subtreeRoot; once closeTab removes it, stale Tab handles return
-// null / empty. Pre-cutover callers that did `tab->layout()->foo()` still
-// work — `layout()` returns `this` (self-pointer) and every Layout method
-// now lives on Tab.
-class Tab {
-public:
+// movable. It's a `struct` (not a class) deliberately — step 6's cutover
+// dissolved the old state-owning `class Tab`; what's left is a two-pointer
+// POD-style view. The underlying state is stable for as long as the engine
+// still tracks the subtreeRoot; once closeTab removes it, stale Tab handles
+// return null / empty. Pre-cutover callers that did `tab->layout()->foo()`
+// still work — `layout()` returns `this` (self-pointer) and every Layout
+// method now lives on Tab.
+struct Tab {
     Tab() = default;
     Tab(Script::Engine* eng, Uuid subtreeRoot) : eng_(eng), subtreeRoot_(subtreeRoot) {}
 

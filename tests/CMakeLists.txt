@@ -36,6 +36,7 @@ set(TEST_SOURCES
     test_tabs.cpp
     test_charset.cpp
     test_layout_tree.cpp
+    test_tree_shape.cpp
     test_uuid.cpp
     MBConnection.cpp
     ../src/text.cpp

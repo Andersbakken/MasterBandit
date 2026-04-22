@@ -141,6 +141,10 @@ std::string PlatformDawn::statsJson(int id)
         tabObj["index"]  = static_cast<double>(ti);
         tabObj["active"] = (ti == activeIdx);
         tabObj["panes"]  = std::move(panesArr);
+        // Tree-node UUID for the tab's subtree root (a Stack after step 8).
+        // Tests use this to assert tree shape end-to-end via `mb --test`.
+        Uuid sub = tab.subtreeRoot();
+        if (!sub.isNil()) tabObj["nodeId"] = sub.toString();
         tabsArr.emplace_back(std::move(tabObj));
     }
     resp["tabs"] = std::move(tabsArr);

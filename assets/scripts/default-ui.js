@@ -1,5 +1,43 @@
 // Default UI controller. Owns the JS-policy actions (tab/pane lifecycle,
-// structural mutations). Mandatory — mb refuses to start without it.
+// structural mutations) AND the startup tree-shape construction. Mandatory
+// — mb refuses to start without it.
+//
+// At load time, the tree looks like this (set up by native bootstrap):
+//
+//   Stack (tabsStack, tree root)
+//   └── Stack (tab 1 subtreeRoot)
+//       └── Container (content)
+//           └── Terminal (first pane)
+//
+// We wrap that in the target shape:
+//
+//   Container (newRoot, vertical)
+//   ├── TabBar
+//   └── Stack (tabsStack)
+//       └── Stack (tab 1)
+//           └── Container (content)
+//               └── Terminal
+//
+// The TabBar node is structurally present (bound to the tabs Stack via
+// setTabBarStack) — its actual on-screen rendering still comes from the
+// RenderFrameState.tabs shadow path until step 10 teaches the renderer to
+// walk the tree. This keeps step 9's blast radius contained to tree shape.
+
+(() => {
+    const tabsStack = mb.layout.getRoot();
+    if (!tabsStack) {
+        console.error('default-ui: no root Stack at load time — aborting tree construction');
+        return;
+    }
+    const newRoot = mb.layout.createContainer('vertical');
+    const tabBar  = mb.layout.createTabBar();
+    // setRoot detaches the old root as a parentless node; we then re-attach
+    // it as the second child of the new root Container.
+    mb.layout.setRoot(newRoot);
+    mb.layout.appendChild(newRoot, tabBar);
+    mb.layout.appendChild(newRoot, tabsStack);
+    mb.layout.setTabBarStack(tabBar, tabsStack);
+})();
 
 mb.actions.register('newTab', () => {
     const tab = mb.layout.createTab();

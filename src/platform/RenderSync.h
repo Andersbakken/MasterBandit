@@ -179,6 +179,7 @@ struct PaneRenderPrivate {
     bool lastCursorVisible = true;
     int lastCursorShape = -1;
     float lastCursorBlinkOpacity = 1.0f;
+    bool lastHasPopupFocus = false;
 
     std::unordered_set<uint32_t> lastVisibleImageIds;
     PooledTexture* heldTexture = nullptr;

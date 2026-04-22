@@ -794,6 +794,7 @@ bool TabManager::createTerminalInContainer(Uuid parentContainerNodeId,
     tab->computeRects(fbW, fbH);
 
     spawnTerminalForPane(paneId, tabIdx, cwd);
+    resizeAllPanesInTab(*tab);
 
     if (outPaneId) *outPaneId = paneId;
     if (outNodeId) *outNodeId = newNodeId;
@@ -864,9 +865,17 @@ bool TabManager::removeNode(Uuid nodeId)
 
     // Skip resize/focus chrome when the tab is now empty — there is nothing
     // to size or focus, and the controller will shortly close the tab.
-    if (tab->panes().empty()) {
+    auto livePanes = tab->panes();
+    if (livePanes.empty()) {
         if (host_.setNeedsRedraw) host_.setNeedsRedraw();
         return true;
+    }
+
+    // If the removed subtree contained the focused Terminal,
+    // Tab::removeNodeSubtree cleared the engine's focus. Promote focus to
+    // the first remaining pane so the user isn't stuck with no focus.
+    if (tab->focusedPaneId() < 0) {
+        tab->setFocusedPane(livePanes.front()->id());
     }
 
     resizeAllPanesInTab(*tab);

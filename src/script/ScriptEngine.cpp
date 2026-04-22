@@ -1840,8 +1840,27 @@ Engine::~Engine()
 {
     // Close any live WS servers + their lws context before runtime teardown.
     wsDestroyEngine(this);
+    // Unload each instance so its owned JSValues (timer callbacks, action
+    // handlers, etc.) are freed before JS_FreeRuntime's GC-empty assert.
+    // Collect ids first; unload() mutates instances_.
+    std::vector<InstanceId> ids;
+    ids.reserve(instances_.size());
+    for (const auto& inst : instances_) ids.push_back(inst.id);
+    for (InstanceId id : ids) unload(id);
+    // Any remaining entries (dead contexts flagged during iteration) are
+    // already freed; just drop the vector slots. Timer callbacks not
+    // attached to an instance, plus global action-handler/timer state, get
+    // swept here as a belt-and-braces step.
+    for (auto& [_, t] : jsTimers_) {
+        if (loop_) loop_->removeTimer(t.loopId);
+        JS_FreeValue(t.ctx, t.callback);
+    }
+    jsTimers_.clear();
+    for (auto& [_, h] : actionHandlers_) {
+        JS_FreeValue(h.ctx, h.fn);
+    }
+    actionHandlers_.clear();
     for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
         if (inst.ctx) JS_FreeContext(inst.ctx);
     }
     if (rt_) JS_FreeRuntime(rt_);

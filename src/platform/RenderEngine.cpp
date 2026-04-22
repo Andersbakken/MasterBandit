@@ -976,6 +976,10 @@ void RenderEngine::renderFrame()
                                   blinkOpacity != rs.lastCursorBlinkOpacity;
         rs.lastCursorBlinkOpacity = blinkOpacity;
 
+        bool popupFocusChanged = !target.isPopup &&
+                                 target.hasPopupFocus != rs.lastHasPopupFocus;
+        rs.lastHasPopupFocus = target.hasPopupFocus;
+
         bool anyRowDirty = false;
         for (uint8_t d : snap.rowDirty) { if (d) { anyRowDirty = true; break; } }
 
@@ -1013,7 +1017,8 @@ void RenderEngine::renderFrame()
                            (target.isFocused && cursorBlinkChanged) ||
                            animationAdvanced ||
                            selectionChanged || commandSelectionChanged ||
-                           outlineColorChanged || !rs.heldTexture;
+                           outlineColorChanged || popupFocusChanged ||
+                           !rs.heldTexture;
 
         if (snap.syncOutputActive && rs.heldTexture)
             needsRender = false;
@@ -1040,7 +1045,9 @@ void RenderEngine::renderFrame()
                     allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
             } else {
                 for (int row = 0; row < snap.rows; ++row) {
-                    if (snap.rowDirty[row] || (cursorMoved && row == snap.cursorY))
+                    if (snap.rowDirty[row] ||
+                        (cursorMoved && row == snap.cursorY) ||
+                        (popupFocusChanged && row == snap.cursorY))
                         allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
                 }
             }

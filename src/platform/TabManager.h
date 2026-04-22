@@ -172,14 +172,12 @@ public:
     // fully wired up.
     void addInitialTab(Tab tab);
 
-    void createTab();
     void closeTab(int idx);
 
     // --- JS-facing primitives (mb.layout.*) -------------------------------
-    // These factor out the pieces of the legacy createTab / closeTab /
-    // SplitPane / ClosePane flows so the default UI controller can compose
-    // them directly. `createTab()` / `closeTab(idx)` above are the all-in-one
-    // legacy paths kept alive as a fallback while actions migrate to JS.
+    // The default UI controller composes tab lifecycle out of these pieces
+    // (createEmptyTab + createTerminalInContainer, splitPaneByNodeId, etc.)
+    // so native doesn't need an all-in-one createTab path anymore.
 
     // Build an empty Tab (no initial Terminal) and attach its Layout subtree
     // under the shared tree's root Stack. Does NOT activate. Returns the new

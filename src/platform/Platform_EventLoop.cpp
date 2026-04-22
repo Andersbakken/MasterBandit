@@ -221,10 +221,6 @@ int PlatformDawn::exec()
             }
             return result;
         };
-        scbs.createTab = [this]() -> int {
-            createTab();
-            return tabManager_->activeTabIdx();
-        };
         scbs.closeTab = [this](int tabId) {
             closeTab(tabId);
         };

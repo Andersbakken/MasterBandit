@@ -2,11 +2,10 @@
 #include "PlatformUtils.h"
 #include "Utils.h"
 
-// Forwarders. The data and behavior live in TabManager; PlatformDawn
-// keeps the entry points so existing call sites (Platform_Actions.cpp,
+// Forwarder. The data and behavior live in TabManager; PlatformDawn
+// keeps the entry point so existing call sites (Platform_Actions.cpp,
 // Platform_EventLoop.cpp's ScriptEngine callbacks) don't need to
 // reach through tabManager_ explicitly.
-void PlatformDawn::createTab() { if (tabManager_) tabManager_->createTab(); }
 void PlatformDawn::closeTab(int idx) { if (tabManager_) tabManager_->closeTab(idx); }
 
 

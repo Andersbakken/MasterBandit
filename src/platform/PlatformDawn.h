@@ -85,7 +85,6 @@ public:
     int exec();
     void quit(int status = 0);
     void createTerminal(const TerminalOptions& options);
-    void createTab();
     void closeTab(int idx);
 
     wgpu::Device device() const { return renderEngine_ ? renderEngine_->device() : wgpu::Device{}; }

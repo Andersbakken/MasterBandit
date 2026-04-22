@@ -1098,21 +1098,9 @@ static JSValue jsTabGetActivePane(JSContext* ctx, JSValueConst this_val)
 }
 
 // tab.close()
-static JSValue jsTabClose(JSContext* ctx, JSValueConst this_val,
-                           int, JSValueConst*)
-{
-    REQUIRE_PERM(ctx, TabsClose);
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
-    engineFromCtx(ctx)->callbacks().closeTab(tab->id);
-    tab->alive = false;
-    return JS_UNDEFINED;
-}
-
 static const JSCFunctionListEntry jsTabProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsTabAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsTabRemoveEventListener),
-    JS_CFUNC_DEF("close", 0, jsTabClose),
     JS_CGETSET_DEF("id", jsTabGetId, nullptr),
     JS_CGETSET_DEF("nodeId", jsTabGetNodeId, nullptr),
     JS_CGETSET_DEF("panes", jsTabGetPanes, nullptr),
@@ -1260,15 +1248,6 @@ static JSValue jsMbGetActivePane(JSContext* ctx, JSValueConst, int, JSValueConst
     for (auto& ti : tabInfos)
         if (ti.active && ti.focusedPane >= 0)
             return jsPaneNew(ctx, ti.focusedPane);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsMbGetActiveTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
-{
-    Engine* eng = engineFromCtx(ctx);
-    auto tabInfos = eng->callbacks().tabs();
-    for (auto& ti : tabInfos)
-        if (ti.active) return jsTabNew(ctx, ti.id);
     return JS_UNDEFINED;
 }
 
@@ -1476,34 +1455,6 @@ static JSValue jsMbApproveScript(JSContext* ctx, JSValueConst, int argc, JSValue
     Engine::LoadResult res = eng->approveScript(std::string(path), response);
     JS_FreeCString(ctx, path);
     return loadResultToJs(ctx, res);
-}
-
-// mb.createTab() -> Tab
-static JSValue jsMbCreateTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
-{
-    REQUIRE_PERM(ctx, TabsCreate);
-    Engine* eng = engineFromCtx(ctx);
-    int tabId = eng->callbacks().createTab();
-    return jsTabNew(ctx, tabId);
-}
-
-// mb.closeTab(tabId?)
-static JSValue jsMbCloseTab(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
-{
-    REQUIRE_PERM(ctx, TabsClose);
-    Engine* eng = engineFromCtx(ctx);
-    int tabId = -1;
-    if (argc >= 1 && JS_IsNumber(argv[0]))
-        JS_ToInt32(ctx, &tabId, argv[0]);
-
-    if (tabId < 0) {
-        auto tabInfos = eng->callbacks().tabs();
-        for (auto& ti : tabInfos)
-            if (ti.active) { tabId = ti.id; break; }
-    }
-    if (tabId >= 0)
-        eng->callbacks().closeTab(tabId);
-    return JS_UNDEFINED;
 }
 
 // mb.unloadScript(id)
@@ -1993,12 +1944,7 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
     };
     defineGetter("tabs", jsMbGetTabs);
     defineGetter("activePane", jsMbGetActivePane);
-    defineGetter("activeTab", jsMbGetActiveTab);
     defineGetter("actions", jsMbGetActions);
-    JS_SetPropertyStr(ctx, mb, "createTab",
-        JS_NewCFunction(ctx, jsMbCreateTab, "createTab", 0));
-    JS_SetPropertyStr(ctx, mb, "closeTab",
-        JS_NewCFunction(ctx, jsMbCloseTab, "closeTab", 0));
     JS_SetPropertyStr(ctx, mb, "unloadScript",
         JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, mb, "loadScript",

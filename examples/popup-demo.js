@@ -67,7 +67,11 @@ popup.addEventListener("input", (data) => {
         popup.close();
         return;
     } else if (data === "t" || data === "T") {
-        mb.createTab()
+        const tab = mb.layout.createTab();
+        if (tab) {
+            mb.layout.createTerminal(tab.nodeId);
+            mb.layout.activateTab(tab.id);
+        }
         return;
     }
 

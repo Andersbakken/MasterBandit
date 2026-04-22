@@ -111,8 +111,6 @@ struct AppCallbacks {
         std::string nodeId;
     };
     std::function<std::vector<TabInfo>()> tabs;
-    // Create a new tab. Returns the tab index.
-    std::function<int()> createTab;
     // Close a tab by index.
     std::function<void(int)> closeTab;
 

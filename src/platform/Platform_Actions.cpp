@@ -246,6 +246,12 @@ void PlatformDawn::executeAction(const Action::Any& action)
             auto tab = activeTab();
             if (!term || !tab) return;
 
+            // Remember which Terminal had focus before the pager takes over
+            // so we can restore it when `less` exits. Without this, the
+            // post-removal fallback in TabManager::removeNode just picks
+            // the first pane, which may not be the one the user was on.
+            Uuid prevFocus = scriptEngine_.focusedTerminalNodeId();
+
             // Write scrollback to temp file.
             std::string content = term->serializeScrollback();
             char tmpPath[] = "/tmp/mb-scrollback-XXXXXX";
@@ -282,7 +288,16 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 setNeedsRedraw();
             };
             PlatformCallbacks pcbs;
-            pcbs.onTerminalExited = [this](Terminal* t) {
+            pcbs.onTerminalExited = [this, prevFocus](Terminal* t) {
+                // Restore focus to the previously-focused Terminal (if it
+                // still exists in the tree) before the removal cascade.
+                // removeNodeSubtree only clears focus if it points inside
+                // the removed subtree; since we've moved it off the pager,
+                // the fallback "pick first pane" branch won't trigger.
+                if (!prevFocus.isNil() &&
+                    scriptEngine_.layoutTree().node(prevFocus)) {
+                    scriptEngine_.setFocusedTerminalNodeId(prevFocus);
+                }
                 // Queue into the render-thread exit drain — same path as any
                 // other pane. TabManager::terminalExited → killTerminal fires
                 // the JS `terminalExited` event, and the controller removes
@@ -331,6 +346,13 @@ void PlatformDawn::executeAction(const Action::Any& action)
             // Move focus to the pager so input routes to it.
             scriptEngine_.setFocusedTerminalNodeId(pagerNode);
             scriptEngine_.notifyPaneCreated(tabManager_->activeTabIdx(), pagerId);
+
+            // The pager's Terminal has no rect yet — computeRects populates
+            // it from the tree shape (now that the node is attached and
+            // activeChild points at it). Without this the pager renders at
+            // {0,0,0,0}, the old pane's framebuffer stays frozen on screen,
+            // and mouse hit-testing against the pager fails.
+            tabManager_->resizeAllPanesInTab(*tab);
 
             if (inputController_) inputController_->refreshPointerShape();
             setNeedsRedraw();

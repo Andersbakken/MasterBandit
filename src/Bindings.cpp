@@ -186,8 +186,6 @@ std::optional<Action::Any> parseAction(const std::string& name,
     }
     if (name == "scroll_to_top")    return Action::ScrollToTop{};
     if (name == "scroll_to_bottom") return Action::ScrollToBottom{};
-    if (name == "push_overlay")     return Action::PushOverlay{};
-    if (name == "pop_overlay")      return Action::PopOverlay{};
     if (name == "increase_font_size") return Action::IncreaseFontSize{};
     if (name == "decrease_font_size") return Action::DecreaseFontSize{};
     if (name == "reset_font_size")    return Action::ResetFontSize{};

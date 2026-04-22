@@ -97,7 +97,6 @@ Terminal* TabManager::activeTerm()
 {
     auto tab = activeTab();
     if (!tab) return nullptr;
-    if (tab->hasOverlay()) return tab->topOverlay();
     Terminal* pane = tab->layout() ? tab->layout()->focusedPane() : nullptr;
     return pane ? static_cast<Terminal*>(pane->activeTerm()) : nullptr;
 }
@@ -464,10 +463,6 @@ void TabManager::closeTab(int idx)
             host_.scriptEngine->notifyPaneDestroyed(panePtr->id(), panePtr->nodeId());
     }
 
-    if (tab->hasOverlay()) {
-        if (host_.scriptEngine) host_.scriptEngine->notifyOverlayDestroyed(idx);
-        host_.pending->structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-    }
     if (host_.scriptEngine)
         host_.scriptEngine->notifyTabDestroyed(idx, tab->subtreeRoot());
 
@@ -478,7 +473,6 @@ void TabManager::closeTab(int idx)
     // the stamp waits for that frame to end before destructors run.
     Uuid subRoot = tab->subtreeRoot();
     std::vector<std::unique_ptr<Terminal>> extractedTerminals;
-    std::vector<std::unique_ptr<Terminal>> extractedOverlays;
     uint64_t stamp = 0;
     {
         std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
@@ -488,7 +482,6 @@ void TabManager::closeTab(int idx)
                 auto t = host_.scriptEngine->extractTerminal(panePtr->nodeId());
                 if (t) extractedTerminals.push_back(std::move(t));
             }
-            extractedOverlays = host_.scriptEngine->extractAllTabOverlays(subRoot);
             host_.scriptEngine->eraseTabIcon(subRoot);
             // Detach the tab's subtree from the root Stack and destroy it.
             // No Layout object to graveyard — the tree nodes are the only
@@ -522,8 +515,6 @@ void TabManager::closeTab(int idx)
     if (host_.graveyard) {
         for (auto& t : extractedTerminals)
             host_.graveyard->defer(std::move(t), stamp);
-        for (auto& o : extractedOverlays)
-            host_.graveyard->defer(std::move(o), stamp);
     }
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
@@ -796,9 +787,22 @@ bool TabManager::createTerminalInContainer(Uuid parentContainerNodeId,
     Layout* layout = tab->layout();
     if (!layout) return false;
 
+    // If the caller passed the tab's subtreeRoot (a Stack since step 8),
+    // drill into the Stack's activeChild — that's the content Container
+    // where panes actually live. Panes attached directly to the Stack would
+    // become overlay-style siblings, which isn't what "createTerminal in
+    // this tab" means. Later steps (step 9 default-ui.js rewrite) may pass
+    // the content node directly and skip this hop.
+    Uuid attachParent = parentContainerNodeId;
+    if (const Node* n = tree.node(attachParent)) {
+        if (auto* sd = std::get_if<StackData>(&n->data)) {
+            if (!sd->activeChild.isNil()) attachParent = sd->activeChild;
+        }
+    }
+
     Uuid newNodeId;
     int paneId = layout->allocatePaneNode(&newNodeId);
-    if (!tree.appendChild(parentContainerNodeId, ChildSlot{newNodeId, /*stretch=*/1}))
+    if (!tree.appendChild(attachParent, ChildSlot{newNodeId, /*stretch=*/1}))
         return false;
 
     const uint32_t fbW = host_.fbWidth ? host_.fbWidth() : 0;

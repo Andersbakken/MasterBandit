@@ -48,24 +48,12 @@ int PlatformDawn::exec()
                 }
             }
         };
-        scbs.injectOverlayData = [this](Script::TabId tabId, const std::string& data) {
-            if (auto tab = tabManager_->tabAt(tabId)) {
-                if (auto* ov = tab->topOverlay())
-                    ov->injectData(data.c_str(), data.size());
-            }
-        };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
             for (Tab tab : tabManager_->tabs()) {
                 if (Terminal* p = tab.layout() ? tab.layout()->pane(paneId) : nullptr) {
                     p->writeText(data);
                     return;
                 }
-            }
-        };
-        scbs.writeOverlayToShell = [this](Script::TabId tabId, const std::string& data) {
-            if (auto tab = tabManager_->tabAt(tabId)) {
-                if (auto* ov = tab->topOverlay())
-                    ov->writeText(data);
             }
         };
         scbs.pastePaneText = [this](Script::PaneId paneId, const std::string& data) {
@@ -76,24 +64,11 @@ int PlatformDawn::exec()
                 }
             }
         };
-        scbs.pasteOverlayText = [this](Script::TabId tabId, const std::string& data) {
-            if (auto tab = tabManager_->tabAt(tabId)) {
-                if (auto* ov = tab->topOverlay())
-                    ov->pasteText(data);
-            }
-        };
         scbs.paneHasPty = [this](Script::PaneId paneId) -> bool {
             for (Tab tab : tabManager_->tabs()) {
                 if (Terminal* p = tab.layout() ? tab.layout()->pane(paneId) : nullptr) {
                     return p->masterFD() >= 0;
                 }
-            }
-            return false;
-        };
-        scbs.overlayHasPty = [this](Script::TabId tabId) -> bool {
-            if (auto tab = tabManager_->tabAt(tabId)) {
-                if (auto* ov = tab->topOverlay())
-                    return ov->masterFD() >= 0;
             }
             return false;
         };
@@ -216,14 +191,6 @@ int PlatformDawn::exec()
             }
             return {};
         };
-        scbs.overlayGetText = [this](Script::TabId tabId, uint64_t startLineId, int startCol,
-                                     uint64_t endLineId, int endCol) -> std::string {
-            if (auto tab = tabManager_->tabAt(tabId)) {
-                if (auto* ov = tab->topOverlay())
-                    return ov->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
-            }
-            return {};
-        };
         scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
             for (Tab tab : tabManager_->tabs()) {
                 if (Terminal* p = tab.layout() ? tab.layout()->pane(paneId) : nullptr) {
@@ -235,24 +202,6 @@ int PlatformDawn::exec()
             }
             return std::nullopt;
         };
-        scbs.overlayLineIdAt = [this](Script::TabId tabId, int screenRow) -> std::optional<uint64_t> {
-            if (auto tab = tabManager_->tabAt(tabId)) {
-                if (auto* ov = tab->topOverlay()) {
-                    const auto& doc = ov->document();
-                    if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
-                    int abs = doc.historySize() + screenRow;
-                    return doc.lineIdForAbs(abs);
-                }
-            }
-            return std::nullopt;
-        };
-        scbs.overlayInfo = [this](Script::TabId tabId) -> Script::AppCallbacks::OverlayInfo {
-            if (auto tab = tabManager_->tabAt(tabId)) {
-                if (auto* ov = tab->topOverlay())
-                    return {ov->width(), ov->height(), ov->masterFD() >= 0, true};
-            }
-            return {0, 0, false, false};
-        };
         scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo> {
             std::vector<Script::AppCallbacks::TabInfo> result;
             auto allTabs = tabManager_->tabs();
@@ -263,7 +212,6 @@ int PlatformDawn::exec()
                 Script::AppCallbacks::TabInfo ti;
                 ti.id = i;
                 ti.active = (i == active);
-                ti.hasOverlay = t.hasOverlay();
                 ti.focusedPane = layout ? layout->focusedPaneId() : -1;
                 if (layout) {
                     for (Terminal* p : layout->panes())
@@ -274,59 +222,6 @@ int PlatformDawn::exec()
                 result.push_back(std::move(ti));
             }
             return result;
-        };
-        scbs.createOverlay = [this](Script::TabId tabId,
-                                     std::function<void(const char*, size_t)> onInput) -> bool {
-            auto tab = tabManager_->tabAt(tabId);
-            if (!tab) return false;
-            if (tab->hasOverlay()) return false;
-
-            TerminalCallbacks cbs;
-            cbs.event = [this](TerminalEmulator*, int, void*) {
-                setNeedsRedraw();
-            };
-
-            PlatformCallbacks pcbs;
-            pcbs.onTerminalExited = [](Terminal*) {};
-            pcbs.quit = [this]() { quit(); };
-            pcbs.onInput = std::move(onInput);
-
-            auto overlay = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
-            TerminalOptions opts = tabManager_->terminalOptions();
-            opts.scrollbackLines = 0;
-            if (!overlay->initHeadless(opts)) return false;
-
-            float usableW = std::max(0.0f, static_cast<float>(fbWidth_) - padLeft_ - padRight_);
-            float usableH = std::max(0.0f, static_cast<float>(fbHeight_) - padTop_ - padBottom_);
-            int cols = std::max(1, static_cast<int>(usableW / charWidth_));
-            int rows = std::max(1, static_cast<int>(usableH / lineHeight_));
-            overlay->resize(cols, rows);
-
-            tab->pushOverlay(std::move(overlay));
-            if (tabId == tabManager_->activeTabIdx() && inputController_) inputController_->refreshPointerShape();
-            setNeedsRedraw();
-            return true;
-        };
-        scbs.popOverlay = [this](Script::TabId tabId) {
-            auto tab = tabManager_->tabAt(tabId);
-            if (!tab) return;
-            if (!tab->hasOverlay()) return;
-            std::unique_ptr<Terminal> extracted;
-            uint64_t stamp = 0;
-            {
-                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                extracted = tab->popOverlay();
-                // Clear stale pointer in the shadow copy so the next
-                // snapshot doesn't hand the render thread a pointer into
-                // the graveyard-bound Terminal.
-                renderThread_->renderState().hasOverlay = false;
-                renderThread_->renderState().overlay = nullptr;
-                stamp = renderThread_->completedFrames();
-            }
-            if (extracted) graveyard_.defer(std::move(extracted), stamp);
-            renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-            if (tabId == tabManager_->activeTabIdx() && inputController_) inputController_->refreshPointerShape();
-            setNeedsRedraw();
         };
         scbs.createTab = [this]() -> int {
             createTab();

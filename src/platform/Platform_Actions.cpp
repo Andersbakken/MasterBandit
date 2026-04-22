@@ -159,25 +159,6 @@ void PlatformDawn::executeAction(const Action::Any& action)
             Terminal* term = activeTerm();
             if (term) term->resetViewport();
         },
-        [&](const Action::PushOverlay&) { /* TODO */ },
-        [&](const Action::PopOverlay&) {
-            auto tab = activeTab();
-            if (!tab || !tab->hasOverlay()) return;
-            scriptEngine_.notifyOverlayDestroyed(tabManager_->activeTabIdx());
-            std::unique_ptr<Terminal> extracted;
-            uint64_t stamp = 0;
-            {
-                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                extracted = tab->popOverlay();
-                renderThread_->renderState().hasOverlay = false;
-                renderThread_->renderState().overlay = nullptr;
-                stamp = renderThread_->completedFrames();
-            }
-            if (extracted) graveyard_.defer(std::move(extracted), stamp);
-            renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-            if (inputController_) inputController_->refreshPointerShape();
-            setNeedsRedraw();
-        },
         [&](const Action::IncreaseFontSize&) { adjustFontSize(1.0f);  },
         [&](const Action::DecreaseFontSize&) { adjustFontSize(-1.0f); },
         [&](const Action::ResetFontSize&)    { adjustFontSize(0.0f);  },
@@ -221,7 +202,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::FocusPopup&) {
             if (scriptEngine_.invokeActionHandler("focusPopup", nullptr)) return;
             auto tab = activeTab();
-            if (!tab || tab->hasOverlay()) return;
+            if (!tab) return;
             Layout* layout = tab->layout();
             Terminal* fp = layout ? layout->focusedPane() : nullptr;
             if (!fp || fp->popups().empty()) return;
@@ -256,11 +237,19 @@ void PlatformDawn::executeAction(const Action::Any& action)
             setNeedsRedraw();
         },
         [&](const Action::ShowScrollback&) {
+            // Spawn a `less` pager as a Stack sibling of the active tab's
+            // content. When the user quits `less`, the pager Terminal's
+            // shell-exit path fires → TabManager::killTerminal extracts it →
+            // JS terminalExited handler calls `mb.layout.removeNode` → the
+            // Stack's activeChild auto-retargets to the content Container
+            // (first remaining child), so the panes come back. No overlay-
+            // specific machinery — the pager IS just another pane, attached
+            // at the tab's Stack instead of under the content Container.
             Terminal* term = dynamic_cast<Terminal*>(activeTerm());
             auto tab = activeTab();
             if (!term || !tab) return;
 
-            // Write scrollback to temp file
+            // Write scrollback to temp file.
             std::string content = term->serializeScrollback();
             char tmpPath[] = "/tmp/mb-scrollback-XXXXXX";
             int tmpFd = mkstemp(tmpPath);
@@ -280,78 +269,73 @@ void PlatformDawn::executeAction(const Action::Any& action)
             }
             ::close(tmpFd);
 
-            // Spawn pager as overlay terminal
             TerminalOptions opts = tabManager_->terminalOptions();
             opts.command = "less -+F -R " + std::string(tmpPath) + "; rm -f " + std::string(tmpPath);
             opts.scrollbackLines = 0;
 
+            // Allocate paneId + tree node for the pager. Register in the
+            // engine's paneId index so pane-by-id lookups work.
+            int pagerId = scriptEngine_.allocatePaneId();
+            LayoutTree& tree = scriptEngine_.layoutTree();
+            Uuid pagerNode = tree.createTerminal();
+            scriptEngine_.registerPaneSlot(pagerId, pagerNode);
+
             TerminalCallbacks cbs;
             cbs.event = [this](TerminalEmulator*, int, void*) {
-                // Overlay uses a single PaneRenderPrivate (overlayRenderPrivate_),
-                // dirty is set via a general "overlay needs redraw" path.
                 setNeedsRedraw();
             };
-
             PlatformCallbacks pcbs;
-            Uuid tabRoot = tab->subtreeRoot();
-            pcbs.onTerminalExited = [this, tabRoot](Terminal* t) {
-                // Defer cleanup — we're called from Terminal::readFromFD.
-                int fd = t->masterFD();
-                eventLoop_->addTimer(0, false, [this, tabRoot, fd]() {
-                    std::unique_ptr<Terminal> extracted;
-                    uint64_t stamp = 0;
-                    {
-                        std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                        tabManager_->removePtyPoll(fd);
-                        int ti = -1;
-                        auto owner = tabManager_->findTabBySubtreeRoot(tabRoot, &ti);
-                        if (owner && ti >= 0)
-                            scriptEngine_.notifyOverlayDestroyed(ti);
-                        if (owner) extracted = owner->popOverlay();
-                        renderThread_->renderState().hasOverlay = false;
-                        renderThread_->renderState().overlay = nullptr;
-                        stamp = renderThread_->completedFrames();
-                    }
-                    if (extracted) graveyard_.defer(std::move(extracted), stamp);
-                    renderThread_->pending().structuralOps.push_back(PendingMutations::DestroyOverlayState{});
-                    if (inputController_) inputController_->refreshPointerShape();
-                    setNeedsRedraw();
-                });
+            pcbs.onTerminalExited = [this](Terminal* t) {
+                // Queue into the render-thread exit drain — same path as any
+                // other pane. TabManager::terminalExited → killTerminal fires
+                // the JS `terminalExited` event, and the controller removes
+                // the tree node. Stack's activeChild auto-retargets to the
+                // remaining content Container, restoring the pane view.
+                if (renderThread_) renderThread_->enqueueTerminalExit(t);
             };
             pcbs.quit = [this]() { quit(); };
-            {
-                int tabIdx = tabManager_->activeTabIdx();
-                pcbs.shouldFilterOutput = [this, tabIdx]() {
-                    return scriptEngine_.hasOverlayOutputFilters(tabIdx);
-                };
-                pcbs.filterOutput = [this, tabIdx](std::string& data) {
-                    scriptEngine_.filterOverlayOutput(tabIdx, data);
-                };
-                pcbs.shouldFilterInput = [this, tabIdx]() {
-                    return scriptEngine_.hasOverlayInputFilters(tabIdx);
-                };
-                pcbs.filterInput = [this, tabIdx](std::string& data) {
-                    scriptEngine_.filterOverlayInput(tabIdx, data);
-                };
-            }
+            Script::Engine* scriptEngine = &scriptEngine_;
+            pcbs.shouldFilterOutput = [scriptEngine, pagerId]() {
+                return scriptEngine->hasPaneOutputFilters(pagerId);
+            };
+            pcbs.filterOutput = [scriptEngine, pagerId](std::string& data) {
+                scriptEngine->filterPaneOutput(pagerId, data);
+            };
+            pcbs.shouldFilterInput = [scriptEngine, pagerId]() {
+                return scriptEngine->hasPaneInputFilters(pagerId);
+            };
+            pcbs.filterInput = [scriptEngine, pagerId](std::string& data) {
+                scriptEngine->filterPaneInput(pagerId, data);
+            };
 
-            auto overlay = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+            auto pager = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+            pager->setId(pagerId);
+            pager->setNodeId(pagerNode);
 
-            // Size overlay before init so the PTY is created with the correct
-            // dimensions. The child process reads the initial PTY size before
-            // any SIGWINCH can arrive.
             float usableW = std::max(0.0f, static_cast<float>(fbWidth_) - padLeft_ - padRight_);
             float usableH = std::max(0.0f, static_cast<float>(fbHeight_) - padTop_ - padBottom_);
             int cols = std::max(1, static_cast<int>(usableW / charWidth_));
             int rows = std::max(1, static_cast<int>(usableH / lineHeight_));
-            overlay->resize(cols, rows);
+            pager->resize(cols, rows);
 
-            if (!overlay->init(opts)) return;
+            if (!pager->init(opts)) return;
 
-            tabManager_->addPtyPoll(overlay->masterFD(), overlay.get());
-            tab->pushOverlay(std::move(overlay));
-            scriptEngine_.notifyOverlayCreated(tabManager_->activeTabIdx());
-            if (inputController_) inputController_->refreshPointerShape();  // overlay may want a different cursor
+            Terminal* pagerPtr = pager.get();
+            int pagerFD = pager->masterFD();
+            scriptEngine_.insertTerminal(pagerNode, std::move(pager));
+
+            // Attach as a sibling under the tab's Stack. The Stack
+            // auto-targets activeChild to this new sibling via setActiveChild.
+            Uuid tabStack = tab->subtreeRoot();
+            tree.appendChild(tabStack, ChildSlot{pagerNode, /*stretch=*/1});
+            tree.setActiveChild(tabStack, pagerNode);
+
+            tabManager_->addPtyPoll(pagerFD, pagerPtr);
+            // Move focus to the pager so input routes to it.
+            scriptEngine_.setFocusedTerminalNodeId(pagerNode);
+            scriptEngine_.notifyPaneCreated(tabManager_->activeTabIdx(), pagerId);
+
+            if (inputController_) inputController_->refreshPointerShape();
             setNeedsRedraw();
         },
         [&](const Action::ReloadConfig&) { if (configLoader_) configLoader_->reloadNow(); },

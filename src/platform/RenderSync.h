@@ -71,8 +71,6 @@ struct RenderFrameState {
     // Active tab's panes (in iteration order)
     std::vector<RenderPaneInfo> panes;
     int focusedPaneId = -1;
-    bool hasOverlay = false;
-    TerminalEmulator* overlay = nullptr;    // null if !hasOverlay
 
     // Tab bar data (all tabs)
     std::vector<RenderTabInfo> tabs;
@@ -129,13 +127,12 @@ struct RenderFrameState {
     bool releaseTabBarTexture = false;
     bool invalidateAllRowCaches = false;
 
-    // Structural destroys accumulated from main-thread pane/popup/overlay
+    // Structural destroys accumulated from main-thread pane/popup
     // destruction. The render thread erases the matching render-private
     // entries and releases their GPU resources. One-shot, cleared by
     // snapshotUnderLock.
     std::vector<int> destroyedPaneIds;
     std::vector<std::string> destroyedPopupKeys;
-    bool destroyedOverlay = false;
 
     // Divider appearance
     float dividerWidth = 0;
@@ -229,20 +226,17 @@ struct PendingMutations {
     bool focusChanged = false;
     bool surfaceNeedsReconfigure = false;
 
-    // --- Structural pane/popup/overlay operations ---
+    // --- Structural pane/popup operations ---
     struct CreatePaneState  { int paneId; int cols; int rows; };
     struct DestroyPaneState { int paneId; };
     struct ResizePaneState  { int paneId; int cols; int rows; };
     struct CreatePopupState  { int paneId; std::string popupId; int cols; int rows; };
     struct DestroyPopupState { int paneId; std::string popupId; };
     struct ResizePopupState  { int paneId; std::string popupId; int cols; int rows; };
-    struct CreateOverlayState  {};
-    struct DestroyOverlayState {};
 
     using StructuralOp = std::variant<
         CreatePaneState, DestroyPaneState, ResizePaneState,
-        CreatePopupState, DestroyPopupState, ResizePopupState,
-        CreateOverlayState, DestroyOverlayState
+        CreatePopupState, DestroyPopupState, ResizePopupState
     >;
     std::vector<StructuralOp> structuralOps;
 

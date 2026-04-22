@@ -161,7 +161,6 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         rs.invalidateAllRowCaches = false;
         rs.destroyedPaneIds.clear();
         rs.destroyedPopupKeys.clear();
-        rs.destroyedOverlay = false;
         return true;
     };
     host.takeSurfaceReconfigureRequest = [this]() -> std::tuple<bool, uint32_t, uint32_t> {
@@ -297,39 +296,12 @@ void PlatformDawn::buildRenderFrameState()
 
     // Active tab pane info
     renderThread_->renderState().panes.clear();
-    renderThread_->renderState().hasOverlay = false;
-    renderThread_->renderState().overlay = nullptr;
     renderThread_->renderState().focusedPaneId = -1;
 
     if (tab) {
         renderThread_->renderState().focusedPaneId = tab->layout()->focusedPaneId();
 
-        if (tab->hasOverlay()) {
-            renderThread_->renderState().hasOverlay = true;
-            renderThread_->renderState().overlay = tab->topOverlay();
-
-            // Resize overlay to match content area (excludes tab bar + padding).
-            // Done here on the main thread so the render thread never mutates
-            // terminal state.
-            const PaneRect& tbRect = renderThread_->renderState().tabBarRect;
-            PaneRect fullRect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
-            if (!tbRect.isEmpty()) {
-                if (tabBarConfig_.position == "top") {
-                    fullRect.y = tbRect.h;
-                    fullRect.h -= tbRect.h;
-                } else {
-                    fullRect.h -= tbRect.h;
-                }
-            }
-            float usableW = std::max(0.0f, static_cast<float>(fullRect.w) - padLeft_ - padRight_);
-            float usableH = std::max(0.0f, static_cast<float>(fullRect.h) - padTop_ - padBottom_);
-            int wantCols = std::max(1, static_cast<int>(usableW / charWidth_));
-            int wantRows = std::max(1, static_cast<int>(usableH / lineHeight_));
-            if (renderThread_->renderState().overlay->width() != wantCols ||
-                renderThread_->renderState().overlay->height() != wantRows) {
-                renderThread_->renderState().overlay->resize(wantCols, wantRows);
-            }
-        } else {
+        {
             for (Terminal* pane : tab->layout()->panes()) {
                 RenderPaneInfo rpi;
                 rpi.id = pane->id();
@@ -645,13 +617,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 auto tab = activeTab();
                 if (tab) {
                     TerminalEmulator* term = nullptr;
-                    Terminal* fp = nullptr;
-                    if (tab->hasOverlay()) {
-                        term = tab->topOverlay();
-                    } else {
-                        fp = tab->layout()->focusedPane();
-                        term = fp;
-                    }
+                    Terminal* fp = tab->layout()->focusedPane();
+                    term = fp;
                     if (term && term->mouseReportingActive()) {
                         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
                         double lastCursorX = inputController_ ? inputController_->lastCursorX() : 0.0;
@@ -691,9 +658,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 setNeedsRedraw();
                 auto t = activeTab();
                 if (!t) return;
-                if (t->hasOverlay()) {
-                    t->topOverlay()->focusEvent(focused);
-                } else if (Layout* l = t->layout()) {
+                if (Layout* l = t->layout()) {
                     if (Terminal* fp = l->focusedPane()) fp->focusEvent(focused);
                 }
                 setNeedsRedraw();
@@ -1191,10 +1156,6 @@ void PlatformDawn::onBlinkTick()
     auto wantsRedraw = [](TerminalEmulator* term) {
         return term && term->cursorBlinking() && term->cursorVisible();
     };
-    if (tab->hasOverlay()) {
-        if (wantsRedraw(tab->topOverlay())) setNeedsRedraw();
-        return;
-    }
     Layout* layout = tab->layout();
     if (!layout) return;
     for (Terminal* panePtr : layout->panes()) {

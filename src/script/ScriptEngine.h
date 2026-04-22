@@ -54,19 +54,14 @@ struct CommandInfo {
 struct AppCallbacks {
     // Inject data directly into a terminal emulator (bypass PTY)
     std::function<void(PaneId, const std::string&)> injectPaneData;
-    std::function<void(TabId, const std::string&)> injectOverlayData;
     // Write to PTY master fd (shell stdin) — raw bytes, no bracketing.
     std::function<void(PaneId, const std::string&)> writePaneToShell;
-    std::function<void(TabId, const std::string&)> writeOverlayToShell;
     // Paste to PTY master fd — wraps in \x1b[200~/\x1b[201~ when the terminal
     // currently has DECSET 2004 active (bracketed paste mode). Use for
-    // content the user is pasting from elsewhere; use writePaneToShell /
-    // writeOverlayToShell for synthetic keystrokes or OSC responses.
+    // content the user is pasting from elsewhere.
     std::function<void(PaneId, const std::string&)> pastePaneText;
-    std::function<void(TabId, const std::string&)> pasteOverlayText;
     // Check if a PTY exists
     std::function<bool(PaneId)> paneHasPty;
-    std::function<bool(TabId)> overlayHasPty;
     // Check if there is an active tab
     std::function<bool()> hasActiveTab;
     // Invoke an action by name
@@ -102,31 +97,20 @@ struct AppCallbacks {
     // pass 0 and INT_MAX (or std::numeric_limits<int>::max()) for full rows.
     std::function<std::string(PaneId, uint64_t startRowId, int startCol,
                               uint64_t endRowId, int endCol)> paneGetText;
-    std::function<std::string(TabId, uint64_t startRowId, int startCol,
-                              uint64_t endRowId, int endCol)> overlayGetText;
     // Returns the stable row ID for a screen row, or nullopt if out of range.
     // Resolve the logical-line id for a screen row position.
     std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneLineIdAt;
-    std::function<std::optional<uint64_t>(TabId, int screenRow)> overlayLineIdAt;
-    // Query overlay info
-    struct OverlayInfo { int cols; int rows; bool hasPty; bool exists; };
-    std::function<OverlayInfo(TabId)> overlayInfo;
     // Query tab/pane structure
     struct TabInfo {
         TabId id;
         bool active;
         std::vector<PaneId> panes;
         PaneId focusedPane;
-        bool hasOverlay;
         // UUID string of this Tab's root Container in the shared LayoutTree,
         // or empty when the tab has no tree representation.
         std::string nodeId;
     };
     std::function<std::vector<TabInfo>()> tabs;
-    // Create a headless overlay on a tab. onInput is called when user types into it.
-    std::function<bool(TabId, std::function<void(const char*, size_t)> onInput)> createOverlay;
-    // Pop overlay from a tab.
-    std::function<void(TabId)> popOverlay;
     // Create a new tab. Returns the tab index.
     std::function<int()> createTab;
     // Close a tab by index.
@@ -250,14 +234,10 @@ public:
     // --- Synchronous filters (called from PTY read / input path) ---
     bool filterPaneOutput(PaneId pane, std::string& data);
     bool filterPaneInput(PaneId pane, std::string& data);
-    bool filterOverlayOutput(TabId tab, std::string& data);
-    bool filterOverlayInput(TabId tab, std::string& data);
 
     bool hasPaneOutputFilters(PaneId pane) const;
     bool hasPaneInputFilters(PaneId pane) const;
     bool hasPaneMouseMoveListeners(PaneId pane) const;
-    bool hasOverlayOutputFilters(TabId tab) const;
-    bool hasOverlayInputFilters(TabId tab) const;
 
     // --- Async events (enqueued as microtasks) ---
     void notifyAction(const std::string& actionName);
@@ -273,8 +253,6 @@ public:
     // payload is {paneId, paneNodeId}.
     void notifyTerminalExited(PaneId pane, Uuid nodeId = {});
     void notifyPaneResized(PaneId pane, int cols, int rows);
-    void notifyOverlayCreated(TabId tab);
-    void notifyOverlayDestroyed(TabId tab);
     void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
     void notifyForegroundProcessChanged(PaneId pane, const std::string& processName);
     void notifyPaneFocusChanged(PaneId pane, bool focused);
@@ -298,8 +276,6 @@ public:
                                  int pixelX, int pixelY, int button);
     void deliverPaneMouseEvent(PaneId pane, const std::string& type,
                                 int cellX, int cellY, int pixelX, int pixelY, int button);
-    void deliverOverlayMouseEvent(TabId tab, const std::string& type,
-                                   int cellX, int cellY, int pixelX, int pixelY, int button);
 
     // Run pending JS jobs. Call from main loop.
     void executePendingJobs();
@@ -309,8 +285,6 @@ public:
     void addPaneOutputFilter(PaneId pane, InstanceId instId);
     void addPaneInputFilter(PaneId pane, InstanceId instId);
     void addPaneMouseMoveListener(PaneId pane, InstanceId instId);
-    void addOverlayOutputFilter(TabId tab, InstanceId instId);
-    void addOverlayInputFilter(TabId tab, InstanceId instId);
 
     uint32_t nextTimer() { return nextTimerId_++; }
 
@@ -336,12 +310,9 @@ public:
         // Resources owned by this instance (cleaned up on unload)
         struct PopupRef { PaneId pane; std::string popupId; };
         std::vector<PopupRef> ownedPopups;
-        std::vector<TabId> ownedOverlays;
         std::vector<PaneId> paneOutputFilters; // panes with output filters from this instance
         std::vector<PaneId> paneInputFilters;
         std::vector<PaneId> paneMouseMoveListeners;
-        std::vector<TabId> overlayOutputFilters;
-        std::vector<TabId> overlayInputFilters;
     };
     Instance* findInstanceByCtx(JSContext* ctx);
     Instance* findInstance(InstanceId id);
@@ -390,12 +361,6 @@ public:
     const std::string& tabIcon(Uuid subtreeRoot) const;
     void setTabIcon(Uuid subtreeRoot, const std::string& s);
     void eraseTabIcon(Uuid subtreeRoot);
-
-    bool hasTabOverlay(Uuid subtreeRoot) const;
-    ::Terminal* topTabOverlay(Uuid subtreeRoot);
-    void pushTabOverlay(Uuid subtreeRoot, std::unique_ptr<::Terminal>);
-    std::unique_ptr<::Terminal> popTabOverlay(Uuid subtreeRoot);
-    std::vector<std::unique_ptr<::Terminal>> extractAllTabOverlays(Uuid subtreeRoot);
 
     // --- paneId ↔ Uuid index (engine-wide) ---
     // Global (across all tabs) since paneIds come from a monotonic counter
@@ -511,8 +476,6 @@ private:
     std::unordered_map<PaneId, int> paneOutputFilterCount_;
     std::unordered_map<PaneId, int> paneInputFilterCount_;
     std::unordered_map<PaneId, int> paneMouseMoveCount_;
-    std::unordered_map<TabId, int> overlayOutputFilterCount_;
-    std::unordered_map<TabId, int> overlayInputFilterCount_;
 
     JSContext* createContext();
     void setupGlobals(JSContext* ctx, InstanceId id);
@@ -527,7 +490,6 @@ private:
                                  int pixelX, int pixelY, int button);
 
     bool runPaneFilters(PaneId pane, const char* filterProp, std::string& data);
-    bool runOverlayFilters(TabId tab, const char* filterProp, std::string& data);
 
     void cleanupPane(PaneId pane);
     void cleanupTab(TabId tab);
@@ -539,8 +501,6 @@ private:
     // then terminals_, then layoutTree_.
     std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> terminals_;
     std::unordered_map<Uuid, std::string,                 UuidHash> tabIcons_;
-    std::unordered_map<Uuid, std::vector<std::unique_ptr<::Terminal>>,
-                                                          UuidHash> tabOverlays_;
 
     // paneId ↔ Uuid indices. Global — paneIds are globally unique (sGlobalPaneId).
     std::unordered_map<int, Uuid>           paneIdToUuid_;

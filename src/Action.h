@@ -32,8 +32,6 @@ struct ScrollUp            { int lines = 3; };
 struct ScrollDown          { int lines = 3; };
 struct ScrollToTop         {};
 struct ScrollToBottom      {};
-struct PushOverlay         {};
-struct PopOverlay          {};
 struct IncreaseFontSize    {};
 struct DecreaseFontSize    {};
 struct ResetFontSize       {};
@@ -62,7 +60,6 @@ using Any = std::variant<
     SplitPane, ClosePane, ZoomPane, FocusPane, AdjustPaneSize,
     Copy, Paste,
     ScrollUp, ScrollDown, ScrollToTop, ScrollToBottom,
-    PushOverlay, PopOverlay,
     IncreaseFontSize, DecreaseFontSize, ResetFontSize,
     ScrollToPrompt, SelectCommandOutput, ShowScrollback,
     CopyLastCommand, CopySelectedCommandOutput, CopyDocument,

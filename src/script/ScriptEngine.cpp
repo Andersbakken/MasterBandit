@@ -971,223 +971,11 @@ static JSValue jsPaneGetPopups(JSContext* ctx, JSValueConst this_val)
 }
 
 // ============================================================================
-// Overlay JS class
+// Overlay JS class — dissolved in tree-cutover step 8. Overlays are no longer
+// a distinct concept; the pager spawned by Action::ShowScrollback is just a
+// pane attached as a sibling under the tab's Stack.
 // ============================================================================
 
-static JSClassID jsOverlayClassId;
-
-struct JsOverlayData {
-    TabId tabId;  // overlay is identified by its parent tab
-    bool alive;
-};
-
-static void jsOverlayFinalize(JSRuntime*, JSValue val)
-{
-    delete static_cast<JsOverlayData*>(JS_GetOpaque(val, jsOverlayClassId));
-}
-
-static JSClassDef jsOverlayClassDef = { "Overlay", jsOverlayFinalize };
-
-static JSValue jsOverlayNew(JSContext* ctx, TabId tabId)
-{
-    JSValue obj = JS_NewObjectClass(ctx, jsOverlayClassId);
-    JS_SetOpaque(obj, new JsOverlayData{tabId, true});
-    return obj;
-}
-
-static JsOverlayData* jsOverlayGet(JSContext* ctx, JSValueConst val)
-{
-    return static_cast<JsOverlayData*>(JS_GetOpaque(val, jsOverlayClassId));
-}
-
-static JSValue jsOverlayAddEventListener(JSContext* ctx, JSValueConst this_val,
-                                          int argc, JSValueConst* argv)
-{
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
-
-    auto* inst = instanceFromCtx(ctx);
-    InstanceId instId = inst ? inst->id : 0;
-
-    std::string prop;
-    if (strcmp(event, "output") == 0) {
-        if (!checkPerm(ctx, Perm::IoFilterOutput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput"); }
-        prop = "__output_filters";
-        eng->addOverlayOutputFilter(ov->tabId, instId);
-        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
-    } else if (strcmp(event, "input") == 0) {
-        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
-        prop = "__input_filters";
-        eng->addOverlayInputFilter(ov->tabId, instId);
-        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
-    } else if (strcmp(event, "mouse") == 0) {
-        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
-        prop = "__mouse_listeners";
-        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
-    } else {
-        prop = std::string("__evt_") + event;
-        registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(ov->tabId), this_val);
-    }
-    JS_FreeCString(ctx, event);
-
-    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
-    if (JS_IsUndefined(arr)) {
-        arr = JS_NewArray(ctx);
-        JS_SetPropertyStr(ctx, this_val, prop.c_str(), JS_DupValue(ctx, arr));
-    }
-    JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
-    JS_Call(ctx, pushFn, arr, 1, &argv[1]);
-    JS_FreeValue(ctx, pushFn);
-    JS_FreeValue(ctx, arr);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsOverlayRemoveEventListener(JSContext* ctx, JSValueConst this_val,
-                                             int argc, JSValueConst* argv)
-{
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
-    std::string prop;
-    if      (strcmp(event, "output") == 0) prop = "__output_filters";
-    else if (strcmp(event, "input")  == 0) prop = "__input_filters";
-    else if (strcmp(event, "mouse")  == 0) prop = "__mouse_listeners";
-    else                                   prop = std::string("__evt_") + event;
-    JS_FreeCString(ctx, event);
-    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
-    removeFromJSArray(ctx, arr, argv[1]);
-    JS_FreeValue(ctx, arr);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsOverlayInject(JSContext* ctx, JSValueConst this_val,
-                                int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
-    REQUIRE_PERM(ctx, IoInject);
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
-    engineFromCtx(ctx)->callbacks().injectOverlayData(ov->tabId, std::string(str, len));
-    JS_FreeCString(ctx, str);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsOverlayWrite(JSContext* ctx, JSValueConst this_val,
-                               int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_ThrowTypeError(ctx, "write requires (string)");
-    REQUIRE_PERM(ctx, ShellWrite);
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().overlayHasPty(ov->tabId))
-        return JS_ThrowTypeError(ctx, "overlay has no PTY");
-    size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
-    eng->callbacks().writeOverlayToShell(ov->tabId, std::string(str, len));
-    JS_FreeCString(ctx, str);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsOverlayPaste(JSContext* ctx, JSValueConst this_val,
-                               int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_ThrowTypeError(ctx, "paste requires (string)");
-    REQUIRE_PERM(ctx, ShellWrite);
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().overlayHasPty(ov->tabId))
-        return JS_ThrowTypeError(ctx, "overlay has no PTY");
-    size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
-    eng->callbacks().pasteOverlayText(ov->tabId, std::string(str, len));
-    JS_FreeCString(ctx, str);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsOverlayGetProp(JSContext* ctx, JSValueConst this_val, int magic)
-{
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    auto info = eng->callbacks().overlayInfo(ov->tabId);
-    if (!info.exists) return JS_UNDEFINED;
-    switch (magic) {
-    case 0: return JS_NewInt32(ctx, info.cols);
-    case 1: return JS_NewInt32(ctx, info.rows);
-    case 2: return JS_NewBool(ctx, info.hasPty);
-    default: return JS_UNDEFINED;
-    }
-}
-
-static JSValue jsOverlayGetTextFromRows(JSContext* ctx, JSValueConst this_val,
-                                         int argc, JSValueConst* argv)
-{
-    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().overlayGetText) return JS_NewString(ctx, "");
-    uint64_t startId = 0, endId = 0;
-    int32_t startCol = 0, endCol = 0;
-    JS_ToIndex(ctx, &startId, argv[0]);
-    JS_ToInt32(ctx, &startCol, argv[1]);
-    JS_ToIndex(ctx, &endId, argv[2]);
-    JS_ToInt32(ctx, &endCol, argv[3]);
-    auto text = eng->callbacks().overlayGetText(ov->tabId, startId, startCol, endId, endCol);
-    return JS_NewStringLen(ctx, text.data(), text.size());
-}
-
-static JSValue jsOverlayRowIdAt(JSContext* ctx, JSValueConst this_val,
-                                 int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().overlayLineIdAt) return JS_NULL;
-    int32_t screenRow = 0;
-    JS_ToInt32(ctx, &screenRow, argv[0]);
-    auto result = eng->callbacks().overlayLineIdAt(ov->tabId, screenRow);
-    if (!result.has_value()) return JS_NULL;
-    return JS_NewInt64(ctx, static_cast<int64_t>(*result));
-}
-
-// Forward declaration — defined later after mb functions
-static JSValue jsOverlayClose(JSContext* ctx, JSValueConst this_val, int, JSValueConst*);
-
-static const JSCFunctionListEntry jsOverlayProto[] = {
-    JS_CFUNC_DEF("addEventListener", 2, jsOverlayAddEventListener),
-    JS_CFUNC_DEF("removeEventListener", 2, jsOverlayRemoveEventListener),
-    JS_CFUNC_DEF("inject", 1, jsOverlayInject),
-    JS_CFUNC_DEF("write", 1, jsOverlayWrite),
-    JS_CFUNC_DEF("paste", 1, jsOverlayPaste),
-    JS_CFUNC_DEF("getTextFromRows", 4, jsOverlayGetTextFromRows),
-    JS_CFUNC_DEF("rowIdAt", 1, jsOverlayRowIdAt),
-    JS_CFUNC_DEF("close", 0, jsOverlayClose),
-    JS_CGETSET_MAGIC_DEF("cols", jsOverlayGetProp, nullptr, 0),
-    JS_CGETSET_MAGIC_DEF("rows", jsOverlayGetProp, nullptr, 1),
-    JS_CGETSET_MAGIC_DEF("hasPty", jsOverlayGetProp, nullptr, 2),
-};
-
-// ============================================================================
-// Tab JS class
-// ============================================================================
 
 static JSClassID jsTabClassId;
 
@@ -1259,17 +1047,6 @@ static JSValue jsTabRemoveEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// tab.overlay — returns Overlay or undefined
-static JSValue jsTabGetOverlay(JSContext* ctx, JSValueConst this_val)
-{
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    auto info = eng->callbacks().overlayInfo(tab->id);
-    if (!info.exists) return JS_UNDEFINED;
-    return jsOverlayNew(ctx, tab->id);
-}
-
 static JSValue jsTabGetId(JSContext* ctx, JSValueConst this_val)
 {
     auto* tab = jsTabGet(ctx, this_val);
@@ -1327,46 +1104,6 @@ static JSValue jsTabGetActivePane(JSContext* ctx, JSValueConst this_val)
     return JS_UNDEFINED;
 }
 
-// tab.createOverlay() -> Overlay or undefined
-static JSValue jsTabCreateOverlay(JSContext* ctx, JSValueConst this_val,
-                                   int, JSValueConst*)
-{
-    REQUIRE_PERM(ctx, UiOverlayCreate);
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-
-    JSValue overlayObj = jsOverlayNew(ctx, tab->id);
-
-    int tabId = tab->id;
-    bool ok = eng->callbacks().createOverlay(tabId, [eng, tabId](const char* data, size_t len) {
-        eng->deliverInput("__overlay_registry", static_cast<uint32_t>(tabId), data, len);
-    });
-
-    if (!ok) {
-        JS_FreeValue(ctx, overlayObj);
-        return JS_NULL;
-    }
-    registerInGlobal(ctx, "__overlay_registry", static_cast<uint32_t>(tab->id), overlayObj);
-
-    // Track ownership for cleanup on unload
-    auto* inst = instanceFromCtx(ctx);
-    if (inst) inst->ownedOverlays.push_back(tab->id);
-
-    return overlayObj;
-}
-
-// tab.closeOverlay()
-static JSValue jsTabCloseOverlay(JSContext* ctx, JSValueConst this_val,
-                                  int, JSValueConst*)
-{
-    REQUIRE_PERM(ctx, UiOverlayClose);
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
-    engineFromCtx(ctx)->callbacks().popOverlay(tab->id);
-    return JS_UNDEFINED;
-}
-
 // tab.close()
 static JSValue jsTabClose(JSContext* ctx, JSValueConst this_val,
                            int, JSValueConst*)
@@ -1382,10 +1119,7 @@ static JSValue jsTabClose(JSContext* ctx, JSValueConst this_val,
 static const JSCFunctionListEntry jsTabProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsTabAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsTabRemoveEventListener),
-    JS_CFUNC_DEF("createOverlay", 0, jsTabCreateOverlay),
-    JS_CFUNC_DEF("closeOverlay", 0, jsTabCloseOverlay),
     JS_CFUNC_DEF("close", 0, jsTabClose),
-    JS_CGETSET_DEF("overlay", jsTabGetOverlay, nullptr),
     JS_CGETSET_DEF("id", jsTabGetId, nullptr),
     JS_CGETSET_DEF("nodeId", jsTabGetNodeId, nullptr),
     JS_CGETSET_DEF("panes", jsTabGetPanes, nullptr),
@@ -1865,19 +1599,6 @@ static JSValue jsMbRegisterAction(JSContext* ctx, JSValueConst, int argc, JSValu
     return JS_UNDEFINED;
 }
 
-// overlay.close() — pops the overlay
-static JSValue jsOverlayClose(JSContext* ctx, JSValueConst this_val,
-                               int, JSValueConst*)
-{
-    REQUIRE_PERM(ctx, UiOverlayClose);
-    auto* ov = jsOverlayGet(ctx, this_val);
-    if (!ov || !ov->alive) return JS_ThrowTypeError(ctx, "overlay is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    eng->callbacks().popOverlay(ov->tabId);
-    ov->alive = false;
-    return JS_UNDEFINED;
-}
-
 // ============================================================================
 // Microtask event dispatch
 // ============================================================================
@@ -2112,9 +1833,6 @@ Engine::Engine()
     JS_NewClassID(rt_, &jsPaneClassId);
     JS_NewClass(rt_, jsPaneClassId, &jsPaneClassDef);
 
-    JS_NewClassID(rt_, &jsOverlayClassId);
-    JS_NewClass(rt_, jsOverlayClassId, &jsOverlayClassDef);
-
     JS_NewClassID(rt_, &jsTabClassId);
     JS_NewClass(rt_, jsTabClassId, &jsTabClassDef);
 
@@ -2153,11 +1871,6 @@ JSContext* Engine::createContext()
     JS_SetPropertyFunctionList(ctx, paneProto,
         jsPaneProto, sizeof(jsPaneProto) / sizeof(jsPaneProto[0]));
     JS_SetClassProto(ctx, jsPaneClassId, paneProto);
-
-    JSValue overlayProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, overlayProto,
-        jsOverlayProto, sizeof(jsOverlayProto) / sizeof(jsOverlayProto[0]));
-    JS_SetClassProto(ctx, jsOverlayClassId, overlayProto);
 
     JSValue tabProto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, tabProto,
@@ -2365,11 +2078,7 @@ void Engine::unload(InstanceId id)
         for (auto& ref : it->ownedPopups)
             callbacks_.destroyPopup(ref.pane, ref.popupId);
 
-        // 3. Pop owned overlays
-        for (auto tabId : it->ownedOverlays)
-            callbacks_.popOverlay(tabId);
-
-        // 4. Decrement filter counts for this instance's registrations
+        // 3. Decrement filter counts for this instance's registrations
         for (auto pane : it->paneOutputFilters) {
             auto fc = paneOutputFilterCount_.find(pane);
             if (fc != paneOutputFilterCount_.end() && --fc->second <= 0)
@@ -2379,16 +2088,6 @@ void Engine::unload(InstanceId id)
             auto fc = paneInputFilterCount_.find(pane);
             if (fc != paneInputFilterCount_.end() && --fc->second <= 0)
                 paneInputFilterCount_.erase(fc);
-        }
-        for (auto tab : it->overlayOutputFilters) {
-            auto fc = overlayOutputFilterCount_.find(tab);
-            if (fc != overlayOutputFilterCount_.end() && --fc->second <= 0)
-                overlayOutputFilterCount_.erase(fc);
-        }
-        for (auto tab : it->overlayInputFilters) {
-            auto fc = overlayInputFilterCount_.find(tab);
-            if (fc != overlayInputFilterCount_.end() && --fc->second <= 0)
-                overlayInputFilterCount_.erase(fc);
         }
         for (auto pane : it->paneMouseMoveListeners) {
             auto fc = paneMouseMoveCount_.find(pane);
@@ -2689,18 +2388,6 @@ bool Engine::hasPaneMouseMoveListeners(PaneId pane) const
     return it != paneMouseMoveCount_.end() && it->second > 0;
 }
 
-bool Engine::hasOverlayOutputFilters(TabId tab) const
-{
-    auto it = overlayOutputFilterCount_.find(tab);
-    return it != overlayOutputFilterCount_.end() && it->second > 0;
-}
-
-bool Engine::hasOverlayInputFilters(TabId tab) const
-{
-    auto it = overlayInputFilterCount_.find(tab);
-    return it != overlayInputFilterCount_.end() && it->second > 0;
-}
-
 bool Engine::filterPaneOutput(PaneId pane, std::string& data)
 {
     return runPaneFilters(pane, "__output_filters", data);
@@ -2709,16 +2396,6 @@ bool Engine::filterPaneOutput(PaneId pane, std::string& data)
 bool Engine::filterPaneInput(PaneId pane, std::string& data)
 {
     return runPaneFilters(pane, "__input_filters", data);
-}
-
-bool Engine::filterOverlayOutput(TabId tab, std::string& data)
-{
-    return runOverlayFilters(tab, "__output_filters", data);
-}
-
-bool Engine::filterOverlayInput(TabId tab, std::string& data)
-{
-    return runOverlayFilters(tab, "__input_filters", data);
 }
 
 // Run filters on all Pane JS objects with matching id across controller contexts.
@@ -2773,60 +2450,6 @@ bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& da
         }
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, paneObj);
-    }
-    return modified;
-}
-
-bool Engine::runOverlayFilters(TabId tab, const char* filterProp, std::string& data)
-{
-    IterGuard guard(this);
-    bool modified = false;
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__overlay_registry");
-        JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
-
-        JSValue overlayObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(tab));
-        JS_FreeValue(inst.ctx, registry);
-        if (JS_IsUndefined(overlayObj)) continue;
-
-        JSValue arr = JS_GetPropertyStr(inst.ctx, overlayObj, filterProp);
-        if (!JS_IsUndefined(arr)) {
-            JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
-            int32_t len = 0;
-            JS_ToInt32(inst.ctx, &len, lenVal);
-            JS_FreeValue(inst.ctx, lenVal);
-
-            for (int32_t i = 0; i < len; ++i) {
-                JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
-                if (JS_IsFunction(inst.ctx, fn)) {
-                    JSValue arg = JS_NewStringLen(inst.ctx, data.c_str(), data.size());
-                    JSValue ret = JS_Call(inst.ctx, fn, overlayObj, 1, &arg);
-                    JS_FreeValue(inst.ctx, arg);
-
-                    if (JS_IsException(ret)) {
-                        JSValue exc = JS_GetException(inst.ctx);
-                        const char* s = JS_ToCString(inst.ctx, exc);
-                        sLog().error("ScriptEngine: overlay filter error: {}", s ? s : "(null)");
-                        if (s) JS_FreeCString(inst.ctx, s);
-                        JS_FreeValue(inst.ctx, exc);
-                    } else if (JS_IsString(ret)) {
-                        size_t rlen;
-                        const char* rstr = JS_ToCStringLen(inst.ctx, &rlen, ret);
-                        if (rstr) { data.assign(rstr, rlen); modified = true; JS_FreeCString(inst.ctx, rstr); }
-                    } else if (JS_IsNull(ret)) {
-                        data.clear(); modified = true;
-                    }
-                    JS_FreeValue(inst.ctx, ret);
-                }
-                JS_FreeValue(inst.ctx, fn);
-            }
-        }
-        JS_FreeValue(inst.ctx, arr);
-        JS_FreeValue(inst.ctx, overlayObj);
     }
     return modified;
 }
@@ -2989,75 +2612,6 @@ void Engine::notifyTerminalExited(PaneId pane, Uuid nodeId)
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);
     }
-}
-
-void Engine::notifyOverlayCreated(TabId tab)
-{
-    IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-
-
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");
-        JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
-
-        JSValue tabObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(tab));
-        if (!JS_IsUndefined(tabObj)) {
-            JSValue arr = JS_GetPropertyStr(inst.ctx, tabObj, "__evt_overlayCreated");
-            JSValue overlayObj = jsOverlayNew(inst.ctx, tab);
-            enqueueListeners(inst.ctx, arr, 1, &overlayObj);
-            JS_FreeValue(inst.ctx, overlayObj);
-            JS_FreeValue(inst.ctx, arr);
-        }
-        JS_FreeValue(inst.ctx, tabObj);
-        JS_FreeValue(inst.ctx, registry);
-    }
-}
-
-void Engine::notifyOverlayDestroyed(TabId tab)
-{
-    IterGuard guard(this);
-    // Fire overlayDestroyed listeners on tab objects
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-
-
-        // Fire destroyed on overlay objects
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue oRegistry = JS_GetPropertyStr(inst.ctx, global, "__overlay_registry");
-        if (!JS_IsUndefined(oRegistry)) {
-            JSValue overlayObj = JS_GetPropertyUint32(inst.ctx, oRegistry, static_cast<uint32_t>(tab));
-            if (!JS_IsUndefined(overlayObj)) {
-                JSValue arr = JS_GetPropertyStr(inst.ctx, overlayObj, "__evt_destroyed");
-                enqueueListeners(inst.ctx, arr, 0, nullptr);
-                JS_FreeValue(inst.ctx, arr);
-                auto* data = jsOverlayGet(inst.ctx, overlayObj);
-                if (data) data->alive = false;
-                JS_SetPropertyUint32(inst.ctx, oRegistry, static_cast<uint32_t>(tab), JS_UNDEFINED);
-            }
-            JS_FreeValue(inst.ctx, overlayObj);
-        }
-        JS_FreeValue(inst.ctx, oRegistry);
-
-        // Fire overlayDestroyed on tab objects
-        JSValue tRegistry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");
-        if (!JS_IsUndefined(tRegistry)) {
-            JSValue tabObj = JS_GetPropertyUint32(inst.ctx, tRegistry, static_cast<uint32_t>(tab));
-            if (!JS_IsUndefined(tabObj)) {
-                JSValue arr = JS_GetPropertyStr(inst.ctx, tabObj, "__evt_overlayDestroyed");
-                enqueueListeners(inst.ctx, arr, 0, nullptr);
-                JS_FreeValue(inst.ctx, arr);
-            }
-            JS_FreeValue(inst.ctx, tabObj);
-        }
-        JS_FreeValue(inst.ctx, tRegistry);
-        JS_FreeValue(inst.ctx, global);
-    }
-
-    overlayOutputFilterCount_.erase(tab);
-    overlayInputFilterCount_.erase(tab);
 }
 
 void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
@@ -3585,13 +3139,6 @@ void Engine::deliverPaneMouseEvent(PaneId pane, const std::string& type,
                                  type, cellX, cellY, pixelX, pixelY, button);
 }
 
-void Engine::deliverOverlayMouseEvent(TabId tab, const std::string& type,
-                                       int cellX, int cellY, int pixelX, int pixelY, int button)
-{
-    deliverMouseToRegistry("__overlay_registry", static_cast<uint32_t>(tab),
-                                 type, cellX, cellY, pixelX, pixelY, button);
-}
-
 void Engine::executePendingJobs()
 {
     JSContext* pctx;
@@ -3639,8 +3186,6 @@ void Engine::cleanupPane(PaneId pane)
 void Engine::cleanupTab(TabId tab)
 {
     IterGuard guard(this);
-    overlayOutputFilterCount_.erase(tab);
-    overlayInputFilterCount_.erase(tab);
 
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
@@ -3705,18 +3250,6 @@ void Engine::addPaneMouseMoveListener(PaneId pane, InstanceId instId) {
     paneMouseMoveCount_[pane]++;
     if (auto* inst = findInstance(instId))
         inst->paneMouseMoveListeners.push_back(pane);
-}
-
-void Engine::addOverlayOutputFilter(TabId tab, InstanceId instId) {
-    overlayOutputFilterCount_[tab]++;
-    if (auto* inst = findInstance(instId))
-        inst->overlayOutputFilters.push_back(tab);
-}
-
-void Engine::addOverlayInputFilter(TabId tab, InstanceId instId) {
-    overlayInputFilterCount_[tab]++;
-    if (auto* inst = findInstance(instId))
-        inst->overlayInputFilters.push_back(tab);
 }
 
 bool Engine::setNamespace(InstanceId id, const std::string& ns)

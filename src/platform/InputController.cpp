@@ -314,10 +314,8 @@ void InputController::onMouseButton(int button, int action, int mods)
     if (action == static_cast<int>(KeyAction_Release) && selectionDragActive_) {
         selectionDragActive_ = false;
         stopAutoScroll();
-        Terminal* fp2 = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
-        TerminalEmulator* term2 = tab->hasOverlay()
-            ? static_cast<TerminalEmulator*>(tab->topOverlay())
-            : static_cast<TerminalEmulator*>(fp2);
+        Terminal* fp2 = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+        TerminalEmulator* term2 = static_cast<TerminalEmulator*>(fp2);
         if (term2) {
             PaneRect pr = fp2 ? fp2->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
             double cellRelX = sx - pr.x - padLeft;
@@ -353,7 +351,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     if (region == MouseRegion::Divider) return;
 
     // 2. Click on inactive pane — switch focus (side effect)
-    if (action == static_cast<int>(KeyAction_Press) && region == MouseRegion::Pane && !tab->hasOverlay()) {
+    if (action == static_cast<int>(KeyAction_Press) && region == MouseRegion::Pane ) {
         int clickedId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
         if (clickedId >= 0 && clickedId != tab->layout()->focusedPaneId()) {
             int prev = tab->layout()->focusedPaneId();
@@ -364,7 +362,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     }
 
     // 2b. Check if click lands inside a popup — deliver mouse event to JS
-    if (region == MouseRegion::Pane && !tab->hasOverlay()) {
+    if (region == MouseRegion::Pane ) {
         Terminal* clickPane = tab->layout()->focusedPane();
         if (clickPane) {
             const PaneRect& pr = clickPane->rect();
@@ -412,10 +410,8 @@ void InputController::onMouseButton(int button, int action, int mods)
     }
 
     // 5. Resolve focused pane and terminal
-    Terminal* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
-    TerminalEmulator* term = tab->hasOverlay()
-        ? static_cast<TerminalEmulator*>(tab->topOverlay())
-        : static_cast<TerminalEmulator*>(fp);
+    Terminal* fp = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+    TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
     // 6. Determine mouse mode
@@ -601,10 +597,8 @@ void InputController::onCursorPos(double x, double y)
     if (!tab) return;
 
     Window* window = host_.window ? host_.window() : nullptr;
-    Terminal* fp = tab->hasOverlay() ? nullptr : tab->layout()->focusedPane();
-    TerminalEmulator* term = tab->hasOverlay()
-        ? static_cast<TerminalEmulator*>(tab->topOverlay())
-        : static_cast<TerminalEmulator*>(fp);
+    Terminal* fp = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+    TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
     const float contentScaleX = host_.contentScaleX();
@@ -633,10 +627,10 @@ void InputController::onCursorPos(double x, double y)
         if (region == MouseRegion::TabBar) {
             window->setCursorStyle(Window::CursorStyle::Arrow);
         } else {
-            int hoveredId = tab->hasOverlay()
-                ? -1
-                : tab->layout()->paneAtPixel(static_cast<int>(sx),
-                                             static_cast<int>(sy));
+            int hoveredId = tab->layout()
+                ? tab->layout()->paneAtPixel(static_cast<int>(sx),
+                                             static_cast<int>(sy))
+                : -1;
             auto it = paneCursorStyle_.find(hoveredId);
             window->setCursorStyle(it != paneCursorStyle_.end()
                 ? it->second
@@ -645,7 +639,7 @@ void InputController::onCursorPos(double x, double y)
     }
 
     // Notify JS mousemove listeners for the hovered pane
-    if (!tab->hasOverlay() && host_.scriptEngine) {
+    if (host_.scriptEngine && tab->layout()) {
         int hoveredPaneId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
         if (hoveredPaneId >= 0 && host_.scriptEngine->hasPaneMouseMoveListeners(hoveredPaneId)) {
             Terminal* hp = tab->layout()->pane(hoveredPaneId);
@@ -802,12 +796,8 @@ void InputController::doAutoScroll()
 
     auto tab = host_.activeTab();
     if (!tab) { stopAutoScroll(); return; }
-    TerminalEmulator* term = tab->hasOverlay()
-        ? static_cast<TerminalEmulator*>(tab->topOverlay())
-        : [&]() -> TerminalEmulator* {
-            Terminal* fp = tab->layout()->focusedPane();
-            return static_cast<TerminalEmulator*>(fp);
-          }();
+    Terminal* fp = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+    TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) { stopAutoScroll(); return; }
 
     term->scrollViewport(autoScrollDir_);
@@ -852,7 +842,7 @@ void InputController::refreshPointerShape()
     // the focused pane when the mouse position isn't usefully hovering one
     // (e.g. before any motion event has fired).
     int paneId = -1;
-    if (!tab->hasOverlay()) {
+    if (tab->layout()) {
         paneId = tab->layout()->paneAtPixel(static_cast<int>(sx),
                                             static_cast<int>(sy));
         if (paneId < 0) {

@@ -16,8 +16,18 @@
 Tab Tab::newSubtree(Script::Engine* engine)
 {
     if (!engine) return {};
-    Uuid subRoot = engine->layoutTree().createContainer(SplitDir::Horizontal);
-    return Tab{engine, subRoot};
+    // The tab is a Stack whose activeChild is the "content" Container
+    // (holding the pane Terminals). Additional siblings may be added later
+    // — e.g. by Action::ShowScrollback — and swapped in via setActiveChild
+    // to produce what used to be the "overlay" UX. When the sibling's
+    // Terminal exits, removeChild auto-retargets activeChild to the first
+    // remaining child (the content Container), so the pane view returns.
+    LayoutTree& tree = engine->layoutTree();
+    Uuid stack   = tree.createStack();
+    Uuid content = tree.createContainer(SplitDir::Horizontal);
+    tree.appendChild(stack, ChildSlot{content, /*stretch=*/1});
+    tree.setActiveChild(stack, content);
+    return Tab{engine, stack};
 }
 
 namespace {
@@ -104,30 +114,6 @@ void Tab::setIcon(const std::string& s)
     eng_->setTabIcon(subtreeRoot_, s);
 }
 
-bool Tab::hasOverlay() const
-{
-    if (!valid()) return false;
-    return eng_->hasTabOverlay(subtreeRoot_);
-}
-
-Terminal* Tab::topOverlay() const
-{
-    if (!valid()) return nullptr;
-    return eng_->topTabOverlay(subtreeRoot_);
-}
-
-void Tab::pushOverlay(std::unique_ptr<Terminal> t)
-{
-    if (!valid()) return;
-    eng_->pushTabOverlay(subtreeRoot_, std::move(t));
-}
-
-std::unique_ptr<Terminal> Tab::popOverlay()
-{
-    if (!valid()) return nullptr;
-    return eng_->popTabOverlay(subtreeRoot_);
-}
-
 // ===========================================================================
 // Pane allocation + tree mutation
 // ===========================================================================
@@ -137,19 +123,25 @@ int Tab::createPane()
     if (!valid()) return -1;
     LayoutTree& tree = eng_->layoutTree();
 
-    // Ensure subtreeRoot is a Container with no children yet.
+    // subtreeRoot is a Stack; its activeChild (first child, set by newSubtree)
+    // is the content Container. Append the Terminal into the content Container
+    // so the Stack can grow additional siblings (e.g. scrollback pager) later.
     Node* rootNode = tree.node(subtreeRoot_);
     if (!rootNode) return -1;
-    auto* rootData = std::get_if<ContainerData>(&rootNode->data);
-    if (!rootData || !rootData->children.empty()) {
-        // createPane is bootstrap-only; subsequent panes come from splitByNodeId
-        // or allocatePaneNode + appendChild.
+    auto* stackData = std::get_if<StackData>(&rootNode->data);
+    if (!stackData || stackData->children.empty()) {
+        // Subtree was set up without a content Container — bail.
+        return eng_->allocatePaneId();
+    }
+    Uuid contentRoot = stackData->children.front().id;
+    Node* contentNode = tree.node(contentRoot);
+    if (!contentNode || !std::holds_alternative<ContainerData>(contentNode->data)) {
         return eng_->allocatePaneId();
     }
 
     int id = eng_->allocatePaneId();
     Uuid u = tree.createTerminal();
-    tree.appendChild(subtreeRoot_, ChildSlot{u, /*stretch=*/1});
+    tree.appendChild(contentRoot, ChildSlot{u, /*stretch=*/1});
     eng_->registerPaneSlot(id, u);
     eng_->setFocusedTerminalNodeId(u);
     return id;

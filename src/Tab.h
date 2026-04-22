@@ -59,13 +59,6 @@ public:
     const std::string& icon() const;
     void setIcon(const std::string& s);
 
-    // --- Overlays (Engine::tabOverlays_) ----------------------------------
-    bool hasOverlay() const;
-    Terminal* topOverlay() const;
-    Terminal* activeOverlay() const { return topOverlay(); }
-    void pushOverlay(std::unique_ptr<Terminal> t);
-    std::unique_ptr<Terminal> popOverlay();
-
     // --- Pane allocation / tree mutation ----------------------------------
     // Create a Container holding a single Terminal leaf under subtreeRoot.
     // Used by createTab's initial-pane bootstrap. Returns the fresh paneId.

@@ -128,16 +128,12 @@ void RenderThread::applyPendingMutations()
             [&](const PendingMutations::ResizePaneState&)  {},
             [&](const PendingMutations::CreatePopupState&) {},
             [&](const PendingMutations::ResizePopupState&) {},
-            [&](const PendingMutations::CreateOverlayState&) {},
             [&](const PendingMutations::DestroyPaneState& d) {
                 renderState_.destroyedPaneIds.push_back(d.paneId);
             },
             [&](const PendingMutations::DestroyPopupState& d) {
                 renderState_.destroyedPopupKeys.push_back(
                     std::to_string(d.paneId) + "/" + d.popupId);
-            },
-            [&](const PendingMutations::DestroyOverlayState&) {
-                renderState_.destroyedOverlay = true;
             },
         }, op);
     }

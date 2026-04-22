@@ -157,11 +157,6 @@ void RenderEngine::shutdown()
         for (auto* t : rs.pendingRelease) texturePool_.release(t);
     }
     popupRenderPrivate_.clear();
-    if (overlayRenderPrivate_.heldTexture) {
-        texturePool_.release(overlayRenderPrivate_.heldTexture);
-        for (auto* t : overlayRenderPrivate_.pendingRelease)
-            texturePool_.release(t);
-    }
 
     // Release tab bar textures
     if (tabBarTexture_) { texturePool_.release(tabBarTexture_); tabBarTexture_ = nullptr; }
@@ -751,7 +746,6 @@ void RenderEngine::renderFrame()
     if (frameState_.releaseAllPaneTextures) {
         for (auto& [id, rs] : paneRenderPrivate_) dropHeldTexture(rs);
         for (auto& [key, rs] : popupRenderPrivate_) dropHeldTexture(rs);
-        dropHeldTexture(overlayRenderPrivate_);
     } else {
         for (int paneId : frameState_.releasePaneTextureIds) {
             auto it = paneRenderPrivate_.find(paneId);
@@ -810,17 +804,6 @@ void RenderEngine::renderFrame()
             popupRenderPrivate_.erase(it);
         }
     }
-    if (frameState_.destroyedOverlay) {
-        extractReleases(overlayRenderPrivate_);
-        // Overlay is a singleton (not map-keyed), so we don't erase; we
-        // just wipe its cached state so the next overlay that's created
-        // starts clean.
-        overlayRenderPrivate_.resolvedCells.clear();
-        overlayRenderPrivate_.glyphBuffer.clear();
-        overlayRenderPrivate_.rowShapingCache.clear();
-        overlayRenderPrivate_.totalGlyphs = 0;
-        overlayRenderPrivate_.dirty = true;
-    }
 
     if (invalidateAllCaches) {
         for (auto& [id, rs] : paneRenderPrivate_) {
@@ -831,14 +814,9 @@ void RenderEngine::renderFrame()
             for (auto& row : rs.rowShapingCache) row.valid = false;
             rs.dirty = true;
         }
-        {
-            auto& rs = overlayRenderPrivate_;
-            for (auto& row : rs.rowShapingCache) row.valid = false;
-            rs.dirty = true;
-        }
     }
 
-    if (frameState_.panes.empty() && !frameState_.hasOverlay) return;
+    if (frameState_.panes.empty()) return;
 
     needsRedraw_ = false;
     renderer_.colrAtlas().advanceGeneration();
@@ -905,36 +883,7 @@ void RenderEngine::renderFrame()
     };
     std::vector<RenderTarget> renderTargets;
 
-    if (frameState_.hasOverlay && frameState_.overlay) {
-        TerminalEmulator* overlay = frameState_.overlay;
-
-        const PaneRect& tbRect = frameState_.tabBarRect;
-        PaneRect fullRect { 0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight) };
-        if (!tbRect.isEmpty()) {
-            if (frameState_.tabBarPosition == "top") {
-                fullRect.y = tbRect.h;
-                fullRect.h -= tbRect.h;
-            } else {
-                fullRect.h -= tbRect.h;
-            }
-        }
-
-        auto& rs = overlayRenderPrivate_;
-        int cols = overlay->width();
-        int rows = overlay->height();
-        if (cols > 0 && rows > 0) {
-            size_t needed = static_cast<size_t>(cols) * rows;
-            if (rs.resolvedCells.size() != needed) {
-                rs.resolvedCells.resize(needed);
-                rs.rowShapingCache.resize(rows);
-                rs.dirty = true;
-            }
-        }
-        RenderTarget ot;
-        ot.term = overlay; ot.rs = &rs; ot.rect = fullRect; ot.isFocused = true;
-        ot.pixelOriginX = frameState_.padLeft; ot.pixelOriginY = frameState_.padTop;
-        renderTargets.push_back(std::move(ot));
-    } else {
+    {
         for (const auto& rpi : frameState_.panes) {
             if (rpi.rect.isEmpty()) continue;
             if (!rpi.term) continue;
@@ -1489,11 +1438,6 @@ void RenderEngine::renderFrame()
         imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
                               rs.lastVisibleImageIds.end());
     }
-    {
-        const auto& rs = overlayRenderPrivate_;
-        imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
-                              rs.lastVisibleImageIds.end());
-    }
     renderer_.retainImagesOnly(imagesToRetain);
 
     if (frameState_.tabBarVisible && (frameState_.tabBarDirty || focusChanged)) {
@@ -1547,7 +1491,7 @@ void RenderEngine::renderFrame()
                                    frameFbW, frameFbH, it->second.dividerVB);
         }
 
-        if (!frameState_.hasOverlay) {
+        {
             for (const auto& rpi : frameState_.panes) {
                 auto rsIt = paneRenderPrivate_.find(rpi.id);
                 if (rsIt == paneRenderPrivate_.end()) continue;
@@ -1785,7 +1729,6 @@ void RenderEngine::renderFrame()
         };
         for (auto& [id, rs] : paneRenderPrivate_) drainPendingRelease(rs);
         for (auto& [key, rs] : popupRenderPrivate_) drainPendingRelease(rs);
-        drainPendingRelease(overlayRenderPrivate_);
         toRelease.insert(toRelease.end(), pendingTabBarRelease_.begin(), pendingTabBarRelease_.end());
         pendingTabBarRelease_.clear();
         toRelease.insert(toRelease.end(), pendingDestroyRelease_.begin(), pendingDestroyRelease_.end());

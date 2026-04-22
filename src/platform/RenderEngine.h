@@ -129,7 +129,6 @@ private:
     // Render-thread-only state
     std::unordered_map<int, PaneRenderPrivate> paneRenderPrivate_;
     std::unordered_map<std::string, PaneRenderPrivate> popupRenderPrivate_;
-    PaneRenderPrivate overlayRenderPrivate_;
     RenderFrameState frameState_;
     int lastFocusedPaneId_ = -1;
 
@@ -172,5 +171,4 @@ public:
     // with platformMutex_ held so the render thread isn't touching these).
     std::unordered_map<int, PaneRenderPrivate>& paneRenderPrivateMap() { return paneRenderPrivate_; }
     std::unordered_map<std::string, PaneRenderPrivate>& popupRenderPrivateMap() { return popupRenderPrivate_; }
-    PaneRenderPrivate& overlayRenderPrivate() { return overlayRenderPrivate_; }
 };

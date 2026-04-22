@@ -100,45 +100,4 @@ void Engine::eraseTabIcon(Uuid subtreeRoot)
     tabIcons_.erase(subtreeRoot);
 }
 
-// --- Per-tab overlay stack -------------------------------------------------
-
-bool Engine::hasTabOverlay(Uuid subtreeRoot) const
-{
-    auto it = tabOverlays_.find(subtreeRoot);
-    return it != tabOverlays_.end() && !it->second.empty();
-}
-
-::Terminal* Engine::topTabOverlay(Uuid subtreeRoot)
-{
-    auto it = tabOverlays_.find(subtreeRoot);
-    if (it == tabOverlays_.end() || it->second.empty()) return nullptr;
-    return it->second.back().get();
-}
-
-void Engine::pushTabOverlay(Uuid subtreeRoot, std::unique_ptr<::Terminal> t)
-{
-    if (!t || subtreeRoot.isNil()) return;
-    tabOverlays_[subtreeRoot].push_back(std::move(t));
-}
-
-std::unique_ptr<::Terminal> Engine::popTabOverlay(Uuid subtreeRoot)
-{
-    auto it = tabOverlays_.find(subtreeRoot);
-    if (it == tabOverlays_.end() || it->second.empty()) return nullptr;
-    std::unique_ptr<::Terminal> out = std::move(it->second.back());
-    it->second.pop_back();
-    if (it->second.empty()) tabOverlays_.erase(it);
-    return out;
-}
-
-std::vector<std::unique_ptr<::Terminal>>
-Engine::extractAllTabOverlays(Uuid subtreeRoot)
-{
-    auto it = tabOverlays_.find(subtreeRoot);
-    if (it == tabOverlays_.end()) return {};
-    std::vector<std::unique_ptr<::Terminal>> out = std::move(it->second);
-    tabOverlays_.erase(it);
-    return out;
-}
-
 } // namespace Script

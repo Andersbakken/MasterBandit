@@ -289,7 +289,7 @@ void PlatformDawn::buildRenderFrameState()
 
     // Tab bar rect from active tab's layout
     if (tab) {
-        renderThread_->renderState().tabBarRect = tab->layout()->tabBarRect(fbWidth_, fbHeight_);
+        renderThread_->renderState().tabBarRect = tab->tabBarRect(fbWidth_, fbHeight_);
     } else {
         renderThread_->renderState().tabBarRect = {};
     }
@@ -303,7 +303,7 @@ void PlatformDawn::buildRenderFrameState()
     renderThread_->renderState().focusedPaneId = -1;
 
     if (tab) {
-        renderThread_->renderState().focusedPaneId = tab->layout()->focusedPaneId();
+        renderThread_->renderState().focusedPaneId = tab->focusedPaneId();
 
         for (Terminal* pane : tab->activePanes()) {
             RenderPaneInfo rpi;
@@ -331,12 +331,11 @@ void PlatformDawn::buildRenderFrameState()
     renderThread_->renderState().tabs.clear();
     auto allTabs = tabManager_->tabs();
     for (Tab& t : allTabs) {
-        Layout* layout = t.layout();
         RenderTabInfo rti;
         rti.title = t.title();
         rti.icon  = t.icon();
-        rti.focusedPaneId = layout ? layout->focusedPaneId() : -1;
-        Terminal* fp = layout ? layout->focusedPane() : nullptr;
+        rti.focusedPaneId = t.valid() ? t.focusedPaneId() : -1;
+        Terminal* fp = t.valid() ? t.focusedPane() : nullptr;
         rti.progressState = fp ? fp->progressState() : 0;
         rti.progressPct   = fp ? fp->progressPct() : 0;
         renderThread_->renderState().tabs.push_back(std::move(rti));
@@ -619,7 +618,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 auto tab = activeTab();
                 if (tab) {
                     TerminalEmulator* term = nullptr;
-                    Terminal* fp = tab->layout()->focusedPane();
+                    Terminal* fp = tab->focusedPane();
                     term = fp;
                     if (term && term->mouseReportingActive()) {
                         PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
@@ -660,8 +659,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 setNeedsRedraw();
                 auto t = activeTab();
                 if (!t) return;
-                if (Layout* l = t->layout()) {
-                    if (Terminal* fp = l->focusedPane()) fp->focusEvent(focused);
+                if (t->valid()) {
+                    if (Terminal* fp = t->focusedPane()) fp->focusEvent(focused);
                 }
                 setNeedsRedraw();
             };
@@ -1034,11 +1033,11 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         // now that dividerWidth_ has been set from options above).
         auto tabsVec = tabManager_->tabs();
         if (!tabsVec.empty()) {
-            Layout* layout = tabsVec.back().layout();
-            if (layout) {
-                layout->setDividerPixels(dividerWidth_);
-                layout->computeRects(fbWidth_, fbHeight_);
-                if (Terminal* p = layout->focusedPane()) {
+            Tab& lastTab = tabsVec.back();
+            if (lastTab.valid()) {
+                lastTab.setDividerPixels(dividerWidth_);
+                lastTab.computeRects(fbWidth_, fbHeight_);
+                if (Terminal* p = lastTab.focusedPane()) {
                     p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
                     int c = p->width(), r = p->height();
                     std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
@@ -1058,8 +1057,8 @@ void PlatformDawn::invalidateAllRowCaches()
     // communicate via the pending mutations flag.
     renderThread_->pending().invalidateAllRowCaches = true;
     for (Tab tab : tabManager_->tabs()) {
-        if (Layout* layout = tab.layout()) {
-            for (Terminal* panePtr : layout->panes())
+        if (tab.valid()) {
+            for (Terminal* panePtr : tab.panes())
                 renderThread_->pending().dirtyPanes.insert(panePtr->id());
         }
     }
@@ -1158,9 +1157,8 @@ void PlatformDawn::onBlinkTick()
     auto wantsRedraw = [](TerminalEmulator* term) {
         return term && term->cursorBlinking() && term->cursorVisible();
     };
-    Layout* layout = tab->layout();
-    if (!layout) return;
-    for (Terminal* panePtr : layout->panes()) {
+    if (!tab->valid()) return;
+    for (Terminal* panePtr : tab->panes()) {
         if (wantsRedraw(panePtr)) {
             setNeedsRedraw();
             return;
@@ -1261,7 +1259,7 @@ void PlatformDawn::applyConfig(const Config& config)
     commandDimFactor_ = std::clamp(config.command_dim_factor, 0.0f, 1.0f);
     commandNavigationWrap_ = config.command_navigation_wrap;
     for (Tab t : tabManager_->tabs()) {
-        if (Layout* layout = t.layout()) layout->setDividerPixels(dividerWidth_);
+        if (t.valid()) t.setDividerPixels(dividerWidth_);
     }
     opts.dividerWidth = config.divider_width;
     opts.dividerColor = config.divider_color;
@@ -1429,11 +1427,10 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     for (Tab& t : allTabs) tabManager_->clearDividers(t);
 
     for (Tab& t : allTabs) {
-        Layout* layout = t.layout();
-        if (!layout) continue;
-        layout->computeRects(fbWidth_, fbHeight_);
+        if (!t.valid()) continue;
+        t.computeRects(fbWidth_, fbHeight_);
 
-        for (Terminal* pane : layout->panes()) {
+        for (Terminal* pane : t.panes()) {
             pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
 
             int cols = pane->width();
@@ -1470,7 +1467,7 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
 {
     if (cfg.style == "hidden") {
         for (Tab tab : tabManager_->tabs()) {
-            if (Layout* layout = tab.layout()) layout->setTabBar(0, cfg.position);
+            if (tab.valid()) tab.setTabBar(0, cfg.position);
         }
         return;
     }
@@ -1510,7 +1507,7 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
 
     int tabBarH = tabBarVisible() ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
     for (Tab tab : tabManager_->tabs()) {
-        if (Layout* layout = tab.layout()) layout->setTabBar(tabBarH, cfg.position);
+        if (tab.valid()) tab.setTabBar(tabBarH, cfg.position);
     }
 
     // Parse colors

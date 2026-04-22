@@ -168,11 +168,10 @@ private:
         bool visible = tabBarVisible();
         int h = visible ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
         for (Tab tab : tabManager_->tabs()) {
-            Layout* layout = tab.layout();
-            if (!layout) continue;
-            layout->setTabBar(h, tabBarConfig_.position);
-            layout->computeRects(fbWidth_, fbHeight_);
-            for (Terminal* p : layout->panes())
+            if (!tab.valid()) continue;
+            tab.setTabBar(h, tabBarConfig_.position);
+            tab.computeRects(fbWidth_, fbHeight_);
+            for (Terminal* p : tab.panes())
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
         }
         if (visible) {
@@ -181,8 +180,7 @@ private:
             // tab bar existed or before the tab was added to tabs.
             auto tabs = tabManager_->tabs();
             for (Tab& tab : tabs) {
-                Layout* layout = tab.layout();
-                Terminal* fp = layout ? layout->focusedPane() : nullptr;
+                Terminal* fp = tab.valid() ? tab.focusedPane() : nullptr;
                 if (fp && fp->title().empty() && tab.title().empty()) {
                     std::string proc = fp->foregroundProcess();
                     if (!proc.empty())

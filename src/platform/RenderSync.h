@@ -165,7 +165,7 @@ struct RenderFrameState {
 
 
 // ---------------------------------------------------------------------------
-// PaneRenderPrivate — render-thread-only state per pane/popup/overlay.
+// PaneRenderPrivate — render-thread-only state per pane/popup.
 // No lock needed — only the render thread touches these.
 // ---------------------------------------------------------------------------
 

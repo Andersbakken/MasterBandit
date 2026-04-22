@@ -34,8 +34,6 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"clipboard",   Perm::GroupClipboard},
     {"layout",      Perm::GroupLayout},
     // Individual
-    {"ui.overlay.create", Perm::UiOverlayCreate},
-    {"ui.overlay.close",  Perm::UiOverlayClose},
     {"ui.popup.create",   Perm::UiPopupCreate},
     {"ui.popup.destroy",  Perm::UiPopupDestroy},
     {"io.filter.input",   Perm::IoFilterInput},
@@ -118,8 +116,6 @@ std::string permissionsToString(uint32_t perms)
     // Emit any leftover individual bits
     struct BitDef { uint32_t bit; const char* name; };
     static const BitDef bits[] = {
-        {Perm::UiOverlayCreate, "ui.overlay.create"},
-        {Perm::UiOverlayClose,  "ui.overlay.close"},
         {Perm::UiPopupCreate,   "ui.popup.create"},
         {Perm::UiPopupDestroy,  "ui.popup.destroy"},
         {Perm::IoFilterInput,   "io.filter.input"},
@@ -161,10 +157,6 @@ uint32_t actionPermission(const std::string& actionName)
         return Perm::TabsCreate;
     if (actionName == "CloseTab" || actionName == "ClosePane")
         return Perm::TabsClose;
-    if (actionName == "PushOverlay")
-        return Perm::UiOverlayCreate;
-    if (actionName == "PopOverlay")
-        return Perm::UiOverlayClose;
     return 0; // safe actions need no extra permission
 }
 

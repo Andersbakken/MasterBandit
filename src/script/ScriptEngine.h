@@ -19,7 +19,7 @@
 
 struct JSRuntime;
 struct JSContext;
-class Tab;          // Layout is a typedef for Tab (see Layout.h).
+struct Tab;          // Layout is a typedef for Tab (see Layout.h).
 class LayoutTree;
 class Terminal;
 

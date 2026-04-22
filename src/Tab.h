@@ -25,7 +25,7 @@ struct LayoutNode {
 //
 // Tab is a lightweight value type: default-constructible (invalid), copyable,
 // movable. It's a `struct` (not a class) deliberately — step 6's cutover
-// dissolved the old state-owning `class Tab`; what's left is a two-pointer
+// dissolved the old state-owning Tab type; what's left is a two-pointer
 // POD-style view. The underlying state is stable for as long as the engine
 // still tracks the subtreeRoot; once closeTab removes it, stale Tab handles
 // return null / empty. Pre-cutover callers that did `tab->layout()->foo()`

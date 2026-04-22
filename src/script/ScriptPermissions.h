@@ -10,9 +10,10 @@ namespace Script {
 // Individual permission bits
 enum Perm : uint32_t {
     None              = 0,
-    // ui group
-    UiOverlayCreate   = 1 << 0,
-    UiOverlayClose    = 1 << 1,
+    // ui group. Bits 0 and 1 are reserved (never asserted) to preserve the
+    // numeric stability of the remaining ui.* bits against existing on-disk
+    // allowlists — the mismatched kAllowlistVersion below would wipe them
+    // anyway but this is belt-and-braces.
     UiPopupCreate     = 1 << 2,
     UiPopupDestroy    = 1 << 3,
     // io group
@@ -46,7 +47,7 @@ enum Perm : uint32_t {
     LayoutModify      = 1 << 20,
 
     // Group masks
-    GroupUi      = UiOverlayCreate | UiOverlayClose | UiPopupCreate | UiPopupDestroy,
+    GroupUi      = UiPopupCreate | UiPopupDestroy,
     GroupIo      = IoFilterInput | IoFilterOutput | IoInject,
     GroupShell   = ShellWrite | ShellReadCommands,
     GroupActions = ActionsInvoke,
@@ -75,7 +76,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 6;
+inline constexpr int kAllowlistVersion = 7;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

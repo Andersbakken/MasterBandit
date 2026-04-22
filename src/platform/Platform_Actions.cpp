@@ -73,35 +73,33 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::ZoomPane&)  { invokeOrLog("zoomPane",  nullptr); },
         [&](const Action::FocusPane& a) {
             auto tab = activeTab();
-            if (!tab) return;
-            Layout* layout = tab->layout();
-            if (!layout) return;
+            if (!tab || !tab->valid()) return;
 
             if (a.dir == Action::Direction::Next || a.dir == Action::Direction::Prev) {
-                auto panes = layout->panes();
+                auto panes = tab->panes();
                 if (panes.size() <= 1) return;
                 int cur = -1;
                 for (int i = 0; i < static_cast<int>(panes.size()); ++i) {
-                    if (panes[i]->id() == layout->focusedPaneId()) { cur = i; break; }
+                    if (panes[i]->id() == tab->focusedPaneId()) { cur = i; break; }
                 }
                 if (cur < 0) return;
                 int n = static_cast<int>(panes.size());
                 int delta = (a.dir == Action::Direction::Next) ? 1 : -1;
                 int next = ((cur + delta) % n + n) % n;
-                int prev = layout->focusedPaneId();
-                layout->setFocusedPane(panes[next]->id());
+                int prev = tab->focusedPaneId();
+                tab->setFocusedPane(panes[next]->id());
                 tabManager_->notifyPaneFocusChange(*tab, prev, panes[next]->id());
                 tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
                 setNeedsRedraw();
                 return;
             }
 
-            Terminal* fp = layout->focusedPane();
+            Terminal* fp = tab->focusedPane();
             if (!fp) return;
             const PaneRect& r = fp->rect();
             // Step past the divider gap; +1 alone lands inside the divider
             // and paneAtPixel returns -1.
-            const int step = layout->dividerPixels() + 1;
+            const int step = tab->dividerPixels() + 1;
             int px = 0, py = 0;
             switch (a.dir) {
             case Action::Direction::Left:  px = r.x - step;       py = r.y + r.h / 2; break;
@@ -110,10 +108,10 @@ void PlatformDawn::executeAction(const Action::Any& action)
             case Action::Direction::Down:  px = r.x + r.w / 2;    py = r.y + r.h + step; break;
             default: return;
             }
-            int targetId = layout->paneAtPixel(px, py);
+            int targetId = tab->paneAtPixel(px, py);
             if (targetId >= 0 && targetId != fp->id()) {
-                int prev = layout->focusedPaneId();
-                layout->setFocusedPane(targetId);
+                int prev = tab->focusedPaneId();
+                tab->setFocusedPane(targetId);
                 tabManager_->notifyPaneFocusChange(*tab, prev, targetId);
                 tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
                 setNeedsRedraw();
@@ -203,8 +201,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (scriptEngine_.invokeActionHandler("focusPopup", nullptr)) return;
             auto tab = activeTab();
             if (!tab) return;
-            Layout* layout = tab->layout();
-            Terminal* fp = layout ? layout->focusedPane() : nullptr;
+            Terminal* fp = tab->focusedPane();
             if (!fp || fp->popups().empty()) return;
 
             const auto& popups = fp->popups();

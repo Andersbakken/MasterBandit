@@ -36,8 +36,8 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
                 postToMainThread([this, paneId, recCopy = std::move(recCopy)] {
                     TerminalEmulator* te = nullptr;
                     for (Tab tab : tabManager_->tabs()) {
-                        if (Layout* tl = tab.layout()) {
-                            if (auto* p = tl->pane(paneId)) { te = p; break; }
+                        if (tab.valid()) {
+                            if (auto* p = tab.pane(paneId)) { te = p; break; }
                         }
                     }
                     if (!te) return;
@@ -63,8 +63,8 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             postToMainThread([this, paneId] {
                 Terminal* te = nullptr;
                 for (Tab tab : tabManager_->tabs()) {
-                    if (Layout* tl = tab.layout()) {
-                        if (auto* p = tl->pane(paneId)) { te = p; break; }
+                    if (tab.valid()) {
+                        if (auto* p = tab.pane(paneId)) { te = p; break; }
                     }
                 }
                 if (!te) return;
@@ -95,9 +95,9 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         postToMainThread([this, paneId, title] {
             int tabIdx = -1;
             auto t = tabManager_->findTabForPane(paneId, &tabIdx);
-            if (!t) return;
-            if (Terminal* p = t->layout()->pane(paneId)) p->setTitle(title);
-            if (t->layout()->focusedPaneId() == paneId) {
+            if (!t || !t->valid()) return;
+            if (Terminal* p = t->pane(paneId)) p->setTitle(title);
+            if (t->focusedPaneId() == paneId) {
                 t->setTitle(title);
                 if (tabIdx == tabManager_->activeTabIdx()) tabManager_->updateWindowTitle();
                 tabBarDirty_ = true;
@@ -110,9 +110,9 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
         postToMainThread([this, paneId, icon] {
             int tabIdx = -1;
             auto t = tabManager_->findTabForPane(paneId, &tabIdx);
-            if (!t) return;
-            if (Terminal* p = t->layout()->pane(paneId)) p->setIcon(icon);
-            if (t->layout()->focusedPaneId() == paneId) {
+            if (!t || !t->valid()) return;
+            if (Terminal* p = t->pane(paneId)) p->setIcon(icon);
+            if (t->focusedPaneId() == paneId) {
                 t->setIcon(icon);
                 if (tabIdx == tabManager_->activeTabIdx()) tabManager_->updateWindowTitle();
                 tabBarDirty_ = true;
@@ -124,8 +124,8 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
     cbs.onProgressChanged = [this, paneId](int state, int pct) {
         postToMainThread([this, paneId, state, pct] {
             auto t = tabManager_->findTabForPane(paneId);
-            if (!t) return;
-            if (Terminal* p = t->layout()->pane(paneId)) {
+            if (!t || !t->valid()) return;
+            if (Terminal* p = t->pane(paneId)) {
                 p->setProgress(state, pct);
                 tabBarDirty_ = true;
                 setNeedsRedraw();
@@ -140,8 +140,8 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
         postToMainThread([this, paneId, dir] {
             auto t = tabManager_->findTabForPane(paneId);
-            if (!t) return;
-            if (Terminal* p = t->layout()->pane(paneId)) p->setCWD(dir);
+            if (!t || !t->valid()) return;
+            if (Terminal* p = t->pane(paneId)) p->setCWD(dir);
         });
     };
 
@@ -186,7 +186,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             // it up. Background panes/tabs don't fight over the cursor.
             if (!window_ || isHeadless()) return;
             auto t = tabManager_->activeTab();
-            if (!t || t->layout()->focusedPaneId() != paneId) return;
+            if (!t || !t->valid() || t->focusedPaneId() != paneId) return;
             window_->setCursorStyle(shape.empty()
                 ? Window::CursorStyle::IBeam
                 : inputController_->paneCursorStyle(paneId));
@@ -199,9 +199,9 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             // Use foreground process as tab title if pane has no OSC title
             int tabIdx = -1;
             auto t = tabManager_->findTabForPane(paneId, &tabIdx);
-            if (!t) return;
-            Terminal* p = t->layout()->pane(paneId);
-            if (p && p->title().empty() && t->layout()->focusedPaneId() == paneId) {
+            if (!t || !t->valid()) return;
+            Terminal* p = t->pane(paneId);
+            if (p && p->title().empty() && t->focusedPaneId() == paneId) {
                 t->setTitle(proc);
                 if (tabIdx == tabManager_->activeTabIdx()) tabManager_->updateWindowTitle();
                 tabBarDirty_ = true;

@@ -619,9 +619,7 @@ void InputController::onCursorPos(double x, double y)
     // OSC 22 pointer shape of whichever pane the mouse is physically over
     // (not necessarily the focused one) — matches user intuition that a pane
     // showing a clickable region uses a hand cursor when hovered. Falls back
-    // to the I-beam for selection. The tab bar always uses the arrow. Overlays
-    // cover the whole tab and aren't tracked in paneCursorStyle_, so they get
-    // IBeam by default.
+    // to the I-beam for selection. The tab bar always uses the arrow.
     if (window) {
         MouseRegion region = hitTest(sx, sy);
         if (region == MouseRegion::TabBar) {

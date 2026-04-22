@@ -970,13 +970,6 @@ static JSValue jsPaneGetPopups(JSContext* ctx, JSValueConst this_val)
     return arr;
 }
 
-// ============================================================================
-// Overlay JS class — dissolved in tree-cutover step 8. Overlays are no longer
-// a distinct concept; the pager spawned by Action::ShowScrollback is just a
-// pane attached as a sibling under the tab's Stack.
-// ============================================================================
-
-
 static JSClassID jsTabClassId;
 
 struct JsTabData {

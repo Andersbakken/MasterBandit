@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -128,24 +129,21 @@ public:
     void setHost(Host host) { host_ = std::move(host); }
 
     // --- Accessors ---
-    std::vector<std::unique_ptr<Tab>>& tabs() { return tabs_; }
-    const std::vector<std::unique_ptr<Tab>>& tabs() const { return tabs_; }
-    int activeTabIdx() const { return activeTabIdx_; }
+    // Tab identity lives in the shared LayoutTree: each tab is a direct
+    // child of Script::Engine::layoutRootStack_, identified by its
+    // subtreeRoot Uuid. The vector returned by tabs() is built on demand
+    // from the tree's root-Stack children, so iterators are valid only
+    // until the next structural mutation. The Tab handle itself is a thin
+    // value type — copy it around freely.
+    std::vector<Tab> tabs() const;
+    int activeTabIdx() const;
     void setActiveTabIdx(int idx);
-    size_t size() const { return tabs_.size(); }
+    size_t size() const;
 
-    Tab* activeTab() {
-        if (tabs_.empty() || activeTabIdx_ < 0 ||
-            activeTabIdx_ >= static_cast<int>(tabs_.size())) {
-            return nullptr;
-        }
-        return tabs_[activeTabIdx_].get();
-    }
-
-    Tab* tabAt(int idx) {
-        if (idx < 0 || idx >= static_cast<int>(tabs_.size())) return nullptr;
-        return tabs_[idx].get();
-    }
+    // Returns nullopt when no tabs exist. `std::optional<Tab>` preserves
+    // `tab->method()` syntax via optional::operator->.
+    std::optional<Tab> activeTab() const;
+    std::optional<Tab> tabAt(int idx) const;
 
     Terminal* activeTerm();
 
@@ -161,15 +159,17 @@ public:
     void addPtyPoll(int fd, Terminal* term);
     void removePtyPoll(int fd);
 
-    // Attach `tab`'s Layout subtree to the shared tree's root Stack as a
+    // Attach a Layout's subtree to the shared tree's root Stack as a
     // direct child, optionally also setting it as the Stack's activeChild.
-    // No-op when there is no Script::Engine (test paths).
-    void attachLayoutSubtree(Tab* tab, bool activate);
+    // No-op when there is no Script::Engine (test paths). Also inserts
+    // the Layout into Engine::tabLayouts_ under its subtreeRoot key.
+    void attachLayoutSubtree(std::unique_ptr<Layout> layout, bool activate);
 
     // --- Tab lifecycle ---
-    // Add a pre-built tab and mark it as active. Used by the one-shot
-    // createTerminal() path which builds the layout + terminal inline.
-    void addInitialTab(std::unique_ptr<Tab> tab);
+    // Register a pre-built Layout as the initial tab (activated). Used by
+    // the one-shot createTerminal() path which builds the layout + first
+    // Terminal inline before TabManager is fully wired up.
+    void addInitialTab(std::unique_ptr<Layout> layout);
 
     void createTab();
     void closeTab(int idx);
@@ -223,12 +223,12 @@ public:
     bool focusPaneById(int paneId);
 
     // Lookup helpers for the binding layer.
-    Tab* findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx = nullptr);
+    std::optional<Tab> findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx = nullptr) const;
     // Walk up from `nodeId`'s ancestors until we hit a Layout's subtreeRoot;
-    // returns the owning Tab (or nullptr).
-    Tab* findTabForNode(Uuid nodeId, int* outTabIdx = nullptr);
+    // returns the owning Tab (or nullopt).
+    std::optional<Tab> findTabForNode(Uuid nodeId, int* outTabIdx = nullptr) const;
     // Resolve a paneId given a Terminal's tree UUID (via Terminal::nodeId()).
-    int  findPaneIdByNodeId(Uuid nodeId);
+    int findPaneIdByNodeId(Uuid nodeId);
 
     // Called from the onTerminalExited deferred drain in PlatformDawn.
     // Resolves the Terminal's nodeId and delegates to killTerminal.
@@ -245,30 +245,32 @@ public:
 
     // --- Pane helpers ---
     void spawnTerminalForPane(int paneId, int tabIdx, const std::string& cwd = {});
-    void resizeAllPanesInTab(Tab* tab);
-    void refreshDividers(Tab* tab);
-    void clearDividers(Tab* tab);
-    void releaseTabTextures(Tab* tab);
+    void resizeAllPanesInTab(Tab tab);
+    void refreshDividers(Tab tab);
+    void clearDividers(Tab tab);
+    void releaseTabTextures(Tab tab);
 
     // --- Title flow ---
     void updateTabTitleFromFocusedPane(int tabIdx);
     void updateWindowTitle();
-    void notifyPaneFocusChange(Tab* tab, int prevId, int newId);
+    void notifyPaneFocusChange(Tab tab, int prevId, int newId);
 
     // --- Lookup helpers ---
-    // Find the tab that contains a given pane; returns the tab pointer
-    // and (optionally) its index. Returns nullptr if not found.
-    Tab* findTabForPane(int paneId, int* outTabIdx = nullptr);
+    // Find the tab that contains a given pane; returns a handle and
+    // (optionally) its index. Returns nullopt if not found.
+    std::optional<Tab> findTabForPane(int paneId, int* outTabIdx = nullptr) const;
 
 private:
     static std::string popupStateKey(int paneId, const std::string& popupId) {
         return std::to_string(paneId) + "/" + popupId;
     }
 
+    // Walk layoutRootStack_'s children and return the Nth child's UUID;
+    // Uuid{} if out of range.
+    Uuid tabSubtreeRootAt(int idx) const;
+
     Host host_;
 
-    std::vector<std::unique_ptr<Tab>> tabs_;
-    int activeTabIdx_ = 0;
     std::unordered_map<int, Terminal*> ptyPolls_;
     TerminalOptions terminalOptions_;
 };

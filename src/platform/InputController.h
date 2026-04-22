@@ -8,15 +8,17 @@
 #include <eventloop/EventLoop.h>
 #include <eventloop/Window.h>
 
+#include "Tab.h"
+
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace Script { class Engine; }
-class Tab;
 class TerminalEmulator;
 
 // Owns keyboard and mouse input state and dispatch logic.  Constructed by
@@ -35,7 +37,7 @@ public:
         std::function<Window*()> window;
 
         // Active-tab / focused-terminal accessors (caller has locked platformMutex_).
-        std::function<Tab*()> activeTab;
+        std::function<std::optional<Tab>()> activeTab;
         std::function<TerminalEmulator*()> activeTerm;
 
         // Active tab index read / write — for switching tabs via mouse.
@@ -64,7 +66,7 @@ public:
         std::function<const std::vector<std::pair<int,int>>&()> tabBarColRanges;
 
         // Focus change notification into PlatformDawn.
-        std::function<void(Tab*, int prevId, int newId)> notifyPaneFocusChange;
+        std::function<void(Tab, int prevId, int newId)> notifyPaneFocusChange;
         std::function<void(int tabIdx)> updateTabTitleFromFocusedPane;
 
         bool headless = false;

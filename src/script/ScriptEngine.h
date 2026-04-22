@@ -19,6 +19,7 @@
 
 struct JSRuntime;
 struct JSContext;
+class Layout;
 class LayoutTree;
 class Terminal;
 
@@ -379,6 +380,29 @@ public:
     // Established in the Engine constructor and set as the tree's root.
     Uuid layoutRootStack() const { return layoutRootStack_; }
 
+    // --- Per-tab ownership (engine-wide) ---
+    // Tabs are identified by their subtreeRoot Uuid (a direct child of
+    // layoutRootStack_ in the shared tree). Each tab's Layout, icon, and
+    // overlay stack lives here, keyed by that Uuid. Title lives on the tree
+    // node's `label` — no separate storage needed.
+    //
+    // Tab.h's handle class calls the accessors below; external callers
+    // should go through Tab, not these directly.
+    ::Layout* tabLayout(Uuid subtreeRoot);
+    const ::Layout* tabLayout(Uuid subtreeRoot) const;
+    ::Layout* insertTabLayout(Uuid subtreeRoot, std::unique_ptr<::Layout>);
+    std::unique_ptr<::Layout> extractTabLayout(Uuid subtreeRoot);
+
+    const std::string& tabIcon(Uuid subtreeRoot) const;
+    void setTabIcon(Uuid subtreeRoot, const std::string& s);
+    void eraseTabIcon(Uuid subtreeRoot);
+
+    bool hasTabOverlay(Uuid subtreeRoot) const;
+    ::Terminal* topTabOverlay(Uuid subtreeRoot);
+    void pushTabOverlay(Uuid subtreeRoot, std::unique_ptr<::Terminal>);
+    std::unique_ptr<::Terminal> popTabOverlay(Uuid subtreeRoot);
+    std::vector<std::unique_ptr<::Terminal>> extractAllTabOverlays(Uuid subtreeRoot);
+
     // --- Terminal ownership (engine-wide) ---
     // The single source of truth for pane Terminal lifetime. Keyed by the
     // Terminal's tree-node UUID (same value as Terminal::nodeId()). Ownership
@@ -483,11 +507,17 @@ private:
     void cleanupPane(PaneId pane);
     void cleanupTab(TabId tab);
 
-    // Engine-wide Terminal map. Declared last so its destructor runs first,
-    // before layoutTree_ (Terminals reference their tree node by UUID; the
-    // tree must outlive the Terminals that point into it). Access goes
-    // through terminal() / insertTerminal() / extractTerminal() above.
+    // Per-tab state. All keyed by the tab's subtreeRoot Uuid (a child of
+    // layoutRootStack_ in the shared tree). Declared AFTER terminals_ so
+    // they destruct FIRST — Layouts and overlay Terminals both reference
+    // the engine-wide Terminal map and the shared tree during destruction,
+    // so the tab-level containers have to go first, then terminals_, then
+    // layoutTree_.
     std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> terminals_;
+    std::unordered_map<Uuid, std::unique_ptr<::Layout>,   UuidHash> tabLayouts_;
+    std::unordered_map<Uuid, std::string,                 UuidHash> tabIcons_;
+    std::unordered_map<Uuid, std::vector<std::unique_ptr<::Terminal>>,
+                                                          UuidHash> tabOverlays_;
 };
 
 } // namespace Script

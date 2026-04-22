@@ -15,87 +15,159 @@
 #include <algorithm>
 #include <cmath>
 
-// collectFirstPaneDividers used to walk Layout's legacy binary-split tree.
-// Now Layout::dividersWithOwnerPanes returns the same (firstLeafPaneId, rect)
-// pairs directly from the LayoutTree walk — see Layout.cpp.
+// ---------------------------------------------------------------------------
+// Tree-backed tab identity
+//
+// Tabs used to live in `std::vector<std::unique_ptr<Tab>> tabs_`. After the
+// cutover, each tab is a direct child of Engine::layoutRootStack_ in the
+// shared LayoutTree. The tab's identity is its subtreeRoot Uuid. The Layout
+// (for now), overlay stack, and icon live on Script::Engine, keyed by that
+// same Uuid. Title lives on the tree node's label.
+//
+// Everything here is a thin wrapper around the tree + Engine maps.
+// ---------------------------------------------------------------------------
 
+Uuid TabManager::tabSubtreeRootAt(int idx) const
+{
+    if (!host_.scriptEngine || idx < 0) return {};
+    const LayoutTree& tree = host_.scriptEngine->layoutTree();
+    const Node* rootStack = tree.node(host_.scriptEngine->layoutRootStack());
+    if (!rootStack) return {};
+    const auto* sd = std::get_if<StackData>(&rootStack->data);
+    if (!sd) return {};
+    if (idx >= static_cast<int>(sd->children.size())) return {};
+    return sd->children[idx].id;
+}
+
+std::vector<Tab> TabManager::tabs() const
+{
+    std::vector<Tab> out;
+    if (!host_.scriptEngine) return out;
+    const LayoutTree& tree = host_.scriptEngine->layoutTree();
+    const Node* rootStack = tree.node(host_.scriptEngine->layoutRootStack());
+    if (!rootStack) return out;
+    const auto* sd = std::get_if<StackData>(&rootStack->data);
+    if (!sd) return out;
+    out.reserve(sd->children.size());
+    for (const auto& child : sd->children) {
+        out.emplace_back(host_.scriptEngine, child.id);
+    }
+    return out;
+}
+
+size_t TabManager::size() const
+{
+    if (!host_.scriptEngine) return 0;
+    const LayoutTree& tree = host_.scriptEngine->layoutTree();
+    const Node* rootStack = tree.node(host_.scriptEngine->layoutRootStack());
+    if (!rootStack) return 0;
+    const auto* sd = std::get_if<StackData>(&rootStack->data);
+    return sd ? sd->children.size() : 0;
+}
+
+int TabManager::activeTabIdx() const
+{
+    if (!host_.scriptEngine) return -1;
+    const LayoutTree& tree = host_.scriptEngine->layoutTree();
+    const Node* rootStack = tree.node(host_.scriptEngine->layoutRootStack());
+    if (!rootStack) return -1;
+    const auto* sd = std::get_if<StackData>(&rootStack->data);
+    if (!sd || sd->activeChild.isNil()) return -1;
+    for (size_t i = 0; i < sd->children.size(); ++i) {
+        if (sd->children[i].id == sd->activeChild) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+std::optional<Tab> TabManager::activeTab() const
+{
+    int idx = activeTabIdx();
+    if (idx < 0) return std::nullopt;
+    return tabAt(idx);
+}
+
+std::optional<Tab> TabManager::tabAt(int idx) const
+{
+    Uuid sub = tabSubtreeRootAt(idx);
+    if (sub.isNil()) return std::nullopt;
+    return Tab{host_.scriptEngine, sub};
+}
 
 Terminal* TabManager::activeTerm()
 {
-    Tab* tab = activeTab();
+    auto tab = activeTab();
     if (!tab) return nullptr;
     if (tab->hasOverlay()) return tab->topOverlay();
-    Terminal* pane = tab->layout()->focusedPane();
+    Terminal* pane = tab->layout() ? tab->layout()->focusedPane() : nullptr;
     return pane ? static_cast<Terminal*>(pane->activeTerm()) : nullptr;
 }
 
 
 void TabManager::notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn)
 {
-    for (auto& tab : tabs_) {
-        for (Terminal* panePtr : tab->layout()->panes()) {
-            fn(panePtr);
+    for (Tab tab : tabs()) {
+        if (auto* layout = tab.layout()) {
+            for (Terminal* panePtr : layout->panes()) fn(panePtr);
         }
     }
 }
 
 
-Tab* TabManager::findTabForPane(int paneId, int* outTabIdx)
+std::optional<Tab> TabManager::findTabForPane(int paneId, int* outTabIdx) const
 {
     // hasPaneSlot (not pane()) so a killed-but-not-yet-removed Terminal's
     // enclosing Tab is still resolvable — the controller needs it to drive
     // tree removal in response to `terminalExited`.
-    for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
-        if (tabs_[i]->layout()->hasPaneSlot(paneId)) {
+    auto allTabs = tabs();
+    for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
+        Layout* layout = allTabs[i].layout();
+        if (layout && layout->hasPaneSlot(paneId)) {
             if (outTabIdx) *outTabIdx = i;
-            return tabs_[i].get();
+            return allTabs[i];
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 
 void TabManager::setActiveTabIdx(int idx)
 {
-    activeTabIdx_ = idx;
-    // Keep the shared tree's root Stack activeChild in sync with the visible
-    // tab so JS observers see a consistent view.
-    if (host_.scriptEngine &&
-        idx >= 0 && idx < static_cast<int>(tabs_.size())) {
-        Uuid sub = tabs_[idx]->layout()->subtreeRoot();
-        if (!sub.isNil()) {
-            host_.scriptEngine->layoutTree().setActiveChild(
-                host_.scriptEngine->layoutRootStack(), sub);
-        }
-    }
+    if (!host_.scriptEngine) return;
+    Uuid sub = tabSubtreeRootAt(idx);
+    if (sub.isNil()) return;
+    host_.scriptEngine->layoutTree().setActiveChild(
+        host_.scriptEngine->layoutRootStack(), sub);
 }
 
-void TabManager::attachLayoutSubtree(Tab* tab, bool activate)
+void TabManager::attachLayoutSubtree(std::unique_ptr<Layout> layout, bool activate)
 {
-    if (!tab || !host_.scriptEngine) return;
+    if (!layout || !host_.scriptEngine) return;
     LayoutTree& tree = host_.scriptEngine->layoutTree();
     Uuid rootStack = host_.scriptEngine->layoutRootStack();
-    Uuid sub = tab->layout()->subtreeRoot();
+    Uuid sub = layout->subtreeRoot();
     if (sub.isNil()) return;
+
     tree.appendChild(rootStack, ChildSlot{sub, /*stretch=*/1});
     if (activate) tree.setActiveChild(rootStack, sub);
+
+    // Transfer ownership to the engine-wide map, keyed by subtreeRoot. Tab
+    // handles resolve their Layout via this map from now on.
+    host_.scriptEngine->insertTabLayout(sub, std::move(layout));
 }
 
-void TabManager::addInitialTab(std::unique_ptr<Tab> tab)
+void TabManager::addInitialTab(std::unique_ptr<Layout> layout)
 {
-    activeTabIdx_ = static_cast<int>(tabs_.size());
-    Tab* raw = tab.get();
-    tabs_.push_back(std::move(tab));
-    attachLayoutSubtree(raw, /*activate=*/true);
+    attachLayoutSubtree(std::move(layout), /*activate=*/true);
 }
 
 
 void TabManager::updateWindowTitle()
 {
     if (host_.headless && host_.headless()) return;
-    Tab* t = activeTab();
+    auto t = activeTab();
     if (!t) return;
-    Terminal* fp = t->layout()->focusedPane();
+    Layout* layout = t->layout();
+    Terminal* fp = layout ? layout->focusedPane() : nullptr;
     if (!fp) return;
     const std::string& icon = fp->icon();
     // Prefer the pane's OSC-set title; fall back to the tab title (e.g. foreground process name)
@@ -132,12 +204,13 @@ void TabManager::removePtyPoll(int fd)
 }
 
 
-void TabManager::refreshDividers(Tab* tab)
+void TabManager::refreshDividers(Tab tab)
 {
     if (!tab) return;
     int divPx = host_.dividerWidth ? host_.dividerWidth() : 0;
     if (divPx <= 0) return;
-    Layout* layout = tab->layout();
+    Layout* layout = tab.layout();
+    if (!layout) return;
 
     // Clear all divider VBs for this tab's panes
     auto lanes = layout->panes();
@@ -171,30 +244,36 @@ void TabManager::refreshDividers(Tab* tab)
 }
 
 
-void TabManager::clearDividers(Tab* tab)
+void TabManager::clearDividers(Tab tab)
 {
     if (!tab) return;
-    for (Terminal* panePtr : tab->layout()->panes())
+    Layout* layout = tab.layout();
+    if (!layout) return;
+    for (Terminal* panePtr : layout->panes())
         host_.pending->clearDividerPanes.push_back(panePtr->id());
     host_.pending->dividersDirty = true;
 }
 
 
-void TabManager::releaseTabTextures(Tab* tab)
+void TabManager::releaseTabTextures(Tab tab)
 {
     if (!tab) return;
-    for (Terminal* panePtr : tab->layout()->panes()) {
+    Layout* layout = tab.layout();
+    if (!layout) return;
+    for (Terminal* panePtr : layout->panes()) {
         host_.pending->releasePaneTextures.push_back(panePtr->id());
         host_.pending->dirtyPanes.insert(panePtr->id());
     }
 }
 
 
-void TabManager::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
+void TabManager::notifyPaneFocusChange(Tab tab, int prevId, int newId)
 {
     if (!tab) return;
+    Layout* layout = tab.layout();
+    if (!layout) return;
     if (prevId >= 0) {
-        Terminal* p = tab->layout()->pane(prevId);
+        Terminal* p = layout->pane(prevId);
         if (p) {
             if (!p->focusedPopupId().empty() && host_.scriptEngine)
                 host_.scriptEngine->notifyFocusedPopupChanged(prevId, "");
@@ -204,7 +283,7 @@ void TabManager::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
         if (host_.scriptEngine) host_.scriptEngine->notifyPaneFocusChanged(prevId, false);
     }
     if (newId >= 0) {
-        Terminal* p = tab->layout()->pane(newId);
+        Terminal* p = layout->pane(newId);
         if (p) p->focusEvent(true);
         if (host_.scriptEngine) host_.scriptEngine->notifyPaneFocusChanged(newId, true);
     }
@@ -214,16 +293,17 @@ void TabManager::notifyPaneFocusChange(Tab* tab, int prevId, int newId)
 
 void TabManager::updateTabTitleFromFocusedPane(int tabIdx)
 {
-    if (tabIdx < 0 || tabIdx >= static_cast<int>(tabs_.size())) return;
-    Tab* tab = tabs_[tabIdx].get();
-    Terminal* fp = tab->layout()->focusedPane();
+    auto tab = tabAt(tabIdx);
+    if (!tab) return;
+    Layout* layout = tab->layout();
+    Terminal* fp = layout ? layout->focusedPane() : nullptr;
     if (!fp) return;
 
     const std::string& title = fp->title();
     const std::string& icon  = fp->icon();
     tab->setTitle(title);
     if (!icon.empty()) tab->setIcon(icon);
-    if (tabIdx == activeTabIdx_ && !title.empty())
+    if (tabIdx == activeTabIdx() && !title.empty())
         updateWindowTitle();
     if (host_.markTabBarDirty) host_.markTabBarDirty();
     if (host_.setNeedsRedraw) host_.setNeedsRedraw();
@@ -252,10 +332,12 @@ void TabManager::createTab()
 
     // Inherit CWD from the focused pane of the active tab
     auto opts = terminalOptions_;
-    if (Tab* at = activeTab()) {
-        if (Terminal* fp = at->layout()->focusedPane()) {
-            std::string cwd = paneProcessCWD(fp);
-            if (!cwd.empty()) opts.cwd = cwd;
+    if (auto at = activeTab()) {
+        if (Layout* atLayout = at->layout()) {
+            if (Terminal* fp = atLayout->focusedPane()) {
+                std::string cwd = paneProcessCWD(fp);
+                if (!cwd.empty()) opts.cwd = cwd;
+            }
         }
     }
 
@@ -313,7 +395,6 @@ void TabManager::createTab()
     int cols = (pr.w > 0 && charWidth > 0) ? static_cast<int>((pr.w - padLeft - padRight) / charWidth) : 80;
     int rows = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
 
-    int tabIdx = static_cast<int>(tabs_.size());
     host_.pending->structuralOps.push_back(PendingMutations::CreatePaneState{paneId, cols, rows});
     host_.pending->dirtyPanes.insert(paneId);
 
@@ -325,12 +406,12 @@ void TabManager::createTab()
     layout->insertTerminal(paneId, std::move(terminal));
     addPtyPoll(masterFD, termPtr);
 
-    activeTabIdx_ = tabIdx;
-    auto tab = std::make_unique<Tab>(std::move(layout));
-    tab->setTitle(termPtr->title());
-    Tab* tabRaw = tab.get();
-    tabs_.push_back(std::move(tab));
-    attachLayoutSubtree(tabRaw, /*activate=*/true);
+    Uuid subRoot = layout->subtreeRoot();
+    attachLayoutSubtree(std::move(layout), /*activate=*/true);
+    Tab newTab{host_.scriptEngine, subRoot};
+    newTab.setTitle(termPtr->title());
+
+    int tabIdx = activeTabIdx();
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
     updateWindowTitle();
@@ -349,16 +430,18 @@ void TabManager::createTab()
 
 void TabManager::closeTab(int idx)
 {
-    if (tabs_.empty() || idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
-    if (tabs_.size() == 1) return; // can't close the last tab
+    auto tab = tabAt(idx);
+    if (!tab) return;
+    if (size() == 1) return; // can't close the last tab
+    Layout* layout = tab->layout();
+    if (!layout) return;
 
     // Stop PTY polls for all terminals in this tab. Queue render state
-    // cleanup and fire script notifications before the Tab leaves its
+    // cleanup and fire script notifications before the tab leaves its
     // slot — scripts and structural-op consumers observe the pre-destroy
     // state, while the actual C++ destruction is deferred via the
     // graveyard below.
-    Tab* tab = tabs_[idx].get();
-    auto tabPanes = tab->layout()->panes();
+    auto tabPanes = layout->panes();
     for (Terminal* panePtr : tabPanes) {
         removePtyPoll(panePtr->masterFD());
         host_.pending->structuralOps.push_back(PendingMutations::DestroyPaneState{panePtr->id()});
@@ -376,20 +459,17 @@ void TabManager::closeTab(int idx)
         host_.pending->structuralOps.push_back(PendingMutations::DestroyOverlayState{});
     }
     if (host_.scriptEngine)
-        host_.scriptEngine->notifyTabDestroyed(idx, tab->layout()->subtreeRoot());
+        host_.scriptEngine->notifyTabDestroyed(idx, tab->subtreeRoot());
 
-    // Extract the Tab AND its Terminals under the render-thread mutex, rebuild
-    // the shadow copy to reflect the new active tab, and stage everything into
-    // the graveyard with the same stamp. The render thread may still hold raw
-    // pointers to any Terminal inside this tab from an in-flight frame; the
-    // stamp waits for that frame to end before destructors run.
-    //
-    // Terminal ownership lives on Script::Engine's map now, not on Tab; we
-    // must pull each Terminal out of the map so its destructor isn't called
-    // while the render thread still references it. The Tab's own destructor
-    // (once the graveyard sweeps) then has no Terminals to free.
-    std::unique_ptr<Tab> extracted;
+    // Extract the Layout + its Terminals + overlays under the render-thread
+    // mutex, rebuild the shadow copy so the new active tab is visible, and
+    // stage everything into the graveyard with the same stamp. The render
+    // thread may still hold raw Terminal pointers from an in-flight frame;
+    // the stamp waits for that frame to end before destructors run.
+    Uuid subRoot = tab->subtreeRoot();
+    std::unique_ptr<Layout> extractedLayout;
     std::vector<std::unique_ptr<Terminal>> extractedTerminals;
+    std::vector<std::unique_ptr<Terminal>> extractedOverlays;
     uint64_t stamp = 0;
     {
         std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
@@ -399,18 +479,23 @@ void TabManager::closeTab(int idx)
                 auto t = host_.scriptEngine->extractTerminal(panePtr->nodeId());
                 if (t) extractedTerminals.push_back(std::move(t));
             }
+            extractedOverlays = host_.scriptEngine->extractAllTabOverlays(subRoot);
+            extractedLayout   = host_.scriptEngine->extractTabLayout(subRoot);
+            host_.scriptEngine->eraseTabIcon(subRoot);
+            // Detach the tab's subtree from the root Stack and destroy it.
+            LayoutTree& tree = host_.scriptEngine->layoutTree();
+            tree.removeChild(host_.scriptEngine->layoutRootStack(), subRoot);
+            tree.destroyNode(subRoot);
         }
-        extracted = std::move(tabs_[idx]);
-        tabs_.erase(tabs_.begin() + idx);
-        if (activeTabIdx_ >= static_cast<int>(tabs_.size()))
-            activeTabIdx_ = static_cast<int>(tabs_.size()) - 1;
         if (host_.buildRenderFrameState) host_.buildRenderFrameState();
         stamp = host_.completedFrames ? host_.completedFrames() : 0;
     }
     if (host_.graveyard) {
         for (auto& t : extractedTerminals)
             host_.graveyard->defer(std::move(t), stamp);
-        if (extracted) host_.graveyard->defer(std::move(extracted), stamp);
+        for (auto& o : extractedOverlays)
+            host_.graveyard->defer(std::move(o), stamp);
+        if (extractedLayout) host_.graveyard->defer(std::move(extractedLayout), stamp);
     }
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
@@ -511,11 +596,14 @@ void TabManager::spawnTerminalForPane(int paneId, int tabIdx, const std::string&
         return;
     }
 
-    // Read geometry from the layout tree node (Terminal may not exist yet)
+    // Read geometry from the layout tree node (Terminal may not exist yet).
     PaneRect pr;
-    for (auto& t : tabs_) {
-        pr = t->layout()->nodeRect(paneId);
-        if (!pr.isEmpty()) break;
+    Layout* ownerLayout = nullptr;
+    for (Tab t : tabs()) {
+        Layout* tl = t.layout();
+        if (!tl) continue;
+        pr = tl->nodeRect(paneId);
+        if (!pr.isEmpty()) { ownerLayout = tl; break; }
     }
     int cols = (pr.w > 0 && charWidth > 0)  ? static_cast<int>((pr.w - padLeft - padRight) / charWidth)  : 80;
     int rows = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
@@ -531,11 +619,8 @@ void TabManager::spawnTerminalForPane(int paneId, int tabIdx, const std::string&
     int masterFD = terminal->masterFD();
     Terminal* termPtr = terminal.get();
 
-    // Insert the Terminal into the layout slot created by splitPane()
-    for (auto& t : tabs_) {
-        if (t->layout()->nodeRect(paneId).isEmpty()) continue;
-        t->layout()->insertTerminal(paneId, std::move(terminal));
-        break;
+    if (ownerLayout) {
+        ownerLayout->insertTerminal(paneId, std::move(terminal));
     }
     addPtyPoll(masterFD, termPtr);
 
@@ -543,9 +628,12 @@ void TabManager::spawnTerminalForPane(int paneId, int tabIdx, const std::string&
 }
 
 
-void TabManager::resizeAllPanesInTab(Tab* tab)
+void TabManager::resizeAllPanesInTab(Tab tab)
 {
     if (!tab) return;
+    Layout* layout = tab.layout();
+    if (!layout) return;
+
     clearDividers(tab);
 
     const float charWidth  = host_.charWidth ? host_.charWidth() : 0.0f;
@@ -557,9 +645,9 @@ void TabManager::resizeAllPanesInTab(Tab* tab)
     const uint32_t fbWidth  = host_.fbWidth ? host_.fbWidth() : 0;
     const uint32_t fbHeight = host_.fbHeight ? host_.fbHeight() : 0;
 
-    tab->layout()->computeRects(fbWidth, fbHeight);
+    layout->computeRects(fbWidth, fbHeight);
 
-    for (Terminal* pane : tab->layout()->panes()) {
+    for (Terminal* pane : layout->panes()) {
         pane->resizeToRect(charWidth, lineHeight, padLeft, padTop, padRight, padBottom);
 
         int cols = std::max(pane->width(),  1);
@@ -582,29 +670,30 @@ void TabManager::resizeAllPanesInTab(Tab* tab)
 // JS-facing primitives
 // -------------------------------------------------------------------------
 
-Tab* TabManager::findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx)
+std::optional<Tab> TabManager::findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx) const
 {
-    for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
-        if (tabs_[i]->layout()->subtreeRoot() == subtreeRoot) {
+    auto allTabs = tabs();
+    for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
+        if (allTabs[i].subtreeRoot() == subtreeRoot) {
             if (outTabIdx) *outTabIdx = i;
-            return tabs_[i].get();
+            return allTabs[i];
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
-Tab* TabManager::findTabForNode(Uuid nodeId, int* outTabIdx)
+std::optional<Tab> TabManager::findTabForNode(Uuid nodeId, int* outTabIdx) const
 {
-    if (!host_.scriptEngine) return nullptr;
-    LayoutTree& tree = host_.scriptEngine->layoutTree();
+    if (!host_.scriptEngine) return std::nullopt;
+    const LayoutTree& tree = host_.scriptEngine->layoutTree();
     Uuid cur = nodeId;
     while (!cur.isNil()) {
-        if (Tab* t = findTabBySubtreeRoot(cur, outTabIdx)) return t;
+        if (auto t = findTabBySubtreeRoot(cur, outTabIdx)) return t;
         const Node* n = tree.node(cur);
         if (!n) break;
         cur = n->parent;
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 int TabManager::findPaneIdByNodeId(Uuid nodeId)
@@ -638,11 +727,9 @@ int TabManager::createEmptyTab(Uuid* outNodeId)
     Uuid subRoot = layout->subtreeRoot();
     if (outNodeId) *outNodeId = subRoot;
 
-    int tabIdx = static_cast<int>(tabs_.size());
-    auto tab = std::make_unique<Tab>(std::move(layout));
-    Tab* tabRaw = tab.get();
-    tabs_.push_back(std::move(tab));
-    attachLayoutSubtree(tabRaw, /*activate=*/false);
+    attachLayoutSubtree(std::move(layout), /*activate=*/false);
+    int tabIdx = -1;
+    findTabBySubtreeRoot(subRoot, &tabIdx);
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
     if (host_.markTabBarDirty) host_.markTabBarDirty();
@@ -654,14 +741,13 @@ int TabManager::createEmptyTab(Uuid* outNodeId)
 
 void TabManager::activateTabByIdx(int idx)
 {
-    if (idx < 0 || idx >= static_cast<int>(tabs_.size())) return;
-    if (Tab* prev = activeTab()) {
-        clearDividers(prev);
-        releaseTabTextures(prev);
+    if (idx < 0 || idx >= static_cast<int>(size())) return;
+    if (auto prev = activeTab()) {
+        clearDividers(*prev);
+        releaseTabTextures(*prev);
     }
     setActiveTabIdx(idx);
-    if (Tab* now = activeTab())
-        refreshDividers(now);
+    if (auto now = activeTab()) refreshDividers(*now);
     updateWindowTitle();
     if (host_.inputController) host_.inputController->refreshPointerShape();
     if (host_.markTabBarDirty) host_.markTabBarDirty();
@@ -677,9 +763,10 @@ bool TabManager::createTerminalInContainer(Uuid parentContainerNodeId,
     LayoutTree& tree = host_.scriptEngine->layoutTree();
 
     int tabIdx = -1;
-    Tab* tab = findTabForNode(parentContainerNodeId, &tabIdx);
+    auto tab = findTabForNode(parentContainerNodeId, &tabIdx);
     if (!tab) return false;
     Layout* layout = tab->layout();
+    if (!layout) return false;
 
     Uuid newNodeId;
     int paneId = layout->allocatePaneNode(&newNodeId);
@@ -703,9 +790,10 @@ bool TabManager::splitPaneByNodeId(Uuid existingPaneNodeId, LayoutNode::Dir dir,
 {
     (void)ratio; // splitByNodeId uses default stretch inheritance
     int tabIdx = -1;
-    Tab* tab = findTabForNode(existingPaneNodeId, &tabIdx);
+    auto tab = findTabForNode(existingPaneNodeId, &tabIdx);
     if (!tab) return false;
     Layout* layout = tab->layout();
+    if (!layout) return false;
 
     Uuid newNodeId;
     int paneId = layout->allocatePaneNode(&newNodeId);
@@ -721,7 +809,7 @@ bool TabManager::splitPaneByNodeId(Uuid existingPaneNodeId, LayoutNode::Dir dir,
         cwd = paneProcessCWD(fp);
 
     spawnTerminalForPane(paneId, tabIdx, cwd);
-    resizeAllPanesInTab(tab);
+    resizeAllPanesInTab(*tab);
 
     if (outPaneId) *outPaneId = paneId;
     if (outNodeId) *outNodeId = newNodeId;
@@ -731,11 +819,13 @@ bool TabManager::splitPaneByNodeId(Uuid existingPaneNodeId, LayoutNode::Dir dir,
 bool TabManager::focusPaneById(int paneId)
 {
     int tabIdx = -1;
-    Tab* tab = findTabForPane(paneId, &tabIdx);
+    auto tab = findTabForPane(paneId, &tabIdx);
     if (!tab) return false;
-    int prev = tab->layout()->focusedPaneId();
-    tab->layout()->setFocusedPane(paneId);
-    notifyPaneFocusChange(tab, prev, paneId);
+    Layout* layout = tab->layout();
+    if (!layout) return false;
+    int prev = layout->focusedPaneId();
+    layout->setFocusedPane(paneId);
+    notifyPaneFocusChange(*tab, prev, paneId);
     updateTabTitleFromFocusedPane(tabIdx);
     if (host_.setNeedsRedraw) host_.setNeedsRedraw();
     return true;
@@ -744,9 +834,10 @@ bool TabManager::focusPaneById(int paneId)
 bool TabManager::removeNode(Uuid nodeId)
 {
     int tabIdx = -1;
-    Tab* tab = findTabForNode(nodeId, &tabIdx);
+    auto tab = findTabForNode(nodeId, &tabIdx);
     if (!tab) return false;
     Layout* layout = tab->layout();
+    if (!layout) return false;
     if (nodeId == layout->subtreeRoot()) return false;
 
     // Tree mutation under the platform mutex so the render thread's next
@@ -768,8 +859,8 @@ bool TabManager::removeNode(Uuid nodeId)
         return true;
     }
 
-    resizeAllPanesInTab(tab);
-    notifyPaneFocusChange(tab, -1, layout->focusedPaneId());
+    resizeAllPanesInTab(*tab);
+    notifyPaneFocusChange(*tab, -1, layout->focusedPaneId());
     updateTabTitleFromFocusedPane(tabIdx);
     return true;
 }

@@ -26,9 +26,11 @@ std::string PlatformDawn::gridToJson(int id)
 {
     // Search for the pane across all tabs
     Terminal* pane = nullptr;
-    for (auto& tabPtr : tabManager_->tabs()) {
-        pane = tabPtr->layout()->pane(id);
-        if (pane) break;
+    for (Tab tab : tabManager_->tabs()) {
+        if (Layout* layout = tab.layout()) {
+            pane = layout->pane(id);
+            if (pane) break;
+        }
     }
     if (!pane) return {};
     TerminalEmulator* term = pane;
@@ -111,12 +113,14 @@ std::string PlatformDawn::statsJson(int id)
     };
 
     glz::generic::array_t tabsArr;
-    auto& allTabs = tabManager_->tabs();
+    auto allTabs = tabManager_->tabs();
     int activeIdx = tabManager_->activeTabIdx();
     for (int ti = 0; ti < static_cast<int>(allTabs.size()); ++ti) {
-        Tab* tab = allTabs[ti].get();
+        Tab& tab = allTabs[ti];
+        Layout* layout = tab.layout();
+        if (!layout) continue;
         glz::generic::array_t panesArr;
-        for (Terminal* panePtr : tab->layout()->panes()) {
+        for (Terminal* panePtr : layout->panes()) {
             int pid = panePtr->id();
             const PaneRenderPrivate* rs = renderEngine_->paneRenderPrivate(pid);
             Terminal* term = panePtr;

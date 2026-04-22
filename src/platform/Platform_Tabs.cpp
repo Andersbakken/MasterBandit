@@ -35,8 +35,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
                 TerminalEmulator::CommandRecord recCopy = *rec;
                 postToMainThread([this, paneId, recCopy = std::move(recCopy)] {
                     TerminalEmulator* te = nullptr;
-                    for (auto& tab : tabManager_->tabs()) {
-                        if (auto* p = tab->layout()->pane(paneId)) { te = p; break; }
+                    for (Tab tab : tabManager_->tabs()) {
+                        if (Layout* tl = tab.layout()) {
+                            if (auto* p = tl->pane(paneId)) { te = p; break; }
+                        }
                     }
                     if (!te) return;
                     const auto& doc = te->document();
@@ -60,8 +62,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             // events see the final state even if multiple fire in a row.
             postToMainThread([this, paneId] {
                 Terminal* te = nullptr;
-                for (auto& tab : tabManager_->tabs()) {
-                    if (auto* p = tab->layout()->pane(paneId)) { te = p; break; }
+                for (Tab tab : tabManager_->tabs()) {
+                    if (Layout* tl = tab.layout()) {
+                        if (auto* p = tl->pane(paneId)) { te = p; break; }
+                    }
                 }
                 if (!te) return;
                 scriptEngine_.notifyCommandSelectionChanged(paneId, te->selectedCommandId());
@@ -90,7 +94,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
     cbs.onTitleChanged = [this, paneId](const std::string& title) {
         postToMainThread([this, paneId, title] {
             int tabIdx = -1;
-            Tab* t = tabManager_->findTabForPane(paneId, &tabIdx);
+            auto t = tabManager_->findTabForPane(paneId, &tabIdx);
             if (!t) return;
             if (Terminal* p = t->layout()->pane(paneId)) p->setTitle(title);
             if (t->layout()->focusedPaneId() == paneId) {
@@ -105,7 +109,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
     cbs.onIconChanged = [this, paneId](const std::string& icon) {
         postToMainThread([this, paneId, icon] {
             int tabIdx = -1;
-            Tab* t = tabManager_->findTabForPane(paneId, &tabIdx);
+            auto t = tabManager_->findTabForPane(paneId, &tabIdx);
             if (!t) return;
             if (Terminal* p = t->layout()->pane(paneId)) p->setIcon(icon);
             if (t->layout()->focusedPaneId() == paneId) {
@@ -119,7 +123,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
     cbs.onProgressChanged = [this, paneId](int state, int pct) {
         postToMainThread([this, paneId, state, pct] {
-            Tab* t = tabManager_->findTabForPane(paneId);
+            auto t = tabManager_->findTabForPane(paneId);
             if (!t) return;
             if (Terminal* p = t->layout()->pane(paneId)) {
                 p->setProgress(state, pct);
@@ -135,7 +139,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
         postToMainThread([this, paneId, dir] {
-            Tab* t = tabManager_->findTabForPane(paneId);
+            auto t = tabManager_->findTabForPane(paneId);
             if (!t) return;
             if (Terminal* p = t->layout()->pane(paneId)) p->setCWD(dir);
         });
@@ -181,7 +185,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             // active tab; otherwise the next mouse-move into that pane will pick
             // it up. Background panes/tabs don't fight over the cursor.
             if (!window_ || isHeadless()) return;
-            Tab* t = tabManager_->activeTab();
+            auto t = tabManager_->activeTab();
             if (!t || t->layout()->focusedPaneId() != paneId) return;
             window_->setCursorStyle(shape.empty()
                 ? Window::CursorStyle::IBeam
@@ -194,7 +198,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
             scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
             // Use foreground process as tab title if pane has no OSC title
             int tabIdx = -1;
-            Tab* t = tabManager_->findTabForPane(paneId, &tabIdx);
+            auto t = tabManager_->findTabForPane(paneId, &tabIdx);
             if (!t) return;
             Terminal* p = t->layout()->pane(paneId);
             if (p && p->title().empty() && t->layout()->focusedPaneId() == paneId) {

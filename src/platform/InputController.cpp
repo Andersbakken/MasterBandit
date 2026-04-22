@@ -234,7 +234,7 @@ void InputController::onChar(uint32_t codepoint)
 
 MouseRegion InputController::hitTest(double sx, double sy)
 {
-    Tab* tab = host_.activeTab();
+    auto tab = host_.activeTab();
     if (!tab) return MouseRegion::Pane;
 
     // Check tab bar
@@ -265,7 +265,7 @@ int InputController::resolveTabBarClickIndex(double sx, double sy)
 {
     float tbCharWidth = host_.tabBarCharWidth();
     if (tbCharWidth <= 0.0f) return -1;
-    Tab* tab = host_.activeTab();
+    auto tab = host_.activeTab();
     if (!tab) return -1;
     PaneRect tbRect = tab->layout()->tabBarRect(host_.fbWidth(), host_.fbHeight());
     if (tbRect.isEmpty()) return -1;
@@ -285,7 +285,7 @@ int InputController::resolveTabBarClickIndex(double sx, double sy)
 void InputController::onMouseButton(int button, int action, int mods)
 {
     std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
-    Tab* tab = host_.activeTab();
+    auto tab = host_.activeTab();
     if (!tab) return;
 
     Window* window = host_.window ? host_.window() : nullptr;
@@ -358,7 +358,7 @@ void InputController::onMouseButton(int button, int action, int mods)
         if (clickedId >= 0 && clickedId != tab->layout()->focusedPaneId()) {
             int prev = tab->layout()->focusedPaneId();
             tab->layout()->setFocusedPane(clickedId);
-            if (host_.notifyPaneFocusChange) host_.notifyPaneFocusChange(tab, prev, clickedId);
+            if (host_.notifyPaneFocusChange) host_.notifyPaneFocusChange(*tab, prev, clickedId);
             if (host_.updateTabTitleFromFocusedPane) host_.updateTabTitleFromFocusedPane(host_.activeTabIdx());
         }
     }
@@ -597,7 +597,7 @@ void InputController::onMouseButton(int button, int action, int mods)
 void InputController::onCursorPos(double x, double y)
 {
     std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
-    Tab* tab = host_.activeTab();
+    auto tab = host_.activeTab();
     if (!tab) return;
 
     Window* window = host_.window ? host_.window() : nullptr;
@@ -800,7 +800,7 @@ void InputController::doAutoScroll()
 {
     if (!selectionDragActive_) { stopAutoScroll(); return; }
 
-    Tab* tab = host_.activeTab();
+    auto tab = host_.activeTab();
     if (!tab) { stopAutoScroll(); return; }
     TerminalEmulator* term = tab->hasOverlay()
         ? static_cast<TerminalEmulator*>(tab->topOverlay())
@@ -835,7 +835,7 @@ void InputController::refreshPointerShape()
 {
     Window* window = host_.window ? host_.window() : nullptr;
     if (!window || host_.headless) return;
-    Tab* tab = host_.activeTab();
+    auto tab = host_.activeTab();
     if (!tab) return;
     // When the pointer is over the tab bar, show the arrow regardless of the
     // focused pane's cursor shape — matches the hover path in onMouseMove.

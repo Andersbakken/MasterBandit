@@ -1,29 +1,68 @@
 #include "Tab.h"
 
-Tab::Tab(std::unique_ptr<Layout> layout)
-    : layout_(std::move(layout))
-{}
+#include "Layout.h"
+#include "LayoutTree.h"
+#include "Terminal.h"
+#include "script/ScriptEngine.h"
+
+namespace {
+const std::string& kEmpty() {
+    static const std::string s;
+    return s;
+}
+} // namespace
+
+Layout* Tab::layout() const
+{
+    if (!valid()) return nullptr;
+    return eng_->tabLayout(subtreeRoot_);
+}
+
+const std::string& Tab::title() const
+{
+    if (!valid()) return kEmpty();
+    const Node* n = eng_->layoutTree().node(subtreeRoot_);
+    return n ? n->label : kEmpty();
+}
+
+void Tab::setTitle(const std::string& s)
+{
+    if (!valid()) return;
+    eng_->layoutTree().setLabel(subtreeRoot_, s);
+}
+
+const std::string& Tab::icon() const
+{
+    if (!valid()) return kEmpty();
+    return eng_->tabIcon(subtreeRoot_);
+}
+
+void Tab::setIcon(const std::string& s)
+{
+    if (!valid()) return;
+    eng_->setTabIcon(subtreeRoot_, s);
+}
+
+bool Tab::hasOverlay() const
+{
+    if (!valid()) return false;
+    return eng_->hasTabOverlay(subtreeRoot_);
+}
+
+Terminal* Tab::topOverlay() const
+{
+    if (!valid()) return nullptr;
+    return eng_->topTabOverlay(subtreeRoot_);
+}
 
 void Tab::pushOverlay(std::unique_ptr<Terminal> t)
 {
-    overlays_.push_back(std::move(t));
+    if (!valid()) return;
+    eng_->pushTabOverlay(subtreeRoot_, std::move(t));
 }
 
 std::unique_ptr<Terminal> Tab::popOverlay()
 {
-    if (overlays_.empty()) return nullptr;
-    std::unique_ptr<Terminal> t = std::move(overlays_.back());
-    overlays_.pop_back();
-    if (t && onOverlayPopped) onOverlayPopped(t->masterFD());
-    return t;
-}
-
-Terminal* Tab::topOverlay()
-{
-    return overlays_.empty() ? nullptr : overlays_.back().get();
-}
-
-Terminal* Tab::activeOverlay()
-{
-    return overlays_.empty() ? nullptr : overlays_.back().get();
+    if (!valid()) return nullptr;
+    return eng_->popTabOverlay(subtreeRoot_);
 }

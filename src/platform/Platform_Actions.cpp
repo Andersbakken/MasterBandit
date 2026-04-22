@@ -72,9 +72,10 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::ClosePane&) { invokeOrLog("closePane", nullptr); },
         [&](const Action::ZoomPane&)  { invokeOrLog("zoomPane",  nullptr); },
         [&](const Action::FocusPane& a) {
-            Tab* tab = activeTab();
+            auto tab = activeTab();
             if (!tab) return;
             Layout* layout = tab->layout();
+            if (!layout) return;
 
             if (a.dir == Action::Direction::Next || a.dir == Action::Direction::Prev) {
                 auto panes = layout->panes();
@@ -89,7 +90,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 int next = ((cur + delta) % n + n) % n;
                 int prev = layout->focusedPaneId();
                 layout->setFocusedPane(panes[next]->id());
-                tabManager_->notifyPaneFocusChange(tab, prev, panes[next]->id());
+                tabManager_->notifyPaneFocusChange(*tab, prev, panes[next]->id());
                 tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
                 setNeedsRedraw();
                 return;
@@ -113,7 +114,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (targetId >= 0 && targetId != fp->id()) {
                 int prev = layout->focusedPaneId();
                 layout->setFocusedPane(targetId);
-                tabManager_->notifyPaneFocusChange(tab, prev, targetId);
+                tabManager_->notifyPaneFocusChange(*tab, prev, targetId);
                 tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
                 setNeedsRedraw();
             }
@@ -160,7 +161,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
         },
         [&](const Action::PushOverlay&) { /* TODO */ },
         [&](const Action::PopOverlay&) {
-            Tab* tab = activeTab();
+            auto tab = activeTab();
             if (!tab || !tab->hasOverlay()) return;
             scriptEngine_.notifyOverlayDestroyed(tabManager_->activeTabIdx());
             std::unique_ptr<Terminal> extracted;
@@ -219,9 +220,10 @@ void PlatformDawn::executeAction(const Action::Any& action)
         },
         [&](const Action::FocusPopup&) {
             if (scriptEngine_.invokeActionHandler("focusPopup", nullptr)) return;
-            Tab* tab = activeTab();
+            auto tab = activeTab();
             if (!tab || tab->hasOverlay()) return;
-            Terminal* fp = tab->layout()->focusedPane();
+            Layout* layout = tab->layout();
+            Terminal* fp = layout ? layout->focusedPane() : nullptr;
             if (!fp || fp->popups().empty()) return;
 
             const auto& popups = fp->popups();
@@ -255,7 +257,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
         },
         [&](const Action::ShowScrollback&) {
             Terminal* term = dynamic_cast<Terminal*>(activeTerm());
-            Tab* tab = activeTab();
+            auto tab = activeTab();
             if (!term || !tab) return;
 
             // Write scrollback to temp file
@@ -291,23 +293,21 @@ void PlatformDawn::executeAction(const Action::Any& action)
             };
 
             PlatformCallbacks pcbs;
-            pcbs.onTerminalExited = [this, tab](Terminal* t) {
+            Uuid tabRoot = tab->subtreeRoot();
+            pcbs.onTerminalExited = [this, tabRoot](Terminal* t) {
                 // Defer cleanup — we're called from Terminal::readFromFD.
                 int fd = t->masterFD();
-                eventLoop_->addTimer(0, false, [this, tab, fd]() {
+                eventLoop_->addTimer(0, false, [this, tabRoot, fd]() {
                     std::unique_ptr<Terminal> extracted;
                     uint64_t stamp = 0;
                     {
                         std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                         tabManager_->removePtyPoll(fd);
-                        auto& tabsVec = tabManager_->tabs();
-                        for (int ti = 0; ti < static_cast<int>(tabsVec.size()); ++ti) {
-                            if (tabsVec[ti].get() == tab) {
-                                scriptEngine_.notifyOverlayDestroyed(ti);
-                                break;
-                            }
-                        }
-                        extracted = tab->popOverlay();
+                        int ti = -1;
+                        auto owner = tabManager_->findTabBySubtreeRoot(tabRoot, &ti);
+                        if (owner && ti >= 0)
+                            scriptEngine_.notifyOverlayDestroyed(ti);
+                        if (owner) extracted = owner->popOverlay();
                         renderThread_->renderState().hasOverlay = false;
                         renderThread_->renderState().overlay = nullptr;
                         stamp = renderThread_->completedFrames();

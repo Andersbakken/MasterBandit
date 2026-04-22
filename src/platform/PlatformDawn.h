@@ -167,24 +167,26 @@ private:
         if (tabBarConfig_.style != "auto") return;
         bool visible = tabBarVisible();
         int h = visible ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
-        for (auto& tab : tabManager_->tabs()) {
-            tab->layout()->setTabBar(h, tabBarConfig_.position);
-            tab->layout()->computeRects(fbWidth_, fbHeight_);
-            for (Terminal* p : tab->layout()->panes())
+        for (Tab tab : tabManager_->tabs()) {
+            Layout* layout = tab.layout();
+            if (!layout) continue;
+            layout->setTabBar(h, tabBarConfig_.position);
+            layout->computeRects(fbWidth_, fbHeight_);
+            for (Terminal* p : layout->panes())
                 p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
         }
         if (visible) {
             // Refresh tab titles from foreground process for tabs that
             // have no OSC title — the callback may have fired before the
             // tab bar existed or before the tab was added to tabs.
-            auto& tabs = tabManager_->tabs();
-            for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
-                Tab* tab = tabs[i].get();
-                Terminal* fp = tab->layout()->focusedPane();
-                if (fp && fp->title().empty() && tab->title().empty()) {
+            auto tabs = tabManager_->tabs();
+            for (Tab& tab : tabs) {
+                Layout* layout = tab.layout();
+                Terminal* fp = layout ? layout->focusedPane() : nullptr;
+                if (fp && fp->title().empty() && tab.title().empty()) {
                     std::string proc = fp->foregroundProcess();
                     if (!proc.empty())
-                        tab->setTitle(proc);
+                        tab.setTitle(proc);
                 }
             }
         }
@@ -196,7 +198,7 @@ private:
         return true;
     }
 
-    Tab* activeTab() { return tabManager_->activeTab(); }
+    std::optional<Tab> activeTab() { return tabManager_->activeTab(); }
 
     void notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn) {
         tabManager_->notifyAllTerminals(fn);

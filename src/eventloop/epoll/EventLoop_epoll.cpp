@@ -103,7 +103,7 @@ void EpollEventLoop::run()
             } else if (fd == timerFd_) {
                 // Drain the timerfd read
                 uint64_t expirations;
-                read(timerFd_, &expirations, sizeof(expirations));
+                [[maybe_unused]] auto n = read(timerFd_, &expirations, sizeof(expirations));
                 drainTimers();
             } else if (fd == inotifyFd_) {
                 drainInotify();
@@ -132,13 +132,13 @@ void EpollEventLoop::stop()
 void EpollEventLoop::wakeup()
 {
     uint64_t one = 1;
-    write(wakeupFd_, &one, sizeof(one));
+    [[maybe_unused]] auto n = write(wakeupFd_, &one, sizeof(one));
 }
 
 void EpollEventLoop::drainWakeup()
 {
     uint64_t val;
-    read(wakeupFd_, &val, sizeof(val));
+    [[maybe_unused]] auto n = read(wakeupFd_, &val, sizeof(val));
 }
 
 // ---------- fd watching ----------

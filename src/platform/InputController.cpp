@@ -239,7 +239,7 @@ MouseRegion InputController::hitTest(double sx, double sy)
 
     // Check tab bar
     if (host_.tabBarVisible()) {
-        PaneRect tbRect = tab->layout()->tabBarRect(host_.fbWidth(), host_.fbHeight());
+        PaneRect tbRect = tab->tabBarRect(host_.fbWidth(), host_.fbHeight());
         if (!tbRect.isEmpty() &&
             sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
             sy >= tbRect.y && sy < tbRect.y + tbRect.h)
@@ -248,9 +248,9 @@ MouseRegion InputController::hitTest(double sx, double sy)
 
     // Divider hit-test — suppresses pane-selection and terminal forwarding when
     // the click lands on a split divider rather than inside a pane.
-    const int divPx = tab->layout()->dividerPixels();
-    if (divPx > 0 && !tab->layout()->isZoomed()) {
-        for (const auto& r : tab->layout()->dividerRects(divPx)) {
+    const int divPx = tab->dividerPixels();
+    if (divPx > 0 && !tab->isZoomed()) {
+        for (const auto& r : tab->dividerRects(divPx)) {
             if (sx >= r.x && sx < r.x + r.w &&
                 sy >= r.y && sy < r.y + r.h)
                 return MouseRegion::Divider;
@@ -267,7 +267,7 @@ int InputController::resolveTabBarClickIndex(double sx, double sy)
     if (tbCharWidth <= 0.0f) return -1;
     auto tab = host_.activeTab();
     if (!tab) return -1;
-    PaneRect tbRect = tab->layout()->tabBarRect(host_.fbWidth(), host_.fbHeight());
+    PaneRect tbRect = tab->tabBarRect(host_.fbWidth(), host_.fbHeight());
     if (tbRect.isEmpty()) return -1;
 
     int clickCol = static_cast<int>((sx - tbRect.x) / tbCharWidth);
@@ -314,7 +314,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     if (action == static_cast<int>(KeyAction_Release) && selectionDragActive_) {
         selectionDragActive_ = false;
         stopAutoScroll();
-        Terminal* fp2 = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+        Terminal* fp2 = tab->focusedPane();
         TerminalEmulator* term2 = static_cast<TerminalEmulator*>(fp2);
         if (term2) {
             PaneRect pr = fp2 ? fp2->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
@@ -352,10 +352,10 @@ void InputController::onMouseButton(int button, int action, int mods)
 
     // 2. Click on inactive pane — switch focus (side effect)
     if (action == static_cast<int>(KeyAction_Press) && region == MouseRegion::Pane ) {
-        int clickedId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
-        if (clickedId >= 0 && clickedId != tab->layout()->focusedPaneId()) {
-            int prev = tab->layout()->focusedPaneId();
-            tab->layout()->setFocusedPane(clickedId);
+        int clickedId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+        if (clickedId >= 0 && clickedId != tab->focusedPaneId()) {
+            int prev = tab->focusedPaneId();
+            tab->setFocusedPane(clickedId);
             if (host_.notifyPaneFocusChange) host_.notifyPaneFocusChange(*tab, prev, clickedId);
             if (host_.updateTabTitleFromFocusedPane) host_.updateTabTitleFromFocusedPane(host_.activeTabIdx());
         }
@@ -363,7 +363,7 @@ void InputController::onMouseButton(int button, int action, int mods)
 
     // 2b. Check if click lands inside a popup — deliver mouse event to JS
     if (region == MouseRegion::Pane ) {
-        Terminal* clickPane = tab->layout()->focusedPane();
+        Terminal* clickPane = tab->focusedPane();
         if (clickPane) {
             const PaneRect& pr = clickPane->rect();
             int cellCol = static_cast<int>((sx - pr.x - padLeft) / charWidth);
@@ -410,7 +410,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     }
 
     // 5. Resolve focused pane and terminal
-    Terminal* fp = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+    Terminal* fp = tab->focusedPane();
     TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
@@ -597,7 +597,7 @@ void InputController::onCursorPos(double x, double y)
     if (!tab) return;
 
     Window* window = host_.window ? host_.window() : nullptr;
-    Terminal* fp = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+    Terminal* fp = tab->focusedPane();
     TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
@@ -627,10 +627,8 @@ void InputController::onCursorPos(double x, double y)
         if (region == MouseRegion::TabBar) {
             window->setCursorStyle(Window::CursorStyle::Arrow);
         } else {
-            int hoveredId = tab->layout()
-                ? tab->layout()->paneAtPixel(static_cast<int>(sx),
-                                             static_cast<int>(sy))
-                : -1;
+            int hoveredId = tab->paneAtPixel(static_cast<int>(sx),
+                                              static_cast<int>(sy));
             auto it = paneCursorStyle_.find(hoveredId);
             window->setCursorStyle(it != paneCursorStyle_.end()
                 ? it->second
@@ -639,10 +637,10 @@ void InputController::onCursorPos(double x, double y)
     }
 
     // Notify JS mousemove listeners for the hovered pane
-    if (host_.scriptEngine && tab->layout()) {
-        int hoveredPaneId = tab->layout()->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+    if (host_.scriptEngine) {
+        int hoveredPaneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
         if (hoveredPaneId >= 0 && host_.scriptEngine->hasPaneMouseMoveListeners(hoveredPaneId)) {
-            Terminal* hp = tab->layout()->pane(hoveredPaneId);
+            Terminal* hp = tab->pane(hoveredPaneId);
             if (hp) {
                 PaneRect hpr = hp->rect();
                 double hcx = sx - hpr.x - padLeft;
@@ -796,7 +794,7 @@ void InputController::doAutoScroll()
 
     auto tab = host_.activeTab();
     if (!tab) { stopAutoScroll(); return; }
-    Terminal* fp = tab->layout() ? tab->layout()->focusedPane() : nullptr;
+    Terminal* fp = tab->focusedPane();
     TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) { stopAutoScroll(); return; }
 
@@ -841,14 +839,9 @@ void InputController::refreshPointerShape()
     // don't show a cursor that doesn't match the hovered pane). Falls back to
     // the focused pane when the mouse position isn't usefully hovering one
     // (e.g. before any motion event has fired).
-    int paneId = -1;
-    if (tab->layout()) {
-        paneId = tab->layout()->paneAtPixel(static_cast<int>(sx),
-                                            static_cast<int>(sy));
-        if (paneId < 0) {
-            Terminal* focPane = tab->layout()->focusedPane();
-            if (focPane) paneId = focPane->id();
-        }
+    int paneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+    if (paneId < 0) {
+        if (Terminal* focPane = tab->focusedPane()) paneId = focPane->id();
     }
     auto it = paneCursorStyle_.find(paneId);
     window->setCursorStyle(it != paneCursorStyle_.end()

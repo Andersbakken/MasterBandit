@@ -378,6 +378,13 @@ public:
     // these through setFocusedTerminal / setZoomedNode.
     Uuid focusedTerminalNodeId() const { return focusedTerminalNodeId_; }
     void setFocusedTerminalNodeId(Uuid u) { focusedTerminalNodeId_ = u; }
+    // Convenience: resolve the focused Uuid through the terminal map. Null
+    // if no pane is focused or the focused Uuid points at a killed Terminal
+    // (the tree node may still exist briefly between killTerminal and the
+    // JS-driven removeNode).
+    ::Terminal* focusedTerminal() {
+        return focusedTerminalNodeId_.isNil() ? nullptr : terminal(focusedTerminalNodeId_);
+    }
     Uuid zoomedNodeId() const { return zoomedNodeId_; }
     void setZoomedNodeId(Uuid u) { zoomedNodeId_ = u; }
 

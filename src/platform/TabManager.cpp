@@ -137,27 +137,42 @@ void TabManager::setActiveTabIdx(int idx)
     if (sub.isNil()) return;
     host_.scriptEngine->layoutTree().setActiveChild(
         host_.scriptEngine->layoutRootStack(), sub);
+
+    // The engine holds a single focused-terminal Uuid. If the currently
+    // focused Terminal isn't inside the newly active tab, move focus onto
+    // the first Terminal of that tab. Without this, closing a tab (which
+    // clears focus if the focused pane was inside it) and splitting via a
+    // JS action that reads `mb.layout.focusedPane()` would see null focus
+    // and no-op the split.
+    Tab activated{host_.scriptEngine, sub};
+    auto livePanes = activated.panes();
+    if (livePanes.empty()) {
+        host_.scriptEngine->setFocusedTerminalNodeId({});
+        return;
+    }
+    Uuid focus = host_.scriptEngine->focusedTerminalNodeId();
+    bool focusInTab = false;
+    for (Terminal* t : livePanes) if (t && t->nodeId() == focus) { focusInTab = true; break; }
+    if (!focusInTab) {
+        host_.scriptEngine->setFocusedTerminalNodeId(livePanes.front()->nodeId());
+    }
 }
 
-void TabManager::attachLayoutSubtree(std::unique_ptr<Layout> layout, bool activate)
+void TabManager::attachLayoutSubtree(Tab tab, bool activate)
 {
-    if (!layout || !host_.scriptEngine) return;
+    if (!tab || !host_.scriptEngine) return;
     LayoutTree& tree = host_.scriptEngine->layoutTree();
     Uuid rootStack = host_.scriptEngine->layoutRootStack();
-    Uuid sub = layout->subtreeRoot();
+    Uuid sub = tab.subtreeRoot();
     if (sub.isNil()) return;
 
     tree.appendChild(rootStack, ChildSlot{sub, /*stretch=*/1});
     if (activate) tree.setActiveChild(rootStack, sub);
-
-    // Transfer ownership to the engine-wide map, keyed by subtreeRoot. Tab
-    // handles resolve their Layout via this map from now on.
-    host_.scriptEngine->insertTabLayout(sub, std::move(layout));
 }
 
-void TabManager::addInitialTab(std::unique_ptr<Layout> layout)
+void TabManager::addInitialTab(Tab tab)
 {
-    attachLayoutSubtree(std::move(layout), /*activate=*/true);
+    attachLayoutSubtree(tab, /*activate=*/true);
 }
 
 
@@ -341,17 +356,14 @@ void TabManager::createTab()
         }
     }
 
-    // Layout's subtree lives in the shared LayoutTree on the Engine, so JS
+    // The tab's subtree lives in the shared LayoutTree on the Engine, so JS
     // bindings and native code see the same structural state.
-    auto layout = std::make_unique<Layout>(host_.scriptEngine
-                                           ? &host_.scriptEngine->layoutTree()
-                                           : nullptr,
-                                           host_.scriptEngine);
-    layout->setDividerPixels(divW);
+    Tab layout = Tab::newSubtree(host_.scriptEngine);
+    layout.setDividerPixels(divW);
 
     // Allocate an ID and tree node — no Terminal created yet.
-    int paneId = layout->createPane();
-    layout->setFocusedPane(paneId);
+    int paneId = layout.createPane();
+    layout.setFocusedPane(paneId);
 
     // Build the Terminal with callbacks that capture the pane ID.
     auto cbs = host_.buildTerminalCallbacks(paneId);
@@ -387,11 +399,11 @@ void TabManager::createTab()
     const float tbLine = host_.tabBarLineHeight ? host_.tabBarLineHeight() : 0.0f;
     if (barVisible && tbLine > 0.0f) {
         std::string pos = host_.tabBarPosition ? host_.tabBarPosition() : "top";
-        layout->setTabBar(static_cast<int>(std::ceil(tbLine)), pos);
+        layout.setTabBar(static_cast<int>(std::ceil(tbLine)), pos);
     }
-    layout->computeRects(fbWidth, fbHeight);
+    layout.computeRects(fbWidth, fbHeight);
 
-    const PaneRect& pr = layout->nodeRect(paneId);
+    const PaneRect pr = layout.nodeRect(paneId);
     int cols = (pr.w > 0 && charWidth > 0) ? static_cast<int>((pr.w - padLeft - padRight) / charWidth) : 80;
     int rows = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
 
@@ -403,13 +415,11 @@ void TabManager::createTab()
 
     Terminal* termPtr = terminal.get();
     int masterFD = terminal->masterFD();
-    layout->insertTerminal(paneId, std::move(terminal));
+    layout.insertTerminal(paneId, std::move(terminal));
     addPtyPoll(masterFD, termPtr);
 
-    Uuid subRoot = layout->subtreeRoot();
-    attachLayoutSubtree(std::move(layout), /*activate=*/true);
-    Tab newTab{host_.scriptEngine, subRoot};
-    newTab.setTitle(termPtr->title());
+    attachLayoutSubtree(layout, /*activate=*/true);
+    layout.setTitle(termPtr->title());
 
     int tabIdx = activeTabIdx();
 
@@ -467,7 +477,6 @@ void TabManager::closeTab(int idx)
     // thread may still hold raw Terminal pointers from an in-flight frame;
     // the stamp waits for that frame to end before destructors run.
     Uuid subRoot = tab->subtreeRoot();
-    std::unique_ptr<Layout> extractedLayout;
     std::vector<std::unique_ptr<Terminal>> extractedTerminals;
     std::vector<std::unique_ptr<Terminal>> extractedOverlays;
     uint64_t stamp = 0;
@@ -480,12 +489,32 @@ void TabManager::closeTab(int idx)
                 if (t) extractedTerminals.push_back(std::move(t));
             }
             extractedOverlays = host_.scriptEngine->extractAllTabOverlays(subRoot);
-            extractedLayout   = host_.scriptEngine->extractTabLayout(subRoot);
             host_.scriptEngine->eraseTabIcon(subRoot);
             // Detach the tab's subtree from the root Stack and destroy it.
+            // No Layout object to graveyard — the tree nodes are the only
+            // structural state left, destroyed immediately under the mutex
+            // (render thread reads the shadow copy, not the tree).
             LayoutTree& tree = host_.scriptEngine->layoutTree();
             tree.removeChild(host_.scriptEngine->layoutRootStack(), subRoot);
             tree.destroyNode(subRoot);
+            // Clear focus/zoom if they pointed into the destroyed subtree.
+            host_.scriptEngine->setFocusedTerminalNodeId({});
+            host_.scriptEngine->setZoomedNodeId({});
+
+            // Activate a surviving tab (prefer the one before the closed
+            // index, else the first). Without this the root Stack's
+            // activeChild is nil after removeChild and downstream lookups
+            // (active tab, focused pane) break — tests that split_pane
+            // after a close would silently no-op.
+            int surviving = (idx > 0) ? (idx - 1) : 0;
+            Uuid newActive = tabSubtreeRootAt(surviving);
+            if (!newActive.isNil()) {
+                tree.setActiveChild(host_.scriptEngine->layoutRootStack(), newActive);
+                Tab newTab{host_.scriptEngine, newActive};
+                auto livePanes = newTab.panes();
+                if (!livePanes.empty())
+                    host_.scriptEngine->setFocusedTerminalNodeId(livePanes.front()->nodeId());
+            }
         }
         if (host_.buildRenderFrameState) host_.buildRenderFrameState();
         stamp = host_.completedFrames ? host_.completedFrames() : 0;
@@ -495,7 +524,6 @@ void TabManager::closeTab(int idx)
             host_.graveyard->defer(std::move(t), stamp);
         for (auto& o : extractedOverlays)
             host_.graveyard->defer(std::move(o), stamp);
-        if (extractedLayout) host_.graveyard->defer(std::move(extractedLayout), stamp);
     }
 
     if (host_.updateTabBarVisibility) host_.updateTabBarVisibility();
@@ -597,13 +625,16 @@ void TabManager::spawnTerminalForPane(int paneId, int tabIdx, const std::string&
     }
 
     // Read geometry from the layout tree node (Terminal may not exist yet).
+    // Hold `allTabs` for the whole function so `ownerTab` stays valid —
+    // a naïve `for (Tab t : tabs())` + capturing `&t` would dangle after
+    // the loop because the range-for's loop variable is rebound each
+    // iteration and destroyed when the loop exits.
     PaneRect pr;
-    Layout* ownerLayout = nullptr;
-    for (Tab t : tabs()) {
-        Layout* tl = t.layout();
-        if (!tl) continue;
-        pr = tl->nodeRect(paneId);
-        if (!pr.isEmpty()) { ownerLayout = tl; break; }
+    Tab ownerTab;
+    auto allTabs = tabs();
+    for (Tab& t : allTabs) {
+        pr = t.nodeRect(paneId);
+        if (!pr.isEmpty()) { ownerTab = t; break; }
     }
     int cols = (pr.w > 0 && charWidth > 0)  ? static_cast<int>((pr.w - padLeft - padRight) / charWidth)  : 80;
     int rows = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
@@ -619,8 +650,8 @@ void TabManager::spawnTerminalForPane(int paneId, int tabIdx, const std::string&
     int masterFD = terminal->masterFD();
     Terminal* termPtr = terminal.get();
 
-    if (ownerLayout) {
-        ownerLayout->insertTerminal(paneId, std::move(terminal));
+    if (ownerTab) {
+        ownerTab.insertTerminal(paneId, std::move(terminal));
     }
     addPtyPoll(masterFD, termPtr);
 
@@ -711,23 +742,20 @@ int TabManager::createEmptyTab(Uuid* outNodeId)
 
     const int divW = host_.dividerWidth ? host_.dividerWidth() : 0;
 
-    auto layout = std::make_unique<Layout>(host_.scriptEngine
-                                           ? &host_.scriptEngine->layoutTree()
-                                           : nullptr,
-                                           host_.scriptEngine);
-    layout->setDividerPixels(divW);
+    Tab layout = Tab::newSubtree(host_.scriptEngine);
+    layout.setDividerPixels(divW);
 
     const bool barVisible = host_.tabBarVisible ? host_.tabBarVisible() : false;
     const float tbLine = host_.tabBarLineHeight ? host_.tabBarLineHeight() : 0.0f;
     if (barVisible && tbLine > 0.0f) {
         std::string pos = host_.tabBarPosition ? host_.tabBarPosition() : "top";
-        layout->setTabBar(static_cast<int>(std::ceil(tbLine)), pos);
+        layout.setTabBar(static_cast<int>(std::ceil(tbLine)), pos);
     }
 
-    Uuid subRoot = layout->subtreeRoot();
+    Uuid subRoot = layout.subtreeRoot();
     if (outNodeId) *outNodeId = subRoot;
 
-    attachLayoutSubtree(std::move(layout), /*activate=*/false);
+    attachLayoutSubtree(layout, /*activate=*/false);
     int tabIdx = -1;
     findTabBySubtreeRoot(subRoot, &tabIdx);
 

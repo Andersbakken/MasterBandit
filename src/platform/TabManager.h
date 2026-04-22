@@ -159,17 +159,18 @@ public:
     void addPtyPoll(int fd, Terminal* term);
     void removePtyPoll(int fd);
 
-    // Attach a Layout's subtree to the shared tree's root Stack as a
-    // direct child, optionally also setting it as the Stack's activeChild.
-    // No-op when there is no Script::Engine (test paths). Also inserts
-    // the Layout into Engine::tabLayouts_ under its subtreeRoot key.
-    void attachLayoutSubtree(std::unique_ptr<Layout> layout, bool activate);
+    // Attach a tab's subtree (its subtreeRoot is an orphan Container in the
+    // shared tree) as a direct child of the root Stack, optionally setting
+    // it as the Stack's activeChild. No-op when there is no Script::Engine
+    // (test paths).
+    void attachLayoutSubtree(Tab tab, bool activate);
 
     // --- Tab lifecycle ---
-    // Register a pre-built Layout as the initial tab (activated). Used by
-    // the one-shot createTerminal() path which builds the layout + first
-    // Terminal inline before TabManager is fully wired up.
-    void addInitialTab(std::unique_ptr<Layout> layout);
+    // Register a pre-built Tab (its subtreeRoot already holds Terminals) as
+    // the initial tab, activated. Used by the one-shot createTerminal() path
+    // which builds the subtree + first Terminal inline before TabManager is
+    // fully wired up.
+    void addInitialTab(Tab tab);
 
     void createTab();
     void closeTab(int idx);

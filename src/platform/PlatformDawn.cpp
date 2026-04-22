@@ -927,14 +927,14 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         renderThread_->start();
     }
 
-    // Create a layout and tab for this terminal. Layout's subtree lives in
-    // the shared LayoutTree on the script Engine so JS and native agree on
-    // structure.
-    auto layout = std::make_unique<Layout>(&scriptEngine_.layoutTree(), &scriptEngine_);
-    layout->setDividerPixels(dividerWidth_);
-    int paneId = layout->createPane();
-    layout->setFocusedPane(paneId);
-    layout->computeRects(fbWidth_, fbHeight_);
+    // Create the initial tab subtree (a Container in the shared LayoutTree)
+    // and a Terminal pane. Both JS and native see the same structural state
+    // via the shared tree.
+    Tab layout = Tab::newSubtree(&scriptEngine_);
+    layout.setDividerPixels(dividerWidth_);
+    int paneId = layout.createPane();
+    layout.setFocusedPane(paneId);
+    layout.computeRects(fbWidth_, fbHeight_);
 
     auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
@@ -965,7 +965,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     }
 
     // Compute cols/rows from layout tree node rect
-    const PaneRect pr = layout->nodeRect(paneId);
+    const PaneRect pr = layout.nodeRect(paneId);
     float usableW = std::max(0.0f, static_cast<float>(pr.w > 0 ? pr.w : fbWidth_) - padLeft_ - padRight_);
     float usableH = std::max(0.0f, static_cast<float>(pr.h > 0 ? pr.h : fbHeight_) - padTop_ - padBottom_);
     int cols = (charWidth_ > 0) ? static_cast<int>(usableW / charWidth_) : 80;
@@ -988,18 +988,15 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
 
     // Title will be set by foreground process detection on first PTY read
 
-    layout->insertTerminal(paneId, std::move(terminal));
+    layout.insertTerminal(paneId, std::move(terminal));
 
     if (eventLoop_) {
         tabManager_->addPtyPoll(masterFD, termPtr);
     }
 
-    // Register the Layout with the Engine and attach its subtree as the
-    // initial tab (activeChild of the root Stack). The Tab handle below
-    // reads from this registered state.
-    Uuid subRoot = layout->subtreeRoot();
-    tabManager_->addInitialTab(std::move(layout));
-    Tab{&scriptEngine_, subRoot}.setTitle(termPtr->title());
+    // Attach the subtree under the root Stack as the initial, active tab.
+    tabManager_->addInitialTab(layout);
+    layout.setTitle(termPtr->title());
     tabManager_->updateWindowTitle();
 
     // Store options for future createTab() calls

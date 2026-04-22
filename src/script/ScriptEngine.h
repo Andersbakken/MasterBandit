@@ -19,7 +19,7 @@
 
 struct JSRuntime;
 struct JSContext;
-class Layout;
+class Tab;          // Layout is a typedef for Tab (see Layout.h).
 class LayoutTree;
 class Terminal;
 
@@ -382,17 +382,11 @@ public:
 
     // --- Per-tab ownership (engine-wide) ---
     // Tabs are identified by their subtreeRoot Uuid (a direct child of
-    // layoutRootStack_ in the shared tree). Each tab's Layout, icon, and
-    // overlay stack lives here, keyed by that Uuid. Title lives on the tree
-    // node's `label` — no separate storage needed.
+    // layoutRootStack_ in the shared tree). Icon + overlay stack live here,
+    // keyed by that Uuid. Title lives on the tree node's `label`.
     //
     // Tab.h's handle class calls the accessors below; external callers
     // should go through Tab, not these directly.
-    ::Layout* tabLayout(Uuid subtreeRoot);
-    const ::Layout* tabLayout(Uuid subtreeRoot) const;
-    ::Layout* insertTabLayout(Uuid subtreeRoot, std::unique_ptr<::Layout>);
-    std::unique_ptr<::Layout> extractTabLayout(Uuid subtreeRoot);
-
     const std::string& tabIcon(Uuid subtreeRoot) const;
     void setTabIcon(Uuid subtreeRoot, const std::string& s);
     void eraseTabIcon(Uuid subtreeRoot);
@@ -402,6 +396,37 @@ public:
     void pushTabOverlay(Uuid subtreeRoot, std::unique_ptr<::Terminal>);
     std::unique_ptr<::Terminal> popTabOverlay(Uuid subtreeRoot);
     std::vector<std::unique_ptr<::Terminal>> extractAllTabOverlays(Uuid subtreeRoot);
+
+    // --- paneId ↔ Uuid index (engine-wide) ---
+    // Global (across all tabs) since paneIds come from a monotonic counter
+    // and are never reused. Registered on Tab::allocatePaneNode, removed on
+    // Tab::removeNodeSubtree.
+    int allocatePaneId(); // monotonic
+    void registerPaneSlot(int paneId, Uuid nodeId);
+    void unregisterPaneSlot(int paneId);
+    Uuid uuidForPaneId(int paneId) const;
+    int  paneIdForUuid(Uuid nodeId) const;
+
+    // --- Focus + zoom (engine-wide, single active) ---
+    // One Terminal is "focused" at a time (the active tab's focused pane).
+    // One node is "zoomed" at a time. Both may be nil. Tab switches update
+    // these through setFocusedTerminal / setZoomedNode.
+    Uuid focusedTerminalNodeId() const { return focusedTerminalNodeId_; }
+    void setFocusedTerminalNodeId(Uuid u) { focusedTerminalNodeId_ = u; }
+    Uuid zoomedNodeId() const { return zoomedNodeId_; }
+    void setZoomedNodeId(Uuid u) { zoomedNodeId_ = u; }
+
+    // --- Global layout params (used to be per-Layout) ---
+    int dividerPixels() const { return dividerPixels_; }
+    void setDividerPixels(int px) { dividerPixels_ = px < 0 ? 0 : px; }
+    int tabBarHeight() const { return tabBarHeight_; }
+    const std::string& tabBarPosition() const { return tabBarPosition_; }
+    void setTabBar(int h, const std::string& pos) {
+        tabBarHeight_ = h; tabBarPosition_ = pos;
+    }
+    uint32_t lastFbWidth() const { return lastFbW_; }
+    uint32_t lastFbHeight() const { return lastFbH_; }
+    void setLastFramebuffer(uint32_t w, uint32_t h) { lastFbW_ = w; lastFbH_ = h; }
 
     // --- Terminal ownership (engine-wide) ---
     // The single source of truth for pane Terminal lifetime. Keyed by the
@@ -509,15 +534,29 @@ private:
 
     // Per-tab state. All keyed by the tab's subtreeRoot Uuid (a child of
     // layoutRootStack_ in the shared tree). Declared AFTER terminals_ so
-    // they destruct FIRST — Layouts and overlay Terminals both reference
-    // the engine-wide Terminal map and the shared tree during destruction,
-    // so the tab-level containers have to go first, then terminals_, then
-    // layoutTree_.
+    // they destruct FIRST — overlay Terminals reference the shared tree
+    // during destruction, so the tab-level containers have to go first,
+    // then terminals_, then layoutTree_.
     std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> terminals_;
-    std::unordered_map<Uuid, std::unique_ptr<::Layout>,   UuidHash> tabLayouts_;
     std::unordered_map<Uuid, std::string,                 UuidHash> tabIcons_;
     std::unordered_map<Uuid, std::vector<std::unique_ptr<::Terminal>>,
                                                           UuidHash> tabOverlays_;
+
+    // paneId ↔ Uuid indices. Global — paneIds are globally unique (sGlobalPaneId).
+    std::unordered_map<int, Uuid>           paneIdToUuid_;
+    std::unordered_map<Uuid, int, UuidHash> uuidToPaneId_;
+    int nextPaneId_ = 0;
+
+    // Engine-wide focus / zoom.
+    Uuid focusedTerminalNodeId_;
+    Uuid zoomedNodeId_;
+
+    // Global layout params. Used by Tab's computeRects and divider helpers.
+    int dividerPixels_ = 1;
+    int tabBarHeight_ = 0;
+    std::string tabBarPosition_ = "bottom";
+    uint32_t lastFbW_ = 0;
+    uint32_t lastFbH_ = 0;
 };
 
 } // namespace Script

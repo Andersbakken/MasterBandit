@@ -47,35 +47,38 @@ std::unique_ptr<::Terminal> Engine::extractTerminal(Uuid nodeId)
     return out;
 }
 
-// --- Per-tab Layout map (keyed by tab subtreeRoot) -------------------------
+// --- paneId ↔ Uuid global index --------------------------------------------
 
-::Layout* Engine::tabLayout(Uuid subtreeRoot)
+int Engine::allocatePaneId()
 {
-    auto it = tabLayouts_.find(subtreeRoot);
-    return it == tabLayouts_.end() ? nullptr : it->second.get();
+    return nextPaneId_++;
 }
 
-const ::Layout* Engine::tabLayout(Uuid subtreeRoot) const
+void Engine::registerPaneSlot(int paneId, Uuid nodeId)
 {
-    auto it = tabLayouts_.find(subtreeRoot);
-    return it == tabLayouts_.end() ? nullptr : it->second.get();
+    if (paneId < 0 || nodeId.isNil()) return;
+    paneIdToUuid_[paneId] = nodeId;
+    uuidToPaneId_[nodeId] = paneId;
 }
 
-::Layout* Engine::insertTabLayout(Uuid subtreeRoot, std::unique_ptr<::Layout> l)
+void Engine::unregisterPaneSlot(int paneId)
 {
-    if (!l || subtreeRoot.isNil()) return nullptr;
-    ::Layout* raw = l.get();
-    tabLayouts_[subtreeRoot] = std::move(l);
-    return raw;
+    auto it = paneIdToUuid_.find(paneId);
+    if (it == paneIdToUuid_.end()) return;
+    uuidToPaneId_.erase(it->second);
+    paneIdToUuid_.erase(it);
 }
 
-std::unique_ptr<::Layout> Engine::extractTabLayout(Uuid subtreeRoot)
+Uuid Engine::uuidForPaneId(int paneId) const
 {
-    auto it = tabLayouts_.find(subtreeRoot);
-    if (it == tabLayouts_.end()) return nullptr;
-    std::unique_ptr<::Layout> out = std::move(it->second);
-    tabLayouts_.erase(it);
-    return out;
+    auto it = paneIdToUuid_.find(paneId);
+    return it == paneIdToUuid_.end() ? Uuid{} : it->second;
+}
+
+int Engine::paneIdForUuid(Uuid nodeId) const
+{
+    auto it = uuidToPaneId_.find(nodeId);
+    return it == uuidToPaneId_.end() ? -1 : it->second;
 }
 
 // --- Per-tab icon map ------------------------------------------------------

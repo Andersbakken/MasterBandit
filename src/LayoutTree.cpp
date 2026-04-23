@@ -286,9 +286,12 @@ bool LayoutTree::setTabBarStack(Uuid tabBar, Uuid stack)
         }
     }
     bd->boundStack = stack;
+    markDirty();
     return true;
 }
 
+// setLabel intentionally does NOT markDirty(): labels feed tab-bar text
+// rendering (which has its own dirty flag), never geometry.
 void LayoutTree::setLabel(Uuid id, std::string label)
 {
     if (Node* n = node(id)) n->label = std::move(label);
@@ -301,11 +304,19 @@ ChildSlot* findSlot(std::vector<ChildSlot>* kids, Uuid child)
     for (auto& s : *kids) if (s.id == child) return &s;
     return nullptr;
 }
+// Slot sizing (stretch/min/max/fixedCells) only affects Container layout.
+// Stack layout passes the full rect to activeChild/zoomTarget and ignores
+// every ChildSlot field, so silently accepting these setters on Stack
+// parents is a trap — callers get `true` back and no effect.
+bool parentUsesSlotSizing(const Node* p)
+{
+    return p && std::holds_alternative<ContainerData>(p->data);
+}
 } // namespace
 
 bool LayoutTree::setSlotStretch(Uuid parent, Uuid child, int stretch)
 {
-    Node* p = node(parent); if (!p) return false;
+    Node* p = node(parent); if (!parentUsesSlotSizing(p)) return false;
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->stretch = std::max(0, stretch);
@@ -315,7 +326,7 @@ bool LayoutTree::setSlotStretch(Uuid parent, Uuid child, int stretch)
 
 bool LayoutTree::setSlotMinCells(Uuid parent, Uuid child, int minCells)
 {
-    Node* p = node(parent); if (!p) return false;
+    Node* p = node(parent); if (!parentUsesSlotSizing(p)) return false;
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->minCells = std::max(0, minCells);
@@ -325,7 +336,7 @@ bool LayoutTree::setSlotMinCells(Uuid parent, Uuid child, int minCells)
 
 bool LayoutTree::setSlotMaxCells(Uuid parent, Uuid child, int maxCells)
 {
-    Node* p = node(parent); if (!p) return false;
+    Node* p = node(parent); if (!parentUsesSlotSizing(p)) return false;
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->maxCells = std::max(0, maxCells);
@@ -335,7 +346,7 @@ bool LayoutTree::setSlotMaxCells(Uuid parent, Uuid child, int maxCells)
 
 bool LayoutTree::setSlotFixedCells(Uuid parent, Uuid child, int fixedCells)
 {
-    Node* p = node(parent); if (!p) return false;
+    Node* p = node(parent); if (!parentUsesSlotSizing(p)) return false;
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->fixedCells = std::max(0, fixedCells);
@@ -595,16 +606,23 @@ bool LayoutTree::resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
 {
     if (target.isNil() || ancestorRoot.isNil()) return false;
 
-    // Walk up until we find a Container parent of the requested split dir.
+    // Walk up until we find a Container parent of the requested split dir,
+    // bounded by ancestorRoot — if we'd step past it, refuse rather than
+    // resize siblings in some unrelated subtree.
     Uuid cur = target;
     while (true) {
+        if (cur == ancestorRoot) return false;
         const Node* n = node(cur);
         if (!n || n->parent.isNil()) return false;
         const Node* p = node(n->parent);
         if (!p) return false;
         const auto* cd = std::get_if<ContainerData>(&p->data);
         if (!cd) return false;
-        if (cd->dir != axis) { cur = n->parent; continue; }
+        if (cd->dir != axis) {
+            if (n->parent == ancestorRoot) return false;
+            cur = n->parent;
+            continue;
+        }
 
         size_t idx = 0;
         bool found = false;

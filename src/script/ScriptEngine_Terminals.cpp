@@ -364,9 +364,18 @@ Rect Engine::nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const
 Uuid Engine::paneAtPixelInSubtree(Uuid subtreeRoot, int px, int py) const
 {
     if (subtreeRoot.isNil()) return {};
-    for (::Terminal* t : panesInSubtree(subtreeRoot)) {
+    // Compute rects fresh — matches the semantics of every other spatial
+    // query (nodeRectInSubtree, tabDividersWithOwnerPanes). Reading the
+    // cached Terminal::rect() would be stale for background tabs when
+    // hit-testing is called outside the per-frame cascade.
+    Rect content = resolveSubtreeContentRect(const_cast<Engine&>(*this), subtreeRoot);
+    auto rects = layoutTree_->computeRectsFrom(subtreeRoot, content,
+                                               lastCellW(), lastCellH());
+    for (::Terminal* t : activePanesInSubtree(subtreeRoot)) {
         if (!t) continue;
-        const Rect& r = t->rect();
+        auto it = rects.find(t->nodeId());
+        if (it == rects.end()) continue;
+        const Rect& r = it->second;
         if (r.isEmpty()) continue;
         if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)
             return t->nodeId();

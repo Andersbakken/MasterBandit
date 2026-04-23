@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rect.h"
 #include "Uuid.h"
 
 #include <cstdint>
@@ -9,14 +10,7 @@
 #include <variant>
 #include <vector>
 
-// Pixel rectangle. Kept distinct from PaneRect in Terminal.h so this module
-// doesn't drag in the terminal/emulator headers; a trivial adapter will
-// convert at the integration boundary.
-struct LayoutRect {
-    int x = 0, y = 0, w = 0, h = 0;
-    bool isEmpty() const { return w <= 0 || h <= 0; }
-    bool operator==(const LayoutRect&) const = default;
-};
+using LayoutRect = Rect;
 
 enum class NodeKind : uint8_t {
     Terminal  = 0,
@@ -217,12 +211,20 @@ public:
     // takeDirty() to recompute rects + cascade TIOCSWINSZ exactly once per
     // frame, regardless of how many mutations accumulated. External callers
     // (e.g. framebuffer resize) can manually markDirty().
-    void markDirty() { dirty_ = true; }
+    void markDirty() { dirty_ = true; ++revision_; }
     bool takeDirty() { bool d = dirty_; dirty_ = false; return d; }
     bool isDirty() const { return dirty_; }
+
+    // Monotonic revision counter — bumped on every markDirty. Unlike the
+    // dirty flag, this is never consumed. Callers that cache derived
+    // information (e.g. the root-level computeRects map in Engine) stamp
+    // their cache with the revision at build time and invalidate when it
+    // diverges. Wraps silently at 2^64 mutations; don't hold your breath.
+    uint64_t revision() const { return revision_; }
 
 private:
     std::unordered_map<Uuid, std::unique_ptr<Node>, UuidHash> nodes_;
     Uuid root_;
     bool dirty_ = true; // initial: first frame must compute
+    uint64_t revision_ = 1; // caches track this; starts at 1 so 0 = "no cache"
 };

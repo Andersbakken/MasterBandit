@@ -451,6 +451,36 @@ TEST_CASE("LayoutTree: dividersIn follows only active Stack child")
     CHECK(divs[0].first == a);
 }
 
+TEST_CASE("LayoutTree: revision counter is monotonic across mutations")
+{
+    LayoutTree t;
+    uint64_t r0 = t.revision();
+    // Create ops don't mutate structure, no bump.
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal();
+    CHECK(t.revision() == r0);
+
+    REQUIRE(t.setRoot(root));
+    uint64_t r1 = t.revision();
+    CHECK(r1 > r0);
+
+    REQUIRE(t.appendChild(root, ChildSlot{a}));
+    uint64_t r2 = t.revision();
+    CHECK(r2 > r1);
+
+    // Read-only ops don't bump.
+    (void)t.computeRects({0, 0, 100, 50}, 1, 1);
+    (void)t.contains(root, a);
+    CHECK(t.revision() == r2);
+
+    // Consuming takeDirty() does NOT reset the revision.
+    (void)t.takeDirty();
+    CHECK(t.revision() == r2);
+
+    REQUIRE(t.setSlotStretch(root, a, 3));
+    CHECK(t.revision() > r2);
+}
+
 TEST_CASE("LayoutTree: dirty flag tracks mutations")
 {
     LayoutTree t;

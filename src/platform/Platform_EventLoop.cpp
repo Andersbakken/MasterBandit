@@ -6,9 +6,10 @@
 
 int PlatformDawn::exec()
 {
-    auto tab = activeTab();
-    if (!tab || !tab->valid() || tab->panes().empty()) return 1;
-
+    // No tab-must-exist guard here: the first tab and its initial Terminal
+    // are built by default-ui.js during script loading below. Scripts run
+    // synchronously before the event loop starts, so by the time we enter
+    // the loop the tab is there.
     running_ = true;
 
     // eventLoop_ and window_ were already created in createTerminal().
@@ -41,7 +42,7 @@ int PlatformDawn::exec()
     {
         Script::AppCallbacks scbs;
         scbs.injectPaneData = [this](Script::PaneId paneId, const std::string& data) {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     p->injectData(data.c_str(), data.size());
                     return;
@@ -49,7 +50,7 @@ int PlatformDawn::exec()
             }
         };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     p->writeText(data);
                     return;
@@ -57,7 +58,7 @@ int PlatformDawn::exec()
             }
         };
         scbs.pastePaneText = [this](Script::PaneId paneId, const std::string& data) {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     p->pasteText(data);
                     return;
@@ -65,7 +66,7 @@ int PlatformDawn::exec()
             }
         };
         scbs.paneHasPty = [this](Script::PaneId paneId) -> bool {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     return p->masterFD() >= 0;
                 }
@@ -82,7 +83,7 @@ int PlatformDawn::exec()
             return true;
         };
         scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     bool isFocused = tab.focusedPaneId() == paneId;
                     Script::AppCallbacks::PaneInfo info {
@@ -141,7 +142,7 @@ int PlatformDawn::exec()
         };
         scbs.paneCommands = [this](Script::PaneId paneId, int limit) -> std::vector<Script::CommandInfo> {
             std::vector<Script::CommandInfo> result;
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 Terminal* te = tab.valid() ? tab.pane(paneId) : nullptr;
                 if (!te) continue;
                 const auto& ring = te->commands();
@@ -173,7 +174,7 @@ int PlatformDawn::exec()
             return result;
         };
         scbs.paneSetSelectedCommand = [this](Script::PaneId paneId, std::optional<uint64_t> id) -> bool {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     p->setSelectedCommand(id);
                     return !id.has_value() || p->selectedCommandId() == id;
@@ -183,7 +184,7 @@ int PlatformDawn::exec()
         };
         scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startLineId, int startCol,
                                   uint64_t endLineId, int endCol) -> std::string {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     return p->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
                 }
@@ -191,7 +192,7 @@ int PlatformDawn::exec()
             return {};
         };
         scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     const auto& doc = p->document();
                     if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
@@ -203,8 +204,8 @@ int PlatformDawn::exec()
         };
         scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo> {
             std::vector<Script::AppCallbacks::TabInfo> result;
-            auto allTabs = tabManager_->tabs();
-            int active = tabManager_->activeTabIdx();
+            auto allTabs = tabs();
+            int active = activeTabIdx();
             for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
                 Tab& t = allTabs[i];
                 Script::AppCallbacks::TabInfo ti;
@@ -226,22 +227,22 @@ int PlatformDawn::exec()
         };
         scbs.createEmptyTab = [this]() -> std::pair<int, std::string> {
             Uuid nodeId;
-            int idx = tabManager_->createEmptyTab(&nodeId);
+            int idx = createEmptyTab(&nodeId);
             return {idx, nodeId.isNil() ? std::string{} : nodeId.toString()};
         };
         scbs.activateTab = [this](int idx) {
-            tabManager_->activateTabByIdx(idx);
+            activateTabByIdx(idx);
             tabBarDirty_ = true;
         };
         scbs.focusPane = [this](Uuid nodeId) {
-            return tabManager_->focusPaneById(nodeId);
+            return focusPaneById(nodeId);
         };
         scbs.removeNode = [this](Uuid nodeId) {
-            return tabManager_->removeNode(nodeId);
+            return removeNode(nodeId);
         };
         scbs.killTerminalByNodeId = [this](Uuid nodeId) {
             std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-            return tabManager_->killTerminal(nodeId);
+            return killTerminal(nodeId);
         };
         scbs.quit = [this]() { quit(); };
         scbs.createTerminalInContainer = [this](const std::string& parentNodeId,
@@ -250,7 +251,7 @@ int PlatformDawn::exec()
             Uuid p = Uuid::fromString(parentNodeId);
             if (p.isNil()) return {{}, false};
             Uuid n;
-            bool ok = tabManager_->createTerminalInContainer(p, cwd, &n);
+            bool ok = createTerminalInContainer(p, cwd, &n);
             return {n.isNil() ? std::string{} : n.toString(), ok};
         };
         scbs.splitPaneByNodeId = [this](const std::string& existingNodeId,
@@ -259,10 +260,10 @@ int PlatformDawn::exec()
                 -> Script::AppCallbacks::NewPane {
             Uuid p = Uuid::fromString(existingNodeId);
             if (p.isNil()) return {{}, false};
-            LayoutNode::Dir d = (dir == "vertical" || dir == "v")
-                ? LayoutNode::Dir::Vertical : LayoutNode::Dir::Horizontal;
+            SplitDir d = (dir == "vertical" || dir == "v")
+                ? SplitDir::Vertical : SplitDir::Horizontal;
             Uuid n;
-            bool ok = tabManager_->splitPaneByNodeId(p, d, /*ratio=*/0.5f,
+            bool ok = splitPaneByNodeId(p, d, /*ratio=*/0.5f,
                                                      newIsFirst, &n);
             return {n.isNil() ? std::string{} : n.toString(), ok};
         };
@@ -271,27 +272,27 @@ int PlatformDawn::exec()
             Uuid u = Uuid::fromString(paneNodeId);
             if (u.isNil()) return false;
             int tabIdx = -1;
-            auto tab = tabManager_->findTabForPane(u, &tabIdx);
+            auto tab = findTabForPane(u, &tabIdx);
             if (!tab || !tab->valid()) return false;
-            LayoutNode::Dir axis;
+            SplitDir axis;
             int pixelDelta;
             if (dir == "left") {
-                axis = LayoutNode::Dir::Horizontal;
+                axis = SplitDir::Horizontal;
                 pixelDelta = -static_cast<int>(amount * charWidth_);
             } else if (dir == "right") {
-                axis = LayoutNode::Dir::Horizontal;
+                axis = SplitDir::Horizontal;
                 pixelDelta = static_cast<int>(amount * charWidth_);
             } else if (dir == "up") {
-                axis = LayoutNode::Dir::Vertical;
+                axis = SplitDir::Vertical;
                 pixelDelta = -static_cast<int>(amount * lineHeight_);
             } else if (dir == "down") {
-                axis = LayoutNode::Dir::Vertical;
+                axis = SplitDir::Vertical;
                 pixelDelta = static_cast<int>(amount * lineHeight_);
             } else {
                 return false;
             }
             if (!tab->resizePaneEdge(u, axis, pixelDelta)) return false;
-            tabManager_->resizeAllPanesInTab(*tab);
+            resizeAllPanesInTab(*tab);
             return true;
         };
         scbs.setStackZoom = [this](const std::string& stackNodeIdStr,
@@ -307,13 +308,13 @@ int PlatformDawn::exec()
             if (!tree.setStackZoom(stackId, targetId)) return false;
             // Trigger resize cascade on the enclosing tab so terminals pick
             // up the new rects (shrunk siblings, zoom target expanded).
-            auto tab = tabManager_->findTabForNode(stackId);
-            if (tab && tab->valid()) tabManager_->resizeAllPanesInTab(*tab);
+            auto tab = findTabForNode(stackId);
+            if (tab && tab->valid()) resizeAllPanesInTab(*tab);
             return true;
         };
         scbs.panePopups = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::PopupInfo> {
             std::vector<Script::AppCallbacks::PopupInfo> result;
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     const std::string& focusedId = p->focusedPopupId();
                     for (const auto& popup : p->popups()) {
@@ -329,7 +330,7 @@ int PlatformDawn::exec()
         scbs.createPopup = [this](Script::PaneId paneId, const std::string& popupId,
                                    int x, int y, int w, int h,
                                    std::function<void(const char*, size_t)> onInput) -> bool {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     PlatformCallbacks pcbs;
                     pcbs.onTerminalExited = [](Terminal*) {};
@@ -355,7 +356,7 @@ int PlatformDawn::exec()
             return false;
         };
         scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr;
                 if (!p) continue;
                 bool wasPopupFocused = (p->focusedPopupId() == popupId);
@@ -401,7 +402,7 @@ int PlatformDawn::exec()
         };
         scbs.resizePopup = [this](Script::PaneId paneId, const std::string& popupId,
                                    int x, int y, int w, int h) -> bool {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     if (p->resizePopup(popupId, x, y, w, h)) {
                         p->grid().markAllDirty();
@@ -420,7 +421,7 @@ int PlatformDawn::exec()
         };
         scbs.injectPopupData = [this](Script::PaneId paneId, const std::string& popupId,
                                        const std::string& data) {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
                     if (Terminal* popup = p->findPopup(popupId)) {
                         popup->injectData(data.c_str(), data.size());
@@ -431,7 +432,7 @@ int PlatformDawn::exec()
             }
         };
         scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string {
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* te = tab.valid() ? tab.pane(paneId) : nullptr) {
                     const auto& doc = te->document();
                     int abs = doc.firstAbsOfLine(lineId);
@@ -461,7 +462,7 @@ int PlatformDawn::exec()
             -> std::vector<Script::AppCallbacks::LinkInfo>
         {
             std::vector<Script::AppCallbacks::LinkInfo> result;
-            for (Tab tab : tabManager_->tabs()) {
+            for (Tab tab : tabs()) {
                 if (Terminal* te = tab.valid() ? tab.pane(paneId) : nullptr) {
                     const auto& doc = te->document();
                     int startAbs = doc.firstAbsOfLine(startLineId);
@@ -594,7 +595,7 @@ int PlatformDawn::exec()
                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 // Advance progress animations
                 bool hasAnim = false;
-                for (Tab t : tabManager_->tabs()) {
+                for (Tab t : tabs()) {
                     if (!t.valid()) continue;
                     for (Terminal* panePtr : t.panes()) {
                         if (panePtr->progressState() == 3) { hasAnim = true; break; }
@@ -617,7 +618,7 @@ int PlatformDawn::exec()
             // TerminalEmulator::mutex() inside injectData. Structural
             // callbacks (terminalExited) defer their work; we drain them
             // under renderThread_->mutex() right after.
-            for (auto& [fd, term] : tabManager_->ptyPolls())
+            for (auto& [fd, term] : ptyPolls())
                 term->flushReadBuffer();
 
             // Drain deferred callbacks.
@@ -642,7 +643,7 @@ int PlatformDawn::exec()
             // Flush any pending TIOCSWINSZ on the main thread so the render
             // thread never mutates terminal state.
             if (!window_ || !window_->inLiveResize()) {
-                for (auto& [fd, term] : tabManager_->ptyPolls())
+                for (auto& [fd, term] : ptyPolls())
                     term->flushPendingResize();
             }
 
@@ -674,7 +675,7 @@ int PlatformDawn::exec()
 
     // Start cursor blink timer from current options (default 500ms).
     if (animScheduler_) {
-        const auto& cur = tabManager_->terminalOptions().cursor;
+        const auto& cur = terminalOptions().cursor;
         animScheduler_->applyBlinkConfig(cur.blink_rate, cur.blink_fps);
     }
 
@@ -684,8 +685,8 @@ int PlatformDawn::exec()
 
     // Cleanup
     std::vector<int> fds;
-    for (auto& [fd, _] : tabManager_->ptyPolls()) fds.push_back(fd);
-    for (int fd : fds) tabManager_->removePtyPoll(fd);
+    for (auto& [fd, _] : ptyPolls()) fds.push_back(fd);
+    for (int fd : fds) removePtyPoll(fd);
 
     if (configLoader_) configLoader_->stop();
     if (animScheduler_) animScheduler_->stopAllTimers();

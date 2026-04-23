@@ -48,50 +48,6 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     renderEngine_ = std::make_unique<RenderEngine>();
     inputController_ = std::make_unique<InputController>();
     actionRouter_ = std::make_unique<ActionRouter>();
-    tabManager_ = std::make_unique<TabManager>();
-    {
-        TabManager::Host th;
-        th.platformMutex = &renderThread_->mutex();
-        th.scriptEngine = &scriptEngine_;
-        th.inputController = inputController_.get();
-        th.renderEngine = renderEngine_.get();
-        th.pending = &renderThread_->pending();
-        th.eventLoop = [this]() -> EventLoop* { return eventLoop_.get(); };
-        th.window = [this]() -> Window* { return window_.get(); };
-        th.headless = [this]() -> bool { return isHeadless(); };
-        th.tabBarVisible = [this]() -> bool { return tabBarVisible(); };
-        th.updateTabBarVisibility = [this]() { updateTabBarVisibility(); };
-        th.markTabBarDirty = [this]() { tabBarDirty_ = true; };
-        th.setNeedsRedraw = [this]() { setNeedsRedraw(); };
-        th.quit = [this]() { quit(); };
-        th.charWidth  = [this]() -> float { return charWidth_; };
-        th.lineHeight = [this]() -> float { return lineHeight_; };
-        th.padLeft    = [this]() -> float { return padLeft_; };
-        th.padTop     = [this]() -> float { return padTop_; };
-        th.padRight   = [this]() -> float { return padRight_; };
-        th.padBottom  = [this]() -> float { return padBottom_; };
-        th.fbWidth    = [this]() -> uint32_t { return fbWidth_; };
-        th.fbHeight   = [this]() -> uint32_t { return fbHeight_; };
-        th.dividerWidth     = [this]() -> int { return dividerWidth_; };
-        th.tabBarLineHeight = [this]() -> float { return tabBarLineHeight_; };
-        th.tabBarPosition   = [this]() -> std::string { return tabBarConfig_.position; };
-        th.dividerR = [this]() -> float { return dividerR_; };
-        th.dividerG = [this]() -> float { return dividerG_; };
-        th.dividerB = [this]() -> float { return dividerB_; };
-        th.dividerA = [this]() -> float { return dividerA_; };
-        th.queueTerminalExit = [this](Terminal* t) {
-            renderThread_->enqueueTerminalExit(t);
-        };
-        th.buildTerminalCallbacks = [this](Uuid nodeId) {
-            return buildTerminalCallbacks(nodeId);
-        };
-        th.graveyard = &graveyard_;
-        th.completedFrames = [this]() -> uint64_t {
-            return renderThread_->completedFrames();
-        };
-        th.buildRenderFrameState = [this]() { buildRenderFrameState(); };
-        tabManager_->setHost(std::move(th));
-    }
     {
         ActionRouter::Host rh;
         rh.executeAction = [this](const Action::Any& a) { executeAction(a); };
@@ -107,7 +63,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         ih.activeTerm = [this]() -> TerminalEmulator* {
             return static_cast<TerminalEmulator*>(activeTerm());
         };
-        ih.activeTabIdx = [this]() -> int { return tabManager_->activeTabIdx(); };
+        ih.activeTabIdx = [this]() -> int { return activeTabIdx(); };
         ih.dispatchAction = [this](const Action::Any& a) { dispatchAction(a); };
         ih.setNeedsRedraw = [this]() { setNeedsRedraw(); };
         ih.resetBlink = [this]() {
@@ -127,10 +83,10 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
             return tabBarColRanges_;
         };
         ih.notifyPaneFocusChange = [this](Tab t, Uuid prev, Uuid next) {
-            tabManager_->notifyPaneFocusChange(t, prev, next);
+            notifyPaneFocusChange(t, prev, next);
         };
         ih.updateTabTitleFromFocusedPane = [this](int tabIdx) {
-            tabManager_->updateTabTitleFromFocusedPane(tabIdx);
+            updateTabTitleFromFocusedPane(tabIdx);
         };
         ih.scriptEngine = &scriptEngine_;
         ih.eventLoop = [this]() -> EventLoop* { return eventLoop_.get(); };
@@ -213,9 +169,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
             renderEngine_->renderFrame();
         };
         rtHost.buildRenderFrameState = [this]() { buildRenderFrameState(); };
-        rtHost.onTerminalExit = [this](Terminal* t) {
-            if (tabManager_) tabManager_->terminalExited(t);
-        };
+        rtHost.onTerminalExit = [this](Terminal* t) { terminalExited(t); };
         renderThread_->setHost(std::move(rtHost));
     }
 
@@ -227,8 +181,8 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
 void PlatformDawn::runLayoutIfDirty()
 {
     if (!scriptEngine_.layoutTree().takeDirty()) return;
-    for (Tab& t : tabManager_->tabs()) {
-        if (t.valid()) tabManager_->resizeAllPanesInTab(t);
+    for (Tab& t : tabs()) {
+        if (t.valid()) resizeAllPanesInTab(t);
     }
 }
 
@@ -238,7 +192,7 @@ void PlatformDawn::buildRenderFrameState()
     // tab switches, etc.) run the resize cascade now. Single gate per frame:
     // the tree's dirty flag is cleared on consume, so subsequent calls are
     // no-ops until the next mutation. Called under the render mutex which
-    // matches the locking order tabManager_->resizeAllPanesInTab expects.
+    // matches the locking order resizeAllPanesInTab expects.
     runLayoutIfDirty();
 
     // Called under the render-thread mutex. Rebuilds the shadow copy from
@@ -249,7 +203,7 @@ void PlatformDawn::buildRenderFrameState()
     tabBarDirty_   = false;
     dividersDirty_ = false;
     auto tab = activeTab();
-    renderThread_->renderState().activeTabIdx = tabManager_->activeTabIdx();
+    renderThread_->renderState().activeTabIdx = activeTabIdx();
     renderThread_->renderState().fbWidth  = fbWidth_;
     renderThread_->renderState().fbHeight = fbHeight_;
     renderThread_->renderState().charWidth  = charWidth_;
@@ -343,7 +297,7 @@ void PlatformDawn::buildRenderFrameState()
 
     // Tab bar data (all tabs)
     renderThread_->renderState().tabs.clear();
-    auto allTabs = tabManager_->tabs();
+    auto allTabs = tabs();
     for (Tab& t : allTabs) {
         RenderTabInfo rti;
         rti.title = t.title();
@@ -542,8 +496,8 @@ PlatformDawn::~PlatformDawn()
 
     // Detach window callbacks before tearing down components they reference.
     // Cocoa's -[NSWindow _close] fires windowDidResignKey synchronously,
-    // which routes through onFocus → activeTab() → tabManager_; with the
-    // callbacks cleared those spurious events become no-ops.
+    // which routes through onFocus → activeTab(); with the callbacks
+    // cleared those spurious events become no-ops.
     if (window_) {
         window_->onKey = nullptr;
         window_->onChar = nullptr;
@@ -561,12 +515,9 @@ PlatformDawn::~PlatformDawn()
     // destructors on the main thread with no concurrent access.
     graveyard_.drainAll();
 
-    // Destroy tabs (and their layouts/panes/terminals) before GPU resources.
-    // Layouts and pane Terminals live on Script::Engine now; tear down
-    // TabManager first (no per-tab state held here anymore) and Engine's
-    // maps destruct in member order (tab overlays → tab layouts → Terminals
-    // → layoutTree).
-    tabManager_.reset();
+    // Terminals live on Script::Engine now; its member-destruction order
+    // (tab overlays → tab layouts → Terminals → layoutTree) runs when
+    // scriptEngine_ goes out of scope below, after GPU resources.
 
     if (renderEngine_) {
         // Destroy the Vulkan surface and device, but intentionally leave the
@@ -907,167 +858,65 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         renderThread_->start();
     }
 
-    // Create the initial tab subtree (a Container in the shared LayoutTree)
-    // and a Terminal pane. Both JS and native see the same structural state
-    // via the shared tree.
-    Tab layout = Tab::newSubtree(&scriptEngine_);
-    layout.setDividerPixels(dividerWidth_);
-    Uuid paneId = layout.createPane();
-    layout.setFocusedPane(paneId);
+    // --- Apply options: padding, colors, bindings, dividers, tab bar ---
+    // (The first tab + first Terminal are NOT built here. default-ui.js
+    // constructs the tree in exec(): root Container with TabBar + tabs
+    // Stack, first tab Stack, content Container, then calls
+    // mb.layout.createTerminal to spawn the initial Terminal. This matches
+    // the rule "native knows only nodes; JS places them".)
+    setTerminalOptions(options);
+
+    padLeft_   = options.padding.left   * contentScaleX_;
+    padTop_    = options.padding.top    * contentScaleX_;
+    padRight_  = options.padding.right  * contentScaleX_;
+    padBottom_ = options.padding.bottom * contentScaleX_;
+
+    const auto& cs = options.colors;
+    defaultFgColor_ = color::parseHexRGBA(cs.foreground, 0xFFDDDDDD);
+    defaultBgColor_ = color::parseHexRGBA(cs.background, 0x00000000);
+
     {
-        const int cellW = std::max(1, static_cast<int>(std::round(charWidth_)));
-        const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
-        layout.computeRects(fbWidth_, fbHeight_, cellW, cellH);
+        std::vector<Binding> all = defaultBindings();
+        auto userBindings = parseBindings(options.keybindings);
+        all.insert(all.end(), userBindings.begin(), userBindings.end());
+        inputController_->setKeyBindings(std::move(all));
     }
-
-    auto cbs = buildTerminalCallbacks(paneId);
-    PlatformCallbacks pcbs;
-    pcbs.onTerminalExited = [this](Terminal* t) {
-        // Deferred: terminalExited fires from inside Terminal::readFromFD
-        // (during parse, with Terminal mutex held). Running the structural
-        // mutation immediately would require acquiring renderThread_->mutex() while
-        // holding Terminal mutex — the opposite of the render thread's
-        // order and a deadlock. Queue and drain after parse.
-        renderThread_->enqueueTerminalExit(t);
-    };
-    pcbs.quit = [this]() { quit(); };
-    auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
-
-    terminal->applyColorScheme(options.colors);
-    terminal->applyCursorConfig(options.cursor);
-    if (!terminal->init(options)) {
-        spdlog::error("Failed to init terminal");
-        return;
-    }
-
-    // Parse padding early so it's available for grid calculation
-    if (padTop_ == 0 && padLeft_ == 0 && padRight_ == 0 && padBottom_ == 0) {
-        padLeft_   = options.padding.left   * contentScaleX_;
-        padTop_    = options.padding.top    * contentScaleX_;
-        padRight_  = options.padding.right  * contentScaleX_;
-        padBottom_ = options.padding.bottom * contentScaleX_;
-    }
-
-    // Compute cols/rows from layout tree node rect
-    const PaneRect pr = layout.nodeRect(paneId);
-    float usableW = std::max(0.0f, static_cast<float>(pr.w > 0 ? pr.w : fbWidth_) - padLeft_ - padRight_);
-    float usableH = std::max(0.0f, static_cast<float>(pr.h > 0 ? pr.h : fbHeight_) - padTop_ - padBottom_);
-    int cols = (charWidth_ > 0) ? static_cast<int>(usableW / charWidth_) : 80;
-    int rows = (lineHeight_ > 0) ? static_cast<int>(usableH / lineHeight_) : 24;
-    if (cols < 1) cols = 80;
-    if (rows < 1) rows = 24;
-
-    // Init per-pane render state
     {
-        std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-        auto& rs = renderEngine_->paneRenderPrivateMap()[paneId];
-        rs.resolvedCells.resize(static_cast<size_t>(cols) * rows);
+        std::vector<MouseBinding> all = defaultMouseBindings();
+        auto userMouseBindings = parseMouseBindings(options.mousebindings);
+        all.insert(all.end(), userMouseBindings.begin(), userMouseBindings.end());
+        inputController_->setMouseBindings(std::move(all));
     }
 
-    terminal->resize(cols, rows);
-    terminal->flushPendingResize(); // initial size — send immediately
-
-    Terminal* termPtr = terminal.get();
-    int masterFD = terminal->masterFD();
-
-    // Title will be set by foreground process detection on first PTY read
-
-    layout.insertTerminal(paneId, std::move(terminal));
-
-    if (eventLoop_) {
-        tabManager_->addPtyPoll(masterFD, termPtr);
-    }
-
-    // Attach the subtree under the root Stack as the initial, active tab.
-    tabManager_->addInitialTab(layout);
-    layout.setTitle(termPtr->title());
-    tabManager_->updateWindowTitle();
-
-    // Store options for future createTab() calls
-    if (tabManager_->size() == 1) {
-        tabManager_->setTerminalOptions(options);
-
-        // Parse padding (scale by content scale)
-        padLeft_   = options.padding.left   * contentScaleX_;
-        padTop_    = options.padding.top    * contentScaleX_;
-        padRight_  = options.padding.right  * contentScaleX_;
-        padBottom_ = options.padding.bottom * contentScaleX_;
-
-        // Parse color scheme
-        const auto& cs = options.colors;
-        defaultFgColor_ = color::parseHexRGBA(cs.foreground, 0xFFDDDDDD);
-        defaultBgColor_ = color::parseHexRGBA(cs.background, 0x00000000);
-    }
-
-    // Initialize bindings and tab bar (only once, on first terminal creation)
-    if (tabManager_->size() == 1) {
-        {
-            std::vector<Binding> all = defaultBindings();
-            auto userBindings = parseBindings(options.keybindings);
-            all.insert(all.end(), userBindings.begin(), userBindings.end());
-            inputController_->setKeyBindings(std::move(all));
-        }
-        {
-            std::vector<MouseBinding> all = defaultMouseBindings();
-            auto userMouseBindings = parseMouseBindings(options.mousebindings);
-            all.insert(all.end(), userMouseBindings.begin(), userMouseBindings.end());
-            inputController_->setMouseBindings(std::move(all));
-        }
-
-        // Divider color
-        dividerWidth_ = std::max(0, options.dividerWidth);
-        const std::string& dc = options.dividerColor;
-        if (dc.size() == 7 && dc[0] == '#') {
-            auto h = [&](int i) -> float {
-                return std::stoul(dc.substr(i, 2), nullptr, 16) / 255.0f;
-            };
-            dividerR_ = h(1); dividerG_ = h(3); dividerB_ = h(5); dividerA_ = 1.0f;
-        }
-
-        // Pane tints
-        auto parseTint = [](const std::string& col, float alpha, float out[4]) {
-            float r = 0.0f, g = 0.0f, b = 0.0f;
-            if (col.size() == 7 && col[0] == '#') {
-                r = std::stoul(col.substr(1, 2), nullptr, 16) / 255.0f;
-                g = std::stoul(col.substr(3, 2), nullptr, 16) / 255.0f;
-                b = std::stoul(col.substr(5, 2), nullptr, 16) / 255.0f;
-            }
-            // Tint is a multiplicative blend: dim by blending toward tint color.
-            // result = src * (tint * alpha + (1 - alpha))
-            out[0] = r * alpha + (1.0f - alpha);
-            out[1] = g * alpha + (1.0f - alpha);
-            out[2] = b * alpha + (1.0f - alpha);
-            out[3] = 1.0f;
+    dividerWidth_ = std::max(0, options.dividerWidth);
+    const std::string& dc = options.dividerColor;
+    if (dc.size() == 7 && dc[0] == '#') {
+        auto h = [&](int i) -> float {
+            return std::stoul(dc.substr(i, 2), nullptr, 16) / 255.0f;
         };
-        parseTint(options.activePaneTint,   options.activePaneTintAlpha,   activeTint_);
-        parseTint(options.inactivePaneTint, options.inactivePaneTintAlpha, inactiveTint_);
-        if (!options.replacementChar.empty())
-            replacementChar_ = options.replacementChar;
-
-        dividersDirty_ = true;
-        tabBarConfig_ = options.tabBar;
-        initTabBar(options.tabBar);
-        // Recompute rects with tab bar height applied (also apply divider width
-        // now that dividerWidth_ has been set from options above).
-        auto tabsVec = tabManager_->tabs();
-        if (!tabsVec.empty()) {
-            Tab& lastTab = tabsVec.back();
-            if (lastTab.valid()) {
-                lastTab.setDividerPixels(dividerWidth_);
-                const int cellW = std::max(1, static_cast<int>(std::round(charWidth_)));
-                const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
-                lastTab.computeRects(fbWidth_, fbHeight_, cellW, cellH);
-                if (Terminal* p = lastTab.focusedPane()) {
-                    p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
-                    int c = p->width(), r = p->height();
-                    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                    auto& rs2 = renderEngine_->paneRenderPrivateMap()[p->id()];
-                    rs2.resolvedCells.resize(static_cast<size_t>(c > 0 ? c : 1) * (r > 0 ? r : 1));
-                }
-            }
-        }
+        dividerR_ = h(1); dividerG_ = h(3); dividerB_ = h(5); dividerA_ = 1.0f;
     }
 
+    auto parseTint = [](const std::string& col, float alpha, float out[4]) {
+        float r = 0.0f, g = 0.0f, b = 0.0f;
+        if (col.size() == 7 && col[0] == '#') {
+            r = std::stoul(col.substr(1, 2), nullptr, 16) / 255.0f;
+            g = std::stoul(col.substr(3, 2), nullptr, 16) / 255.0f;
+            b = std::stoul(col.substr(5, 2), nullptr, 16) / 255.0f;
+        }
+        out[0] = r * alpha + (1.0f - alpha);
+        out[1] = g * alpha + (1.0f - alpha);
+        out[2] = b * alpha + (1.0f - alpha);
+        out[3] = 1.0f;
+    };
+    parseTint(options.activePaneTint,   options.activePaneTintAlpha,   activeTint_);
+    parseTint(options.inactivePaneTint, options.inactivePaneTintAlpha, inactiveTint_);
+    if (!options.replacementChar.empty())
+        replacementChar_ = options.replacementChar;
+
+    dividersDirty_ = true;
+    tabBarConfig_ = options.tabBar;
+    initTabBar(options.tabBar);
 }
 
 void PlatformDawn::invalidateAllRowCaches()
@@ -1076,7 +925,7 @@ void PlatformDawn::invalidateAllRowCaches()
     // The render-private maps are only touched by the render thread, so we
     // communicate via the pending mutations flag.
     renderThread_->pending().invalidateAllRowCaches = true;
-    for (Tab tab : tabManager_->tabs()) {
+    for (Tab tab : tabs()) {
         if (tab.valid()) {
             for (Terminal* panePtr : tab.panes())
                 renderThread_->pending().dirtyPanes.insert(panePtr->id());
@@ -1151,7 +1000,7 @@ void PlatformDawn::applyFontChange(const Config& config)
     if (!nerdData.empty())
         textSystem_.addFallbackFont(fontName_, nerdData);
 
-    tabManager_->terminalOptions().font = config.font;
+    terminalOptions().font = config.font;
 
     // Recalculate metrics
     const FontData* font = textSystem_.getFont(fontName_);
@@ -1240,7 +1089,7 @@ void PlatformDawn::applyConfig(const Config& config)
     if (window_) window_->setAltSendsEsc(config.alt_sends_esc);
 
     // Colors
-    TerminalOptions& opts = tabManager_->terminalOptions();
+    TerminalOptions& opts = terminalOptions();
     opts.colors = config.colors;
     defaultFgColor_ = color::parseHexRGBA(config.colors.foreground, 0xFFDDDDDD);
     defaultBgColor_ = color::parseHexRGBA(config.colors.background, 0x00000000);
@@ -1278,7 +1127,7 @@ void PlatformDawn::applyConfig(const Config& config)
     }
     commandDimFactor_ = std::clamp(config.command_dim_factor, 0.0f, 1.0f);
     commandNavigationWrap_ = config.command_navigation_wrap;
-    for (Tab t : tabManager_->tabs()) {
+    for (Tab t : tabs()) {
         if (t.valid()) t.setDividerPixels(dividerWidth_);
     }
     opts.dividerWidth = config.divider_width;
@@ -1347,7 +1196,7 @@ void PlatformDawn::applyConfig(const Config& config)
         applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
     } else {
         // Color-only change: no layout recompute needed, just refresh divider geometry.
-        if (auto active = activeTab()) tabManager_->refreshDividers(*active);
+        if (auto active = activeTab()) refreshDividers(*active);
     }
 
     tabBarDirty_ = true;
@@ -1443,8 +1292,8 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     dividersDirty_ = true;
 
     // Clear divider buffers for all tabs — geometry is now stale
-    auto allTabs = tabManager_->tabs();
-    for (Tab& t : allTabs) tabManager_->clearDividers(t);
+    auto allTabs = tabs();
+    for (Tab& t : allTabs) clearDividers(t);
 
     // Fb change isn't a tree mutation but still invalidates all rects. Mark
     // dirty so runLayoutIfDirty (invoked from buildRenderFrameState next
@@ -1458,7 +1307,7 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     renderThread_->pending().releaseAllPaneTextures = true;
     renderThread_->pending().releaseTabBarTexture = true;
     tabBarDirty_ = true;
-    if (auto active = activeTab()) tabManager_->refreshDividers(*active);
+    if (auto active = activeTab()) refreshDividers(*active);
     setNeedsRedraw();
 }
 

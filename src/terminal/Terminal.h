@@ -1,4 +1,5 @@
 #pragma once
+#include "Rect.h"
 #include "TerminalEmulator.h"
 #include "TerminalOptions.h"
 #include "Uuid.h"
@@ -15,11 +16,7 @@
         ret = (op);        \
     } while (ret == -1 && errno == EINTR)
 
-// Pixel rectangle in the window coordinate space.
-struct PaneRect {
-    int x = 0, y = 0, w = 0, h = 0;
-    bool isEmpty() const { return w == 0 || h == 0; }
-};
+using PaneRect = Rect;
 
 class Terminal; // forward declare for PlatformCallbacks
 
@@ -76,7 +73,7 @@ public:
     bool hasResizePending() const { return mResizePending.load(std::memory_order_acquire); }
     void flushPendingResize();
 
-    // --- Pixel rect (set by Layout::computeRects for panes) ---
+    // --- Pixel rect (set by Tab::computeRects for panes) ---
     void setRect(const PaneRect& r) { mRect = r; }
     const PaneRect& rect() const { return mRect; }
 

@@ -90,8 +90,8 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 Uuid prev = focusedId;
                 Uuid nextId = panes[next]->nodeId();
                 tab->setFocusedPane(nextId);
-                tabManager_->notifyPaneFocusChange(*tab, prev, nextId);
-                tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
+                notifyPaneFocusChange(*tab, prev, nextId);
+                updateTabTitleFromFocusedPane(activeTabIdx());
                 setNeedsRedraw();
                 return;
             }
@@ -114,8 +114,8 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (!targetId.isNil() && targetId != fp->nodeId()) {
                 Uuid prev = tab->focusedPaneId();
                 tab->setFocusedPane(targetId);
-                tabManager_->notifyPaneFocusChange(*tab, prev, targetId);
-                tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
+                notifyPaneFocusChange(*tab, prev, targetId);
+                updateTabTitleFromFocusedPane(activeTabIdx());
                 setNeedsRedraw();
             }
         },
@@ -274,7 +274,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             }
             ::close(tmpFd);
 
-            TerminalOptions opts = tabManager_->terminalOptions();
+            TerminalOptions opts = terminalOptions();
             opts.command = "less -+F -R " + std::string(tmpPath) + "; rm -f " + std::string(tmpPath);
             opts.scrollbackLines = 0;
 
@@ -332,17 +332,17 @@ void PlatformDawn::executeAction(const Action::Any& action)
             tree.appendChild(tabStack, ChildSlot{pagerNode, /*stretch=*/1});
             tree.setActiveChild(tabStack, pagerNode);
 
-            tabManager_->addPtyPoll(pagerFD, pagerPtr);
+            addPtyPoll(pagerFD, pagerPtr);
             // Move focus to the pager so input routes to it.
             scriptEngine_.setFocusedTerminalNodeId(pagerNode);
-            scriptEngine_.notifyPaneCreated(tabManager_->activeTabIdx(), pagerNode);
+            scriptEngine_.notifyPaneCreated(activeTabIdx(), pagerNode);
 
             // The pager's Terminal has no rect yet — computeRects populates
             // it from the tree shape (now that the node is attached and
             // activeChild points at it). Without this the pager renders at
             // {0,0,0,0}, the old pane's framebuffer stays frozen on screen,
             // and mouse hit-testing against the pager fails.
-            tabManager_->resizeAllPanesInTab(*tab);
+            resizeAllPanesInTab(*tab);
 
             if (inputController_) inputController_->refreshPointerShape();
             setNeedsRedraw();

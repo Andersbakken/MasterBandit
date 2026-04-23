@@ -1,8 +1,7 @@
 #include "InputController.h"
 
-#include "Layout.h"
-#include "ScriptEngine.h"
 #include "Tab.h"
+#include "ScriptEngine.h"
 #include "Terminal.h"
 #include "Utf8.h"
 #include "Utils.h"

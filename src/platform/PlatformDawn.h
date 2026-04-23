@@ -11,8 +11,8 @@
 #include "InputController.h"
 #include "InputTypes.h"
 #include "ClickDetector.h"
-#include "TabManager.h"
 #include "Terminal.h"
+#include "TerminalOptions.h"
 #include "TerminalSnapshot.h"
 #include "Renderer.h"
 #include "RenderEngine.h"
@@ -22,7 +22,6 @@
 #include "text.h"
 #include "DebugIPC.h"
 #include "FontFallback.h"
-#include "Layout.h"
 #include "Tab.h"
 #include "Action.h"
 #include "Bindings.h"
@@ -72,6 +71,10 @@ void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback)
 void platformSendNotification(const std::string& title, const std::string& body);
 void platformOpenURL(const std::string& url);
 std::string platformProcessCWD(pid_t pid);
+
+// LayoutNode/Dir and Tab handle live in Tab.h (legacy scaffold); include
+// to get SplitDir used by split API.
+#include "Tab.h"
 
 class PlatformDawn {
 public:
@@ -156,13 +159,72 @@ private:
     std::unique_ptr<DebugIPC> debugIPC_;
     std::shared_ptr<DebugIPCSink> debugSink_;
 
-    // Script engine. Declared BEFORE tabManager_ so it outlives the Tabs/
-    // Layouts during destruction — Layouts hold pointers into
-    // scriptEngine_.layoutTree() and destroyNode their subtrees on teardown.
+    // Script engine. Declared early so it outlives the PTY terminals and
+    // layout tree during destruction — Terminals are owned by Engine and
+    // hold Uuid handles into Engine::layoutTree().
     Script::Engine scriptEngine_;
 
-    // Tabs — owned by TabManager.
-    std::unique_ptr<TabManager> tabManager_;
+    // --- Tab/pane primitives (formerly TabManager) ----------------------
+    // Tab identity lives in the shared LayoutTree: each tab is a direct
+    // child of Script::Engine::layoutRootStack_, identified by its
+    // subtreeRoot Uuid. tabs() returns a transient vector of handles built
+    // from the tree's root-Stack children.
+    std::vector<Tab> tabs() const;
+    int activeTabIdx() const;
+    void setActiveTabIdx(int idx);
+    size_t tabCount() const;
+
+    std::optional<Tab> activeTab() const;
+    std::optional<Tab> tabAt(int idx) const;
+
+    Terminal* activeTerm();
+
+    void notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn);
+
+    TerminalOptions& terminalOptions() { return terminalOptions_; }
+    const TerminalOptions& terminalOptions() const { return terminalOptions_; }
+    void setTerminalOptions(TerminalOptions opts) { terminalOptions_ = std::move(opts); }
+
+    std::unordered_map<int, Terminal*>& ptyPolls() { return ptyPolls_; }
+    void addPtyPoll(int fd, Terminal* term);
+    void removePtyPoll(int fd);
+
+    void attachLayoutSubtree(Tab tab, bool activate);
+
+    int createEmptyTab(Uuid* outNodeId = nullptr);
+    void activateTabByIdx(int idx);
+
+    bool createTerminalInContainer(Uuid parentContainerNodeId,
+                                   const std::string& cwd,
+                                   Uuid* outNodeId);
+    bool splitPaneByNodeId(Uuid existingPaneNodeId, SplitDir dir,
+                           float ratio, bool newIsFirst,
+                           Uuid* outNodeId);
+    bool removeNode(Uuid nodeId);
+    bool focusPaneById(Uuid nodeId);
+
+    std::optional<Tab> findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx = nullptr) const;
+    std::optional<Tab> findTabForNode(Uuid nodeId, int* outTabIdx = nullptr) const;
+    std::optional<Tab> findTabForPane(Uuid nodeId, int* outTabIdx = nullptr) const;
+
+    void terminalExited(Terminal* terminal);
+    bool killTerminal(Uuid nodeId);
+
+    void spawnTerminalForPane(Uuid nodeId, int tabIdx, const std::string& cwd = {});
+    void resizeAllPanesInTab(Tab tab);
+    void refreshDividers(Tab tab);
+    void clearDividers(Tab tab);
+    void releaseTabTextures(Tab tab);
+
+    void updateTabTitleFromFocusedPane(int tabIdx);
+    void updateWindowTitle();
+    void notifyPaneFocusChange(Tab tab, Uuid prevId, Uuid newId);
+
+private:
+    Uuid tabSubtreeRootAt(int idx) const;
+
+    std::unordered_map<int, Terminal*> ptyPolls_;
+    TerminalOptions                    terminalOptions_;
 
     void updateTabBarVisibility() {
         if (tabBarConfig_.style != "auto") return;
@@ -187,8 +249,8 @@ private:
             // Refresh tab titles from foreground process for tabs that
             // have no OSC title — the callback may have fired before the
             // tab bar existed or before the tab was added to tabs.
-            auto tabs = tabManager_->tabs();
-            for (Tab& tab : tabs) {
+            auto tabList = tabs();
+            for (Tab& tab : tabList) {
                 Terminal* fp = tab.valid() ? tab.focusedPane() : nullptr;
                 if (fp && fp->title().empty() && tab.title().empty()) {
                     std::string proc = fp->foregroundProcess();
@@ -201,17 +263,13 @@ private:
 
     bool tabBarVisible() const {
         if (tabBarConfig_.style == "hidden") return false;
-        if (tabBarConfig_.style == "auto") return tabManager_->size() > 1;
+        if (tabBarConfig_.style == "auto") return tabCount() > 1;
         return true;
     }
 
-    std::optional<Tab> activeTab() { return tabManager_->activeTab(); }
-
-    void notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn) {
-        tabManager_->notifyAllTerminals(fn);
+    static std::string popupStateKey(Uuid nodeId, const std::string& popupId) {
+        return nodeId.toString() + "/" + popupId;
     }
-
-    Terminal* activeTerm() { return tabManager_->activeTerm(); }
 
     // Shared rendering state
     TextSystem textSystem_;
@@ -230,10 +288,6 @@ private:
     uint32_t defaultFgColor_ = 0xFFDDDDDD;
     uint32_t defaultBgColor_ = 0x00000000;
     bool              windowHasFocus_ = true;
-
-    static std::string popupStateKey(Uuid nodeId, const std::string& popupId) {
-        return nodeId.toString() + "/" + popupId;
-    }
 
     // Owns the render worker thread, coarse mutex, pending mutations,
     // renderState shadow copy, and the deferred main/exit queues.

@@ -2,26 +2,18 @@
 // structural mutations) AND the startup tree-shape construction. Mandatory
 // — mb refuses to start without it.
 //
-// At load time, the tree looks like this (set up by native bootstrap):
+// At load time, the tree is empty except for Engine::layoutRootStack_, the
+// Stack that holds each tab as a direct child. We build:
 //
-//   Stack (tabsStack, tree root)
-//   └── Stack (tab 1 subtreeRoot)
-//       └── Container (content)
-//           └── Terminal (first pane)
+//   Container (newRoot, vertical, tree root)
+//   ├── TabBar (fixedCells=1)
+//   └── Stack (layoutRootStack, stretch=1)       // the tabs Stack
+//       └── Stack (tab 1 subtreeRoot, activeChild)
+//           └── Container (content, activeChild)
+//               └── Terminal (first pane, spawned by mb.layout.createTerminal)
 //
-// We wrap that in the target shape:
-//
-//   Container (newRoot, vertical)
-//   ├── TabBar
-//   └── Stack (tabsStack)
-//       └── Stack (tab 1)
-//           └── Container (content)
-//               └── Terminal
-//
-// The TabBar node is structurally present (bound to the tabs Stack via
-// setTabBarStack) — its actual on-screen rendering still comes from the
-// RenderFrameState.tabs shadow path until step 10 teaches the renderer to
-// walk the tree. This keeps step 9's blast radius contained to tree shape.
+// mb.layout.createTerminal spawns the native PTY + initial resize; we focus
+// the resulting Terminal so keyboard input lands there immediately.
 
 (() => {
     const tabsStack = mb.layout.getRoot();
@@ -29,17 +21,28 @@
         console.error('default-ui: no root Stack at load time — aborting tree construction');
         return;
     }
+    // Wrap the tabs Stack in a vertical root Container with a TabBar sibling.
     const newRoot = mb.layout.createContainer('vertical');
     const tabBar  = mb.layout.createTabBar();
-    // setRoot detaches the old root as a parentless node; we then re-attach
-    // it as the second child of the new root Container.
     mb.layout.setRoot(newRoot);
-    // TabBar slot is one cell high (approximately one text line). Native
-    // code (initTabBar / updateTabBarVisibility) can override fixedCells
-    // to toggle visibility. The tabs Stack stretches to fill the rest.
     mb.layout.appendChild(newRoot, tabBar, {fixedCells: 1});
     mb.layout.appendChild(newRoot, tabsStack, {stretch: 1});
     mb.layout.setTabBarStack(tabBar, tabsStack);
+
+    // Build the first tab: Stack → content Container. appendChild
+    // auto-sets the Stack's activeChild to its first child, so both
+    // `tabsStack.activeChild = firstTab` and
+    // `firstTab.activeChild = content` fall out naturally.
+    const firstTab = mb.layout.createStack();
+    const content  = mb.layout.createContainer('horizontal');
+    mb.layout.appendChild(firstTab, content, {stretch: 1});
+    mb.layout.appendChild(tabsStack, firstTab, {stretch: 1});
+
+    // Spawn the first Terminal. Native handles PTY + initial resize; the
+    // returned nodeId is the Terminal's tree Uuid. Focus it so keyboard
+    // input lands there on the first frame.
+    const term = mb.layout.createTerminal(content);
+    if (term && term.nodeId) mb.layout.focusPane(term.nodeId);
 })();
 
 mb.actions.register('newTab', () => {

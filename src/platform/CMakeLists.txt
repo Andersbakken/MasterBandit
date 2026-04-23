@@ -10,7 +10,6 @@ set(PLATFORM_SOURCES
     InputController.cpp
     RenderEngine.cpp
     RenderThread.cpp
-    TabManager.cpp
     Renderer.cpp
     TexturePool.cpp
     ComputeStatePool.cpp

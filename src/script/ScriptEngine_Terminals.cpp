@@ -1,13 +1,14 @@
 // Engine's per-pane / per-tab ownership accessors, split out of
-// ScriptEngine.cpp so Layout.cpp + Tab.cpp (which mb-tests links directly
-// without pulling in QuickJS / libwebsockets) can resolve the symbols.
+// ScriptEngine.cpp so code paths that link against Engine without pulling
+// in QuickJS / libwebsockets (e.g. mb-tests) can resolve the symbols.
 // Both mb and mb-tests link this TU.
 
 #include "ScriptEngine.h"
-#include "Layout.h"
 #include "LayoutTree.h"
 #include "Terminal.h"
 
+#include <algorithm>
+#include <cmath>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -108,6 +109,27 @@ bool Engine::removeNodeSubtree(Uuid scopeRoot, Uuid nodeId)
     return true;
 }
 
+const std::unordered_map<Uuid, LayoutRect, UuidHash>&
+Engine::rootRects(uint32_t fbW, uint32_t fbH, int cellW, int cellH)
+{
+    const uint64_t fbKey    = (static_cast<uint64_t>(fbW) << 32) | fbH;
+    const uint64_t treeRev  = layoutTree_->revision();
+    const bool keyMatches = rootRectsKeyRevision_ == treeRev &&
+                            rootRectsKeyFb_       == fbKey   &&
+                            rootRectsKeyCellW_    == cellW   &&
+                            rootRectsKeyCellH_    == cellH;
+    if (!keyMatches) {
+        rootRectsCache_ = layoutTree_->computeRects(
+            LayoutRect{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)},
+            cellW, cellH);
+        rootRectsKeyFb_       = fbKey;
+        rootRectsKeyCellW_    = cellW;
+        rootRectsKeyCellH_    = cellH;
+        rootRectsKeyRevision_ = treeRev;
+    }
+    return rootRectsCache_;
+}
+
 Uuid Engine::primaryTabBarNode() const
 {
     // Find the first TabBar node in the tree by BFS from root. Typical
@@ -186,6 +208,260 @@ void Engine::setTabIcon(Uuid subtreeRoot, const std::string& s)
 void Engine::eraseTabIcon(Uuid subtreeRoot)
 {
     tabIcons_.erase(subtreeRoot);
+}
+
+// ---------------------------------------------------------------------------
+// Per-tab helpers (scoped to tab subtreeRoot)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Resolve the pixel rect this tab's subtree should lay out into. The tab bar
+// is a sibling of the tabs Stack in a top-level Container, so the tabs
+// Stack's allocation already excludes the bar. Lookup preference:
+//   1) If `subtreeRoot` is the active tab, it's in the root-level rect map.
+//   2) Otherwise use the parent's rect (the tabs Stack) — all tabs share it.
+//   3) Fallback: the full window (test harness, detached subtree).
+LayoutRect resolveSubtreeContentRect(Engine& eng, Uuid subtreeRoot)
+{
+    const ::LayoutTree& tree = eng.layoutTree();
+    uint32_t fbW = eng.lastFbWidth();
+    uint32_t fbH = eng.lastFbHeight();
+    LayoutRect fallback{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)};
+    if (fbW == 0 || fbH == 0 || tree.root().isNil()) return fallback;
+
+    const auto& rects = eng.rootRects(fbW, fbH, eng.lastCellW(), eng.lastCellH());
+    auto it = rects.find(subtreeRoot);
+    if (it != rects.end()) return it->second;
+    const Node* myNode = tree.node(subtreeRoot);
+    if (myNode && !myNode->parent.isNil()) {
+        auto parentIt = rects.find(myNode->parent);
+        if (parentIt != rects.end()) return parentIt->second;
+    }
+    return fallback;
+}
+
+const std::string& kEmptyStr() { static const std::string s; return s; }
+
+} // namespace
+
+const std::string& Engine::tabTitle(Uuid subtreeRoot) const
+{
+    if (subtreeRoot.isNil()) return kEmptyStr();
+    const Node* n = layoutTree_->node(subtreeRoot);
+    return n ? n->label : kEmptyStr();
+}
+
+void Engine::setTabTitle(Uuid subtreeRoot, const std::string& s)
+{
+    if (subtreeRoot.isNil()) return;
+    layoutTree_->setLabel(subtreeRoot, s);
+}
+
+Uuid Engine::createTabSubtree()
+{
+    // The tab is a Stack whose activeChild is the "content" Container
+    // (holding the pane Terminals). Additional siblings may be added later
+    // — e.g. by Action::ShowScrollback — and swapped in via setActiveChild
+    // to produce what used to be the "overlay" UX.
+    ::LayoutTree& tree = *layoutTree_;
+    Uuid stack   = tree.createStack();
+    Uuid content = tree.createContainer(SplitDir::Horizontal);
+    tree.appendChild(stack, ChildSlot{content, /*stretch=*/1});
+    tree.setActiveChild(stack, content);
+    return stack;
+}
+
+Uuid Engine::createPaneInTab(Uuid subtreeRoot)
+{
+    if (subtreeRoot.isNil()) return {};
+    ::LayoutTree& tree = *layoutTree_;
+
+    // subtreeRoot is a Stack; its activeChild (first child) is the content
+    // Container. Append the Terminal into the content Container so the
+    // Stack can grow additional siblings (pager overlays) later.
+    Node* rootNode = tree.node(subtreeRoot);
+    if (!rootNode) return {};
+    auto* stackData = std::get_if<StackData>(&rootNode->data);
+    if (!stackData || stackData->children.empty()) {
+        return tree.createTerminal();
+    }
+    Uuid contentRoot = stackData->children.front().id;
+    Node* contentNode = tree.node(contentRoot);
+    if (!contentNode || !std::holds_alternative<ContainerData>(contentNode->data)) {
+        return tree.createTerminal();
+    }
+    Uuid u = tree.createTerminal();
+    tree.appendChild(contentRoot, ChildSlot{u, /*stretch=*/1});
+    setFocusedTerminalNodeId(u);
+    return u;
+}
+
+Uuid Engine::allocatePaneNode()
+{
+    return layoutTree_->createTerminal();
+}
+
+bool Engine::splitByNodeId(Uuid existingChildNodeId, SplitDir dir,
+                           Uuid newChildNodeId, bool newIsFirst)
+{
+    return !layoutTree_->splitByWrapping(existingChildNodeId, dir,
+                                         newChildNodeId, newIsFirst).isNil();
+}
+
+::Terminal* Engine::paneInSubtree(Uuid subtreeRoot, Uuid nodeId)
+{
+    if (subtreeRoot.isNil() || nodeId.isNil()) return nullptr;
+    return layoutTree_->contains(subtreeRoot, nodeId) ? terminal(nodeId) : nullptr;
+}
+
+bool Engine::hasPaneSlotInSubtree(Uuid subtreeRoot, Uuid nodeId) const
+{
+    if (subtreeRoot.isNil() || nodeId.isNil()) return false;
+    return layoutTree_->contains(subtreeRoot, nodeId);
+}
+
+std::vector<::Terminal*> Engine::panesInSubtree(Uuid subtreeRoot) const
+{
+    std::vector<::Terminal*> out;
+    if (subtreeRoot.isNil()) return out;
+    std::vector<Uuid> leaves;
+    layoutTree_->terminalLeavesIn(subtreeRoot, /*onlyActiveStack=*/false, leaves);
+    out.reserve(leaves.size());
+    for (Uuid u : leaves) {
+        auto it = terminals_.find(u);
+        if (it != terminals_.end() && it->second) out.push_back(it->second.get());
+    }
+    return out;
+}
+
+std::vector<::Terminal*> Engine::activePanesInSubtree(Uuid subtreeRoot) const
+{
+    std::vector<::Terminal*> out;
+    if (subtreeRoot.isNil()) return out;
+    std::vector<Uuid> leaves;
+    layoutTree_->terminalLeavesIn(subtreeRoot, /*onlyActiveStack=*/true, leaves);
+    out.reserve(leaves.size());
+    for (Uuid u : leaves) {
+        auto it = terminals_.find(u);
+        if (it != terminals_.end() && it->second) out.push_back(it->second.get());
+    }
+    return out;
+}
+
+LayoutRect Engine::nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const
+{
+    if (subtreeRoot.isNil() || nodeId.isNil()) return {};
+    LayoutRect content = resolveSubtreeContentRect(const_cast<Engine&>(*this), subtreeRoot);
+    if (content.isEmpty()) return {};
+    auto rects = layoutTree_->computeRectsFrom(subtreeRoot, content,
+                                               lastCellW(), lastCellH());
+    auto it = rects.find(nodeId);
+    if (it == rects.end()) return {};
+    return it->second;
+}
+
+Uuid Engine::paneAtPixelInSubtree(Uuid subtreeRoot, int px, int py) const
+{
+    if (subtreeRoot.isNil()) return {};
+    for (::Terminal* t : panesInSubtree(subtreeRoot)) {
+        if (!t) continue;
+        const LayoutRect& r = t->rect();
+        if (r.isEmpty()) continue;
+        if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)
+            return t->nodeId();
+    }
+    return {};
+}
+
+Uuid Engine::focusedPaneInSubtree(Uuid subtreeRoot) const
+{
+    if (subtreeRoot.isNil()) return {};
+    Uuid u = focusedTerminalNodeId_;
+    if (u.isNil()) return {};
+    return layoutTree_->contains(subtreeRoot, u) ? u : Uuid{};
+}
+
+::Terminal* Engine::focusedTerminalInSubtree(Uuid subtreeRoot)
+{
+    Uuid u = focusedPaneInSubtree(subtreeRoot);
+    return u.isNil() ? nullptr : paneInSubtree(subtreeRoot, u);
+}
+
+LayoutRect Engine::tabBarRect(uint32_t windowW, uint32_t windowH)
+{
+    Uuid bar = primaryTabBarNode();
+    if (bar.isNil()) return {};
+    const auto& rects = rootRects(windowW, windowH, lastCellW(), lastCellH());
+    auto it = rects.find(bar);
+    if (it == rects.end()) return {};
+    return it->second;
+}
+
+void Engine::computeTabRects(Uuid subtreeRoot, uint32_t windowW, uint32_t windowH,
+                             int cellW, int cellH)
+{
+    if (subtreeRoot.isNil()) return;
+    setLastFramebuffer(windowW, windowH);
+    setLastCellMetrics(cellW, cellH);
+    LayoutRect content = resolveSubtreeContentRect(*this, subtreeRoot);
+
+    // Zoom is tree-native (StackData::zoomTarget); non-zoomed Terminals
+    // fall through to the rect-map miss below and get {0,0,0,0}.
+    auto rects = layoutTree_->computeRectsFrom(subtreeRoot, content,
+                                               lastCellW(), lastCellH());
+
+    for (::Terminal* t : panesInSubtree(subtreeRoot)) {
+        if (!t) continue;
+        auto it = rects.find(t->nodeId());
+        if (it == rects.end()) { t->setRect({0, 0, 0, 0}); continue; }
+        t->setRect(it->second);
+    }
+}
+
+std::vector<LayoutRect>
+Engine::tabDividerRects(Uuid subtreeRoot, int dividerPx) const
+{
+    auto pairs = tabDividersWithOwnerPanes(subtreeRoot, dividerPx);
+    std::vector<LayoutRect> out;
+    out.reserve(pairs.size());
+    for (auto& p : pairs) out.push_back(p.second);
+    return out;
+}
+
+std::vector<std::pair<Uuid, LayoutRect>>
+Engine::tabDividersWithOwnerPanes(Uuid subtreeRoot, int dividerPx) const
+{
+    if (subtreeRoot.isNil() || dividerPx <= 0) return {};
+    auto liveTerminals = activePanesInSubtree(subtreeRoot);
+    if (liveTerminals.size() < 2) return {};
+
+    LayoutRect content = resolveSubtreeContentRect(const_cast<Engine&>(*this),
+                                                    subtreeRoot);
+    const ::LayoutTree& tree = *layoutTree_;
+    auto rects = tree.computeRectsFrom(subtreeRoot, content,
+                                        lastCellW(), lastCellH());
+
+    std::vector<std::pair<Uuid, LayoutRect>> raw;
+    tree.dividersIn(subtreeRoot, dividerPx, rects, raw);
+
+    std::vector<std::pair<Uuid, LayoutRect>> out;
+    out.reserve(raw.size());
+    for (const auto& [firstNode, r] : raw) {
+        Uuid leafId = tree.leftmostTerminalIn(firstNode);
+        out.push_back({leafId, r});
+    }
+    return out;
+}
+
+bool Engine::resizeTabPaneEdge(Uuid subtreeRoot, Uuid nodeId,
+                               SplitDir axis, int pixelDelta)
+{
+    if (subtreeRoot.isNil() || nodeId.isNil()) return false;
+    LayoutRect content = resolveSubtreeContentRect(*this, subtreeRoot);
+    return layoutTree_->resizeEdgeAlongAxis(
+        nodeId, axis, pixelDelta, subtreeRoot,
+        content, lastCellW(), lastCellH());
 }
 
 } // namespace Script

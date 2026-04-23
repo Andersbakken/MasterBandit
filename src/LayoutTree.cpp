@@ -82,7 +82,7 @@ bool LayoutTree::setRoot(Uuid id)
         return false;
     }
     root_ = id;
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -157,7 +157,7 @@ bool LayoutTree::appendChild(Uuid parent, ChildSlot slot)
     if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild.isNil()) {
         sd->activeChild = slot.id;
     }
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -179,7 +179,7 @@ bool LayoutTree::removeChild(Uuid parent, Uuid child)
     if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild == child) {
         sd->activeChild = kids->empty() ? Uuid{} : kids->front().id;
     }
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -211,7 +211,7 @@ bool LayoutTree::replaceChild(Uuid parent, Uuid oldChild, ChildSlot newSlot)
     if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild == oldChild) {
         sd->activeChild = newSlot.id;
     }
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -226,7 +226,7 @@ bool LayoutTree::setStackZoom(Uuid stack, Uuid target)
     }
     if (target.isNil()) {
         sd->zoomTarget = {};
-        dirty_ = true;
+        markDirty();
         return true;
     }
     if (target == stack) {
@@ -239,7 +239,7 @@ bool LayoutTree::setStackZoom(Uuid stack, Uuid target)
         return false;
     }
     sd->zoomTarget = target;
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -260,7 +260,7 @@ bool LayoutTree::setActiveChild(Uuid stack, Uuid child)
         return false;
     }
     sd->activeChild = child;
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -309,7 +309,7 @@ bool LayoutTree::setSlotStretch(Uuid parent, Uuid child, int stretch)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->stretch = std::max(0, stretch);
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -319,7 +319,7 @@ bool LayoutTree::setSlotMinCells(Uuid parent, Uuid child, int minCells)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->minCells = std::max(0, minCells);
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -329,7 +329,7 @@ bool LayoutTree::setSlotMaxCells(Uuid parent, Uuid child, int maxCells)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->maxCells = std::max(0, maxCells);
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -339,7 +339,7 @@ bool LayoutTree::setSlotFixedCells(Uuid parent, Uuid child, int fixedCells)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->fixedCells = std::max(0, fixedCells);
-    dirty_ = true;
+    markDirty();
     return true;
 }
 
@@ -374,7 +374,7 @@ void LayoutTree::destroyNode(Uuid id)
             if (sd->zoomTarget == id) sd->zoomTarget = {};
         }
     }
-    dirty_ = true;
+    markDirty();
     // Any TabBar referencing this node becomes dangling; that's intentional —
     // computeRects ignores TabBar.boundStack entirely, so render simply sees
     // an empty bar. Sweeping is the renderer's job on its next frame.
@@ -637,7 +637,7 @@ bool LayoutTree::resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
         cdMut->children[neighborIdx].stretch = newB;
         cdMut->children[idx].fixedCells      = 0;
         cdMut->children[neighborIdx].fixedCells = 0;
-        dirty_ = true;
+        markDirty();
         return true;
     }
 }

@@ -685,9 +685,11 @@ static JSValue jsPaneSelectCommand(JSContext* ctx, JSValueConst this_val, int ar
     return JS_UNDEFINED;
 }
 
-// Forward declarations — defined after Popup class
+// Forward declarations — defined after Popup / Embedded classes
 static JSValue jsPaneCreatePopup(JSContext*, JSValueConst, int, JSValueConst*);
 static JSValue jsPaneGetPopups(JSContext*, JSValueConst);
+static JSValue jsPaneCreateEmbedded(JSContext*, JSValueConst, int, JSValueConst*);
+static JSValue jsPaneGetEmbeddeds(JSContext*, JSValueConst);
 
 static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsPaneAddEventListener),
@@ -700,6 +702,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("linkAt", 2, jsPaneLinkAt),
     JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
+    JS_CFUNC_DEF("createEmbeddedTerminal", 1, jsPaneCreateEmbedded),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("cols", jsPaneGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("rows", jsPaneGetProp, nullptr, 2),
@@ -710,6 +713,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("focusedPopupId", jsPaneGetProp, nullptr, 7),
     JS_CGETSET_MAGIC_DEF("foregroundProcess", jsPaneGetProp, nullptr, 8),
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
+    JS_CGETSET_DEF("embeddeds", jsPaneGetEmbeddeds, nullptr),
     JS_CGETSET_MAGIC_DEF("selectedCommand", jsPaneGetProp, nullptr, 9),
     JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
     JS_CGETSET_MAGIC_DEF("selection",    jsPaneGetProp, nullptr, 11),
@@ -992,6 +996,245 @@ static JSValue jsPaneGetPopups(JSContext* ctx, JSValueConst this_val)
     JSValue arr = JS_NewArray(ctx);
     for (uint32_t i = 0; i < popups.size(); ++i)
         JS_SetPropertyUint32(ctx, arr, i, jsPopupNew(ctx, pane->id, popups[i].id));
+    return arr;
+}
+
+// ============================================================================
+// EmbeddedTerminal JS class — wraps (paneId, lineId)
+// ============================================================================
+
+static JSClassID jsEmbeddedClassId;
+
+struct JsEmbeddedData {
+    PaneId paneId;
+    uint64_t lineId;
+    bool alive;
+};
+
+static void jsEmbeddedFinalize(JSRuntime*, JSValue val)
+{
+    delete static_cast<JsEmbeddedData*>(JS_GetOpaque(val, jsEmbeddedClassId));
+}
+
+static JSClassDef jsEmbeddedClassDef = { "EmbeddedTerminal", jsEmbeddedFinalize };
+
+static JSValue jsEmbeddedNew(JSContext* ctx, PaneId paneId, uint64_t lineId)
+{
+    JSValue obj = JS_NewObjectClass(ctx, jsEmbeddedClassId);
+    JS_SetOpaque(obj, new JsEmbeddedData{paneId, lineId, true});
+    return obj;
+}
+
+static JsEmbeddedData* jsEmbeddedGet(JSContext*, JSValueConst val)
+{
+    return static_cast<JsEmbeddedData*>(JS_GetOpaque(val, jsEmbeddedClassId));
+}
+
+// embedded.inject(data)
+static JSValue jsEmbeddedInject(JSContext* ctx, JSValueConst this_val,
+                                  int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
+    REQUIRE_PERM(ctx, IoInject);
+    auto* em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    size_t len;
+    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) return JS_EXCEPTION;
+    engineFromCtx(ctx)->callbacks().injectEmbeddedData(em->paneId, em->lineId,
+                                                       std::string(str, len));
+    JS_FreeCString(ctx, str);
+    return JS_UNDEFINED;
+}
+
+// embedded.resize(rows)
+static JSValue jsEmbeddedResize(JSContext* ctx, JSValueConst this_val,
+                                  int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_ThrowTypeError(ctx, "resize requires (rows)");
+    REQUIRE_PERM(ctx, UiPopupCreate);
+    auto* em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    int32_t rows = 0;
+    if (JS_ToInt32(ctx, &rows, argv[0]) < 0) return JS_EXCEPTION;
+    bool ok = engineFromCtx(ctx)->callbacks().resizeEmbedded(em->paneId, em->lineId, rows);
+    return JS_NewBool(ctx, ok);
+}
+
+// embedded.close()
+static JSValue jsEmbeddedClose(JSContext* ctx, JSValueConst this_val,
+                                int, JSValueConst*)
+{
+    REQUIRE_PERM(ctx, UiPopupDestroy);
+    auto* em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+    // Capture regKey before destroy invalidates the embedded.
+    std::string regKey = em->paneId.toString() + ":" + std::to_string(em->lineId);
+    eng->callbacks().destroyEmbedded(em->paneId, em->lineId);
+    em->alive = false;
+    // Fire destroyed event to listeners, then clear registry entry so a
+    // future embedded at the same lineId (unlikely — ids are monotonic)
+    // registers fresh.
+    eng->deliverEmbeddedDestroyed(regKey);
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue registry = JS_GetPropertyStr(ctx, global, "__embedded_registry");
+    if (!JS_IsUndefined(registry))
+        JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_UNDEFINED);
+    JS_FreeValue(ctx, registry);
+    JS_FreeValue(ctx, global);
+    return JS_UNDEFINED;
+}
+
+// embedded.addEventListener(event, fn)
+// Supported events: "input" (keystrokes when focused), "destroyed" (eviction or close).
+static JSValue jsEmbeddedAddEventListener(JSContext* ctx, JSValueConst this_val,
+                                            int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
+    auto* em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
+
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+
+    std::string prop;
+    if (strcmp(event, "input") == 0) {
+        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
+        prop = "__input_filters";
+    } else {
+        prop = std::string("__evt_") + event;
+    }
+    JS_FreeCString(ctx, event);
+
+    std::string regKey = em->paneId.toString() + ":" + std::to_string(em->lineId);
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue registry = JS_GetPropertyStr(ctx, global, "__embedded_registry");
+    if (JS_IsUndefined(registry)) {
+        registry = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, global, "__embedded_registry", JS_DupValue(ctx, registry));
+    }
+    JSValue existing = JS_GetPropertyStr(ctx, registry, regKey.c_str());
+    if (JS_IsUndefined(existing))
+        JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_DupValue(ctx, this_val));
+    JS_FreeValue(ctx, existing);
+    JS_FreeValue(ctx, registry);
+    JS_FreeValue(ctx, global);
+
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    if (JS_IsUndefined(arr)) {
+        arr = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, this_val, prop.c_str(), JS_DupValue(ctx, arr));
+    }
+    JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
+    JS_Call(ctx, pushFn, arr, 1, &argv[1]);
+    JS_FreeValue(ctx, pushFn);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsEmbeddedRemoveEventListener(JSContext* ctx, JSValueConst this_val,
+                                               int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
+    auto* em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+    std::string prop;
+    if (strcmp(event, "input") == 0) prop = "__input_filters";
+    else                              prop = std::string("__evt_") + event;
+    JS_FreeCString(ctx, event);
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    removeFromJSArray(ctx, arr, argv[1]);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
+// embedded.<property> getter
+static JSValue jsEmbeddedGetProp(JSContext* ctx, JSValueConst this_val, int magic)
+{
+    auto* em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) return JS_UNDEFINED;
+    Engine* eng = engineFromCtx(ctx);
+    switch (magic) {
+    case 0: { std::string s = em->paneId.toString(); return JS_NewStringLen(ctx, s.data(), s.size()); }
+    case 1: return JS_NewInt64(ctx, static_cast<int64_t>(em->lineId));
+    case 2: case 3: case 4: {
+        // rows / cols / focused — look up from paneEmbeddeds
+        auto embeds = eng->callbacks().paneEmbeddeds(em->paneId);
+        for (const auto& e : embeds) {
+            if (e.lineId != em->lineId) continue;
+            if (magic == 2) return JS_NewInt32(ctx, e.rows);
+            if (magic == 3) return JS_NewInt32(ctx, 0); // cols (parent's cols) — caller can query pane
+            if (magic == 4) return JS_NewBool(ctx, e.focused);
+        }
+        return JS_UNDEFINED;
+    }
+    }
+    return JS_UNDEFINED;
+}
+
+static const JSCFunctionListEntry jsEmbeddedProto[] = {
+    JS_CFUNC_DEF("addEventListener", 2, jsEmbeddedAddEventListener),
+    JS_CFUNC_DEF("removeEventListener", 2, jsEmbeddedRemoveEventListener),
+    JS_CFUNC_DEF("inject", 1, jsEmbeddedInject),
+    JS_CFUNC_DEF("resize", 1, jsEmbeddedResize),
+    JS_CFUNC_DEF("close", 0, jsEmbeddedClose),
+    JS_CGETSET_MAGIC_DEF("paneId", jsEmbeddedGetProp, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("id",     jsEmbeddedGetProp, nullptr, 1),
+    JS_CGETSET_MAGIC_DEF("rows",   jsEmbeddedGetProp, nullptr, 2),
+    JS_CGETSET_MAGIC_DEF("cols",   jsEmbeddedGetProp, nullptr, 3),
+    JS_CGETSET_MAGIC_DEF("focused", jsEmbeddedGetProp, nullptr, 4),
+};
+
+// pane.createEmbeddedTerminal({rows}) -> EmbeddedTerminal | null
+static JSValue jsPaneCreateEmbedded(JSContext* ctx, JSValueConst this_val,
+                                      int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsObject(argv[0]))
+        return JS_ThrowTypeError(ctx, "createEmbeddedTerminal requires ({rows})");
+    REQUIRE_PERM(ctx, UiPopupCreate);
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+
+    int32_t rows = 0;
+    JSValue v = JS_GetPropertyStr(ctx, argv[0], "rows");
+    JS_ToInt32(ctx, &rows, v); JS_FreeValue(ctx, v);
+    if (rows <= 0) return JS_ThrowTypeError(ctx, "createEmbeddedTerminal: 'rows' must be > 0");
+
+    Uuid paneId = pane->id;
+    uint64_t lineId = eng->callbacks().createEmbedded(paneId, rows,
+        [eng, paneId](const char* data, size_t len) {
+            // Input routing: placeholder — the regKey is computed at delivery
+            // time from the focused embedded's lineId. For now we deliver to
+            // whichever embedded is focused on this pane (native focus state
+            // decides which lineId's listeners to fire).
+            (void)eng; (void)paneId; (void)data; (void)len;
+        });
+
+    if (lineId == 0)
+        return JS_NULL;
+
+    auto* inst = instanceFromCtx(ctx);
+    if (inst) inst->ownedEmbeddeds.push_back({paneId, lineId});
+
+    return jsEmbeddedNew(ctx, paneId, lineId);
+}
+
+// pane.embeddeds — array of EmbeddedTerminal objects for this pane
+static JSValue jsPaneGetEmbeddeds(JSContext* ctx, JSValueConst this_val)
+{
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_NewArray(ctx);
+    Engine* eng = engineFromCtx(ctx);
+    auto embeds = eng->callbacks().paneEmbeddeds(pane->id);
+    JSValue arr = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < embeds.size(); ++i)
+        JS_SetPropertyUint32(ctx, arr, i, jsEmbeddedNew(ctx, pane->id, embeds[i].lineId));
     return arr;
 }
 
@@ -1808,6 +2051,9 @@ Engine::Engine()
     JS_NewClassID(rt_, &jsPopupClassId);
     JS_NewClass(rt_, jsPopupClassId, &jsPopupClassDef);
 
+    JS_NewClassID(rt_, &jsEmbeddedClassId);
+    JS_NewClass(rt_, jsEmbeddedClassId, &jsEmbeddedClassDef);
+
     JS_NewClassID(rt_, &jsCommandClassId);
     JS_NewClass(rt_, jsCommandClassId, &jsCommandClassDef);
 }
@@ -1869,6 +2115,11 @@ JSContext* Engine::createContext()
     JS_SetPropertyFunctionList(ctx, popupProto,
         jsPopupProto, sizeof(jsPopupProto) / sizeof(jsPopupProto[0]));
     JS_SetClassProto(ctx, jsPopupClassId, popupProto);
+
+    JSValue embeddedProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, embeddedProto,
+        jsEmbeddedProto, sizeof(jsEmbeddedProto) / sizeof(jsEmbeddedProto[0]));
+    JS_SetClassProto(ctx, jsEmbeddedClassId, embeddedProto);
 
     JSValue commandProto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, commandProto, jsCommandProto, jsCommandProtoCount);
@@ -2060,6 +2311,9 @@ void Engine::unload(InstanceId id)
         // 2. Destroy owned popups
         for (auto& ref : it->ownedPopups)
             callbacks_.destroyPopup(ref.pane, ref.popupId);
+        // 2b. Destroy owned embedded terminals
+        for (auto& ref : it->ownedEmbeddeds)
+            if (callbacks_.destroyEmbedded) callbacks_.destroyEmbedded(ref.pane, ref.lineId);
 
         // 3. Decrement filter counts for this instance's registrations
         for (auto pane : it->paneOutputFilters) {
@@ -3003,6 +3257,78 @@ void Engine::deliverPopupInput(const std::string& regKey, const char* data, size
                 JS_FreeValue(inst.ctx, arg);
             }
             JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::deliverEmbeddedInput(const std::string& regKey, const char* data, size_t len)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__embedded_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
+        if (!JS_IsUndefined(obj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__input_filters");
+            if (!JS_IsUndefined(arr)) {
+                JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+                int32_t arrLen = 0;
+                JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                JS_FreeValue(inst.ctx, lenVal);
+
+                JSValue arg = JS_NewStringLen(inst.ctx, data, len);
+                for (int32_t i = 0; i < arrLen; ++i) {
+                    JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
+                    if (JS_IsFunction(inst.ctx, fn)) {
+                        JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &arg);
+                        if (JS_IsException(ret)) {
+                            JSValue exc = JS_GetException(inst.ctx);
+                            const char* s = JS_ToCString(inst.ctx, exc);
+                            sLog().error("ScriptEngine: embedded input error: {}", s ? s : "(null)");
+                            if (s) JS_FreeCString(inst.ctx, s);
+                            JS_FreeValue(inst.ctx, exc);
+                        }
+                        JS_FreeValue(inst.ctx, ret);
+                    }
+                    JS_FreeValue(inst.ctx, fn);
+                }
+                JS_FreeValue(inst.ctx, arg);
+            }
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::deliverEmbeddedDestroyed(const std::string& regKey)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__embedded_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
+        if (!JS_IsUndefined(obj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__evt_destroyed");
+            if (!JS_IsUndefined(arr)) {
+                // Fire listeners with no argument.
+                enqueueListeners(inst.ctx, arr, 0, nullptr);
+            }
+            JS_FreeValue(inst.ctx, arr);
+
+            // Mark JsEmbeddedData as !alive so subsequent method calls throw.
+            auto* emData = static_cast<JsEmbeddedData*>(JS_GetOpaque(obj, jsEmbeddedClassId));
+            if (emData) emData->alive = false;
         }
         JS_FreeValue(inst.ctx, obj);
         JS_FreeValue(inst.ctx, registry);

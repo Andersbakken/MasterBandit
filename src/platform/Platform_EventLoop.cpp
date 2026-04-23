@@ -375,6 +375,57 @@ int PlatformDawn::exec()
                 }
             }
         };
+        scbs.paneEmbeddeds = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::EmbeddedInfo> {
+            std::vector<Script::AppCallbacks::EmbeddedInfo> result;
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                const uint64_t focused = p->focusedEmbeddedLineId();
+                for (const auto& [lineId, em] : p->embeddeds()) {
+                    result.push_back({lineId, em->height(), lineId == focused});
+                }
+            }
+            return result;
+        };
+        scbs.createEmbedded = [this](Script::PaneId paneId, int rows,
+                                      std::function<void(const char*, size_t)> onInput) -> uint64_t {
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p) return 0;
+            PlatformCallbacks pcbs;
+            pcbs.onTerminalExited = [](Terminal*) {};
+            pcbs.quit = [this]() { quit(); };
+            pcbs.onInput = std::move(onInput);
+            // Resolve anchor lineId from current cursor position BEFORE the call,
+            // because createEmbedded advances the cursor internally. The
+            // document's lineIdForAbs on the cursor's absolute row is the
+            // captured anchor.
+            uint64_t anchorLineId = p->document().lineIdForAbs(
+                p->document().historySize() + p->cursorY());
+            Terminal* em = p->createEmbedded(rows, std::move(pcbs));
+            if (!em) return 0;
+            setNeedsRedraw();
+            return anchorLineId;
+        };
+        scbs.destroyEmbedded = [this](Script::PaneId paneId, uint64_t lineId) {
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                auto extracted = p->extractEmbedded(lineId);
+                if (extracted) setNeedsRedraw();
+            }
+        };
+        scbs.resizeEmbedded = [this](Script::PaneId paneId, uint64_t lineId, int rows) -> bool {
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p) return false;
+            bool ok = p->resizeEmbedded(lineId, rows);
+            if (ok) setNeedsRedraw();
+            return ok;
+        };
+        scbs.injectEmbeddedData = [this](Script::PaneId paneId, uint64_t lineId,
+                                          const std::string& data) {
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                if (Terminal* em = p->findEmbedded(lineId)) {
+                    em->injectData(data.c_str(), data.size());
+                    setNeedsRedraw();
+                }
+            }
+        };
         scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string {
             Terminal* te = scriptEngine_.terminal(paneId);
             if (!te) return {};

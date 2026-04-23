@@ -5,10 +5,12 @@
 #include "Uuid.h"
 #include <eventloop/EventLoop.h>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #define EINTRWRAP(ret, op) \
@@ -123,10 +125,37 @@ public:
     void clearFocusedPopup() { mFocusedPopupId.clear(); }
     Terminal* focusedPopup();
 
-    // Returns the focused popup's emulator if one exists, otherwise this.
+    // --- Embedded terminals (document-anchored inline surfaces) ---
+    // Headless sibling of popups but anchored to a stable logical-line id
+    // instead of viewport cell coordinates — the embedded scrolls with the
+    // document and is destroyed when its anchor row evicts past the archive
+    // cap. The anchor row is visually covered by the embedded; subsequent
+    // rows are pushed down by (rows-1) cell heights (Model B displacement).
+    //
+    // Creation captures the parent's current cursor row as the anchor lineId,
+    // then advances the parent cursor to a new row below so subsequent parent
+    // writes don't target the now-hidden anchor cells. Fails (returns nullptr)
+    // when parent is on alt-screen, when `rows` <= 0, or when the cursor row
+    // already has an embedded attached.
+    Terminal* createEmbedded(int rows, PlatformCallbacks pcbs);
+    // Move an embedded out for deferred destruction. Returns the moved
+    // Terminal on success, or nullptr if no embedded is anchored at lineId.
+    std::unique_ptr<Terminal> extractEmbedded(uint64_t lineId);
+    // Resize an existing embedded. Only rows change; cols track parent cols.
+    bool resizeEmbedded(uint64_t lineId, int rows);
+    Terminal* findEmbedded(uint64_t lineId);
+    const std::unordered_map<uint64_t, std::unique_ptr<Terminal>>& embeddeds() const { return mEmbedded; }
+
+    uint64_t focusedEmbeddedLineId() const { return mFocusedEmbeddedLineId; }
+    void setFocusedEmbeddedLineId(uint64_t id) { mFocusedEmbeddedLineId = id; }
+    void clearFocusedEmbedded() { mFocusedEmbeddedLineId = 0; }
+    Terminal* focusedEmbedded();
+
+    // Returns the focused popup's emulator if one exists, else the focused
+    // embedded's emulator if any, else this.
     TerminalEmulator* activeTerm();
 
-    // Set by platform; called when a popup emulator fires an event (triggers redraw)
+    // Set by platform; called when a popup or embedded emulator fires an event (triggers redraw)
     std::function<void()> onPopupEvent;
 
 protected:
@@ -172,6 +201,13 @@ private:
     // Popup children — headless child terminals at cell coordinates
     std::vector<std::unique_ptr<Terminal>> mPopups;
     std::string mFocusedPopupId;
+
+    // Embedded children — headless terminals anchored to a logical line id,
+    // rendered inline in the scrollback. Destroyed when the anchor row
+    // evicts past the archive cap (via Document::onRowEvicted callback wired
+    // in the constructor). Keyed on lineId so each row holds at most one.
+    std::unordered_map<uint64_t, std::unique_ptr<Terminal>> mEmbedded;
+    uint64_t mFocusedEmbeddedLineId { 0 }; // 0 = none focused
 
     // Disarm the PTY fd in the event loop and fire onTerminalExited (once).
     // Safe to call multiple times — the first call sets mExited.

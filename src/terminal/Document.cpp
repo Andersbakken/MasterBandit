@@ -227,7 +227,18 @@ void Document::evictToArchive() {
     if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
         archive_.pop_front();
         // Line id deque shrinks: the archive head row is no longer reachable.
-        if (!rowLineId_.empty()) rowLineId_.pop_front();
+        if (!rowLineId_.empty()) {
+            uint64_t evictedId = rowLineId_.front();
+            rowLineId_.pop_front();
+            // Fire onLineIdEvicted only when the LAST row carrying this id is
+            // gone — soft-wrap continuations share the id across multiple
+            // rows and we don't want to fire N times for one logical line.
+            // After pop_front, rowLineId_.front() is the next oldest; if it
+            // differs, the evicted id has no remaining rows.
+            if (onLineIdEvicted_ && (rowLineId_.empty() || rowLineId_.front() != evictedId)) {
+                onLineIdEvicted_(evictedId);
+            }
+        }
     }
     historyCount_--;
 }

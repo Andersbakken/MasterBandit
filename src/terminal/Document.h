@@ -1,7 +1,9 @@
 #pragma once
 
 #include "IGrid.h"
+#include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -111,6 +113,13 @@ public:
                                  int startCol = 0,
                                  int endCol = std::numeric_limits<int>::max()) const;
 
+    // Called exactly once per line id as it evicts past the archive cap.
+    // Fires from inside evictToArchive() after rowLineId_.pop_front() — the
+    // id is no longer resolvable through firstAbsOfLine/lastAbsOfLine when
+    // the callback runs. The owning Terminal uses this to destroy any
+    // embedded Terminal anchored to the evicted line. May be null.
+    void setOnLineIdEvicted(std::function<void(uint64_t)> cb) { onLineIdEvicted_ = std::move(cb); }
+
 private:
     // Segmented ring buffer: each segment holds SEG_SIZE rows of cols_ cells.
     // Segments are allocated without construction; cells are written before read
@@ -140,6 +149,9 @@ private:
     // Non-decreasing because IDs mint in write order which matches abs order.
     std::deque<uint64_t> rowLineId_;
     uint64_t nextLineId_ = 1;
+    // Fired from evictToArchive() when a line id leaves the archive cap.
+    // See setOnLineIdEvicted docs above.
+    std::function<void(uint64_t)> onLineIdEvicted_;
     // Mint a fresh ID (never reuses).
     uint64_t mintLineId() { return nextLineId_++; }
 

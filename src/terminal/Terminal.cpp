@@ -22,6 +22,17 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
     : TerminalEmulator(std::move(callbacks))
     , mPlatformCbs(std::move(platformCbs))
 {
+    // Destroy embedded terminals whose anchor row has evicted past archive
+    // cap. Fires from inside Document::evictToArchive, which runs under this
+    // Terminal's mutex (recursive, safe to re-enter). Headless Terminal
+    // destructor has no side effects beyond memory cleanup.
+    document().setOnLineIdEvicted([this](uint64_t lineId) {
+        auto it = mEmbedded.find(lineId);
+        if (it == mEmbedded.end()) return;
+        mEmbedded.erase(it);
+        if (mFocusedEmbeddedLineId == lineId) mFocusedEmbeddedLineId = 0;
+        if (onPopupEvent) onPopupEvent();
+    });
 }
 
 Terminal::~Terminal()
@@ -455,9 +466,85 @@ Terminal* Terminal::focusedPopup()
     return findPopup(mFocusedPopupId);
 }
 
+// ---------------------------------------------------------------------------
+// Embedded children — document-anchored headless terminals
+// ---------------------------------------------------------------------------
+
+Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
+{
+    if (rows <= 0) return nullptr;
+    // Alt-screen mode has no persistent scrollback — embedded has nowhere to
+    // anchor. Applets must wait until the shell returns to main screen.
+    if (usingAltScreen()) return nullptr;
+
+    // Current cursor row → anchor lineId. historySize() + cursorY() is the
+    // absolute row of the current cursor position on main screen.
+    const int anchorAbsRow = document().historySize() + cursorY();
+    const uint64_t anchorLineId = document().lineIdForAbs(anchorAbsRow);
+    if (anchorLineId == 0) return nullptr;
+    if (mEmbedded.count(anchorLineId)) return nullptr;
+
+    TerminalCallbacks cbs;
+    cbs.event = [this](TerminalEmulator*, int, void*) {
+        if (onPopupEvent) onPopupEvent();
+    };
+
+    auto embedded = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+    TerminalOptions opts;
+    opts.scrollbackLines = 0;
+    embedded->initHeadless(opts);
+    embedded->resize(width() > 0 ? width() : 80, rows);
+
+    Terminal* raw = embedded.get();
+    mEmbedded[anchorLineId] = std::move(embedded);
+
+    // Advance the parent cursor to a fresh row so subsequent parent writes
+    // don't target the (now-hidden) anchor row. CR+LF goes through the
+    // emulator's standard path, creating a new tier-1 row below and
+    // scrolling if we were at the last viewport row.
+    injectData("\r\n", 2);
+
+    spdlog::info("Terminal: created embedded at lineId={} rows={}", anchorLineId, rows);
+    return raw;
+}
+
+std::unique_ptr<Terminal> Terminal::extractEmbedded(uint64_t lineId)
+{
+    auto it = mEmbedded.find(lineId);
+    if (it == mEmbedded.end()) return nullptr;
+    auto t = std::move(it->second);
+    mEmbedded.erase(it);
+    if (mFocusedEmbeddedLineId == lineId) mFocusedEmbeddedLineId = 0;
+    spdlog::info("Terminal: extracted embedded lineId={}", lineId);
+    return t;
+}
+
+bool Terminal::resizeEmbedded(uint64_t lineId, int rows)
+{
+    if (rows <= 0) return false;
+    auto it = mEmbedded.find(lineId);
+    if (it == mEmbedded.end()) return false;
+    it->second->resize(width() > 0 ? width() : 80, rows);
+    return true;
+}
+
+Terminal* Terminal::findEmbedded(uint64_t lineId)
+{
+    auto it = mEmbedded.find(lineId);
+    return it == mEmbedded.end() ? nullptr : it->second.get();
+}
+
+Terminal* Terminal::focusedEmbedded()
+{
+    if (mFocusedEmbeddedLineId == 0) return nullptr;
+    return findEmbedded(mFocusedEmbeddedLineId);
+}
+
 TerminalEmulator* Terminal::activeTerm()
 {
     if (auto* pp = focusedPopup())
         return pp;
+    if (auto* em = focusedEmbedded())
+        return em;
     return this;
 }

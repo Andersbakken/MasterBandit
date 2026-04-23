@@ -170,6 +170,24 @@ struct AppCallbacks {
     std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h)> resizePopup;
     // Inject data into a popup's terminal.
     std::function<void(PaneId, const std::string& id, const std::string& data)> injectPopupData;
+
+    // --- Embedded terminals (document-anchored inline surfaces) ---
+    // Query embeddeds on a pane.
+    struct EmbeddedInfo { uint64_t lineId; int rows; bool focused; };
+    std::function<std::vector<EmbeddedInfo>(PaneId)> paneEmbeddeds;
+    // Create an embedded terminal on a pane at the pane's current cursor row.
+    // Returns the anchor lineId on success, 0 on failure (alt-screen, rows<=0,
+    // duplicate anchor). onInput callback is invoked when keystrokes route into
+    // the embedded (while focused).
+    std::function<uint64_t(PaneId, int rows,
+                       std::function<void(const char*, size_t)> onInput)> createEmbedded;
+    // Destroy an embedded terminal by its anchor lineId.
+    std::function<void(PaneId, uint64_t lineId)> destroyEmbedded;
+    // Resize an embedded's row count (cols track parent cols automatically).
+    std::function<bool(PaneId, uint64_t lineId, int rows)> resizeEmbedded;
+    // Inject data into an embedded's terminal (parses through VT emulator).
+    std::function<void(PaneId, uint64_t lineId, const std::string& data)> injectEmbeddedData;
+
     // Clipboard access. source is "clipboard" or "primary".
     std::function<std::string(const std::string& source)> getClipboard;
     std::function<void(const std::string& source, const std::string& text)> setClipboard;
@@ -273,6 +291,13 @@ public:
     // Deliver input to popup listeners (keyed by "paneId:popupId" string).
     void deliverPopupInput(const std::string& regKey, const char* data, size_t len);
 
+    // Deliver input to embedded-terminal listeners (keyed by
+    // "paneId:lineId" string). Mirrors deliverPopupInput.
+    void deliverEmbeddedInput(const std::string& regKey, const char* data, size_t len);
+    // Fire the "destroyed" event on an embedded terminal's registered
+    // listeners. Called when the anchor row evicts or close() is called.
+    void deliverEmbeddedDestroyed(const std::string& regKey);
+
     // Deliver mouse events to JS listeners.
     void deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
                                  const std::string& type, int cellX, int cellY,
@@ -313,6 +338,8 @@ public:
         // Resources owned by this instance (cleaned up on unload)
         struct PopupRef { PaneId pane; std::string popupId; };
         std::vector<PopupRef> ownedPopups;
+        struct EmbeddedRef { PaneId pane; uint64_t lineId; };
+        std::vector<EmbeddedRef> ownedEmbeddeds;
         std::vector<PaneId> paneOutputFilters; // panes with output filters from this instance
         std::vector<PaneId> paneInputFilters;
         std::vector<PaneId> paneMouseMoveListeners;

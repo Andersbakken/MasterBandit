@@ -20,17 +20,15 @@ struct LayoutNode {
 
 // Non-owning handle for a tab. A tab's identity is its subtreeRoot Uuid in
 // the shared LayoutTree (a direct child of Engine::layoutRootStack_). All
-// per-tab state — icon, overlay stack, paneId index, focus, zoom, divider
-// geometry — lives on Script::Engine (or on the tree node's `label`).
+// per-tab state — icon, overlay stack, focus, divider geometry — lives on
+// Script::Engine (or on the tree node's `label`).
 //
 // Tab is a lightweight value type: default-constructible (invalid), copyable,
-// movable. It's a `struct` (not a class) deliberately — step 6's cutover
-// dissolved the old state-owning Tab type; what's left is a two-pointer
-// POD-style view. The underlying state is stable for as long as the engine
-// still tracks the subtreeRoot; once closeTab removes it, stale Tab handles
-// return null / empty. Pre-cutover callers that did `tab->layout()->foo()`
-// still work — `layout()` returns `this` (self-pointer) and every Layout
-// method now lives on Tab.
+// movable. Two pointers only. The underlying state is stable for as long as
+// the engine still tracks the subtreeRoot; once closeTab removes it, stale
+// Tab handles return null / empty. `layout()` returns `this` as a self-
+// pointer so legacy `tab->layout()->method()` call sites still compile
+// without a second indirection.
 struct Tab {
     Tab() = default;
     Tab(Script::Engine* eng, Uuid subtreeRoot) : eng_(eng), subtreeRoot_(subtreeRoot) {}
@@ -62,15 +60,14 @@ struct Tab {
 
     // --- Pane allocation / tree mutation ----------------------------------
     // Create a Container holding a single Terminal leaf under subtreeRoot.
-    // Used by createTab's initial-pane bootstrap. Returns the fresh paneId.
-    // Precondition: subtreeRoot is empty (no children).
-    int createPane();
+    // Used by createTab's initial-pane bootstrap. Returns the Terminal's
+    // tree Uuid. Precondition: subtreeRoot is empty (no children).
+    Uuid createPane();
 
-    // Allocate a Terminal tree node as an orphan (no parent) and associate
-    // it with a fresh paneId in the engine's paneId↔Uuid index. The caller
+    // Allocate a Terminal tree node as an orphan (no parent). The caller
     // is responsible for attaching it under some Container via appendChild
-    // or splitByNodeId.
-    int allocatePaneNode(Uuid* outNodeId = nullptr);
+    // or splitByNodeId. Returns the new node's Uuid.
+    Uuid allocatePaneNode();
 
     // Wrap `existingChildNodeId` in a new Container, place `newChildNodeId`
     // alongside. Validates that both are known nodes, newChild is orphaned,
@@ -79,9 +76,9 @@ struct Tab {
                        Uuid newChildNodeId, bool newIsFirst = false);
 
     // Attach a Terminal to a pane slot allocated via allocatePaneNode /
-    // createPane. Threads id + nodeId onto the Terminal and transfers
-    // ownership to the engine's terminals_ map.
-    Terminal* insertTerminal(int paneId, std::unique_ptr<Terminal> t);
+    // createPane. Threads nodeId onto the Terminal and transfers ownership
+    // to the engine's terminals_ map.
+    Terminal* insertTerminal(Uuid nodeId, std::unique_ptr<Terminal> t);
 
     // Remove an arbitrary subtree from this tab's subtree. Guard: any
     // descendant Terminal still live in the engine map → refuse. Cleans up
@@ -90,8 +87,8 @@ struct Tab {
     bool removeNodeSubtree(Uuid nodeId);
 
     // --- Pane queries -----------------------------------------------------
-    Terminal* pane(int paneId);
-    bool hasPaneSlot(int paneId) const; // slot exists, Terminal may be dead
+    Terminal* pane(Uuid nodeId);
+    bool hasPaneSlot(Uuid nodeId) const; // slot exists, Terminal may be dead
     // All live Terminals in the tab's subtree, DFS. Includes Terminals under
     // inactive Stack siblings (e.g. a non-visible content Container while a
     // pager overlay is active). Use for "every pane in this tab" work —
@@ -102,31 +99,35 @@ struct Tab {
     // all children. Use this for rendering / dividers / hit-testing paths
     // where "what's on screen right now" matters.
     std::vector<Terminal*> activePanes() const;
-    PaneRect nodeRect(int paneId) const;
-    int paneAtPixel(int px, int py) const;
+    PaneRect nodeRect(Uuid nodeId) const;
+    Uuid paneAtPixel(int px, int py) const;
 
     // --- Focus (engine-wide) ----------------------------------------------
-    int focusedPaneId() const;
-    void setFocusedPane(int paneId);
+    Uuid focusedPaneId() const;
+    void setFocusedPane(Uuid nodeId);
     Terminal* focusedPane();
 
-    // --- Zoom (engine-wide) -----------------------------------------------
-    bool isZoomed() const;
-    int zoomedPaneId() const;
-    void zoomPane(int paneId);
-    void unzoom();
+    // Zoom moved onto StackData::zoomTarget — JS (mb.layout.setStackZoom)
+    // writes it directly; Tab no longer mediates.
 
     // --- Global layout params (forwarded to engine) -----------------------
     void setDividerPixels(int px);
     int dividerPixels() const;
-    void setTabBar(int height, const std::string& position);
+    // Tab-bar geometry now lives on a TabBar node in the tree. `tabBarRect`
+    // still exists as a convenience that runs a root-level computeRects and
+    // returns the primary TabBar node's rect; use this from renderers/input
+    // rather than carrying bar geometry on the engine.
     PaneRect tabBarRect(uint32_t windowW, uint32_t windowH) const;
 
     // --- Rect computation + divider geometry ------------------------------
-    void computeRects(uint32_t windowW, uint32_t windowH);
+    // cellW / cellH are pixels-per-cell along the container's split axis,
+    // used to convert ChildSlot cell-based sizing hints (minCells, maxCells,
+    // fixedCells) into pixels. Callers pass rounded font metrics; 1,1 is
+    // legal but reduces cell-based clamps to pixel-based ones.
+    void computeRects(uint32_t windowW, uint32_t windowH, int cellW, int cellH);
     std::vector<PaneRect> dividerRects(int dividerPixels) const;
-    std::vector<std::pair<int, PaneRect>> dividersWithOwnerPanes(int dividerPixels) const;
-    bool resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta);
+    std::vector<std::pair<Uuid, PaneRect>> dividersWithOwnerPanes(int dividerPixels) const;
+    bool resizePaneEdge(Uuid nodeId, LayoutNode::Dir axis, int pixelDelta);
 
 private:
     Script::Engine* eng_ = nullptr;

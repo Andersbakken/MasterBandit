@@ -66,7 +66,7 @@ public:
         std::function<const std::vector<std::pair<int,int>>&()> tabBarColRanges;
 
         // Focus change notification into PlatformDawn.
-        std::function<void(Tab, int prevId, int newId)> notifyPaneFocusChange;
+        std::function<void(Tab, Uuid prevId, Uuid newId)> notifyPaneFocusChange;
         std::function<void(int tabIdx)> updateTabTitleFromFocusedPane;
 
         bool headless = false;
@@ -101,12 +101,13 @@ public:
     void setKeySequenceTimeoutMs(int ms) { sequenceTimeoutMs_ = ms; }
 
     // Per-pane cursor style (set from OSC 22 terminal callback, read on every
-    // mouse move). Erased when a pane is destroyed.
-    void setPaneCursorStyle(int paneId, Window::CursorStyle style) { paneCursorStyle_[paneId] = style; }
-    void erasePaneCursorStyle(int paneId) { paneCursorStyle_.erase(paneId); }
-    bool hasPaneCursorStyle(int paneId) const { return paneCursorStyle_.find(paneId) != paneCursorStyle_.end(); }
-    Window::CursorStyle paneCursorStyle(int paneId) const {
-        auto it = paneCursorStyle_.find(paneId);
+    // mouse move). Erased when a pane is destroyed. Keyed by the Terminal's
+    // tree Uuid (Script::PaneId).
+    void setPaneCursorStyle(Uuid nodeId, Window::CursorStyle style) { paneCursorStyle_[nodeId] = style; }
+    void erasePaneCursorStyle(Uuid nodeId) { paneCursorStyle_.erase(nodeId); }
+    bool hasPaneCursorStyle(Uuid nodeId) const { return paneCursorStyle_.find(nodeId) != paneCursorStyle_.end(); }
+    Window::CursorStyle paneCursorStyle(Uuid nodeId) const {
+        auto it = paneCursorStyle_.find(nodeId);
         return it == paneCursorStyle_.end() ? Window::CursorStyle::Arrow : it->second;
     }
 
@@ -157,7 +158,7 @@ private:
         MouseButton button = MouseButton::Left;
     } mouseCtx_;
 
-    std::unordered_map<int, Window::CursorStyle> paneCursorStyle_;
+    std::unordered_map<Uuid, Window::CursorStyle, UuidHash> paneCursorStyle_;
 
     bool controlPressed_ = false;
     uint32_t lastMods_ = 0;

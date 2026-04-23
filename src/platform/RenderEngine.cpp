@@ -747,12 +747,12 @@ void RenderEngine::renderFrame()
         for (auto& [id, rs] : paneRenderPrivate_) dropHeldTexture(rs);
         for (auto& [key, rs] : popupRenderPrivate_) dropHeldTexture(rs);
     } else {
-        for (int paneId : frameState_.releasePaneTextureIds) {
+        for (const Uuid& paneId : frameState_.releasePaneTextureIds) {
             auto it = paneRenderPrivate_.find(paneId);
             if (it != paneRenderPrivate_.end()) dropHeldTexture(it->second);
             // Popups hang off a pane; release their textures too. Keys are
-            // "paneId/popupId" — match by prefix.
-            std::string prefix = std::to_string(paneId) + "/";
+            // "<uuid>/popupId" — match by prefix.
+            std::string prefix = paneId.toString() + "/";
             for (auto& [key, rs] : popupRenderPrivate_) {
                 if (key.compare(0, prefix.size(), prefix) == 0) dropHeldTexture(rs);
             }
@@ -780,9 +780,9 @@ void RenderEngine::renderFrame()
         rs.heldTexture = nullptr;
         rs.pendingRelease.clear();
     };
-    for (int paneId : frameState_.destroyedPaneIds) {
+    for (const Uuid& paneId : frameState_.destroyedPaneIds) {
         // Drop any popups that belonged to this pane first.
-        std::string prefix = std::to_string(paneId) + "/";
+        std::string prefix = paneId.toString() + "/";
         for (auto it = popupRenderPrivate_.begin(); it != popupRenderPrivate_.end(); ) {
             if (it->first.compare(0, prefix.size(), prefix) == 0) {
                 extractReleases(it->second);
@@ -853,9 +853,9 @@ void RenderEngine::renderFrame()
     DebugIPC* debugIPC = host_.debugIPC ? host_.debugIPC() : nullptr;
     bool pngNeeded = debugIPC && debugIPC->pngScreenshotPending();
 
-    int currentFocusedPaneId = frameState_.focusedPaneId;
+    Uuid currentFocusedPaneId = frameState_.focusedPaneId;
     if (currentFocusedPaneId != lastFocusedPaneId_) {
-        auto markDirty = [&](int id) {
+        auto markDirty = [&](Uuid id) {
             auto it = paneRenderPrivate_.find(id);
             if (it != paneRenderPrivate_.end()) it->second.dirty = true;
         };
@@ -872,13 +872,13 @@ void RenderEngine::renderFrame()
         PaneRenderPrivate* rs;
         PaneRect rect;
         bool isFocused;
-        int paneId = -1;
+        Uuid paneId;
         bool hasPopupFocus = false;
         const RenderPaneInfo* paneInfo = nullptr;
         bool isPopup = false;
         float pixelOriginX = 0.0f;
         float pixelOriginY = 0.0f;
-        int popupParentPaneId = -1;
+        Uuid popupParentPaneId;
         std::string popupId;
     };
     std::vector<RenderTarget> renderTargets;
@@ -1475,7 +1475,7 @@ void RenderEngine::renderFrame()
                 ? frameState_.activeTint : frameState_.inactiveTint;
             renderer_.updateDividerViewport(queue_, frameFbW, frameFbH, windowTint);
             for (const auto& rpi : frameState_.panes) {
-                int pid = rpi.id;
+                const Uuid& pid = rpi.id;
                 auto git = frameState_.dividerGeoms.find(pid);
                 if (git == frameState_.dividerGeoms.end() || !git->second.valid) continue;
                 auto& geom = git->second;
@@ -1622,7 +1622,20 @@ void RenderEngine::renderFrame()
 
             const auto& target = debugIPC->pngTarget();
             if (target.starts_with("pane:")) {
-                int paneId = std::stoi(target.substr(5));
+                // "pane:<uuid>" matches the render-private entry directly.
+                // "pane:<N>" (legacy integer id used by tests) resolves to
+                // the Nth pane in visible order — kept so the test harness
+                // doesn't have to plumb real UUIDs through IPC.
+                std::string rest = target.substr(5);
+                Uuid paneId = Uuid::fromString(rest);
+                if (paneId.isNil() && !rest.empty()) {
+                    // Numeric index into frameState_.panes.
+                    try {
+                        size_t idx = std::stoul(rest);
+                        if (idx < frameState_.panes.size())
+                            paneId = frameState_.panes[idx].id;
+                    } catch (...) { /* leave nil */ }
+                }
                 auto it = paneRenderPrivate_.find(paneId);
                 if (it != paneRenderPrivate_.end() && it->second.heldTexture) {
                     srcTexture = it->second.heldTexture->texture;

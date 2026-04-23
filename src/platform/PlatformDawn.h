@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <sys/types.h>
 #include "ActionRouter.h"
 #include "AnimationScheduler.h"
@@ -118,8 +120,8 @@ public:
         return window_ && window_->shouldClose();
     }
 
-    std::string gridToJson(int id);
-    std::string statsJson(int id);
+    std::string gridToJson(Uuid id);
+    std::string statsJson(int requestId);
 
 private:
     int exitStatus_ = 0;
@@ -165,14 +167,22 @@ private:
     void updateTabBarVisibility() {
         if (tabBarConfig_.style != "auto") return;
         bool visible = tabBarVisible();
-        int h = visible ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
-        for (Tab tab : tabManager_->tabs()) {
-            if (!tab.valid()) continue;
-            tab.setTabBar(h, tabBarConfig_.position);
-            tab.computeRects(fbWidth_, fbHeight_);
-            for (Terminal* p : tab.panes())
-                p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
+        // Toggle the TabBar node's slot size in the tree. fixedCells=1 shows
+        // the bar at one line; fixedCells=0 means "use stretch" (which is 0
+        // by default for bar slots → invisible). All tabs share the same
+        // TabBar node, so one mutation is enough.
+        Uuid bar = scriptEngine_.primaryTabBarNode();
+        if (!bar.isNil()) {
+            LayoutTree& tree = scriptEngine_.layoutTree();
+            if (const Node* n = tree.node(bar); n && !n->parent.isNil()) {
+                tree.setSlotFixedCells(n->parent, bar, visible ? 1 : 0);
+            }
         }
+        // setSlotFixedCells marks the tree dirty; the per-frame gate in
+        // buildRenderFrameState will run the resize cascade. Inline it here
+        // too so the caller sees fresh rects synchronously (tests, callers
+        // that read pane dims right after toggling bar visibility).
+        runLayoutIfDirty();
         if (visible) {
             // Refresh tab titles from foreground process for tabs that
             // have no OSC title — the callback may have fired before the
@@ -221,8 +231,8 @@ private:
     uint32_t defaultBgColor_ = 0x00000000;
     bool              windowHasFocus_ = true;
 
-    static std::string popupStateKey(int paneId, const std::string& popupId) {
-        return std::to_string(paneId) + "/" + popupId;
+    static std::string popupStateKey(Uuid nodeId, const std::string& popupId) {
+        return nodeId.toString() + "/" + popupId;
     }
 
     // Owns the render worker thread, coarse mutex, pending mutations,
@@ -241,6 +251,14 @@ private:
     // RenderThread::applyPendingMutations(), which also transfers
     // pending flags into renderState.
     void buildRenderFrameState();
+
+    // If the LayoutTree has been marked dirty since the last call, run a
+    // full resize cascade across every tab (computeRects + TIOCSWINSZ +
+    // divider refresh + render-state invalidation). Cheap when clean. Tree
+    // mutations auto-mark via LayoutTree itself; callers who need fresh
+    // rects synchronously (pane spawn/split before reading pane dims) also
+    // call this.
+    void runLayoutIfDirty();
 
     // Tab bar
     TabBarConfig  tabBarConfig_;
@@ -313,7 +331,7 @@ private:
     // closes over ~20 platform members (title/icon/cwd/progress/OSC/
     // foreground-process/mouse-cursor-shape) that TabManager doesn't
     // own. TabManager calls this via Host::buildTerminalCallbacks.
-    TerminalCallbacks buildTerminalCallbacks(int paneId);
+    TerminalCallbacks buildTerminalCallbacks(Uuid nodeId);
 };
 
 std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, uint32_t flags = PlatformDawn::FlagNone);

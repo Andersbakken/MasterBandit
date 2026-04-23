@@ -96,7 +96,7 @@ public:
     int pendingGpuCallbacks() const { return pendingGpuCallbacks_.load(std::memory_order_acquire); }
 
     // Per-pane render state queries used by Platform_Debug.cpp.
-    const PaneRenderPrivate* paneRenderPrivate(int paneId) const {
+    const PaneRenderPrivate* paneRenderPrivate(Uuid paneId) const {
         auto it = paneRenderPrivate_.find(paneId);
         return it == paneRenderPrivate_.end() ? nullptr : &it->second;
     }
@@ -106,8 +106,8 @@ public:
     // released. Safe to call multiple times.
     void shutdown();
 
-    static std::string popupStateKey(int paneId, const std::string& popupId) {
-        return std::to_string(paneId) + "/" + popupId;
+    static std::string popupStateKey(Uuid paneId, const std::string& popupId) {
+        return paneId.toString() + "/" + popupId;
     }
 
 private:
@@ -127,10 +127,10 @@ private:
     wgpu::Texture headlessComposite_;
 
     // Render-thread-only state
-    std::unordered_map<int, PaneRenderPrivate> paneRenderPrivate_;
+    std::unordered_map<Uuid, PaneRenderPrivate, UuidHash> paneRenderPrivate_;
     std::unordered_map<std::string, PaneRenderPrivate> popupRenderPrivate_;
     RenderFrameState frameState_;
-    int lastFocusedPaneId_ = -1;
+    Uuid lastFocusedPaneId_;
 
     // Tab bar render resources
     PooledTexture* tabBarTexture_ = nullptr;
@@ -169,6 +169,6 @@ private:
 public:
     // Access hooks for PlatformDawn during pane/popup lifecycle (main thread,
     // with platformMutex_ held so the render thread isn't touching these).
-    std::unordered_map<int, PaneRenderPrivate>& paneRenderPrivateMap() { return paneRenderPrivate_; }
+    std::unordered_map<Uuid, PaneRenderPrivate, UuidHash>& paneRenderPrivateMap() { return paneRenderPrivate_; }
     std::unordered_map<std::string, PaneRenderPrivate>& popupRenderPrivateMap() { return popupRenderPrivate_; }
 };

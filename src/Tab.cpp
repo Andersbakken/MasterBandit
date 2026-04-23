@@ -8,10 +8,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
-
-// Global pane-id counter (was sGlobalPaneId in Layout.cpp). Preserved via
-// Engine::allocatePaneId so paneIds stay globally unique across tabs.
 
 Tab Tab::newSubtree(Script::Engine* engine)
 {
@@ -42,51 +38,44 @@ SplitDir toSplitDir(LayoutNode::Dir d) {
                                              : SplitDir::Vertical;
 }
 
-// Small helpers migrated from Layout.cpp (private there).
-
-int leftmostPaneIdInSubtree(const LayoutTree& tree,
-                            const Script::Engine& eng,
-                            Uuid root)
+// Resolve the pixel rect this tab's subtree should lay out into. In a fully
+// tree-driven world the tab bar is a sibling node of the tabs Stack inside a
+// top-level Container, so the tabs Stack's allocation already excludes the
+// bar. Lookup preference:
+//   1) If `subtreeRoot` is the active tab, it's in the root-level rect map.
+//   2) Otherwise use the parent's rect (the tabs Stack) — all tabs share it.
+//   3) Fallback: the full window (test harness, detached subtree).
+PaneRect resolveSubtreeContentRect(const Script::Engine& eng, Uuid subtreeRoot)
 {
-    const Node* n = tree.node(root);
-    if (!n) return -1;
-    if (std::holds_alternative<TerminalData>(n->data)) {
-        return eng.paneIdForUuid(root);
-    }
-    if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
-        if (cd->children.empty()) return -1;
-        return leftmostPaneIdInSubtree(tree, eng, cd->children.front().id);
-    }
-    if (const auto* sd = std::get_if<StackData>(&n->data)) {
-        if (sd->activeChild.isNil()) return -1;
-        return leftmostPaneIdInSubtree(tree, eng, sd->activeChild);
-    }
-    return -1;
-}
+    const LayoutTree& tree = eng.layoutTree();
+    uint32_t fbW = eng.lastFbWidth();
+    uint32_t fbH = eng.lastFbHeight();
+    PaneRect fallback{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)};
+    if (fbW == 0 || fbH == 0) return fallback;
 
-// Tab-bar-aware content rect used by computeRects / dividersWithOwnerPanes /
-// resizePaneEdge. Mirrors the old Layout::computeRects early block.
-PaneRect contentRectFromFb(uint32_t fbW, uint32_t fbH,
-                            int tabBarHeight, const std::string& tabBarPosition)
-{
-    PaneRect content{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)};
-    if (tabBarHeight > 0) {
-        if (tabBarPosition == "top") {
-            content.y += tabBarHeight;
-            content.h -= tabBarHeight;
-        } else {
-            content.h -= tabBarHeight;
+    if (tree.root().isNil()) return fallback;
+
+    auto rects = tree.computeRects(LayoutRect{0, 0, (int)fbW, (int)fbH},
+                                   eng.lastCellW(), eng.lastCellH());
+    auto it = rects.find(subtreeRoot);
+    if (it != rects.end()) {
+        return PaneRect{it->second.x, it->second.y, it->second.w, it->second.h};
+    }
+    const Node* myNode = tree.node(subtreeRoot);
+    if (myNode && !myNode->parent.isNil()) {
+        auto parentIt = rects.find(myNode->parent);
+        if (parentIt != rects.end()) {
+            return PaneRect{parentIt->second.x, parentIt->second.y,
+                            parentIt->second.w, parentIt->second.h};
         }
     }
-    if (content.w < 0) content.w = 0;
-    if (content.h < 0) content.h = 0;
-    return content;
+    return fallback;
 }
 
 } // namespace
 
 // ===========================================================================
-// Title / icon / overlays
+// Title / icon
 // ===========================================================================
 
 const std::string& Tab::title() const
@@ -118,96 +107,52 @@ void Tab::setIcon(const std::string& s)
 // Pane allocation + tree mutation
 // ===========================================================================
 
-int Tab::createPane()
+Uuid Tab::createPane()
 {
-    if (!valid()) return -1;
+    if (!valid()) return {};
     LayoutTree& tree = eng_->layoutTree();
 
     // subtreeRoot is a Stack; its activeChild (first child, set by newSubtree)
     // is the content Container. Append the Terminal into the content Container
     // so the Stack can grow additional siblings (e.g. scrollback pager) later.
     Node* rootNode = tree.node(subtreeRoot_);
-    if (!rootNode) return -1;
+    if (!rootNode) return {};
     auto* stackData = std::get_if<StackData>(&rootNode->data);
     if (!stackData || stackData->children.empty()) {
-        // Subtree was set up without a content Container — bail.
-        return eng_->allocatePaneId();
+        // Subtree was set up without a content Container — just allocate.
+        return tree.createTerminal();
     }
     Uuid contentRoot = stackData->children.front().id;
     Node* contentNode = tree.node(contentRoot);
     if (!contentNode || !std::holds_alternative<ContainerData>(contentNode->data)) {
-        return eng_->allocatePaneId();
+        return tree.createTerminal();
     }
 
-    int id = eng_->allocatePaneId();
     Uuid u = tree.createTerminal();
     tree.appendChild(contentRoot, ChildSlot{u, /*stretch=*/1});
-    eng_->registerPaneSlot(id, u);
     eng_->setFocusedTerminalNodeId(u);
-    return id;
+    return u;
 }
 
-int Tab::allocatePaneNode(Uuid* outNodeId)
+Uuid Tab::allocatePaneNode()
 {
-    if (!valid()) return -1;
-    int id = eng_->allocatePaneId();
-    Uuid u = eng_->layoutTree().createTerminal();
-    eng_->registerPaneSlot(id, u);
-    if (outNodeId) *outNodeId = u;
-    return id;
+    if (!valid()) return {};
+    return eng_->layoutTree().createTerminal();
 }
 
 bool Tab::splitByNodeId(Uuid existingChildNodeId, LayoutNode::Dir dir,
                         Uuid newChildNodeId, bool newIsFirst)
 {
     if (!valid()) return false;
-    LayoutTree& tree = eng_->layoutTree();
-    Node* target = tree.node(existingChildNodeId);
-    if (!target) return false;
-    Node* incoming = tree.node(newChildNodeId);
-    if (!incoming) return false;
-    if (target->parent.isNil()) return false;
-    if (!incoming->parent.isNil()) return false;
-
-    SplitDir sd = toSplitDir(dir);
-    Uuid wrapper = tree.createContainer(sd);
-
-    ChildSlot wrapperSlot{wrapper, 1, 0, 0, 0};
-    if (Node* parentMut = tree.node(target->parent)) {
-        if (auto* cd = std::get_if<ContainerData>(&parentMut->data)) {
-            for (const auto& s : cd->children) {
-                if (s.id == existingChildNodeId) {
-                    wrapperSlot.stretch    = s.stretch;
-                    wrapperSlot.minCells   = s.minCells;
-                    wrapperSlot.maxCells   = s.maxCells;
-                    wrapperSlot.fixedCells = s.fixedCells;
-                    break;
-                }
-            }
-        }
-    }
-    if (!tree.replaceChild(target->parent, existingChildNodeId, wrapperSlot))
-        return false;
-
-    if (newIsFirst) {
-        tree.appendChild(wrapper, ChildSlot{newChildNodeId,       1});
-        tree.appendChild(wrapper, ChildSlot{existingChildNodeId,  1});
-    } else {
-        tree.appendChild(wrapper, ChildSlot{existingChildNodeId,  1});
-        tree.appendChild(wrapper, ChildSlot{newChildNodeId,       1});
-    }
-    return true;
+    return !eng_->layoutTree().splitByWrapping(existingChildNodeId,
+                                                toSplitDir(dir),
+                                                newChildNodeId,
+                                                newIsFirst).isNil();
 }
 
-Terminal* Tab::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
+Terminal* Tab::insertTerminal(Uuid nodeId, std::unique_ptr<Terminal> t)
 {
-    if (!valid() || !t) return nullptr;
-    Uuid nodeId = eng_->uuidForPaneId(paneId);
-    if (nodeId.isNil()) {
-        spdlog::warn("Tab::insertTerminal: pane {} has no tree node", paneId);
-        return nullptr;
-    }
-    t->setId(paneId);
+    if (!valid() || !t || nodeId.isNil()) return nullptr;
     t->setNodeId(nodeId);
     return eng_->insertTerminal(nodeId, std::move(t));
 }
@@ -215,126 +160,34 @@ Terminal* Tab::insertTerminal(int paneId, std::unique_ptr<Terminal> t)
 bool Tab::removeNodeSubtree(Uuid nodeId)
 {
     if (!valid()) return false;
-    if (nodeId.isNil() || nodeId == subtreeRoot_) return false;
-    LayoutTree& tree = eng_->layoutTree();
-    Node* target = tree.node(nodeId);
-    if (!target) return false;
-    if (target->parent.isNil()) return false;
-
-    // Walk the subtree, gather Terminal descendants. Guard: any live Terminal
-    // in the engine map → refuse and leave the tree unchanged.
-    std::vector<Uuid> terminalNodes;
-    std::function<bool(Uuid)> walk = [&](Uuid id) -> bool {
-        const Node* n = tree.node(id);
-        if (!n) return true;
-        if (n->kind() == NodeKind::Terminal) {
-            if (eng_->terminal(id)) return false;
-            terminalNodes.push_back(id);
-            return true;
-        }
-        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
-            for (const auto& s : cd->children) if (!walk(s.id)) return false;
-        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
-            for (const auto& c : sd->children) if (!walk(c.id)) return false;
-        }
-        return true;
-    };
-    if (!walk(nodeId)) return false;
-
-    // Strip paneId index entries for removed Terminals. Clear focus/zoom if
-    // they pointed at the removed subtree.
-    for (Uuid tn : terminalNodes) {
-        int paneId = eng_->paneIdForUuid(tn);
-        if (paneId >= 0) eng_->unregisterPaneSlot(paneId);
-        if (eng_->focusedTerminalNodeId() == tn) eng_->setFocusedTerminalNodeId({});
-        if (eng_->zoomedNodeId() == tn) eng_->setZoomedNodeId({});
-    }
-    if (eng_->zoomedNodeId() == nodeId) eng_->setZoomedNodeId({});
-
-    Uuid parentUuid = target->parent;
-    tree.removeChild(parentUuid, nodeId);
-    tree.destroyNode(nodeId);
-
-    // Collapse single-child Containers on the parent spine.
-    Uuid cur = parentUuid;
-    while (!cur.isNil() && cur != subtreeRoot_) {
-        Node* n = tree.node(cur);
-        if (!n) break;
-        auto* cd = std::get_if<ContainerData>(&n->data);
-        if (!cd || cd->children.size() != 1) break;
-        Uuid grand = n->parent;
-        if (grand.isNil()) break;
-        Uuid onlyChild = cd->children.front().id;
-        tree.removeChild(cur, onlyChild);
-        if (!tree.replaceChild(grand, cur, ChildSlot{onlyChild, 1})) {
-            spdlog::warn("Tab::removeNodeSubtree: collapse replaceChild failed");
-            break;
-        }
-        tree.destroyNode(cur);
-        cur = grand;
-    }
-
-    return true;
+    if (nodeId == subtreeRoot_) return false; // use closeTab path
+    return eng_->removeNodeSubtree(subtreeRoot_, nodeId);
 }
 
 // ===========================================================================
 // Pane queries
 // ===========================================================================
 
-Terminal* Tab::pane(int paneId)
+Terminal* Tab::pane(Uuid nodeId)
 {
-    if (!valid()) return nullptr;
-    Uuid u = eng_->uuidForPaneId(paneId);
-    if (u.isNil()) return nullptr;
-    // Scope to this tab: the slot must be inside subtreeRoot's subtree.
-    // Cheap ancestor walk.
-    const LayoutTree& tree = eng_->layoutTree();
-    Uuid cur = u;
-    while (!cur.isNil()) {
-        if (cur == subtreeRoot_) return eng_->terminal(u);
-        const Node* n = tree.node(cur);
-        if (!n) return nullptr;
-        cur = n->parent;
-    }
-    return nullptr;
+    if (!valid() || nodeId.isNil()) return nullptr;
+    return eng_->layoutTree().contains(subtreeRoot_, nodeId) ? eng_->terminal(nodeId) : nullptr;
 }
 
-bool Tab::hasPaneSlot(int paneId) const
+bool Tab::hasPaneSlot(Uuid nodeId) const
 {
-    if (!valid()) return false;
-    Uuid u = eng_->uuidForPaneId(paneId);
-    if (u.isNil()) return false;
-    const LayoutTree& tree = eng_->layoutTree();
-    Uuid cur = u;
-    while (!cur.isNil()) {
-        if (cur == subtreeRoot_) return true;
-        const Node* n = tree.node(cur);
-        if (!n) return false;
-        cur = n->parent;
-    }
-    return false;
+    if (!valid() || nodeId.isNil()) return false;
+    return eng_->layoutTree().contains(subtreeRoot_, nodeId);
 }
 
 std::vector<Terminal*> Tab::panes() const
 {
     std::vector<Terminal*> out;
     if (!valid()) return out;
-    const LayoutTree& tree = eng_->layoutTree();
-
-    std::function<void(Uuid)> walk = [&](Uuid id) {
-        const Node* n = tree.node(id);
-        if (!n) return;
-        if (n->kind() == NodeKind::Terminal) {
-            if (Terminal* t = eng_->terminal(id)) out.push_back(t);
-            return;
-        }
-        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
-            for (const auto& s : cd->children) walk(s.id);
-        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
-            for (const auto& c : sd->children) walk(c.id);
-        }
-    };
-    walk(subtreeRoot_);
+    std::vector<Uuid> leaves;
+    eng_->layoutTree().terminalLeavesIn(subtreeRoot_, /*onlyActiveStack=*/false, leaves);
+    out.reserve(leaves.size());
+    for (Uuid u : leaves) if (Terminal* t = eng_->terminal(u)) out.push_back(t);
     return out;
 }
 
@@ -342,127 +195,61 @@ std::vector<Terminal*> Tab::activePanes() const
 {
     std::vector<Terminal*> out;
     if (!valid()) return out;
-    const LayoutTree& tree = eng_->layoutTree();
-
-    std::function<void(Uuid)> walk = [&](Uuid id) {
-        const Node* n = tree.node(id);
-        if (!n) return;
-        if (n->kind() == NodeKind::Terminal) {
-            if (Terminal* t = eng_->terminal(id)) out.push_back(t);
-            return;
-        }
-        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
-            for (const auto& s : cd->children) walk(s.id);
-        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
-            // Only follow the activeChild so inactive siblings (e.g. the
-            // content Container while a pager overlay is on top) don't
-            // contribute to the visible-pane list.
-            if (!sd->activeChild.isNil()) walk(sd->activeChild);
-        }
-    };
-    walk(subtreeRoot_);
+    std::vector<Uuid> leaves;
+    eng_->layoutTree().terminalLeavesIn(subtreeRoot_, /*onlyActiveStack=*/true, leaves);
+    out.reserve(leaves.size());
+    for (Uuid u : leaves) if (Terminal* t = eng_->terminal(u)) out.push_back(t);
     return out;
 }
 
-PaneRect Tab::nodeRect(int paneId) const
+PaneRect Tab::nodeRect(Uuid nodeId) const
 {
-    if (!valid()) return {};
-    Uuid u = eng_->uuidForPaneId(paneId);
-    if (u.isNil()) return {};
-    uint32_t fbW = eng_->lastFbWidth();
-    uint32_t fbH = eng_->lastFbHeight();
-    if (fbW == 0 || fbH == 0) return {};
-    PaneRect content = contentRectFromFb(fbW, fbH, eng_->tabBarHeight(),
-                                          eng_->tabBarPosition());
+    if (!valid() || nodeId.isNil()) return {};
+    PaneRect content = resolveSubtreeContentRect(*eng_, subtreeRoot_);
+    if (content.isEmpty()) return {};
     auto rects = eng_->layoutTree().computeRectsFrom(subtreeRoot_,
-        LayoutRect{content.x, content.y, content.w, content.h}, 1, 1);
-    auto it = rects.find(u);
+        LayoutRect{content.x, content.y, content.w, content.h},
+        eng_->lastCellW(), eng_->lastCellH());
+    auto it = rects.find(nodeId);
     if (it == rects.end()) return {};
     return PaneRect{it->second.x, it->second.y, it->second.w, it->second.h};
 }
 
-int Tab::paneAtPixel(int px, int py) const
+Uuid Tab::paneAtPixel(int px, int py) const
 {
-    if (!valid()) return -1;
+    if (!valid()) return {};
     for (Terminal* t : panes()) {
         if (!t) continue;
         const PaneRect& r = t->rect();
         if (r.isEmpty()) continue;
         if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)
-            return t->id();
+            return t->nodeId();
     }
-    return -1;
+    return {};
 }
 
 // ===========================================================================
-// Focus / zoom (engine-wide, scoped to this tab for query semantics)
+// Focus (engine-wide, scoped to this tab for query semantics)
 // ===========================================================================
 
-int Tab::focusedPaneId() const
+Uuid Tab::focusedPaneId() const
 {
-    if (!valid()) return -1;
+    if (!valid()) return {};
     Uuid u = eng_->focusedTerminalNodeId();
-    if (u.isNil()) return -1;
-    // Scope to this tab.
-    const LayoutTree& tree = eng_->layoutTree();
-    Uuid cur = u;
-    while (!cur.isNil()) {
-        if (cur == subtreeRoot_) return eng_->paneIdForUuid(u);
-        const Node* n = tree.node(cur);
-        if (!n) return -1;
-        cur = n->parent;
-    }
-    return -1;
+    if (u.isNil()) return {};
+    return eng_->layoutTree().contains(subtreeRoot_, u) ? u : Uuid{};
 }
 
-void Tab::setFocusedPane(int paneId)
+void Tab::setFocusedPane(Uuid nodeId)
 {
     if (!valid()) return;
-    Uuid u = eng_->uuidForPaneId(paneId);
-    if (u.isNil()) return;
-    eng_->setFocusedTerminalNodeId(u);
+    eng_->setFocusedTerminalNodeId(nodeId);
 }
 
 Terminal* Tab::focusedPane()
 {
-    int id = focusedPaneId();
-    return id < 0 ? nullptr : pane(id);
-}
-
-bool Tab::isZoomed() const
-{
-    return zoomedPaneId() >= 0;
-}
-
-int Tab::zoomedPaneId() const
-{
-    if (!valid()) return -1;
-    Uuid u = eng_->zoomedNodeId();
-    if (u.isNil()) return -1;
-    const LayoutTree& tree = eng_->layoutTree();
-    Uuid cur = u;
-    while (!cur.isNil()) {
-        if (cur == subtreeRoot_) return eng_->paneIdForUuid(u);
-        const Node* n = tree.node(cur);
-        if (!n) return -1;
-        cur = n->parent;
-    }
-    return -1;
-}
-
-void Tab::zoomPane(int paneId)
-{
-    if (!valid()) return;
-    Uuid u = eng_->uuidForPaneId(paneId);
-    if (u.isNil()) return;
-    if (eng_->zoomedNodeId() == u) eng_->setZoomedNodeId({});
-    else                           eng_->setZoomedNodeId(u);
-}
-
-void Tab::unzoom()
-{
-    if (!valid()) return;
-    eng_->setZoomedNodeId({});
+    Uuid u = focusedPaneId();
+    return u.isNil() ? nullptr : pane(u);
 }
 
 // ===========================================================================
@@ -472,55 +259,41 @@ void Tab::unzoom()
 void Tab::setDividerPixels(int px)   { if (valid()) eng_->setDividerPixels(px); }
 int  Tab::dividerPixels() const      { return valid() ? eng_->dividerPixels() : 1; }
 
-void Tab::setTabBar(int height, const std::string& position)
-{
-    if (valid()) eng_->setTabBar(height, position);
-}
-
 PaneRect Tab::tabBarRect(uint32_t windowW, uint32_t windowH) const
 {
-    if (!valid() || eng_->tabBarHeight() <= 0) return {};
-    PaneRect r;
-    r.w = static_cast<int>(windowW);
-    r.h = eng_->tabBarHeight();
-    r.x = 0;
-    r.y = (eng_->tabBarPosition() == "top")
-            ? 0
-            : static_cast<int>(windowH) - eng_->tabBarHeight();
-    return r;
+    if (!valid()) return {};
+    Uuid bar = eng_->primaryTabBarNode();
+    if (bar.isNil()) return {};
+    const LayoutTree& tree = eng_->layoutTree();
+    auto rects = tree.computeRects(LayoutRect{0, 0, (int)windowW, (int)windowH},
+                                   eng_->lastCellW(), eng_->lastCellH());
+    auto it = rects.find(bar);
+    if (it == rects.end()) return {};
+    return PaneRect{it->second.x, it->second.y, it->second.w, it->second.h};
 }
 
 // ===========================================================================
 // Rect computation + dividers
 // ===========================================================================
 
-void Tab::computeRects(uint32_t windowW, uint32_t windowH)
+void Tab::computeRects(uint32_t windowW, uint32_t windowH, int cellW, int cellH)
 {
     if (!valid()) return;
     eng_->setLastFramebuffer(windowW, windowH);
-    PaneRect content = contentRectFromFb(windowW, windowH, eng_->tabBarHeight(),
-                                          eng_->tabBarPosition());
+    eng_->setLastCellMetrics(cellW, cellH);
+    PaneRect content = resolveSubtreeContentRect(*eng_, subtreeRoot_);
 
-    int zoomPaneId = zoomedPaneId();
-    if (zoomPaneId >= 0) {
-        for (Terminal* t : panes()) {
-            if (!t) continue;
-            if (t->id() == zoomPaneId) {
-                t->setRect({content.x, content.y, content.w, content.h});
-            } else {
-                t->setRect({0, 0, 0, 0});
-            }
-        }
-        return;
-    }
-
+    // Zoom is tree-native (StackData::zoomTarget) — the tree routes the
+    // Stack's rect to the zoom target and skips everything else, so
+    // non-zoomed Terminals naturally fall through to the rect-map miss
+    // below and get {0,0,0,0}.
     auto rects = eng_->layoutTree().computeRectsFrom(subtreeRoot_,
-        LayoutRect{content.x, content.y, content.w, content.h}, 1, 1);
+        LayoutRect{content.x, content.y, content.w, content.h},
+        eng_->lastCellW(), eng_->lastCellH());
 
     for (Terminal* t : panes()) {
         if (!t) continue;
-        Uuid u = eng_->uuidForPaneId(t->id());
-        auto it = rects.find(u);
+        auto it = rects.find(t->nodeId());
         if (it == rects.end()) { t->setRect({0, 0, 0, 0}); continue; }
         t->setRect(PaneRect{it->second.x, it->second.y, it->second.w, it->second.h});
     }
@@ -535,7 +308,7 @@ std::vector<PaneRect> Tab::dividerRects(int dividerPixelsParam) const
     return out;
 }
 
-std::vector<std::pair<int, PaneRect>>
+std::vector<std::pair<Uuid, PaneRect>>
 Tab::dividersWithOwnerPanes(int dividerPixelsParam) const
 {
     if (!valid() || dividerPixelsParam <= 0) return {};
@@ -545,95 +318,30 @@ Tab::dividersWithOwnerPanes(int dividerPixelsParam) const
     auto liveTerminals = activePanes();
     if (liveTerminals.size() < 2) return {};
 
-    PaneRect content = contentRectFromFb(eng_->lastFbWidth(), eng_->lastFbHeight(),
-                                          eng_->tabBarHeight(), eng_->tabBarPosition());
+    PaneRect content = resolveSubtreeContentRect(*eng_, subtreeRoot_);
     const LayoutTree& tree = eng_->layoutTree();
     auto rects = tree.computeRectsFrom(subtreeRoot_,
-        LayoutRect{content.x, content.y, content.w, content.h}, 1, 1);
+        LayoutRect{content.x, content.y, content.w, content.h},
+        eng_->lastCellW(), eng_->lastCellH());
 
-    std::vector<std::pair<int, PaneRect>> out;
-    std::function<void(Uuid)> walk = [&](Uuid id) {
-        const Node* n = tree.node(id);
-        if (!n) return;
-        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
-            for (const auto& s : cd->children) walk(s.id);
-            if (cd->children.size() < 2) return;
-            for (size_t i = 0; i + 1 < cd->children.size(); ++i) {
-                auto a = rects.find(cd->children[i].id);
-                if (a == rects.end()) continue;
-                PaneRect divR;
-                if (cd->dir == SplitDir::Horizontal) {
-                    int splitX = a->second.x + a->second.w;
-                    divR = {splitX, a->second.y, dividerPixelsParam, a->second.h};
-                } else {
-                    int splitY = a->second.y + a->second.h;
-                    divR = {a->second.x, splitY, a->second.w, dividerPixelsParam};
-                }
-                int firstPaneId = leftmostPaneIdInSubtree(tree, *eng_,
-                                                           cd->children[i].id);
-                out.push_back({firstPaneId, divR});
-            }
-        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
-            if (!sd->activeChild.isNil()) walk(sd->activeChild);
-        }
-    };
-    walk(subtreeRoot_);
+    std::vector<std::pair<Uuid, LayoutRect>> raw;
+    tree.dividersIn(subtreeRoot_, dividerPixelsParam, rects, raw);
+
+    std::vector<std::pair<Uuid, PaneRect>> out;
+    out.reserve(raw.size());
+    for (const auto& [firstNode, r] : raw) {
+        Uuid leafId = tree.leftmostTerminalIn(firstNode);
+        out.push_back({leafId, PaneRect{r.x, r.y, r.w, r.h}});
+    }
     return out;
 }
 
-bool Tab::resizePaneEdge(int paneId, LayoutNode::Dir axis, int pixelDelta)
+bool Tab::resizePaneEdge(Uuid nodeId, LayoutNode::Dir axis, int pixelDelta)
 {
-    if (!valid()) return false;
-    LayoutTree& tree = eng_->layoutTree();
-    Uuid target = eng_->uuidForPaneId(paneId);
-    if (target.isNil()) return false;
-    SplitDir want = toSplitDir(axis);
-
-    Uuid cur = target;
-    while (true) {
-        const Node* n = tree.node(cur);
-        if (!n || n->parent.isNil()) return false;
-        const Node* p = tree.node(n->parent);
-        if (!p) return false;
-        const auto* cd = std::get_if<ContainerData>(&p->data);
-        if (!cd) return false;
-        if (cd->dir != want) { cur = n->parent; continue; }
-
-        size_t idx = 0;
-        bool found = false;
-        for (size_t i = 0; i < cd->children.size(); ++i) {
-            if (cd->children[i].id == cur) { idx = i; found = true; break; }
-        }
-        if (!found) return false;
-
-        bool useTrailing = (idx + 1 < cd->children.size());
-        size_t neighborIdx = useTrailing ? idx + 1 : idx - 1;
-        if (!useTrailing && idx == 0) return false;
-
-        PaneRect content = contentRectFromFb(eng_->lastFbWidth(), eng_->lastFbHeight(),
-                                              eng_->tabBarHeight(), eng_->tabBarPosition());
-        auto rects = tree.computeRectsFrom(subtreeRoot_,
-            LayoutRect{content.x, content.y, content.w, content.h}, 1, 1);
-
-        auto ra = rects.find(cd->children[idx].id);
-        auto rb = rects.find(cd->children[neighborIdx].id);
-        if (ra == rects.end() || rb == rects.end()) return false;
-
-        int axisA = (want == SplitDir::Horizontal) ? ra->second.w : ra->second.h;
-        int axisB = (want == SplitDir::Horizontal) ? rb->second.w : rb->second.h;
-
-        int signedDelta = useTrailing ? pixelDelta : -pixelDelta;
-        int newA = std::max(1, axisA + signedDelta);
-        int newB = std::max(1, axisB - signedDelta);
-
-        Node* pMut = tree.node(n->parent);
-        if (!pMut) return false;
-        auto* cdMut = std::get_if<ContainerData>(&pMut->data);
-        if (!cdMut) return false;
-        cdMut->children[idx].stretch         = newA;
-        cdMut->children[neighborIdx].stretch = newB;
-        cdMut->children[idx].fixedCells      = 0;
-        cdMut->children[neighborIdx].fixedCells = 0;
-        return true;
-    }
+    if (!valid() || nodeId.isNil()) return false;
+    PaneRect content = resolveSubtreeContentRect(*eng_, subtreeRoot_);
+    return eng_->layoutTree().resizeEdgeAlongAxis(
+        nodeId, toSplitDir(axis), pixelDelta, subtreeRoot_,
+        LayoutRect{content.x, content.y, content.w, content.h},
+        eng_->lastCellW(), eng_->lastCellH());
 }

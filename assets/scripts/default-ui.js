@@ -34,8 +34,11 @@
     // setRoot detaches the old root as a parentless node; we then re-attach
     // it as the second child of the new root Container.
     mb.layout.setRoot(newRoot);
-    mb.layout.appendChild(newRoot, tabBar);
-    mb.layout.appendChild(newRoot, tabsStack);
+    // TabBar slot is one cell high (approximately one text line). Native
+    // code (initTabBar / updateTabBarVisibility) can override fixedCells
+    // to toggle visibility. The tabs Stack stretches to fill the rest.
+    mb.layout.appendChild(newRoot, tabBar, {fixedCells: 1});
+    mb.layout.appendChild(newRoot, tabsStack, {stretch: 1});
     mb.layout.setTabBarStack(tabBar, tabsStack);
 })();
 
@@ -86,7 +89,20 @@ mb.actions.register('closePane', () => {
 mb.actions.register('zoomPane', () => {
     const fp = mb.layout.focusedPane();
     if (!fp) return;
-    mb.layout.setZoom(fp.nodeId);
+    // Walk up from the focused pane to the nearest enclosing Stack — that's
+    // the tab's subtreeRoot. Its `zoomTarget` is the tree-native override;
+    // we toggle between "zoomed to fp" and "cleared".
+    let tabStack = null;
+    for (let cur = fp.nodeId; cur; ) {
+        const n = mb.layout.node(cur);
+        if (!n) break;
+        if (n.kind === 'Stack') { tabStack = cur; break; }
+        cur = n.parent;
+    }
+    if (!tabStack) return;
+    const stackNode = mb.layout.node(tabStack);
+    if (!stackNode) return;
+    mb.layout.setStackZoom(tabStack, stackNode.zoomTarget ? null : fp.nodeId);
 });
 
 mb.actions.register('adjustPaneSize', ({dir, amount}) => {

@@ -263,6 +263,26 @@ static void registerInGlobal(JSContext* ctx, const char* registryName,
     JS_FreeValue(ctx, global);
 }
 
+// String-keyed variant — needed for pane/tab registries since pane ids are
+// now Uuids (their string form) rather than ints.
+static void registerInGlobal(JSContext* ctx, const char* registryName,
+                              const std::string& key, JSValueConst obj)
+{
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue registry = JS_GetPropertyStr(ctx, global, registryName);
+    if (JS_IsUndefined(registry)) {
+        registry = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, global, registryName, JS_DupValue(ctx, registry));
+    }
+    JSValue existing = JS_GetPropertyStr(ctx, registry, key.c_str());
+    if (JS_IsUndefined(existing)) {
+        JS_SetPropertyStr(ctx, registry, key.c_str(), JS_DupValue(ctx, obj));
+    }
+    JS_FreeValue(ctx, existing);
+    JS_FreeValue(ctx, registry);
+    JS_FreeValue(ctx, global);
+}
+
 // Remove a callback from a JS array by identity (indexOf + splice).
 static void removeFromJSArray(JSContext* ctx, JSValue arr, JSValueConst fn)
 {
@@ -304,21 +324,21 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
         if (!checkPerm(ctx, Perm::IoFilterOutput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput"); }
         prop = "__output_filters";
         eng->addPaneOutputFilter(pane->id, instId);
-        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+        registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else if (strcmp(event, "input") == 0) {
         if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
         eng->addPaneInputFilter(pane->id, instId);
-        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+        registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else if (strcmp(event, "mouse") == 0) {
         if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
         prop = "__mouse_listeners";
-        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+        registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else if (strcmp(event, "mousemove") == 0) {
         if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
         prop = "__evt_mousemove";
         eng->addPaneMouseMoveListener(pane->id, instId);
-        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+        registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else if (strcmp(event, "commandComplete") == 0) {
         if (!checkPerm(ctx, Perm::ShellReadCommands)) {
             JS_FreeCString(ctx, event);
@@ -326,11 +346,11 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
             return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
         }
         prop = std::string("__evt_") + event;
-        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+        registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else {
         prop = std::string("__evt_") + event;
         // Register for lifecycle events too (so destroyed can be found)
-        registerInGlobal(ctx, "__pane_registry", static_cast<uint32_t>(pane->id), this_val);
+        registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     }
     JS_FreeCString(ctx, event);
 
@@ -553,7 +573,10 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
     Engine* eng = engineFromCtx(ctx);
     auto info = eng->callbacks().paneInfo(pane->id);
     switch (magic) {
-    case 0: return JS_NewInt32(ctx, pane->id);
+    case 0: {
+        std::string s = pane->id.toString();
+        return JS_NewStringLen(ctx, s.data(), s.size());
+    }
     case 1: return JS_NewInt32(ctx, info.cols);
     case 2: return JS_NewInt32(ctx, info.rows);
     case 3: return JS_NewString(ctx, info.title.c_str());
@@ -760,7 +783,7 @@ static JSValue jsPopupClose(JSContext* ctx, JSValueConst this_val,
 
     // Clear popup registry so a future popup with the same id on the same pane
     // registers fresh and input is delivered to the new popup's listeners.
-    std::string regKey = std::to_string(popup->paneId) + ":" + popup->popupId;
+    std::string regKey = popup->paneId.toString() + ":" + popup->popupId;
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue registry = JS_GetPropertyStr(ctx, global, "__popup_registry");
     if (!JS_IsUndefined(registry))
@@ -797,7 +820,7 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
 
     // Register in popup registry for input/mouse delivery
     Engine* eng = engineFromCtx(ctx);
-    std::string regKey = std::to_string(popup->paneId) + ":" + popup->popupId;
+    std::string regKey = popup->paneId.toString() + ":" + popup->popupId;
     // Use a string-keyed property on a global popup registry
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue registry = JS_GetPropertyStr(ctx, global, "__popup_registry");
@@ -851,7 +874,10 @@ static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
     if (!popup || !popup->alive) return JS_UNDEFINED;
     Engine* eng = engineFromCtx(ctx);
     switch (magic) {
-    case 0: return JS_NewInt32(ctx, popup->paneId);
+    case 0: {
+        std::string s = popup->paneId.toString();
+        return JS_NewStringLen(ctx, s.data(), s.size());
+    }
     case 1: return JS_NewString(ctx, popup->popupId.c_str());
     case 2: {
         auto info = eng->callbacks().paneInfo(popup->paneId);
@@ -940,11 +966,11 @@ static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
     std::string popupId(id);
     JS_FreeCString(ctx, id);
 
-    int paneId = pane->id;
+    Uuid paneId = pane->id;
     bool ok = eng->callbacks().createPopup(paneId, popupId, x, y, w, h,
         [eng, paneId, popupId](const char* data, size_t len) {
             // Deliver input to popup listeners
-            std::string regKey = std::to_string(paneId) + ":" + popupId;
+            std::string regKey = paneId.toString() + ":" + popupId;
             eng->deliverPopupInput(regKey, data, len);
         });
 
@@ -1091,7 +1117,7 @@ static JSValue jsTabGetActivePane(JSContext* ctx, JSValueConst this_val)
     Engine* eng = engineFromCtx(ctx);
     auto tabInfos = eng->callbacks().tabs();
     for (auto& ti : tabInfos) {
-        if (ti.id == tab->id && ti.focusedPane >= 0)
+        if (ti.id == tab->id && !ti.focusedPane.isNil())
             return jsPaneNew(ctx, ti.focusedPane);
     }
     return JS_UNDEFINED;
@@ -1246,7 +1272,7 @@ static JSValue jsMbGetActivePane(JSContext* ctx, JSValueConst, int, JSValueConst
     Engine* eng = engineFromCtx(ctx);
     auto tabInfos = eng->callbacks().tabs();
     for (auto& ti : tabInfos)
-        if (ti.active && ti.focusedPane >= 0)
+        if (ti.active && !ti.focusedPane.isNil())
             return jsPaneNew(ctx, ti.focusedPane);
     return JS_UNDEFINED;
 }
@@ -2153,7 +2179,7 @@ Engine::LoadResult Engine::loadScript(const std::string& path, uint32_t requeste
 
     // Store pending script and notify JS to show permission prompt
     std::string pendingKey = path; // keyed by path
-    pendingScripts_[pendingKey] = {path, content, hash, requestedPerms, "", -1};
+    pendingScripts_[pendingKey] = {path, content, hash, requestedPerms, "", Uuid{}};
 
     // Fire scriptPermissionRequired event on mb
     notifyPermissionRequired(path, permissionsToString(requestedPerms), hash);
@@ -2370,7 +2396,7 @@ bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& da
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         JS_FreeValue(inst.ctx, registry);
         if (JS_IsUndefined(paneObj)) continue;
 
@@ -2491,8 +2517,9 @@ void Engine::notifyPaneDestroyed(PaneId pane, Uuid nodeId)
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_paneDestroyed");
+        std::string ps = pane.toString();
         JSValue args[2] = {
-            JS_NewInt32(inst.ctx, pane),
+            JS_NewStringLen(inst.ctx, ps.data(), ps.size()),
             nodeId.isNil()
               ? JS_NULL
               : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36),
@@ -2560,7 +2587,9 @@ void Engine::notifyTerminalExited(PaneId pane, Uuid nodeId)
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_terminalExited");
         JSValue payload = JS_NewObject(inst.ctx);
-        JS_SetPropertyStr(inst.ctx, payload, "paneId", JS_NewInt32(inst.ctx, pane));
+        std::string ps = pane.toString();
+        JS_SetPropertyStr(inst.ctx, payload, "paneId",
+            JS_NewStringLen(inst.ctx, ps.data(), ps.size()));
         JS_SetPropertyStr(inst.ctx, payload, "paneNodeId",
             nodeId.isNil() ? JS_NULL
                            : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36));
@@ -2584,7 +2613,7 @@ void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_resized");
             JSValue args[] = { JS_NewInt32(inst.ctx, cols), JS_NewInt32(inst.ctx, rows) };
@@ -2612,7 +2641,7 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, prop.c_str());
             if (!JS_IsUndefined(arr)) {
@@ -2654,7 +2683,7 @@ void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& proc
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_foregroundProcessChanged");
             JSValue arg = JS_NewString(inst.ctx, processName.c_str());
@@ -2677,7 +2706,7 @@ void Engine::notifyPaneFocusChanged(PaneId pane, bool focused)
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_focusChanged");
             JSValue arg = JS_NewBool(inst.ctx, focused);
@@ -2700,7 +2729,7 @@ void Engine::notifyFocusedPopupChanged(PaneId pane, const std::string& popupId)
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_focusedPopupChanged");
             JSValue arg = popupId.empty() ? JS_NULL : JS_NewString(inst.ctx, popupId.c_str());
@@ -2723,7 +2752,7 @@ void Engine::notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, 
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_mousemove");
             if (!JS_IsUndefined(arr)) {
@@ -2845,7 +2874,7 @@ void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_commandComplete");
             JSValue arg = buildCommandObject(inst.ctx, rec, pane);
@@ -2868,7 +2897,7 @@ void Engine::notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> 
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_commandSelectionChanged");
             JSValue arg = commandId
@@ -2986,7 +3015,7 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
                                      int pixelX, int pixelY, int button)
 {
     IterGuard guard(this);
-    std::string regKey = std::to_string(pane) + ":" + popupId;
+    std::string regKey = pane.toString() + ":" + popupId;
 
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
@@ -3038,7 +3067,7 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
 }
 
 void Engine::deliverMouseToRegistry(const char* registryName,
-                                     uint32_t key, const std::string& type,
+                                     const std::string& key, const std::string& type,
                                      int cellX, int cellY, int pixelX, int pixelY, int button)
 {
     IterGuard guard(this);
@@ -3049,7 +3078,7 @@ void Engine::deliverMouseToRegistry(const char* registryName,
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue obj = JS_GetPropertyUint32(inst.ctx, registry, key);
+        JSValue obj = JS_GetPropertyStr(inst.ctx, registry, key.c_str());
         if (!JS_IsUndefined(obj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__mouse_listeners");
             if (!JS_IsUndefined(arr)) {
@@ -3093,7 +3122,7 @@ void Engine::deliverMouseToRegistry(const char* registryName,
 void Engine::deliverPaneMouseEvent(PaneId pane, const std::string& type,
                                     int cellX, int cellY, int pixelX, int pixelY, int button)
 {
-    deliverMouseToRegistry("__pane_registry", static_cast<uint32_t>(pane),
+    deliverMouseToRegistry("__pane_registry", pane.toString(),
                                  type, cellX, cellY, pixelX, pixelY, button);
 }
 
@@ -3122,7 +3151,7 @@ void Engine::cleanupPane(PaneId pane)
         JS_FreeValue(inst.ctx, global);
         if (JS_IsUndefined(registry)) continue;
 
-        JSValue paneObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane));
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             // Fire destroyed listeners
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_destroyed");
@@ -3134,7 +3163,7 @@ void Engine::cleanupPane(PaneId pane)
             if (data) data->alive = false;
 
             // Remove from registry
-            JS_SetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(pane), JS_UNDEFINED);
+            JS_SetPropertyStr(inst.ctx, registry, pane.toString().c_str(), JS_UNDEFINED);
         }
         JS_FreeValue(inst.ctx, paneObj);
         JS_FreeValue(inst.ctx, registry);

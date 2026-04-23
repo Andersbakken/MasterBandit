@@ -98,7 +98,7 @@ public:
         // Build the terminal callbacks shim — stays on PlatformDawn
         // because it closes over ~20 platform members (title, icon,
         // CWD, progress, OSC, foreground-process, mouse-cursor-shape).
-        std::function<TerminalCallbacks(int paneId)> buildTerminalCallbacks;
+        std::function<TerminalCallbacks(Uuid nodeId)> buildTerminalCallbacks;
 
         // Main-thread graveyard for deferred destruction of Panes / Tabs /
         // overlays / Terminals. The Terminals they own must outlive the
@@ -192,19 +192,17 @@ public:
 
     // Spawn a Terminal inside the Layout that owns `parentContainerNodeId`,
     // append the new Terminal node as the container's last child, and fire
-    // `paneCreated`. On success returns true and fills `outPaneId` /
-    // `outNodeId`. `cwd` may be empty (Terminal uses its default).
+    // `paneCreated`. On success returns true and fills `outNodeId` with the
+    // fresh Terminal's tree Uuid. `cwd` may be empty.
     bool createTerminalInContainer(Uuid parentContainerNodeId,
                                    const std::string& cwd,
-                                   int* outPaneId,
                                    Uuid* outNodeId);
 
     // Wrap `existingPaneNodeId` in a new Container, place a freshly-spawned
-    // Terminal alongside, and fire `paneCreated`. Mirrors legacy SplitPane
-    // semantics but entirely UUID-driven.
+    // Terminal alongside, and fire `paneCreated`.
     bool splitPaneByNodeId(Uuid existingPaneNodeId, LayoutNode::Dir dir,
                            float ratio, bool newIsFirst,
-                           int* outPaneId, Uuid* outNodeId);
+                           Uuid* outNodeId);
 
     // Remove a node (Terminal leaf, Container, or Stack) from its enclosing
     // Tab's Layout tree. Refuses if any descendant Terminal is still live in
@@ -219,15 +217,13 @@ public:
 
     // Set the focused pane in whichever tab contains it, with notify
     // + title update + redraw. Returns false if pane not found.
-    bool focusPaneById(int paneId);
+    bool focusPaneById(Uuid nodeId);
 
     // Lookup helpers for the binding layer.
     std::optional<Tab> findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx = nullptr) const;
     // Walk up from `nodeId`'s ancestors until we hit a Layout's subtreeRoot;
     // returns the owning Tab (or nullopt).
     std::optional<Tab> findTabForNode(Uuid nodeId, int* outTabIdx = nullptr) const;
-    // Resolve a paneId given a Terminal's tree UUID (via Terminal::nodeId()).
-    int findPaneIdByNodeId(Uuid nodeId);
 
     // Called from the onTerminalExited deferred drain in PlatformDawn.
     // Resolves the Terminal's nodeId and delegates to killTerminal.
@@ -243,7 +239,7 @@ public:
     bool killTerminal(Uuid nodeId);
 
     // --- Pane helpers ---
-    void spawnTerminalForPane(int paneId, int tabIdx, const std::string& cwd = {});
+    void spawnTerminalForPane(Uuid nodeId, int tabIdx, const std::string& cwd = {});
     void resizeAllPanesInTab(Tab tab);
     void refreshDividers(Tab tab);
     void clearDividers(Tab tab);
@@ -252,16 +248,16 @@ public:
     // --- Title flow ---
     void updateTabTitleFromFocusedPane(int tabIdx);
     void updateWindowTitle();
-    void notifyPaneFocusChange(Tab tab, int prevId, int newId);
+    void notifyPaneFocusChange(Tab tab, Uuid prevId, Uuid newId);
 
     // --- Lookup helpers ---
     // Find the tab that contains a given pane; returns a handle and
     // (optionally) its index. Returns nullopt if not found.
-    std::optional<Tab> findTabForPane(int paneId, int* outTabIdx = nullptr) const;
+    std::optional<Tab> findTabForPane(Uuid nodeId, int* outTabIdx = nullptr) const;
 
 private:
-    static std::string popupStateKey(int paneId, const std::string& popupId) {
-        return std::to_string(paneId) + "/" + popupId;
+    static std::string popupStateKey(Uuid nodeId, const std::string& popupId) {
+        return nodeId.toString() + "/" + popupId;
     }
 
     // Walk layoutRootStack_'s children and return the Nth child's UUID;

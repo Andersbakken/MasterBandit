@@ -43,13 +43,10 @@ public:
     ~Terminal() override;
 
     // --- Identity ---
-    int id() const { return mId; }
-    void setId(int id) { mId = id; }
-
-    // Stable UUID for this Terminal's node in the shared LayoutTree. Populated
-    // by Layout::insertTerminal once both the integer paneId and the tree
-    // node exist. Nil for Terminals that don't live in the tree (popups,
-    // overlays — those are attached below the tree, not as nodes in it).
+    // The Terminal's tree-node UUID is the sole identifier. Popups / overlays
+    // that don't live in the tree have nil nodeId and key off their parent
+    // plus popupId string.
+    Uuid id() const { return mNodeId; }
     Uuid nodeId() const { return mNodeId; }
     void setNodeId(Uuid u) { mNodeId = u; }
 
@@ -144,7 +141,6 @@ private:
     void writeToPTY(const char* data, size_t len);
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
-    int mId { -1 };
     Uuid mNodeId;
     int mMasterFD { -1 };
     bool mHeadless { false };

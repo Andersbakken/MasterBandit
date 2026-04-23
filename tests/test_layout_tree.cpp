@@ -358,3 +358,214 @@ TEST_CASE("LayoutTree: removing a stack's active child promotes the new front to
     auto m = t.computeRects({0, 0, 200, 100}, 1, 1);
     CHECK(rectOf(m, b) == LayoutRect{0, 0, 200, 100});
 }
+
+TEST_CASE("LayoutTree: contains walks parent chain")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid inner = t.createContainer(SplitDir::Vertical);
+    Uuid leaf = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{inner}));
+    REQUIRE(t.appendChild(inner, ChildSlot{leaf}));
+
+    CHECK(t.contains(root, leaf));
+    CHECK(t.contains(root, inner));
+    CHECK(t.contains(root, root)); // reflexive
+    CHECK(t.contains(inner, leaf));
+    CHECK_FALSE(t.contains(leaf, root)); // reversed
+    CHECK_FALSE(t.contains(root, Uuid{}));
+    CHECK_FALSE(t.contains(Uuid{}, leaf));
+}
+
+TEST_CASE("LayoutTree: nearestAncestorOfKind finds first matching ancestor")
+{
+    LayoutTree t;
+    Uuid stk = t.createStack();
+    Uuid inner = t.createContainer(SplitDir::Horizontal);
+    Uuid leaf = t.createTerminal();
+    REQUIRE(t.setRoot(stk));
+    REQUIRE(t.appendChild(stk, ChildSlot{inner}));
+    REQUIRE(t.appendChild(inner, ChildSlot{leaf}));
+
+    // `leaf` itself is the Terminal match (reflexive).
+    CHECK(t.nearestAncestorOfKind(leaf, NodeKind::Terminal) == leaf);
+    // `inner` is the nearest Container.
+    CHECK(t.nearestAncestorOfKind(leaf, NodeKind::Container) == inner);
+    // `stk` is the nearest Stack (skipping past inner).
+    CHECK(t.nearestAncestorOfKind(leaf, NodeKind::Stack) == stk);
+    // No TabBar anywhere: nil.
+    CHECK(t.nearestAncestorOfKind(leaf, NodeKind::TabBar).isNil());
+}
+
+TEST_CASE("LayoutTree: dividersIn emits rects between visible siblings")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal();
+    Uuid b = t.createTerminal();
+    Uuid c = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{c, 1}));
+
+    auto rects = t.computeRects({0, 0, 300, 100}, 1, 1);
+    std::vector<std::pair<Uuid, LayoutRect>> divs;
+    t.dividersIn(root, 2, rects, divs);
+
+    REQUIRE(divs.size() == 2);
+    // First divider between a and b. Owner = a.
+    CHECK(divs[0].first == a);
+    CHECK(divs[0].second == LayoutRect{100, 0, 2, 100});
+    // Second divider between b and c. Owner = b.
+    CHECK(divs[1].first == b);
+    CHECK(divs[1].second == LayoutRect{200, 0, 2, 100});
+}
+
+TEST_CASE("LayoutTree: dividersIn follows only active Stack child")
+{
+    LayoutTree t;
+    Uuid stk = t.createStack();
+    Uuid visible = t.createContainer(SplitDir::Horizontal);
+    Uuid hidden  = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal();
+    Uuid b = t.createTerminal();
+    Uuid c = t.createTerminal();
+    Uuid d = t.createTerminal();
+    REQUIRE(t.setRoot(stk));
+    REQUIRE(t.appendChild(stk, ChildSlot{visible}));
+    REQUIRE(t.appendChild(stk, ChildSlot{hidden}));
+    REQUIRE(t.appendChild(visible, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(visible, ChildSlot{b, 1}));
+    REQUIRE(t.appendChild(hidden,  ChildSlot{c, 1}));
+    REQUIRE(t.appendChild(hidden,  ChildSlot{d, 1}));
+    // `visible` was auto-activated by first appendChild.
+
+    auto rects = t.computeRects({0, 0, 200, 50}, 1, 1);
+    std::vector<std::pair<Uuid, LayoutRect>> divs;
+    t.dividersIn(stk, 1, rects, divs);
+
+    // Only the visible Container's a/b boundary should produce a divider.
+    REQUIRE(divs.size() == 1);
+    CHECK(divs[0].first == a);
+}
+
+TEST_CASE("LayoutTree: dirty flag tracks mutations")
+{
+    LayoutTree t;
+    // Fresh tree starts dirty (first-frame compute).
+    CHECK(t.isDirty());
+    CHECK(t.takeDirty());
+    CHECK_FALSE(t.isDirty());
+
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a    = t.createTerminal();
+    // createContainer/createTerminal are allocation-only; no structural
+    // change until setRoot/appendChild. They do NOT dirty the tree.
+    CHECK_FALSE(t.isDirty());
+
+    REQUIRE(t.setRoot(root));
+    CHECK(t.isDirty());
+    (void)t.takeDirty();
+
+    REQUIRE(t.appendChild(root, ChildSlot{a, 1}));
+    CHECK(t.isDirty());
+    (void)t.takeDirty();
+
+    REQUIRE(t.setSlotStretch(root, a, 2));
+    CHECK(t.isDirty());
+    (void)t.takeDirty();
+
+    // Read-only ops should NOT dirty.
+    (void)t.computeRects({0, 0, 100, 50}, 1, 1);
+    (void)t.contains(root, a);
+    CHECK_FALSE(t.isDirty());
+
+    t.destroyNode(a);
+    CHECK(t.isDirty());
+}
+
+TEST_CASE("LayoutTree: Stack zoomTarget routes the Stack's rect to the target")
+{
+    LayoutTree t;
+    Uuid stk  = t.createStack();
+    Uuid cont = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal();
+    Uuid b = t.createTerminal();
+    REQUIRE(t.setRoot(stk));
+    REQUIRE(t.appendChild(stk,  ChildSlot{cont}));
+    REQUIRE(t.appendChild(cont, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(cont, ChildSlot{b, 1}));
+
+    // Sanity: without zoom both siblings share the rect.
+    auto m0 = t.computeRects({0, 0, 200, 100}, 1, 1);
+    CHECK(rectOf(m0, a) == LayoutRect{  0, 0, 100, 100});
+    CHECK(rectOf(m0, b) == LayoutRect{100, 0, 100, 100});
+
+    // Zoom `a` — the Stack's entire rect goes to a, b is missing.
+    REQUIRE(t.setStackZoom(stk, a));
+    auto m1 = t.computeRects({0, 0, 200, 100}, 1, 1);
+    CHECK(rectOf(m1, a) == LayoutRect{0, 0, 200, 100});
+    CHECK(m1.find(b) == m1.end());
+
+    // Clear: back to the split.
+    REQUIRE(t.setStackZoom(stk, Uuid{}));
+    auto m2 = t.computeRects({0, 0, 200, 100}, 1, 1);
+    CHECK(rectOf(m2, b) == LayoutRect{100, 0, 100, 100});
+}
+
+TEST_CASE("LayoutTree: setStackZoom rejects targets outside the Stack's subtree")
+{
+    LayoutTree t;
+    Uuid stk   = t.createStack();
+    Uuid inner = t.createTerminal();
+    Uuid orphan = t.createTerminal(); // not under stk
+    REQUIRE(t.appendChild(stk, ChildSlot{inner}));
+    CHECK_FALSE(t.setStackZoom(stk, orphan));
+    CHECK_FALSE(t.setStackZoom(stk, stk)); // reflexive disallowed
+    CHECK(t.setStackZoom(stk, inner));
+    CHECK(t.setStackZoom(stk, Uuid{}));     // nil always clears
+}
+
+TEST_CASE("LayoutTree: destroyNode clears zoomTarget pointing into the destroyed subtree")
+{
+    LayoutTree t;
+    Uuid stk  = t.createStack();
+    Uuid cont = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal();
+    REQUIRE(t.setRoot(stk));
+    REQUIRE(t.appendChild(stk,  ChildSlot{cont}));
+    REQUIRE(t.appendChild(cont, ChildSlot{a, 1}));
+    REQUIRE(t.setStackZoom(stk, a));
+
+    // Destroy a — zoomTarget must clear, else zoom override would dangle.
+    t.destroyNode(a);
+    const Node* s = t.node(stk);
+    REQUIRE(s != nullptr);
+    const auto* sd = std::get_if<StackData>(&s->data);
+    REQUIRE(sd != nullptr);
+    CHECK(sd->zoomTarget.isNil());
+}
+
+TEST_CASE("LayoutTree: collapseSingletonsAbove folds single-child Containers")
+{
+    LayoutTree t;
+    Uuid root  = t.createContainer(SplitDir::Horizontal);
+    Uuid wrap1 = t.createContainer(SplitDir::Vertical);
+    Uuid wrap2 = t.createContainer(SplitDir::Horizontal);
+    Uuid leaf  = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root,  ChildSlot{wrap1, 1}));
+    REQUIRE(t.appendChild(wrap1, ChildSlot{wrap2, 1}));
+    REQUIRE(t.appendChild(wrap2, ChildSlot{leaf,  1}));
+
+    // Collapse everything from wrap2 up to (but not including) root.
+    t.collapseSingletonsAbove(wrap2, root);
+
+    // wrap1, wrap2 are gone; root directly parents leaf.
+    CHECK(t.node(wrap1) == nullptr);
+    CHECK(t.node(wrap2) == nullptr);
+    auto rects = t.computeRects({0, 0, 100, 50}, 1, 1);
+    CHECK(rectOf(rects, leaf) == LayoutRect{0, 0, 100, 50});
+}

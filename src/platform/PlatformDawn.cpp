@@ -18,6 +18,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sys/ioctl.h>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -81,8 +82,8 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         th.queueTerminalExit = [this](Terminal* t) {
             renderThread_->enqueueTerminalExit(t);
         };
-        th.buildTerminalCallbacks = [this](int paneId) {
-            return buildTerminalCallbacks(paneId);
+        th.buildTerminalCallbacks = [this](Uuid nodeId) {
+            return buildTerminalCallbacks(nodeId);
         };
         th.graveyard = &graveyard_;
         th.completedFrames = [this]() -> uint64_t {
@@ -125,7 +126,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
         ih.tabBarColRanges = [this]() -> const std::vector<std::pair<int,int>>& {
             return tabBarColRanges_;
         };
-        ih.notifyPaneFocusChange = [this](Tab t, int prev, int next) {
+        ih.notifyPaneFocusChange = [this](Tab t, Uuid prev, Uuid next) {
             tabManager_->notifyPaneFocusChange(t, prev, next);
         };
         ih.updateTabTitleFromFocusedPane = [this](int tabIdx) {
@@ -223,8 +224,23 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     }
 }
 
+void PlatformDawn::runLayoutIfDirty()
+{
+    if (!scriptEngine_.layoutTree().takeDirty()) return;
+    for (Tab& t : tabManager_->tabs()) {
+        if (t.valid()) tabManager_->resizeAllPanesInTab(t);
+    }
+}
+
 void PlatformDawn::buildRenderFrameState()
 {
+    // If any tree mutations happened since the last frame (splits, zooms,
+    // tab switches, etc.) run the resize cascade now. Single gate per frame:
+    // the tree's dirty flag is cleared on consume, so subsequent calls are
+    // no-ops until the next mutation. Called under the render mutex which
+    // matches the locking order tabManager_->resizeAllPanesInTab expects.
+    runLayoutIfDirty();
+
     // Called under the render-thread mutex. Rebuilds the shadow copy from
     // live state and merges main-thread-owned dirty flags (tabBarDirty_,
     // dividersDirty_) into renderThread_->renderState().
@@ -296,18 +312,16 @@ void PlatformDawn::buildRenderFrameState()
 
     // Active tab pane info. `activePanes()` walks the tab's subtree honouring
     // Stack activeChild semantics — inactive Stack siblings (e.g. the content
-    // Container while a scrollback pager is on top) don't contribute. This
-    // replaces the pre-cutover path that iterated `TabManager::tabs_` and the
-    // overlay render pass (both deleted in earlier steps).
+    // Container while a scrollback pager is on top) don't contribute.
     renderThread_->renderState().panes.clear();
-    renderThread_->renderState().focusedPaneId = -1;
+    renderThread_->renderState().focusedPaneId = {};
 
     if (tab) {
         renderThread_->renderState().focusedPaneId = tab->focusedPaneId();
 
         for (Terminal* pane : tab->activePanes()) {
             RenderPaneInfo rpi;
-            rpi.id = pane->id();
+            rpi.id = pane->nodeId();
             rpi.rect = pane->rect();
             rpi.term = pane;
             rpi.progressState = pane->progressState();
@@ -334,7 +348,7 @@ void PlatformDawn::buildRenderFrameState()
         RenderTabInfo rti;
         rti.title = t.title();
         rti.icon  = t.icon();
-        rti.focusedPaneId = t.valid() ? t.focusedPaneId() : -1;
+        rti.focusedPaneId = t.valid() ? t.focusedPaneId() : Uuid{};
         Terminal* fp = t.valid() ? t.focusedPane() : nullptr;
         rti.progressState = fp ? fp->progressState() : 0;
         rti.progressPct   = fp ? fp->progressPct() : 0;
@@ -898,9 +912,13 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     // via the shared tree.
     Tab layout = Tab::newSubtree(&scriptEngine_);
     layout.setDividerPixels(dividerWidth_);
-    int paneId = layout.createPane();
+    Uuid paneId = layout.createPane();
     layout.setFocusedPane(paneId);
-    layout.computeRects(fbWidth_, fbHeight_);
+    {
+        const int cellW = std::max(1, static_cast<int>(std::round(charWidth_)));
+        const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
+        layout.computeRects(fbWidth_, fbHeight_, cellW, cellH);
+    }
 
     auto cbs = buildTerminalCallbacks(paneId);
     PlatformCallbacks pcbs;
@@ -1036,7 +1054,9 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             Tab& lastTab = tabsVec.back();
             if (lastTab.valid()) {
                 lastTab.setDividerPixels(dividerWidth_);
-                lastTab.computeRects(fbWidth_, fbHeight_);
+                const int cellW = std::max(1, static_cast<int>(std::round(charWidth_)));
+                const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
+                lastTab.computeRects(fbWidth_, fbHeight_, cellW, cellH);
                 if (Terminal* p = lastTab.focusedPane()) {
                     p->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
                     int c = p->width(), r = p->height();
@@ -1426,24 +1446,13 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     auto allTabs = tabManager_->tabs();
     for (Tab& t : allTabs) tabManager_->clearDividers(t);
 
-    for (Tab& t : allTabs) {
-        if (!t.valid()) continue;
-        t.computeRects(fbWidth_, fbHeight_);
-
-        for (Terminal* pane : t.panes()) {
-            pane->resizeToRect(charWidth_, lineHeight_, padLeft_, padTop_, padRight_, padBottom_);
-
-            int cols = pane->width();
-            int rows = pane->height();
-            if (cols < 1) cols = 1;
-            if (rows < 1) rows = 1;
-
-            scriptEngine_.notifyPaneResized(pane->id(), cols, rows);
-
-            renderThread_->pending().structuralOps.push_back(
-                PendingMutations::ResizePaneState{pane->id(), cols, rows});
-        }
-    }
+    // Fb change isn't a tree mutation but still invalidates all rects. Mark
+    // dirty so runLayoutIfDirty (invoked from buildRenderFrameState next
+    // frame) does the full resize cascade. Also run it inline here so the
+    // render thread sees fresh rects immediately, matching the pre-gate
+    // synchronous behaviour.
+    scriptEngine_.layoutTree().markDirty();
+    runLayoutIfDirty();
 
     // Release all held textures — they're now the wrong size.
     renderThread_->pending().releaseAllPaneTextures = true;
@@ -1465,10 +1474,15 @@ uint32_t parseTabBarHexColor(const std::string& hex, uint32_t def = 0xFF000000) 
 
 void PlatformDawn::initTabBar(const TabBarConfig& cfg)
 {
+    auto setBarSlot = [this](int cells) {
+        Uuid bar = scriptEngine_.primaryTabBarNode();
+        if (bar.isNil()) return;
+        LayoutTree& tree = scriptEngine_.layoutTree();
+        if (const Node* n = tree.node(bar); n && !n->parent.isNil())
+            tree.setSlotFixedCells(n->parent, bar, cells);
+    };
     if (cfg.style == "hidden") {
-        for (Tab tab : tabManager_->tabs()) {
-            if (tab.valid()) tab.setTabBar(0, cfg.position);
-        }
+        setBarSlot(0);
         return;
     }
 
@@ -1505,10 +1519,10 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
         tabBarCharWidth_  = charWidth_;
     }
 
-    int tabBarH = tabBarVisible() ? static_cast<int>(std::ceil(tabBarLineHeight_)) : 0;
-    for (Tab tab : tabManager_->tabs()) {
-        if (tab.valid()) tab.setTabBar(tabBarH, cfg.position);
-    }
+    // TabBar slot: 1 cell high when visible, 0 when hidden. One line of the
+    // tab bar font is close to one terminal cell (same line-height math);
+    // finer control can be added later via a dedicated JS binding.
+    setBarSlot(tabBarVisible() ? 1 : 0);
 
     // Parse colors
     tbBgColor_         = parseTabBarHexColor(cfg.colors.background);

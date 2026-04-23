@@ -26,7 +26,10 @@ class Terminal;
 namespace Script {
 
 using InstanceId = uint64_t;
-using PaneId = int;
+// Panes are identified by their LayoutTree node Uuid. The old integer paneId
+// (monotonic counter that bridged render/input/script surfaces) is gone —
+// nothing outside the Terminal itself uses it.
+using PaneId = Uuid;
 using TabId = int;
 
 // OSC 133 command record as surfaced to scripts — shared between AppCallbacks
@@ -126,11 +129,11 @@ struct AppCallbacks {
     // JS-facing primitives. Each maps 1:1 to a TabManager method; they're
     // wired through AppCallbacks so ScriptLayoutBindings can stay decoupled
     // from the platform layer.
-    struct NewPane { int paneId; std::string nodeId; bool ok; };
+    struct NewPane { std::string nodeId; bool ok; };
     // Empty-tab variant. Returns {tabIdx, subtreeRoot uuid string}.
     std::function<std::pair<int, std::string>()> createEmptyTab;
     std::function<void(int)> activateTab;
-    std::function<bool(int)> focusPane;
+    std::function<bool(Uuid)> focusPane;
     // Remove a tree node (Terminal leaf, Container, or Stack) from its
     // enclosing Tab's Layout. Refuses if any descendant Terminal is still
     // live — the controller must killTerminal first. See TabManager::removeNode.
@@ -144,9 +147,12 @@ struct AppCallbacks {
     std::function<NewPane(const std::string& existingPaneNodeId,
                           const std::string& dir,
                           bool newIsFirst)> splitPaneByNodeId;
-    // Set the zoomed pane (empty string clears). Operates on the focused
-    // tab's Layout by resolving the nodeId to a paneId.
-    std::function<bool(const std::string& paneNodeIdOrEmpty)> setZoom;
+    // Apply a Stack zoom override. `stackNodeId` is the Stack whose rect
+    // should be redirected; `targetOrEmpty == ""` clears the override.
+    // Wraps LayoutTree::setStackZoom and then triggers a resize cascade
+    // for the enclosing tab so terminals pick up the new rect.
+    std::function<bool(const std::string& stackNodeId,
+                       const std::string& targetNodeIdOrEmpty)> setStackZoom;
     // Move the boundary of `paneNodeId`'s slot by `amount` cells in `dir`.
     // `dir` is one of "left"/"right"/"up"/"down"; positive cells grow the
     // pane in that direction. Resolves pane → pixel delta via font metrics
@@ -345,9 +351,31 @@ public:
     ::LayoutTree&       layoutTree()       { return *layoutTree_; }
     const ::LayoutTree& layoutTree() const { return *layoutTree_; }
 
+    // Remove a subtree under `scopeRoot`. Guard: refuses if any descendant
+    // Terminal is still live in the engine's terminal map (caller must kill
+    // first). Cleans up paneId index entries, clears focus if it pointed at
+    // the removed subtree, then detaches + destroys the nodes. Collapses any
+    // singleton Container spine up to but not including `scopeRoot`. Returns
+    // false on guard failure or any structural error.
+    bool removeNodeSubtree(Uuid scopeRoot, Uuid nodeId);
+
     // Root Stack holding each Tab's Layout subtree as a direct child.
     // Established in the Engine constructor and set as the tree's root.
     Uuid layoutRootStack() const { return layoutRootStack_; }
+
+    // --- Tab identity (tree-derived) --------------------------------------
+    // These read directly from the layout tree's root Stack — no separate
+    // book-keeping. Each tab = one direct child of layoutRootStack_. The
+    // "active tab" is the root Stack's activeChild. Order is the root
+    // Stack's child order (slot order), not creation order.
+    std::vector<Uuid> tabSubtreeRoots() const;
+    Uuid activeTabSubtreeRoot() const;
+    int  activeTabIndex() const; // -1 if no active tab / empty
+    int  tabCount() const;
+    // Return the tab subtreeRoot that contains `nodeId`, or nil if none.
+    // Walks up nodeId's parent chain checking each against rootStack's
+    // direct children.
+    Uuid findTabSubtreeRootForNode(Uuid nodeId) const;
 
     // --- Per-tab ownership (engine-wide) ---
     // Tabs are identified by their subtreeRoot Uuid (a direct child of
@@ -360,15 +388,8 @@ public:
     void setTabIcon(Uuid subtreeRoot, const std::string& s);
     void eraseTabIcon(Uuid subtreeRoot);
 
-    // --- paneId ↔ Uuid index (engine-wide) ---
-    // Global (across all tabs) since paneIds come from a monotonic counter
-    // and are never reused. Registered on Tab::allocatePaneNode, removed on
-    // Tab::removeNodeSubtree.
-    int allocatePaneId(); // monotonic
-    void registerPaneSlot(int paneId, Uuid nodeId);
-    void unregisterPaneSlot(int paneId);
-    Uuid uuidForPaneId(int paneId) const;
-    int  paneIdForUuid(Uuid nodeId) const;
+    // Uuid is the sole pane identity — render state, input routing, and the
+    // script surface all key on it. (A previous int paneId index was purged.)
 
     // --- Focus + zoom (engine-wide, single active) ---
     // One Terminal is "focused" at a time (the active tab's focused pane).
@@ -383,20 +404,33 @@ public:
     ::Terminal* focusedTerminal() {
         return focusedTerminalNodeId_.isNil() ? nullptr : terminal(focusedTerminalNodeId_);
     }
-    Uuid zoomedNodeId() const { return zoomedNodeId_; }
-    void setZoomedNodeId(Uuid u) { zoomedNodeId_ = u; }
+    // NOTE: zoom state moved onto StackData::zoomTarget in the LayoutTree.
+    // Engine no longer tracks a global zoom node; JS sets it directly via
+    // LayoutTree::setStackZoom (bound as mb.layout.setStackZoom).
 
     // --- Global layout params (used to be per-Layout) ---
     int dividerPixels() const { return dividerPixels_; }
     void setDividerPixels(int px) { dividerPixels_ = px < 0 ? 0 : px; }
-    int tabBarHeight() const { return tabBarHeight_; }
-    const std::string& tabBarPosition() const { return tabBarPosition_; }
-    void setTabBar(int h, const std::string& pos) {
-        tabBarHeight_ = h; tabBarPosition_ = pos;
-    }
+    // Tab-bar geometry is derived from the tree: the `TabBar` node occupies
+    // its slot in the root Container; Engine::primaryTabBarNode locates the
+    // first such node so renderers and input can query its rect from a
+    // root-level computeRects.
+    Uuid primaryTabBarNode() const;
     uint32_t lastFbWidth() const { return lastFbW_; }
     uint32_t lastFbHeight() const { return lastFbH_; }
     void setLastFramebuffer(uint32_t w, uint32_t h) { lastFbW_ = w; lastFbH_ = h; }
+
+    // Cell metrics used by Tab helpers (nodeRect, dividersWithOwnerPanes,
+    // resizePaneEdge) to convert ChildSlot cell-based clamps (minCells,
+    // maxCells, fixedCells) into pixels. Updated by Tab::computeRects from
+    // its callers' font metrics. Defaults to 1 so legacy callers that never
+    // touch Tab::computeRects still get the old pixel-equivalent behaviour.
+    int lastCellW() const { return lastCellW_; }
+    int lastCellH() const { return lastCellH_; }
+    void setLastCellMetrics(int cellW, int cellH) {
+        lastCellW_ = cellW > 0 ? cellW : 1;
+        lastCellH_ = cellH > 0 ? cellH : 1;
+    }
 
     // --- Terminal ownership (engine-wide) ---
     // The single source of truth for pane Terminal lifetime. Keyed by the
@@ -478,9 +512,9 @@ private:
 
     std::unordered_map<uint32_t, JsTimer> jsTimers_;
 
-    std::unordered_map<PaneId, int> paneOutputFilterCount_;
-    std::unordered_map<PaneId, int> paneInputFilterCount_;
-    std::unordered_map<PaneId, int> paneMouseMoveCount_;
+    std::unordered_map<PaneId, int, UuidHash> paneOutputFilterCount_;
+    std::unordered_map<PaneId, int, UuidHash> paneInputFilterCount_;
+    std::unordered_map<PaneId, int, UuidHash> paneMouseMoveCount_;
 
     JSContext* createContext();
     void setupGlobals(JSContext* ctx, InstanceId id);
@@ -490,7 +524,7 @@ private:
     void notifyPermissionRequired(const std::string& path, const std::string& permissions,
                                    const std::string& hash);
 
-    void deliverMouseToRegistry(const char* registryName, uint32_t key,
+    void deliverMouseToRegistry(const char* registryName, const std::string& key,
                                  const std::string& type, int cellX, int cellY,
                                  int pixelX, int pixelY, int button);
 
@@ -507,21 +541,16 @@ private:
     std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> terminals_;
     std::unordered_map<Uuid, std::string,                 UuidHash> tabIcons_;
 
-    // paneId ↔ Uuid indices. Global — paneIds are globally unique (sGlobalPaneId).
-    std::unordered_map<int, Uuid>           paneIdToUuid_;
-    std::unordered_map<Uuid, int, UuidHash> uuidToPaneId_;
-    int nextPaneId_ = 0;
-
-    // Engine-wide focus / zoom.
+    // Engine-wide focus. Zoom lives on StackData::zoomTarget (tree-side),
+    // not on the engine.
     Uuid focusedTerminalNodeId_;
-    Uuid zoomedNodeId_;
 
     // Global layout params. Used by Tab's computeRects and divider helpers.
     int dividerPixels_ = 1;
-    int tabBarHeight_ = 0;
-    std::string tabBarPosition_ = "bottom";
     uint32_t lastFbW_ = 0;
     uint32_t lastFbH_ = 0;
+    int lastCellW_ = 1;
+    int lastCellH_ = 1;
 };
 
 } // namespace Script

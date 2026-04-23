@@ -79,16 +79,18 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 auto panes = tab->panes();
                 if (panes.size() <= 1) return;
                 int cur = -1;
+                Uuid focusedId = tab->focusedPaneId();
                 for (int i = 0; i < static_cast<int>(panes.size()); ++i) {
-                    if (panes[i]->id() == tab->focusedPaneId()) { cur = i; break; }
+                    if (panes[i]->nodeId() == focusedId) { cur = i; break; }
                 }
                 if (cur < 0) return;
                 int n = static_cast<int>(panes.size());
                 int delta = (a.dir == Action::Direction::Next) ? 1 : -1;
                 int next = ((cur + delta) % n + n) % n;
-                int prev = tab->focusedPaneId();
-                tab->setFocusedPane(panes[next]->id());
-                tabManager_->notifyPaneFocusChange(*tab, prev, panes[next]->id());
+                Uuid prev = focusedId;
+                Uuid nextId = panes[next]->nodeId();
+                tab->setFocusedPane(nextId);
+                tabManager_->notifyPaneFocusChange(*tab, prev, nextId);
                 tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
                 setNeedsRedraw();
                 return;
@@ -98,7 +100,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (!fp) return;
             const PaneRect& r = fp->rect();
             // Step past the divider gap; +1 alone lands inside the divider
-            // and paneAtPixel returns -1.
+            // and paneAtPixel returns nil.
             const int step = tab->dividerPixels() + 1;
             int px = 0, py = 0;
             switch (a.dir) {
@@ -108,9 +110,9 @@ void PlatformDawn::executeAction(const Action::Any& action)
             case Action::Direction::Down:  px = r.x + r.w / 2;    py = r.y + r.h + step; break;
             default: return;
             }
-            int targetId = tab->paneAtPixel(px, py);
-            if (targetId >= 0 && targetId != fp->id()) {
-                int prev = tab->focusedPaneId();
+            Uuid targetId = tab->paneAtPixel(px, py);
+            if (!targetId.isNil() && targetId != fp->nodeId()) {
+                Uuid prev = tab->focusedPaneId();
                 tab->setFocusedPane(targetId);
                 tabManager_->notifyPaneFocusChange(*tab, prev, targetId);
                 tabManager_->updateTabTitleFromFocusedPane(tabManager_->activeTabIdx());
@@ -276,12 +278,9 @@ void PlatformDawn::executeAction(const Action::Any& action)
             opts.command = "less -+F -R " + std::string(tmpPath) + "; rm -f " + std::string(tmpPath);
             opts.scrollbackLines = 0;
 
-            // Allocate paneId + tree node for the pager. Register in the
-            // engine's paneId index so pane-by-id lookups work.
-            int pagerId = scriptEngine_.allocatePaneId();
+            // Allocate a tree node for the pager. Uuid is the sole identity.
             LayoutTree& tree = scriptEngine_.layoutTree();
             Uuid pagerNode = tree.createTerminal();
-            scriptEngine_.registerPaneSlot(pagerId, pagerNode);
 
             TerminalCallbacks cbs;
             cbs.event = [this](TerminalEmulator*, int, void*) {
@@ -291,37 +290,28 @@ void PlatformDawn::executeAction(const Action::Any& action)
             pcbs.onTerminalExited = [this, prevFocus](Terminal* t) {
                 // Restore focus to the previously-focused Terminal (if it
                 // still exists in the tree) before the removal cascade.
-                // removeNodeSubtree only clears focus if it points inside
-                // the removed subtree; since we've moved it off the pager,
-                // the fallback "pick first pane" branch won't trigger.
                 if (!prevFocus.isNil() &&
                     scriptEngine_.layoutTree().node(prevFocus)) {
                     scriptEngine_.setFocusedTerminalNodeId(prevFocus);
                 }
-                // Queue into the render-thread exit drain — same path as any
-                // other pane. TabManager::terminalExited → killTerminal fires
-                // the JS `terminalExited` event, and the controller removes
-                // the tree node. Stack's activeChild auto-retargets to the
-                // remaining content Container, restoring the pane view.
                 if (renderThread_) renderThread_->enqueueTerminalExit(t);
             };
             pcbs.quit = [this]() { quit(); };
             Script::Engine* scriptEngine = &scriptEngine_;
-            pcbs.shouldFilterOutput = [scriptEngine, pagerId]() {
-                return scriptEngine->hasPaneOutputFilters(pagerId);
+            pcbs.shouldFilterOutput = [scriptEngine, pagerNode]() {
+                return scriptEngine->hasPaneOutputFilters(pagerNode);
             };
-            pcbs.filterOutput = [scriptEngine, pagerId](std::string& data) {
-                scriptEngine->filterPaneOutput(pagerId, data);
+            pcbs.filterOutput = [scriptEngine, pagerNode](std::string& data) {
+                scriptEngine->filterPaneOutput(pagerNode, data);
             };
-            pcbs.shouldFilterInput = [scriptEngine, pagerId]() {
-                return scriptEngine->hasPaneInputFilters(pagerId);
+            pcbs.shouldFilterInput = [scriptEngine, pagerNode]() {
+                return scriptEngine->hasPaneInputFilters(pagerNode);
             };
-            pcbs.filterInput = [scriptEngine, pagerId](std::string& data) {
-                scriptEngine->filterPaneInput(pagerId, data);
+            pcbs.filterInput = [scriptEngine, pagerNode](std::string& data) {
+                scriptEngine->filterPaneInput(pagerNode, data);
             };
 
             auto pager = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
-            pager->setId(pagerId);
             pager->setNodeId(pagerNode);
 
             float usableW = std::max(0.0f, static_cast<float>(fbWidth_) - padLeft_ - padRight_);
@@ -345,7 +335,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             tabManager_->addPtyPoll(pagerFD, pagerPtr);
             // Move focus to the pager so input routes to it.
             scriptEngine_.setFocusedTerminalNodeId(pagerNode);
-            scriptEngine_.notifyPaneCreated(tabManager_->activeTabIdx(), pagerId);
+            scriptEngine_.notifyPaneCreated(tabManager_->activeTabIdx(), pagerNode);
 
             // The pager's Terminal has no rect yet — computeRects populates
             // it from the tree shape (now that the node is attached and

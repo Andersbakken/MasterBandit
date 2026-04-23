@@ -210,10 +210,10 @@ int PlatformDawn::exec()
                 Script::AppCallbacks::TabInfo ti;
                 ti.id = i;
                 ti.active = (i == active);
-                ti.focusedPane = t.valid() ? t.focusedPaneId() : -1;
+                ti.focusedPane = t.valid() ? t.focusedPaneId() : Uuid{};
                 if (t.valid()) {
                     for (Terminal* p : t.panes())
-                        ti.panes.push_back(p->id());
+                        ti.panes.push_back(p->nodeId());
                 }
                 Uuid sub = t.subtreeRoot();
                 if (!sub.isNil()) ti.nodeId = sub.toString();
@@ -233,16 +233,13 @@ int PlatformDawn::exec()
             tabManager_->activateTabByIdx(idx);
             tabBarDirty_ = true;
         };
-        scbs.focusPane = [this](int paneId) {
-            return tabManager_->focusPaneById(paneId);
+        scbs.focusPane = [this](Uuid nodeId) {
+            return tabManager_->focusPaneById(nodeId);
         };
         scbs.removeNode = [this](Uuid nodeId) {
             return tabManager_->removeNode(nodeId);
         };
         scbs.killTerminalByNodeId = [this](Uuid nodeId) {
-            // TabManager::killTerminal mutates live state the render thread
-            // observes, so take the platform/render mutex around it (same
-            // invariant as closeTab / removeNode).
             std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
             return tabManager_->killTerminal(nodeId);
         };
@@ -251,32 +248,30 @@ int PlatformDawn::exec()
                                                  const std::string& cwd)
                 -> Script::AppCallbacks::NewPane {
             Uuid p = Uuid::fromString(parentNodeId);
-            if (p.isNil()) return {-1, {}, false};
-            int paneId = -1; Uuid n;
-            bool ok = tabManager_->createTerminalInContainer(p, cwd, &paneId, &n);
-            return {paneId, n.isNil() ? std::string{} : n.toString(), ok};
+            if (p.isNil()) return {{}, false};
+            Uuid n;
+            bool ok = tabManager_->createTerminalInContainer(p, cwd, &n);
+            return {n.isNil() ? std::string{} : n.toString(), ok};
         };
         scbs.splitPaneByNodeId = [this](const std::string& existingNodeId,
                                          const std::string& dir,
                                          bool newIsFirst)
                 -> Script::AppCallbacks::NewPane {
             Uuid p = Uuid::fromString(existingNodeId);
-            if (p.isNil()) return {-1, {}, false};
+            if (p.isNil()) return {{}, false};
             LayoutNode::Dir d = (dir == "vertical" || dir == "v")
                 ? LayoutNode::Dir::Vertical : LayoutNode::Dir::Horizontal;
-            int paneId = -1; Uuid n;
+            Uuid n;
             bool ok = tabManager_->splitPaneByNodeId(p, d, /*ratio=*/0.5f,
-                                                     newIsFirst, &paneId, &n);
-            return {paneId, n.isNil() ? std::string{} : n.toString(), ok};
+                                                     newIsFirst, &n);
+            return {n.isNil() ? std::string{} : n.toString(), ok};
         };
         scbs.adjustPaneSize = [this](const std::string& paneNodeId,
                                       const std::string& dir, int amount) -> bool {
             Uuid u = Uuid::fromString(paneNodeId);
             if (u.isNil()) return false;
-            int paneId = tabManager_->findPaneIdByNodeId(u);
-            if (paneId < 0) return false;
             int tabIdx = -1;
-            auto tab = tabManager_->findTabForPane(paneId, &tabIdx);
+            auto tab = tabManager_->findTabForPane(u, &tabIdx);
             if (!tab || !tab->valid()) return false;
             LayoutNode::Dir axis;
             int pixelDelta;
@@ -295,24 +290,25 @@ int PlatformDawn::exec()
             } else {
                 return false;
             }
-            if (!tab->resizePaneEdge(paneId, axis, pixelDelta)) return false;
+            if (!tab->resizePaneEdge(u, axis, pixelDelta)) return false;
             tabManager_->resizeAllPanesInTab(*tab);
             return true;
         };
-        scbs.setZoom = [this](const std::string& paneNodeIdOrEmpty) -> bool {
-            auto tab = activeTab();
-            if (!tab || !tab->valid()) return false;
-            if (paneNodeIdOrEmpty.empty()) {
-                tab->unzoom();
-                tabManager_->resizeAllPanesInTab(*tab);
-                return true;
+        scbs.setStackZoom = [this](const std::string& stackNodeIdStr,
+                                    const std::string& targetNodeIdOrEmpty) -> bool {
+            Uuid stackId = Uuid::fromString(stackNodeIdStr);
+            if (stackId.isNil()) return false;
+            Uuid targetId;
+            if (!targetNodeIdOrEmpty.empty()) {
+                targetId = Uuid::fromString(targetNodeIdOrEmpty);
+                if (targetId.isNil()) return false;
             }
-            Uuid u = Uuid::fromString(paneNodeIdOrEmpty);
-            if (u.isNil()) return false;
-            int paneId = tabManager_->findPaneIdByNodeId(u);
-            if (paneId < 0) return false;
-            tab->zoomPane(paneId);
-            tabManager_->resizeAllPanesInTab(*tab);
+            LayoutTree& tree = scriptEngine_.layoutTree();
+            if (!tree.setStackZoom(stackId, targetId)) return false;
+            // Trigger resize cascade on the enclosing tab so terminals pick
+            // up the new rects (shrunk siblings, zoom target expanded).
+            auto tab = tabManager_->findTabForNode(stackId);
+            if (tab && tab->valid()) tabManager_->resizeAllPanesInTab(*tab);
             return true;
         };
         scbs.panePopups = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::PopupInfo> {

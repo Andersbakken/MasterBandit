@@ -248,8 +248,11 @@ MouseRegion InputController::hitTest(double sx, double sy)
 
     // Divider hit-test — suppresses pane-selection and terminal forwarding when
     // the click lands on a split divider rather than inside a pane.
+    // When zoomed, dividerRects returns nothing: the tree's rect map skips
+    // non-zoomed siblings, so no dividers emit from dividersIn. Safe to drop
+    // the explicit !isZoomed guard.
     const int divPx = tab->dividerPixels();
-    if (divPx > 0 && !tab->isZoomed()) {
+    if (divPx > 0) {
         for (const auto& r : tab->dividerRects(divPx)) {
             if (sx >= r.x && sx < r.x + r.w &&
                 sy >= r.y && sy < r.y + r.h)
@@ -352,9 +355,9 @@ void InputController::onMouseButton(int button, int action, int mods)
 
     // 2. Click on inactive pane — switch focus (side effect)
     if (action == static_cast<int>(KeyAction_Press) && region == MouseRegion::Pane ) {
-        int clickedId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
-        if (clickedId >= 0 && clickedId != tab->focusedPaneId()) {
-            int prev = tab->focusedPaneId();
+        Uuid clickedId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+        if (!clickedId.isNil() && clickedId != tab->focusedPaneId()) {
+            Uuid prev = tab->focusedPaneId();
             tab->setFocusedPane(clickedId);
             if (host_.notifyPaneFocusChange) host_.notifyPaneFocusChange(*tab, prev, clickedId);
             if (host_.updateTabTitleFromFocusedPane) host_.updateTabTitleFromFocusedPane(host_.activeTabIdx());
@@ -625,8 +628,8 @@ void InputController::onCursorPos(double x, double y)
         if (region == MouseRegion::TabBar) {
             window->setCursorStyle(Window::CursorStyle::Arrow);
         } else {
-            int hoveredId = tab->paneAtPixel(static_cast<int>(sx),
-                                              static_cast<int>(sy));
+            Uuid hoveredId = tab->paneAtPixel(static_cast<int>(sx),
+                                               static_cast<int>(sy));
             auto it = paneCursorStyle_.find(hoveredId);
             window->setCursorStyle(it != paneCursorStyle_.end()
                 ? it->second
@@ -636,8 +639,8 @@ void InputController::onCursorPos(double x, double y)
 
     // Notify JS mousemove listeners for the hovered pane
     if (host_.scriptEngine) {
-        int hoveredPaneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
-        if (hoveredPaneId >= 0 && host_.scriptEngine->hasPaneMouseMoveListeners(hoveredPaneId)) {
+        Uuid hoveredPaneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+        if (!hoveredPaneId.isNil() && host_.scriptEngine->hasPaneMouseMoveListeners(hoveredPaneId)) {
             Terminal* hp = tab->pane(hoveredPaneId);
             if (hp) {
                 PaneRect hpr = hp->rect();
@@ -837,9 +840,9 @@ void InputController::refreshPointerShape()
     // don't show a cursor that doesn't match the hovered pane). Falls back to
     // the focused pane when the mouse position isn't usefully hovering one
     // (e.g. before any motion event has fired).
-    int paneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
-    if (paneId < 0) {
-        if (Terminal* focPane = tab->focusedPane()) paneId = focPane->id();
+    Uuid paneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+    if (paneId.isNil()) {
+        if (Terminal* focPane = tab->focusedPane()) paneId = focPane->nodeId();
     }
     auto it = paneCursorStyle_.find(paneId);
     window->setCursorStyle(it != paneCursorStyle_.end()

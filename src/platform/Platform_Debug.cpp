@@ -22,7 +22,7 @@ static std::string sanitizeUtf8(const std::string& in)
     return out;
 }
 
-std::string PlatformDawn::gridToJson(int id)
+std::string PlatformDawn::gridToJson(Uuid id)
 {
     // Search for the pane across all tabs
     Terminal* pane = nullptr;
@@ -40,7 +40,7 @@ std::string PlatformDawn::gridToJson(int id)
     glz::generic::object_t resp;
     resp["type"] = "screenshot";
     resp["format"] = "grid";
-    if (id) resp["id"] = static_cast<double>(id);
+    if (!id.isNil()) resp["id"] = id.toString();
     resp["cols"] = static_cast<double>(term->width());
     resp["rows"] = static_cast<double>(term->height());
     resp["cursor"] = glz::generic::object_t{
@@ -120,11 +120,11 @@ std::string PlatformDawn::statsJson(int id)
         if (!tab.valid()) continue;
         glz::generic::array_t panesArr;
         for (Terminal* panePtr : tab.panes()) {
-            int pid = panePtr->id();
+            Uuid pid = panePtr->nodeId();
             const PaneRenderPrivate* rs = renderEngine_->paneRenderPrivate(pid);
             Terminal* term = panePtr;
             glz::generic::object_t paneObj;
-            paneObj["id"]   = static_cast<double>(pid);
+            paneObj["id"]   = pid.toString();
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);
             paneObj["rows"] = static_cast<double>(term ? term->height() : 0);
             paneObj["cwd"]  = panePtr->cwd();
@@ -140,8 +140,8 @@ std::string PlatformDawn::statsJson(int id)
         tabObj["index"]  = static_cast<double>(ti);
         tabObj["active"] = (ti == activeIdx);
         tabObj["panes"]  = std::move(panesArr);
-        // Tree-node UUID for the tab's subtree root (a Stack after step 8).
-        // Tests use this to assert tree shape end-to-end via `mb --test`.
+        // Tree-node UUID for the tab's subtree root (always a Stack). Tests
+        // use this to assert tree shape end-to-end via `mb --test`.
         Uuid sub = tab.subtreeRoot();
         if (!sub.isNil()) tabObj["nodeId"] = sub.toString();
         tabsArr.emplace_back(std::move(tabObj));

@@ -9,7 +9,7 @@
 void PlatformDawn::closeTab(int idx) { if (tabManager_) tabManager_->closeTab(idx); }
 
 
-TerminalCallbacks PlatformDawn::buildTerminalCallbacks(int paneId)
+TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
 {
     TerminalCallbacks cbs;
 

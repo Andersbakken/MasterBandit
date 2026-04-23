@@ -401,7 +401,8 @@ Terminal* Terminal::createPopup(const std::string& id, int x, int y, int w, int 
     popup->setCellPosition(x, y, w, h);
 
     spdlog::info("Terminal: created popup '{}' at ({},{}) {}x{}", id, x, y, w, h);
-    popup->setId(-1); // popups don't get a pane ID; they're identified by string id
+    // Popups have no tree nodeId — they're identified by the popupId string
+    // relative to their parent Terminal.
     popup->setPopupId(id);
     mPopups.push_back(std::move(popup));
     return mPopups.back().get();

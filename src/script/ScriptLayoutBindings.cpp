@@ -102,9 +102,9 @@ bool parseChildSlot(JSContext* ctx, JSValueConst opts, Uuid slotId, ChildSlot& o
 // Node creation — all return a UUID string. Permission: layout.modify.
 // ---------------------------------------------------------------------------
 //
-// Bare Terminal-node creation (no PTY) was previously exposed as
-// mb.layout.createTerminalNode. Dead after the composite createTerminal
-// shipped; removed with the tree cutover step 4.
+// mb.layout.createTerminalNode used to create a tree-only Terminal node
+// without spawning a PTY. Dropped — composite mb.layout.createTerminal
+// (which spawns the PTY) is the only way a Terminal node enters the tree.
 
 JSValue jsLayoutCreateContainer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -306,66 +306,32 @@ JSValue jsLayoutFocusPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    if (argc < 1) return JS_ThrowTypeError(ctx, "focusPane(idOrNodeId)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "focusPane(nodeId)");
     auto* eng = engineFromCtx(ctx);
-    int paneId = -1;
-    if (JS_IsNumber(argv[0])) {
-        if (JS_ToInt32(ctx, &paneId, argv[0]) != 0) return JS_EXCEPTION;
-    } else if (JS_IsString(argv[0])) {
-        size_t len = 0;
-        const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
-        if (!s) return JS_EXCEPTION;
-        // paneInfo doesn't take a nodeId, so iterate tabs() → paneInfo.
-        std::string want(s, len);
-        JS_FreeCString(ctx, s);
-        if (eng->callbacks().tabs && eng->callbacks().paneInfo) {
-            auto all = eng->callbacks().tabs();
-            for (const auto& t : all) {
-                for (int pid : t.panes) {
-                    auto pi = eng->callbacks().paneInfo(pid);
-                    if (pi.nodeId == want) { paneId = pid; break; }
-                }
-                if (paneId >= 0) break;
-            }
-        }
-    }
-    if (paneId < 0) return JS_FALSE;
-    bool ok = eng->callbacks().focusPane && eng->callbacks().focusPane(paneId);
+    Uuid nodeId = parseUuidArg(ctx, argv[0], "focusPane(nodeId)");
+    if (JS_HasException(ctx)) return JS_EXCEPTION;
+    if (nodeId.isNil()) return JS_FALSE;
+    bool ok = eng->callbacks().focusPane && eng->callbacks().focusPane(nodeId);
     return JS_NewBool(ctx, ok);
 }
 
-// mb.layout.removeNode(idOrNodeId) — remove a tree node (Terminal leaf,
+// mb.layout.removeNode(nodeId) — remove a tree node (Terminal leaf,
 // Container, or Stack). Structural-only: refuses if any descendant Terminal
-// is still live. Callers must killTerminal first for those. Accepts either
-// a string UUID (preferred — matches the other structural APIs) or an
-// integer paneId (resolved via paneInfo.nodeId).
+// is still live. Callers must killTerminal first for those.
 JSValue jsLayoutRemoveNode(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    if (argc < 1) return JS_ThrowTypeError(ctx, "removeNode(idOrNodeId)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "removeNode(nodeId)");
     auto* eng = engineFromCtx(ctx);
-    Uuid nodeId;
-    if (JS_IsNumber(argv[0])) {
-        int paneId = -1;
-        if (JS_ToInt32(ctx, &paneId, argv[0]) != 0) return JS_EXCEPTION;
-        if (eng->callbacks().paneInfo) {
-            auto info = eng->callbacks().paneInfo(paneId);
-            if (!info.nodeId.empty()) nodeId = Uuid::fromString(info.nodeId);
-        }
-    } else if (JS_IsString(argv[0])) {
-        size_t len = 0;
-        const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
-        if (!s) return JS_EXCEPTION;
-        nodeId = Uuid::fromString(std::string_view(s, len));
-        JS_FreeCString(ctx, s);
-    }
+    Uuid nodeId = parseUuidArg(ctx, argv[0], "removeNode(nodeId)");
+    if (JS_HasException(ctx)) return JS_EXCEPTION;
     if (nodeId.isNil()) return JS_FALSE;
     bool ok = eng->callbacks().removeNode && eng->callbacks().removeNode(nodeId);
     return JS_NewBool(ctx, ok);
 }
 
-// mb.layout.killTerminal(idOrNodeId) — synchronously kill a Terminal. The
+// mb.layout.killTerminal(nodeId) — synchronously kill a Terminal. The
 // Terminal is extracted from the engine map and graveyarded; its tree node
 // remains in place so the JS controller can remove it (or transform the tab)
 // in response to the `terminalExited` event.
@@ -373,24 +339,10 @@ JSValue jsLayoutKillTerminal(JSContext* ctx, JSValueConst, int argc, JSValueCons
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    if (argc < 1) return JS_ThrowTypeError(ctx, "killTerminal(idOrNodeId)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "killTerminal(nodeId)");
     auto* eng = engineFromCtx(ctx);
-    Uuid nodeId;
-    if (JS_IsNumber(argv[0])) {
-        // Integer paneId → look up nodeId via paneInfo.
-        int paneId = -1;
-        if (JS_ToInt32(ctx, &paneId, argv[0]) != 0) return JS_EXCEPTION;
-        if (eng->callbacks().paneInfo) {
-            auto info = eng->callbacks().paneInfo(paneId);
-            if (!info.nodeId.empty()) nodeId = Uuid::fromString(info.nodeId);
-        }
-    } else if (JS_IsString(argv[0])) {
-        size_t len = 0;
-        const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
-        if (!s) return JS_EXCEPTION;
-        nodeId = Uuid::fromString(std::string_view(s, len));
-        JS_FreeCString(ctx, s);
-    }
+    Uuid nodeId = parseUuidArg(ctx, argv[0], "killTerminal(nodeId)");
+    if (JS_HasException(ctx)) return JS_EXCEPTION;
     if (nodeId.isNil()) return JS_FALSE;
     bool ok = eng->callbacks().killTerminalByNodeId &&
               eng->callbacks().killTerminalByNodeId(nodeId);
@@ -451,8 +403,10 @@ JSValue jsLayoutCreateTerminalComposite(JSContext* ctx, JSValueConst, int argc, 
     auto np = eng->callbacks().createTerminalInContainer(parent.toString(), cwd);
     if (!np.ok) return JS_NULL;
     JSValue o = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, o, "id",     JS_NewInt32(ctx, np.paneId));
     JS_SetPropertyStr(ctx, o, "nodeId", np.nodeId.empty() ? JS_NULL :
+        JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
+    // Alias: `id` is the same as nodeId now that paneId has been purged.
+    JS_SetPropertyStr(ctx, o, "id", np.nodeId.empty() ? JS_NULL :
         JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
     return o;
 }
@@ -489,8 +443,10 @@ JSValue jsLayoutSplitPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
     auto np = eng->callbacks().splitPaneByNodeId(existing.toString(), wireDir, newIsFirst);
     if (!np.ok) return JS_NULL;
     JSValue o = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, o, "id",     JS_NewInt32(ctx, np.paneId));
     JS_SetPropertyStr(ctx, o, "nodeId", np.nodeId.empty() ? JS_NULL :
+        JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
+    // Alias: `id` is the same as nodeId now that paneId has been purged.
+    JS_SetPropertyStr(ctx, o, "id", np.nodeId.empty() ? JS_NULL :
         JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
     return o;
 }
@@ -555,21 +511,30 @@ JSValue jsLayoutAdjustPaneSize(JSContext* ctx, JSValueConst, int argc, JSValueCo
     return JS_NewBool(ctx, eng->callbacks().adjustPaneSize(pane.toString(), dir, amount));
 }
 
-JSValue jsLayoutSetZoom(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+// setStackZoom(stackNodeId, targetNodeIdOrNull) → bool
+JSValue jsLayoutSetStackZoom(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    std::string target;
-    if (argc >= 1 && JS_IsString(argv[0])) {
-        size_t len = 0;
-        const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
-        if (!s) return JS_EXCEPTION;
-        target.assign(s, len);
-        JS_FreeCString(ctx, s);
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "setStackZoom(stackNodeId, targetNodeIdOrNull)");
+    size_t slen = 0;
+    const char* ss = JS_ToCStringLen(ctx, &slen, argv[0]);
+    if (!ss) return JS_EXCEPTION;
+    std::string stackStr(ss, slen);
+    JS_FreeCString(ctx, ss);
+    std::string targetStr;
+    if (argc >= 2 && JS_IsString(argv[1])) {
+        size_t tlen = 0;
+        const char* ts = JS_ToCStringLen(ctx, &tlen, argv[1]);
+        if (!ts) return JS_EXCEPTION;
+        targetStr.assign(ts, tlen);
+        JS_FreeCString(ctx, ts);
     }
     auto* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().setZoom) return JS_ThrowTypeError(ctx, "setZoom: not wired");
-    return JS_NewBool(ctx, eng->callbacks().setZoom(target));
+    if (!eng->callbacks().setStackZoom)
+        return JS_ThrowTypeError(ctx, "setStackZoom: not wired");
+    return JS_NewBool(ctx, eng->callbacks().setStackZoom(stackStr, targetStr));
 }
 
 // focusedPane() → {id, nodeId, tabId, tabNodeId} | null
@@ -580,10 +545,11 @@ JSValue jsLayoutFocusedPane(JSContext* ctx, JSValueConst, int, JSValueConst*)
     auto all = eng->callbacks().tabs();
     for (const auto& t : all) {
         if (!t.active) continue;
-        if (t.focusedPane < 0) return JS_NULL;
+        if (t.focusedPane.isNil()) return JS_NULL;
         auto pi = eng->callbacks().paneInfo(t.focusedPane);
         JSValue o = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, o, "id",        JS_NewInt32(ctx, t.focusedPane));
+        std::string pids = t.focusedPane.toString();
+        JS_SetPropertyStr(ctx, o, "id",        JS_NewStringLen(ctx, pids.data(), pids.size()));
         JS_SetPropertyStr(ctx, o, "nodeId",    pi.nodeId.empty() ? JS_NULL :
             JS_NewStringLen(ctx, pi.nodeId.data(), pi.nodeId.size()));
         JS_SetPropertyStr(ctx, o, "tabId",     JS_NewInt32(ctx, t.id));
@@ -671,6 +637,8 @@ JSValue jsLayoutNode(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
             JS_SetPropertyStr(ctx, o, "activeChild",
                 d.activeChild.isNil() ? JS_NULL : uuidToJs(ctx, d.activeChild));
             JS_SetPropertyStr(ctx, o, "opaque",      JS_NewBool(ctx, d.opaque));
+            JS_SetPropertyStr(ctx, o, "zoomTarget",
+                d.zoomTarget.isNil() ? JS_NULL : uuidToJs(ctx, d.zoomTarget));
         } else if constexpr (std::is_same_v<T, TabBarData>) {
             JS_SetPropertyStr(ctx, o, "boundStack",
                 d.boundStack.isNil() ? JS_NULL : uuidToJs(ctx, d.boundStack));
@@ -744,8 +712,8 @@ void installLayoutBindings(Engine&, JSContext* ctx, JSValue mb)
         JS_NewCFunction(ctx, jsLayoutKillTerminal, "killTerminal", 1));
     JS_SetPropertyStr(ctx, layout, "splitPane",
         JS_NewCFunction(ctx, jsLayoutSplitPane, "splitPane", 3));
-    JS_SetPropertyStr(ctx, layout, "setZoom",
-        JS_NewCFunction(ctx, jsLayoutSetZoom, "setZoom", 1));
+    JS_SetPropertyStr(ctx, layout, "setStackZoom",
+        JS_NewCFunction(ctx, jsLayoutSetStackZoom, "setStackZoom", 2));
     JS_SetPropertyStr(ctx, layout, "setSlotStretch",
         JS_NewCFunction(ctx, jsLayoutSetSlotStretch, "setSlotStretch", 3));
     JS_SetPropertyStr(ctx, layout, "setSlotMinCells",

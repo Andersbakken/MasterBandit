@@ -13,6 +13,7 @@
 #include "TerminalSnapshot.h"
 #include "TexturePool.h"
 #include "Renderer.h"
+#include "Uuid.h"
 
 #include <dawn/webgpu_cpp.h>
 
@@ -37,7 +38,7 @@ struct RenderPanePopupInfo {
 };
 
 struct RenderPaneInfo {
-    int id = -1;
+    Uuid id;
     PaneRect rect;
     TerminalEmulator* term = nullptr;   // raw ptr — valid while tab/pane exist
     int progressState = 0;
@@ -49,7 +50,7 @@ struct RenderPaneInfo {
 struct RenderTabInfo {
     std::string title;
     std::string icon;
-    int focusedPaneId = -1;
+    Uuid focusedPaneId;
     int progressState = 0;      // from focused pane
     int progressPct = 0;        // from focused pane
 };
@@ -70,7 +71,7 @@ struct TabBarCell {
 struct RenderFrameState {
     // Active tab's panes (in iteration order)
     std::vector<RenderPaneInfo> panes;
-    int focusedPaneId = -1;
+    Uuid focusedPaneId;
 
     // Tab bar data (all tabs)
     std::vector<RenderTabInfo> tabs;
@@ -105,8 +106,8 @@ struct RenderFrameState {
     bool progressIconEnabled = false;
     int maxTitleLength = 0;
 
-    // Per-pane divider geometry
-    std::unordered_map<int, DividerGeom> dividerGeoms;
+    // Per-pane divider geometry (keyed by the divider's owner Terminal Uuid).
+    std::unordered_map<Uuid, DividerGeom, UuidHash> dividerGeoms;
 
     // Font atlas change flags (render thread does the GPU work)
     bool mainFontAtlasChanged = false;
@@ -121,7 +122,7 @@ struct RenderFrameState {
     // Texture / cache release requests for the next frame. One-shot:
     // consumed and cleared by snapshotUnderLock so the render thread acts
     // on each request exactly once.
-    std::vector<int> releasePaneTextureIds;
+    std::vector<Uuid> releasePaneTextureIds;
     std::vector<std::string> releasePopupTextureKeys;
     bool releaseAllPaneTextures = false;
     bool releaseTabBarTexture = false;
@@ -131,7 +132,7 @@ struct RenderFrameState {
     // destruction. The render thread erases the matching render-private
     // entries and releases their GPU resources. One-shot, cleared by
     // snapshotUnderLock.
-    std::vector<int> destroyedPaneIds;
+    std::vector<Uuid> destroyedPaneIds;
     std::vector<std::string> destroyedPopupKeys;
 
     // Divider appearance
@@ -221,19 +222,19 @@ struct PaneRenderPrivate {
 
 struct PendingMutations {
     // --- Dirty flags ---
-    std::unordered_set<int> dirtyPanes;
+    std::unordered_set<Uuid, UuidHash> dirtyPanes;
     bool tabBarDirty = false;
     bool dividersDirty = false;
     bool focusChanged = false;
     bool surfaceNeedsReconfigure = false;
 
     // --- Structural pane/popup operations ---
-    struct CreatePaneState  { int paneId; int cols; int rows; };
-    struct DestroyPaneState { int paneId; };
-    struct ResizePaneState  { int paneId; int cols; int rows; };
-    struct CreatePopupState  { int paneId; std::string popupId; int cols; int rows; };
-    struct DestroyPopupState { int paneId; std::string popupId; };
-    struct ResizePopupState  { int paneId; std::string popupId; int cols; int rows; };
+    struct CreatePaneState  { Uuid paneId; int cols; int rows; };
+    struct DestroyPaneState { Uuid paneId; };
+    struct ResizePaneState  { Uuid paneId; int cols; int rows; };
+    struct CreatePopupState  { Uuid paneId; std::string popupId; int cols; int rows; };
+    struct DestroyPopupState { Uuid paneId; std::string popupId; };
+    struct ResizePopupState  { Uuid paneId; std::string popupId; int cols; int rows; };
 
     using StructuralOp = std::variant<
         CreatePaneState, DestroyPaneState, ResizePaneState,
@@ -242,20 +243,20 @@ struct PendingMutations {
     std::vector<StructuralOp> structuralOps;
 
     // --- Texture release requests ---
-    std::vector<int> releasePaneTextures;       // pane IDs whose heldTexture should be released
-    std::vector<std::string> releasePopupTextures; // popup keys (paneId/popupId)
+    std::vector<Uuid> releasePaneTextures;      // pane Uuids whose heldTexture should be released
+    std::vector<std::string> releasePopupTextures; // popup keys ("<uuid>/<popupId>")
     bool releaseTabBarTexture = false;
     bool releaseAllPaneTextures = false;        // resize: release everything
 
     // --- Divider geometry updates ---
     struct DividerUpdate {
-        int paneId;
+        Uuid paneId;
         float x, y, w, h;
         float r, g, b, a;
         bool valid;
     };
     std::vector<DividerUpdate> dividerUpdates;
-    std::vector<int> clearDividerPanes;         // pane IDs whose divider VB should be cleared
+    std::vector<Uuid> clearDividerPanes;        // pane Uuids whose divider VB should be cleared
 
     // --- Framebuffer size ---
     std::optional<std::pair<uint32_t, uint32_t>> newFbSize;

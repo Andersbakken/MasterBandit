@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <functional>
 #include <type_traits>
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,7 @@ bool LayoutTree::setRoot(Uuid id)
         return false;
     }
     root_ = id;
+    dirty_ = true;
     return true;
 }
 
@@ -94,6 +96,31 @@ const Node* LayoutTree::node(Uuid id) const
 {
     auto it = nodes_.find(id);
     return it == nodes_.end() ? nullptr : it->second.get();
+}
+
+bool LayoutTree::contains(Uuid ancestor, Uuid descendant) const
+{
+    if (ancestor.isNil() || descendant.isNil()) return false;
+    Uuid cur = descendant;
+    while (!cur.isNil()) {
+        if (cur == ancestor) return true;
+        const Node* n = node(cur);
+        if (!n) return false;
+        cur = n->parent;
+    }
+    return false;
+}
+
+Uuid LayoutTree::nearestAncestorOfKind(Uuid start, NodeKind kind) const
+{
+    Uuid cur = start;
+    while (!cur.isNil()) {
+        const Node* n = node(cur);
+        if (!n) return {};
+        if (n->kind() == kind) return cur;
+        cur = n->parent;
+    }
+    return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +157,7 @@ bool LayoutTree::appendChild(Uuid parent, ChildSlot slot)
     if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild.isNil()) {
         sd->activeChild = slot.id;
     }
+    dirty_ = true;
     return true;
 }
 
@@ -151,6 +179,7 @@ bool LayoutTree::removeChild(Uuid parent, Uuid child)
     if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild == child) {
         sd->activeChild = kids->empty() ? Uuid{} : kids->front().id;
     }
+    dirty_ = true;
     return true;
 }
 
@@ -182,6 +211,35 @@ bool LayoutTree::replaceChild(Uuid parent, Uuid oldChild, ChildSlot newSlot)
     if (auto* sd = std::get_if<StackData>(&p->data); sd && sd->activeChild == oldChild) {
         sd->activeChild = newSlot.id;
     }
+    dirty_ = true;
+    return true;
+}
+
+bool LayoutTree::setStackZoom(Uuid stack, Uuid target)
+{
+    Node* s = node(stack);
+    if (!s) return false;
+    auto* sd = std::get_if<StackData>(&s->data);
+    if (!sd) {
+        spdlog::warn("LayoutTree::setStackZoom: node {} is not a Stack", stack.toString());
+        return false;
+    }
+    if (target.isNil()) {
+        sd->zoomTarget = {};
+        dirty_ = true;
+        return true;
+    }
+    if (target == stack) {
+        spdlog::warn("LayoutTree::setStackZoom: target cannot be the stack itself");
+        return false;
+    }
+    if (!contains(stack, target)) {
+        spdlog::warn("LayoutTree::setStackZoom: target {} not in stack {}'s subtree",
+                     target.toString(), stack.toString());
+        return false;
+    }
+    sd->zoomTarget = target;
+    dirty_ = true;
     return true;
 }
 
@@ -202,6 +260,7 @@ bool LayoutTree::setActiveChild(Uuid stack, Uuid child)
         return false;
     }
     sd->activeChild = child;
+    dirty_ = true;
     return true;
 }
 
@@ -250,6 +309,7 @@ bool LayoutTree::setSlotStretch(Uuid parent, Uuid child, int stretch)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->stretch = std::max(0, stretch);
+    dirty_ = true;
     return true;
 }
 
@@ -259,6 +319,7 @@ bool LayoutTree::setSlotMinCells(Uuid parent, Uuid child, int minCells)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->minCells = std::max(0, minCells);
+    dirty_ = true;
     return true;
 }
 
@@ -268,6 +329,7 @@ bool LayoutTree::setSlotMaxCells(Uuid parent, Uuid child, int maxCells)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->maxCells = std::max(0, maxCells);
+    dirty_ = true;
     return true;
 }
 
@@ -277,6 +339,7 @@ bool LayoutTree::setSlotFixedCells(Uuid parent, Uuid child, int fixedCells)
     ChildSlot* s = findSlot(childrenOf(p), child);
     if (!s) return false;
     s->fixedCells = std::max(0, fixedCells);
+    dirty_ = true;
     return true;
 }
 
@@ -302,6 +365,16 @@ void LayoutTree::destroyNode(Uuid id)
 
     if (root_ == id) root_ = Uuid{};
     nodes_.erase(id);
+    // Clear any Stack zoomTarget pointing at this destroyed node. Ancestor
+    // Stacks are likeliest but any Stack in the tree could technically point
+    // here if the node was nested under it. Mirrors the activeChild retarget
+    // in removeChild.
+    for (auto& [_, np] : nodes_) {
+        if (auto* sd = std::get_if<StackData>(&np->data)) {
+            if (sd->zoomTarget == id) sd->zoomTarget = {};
+        }
+    }
+    dirty_ = true;
     // Any TabBar referencing this node becomes dangling; that's intentional —
     // computeRects ignores TabBar.boundStack entirely, so render simply sees
     // an empty bar. Sweeping is the renderer's job on its next frame.
@@ -414,7 +487,13 @@ static void layoutSubtree(const LayoutTree& tree, Uuid id, LayoutRect rect,
             }
         }
         else if constexpr (std::is_same_v<T, StackData>) {
-            if (!d.activeChild.isNil()) {
+            // Zoom override: if set, the Stack's entire rect goes to the zoom
+            // target instead of activeChild. All non-zoom descendants are
+            // skipped this frame, so TIOCSWINSZ/divider/hit-test paths see
+            // them as hidden (rect map miss).
+            if (!d.zoomTarget.isNil()) {
+                layoutSubtree(tree, d.zoomTarget, rect, cellW, cellH, out);
+            } else if (!d.activeChild.isNil()) {
                 layoutSubtree(tree, d.activeChild, rect, cellW, cellH, out);
             }
         }
@@ -435,4 +514,193 @@ std::unordered_map<Uuid, LayoutRect, UuidHash> LayoutTree::computeRectsFrom(
     if (start.isNil() || window.isEmpty()) return out;
     layoutSubtree(*this, start, window, cellW, cellH, out);
     return out;
+}
+
+void LayoutTree::dividersIn(Uuid start, int dividerPixels,
+                            const std::unordered_map<Uuid, LayoutRect, UuidHash>& rects,
+                            std::vector<std::pair<Uuid, LayoutRect>>& out) const
+{
+    if (start.isNil() || dividerPixels <= 0) return;
+
+    std::function<void(Uuid)> walk = [&](Uuid id) {
+        const Node* n = node(id);
+        if (!n) return;
+        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
+            for (const auto& s : cd->children) walk(s.id);
+            if (cd->children.size() < 2) return;
+            for (size_t i = 0; i + 1 < cd->children.size(); ++i) {
+                auto a = rects.find(cd->children[i].id);
+                if (a == rects.end()) continue;
+                LayoutRect divR;
+                if (cd->dir == SplitDir::Horizontal) {
+                    int splitX = a->second.x + a->second.w;
+                    divR = {splitX, a->second.y, dividerPixels, a->second.h};
+                } else {
+                    int splitY = a->second.y + a->second.h;
+                    divR = {a->second.x, splitY, a->second.w, dividerPixels};
+                }
+                out.push_back({cd->children[i].id, divR});
+            }
+        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
+            if (!sd->activeChild.isNil()) walk(sd->activeChild);
+        }
+    };
+    walk(start);
+}
+
+Uuid LayoutTree::splitByWrapping(Uuid existingChild, SplitDir dir,
+                                  Uuid newChild, bool newIsFirst)
+{
+    Node* target = node(existingChild);
+    if (!target) return {};
+    Node* incoming = node(newChild);
+    if (!incoming) return {};
+    if (target->parent.isNil()) return {};
+    if (!incoming->parent.isNil()) return {};
+
+    Uuid wrapper = createContainer(dir);
+
+    // Inherit the existing slot's sizing knobs so the parent's allocation
+    // doesn't lurch on split.
+    ChildSlot wrapperSlot{wrapper, 1, 0, 0, 0};
+    if (Node* parentMut = node(target->parent)) {
+        if (auto* cd = std::get_if<ContainerData>(&parentMut->data)) {
+            for (const auto& s : cd->children) {
+                if (s.id == existingChild) {
+                    wrapperSlot.stretch    = s.stretch;
+                    wrapperSlot.minCells   = s.minCells;
+                    wrapperSlot.maxCells   = s.maxCells;
+                    wrapperSlot.fixedCells = s.fixedCells;
+                    break;
+                }
+            }
+        }
+    }
+    if (!replaceChild(target->parent, existingChild, wrapperSlot))
+        return {};
+
+    if (newIsFirst) {
+        appendChild(wrapper, ChildSlot{newChild,      1});
+        appendChild(wrapper, ChildSlot{existingChild, 1});
+    } else {
+        appendChild(wrapper, ChildSlot{existingChild, 1});
+        appendChild(wrapper, ChildSlot{newChild,      1});
+    }
+    return wrapper;
+}
+
+bool LayoutTree::resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
+                                      Uuid ancestorRoot, LayoutRect window,
+                                      int cellW, int cellH)
+{
+    if (target.isNil() || ancestorRoot.isNil()) return false;
+
+    // Walk up until we find a Container parent of the requested split dir.
+    Uuid cur = target;
+    while (true) {
+        const Node* n = node(cur);
+        if (!n || n->parent.isNil()) return false;
+        const Node* p = node(n->parent);
+        if (!p) return false;
+        const auto* cd = std::get_if<ContainerData>(&p->data);
+        if (!cd) return false;
+        if (cd->dir != axis) { cur = n->parent; continue; }
+
+        size_t idx = 0;
+        bool found = false;
+        for (size_t i = 0; i < cd->children.size(); ++i) {
+            if (cd->children[i].id == cur) { idx = i; found = true; break; }
+        }
+        if (!found) return false;
+
+        bool useTrailing = (idx + 1 < cd->children.size());
+        size_t neighborIdx = useTrailing ? idx + 1 : idx - 1;
+        if (!useTrailing && idx == 0) return false;
+
+        auto rects = computeRectsFrom(ancestorRoot, window, cellW, cellH);
+        auto ra = rects.find(cd->children[idx].id);
+        auto rb = rects.find(cd->children[neighborIdx].id);
+        if (ra == rects.end() || rb == rects.end()) return false;
+
+        int axisA = (axis == SplitDir::Horizontal) ? ra->second.w : ra->second.h;
+        int axisB = (axis == SplitDir::Horizontal) ? rb->second.w : rb->second.h;
+
+        int signedDelta = useTrailing ? pixelDelta : -pixelDelta;
+        int newA = std::max(1, axisA + signedDelta);
+        int newB = std::max(1, axisB - signedDelta);
+
+        Node* pMut = node(n->parent);
+        if (!pMut) return false;
+        auto* cdMut = std::get_if<ContainerData>(&pMut->data);
+        if (!cdMut) return false;
+        cdMut->children[idx].stretch         = newA;
+        cdMut->children[neighborIdx].stretch = newB;
+        cdMut->children[idx].fixedCells      = 0;
+        cdMut->children[neighborIdx].fixedCells = 0;
+        dirty_ = true;
+        return true;
+    }
+}
+
+void LayoutTree::terminalLeavesIn(Uuid start, bool onlyActiveStack,
+                                   std::vector<Uuid>& out) const
+{
+    std::function<void(Uuid)> walk = [&](Uuid id) {
+        const Node* n = node(id);
+        if (!n) return;
+        if (n->kind() == NodeKind::Terminal) {
+            out.push_back(id);
+            return;
+        }
+        if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
+            for (const auto& s : cd->children) walk(s.id);
+        } else if (const auto* sd = std::get_if<StackData>(&n->data)) {
+            if (onlyActiveStack) {
+                if (!sd->activeChild.isNil()) walk(sd->activeChild);
+            } else {
+                for (const auto& c : sd->children) walk(c.id);
+            }
+        }
+    };
+    walk(start);
+}
+
+Uuid LayoutTree::leftmostTerminalIn(Uuid start) const
+{
+    const Node* n = node(start);
+    if (!n) return {};
+    if (std::holds_alternative<TerminalData>(n->data)) return start;
+    if (const auto* cd = std::get_if<ContainerData>(&n->data)) {
+        if (cd->children.empty()) return {};
+        return leftmostTerminalIn(cd->children.front().id);
+    }
+    if (const auto* sd = std::get_if<StackData>(&n->data)) {
+        if (sd->activeChild.isNil()) return {};
+        return leftmostTerminalIn(sd->activeChild);
+    }
+    return {};
+}
+
+void LayoutTree::collapseSingletonsAbove(Uuid fromParent, Uuid stopAt)
+{
+    if (fromParent.isNil() || stopAt.isNil()) return;
+
+    Uuid cur = fromParent;
+    while (!cur.isNil() && cur != stopAt) {
+        Node* n = node(cur);
+        if (!n) break;
+        auto* cd = std::get_if<ContainerData>(&n->data);
+        if (!cd || cd->children.size() != 1) break;
+        Uuid grand = n->parent;
+        if (grand.isNil()) break;
+        Uuid onlyChild = cd->children.front().id;
+        removeChild(cur, onlyChild);
+        if (!replaceChild(grand, cur, ChildSlot{onlyChild, 1})) {
+            spdlog::warn("LayoutTree::collapseSingletonsAbove: replaceChild failed at {}",
+                         cur.toString());
+            break;
+        }
+        destroyNode(cur);
+        cur = grand;
+    }
 }

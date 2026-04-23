@@ -42,8 +42,8 @@ struct ChildSlot {
 };
 
 struct TerminalData {
-    // Empty for now. Terminal lifetime stays with the existing machinery
-    // (Layout/TabManager) until the cutover; the tree only tracks identity.
+    // Empty: Terminal lifetime lives in Script::Engine's terminals_ map
+    // (keyed by the tree Uuid). The tree only tracks identity / topology.
 };
 
 struct ContainerData {
@@ -55,6 +55,12 @@ struct StackData {
     std::vector<ChildSlot> children; // stretch/min/max ignored (only one visible)
     Uuid activeChild;                // nil if empty stack
     bool opaque = false;             // true = navigation treats this stack as a single node
+    // When non-nil, layout routes the Stack's entire rect to this node
+    // (which must live in the Stack's subtree) instead of activeChild.
+    // All other children are skipped that frame. JS toggles this via
+    // LayoutTree::setStackZoom; destroyNode clears any Stack pointing at
+    // a destroyed node. This replaces the engine-level zoomedNodeId_ policy.
+    Uuid zoomTarget;
 };
 
 struct TabBarData {
@@ -107,6 +113,13 @@ public:
     bool setTabBarStack(Uuid tabBar, Uuid stack); // stack must be kind Stack
     void setLabel(Uuid node, std::string label);
 
+    // Zoom override on a Stack. `target == nil` clears. Otherwise:
+    //   - `stack` must be an existing Stack node.
+    //   - `target` must live in `stack`'s subtree (reflexive disallowed).
+    // Returns false on any violation; true (and silently clears) when
+    // `target` is nil.
+    bool setStackZoom(Uuid stack, Uuid target);
+
     // Per-slot sizing knobs (mb.layout.setSlot{Stretch,Fixed,Min,Max}).
     // `parent` must be a Container or Stack that contains `child` directly.
     // fixedCells == 0 disables fixed mode for that slot; otherwise stretch is
@@ -126,6 +139,15 @@ public:
     Node*       node(Uuid id);
     const Node* node(Uuid id) const;
 
+    // Walk `descendant`'s parent chain; return true if any ancestor equals
+    // `ancestor`. `ancestor == descendant` is also true (reflexive). Either
+    // nil returns false.
+    bool contains(Uuid ancestor, Uuid descendant) const;
+
+    // Walk `start`'s parent chain (starting at `start` itself); return the
+    // first ancestor whose kind() == `kind`. Returns nil if none.
+    Uuid nearestAncestorOfKind(Uuid start, NodeKind kind) const;
+
     // --- Layout ---
     // Compute rects for the whole tree starting from root(). Nodes not in the
     // returned map are "not visible this frame" — non-active Stack children
@@ -140,7 +162,67 @@ public:
     std::unordered_map<Uuid, LayoutRect, UuidHash> computeRectsFrom(
         Uuid start, LayoutRect window, int cellW, int cellH) const;
 
+    // Collect divider rects between visible siblings inside `start`'s subtree,
+    // given a `rects` map produced by computeRects/computeRectsFrom. Each
+    // divider is paired with the Uuid of its "first neighbour" — the sibling
+    // on its left (horizontal split) or above (vertical split). Callers that
+    // want a paneId resolve the Uuid to whatever integer identity they track.
+    // Stack nodes follow only their activeChild; a Stack's zoomTarget (once
+    // wired up) naturally bypasses non-zoomed Containers because their
+    // children aren't in `rects`.
+    void dividersIn(Uuid start, int dividerPixels,
+                    const std::unordered_map<Uuid, LayoutRect, UuidHash>& rects,
+                    std::vector<std::pair<Uuid, LayoutRect>>& out) const;
+
+    // Starting at `fromParent`, walk up the parent chain collapsing each
+    // Container that has exactly one child: the only child is promoted into
+    // the grandparent's slot, and the singleton Container is destroyed.
+    // Stops when it reaches `stopAt` (exclusive) or a node with 0/>=2
+    // children. No-op if either argument is nil or `stopAt` is not reachable.
+    void collapseSingletonsAbove(Uuid fromParent, Uuid stopAt);
+
+    // Wrap `existingChild` in a fresh Container of direction `dir`, and
+    // place `newChild` as a sibling inside that wrapper. The wrapper
+    // inherits `existingChild`'s slot stretch/min/max/fixed, so the parent's
+    // layout is preserved across the split. `existingChild` must have a
+    // parent (Container); `newChild` must be orphaned. Returns the wrapper
+    // Uuid on success, nil on any validation failure.
+    Uuid splitByWrapping(Uuid existingChild, SplitDir dir,
+                          Uuid newChild, bool newIsFirst);
+
+    // Walk up from `target` until we find a Container parent whose SplitDir
+    // matches `axis`. Grow `target`'s side by `pixelDelta` and shrink its
+    // neighbour (leading or trailing, preferring trailing). Uses the current
+    // rects (fetched via computeRectsFrom(ancestorRoot, window, cellW, cellH))
+    // to translate pixels to stretch weights. Returns false if no matching
+    // ancestor exists or if `ancestorRoot` is nil. `window` is the pixel box
+    // the subtree lays out into.
+    bool resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
+                              Uuid ancestorRoot, LayoutRect window,
+                              int cellW, int cellH);
+
+    // Collect every Terminal-kind leaf Uuid in `start`'s subtree. If
+    // `onlyActiveStack` is true, Stack recursion follows `activeChild` only
+    // (matches the "currently visible" semantics).
+    void terminalLeavesIn(Uuid start, bool onlyActiveStack,
+                          std::vector<Uuid>& out) const;
+
+    // Return the leftmost Terminal's Uuid inside `start`'s subtree — useful
+    // for naming dividers by their "first neighbour" paneId.
+    Uuid leftmostTerminalIn(Uuid start) const;
+
+    // Dirty flag — set by every structural mutation (appendChild, removeChild,
+    // replaceChild, setActiveChild, setStackZoom, setSlot*, setRoot,
+    // destroyNode). Consumers (PlatformDawn::runLayoutIfDirty) read via
+    // takeDirty() to recompute rects + cascade TIOCSWINSZ exactly once per
+    // frame, regardless of how many mutations accumulated. External callers
+    // (e.g. framebuffer resize) can manually markDirty().
+    void markDirty() { dirty_ = true; }
+    bool takeDirty() { bool d = dirty_; dirty_ = false; return d; }
+    bool isDirty() const { return dirty_; }
+
 private:
     std::unordered_map<Uuid, std::unique_ptr<Node>, UuidHash> nodes_;
     Uuid root_;
+    bool dirty_ = true; // initial: first frame must compute
 };

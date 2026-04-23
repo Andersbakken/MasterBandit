@@ -133,7 +133,7 @@ void RenderThread::applyPendingMutations()
             },
             [&](const PendingMutations::DestroyPopupState& d) {
                 renderState_.destroyedPopupKeys.push_back(
-                    std::to_string(d.paneId) + "/" + d.popupId);
+                    d.paneId.toString() + "/" + d.popupId);
             },
         }, op);
     }
@@ -143,7 +143,7 @@ void RenderThread::applyPendingMutations()
 
     // Transfer per-pane dirty pane entries so the render thread picks
     // them up at snapshot time.
-    for (int id : pending_.dirtyPanes) {
+    for (const Uuid& id : pending_.dirtyPanes) {
         renderState_.dividerGeoms[id]; // ensure entry exists (noop if already there)
     }
 

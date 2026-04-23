@@ -96,7 +96,7 @@ void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
     clearSelection();
     mPendingSelection    = true;
     mPendingSelCol       = ev->x;
-    mPendingSelAbsRow    = mDocument.historySize() - mViewportOffset + ev->y;
+    mPendingSelAbsRow    = mDocument.historySize() - viewportOffset() + ev->y;
 }
 
 void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
@@ -141,7 +141,7 @@ void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
     if (mSelection.active) {
         int col = std::max(0, std::min(ev->x, mWidth - 1));
         int row = std::max(0, std::min(ev->y, mHeight - 1));
-        int absRow = mDocument.historySize() - mViewportOffset + row;
+        int absRow = mDocument.historySize() - viewportOffset() + row;
         updateSelection(col, absRow);
         if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
         return;

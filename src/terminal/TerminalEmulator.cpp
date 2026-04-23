@@ -198,7 +198,25 @@ void TerminalEmulator::resize(int width, int height)
 
     mState->scrollTop = 0;
     mState->scrollBottom = height;
-    mViewportOffset = std::clamp(mViewportOffset, 0, mDocument.historySize());
+    // Anchor the viewport top. If mTopLineId is 0 (first resize) or its
+    // backing row has evicted, snap to the top of the screen area (live
+    // mode). Otherwise preserve it — callers that want to stay on the same
+    // content across a resize (shell height grow) get that automatically
+    // because line ids survive reflow.
+    const int histSize = mDocument.historySize();
+    if (mTopLineId == 0 || mDocument.firstAbsOfLine(mTopLineId) < 0) {
+        mTopLineId = mDocument.lineIdForAbs(histSize);
+        mTopPixelSubY = 0;
+    } else {
+        // Clamp: a height shrink may have pushed the anchor deeper into
+        // history than the (now-smaller) scrollback allows. Pull it back
+        // to the oldest surviving line in that case.
+        int topAbs = mDocument.firstAbsOfLine(mTopLineId);
+        if (topAbs > histSize) {
+            mTopLineId = mDocument.lineIdForAbs(histSize);
+            mTopPixelSubY = 0;
+        }
+    }
     mState->wrapPending = false;
     mState->savedCursorX = std::min(mState->savedCursorX, width - 1);
     mState->savedCursorY = std::min(mState->savedCursorY, height - 1);
@@ -217,15 +235,38 @@ void TerminalEmulator::resize(int width, int height)
 void TerminalEmulator::scrollUpInRegion(int n)
 {
     IGrid& g = grid();
-    // Document::scrollUp handles history push internally when top == 0
-    if (!mUsingAltScreen && mViewportOffset > 0 && mState->scrollTop == 0) {
-        // Will gain n history rows from the scroll
-        mViewportOffset += n;
-    }
+    // Capture whether the viewport was live-tailing BEFORE the scroll. Line
+    // ids are stable, so `firstAbsOfLine(mTopLineId)` returns the same abs
+    // row before and after — if we don't advance the anchor when the user
+    // was at live, newly-scrolled content pushes the visible viewport
+    // backward one line at a time, the exact bug the old mViewportOffset
+    // += n path was compensating for.
+    bool wasLive = !mUsingAltScreen && mState->scrollTop == 0 &&
+                   (mTopLineId == 0 || viewportOffset() == 0);
+
     g.scrollUp(mState->scrollTop, mState->scrollBottom, n);
-    if (!mUsingAltScreen && mViewportOffset > 0) {
-        mViewportOffset = std::min(mViewportOffset, mDocument.historySize());
+
+    if (wasLive) {
+        // The newest row after the scroll is the new live-top. In alt
+        // screen and non-top-starting scroll regions this branch doesn't
+        // fire (history isn't pushed there anyway).
+        int newHistSize = mDocument.historySize();
+        uint64_t newLineId = mDocument.lineIdForAbs(newHistSize);
+        if (newLineId != 0) mTopLineId = newLineId;
+        mTopPixelSubY = 0;
     }
+}
+
+int TerminalEmulator::viewportOffset() const
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    if (mTopLineId == 0) return 0;
+    int topAbs = mDocument.firstAbsOfLine(mTopLineId);
+    int histSize = mDocument.historySize();
+    if (topAbs < 0 || topAbs >= histSize + mHeight) return 0; // evicted / out-of-range → live
+    // topAbs in [0, histSize] maps to offset in [histSize, 0]; clamp at 0 if
+    // topAbs ran past histSize (the line scrolled into screen area).
+    return std::max(0, histSize - topAbs);
 }
 
 bool TerminalEmulator::copyViewportRow(int viewRow, std::span<Cell> dst) const
@@ -235,16 +276,16 @@ bool TerminalEmulator::copyViewportRow(int viewRow, std::span<Cell> dst) const
     assert(static_cast<int>(dst.size()) == mWidth);
 
     const Cell* src = nullptr;
-    if (mViewportOffset == 0) {
-        src = grid().row(viewRow);
+    // Compute the logical row index from mTopLineId. If the anchor evicted,
+    // fall through to live mode (topAbs = historySize).
+    int histSize = mDocument.historySize();
+    int topAbs = mTopLineId ? mDocument.firstAbsOfLine(mTopLineId) : histSize;
+    if (topAbs < 0) topAbs = histSize;
+    int logicalRow = topAbs + viewRow;
+    if (logicalRow < histSize) {
+        src = mDocument.historyRow(logicalRow);
     } else {
-        int histSize = mDocument.historySize();
-        int logicalRow = histSize - mViewportOffset + viewRow;
-        if (logicalRow < histSize) {
-            src = mDocument.historyRow(logicalRow);
-        } else {
-            src = grid().row(logicalRow - histSize);
-        }
+        src = grid().row(logicalRow - histSize);
     }
 
     if (!src) return false;
@@ -255,23 +296,62 @@ bool TerminalEmulator::copyViewportRow(int viewRow, std::span<Cell> dst) const
 void TerminalEmulator::scrollViewport(int delta)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    int oldOffset = mViewportOffset;
-    // delta > 0 means scroll into history, delta < 0 toward live
-    mViewportOffset = std::clamp(mViewportOffset + delta, 0, mDocument.historySize());
-    if (mViewportOffset != oldOffset) {
-        grid().markAllDirty();
-        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
-    }
+    int oldOffset = viewportOffset();
+    int histSize = mDocument.historySize();
+    int newOffset = std::clamp(oldOffset + delta, 0, histSize);
+    if (newOffset == oldOffset && mTopPixelSubY == 0) return;
+
+    int newTopAbs = histSize - newOffset;
+    uint64_t newLineId = mDocument.lineIdForAbs(newTopAbs);
+    if (newLineId != 0) mTopLineId = newLineId;
+    mTopPixelSubY = 0;
+    grid().markAllDirty();
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
 }
 
 void TerminalEmulator::resetViewport()
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    if (mViewportOffset != 0) {
-        mViewportOffset = 0;
-        grid().markAllDirty();
-        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
-    }
+    int histSize = mDocument.historySize();
+    uint64_t liveLineId = mDocument.lineIdForAbs(histSize);
+    if (mTopLineId == liveLineId && mTopPixelSubY == 0) return;
+    if (liveLineId != 0) mTopLineId = liveLineId;
+    mTopPixelSubY = 0;
+    grid().markAllDirty();
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
+}
+
+void TerminalEmulator::scrollByPixels(int dyPx, int cellHeight)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    if (cellHeight <= 0 || dyPx == 0) return;
+
+    // Convert current position to a single pixel counter: totalPx = offset*cellHeight + subY.
+    const int histSize = mDocument.historySize();
+    int offsetRows = viewportOffset();
+    long long totalPx = static_cast<long long>(offsetRows) * cellHeight + mTopPixelSubY;
+    totalPx += dyPx;
+
+    long long maxPx = static_cast<long long>(histSize) * cellHeight;
+    if (totalPx < 0) totalPx = 0;
+    if (totalPx > maxPx) totalPx = maxPx;
+
+    int newOffset = static_cast<int>(totalPx / cellHeight);
+    int newSubY   = static_cast<int>(totalPx % cellHeight);
+    // Clamp at max: when totalPx == maxPx we want offset==histSize, subY==0
+    // (anything sub-pixel beyond the oldest row would have no content to show).
+    if (newOffset >= histSize) { newOffset = histSize; newSubY = 0; }
+
+    int oldOffset = offsetRows;
+    int oldSubY   = mTopPixelSubY;
+    if (newOffset == oldOffset && newSubY == oldSubY) return;
+
+    int newTopAbs = histSize - newOffset;
+    uint64_t newLineId = mDocument.lineIdForAbs(newTopAbs);
+    if (newLineId != 0) mTopLineId = newLineId;
+    mTopPixelSubY = newSubY;
+    grid().markAllDirty();
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
 }
 
 void TerminalEmulator::scrollToPrompt(int direction, bool wrap)
@@ -304,7 +384,10 @@ void TerminalEmulator::scrollToPrompt(int direction, bool wrap)
         if (newOffset <= 0) {
             resetViewport();
         } else {
-            mViewportOffset = std::clamp(newOffset, 0, histSize);
+            int clampedTopAbs = histSize - std::clamp(newOffset, 0, histSize);
+            uint64_t newTopLineId = mDocument.lineIdForAbs(clampedTopAbs);
+            if (newTopLineId != 0) mTopLineId = newTopLineId;
+            mTopPixelSubY = 0;
             grid().markAllDirty();
             if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
         }
@@ -989,7 +1072,11 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mLastPrintedX = -1;
                 mLastPrintedY = -1;
                 mGraphemeState = 0;
-                mViewportOffset = 0;
+                // RIS: snap viewport back to live mode (equivalent of
+                // resetViewport() minus the event fire, since RIS already
+                // nukes state broadly and the caller will re-render).
+                mTopLineId = mDocument.lineIdForAbs(mDocument.historySize());
+                mTopPixelSubY = 0;
                 // Tab stops: reset to defaults (every 8 columns).
                 std::fill(mTabStops.begin(), mTabStops.end(), 0);
                 for (int x = 0; x < mWidth; x += 8) mTabStops[x] = 1;

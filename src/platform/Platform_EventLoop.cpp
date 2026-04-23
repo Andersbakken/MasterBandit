@@ -385,30 +385,72 @@ int PlatformDawn::exec()
             }
             return result;
         };
-        scbs.createEmbedded = [this](Script::PaneId paneId, int rows,
-                                      std::function<void(const char*, size_t)> onInput) -> uint64_t {
+        scbs.createEmbedded = [this](Script::PaneId paneId, int rows) -> uint64_t {
             Terminal* p = scriptEngine_.terminal(paneId);
             if (!p) return 0;
+            // Resolve anchor lineId from current cursor position BEFORE the
+            // call, because createEmbedded advances the cursor internally.
+            // The document's lineIdForAbs on the cursor's absolute row is the
+            // captured anchor — we need it now so the onInput delivery lambda
+            // can bake the regKey in at install time.
+            uint64_t anchorLineId = p->document().lineIdForAbs(
+                p->document().historySize() + p->cursorY());
+            if (anchorLineId == 0) return 0;
+
             PlatformCallbacks pcbs;
             pcbs.onTerminalExited = [](Terminal*) {};
             pcbs.quit = [this]() { quit(); };
-            pcbs.onInput = std::move(onInput);
-            // Resolve anchor lineId from current cursor position BEFORE the call,
-            // because createEmbedded advances the cursor internally. The
-            // document's lineIdForAbs on the cursor's absolute row is the
-            // captured anchor.
-            uint64_t anchorLineId = p->document().lineIdForAbs(
-                p->document().historySize() + p->cursorY());
+            // When the user types into a focused embedded, its headless
+            // Terminal emits bytes via writeToOutput → onInput. Route to the
+            // JS "input" listeners registered under "paneId:lineId" — same
+            // regKey-based fanout as deliverEmbeddedDestroyed.
+            std::string regKey = paneId.toString() + ":" + std::to_string(anchorLineId);
+            pcbs.onInput = [this, regKey](const char* data, size_t len) {
+                scriptEngine_.deliverEmbeddedInput(regKey, data, len);
+                scriptEngine_.executePendingJobs();
+            };
+
             Terminal* em = p->createEmbedded(rows, std::move(pcbs));
             if (!em) return 0;
             setNeedsRedraw();
             return anchorLineId;
         };
         scbs.destroyEmbedded = [this](Script::PaneId paneId, uint64_t lineId) {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
-                auto extracted = p->extractEmbedded(lineId);
-                if (extracted) setNeedsRedraw();
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p) return;
+
+            // Mirror the popup-destruction pattern: under the render mutex,
+            // extract the embedded from the live parent, remove it from the
+            // shadow copy, and stamp with the current completed-frames
+            // counter. Release the mutex before handing the unique_ptr to
+            // the graveyard — any frame that holds a raw pointer to this
+            // embedded Terminal has until it completes to finish; the
+            // graveyard will sweep it later once completedFrames > stamp.
+            std::unique_ptr<Terminal> extracted;
+            uint64_t stamp = 0;
+            {
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
+                extracted = p->extractEmbedded(lineId);
+                if (!extracted) return;
+                for (auto& rpi : renderThread_->renderState().panes) {
+                    if (rpi.id != paneId) continue;
+                    auto& embs = rpi.embeddeds;
+                    embs.erase(std::remove_if(embs.begin(), embs.end(),
+                        [lineId](const RenderPaneEmbeddedInfo& ei) { return ei.lineId == lineId; }),
+                        embs.end());
+                    if (rpi.focusedEmbeddedLineId == lineId) rpi.focusedEmbeddedLineId = 0;
+                    break;
+                }
+                stamp = renderThread_->completedFrames();
             }
+            graveyard_.defer(std::move(extracted), stamp);
+
+            renderThread_->pending().structuralOps.push_back(
+                PendingMutations::DestroyEmbeddedState{paneId, lineId});
+            renderThread_->pending().releaseEmbeddedTextures.push_back(
+                paneId.toString() + ":" + std::to_string(lineId));
+            renderThread_->pending().dirtyPanes.insert(paneId);
+            setNeedsRedraw();
         };
         scbs.resizeEmbedded = [this](Script::PaneId paneId, uint64_t lineId, int rows) -> bool {
             Terminal* p = scriptEngine_.terminal(paneId);
@@ -609,6 +651,47 @@ int PlatformDawn::exec()
             // under renderThread_->mutex() right after.
             for (auto& [fd, term] : ptyPolls())
                 term->flushReadBuffer();
+
+            // Drain embeddeds whose anchor line evicted during the PTY flush
+            // above. The eviction callback stashed them on the parent
+            // Terminal because it couldn't take the render mutex from inside
+            // Document::evictToArchive. Now that the terminal mutex is
+            // released, we can go through the same render-mutex + graveyard
+            // path used by destroyEmbedded.
+            for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
+                for (Terminal* pane : scriptEngine_.panesInSubtree(sub)) {
+                    if (!pane->hasEvictedEmbeddeds()) continue;
+                    Uuid paneId = pane->nodeId();
+                    pane->drainEvictedEmbeddeds(
+                        [&, this, paneId](uint64_t lineId, std::unique_ptr<Terminal> em) {
+                            uint64_t stamp = 0;
+                            {
+                                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
+                                for (auto& rpi : renderThread_->renderState().panes) {
+                                    if (rpi.id != paneId) continue;
+                                    auto& embs = rpi.embeddeds;
+                                    embs.erase(std::remove_if(embs.begin(), embs.end(),
+                                        [lineId](const RenderPaneEmbeddedInfo& ei) { return ei.lineId == lineId; }),
+                                        embs.end());
+                                    if (rpi.focusedEmbeddedLineId == lineId) rpi.focusedEmbeddedLineId = 0;
+                                    break;
+                                }
+                                stamp = renderThread_->completedFrames();
+                            }
+                            graveyard_.defer(std::move(em), stamp);
+                            renderThread_->pending().structuralOps.push_back(
+                                PendingMutations::DestroyEmbeddedState{paneId, lineId});
+                            renderThread_->pending().releaseEmbeddedTextures.push_back(
+                                paneId.toString() + ":" + std::to_string(lineId));
+                            renderThread_->pending().dirtyPanes.insert(paneId);
+
+                            // Fire JS "destroyed" listeners for this embedded.
+                            scriptEngine_.deliverEmbeddedDestroyed(
+                                paneId.toString() + ":" + std::to_string(lineId));
+                        });
+                    setNeedsRedraw();
+                }
+            }
 
             // Drain deferred callbacks.
             renderThread_->drainDeferredMain();         // title / icon / cwd / progress / etc.

@@ -126,6 +126,25 @@ void InputController::onKey(int key, int scancode, int action, int mods)
         return;
     }
 
+    // Esc defocus for embedded terminals. Applets use `q` / Ctrl-C for their
+    // own cancel, so Esc is repurposed here as "hand focus back to the
+    // parent pane". The focused popup path intentionally forwards Esc to the
+    // popup's content; embeddeds differ.
+    if (action != static_cast<int>(KeyAction_Release) &&
+        k == Key_Escape && mods == 0) {
+        auto tab = platform_->activeTab();
+        if (tab) {
+            Terminal* fp = platform_->scriptEngine_.focusedTerminalInSubtree(*tab);
+            if (fp && fp->focusedEmbeddedLineId() != 0) {
+                fp->clearFocusedEmbedded();
+                fp->focusEvent(true);
+                platform_->renderThread_->pending().dirtyPanes.insert(fp->id());
+                platform_->setNeedsRedraw();
+                return;
+            }
+        }
+    }
+
     // Reset viewport to live when typing (not on release, not for bindings)
     if (action != static_cast<int>(KeyAction_Release)) {
         term->resetViewport();
@@ -372,8 +391,10 @@ void InputController::onMouseButton(int button, int action, int mods)
         Terminal* clickPane = eng.focusedTerminalInSubtree(*tab);
         if (clickPane) {
             const Rect& pr = clickPane->rect();
-            int cellCol = static_cast<int>((sx - pr.x - padLeft) / charWidth);
-            int cellRow = static_cast<int>((sy - pr.y - padTop) / lineHeight);
+            double cellRelX = sx - pr.x - padLeft;
+            double cellRelY = sy - pr.y - padTop;
+            int cellCol = static_cast<int>(cellRelX / charWidth);
+            int cellRow = static_cast<int>(cellRelY / lineHeight);
             for (const auto& popup : clickPane->popups()) {
                 if (cellCol >= popup->cellX() && cellCol < popup->cellX() + popup->cellW() &&
                     cellRow >= popup->cellY() && cellRow < popup->cellY() + popup->cellH()) {
@@ -390,6 +411,41 @@ void InputController::onMouseButton(int button, int action, int mods)
                         static_cast<int>(sx), static_cast<int>(sy), btn);
                     platform_->scriptEngine_.executePendingJobs();
                     return;
+                }
+            }
+
+            // 2c. Embedded terminals. Hit-test visual displacement so a click
+            // on a visible embedded focuses it. Skipped mid-drag (drag
+            // originated outside the embedded — let the selection continue
+            // across its rect instead of stealing focus). Also skipped on
+            // alt-screen where embeddeds are hidden anyway.
+            if (!selectionDragActive_ && !clickPane->usingAltScreen() &&
+                !clickPane->embeddeds().empty()) {
+                uint64_t hitLineId = 0;
+                bool clickedEmbedded = clickPane->liveSegmentHitTest(
+                    cellRelY, lineHeight, /*out*/ hitLineId);
+                if (clickedEmbedded && action == static_cast<int>(KeyAction_Press)) {
+                    // Focus the embedded; subsequent activeTerm() resolves to it.
+                    clickPane->clearFocusedPopup();
+                    clickPane->setFocusedEmbeddedLineId(hitLineId);
+                    clickPane->focusEvent(false);
+                    platform_->renderThread_->pending().dirtyPanes.insert(clickPane->id());
+                    platform_->setNeedsRedraw();
+                    return;
+                }
+                if (clickedEmbedded) {
+                    // Release inside embedded — swallow without further action.
+                    return;
+                }
+                // Click outside any embedded: if one is currently focused,
+                // defocus it so the parent pane resumes handling input.
+                if (action == static_cast<int>(KeyAction_Press) &&
+                    clickPane->focusedEmbeddedLineId() != 0) {
+                    clickPane->clearFocusedEmbedded();
+                    clickPane->focusEvent(true);
+                    platform_->renderThread_->pending().dirtyPanes.insert(clickPane->id());
+                    platform_->setNeedsRedraw();
+                    // Fall through to normal click processing.
                 }
             }
 

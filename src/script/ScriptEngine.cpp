@@ -1207,14 +1207,7 @@ static JSValue jsPaneCreateEmbedded(JSContext* ctx, JSValueConst this_val,
     if (rows <= 0) return JS_ThrowTypeError(ctx, "createEmbeddedTerminal: 'rows' must be > 0");
 
     Uuid paneId = pane->id;
-    uint64_t lineId = eng->callbacks().createEmbedded(paneId, rows,
-        [eng, paneId](const char* data, size_t len) {
-            // Input routing: placeholder — the regKey is computed at delivery
-            // time from the focused embedded's lineId. For now we deliver to
-            // whichever embedded is focused on this pane (native focus state
-            // decides which lineId's listeners to fire).
-            (void)eng; (void)paneId; (void)data; (void)len;
-        });
+    uint64_t lineId = eng->callbacks().createEmbedded(paneId, rows);
 
     if (lineId == 0)
         return JS_NULL;

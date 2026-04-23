@@ -33,6 +33,7 @@ set(TEST_SOURCES
     test_kitty_graphics.cpp
     test_osc_1337.cpp
     test_popup.cpp
+    test_embedded_terminals.cpp
     test_tabs.cpp
     test_charset.cpp
     test_layout_tree.cpp

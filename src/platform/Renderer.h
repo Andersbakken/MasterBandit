@@ -92,9 +92,12 @@ public:
                       size_t imgSplitText = 0);
 
     // Composite entry: a rendered pane texture and where to place it on the swapchain.
+    // srcX/srcY let a single texture be composited as multiple vertical strips —
+    // used when an embedded terminal slices the parent pane around its anchor row.
     struct CompositeEntry {
         wgpu::Texture texture;
-        uint32_t srcW, srcH;         // used region of the texture (== pane pixel size)
+        uint32_t srcX = 0, srcY = 0; // offset into the source texture
+        uint32_t srcW, srcH;         // extent copied from the texture
         uint32_t dstX, dstY;         // destination pixel offset on swapchain
     };
 

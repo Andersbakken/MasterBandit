@@ -22,13 +22,18 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
     : TerminalEmulator(std::move(callbacks))
     , mPlatformCbs(std::move(platformCbs))
 {
-    // Destroy embedded terminals whose anchor row has evicted past archive
-    // cap. Fires from inside Document::evictToArchive, which runs under this
-    // Terminal's mutex (recursive, safe to re-enter). Headless Terminal
-    // destructor has no side effects beyond memory cleanup.
+    // Embedded anchor evicted past the archive cap. We're deep inside
+    // Document::evictToArchive which runs under this Terminal's mutex, and
+    // the render thread takes (renderMutex -> terminalMutex) during snapshot
+    // capture — so we can't take the render mutex here (cyclic). Instead
+    // move the unique_ptr into mEvictedEmbeddeds for the main-thread Platform
+    // to drain via drainEvictedEmbeddeds(), at which point it can mirror the
+    // removal into the render shadow copy and defer the Terminal to the
+    // graveyard.
     document().setOnLineIdEvicted([this](uint64_t lineId) {
         auto it = mEmbedded.find(lineId);
         if (it == mEmbedded.end()) return;
+        mEvictedEmbeddeds.push_back({lineId, std::move(it->second)});
         mEmbedded.erase(it);
         if (mFocusedEmbeddedLineId == lineId) mFocusedEmbeddedLineId = 0;
         if (onPopupEvent) onPopupEvent();
@@ -547,4 +552,51 @@ TerminalEmulator* Terminal::activeTerm()
     if (auto* em = focusedEmbedded())
         return em;
     return this;
+}
+
+void Terminal::collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const
+{
+    if (usingAltScreen()) return; // hidden while in alt
+    for (const auto& [lineId, em] : mEmbedded) {
+        out.push_back({lineId, em->height()});
+    }
+}
+
+bool Terminal::liveSegmentHitTest(double cellRelY, float lineHeight,
+                                  uint64_t& outLineId) const
+{
+    if (usingAltScreen() || mEmbedded.empty() || lineHeight <= 0.0f) return false;
+
+    // Shift the click into un-scrolled viewport coordinates so sub-line
+    // scroll doesn't desync the hit-test from what the user visually clicked.
+    double adjY = cellRelY + topPixelSubY();
+
+    struct EmHit { int viewRow; int rows; uint64_t lineId; };
+    std::vector<EmHit> hits;
+    hits.reserve(mEmbedded.size());
+
+    const Document& doc = document();
+    const int origin = doc.historySize() - viewportOffset();
+    const int paneRows = height();
+    for (const auto& [lineId, em] : mEmbedded) {
+        int abs = doc.firstAbsOfLine(lineId);
+        if (abs < 0) continue;
+        int viewRow = abs - origin;
+        if (viewRow < 0 || viewRow >= paneRows) continue;
+        hits.push_back({viewRow, em->height(), lineId});
+    }
+    std::sort(hits.begin(), hits.end(),
+              [](const EmHit& a, const EmHit& b) { return a.viewRow < b.viewRow; });
+
+    int cumShiftRows = 0;
+    for (const auto& h : hits) {
+        double visualYStartPx = (h.viewRow + cumShiftRows) * lineHeight;
+        double visualYEndPx   = visualYStartPx + h.rows * lineHeight;
+        if (adjY >= visualYStartPx && adjY < visualYEndPx) {
+            outLineId = h.lineId;
+            return true;
+        }
+        cumShiftRows += (h.rows - 1);
+    }
+    return false;
 }

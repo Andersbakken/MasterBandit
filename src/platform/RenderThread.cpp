@@ -113,6 +113,10 @@ void RenderThread::applyPendingMutations()
         renderState_.releasePopupTextureKeys.end(),
         pending_.releasePopupTextures.begin(),
         pending_.releasePopupTextures.end());
+    renderState_.releaseEmbeddedTextureKeys.insert(
+        renderState_.releaseEmbeddedTextureKeys.end(),
+        pending_.releaseEmbeddedTextures.begin(),
+        pending_.releaseEmbeddedTextures.end());
     renderState_.releaseAllPaneTextures |= pending_.releaseAllPaneTextures;
     renderState_.releaseTabBarTexture   |= pending_.releaseTabBarTexture;
     renderState_.invalidateAllRowCaches |= pending_.invalidateAllRowCaches;
@@ -132,6 +136,10 @@ void RenderThread::applyPendingMutations()
             [&](const PendingMutations::DestroyPopupState& d) {
                 renderState_.destroyedPopupKeys.push_back(
                     d.paneId.toString() + "/" + d.popupId);
+            },
+            [&](const PendingMutations::DestroyEmbeddedState& d) {
+                renderState_.destroyedEmbeddedKeys.push_back(
+                    d.paneId.toString() + ":" + std::to_string(d.lineId));
             },
         }, op);
     }

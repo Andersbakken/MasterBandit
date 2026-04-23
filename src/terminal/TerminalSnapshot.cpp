@@ -8,6 +8,21 @@
 #include <cstring>
 #include <span>
 
+const TerminalSnapshot::Segment* TerminalSnapshot::segmentAtPixelY(int y, float cellH) const
+{
+    if (cellH <= 0.0f || segments.empty()) return nullptr;
+    // Smooth scroll shifts all segments up by topPixelSubY; adjust y into
+    // segment-local space by adding that offset.
+    int adjY = y + topPixelSubY;
+    if (adjY < 0) return nullptr;
+    for (const auto& seg : segments) {
+        int startPx = static_cast<int>(static_cast<float>(seg.cellYStart) * cellH);
+        int endPx   = static_cast<int>(static_cast<float>(seg.cellYStart + seg.rowCount) * cellH);
+        if (adjY >= startPx && adjY < endPx) return &seg;
+    }
+    return nullptr;
+}
+
 bool TerminalSnapshot::isCellSelected(int col, int absRow) const
 {
     if (!selection.active && !selection.valid) return false;
@@ -194,6 +209,65 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     lastCols_ = cols;
     lastViewportOffset_ = viewportOffset;
     lastHistorySize_ = historySize;
+
+    // ---- Visual-layout segment list ----
+    //
+    // One Row segment per viewport row, plus an Embedded segment for each
+    // embedded whose anchor row is visible in the current viewport. Embedded
+    // segments occupy (embRows) cell-units of vertical space and push rows
+    // below them down by (embRows - 1). Subclass hook supplies the embedded
+    // anchor list — alt-screen is handled by the subclass returning empty.
+    segments.clear();
+    segments.reserve(static_cast<size_t>(rows));
+
+    const int origin = historySize - viewportOffset; // absRow at viewport top
+    // Prefer the emulator's authoritative anchor. Falls back to a derived
+    // lineId if the term hasn't initialized mTopLineId yet (e.g. initial
+    // frame before the first scroll).
+    topLineId = term.topLineId();
+    if (topLineId == 0) topLineId = doc.lineIdForAbs(origin);
+    topPixelSubY = term.topPixelSubY();
+
+    std::vector<TerminalEmulator::EmbeddedAnchor> anchors;
+    term.collectEmbeddedAnchors(anchors);
+    // Resolve each anchor to a viewport row, filter to in-view, sort.
+    struct ViewAnchor { int viewRow; int rows; uint64_t lineId; };
+    std::vector<ViewAnchor> viewAnchors;
+    viewAnchors.reserve(anchors.size());
+    for (const auto& a : anchors) {
+        int absRow = doc.firstAbsOfLine(a.lineId);
+        if (absRow < 0) continue;
+        int viewRow = absRow - origin;
+        if (viewRow < 0 || viewRow >= rows) continue;
+        viewAnchors.push_back({viewRow, a.rows, a.lineId});
+    }
+    std::sort(viewAnchors.begin(), viewAnchors.end(),
+              [](const ViewAnchor& a, const ViewAnchor& b) { return a.viewRow < b.viewRow; });
+
+    int cellY = 0;
+    size_t anchorIdx = 0;
+    for (int viewRow = 0; viewRow < rows; ++viewRow) {
+        int absRow = origin + viewRow;
+        Segment seg;
+        seg.absRow     = absRow;
+        seg.lineId     = doc.lineIdForAbs(absRow);
+        seg.cellYStart = cellY;
+        if (anchorIdx < viewAnchors.size() && viewAnchors[anchorIdx].viewRow == viewRow) {
+            // Emit an Embedded segment here; the anchor row itself is
+            // covered by the embedded, so no Row segment is emitted for it.
+            seg.kind     = Segment::Kind::Embedded;
+            seg.rowCount = std::max(1, viewAnchors[anchorIdx].rows);
+            seg.lineId   = viewAnchors[anchorIdx].lineId;
+            segments.push_back(seg);
+            cellY += seg.rowCount;
+            ++anchorIdx;
+        } else {
+            seg.kind     = Segment::Kind::Row;
+            seg.rowCount = 1;
+            segments.push_back(seg);
+            cellY += 1;
+        }
+    }
 
     ++version;
     return true;

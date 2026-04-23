@@ -203,33 +203,69 @@ void PlatformDawn::executeAction(const Action::Any& action)
             auto tab = activeTab();
             if (!tab) return;
             Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
-            if (!fp || fp->popups().empty()) return;
+            if (!fp) return;
 
             const auto& popups = fp->popups();
             const std::string& curFocus = fp->focusedPopupId();
+            const uint64_t curEmbedded = fp->focusedEmbeddedLineId();
 
-            if (curFocus.empty()) {
-                // No popup focused — focus first popup
-                fp->setFocusedPopup(popups.front()->popupId());
+            // Embeddeds cycled in ascending lineId order (creation order).
+            // unordered_map iteration is unstable so gather + sort.
+            std::vector<uint64_t> embeddedIds;
+            embeddedIds.reserve(fp->embeddeds().size());
+            for (const auto& [lineId, em] : fp->embeddeds()) embeddedIds.push_back(lineId);
+            std::sort(embeddedIds.begin(), embeddedIds.end());
+
+            if (popups.empty() && embeddedIds.empty()) return;
+
+            auto focusPopupIdx = [&](size_t i) {
+                const std::string& pid = popups[i]->popupId();
+                fp->clearFocusedEmbedded();
+                fp->setFocusedPopup(pid);
                 fp->focusEvent(false);
-                scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups.front()->popupId());
-            } else {
-                // Find current popup index, cycle to next or back to main
+                scriptEngine_.notifyFocusedPopupChanged(fp->id(), pid);
+            };
+            auto focusEmbeddedIdx = [&](size_t i) {
+                fp->clearFocusedPopup();
+                fp->setFocusedEmbeddedLineId(embeddedIds[i]);
+                fp->focusEvent(false);
+                scriptEngine_.notifyFocusedPopupChanged(fp->id(), "");
+            };
+            auto focusPane = [&]() {
+                fp->clearFocusedPopup();
+                fp->clearFocusedEmbedded();
+                fp->focusEvent(true);
+                scriptEngine_.notifyFocusedPopupChanged(fp->id(), "");
+            };
+
+            if (!curFocus.empty()) {
+                // Currently in a popup — next popup, or first embedded, or pane.
                 int cur = -1;
                 for (int i = 0; i < static_cast<int>(popups.size()); ++i) {
                     if (popups[i]->popupId() == curFocus) { cur = i; break; }
                 }
-                if (cur < 0 || cur + 1 >= static_cast<int>(popups.size())) {
-                    // Last popup or not found — back to main terminal
-                    fp->clearFocusedPopup();
-                    fp->focusEvent(true);
-                    scriptEngine_.notifyFocusedPopupChanged(fp->id(), "");
-                } else {
-                    fp->setFocusedPopup(popups[cur + 1]->popupId());
-                    // Focus moves between popups — main terminal stays unfocused
-                    scriptEngine_.notifyFocusedPopupChanged(fp->id(), popups[cur + 1]->popupId());
+                if (cur >= 0 && cur + 1 < static_cast<int>(popups.size()))
+                    focusPopupIdx(cur + 1);
+                else if (!embeddedIds.empty())
+                    focusEmbeddedIdx(0);
+                else
+                    focusPane();
+            } else if (curEmbedded != 0) {
+                // Currently in an embedded — next embedded, or pane.
+                size_t cur = embeddedIds.size();
+                for (size_t i = 0; i < embeddedIds.size(); ++i) {
+                    if (embeddedIds[i] == curEmbedded) { cur = i; break; }
                 }
+                if (cur + 1 < embeddedIds.size())
+                    focusEmbeddedIdx(cur + 1);
+                else
+                    focusPane();
+            } else {
+                // Pane focused — first popup, else first embedded.
+                if (!popups.empty()) focusPopupIdx(0);
+                else                 focusEmbeddedIdx(0);
             }
+
             // Mark pane dirty so cursor position updates in the pane texture
             renderThread_->pending().dirtyPanes.insert(fp->id());
             setNeedsRedraw();

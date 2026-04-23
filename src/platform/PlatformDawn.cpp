@@ -76,11 +76,13 @@ bool PlatformDawn::snapshotUnderLock(RenderFrameState& out)
     rs.dividersDirty = false;
     rs.releasePaneTextureIds.clear();
     rs.releasePopupTextureKeys.clear();
+    rs.releaseEmbeddedTextureKeys.clear();
     rs.releaseAllPaneTextures = false;
     rs.releaseTabBarTexture = false;
     rs.invalidateAllRowCaches = false;
     rs.destroyedPaneIds.clear();
     rs.destroyedPopupKeys.clear();
+    rs.destroyedEmbeddedKeys.clear();
     return true;
 }
 
@@ -223,6 +225,19 @@ void PlatformDawn::buildRenderFrameState()
                 pi.cellH = popup->cellH();
                 pi.term = popup.get();
                 rpi.popups.push_back(std::move(pi));
+            }
+            // Embedded terminals — anchored to a logical line id. Render
+            // thread resolves the current viewport-row position from the
+            // parent Document each frame. Skipped on alt-screen.
+            rpi.focusedEmbeddedLineId = pane->focusedEmbeddedLineId();
+            rpi.onAltScreen = pane->usingAltScreen();
+            for (const auto& [lineId, em] : pane->embeddeds()) {
+                RenderPaneEmbeddedInfo ei;
+                ei.lineId = lineId;
+                ei.rows = em->height();
+                ei.term = em.get();
+                ei.focused = (lineId == rpi.focusedEmbeddedLineId);
+                rpi.embeddeds.push_back(std::move(ei));
             }
             renderThread_->renderState().panes.push_back(std::move(rpi));
         }
@@ -537,8 +552,22 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                         return;
                     }
                 }
-                if (dy > 0) dispatchAction(Action::ScrollUp{});
-                else if (dy < 0) dispatchAction(Action::ScrollDown{});
+                // Pixel-scroll. Wheel-tick magnitudes vary by platform
+                // (XCB emits ±1 per detent, Cocoa emits continuous
+                // fractional dy). Multiplying by term->scrollStepPx() gives
+                // a consistent pixel advance either way; scrollByPixels
+                // rolls sub-cell overflow into mTopLineId. Sign: dy > 0
+                // means "scroll content up" (reveal older) → scroll INTO
+                // history, which is a positive dyPx for scrollByPixels.
+                if (auto t2 = activeTab()) {
+                    if (Terminal* fp2 = scriptEngine_.focusedTerminalInSubtree(*t2)) {
+                        int dyPx = static_cast<int>(std::lround(dy * fp2->scrollStepPx()));
+                        if (dyPx != 0) {
+                            fp2->scrollByPixels(dyPx, static_cast<int>(std::lround(lineHeight_)));
+                            setNeedsRedraw();
+                        }
+                    }
+                }
             };
             window_->onExpose = [this]() { setNeedsRedraw(); };
             window_->onLiveResizeEnd = [this]() {

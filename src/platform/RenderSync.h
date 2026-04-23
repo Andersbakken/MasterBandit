@@ -37,6 +37,20 @@ struct RenderPanePopupInfo {
     TerminalEmulator* term = nullptr;   // raw ptr into popup Terminal child
 };
 
+// Embedded terminal shadow-copy entry. Unlike popups (which carry cell
+// coordinates captured at createPopup time), embeddeds are anchored to a
+// logical line id; their viewport-row position is resolved each frame from
+// the parent's Document so the embedded scrolls with the content.
+struct RenderPaneEmbeddedInfo {
+    uint64_t lineId = 0;
+    int rows = 0;                        // embedded's row count (cols = parent cols)
+    TerminalEmulator* term = nullptr;   // raw ptr into embedded Terminal child
+    bool focused = false;
+    // Viewport row position is resolved each frame by
+    // TerminalSnapshot::update via Terminal::collectEmbeddedAnchors → the
+    // segment list — no caching needed on the shadow-copy side.
+};
+
 struct RenderPaneInfo {
     Uuid id;
     Rect rect;
@@ -45,6 +59,11 @@ struct RenderPaneInfo {
     int progressPct = 0;
     std::vector<RenderPanePopupInfo> popups;
     std::string focusedPopupId;
+    // Embedded children. Rendered only when `onAltScreen` is false — alt-screen
+    // mode has no persistent scrollback for the anchor lineId to resolve against.
+    std::vector<RenderPaneEmbeddedInfo> embeddeds;
+    uint64_t focusedEmbeddedLineId = 0;
+    bool onAltScreen = false;
 };
 
 struct RenderTabInfo {
@@ -124,16 +143,18 @@ struct RenderFrameState {
     // on each request exactly once.
     std::vector<Uuid> releasePaneTextureIds;
     std::vector<std::string> releasePopupTextureKeys;
+    std::vector<std::string> releaseEmbeddedTextureKeys;
     bool releaseAllPaneTextures = false;
     bool releaseTabBarTexture = false;
     bool invalidateAllRowCaches = false;
 
-    // Structural destroys accumulated from main-thread pane/popup
+    // Structural destroys accumulated from main-thread pane/popup/embedded
     // destruction. The render thread erases the matching render-private
     // entries and releases their GPU resources. One-shot, cleared by
     // snapshotUnderLock.
     std::vector<Uuid> destroyedPaneIds;
     std::vector<std::string> destroyedPopupKeys;
+    std::vector<std::string> destroyedEmbeddedKeys;
 
     // Divider appearance
     float dividerWidth = 0;
@@ -235,16 +256,19 @@ struct PendingMutations {
     struct CreatePopupState  { Uuid paneId; std::string popupId; int cols; int rows; };
     struct DestroyPopupState { Uuid paneId; std::string popupId; };
     struct ResizePopupState  { Uuid paneId; std::string popupId; int cols; int rows; };
+    struct DestroyEmbeddedState { Uuid paneId; uint64_t lineId; };
 
     using StructuralOp = std::variant<
         CreatePaneState, DestroyPaneState, ResizePaneState,
-        CreatePopupState, DestroyPopupState, ResizePopupState
+        CreatePopupState, DestroyPopupState, ResizePopupState,
+        DestroyEmbeddedState
     >;
     std::vector<StructuralOp> structuralOps;
 
     // --- Texture release requests ---
     std::vector<Uuid> releasePaneTextures;      // pane Uuids whose heldTexture should be released
     std::vector<std::string> releasePopupTextures; // popup keys ("<uuid>/<popupId>")
+    std::vector<std::string> releaseEmbeddedTextures; // embedded keys ("<uuid>:<lineId>")
     bool releaseTabBarTexture = false;
     bool releaseAllPaneTextures = false;        // resize: release everything
 
@@ -280,6 +304,7 @@ struct PendingMutations {
         structuralOps.clear();
         releasePaneTextures.clear();
         releasePopupTextures.clear();
+        releaseEmbeddedTextures.clear();
         releaseTabBarTexture = false;
         releaseAllPaneTextures = false;
         dividerUpdates.clear();

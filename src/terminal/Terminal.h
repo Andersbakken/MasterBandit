@@ -155,6 +155,22 @@ public:
     // embedded's emulator if any, else this.
     TerminalEmulator* activeTerm();
 
+    // Hook consumed by TerminalSnapshot::update() to build the visual-layout
+    // segment list. Pushes (lineId, rowCount) for every embedded currently
+    // attached to this Terminal. Alt-screen hides embeddeds so the list
+    // stays empty there.
+    void collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const override;
+
+    // Input-path hit-test. Returns true if viewport-pixel-Y (pane-relative,
+    // i.e. after padTop subtraction) falls inside a visible embedded's
+    // displaced band. Walks live state — InputController can't read the
+    // render thread's TerminalSnapshot.segments from the main thread
+    // without racing snapshot.update(). `lineHeight` = cell height in
+    // pixels. `topPixelSubY` is applied automatically so sub-line-scrolled
+    // viewports resolve hits correctly.
+    bool liveSegmentHitTest(double cellRelY, float lineHeight,
+                            uint64_t& outLineId) const;
+
     // Set by platform; called when a popup or embedded emulator fires an event (triggers redraw)
     std::function<void()> onPopupEvent;
 
@@ -208,6 +224,38 @@ private:
     // in the constructor). Keyed on lineId so each row holds at most one.
     std::unordered_map<uint64_t, std::unique_ptr<Terminal>> mEmbedded;
     uint64_t mFocusedEmbeddedLineId { 0 }; // 0 = none focused
+
+    // Embeddeds that the eviction callback extracted from mEmbedded.  The
+    // callback fires under this Terminal's mutex from deep inside
+    // Document::evictToArchive(), so it can't take the render-thread mutex
+    // to mirror the removal into the shadow copy (cyclic lock order with
+    // snapshot capture).  Instead we hold the unique_ptr here and let the
+    // main-thread Platform drain this list (drainEvictedEmbeddeds()) after
+    // the evict path unwinds, at which point the render mutex is free.
+    struct EvictedEmbedded { uint64_t lineId; std::unique_ptr<Terminal> term; };
+    std::vector<EvictedEmbedded> mEvictedEmbeddeds;
+
+public:
+    // Called by Platform on each main-thread tick after the terminal mutex
+    // has been released.  Moves `fn(lineId, unique_ptr)` so Platform can
+    // graveyard-defer and mirror into the render shadow copy.
+    template <typename Fn>
+    void drainEvictedEmbeddeds(Fn&& fn) {
+        std::vector<EvictedEmbedded> drained;
+        {
+            std::lock_guard<std::recursive_mutex> _lk(mutex());
+            drained.swap(mEvictedEmbeddeds);
+        }
+        for (auto& e : drained) fn(e.lineId, std::move(e.term));
+    }
+    // True if there are evicted embeddeds waiting for the main thread to
+    // graveyard them.
+    bool hasEvictedEmbeddeds() const {
+        std::lock_guard<std::recursive_mutex> _lk(const_cast<Terminal*>(this)->mutex());
+        return !mEvictedEmbeddeds.empty();
+    }
+
+private:
 
     // Disarm the PTY fd in the event loop and fire onTerminalExited (once).
     // Safe to call multiple times — the first call sets mExited.

@@ -160,6 +160,11 @@ void RenderEngine::shutdown()
         for (auto* t : rs.pendingRelease) texturePool_.release(t);
     }
     popupRenderPrivate_.clear();
+    for (auto& [key, rs] : embeddedRenderPrivate_) {
+        if (rs.heldTexture) texturePool_.release(rs.heldTexture);
+        for (auto* t : rs.pendingRelease) texturePool_.release(t);
+    }
+    embeddedRenderPrivate_.clear();
 
     // Release tab bar textures
     if (tabBarTexture_) { texturePool_.release(tabBarTexture_); tabBarTexture_ = nullptr; }
@@ -751,20 +756,31 @@ void RenderEngine::renderFrame()
     if (frameState_.releaseAllPaneTextures) {
         for (auto& [id, rs] : paneRenderPrivate_) dropHeldTexture(rs);
         for (auto& [key, rs] : popupRenderPrivate_) dropHeldTexture(rs);
+        for (auto& [key, rs] : embeddedRenderPrivate_) dropHeldTexture(rs);
     } else {
         for (const Uuid& paneId : frameState_.releasePaneTextureIds) {
             auto it = paneRenderPrivate_.find(paneId);
             if (it != paneRenderPrivate_.end()) dropHeldTexture(it->second);
             // Popups hang off a pane; release their textures too. Keys are
             // "<uuid>/popupId" — match by prefix.
-            std::string prefix = paneId.toString() + "/";
+            std::string popupPrefix = paneId.toString() + "/";
             for (auto& [key, rs] : popupRenderPrivate_) {
-                if (key.compare(0, prefix.size(), prefix) == 0) dropHeldTexture(rs);
+                if (key.compare(0, popupPrefix.size(), popupPrefix) == 0) dropHeldTexture(rs);
+            }
+            // Embeddeds keyed as "<uuid>:lineId" — different separator so
+            // the popup prefix doesn't collide.
+            std::string embeddedPrefix = paneId.toString() + ":";
+            for (auto& [key, rs] : embeddedRenderPrivate_) {
+                if (key.compare(0, embeddedPrefix.size(), embeddedPrefix) == 0) dropHeldTexture(rs);
             }
         }
         for (const auto& key : frameState_.releasePopupTextureKeys) {
             auto it = popupRenderPrivate_.find(key);
             if (it != popupRenderPrivate_.end()) dropHeldTexture(it->second);
+        }
+        for (const auto& key : frameState_.releaseEmbeddedTextureKeys) {
+            auto it = embeddedRenderPrivate_.find(key);
+            if (it != embeddedRenderPrivate_.end()) dropHeldTexture(it->second);
         }
     }
     if (frameState_.releaseTabBarTexture && tabBarTexture_) {
@@ -787,11 +803,21 @@ void RenderEngine::renderFrame()
     };
     for (const Uuid& paneId : frameState_.destroyedPaneIds) {
         // Drop any popups that belonged to this pane first.
-        std::string prefix = paneId.toString() + "/";
+        std::string popupPrefix = paneId.toString() + "/";
         for (auto it = popupRenderPrivate_.begin(); it != popupRenderPrivate_.end(); ) {
-            if (it->first.compare(0, prefix.size(), prefix) == 0) {
+            if (it->first.compare(0, popupPrefix.size(), popupPrefix) == 0) {
                 extractReleases(it->second);
                 it = popupRenderPrivate_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        // And any embeddeds — keyed "<uuid>:lineId".
+        std::string embeddedPrefix = paneId.toString() + ":";
+        for (auto it = embeddedRenderPrivate_.begin(); it != embeddedRenderPrivate_.end(); ) {
+            if (it->first.compare(0, embeddedPrefix.size(), embeddedPrefix) == 0) {
+                extractReleases(it->second);
+                it = embeddedRenderPrivate_.erase(it);
             } else {
                 ++it;
             }
@@ -809,6 +835,13 @@ void RenderEngine::renderFrame()
             popupRenderPrivate_.erase(it);
         }
     }
+    for (const auto& key : frameState_.destroyedEmbeddedKeys) {
+        auto it = embeddedRenderPrivate_.find(key);
+        if (it != embeddedRenderPrivate_.end()) {
+            extractReleases(it->second);
+            embeddedRenderPrivate_.erase(it);
+        }
+    }
 
     if (invalidateAllCaches) {
         for (auto& [id, rs] : paneRenderPrivate_) {
@@ -816,6 +849,10 @@ void RenderEngine::renderFrame()
             rs.dirty = true;
         }
         for (auto& [key, rs] : popupRenderPrivate_) {
+            for (auto& row : rs.rowShapingCache) row.valid = false;
+            rs.dirty = true;
+        }
+        for (auto& [key, rs] : embeddedRenderPrivate_) {
             for (auto& row : rs.rowShapingCache) row.valid = false;
             rs.dirty = true;
         }
@@ -881,10 +918,14 @@ void RenderEngine::renderFrame()
         bool hasPopupFocus = false;
         const RenderPaneInfo* paneInfo = nullptr;
         bool isPopup = false;
+        bool isEmbedded = false;
         float pixelOriginX = 0.0f;
         float pixelOriginY = 0.0f;
         Uuid popupParentPaneId;
         std::string popupId;
+        // Embedded-only: parent pane id and anchor line id.
+        Uuid embeddedParentPaneId;
+        uint64_t embeddedLineId = 0;
     };
     std::vector<RenderTarget> renderTargets;
 
@@ -927,6 +968,42 @@ void RenderEngine::renderFrame()
                 pop.pixelOriginX = 0.0f; pop.pixelOriginY = 0.0f;
                 pop.popupParentPaneId = rpi.id; pop.popupId = popup.id;
                 renderTargets.push_back(std::move(pop));
+            }
+        }
+        // Embedded terminals — anchored to a Document line id. Rendered into
+        // their own per-embedded texture sized (embCols*cellW) × (embRows*cellH)
+        // with no internal padding. Skipped while the parent is on alt-screen
+        // (no persistent scrollback for the anchor line to resolve against).
+        for (const auto& rpi : frameState_.panes) {
+            if (rpi.onAltScreen) continue;
+            for (const auto& em : rpi.embeddeds) {
+                if (!em.term) continue;
+                std::string key = embeddedStateKey(rpi.id, em.lineId);
+                PaneRenderPrivate& ers = embeddedRenderPrivate_[key];
+                int ecols = em.term->width(), erows = em.term->height();
+                if (ecols <= 0 || erows <= 0) continue;
+                size_t needed = static_cast<size_t>(ecols) * erows;
+                if (ers.resolvedCells.size() != needed) {
+                    ers.resolvedCells.resize(needed);
+                    ers.rowShapingCache.resize(erows);
+                    ers.dirty = true;
+                }
+                Rect embRect;
+                // The final composite destination is computed at composite
+                // time from the parent's snapshot viewport position; here
+                // `rect` is just the texture size the embedded renders into.
+                embRect.x = 0;
+                embRect.y = 0;
+                embRect.w = static_cast<int>(std::round(ecols * frameState_.charWidth));
+                embRect.h = static_cast<int>(std::round(erows * frameState_.lineHeight));
+                RenderTarget et;
+                et.term = em.term; et.rs = &ers; et.rect = embRect;
+                et.isFocused = em.focused;
+                et.isEmbedded = true;
+                et.pixelOriginX = 0.0f; et.pixelOriginY = 0.0f;
+                et.embeddedParentPaneId = rpi.id;
+                et.embeddedLineId = em.lineId;
+                renderTargets.push_back(std::move(et));
             }
         }
     }
@@ -981,7 +1058,7 @@ void RenderEngine::renderFrame()
                                   blinkOpacity != rs.lastCursorBlinkOpacity;
         rs.lastCursorBlinkOpacity = blinkOpacity;
 
-        bool popupFocusChanged = !target.isPopup &&
+        bool popupFocusChanged = !target.isPopup && !target.isEmbedded &&
                                  target.hasPopupFocus != rs.lastHasPopupFocus;
         rs.lastHasPopupFocus = target.hasPopupFocus;
 
@@ -1118,7 +1195,11 @@ void RenderEngine::renderFrame()
             bool selectionVisible = snap.selection.valid || snap.selection.active;
             if (selectionVisible) {
                 for (int row = 0; row < snap.rows; ++row) {
-                    int absRow = snap.historySize - snap.viewportOffset + row;
+                    // Pull absRow from the segment list so embedded and
+                    // sub-line-scrolled viewports still resolve correctly.
+                    int absRow = (row < static_cast<int>(snap.segments.size()))
+                                    ? snap.segments[row].absRow
+                                    : snap.historySize - snap.viewportOffset + row;
                     for (int col = 0; col < snap.cols; ++col) {
                         if (snap.isCellSelected(col, absRow)) {
                             int idx = row * snap.cols + col;
@@ -1303,7 +1384,11 @@ void RenderEngine::renderFrame()
             params.selection_outline_flags = 0;
             params.selection_outline_color = 0;
             if (snap.selectedCommand) {
-                int origin = snap.historySize - snap.viewportOffset;
+                // Origin (absRow at viewport top) comes from segments[0]
+                // when populated; segments carry the authoritative anchor.
+                int origin = snap.segments.empty()
+                                ? (snap.historySize - snap.viewportOffset)
+                                : snap.segments.front().absRow;
                 int startView = snap.selectedCommand->startAbsRow - origin;
                 int endView   = snap.selectedCommand->endAbsRow   - origin;
                 if (endView >= 0 && startView < snap.rows) {
@@ -1320,7 +1405,9 @@ void RenderEngine::renderFrame()
             }
 
             params.cursor_type = 0;
-            if (target.isPopup) {
+            // Popups and embeddeds both render their own cursor without the
+            // scrollback-viewport offset and without popup-covering logic.
+            if (target.isPopup || target.isEmbedded) {
                 if (snap.cursorVisible &&
                     snap.cursorX >= 0 && snap.cursorX < snap.cols &&
                     snap.cursorY >= 0 && snap.cursorY < snap.rows) {
@@ -1333,7 +1420,18 @@ void RenderEngine::renderFrame()
                 }
             } else {
                 bool popupHasFocus = target.hasPopupFocus;
+                // Cursor's viewport row: search segments for the row whose
+                // absRow matches the live cursor's abs position, falling
+                // back to the legacy derivation when segments are absent.
+                int cursorAbsRow = snap.historySize + snap.cursorY;
                 int cursorViewRow = snap.cursorY + snap.viewportOffset;
+                for (int vr = 0; vr < static_cast<int>(snap.segments.size()); ++vr) {
+                    if (snap.segments[vr].absRow == cursorAbsRow &&
+                        snap.segments[vr].kind == TerminalSnapshot::Segment::Kind::Row) {
+                        cursorViewRow = vr;
+                        break;
+                    }
+                }
                 bool cursorCovered = false;
                 if (target.paneInfo) {
                     for (const auto& popup : target.paneInfo->popups) {
@@ -1398,7 +1496,9 @@ void RenderEngine::renderFrame()
             Renderer::DimParams dim;
             if (snap.selectedCommand) {
                 dim.factor = frameState_.commandDimFactor;
-                int origin = snap.historySize - snap.viewportOffset;
+                int origin = snap.segments.empty()
+                                ? (snap.historySize - snap.viewportOffset)
+                                : snap.segments.front().absRow;
                 int startView = snap.selectedCommand->startAbsRow - origin;
                 int endView   = snap.selectedCommand->endAbsRow   - origin;
                 if (endView < 0 || startView >= snap.rows) {
@@ -1431,13 +1531,117 @@ void RenderEngine::renderFrame()
         }
 
         if (rs.heldTexture) {
-            Renderer::CompositeEntry entry;
-            entry.texture = rs.heldTexture->texture;
-            entry.srcW = static_cast<uint32_t>(paneRect.w);
-            entry.srcH = static_cast<uint32_t>(paneRect.h);
-            entry.dstX = static_cast<uint32_t>(paneRect.x);
-            entry.dstY = static_cast<uint32_t>(paneRect.y);
-            compositeEntries.push_back(entry);
+            if (target.isEmbedded) {
+                // Embedded's composite entry is emitted alongside the
+                // parent pane's strips (see parent branch below), since
+                // dst placement depends on the parent's viewport.
+            } else if (!target.isPopup) {
+                // Parent pane composite. Apply topPixelSubY as a vertical
+                // shift so smooth (sub-cell) scroll moves content by its
+                // exact pixel delta. Positive subY = content shifts up
+                // (more of the next row revealed at the bottom); the source
+                // copy advances by subY pixels from the top of the texture.
+                const TerminalSnapshot& psnap = rs.snapshot;
+                const int subY = psnap.topPixelSubY;
+                const int paneTexH = paneRect.h;
+                const int paneBottom = paneRect.y + paneTexH;
+                uint32_t texW = rs.heldTexture->texture.GetWidth();
+
+                // Push a strip from the parent texture, applying the
+                // topPixelSubY translation. srcY/dstY are in natural
+                // (unscrolled) coordinates — the shift is applied inside.
+                auto pushParentStrip = [&](int srcYi, int dstYi, int hPx) {
+                    if (hPx <= 0) return;
+                    int effDstY = dstYi - subY;
+                    int effSrcY = srcYi;
+                    if (effDstY < paneRect.y) {
+                        int crop = paneRect.y - effDstY;
+                        effSrcY += crop;
+                        hPx -= crop;
+                        effDstY = paneRect.y;
+                        if (hPx <= 0) return;
+                    }
+                    if (effDstY + hPx > paneBottom) hPx = paneBottom - effDstY;
+                    if (hPx <= 0) return;
+                    Renderer::CompositeEntry e;
+                    e.texture = rs.heldTexture->texture;
+                    e.srcX = 0;
+                    e.srcY = static_cast<uint32_t>(std::max(0, effSrcY));
+                    e.srcW = texW;
+                    e.srcH = static_cast<uint32_t>(hPx);
+                    e.dstX = static_cast<uint32_t>(paneRect.x);
+                    e.dstY = static_cast<uint32_t>(effDstY);
+                    compositeEntries.push_back(e);
+                };
+
+                bool anyEmbedded = false;
+                if (target.paneInfo && !target.paneInfo->onAltScreen) {
+                    for (const auto& seg : psnap.segments)
+                        if (seg.kind == TerminalSnapshot::Segment::Kind::Embedded) { anyEmbedded = true; break; }
+                }
+
+                if (!anyEmbedded) {
+                    pushParentStrip(0, paneRect.y, paneTexH);
+                } else {
+                    const float cellH = frameState_.lineHeight;
+                    const float cellW = frameState_.charWidth;
+                    const float padT  = frameState_.padTop;
+                    const float padL  = frameState_.padLeft;
+                    int srcY = 0;
+                    int dstY = paneRect.y;
+                    int embWPx = static_cast<int>(std::round(psnap.cols * cellW));
+
+                    for (int viewRow = 0; viewRow < static_cast<int>(psnap.segments.size()); ++viewRow) {
+                        const auto& seg = psnap.segments[viewRow];
+                        if (seg.kind != TerminalSnapshot::Segment::Kind::Embedded) continue;
+                        int anchorSrcY = static_cast<int>(std::round(padT + viewRow * cellH));
+                        pushParentStrip(srcY, dstY, anchorSrcY - srcY);
+                        dstY += std::max(0, anchorSrcY - srcY);
+
+                        int embHPx = static_cast<int>(std::round(seg.rowCount * cellH));
+                        std::string key = embeddedStateKey(target.paneId, seg.lineId);
+                        auto emIt = embeddedRenderPrivate_.find(key);
+                        if (emIt != embeddedRenderPrivate_.end() && emIt->second.heldTexture) {
+                            // Embedded overlay follows the same topPixelSubY
+                            // shift as surrounding parent strips so smooth
+                            // scroll doesn't desync parent and embedded.
+                            int effDstY = dstY - subY;
+                            int effSrcY = 0;
+                            int effH    = embHPx;
+                            if (effDstY < paneRect.y) {
+                                int crop = paneRect.y - effDstY;
+                                effSrcY += crop;
+                                effH    -= crop;
+                                effDstY  = paneRect.y;
+                            }
+                            if (effDstY + effH > paneBottom) effH = paneBottom - effDstY;
+                            if (effH > 0) {
+                                Renderer::CompositeEntry e;
+                                e.texture = emIt->second.heldTexture->texture;
+                                e.srcX = 0;
+                                e.srcY = static_cast<uint32_t>(effSrcY);
+                                e.srcW = static_cast<uint32_t>(embWPx);
+                                e.srcH = static_cast<uint32_t>(effH);
+                                e.dstX = static_cast<uint32_t>(paneRect.x + padL);
+                                e.dstY = static_cast<uint32_t>(effDstY);
+                                compositeEntries.push_back(e);
+                            }
+                        }
+                        dstY += embHPx;
+                        srcY = anchorSrcY + static_cast<int>(std::round(cellH));
+                    }
+                    pushParentStrip(srcY, dstY, paneTexH - srcY);
+                }
+            } else {
+                // Popup: no scroll, no topPixelSubY — straight blit.
+                Renderer::CompositeEntry entry;
+                entry.texture = rs.heldTexture->texture;
+                entry.srcW = static_cast<uint32_t>(paneRect.w);
+                entry.srcH = static_cast<uint32_t>(paneRect.h);
+                entry.dstX = static_cast<uint32_t>(paneRect.x);
+                entry.dstY = static_cast<uint32_t>(paneRect.y);
+                compositeEntries.push_back(entry);
+            }
         }
     }
 
@@ -1447,6 +1651,10 @@ void RenderEngine::renderFrame()
                               rs.lastVisibleImageIds.end());
     }
     for (const auto& [key, rs] : popupRenderPrivate_) {
+        imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
+                              rs.lastVisibleImageIds.end());
+    }
+    for (const auto& [key, rs] : embeddedRenderPrivate_) {
         imagesToRetain.insert(rs.lastVisibleImageIds.begin(),
                               rs.lastVisibleImageIds.end());
     }
@@ -1752,6 +1960,7 @@ void RenderEngine::renderFrame()
         };
         for (auto& [id, rs] : paneRenderPrivate_) drainPendingRelease(rs);
         for (auto& [key, rs] : popupRenderPrivate_) drainPendingRelease(rs);
+        for (auto& [key, rs] : embeddedRenderPrivate_) drainPendingRelease(rs);
         toRelease.insert(toRelease.end(), pendingTabBarRelease_.begin(), pendingTabBarRelease_.end());
         pendingTabBarRelease_.clear();
         toRelease.insert(toRelease.end(), pendingDestroyRelease_.begin(), pendingDestroyRelease_.end());

@@ -77,6 +77,11 @@ public:
         return paneId.toString() + "/" + popupId;
     }
 
+    // Different separator from popup so key spaces can't collide.
+    static std::string embeddedStateKey(Uuid paneId, uint64_t lineId) {
+        return paneId.toString() + ":" + std::to_string(lineId);
+    }
+
 private:
     void resolveRow(PaneRenderPrivate& rs, int row, FontData* font, float scale,
                     float pixelOriginX, float pixelOriginY);
@@ -96,6 +101,9 @@ private:
     // Render-thread-only state
     std::unordered_map<Uuid, PaneRenderPrivate, UuidHash> paneRenderPrivate_;
     std::unordered_map<std::string, PaneRenderPrivate> popupRenderPrivate_;
+    // Embedded terminals — headless children anchored to a Document line id.
+    // Keyed as "<paneUuid>:<lineId>" (see embeddedStateKey).
+    std::unordered_map<std::string, PaneRenderPrivate> embeddedRenderPrivate_;
     RenderFrameState frameState_;
     Uuid lastFocusedPaneId_;
 
@@ -138,4 +146,5 @@ public:
     // with platformMutex_ held so the render thread isn't touching these).
     std::unordered_map<Uuid, PaneRenderPrivate, UuidHash>& paneRenderPrivateMap() { return paneRenderPrivate_; }
     std::unordered_map<std::string, PaneRenderPrivate>& popupRenderPrivateMap() { return popupRenderPrivate_; }
+    std::unordered_map<std::string, PaneRenderPrivate>& embeddedRenderPrivateMap() { return embeddedRenderPrivate_; }
 };

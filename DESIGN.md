@@ -83,6 +83,41 @@ Two-tier design.
 
 Tier 1 overflow pushes the oldest row into Tier 2 before reuse.
 
+### Viewport anchoring
+
+The viewport's top is anchored on a **logical line id + sub-pixel offset**
+(`mTopLineId`, `mTopPixelSubY` on `TerminalEmulator`), not a row-count offset.
+The legacy `viewportOffset()` accessor is derived from `mTopLineId` at read
+time via `historySize - firstAbsOfLine(mTopLineId)`.
+
+**Why.** Line ids are stable across scrollback migration / reflow / eviction,
+so anchoring to one means:
+- New content streaming in doesn't drift a scrolled-back viewport — the
+  anchor's abs row is unchanged; `viewportOffset()` recomputes larger as
+  `historySize` grows. (The old `mViewportOffset += n` compensation in
+  `scrollUpInRegion` is gone.)
+- Embedded resize (rows 2 → 10) doesn't move the top-of-viewport.
+- Width-change reflow that renumbers physical rows leaves `mTopLineId`
+  resolving to the same content.
+
+**Live-mode auto-advance.** `scrollUpInRegion` captures whether the user was
+at live (viewportOffset==0) before the scroll and re-points `mTopLineId`
+to the newest top-of-screen row after, so live-tailing doesn't drift
+backward one row per appended line.
+
+**Sub-line scroll.** `scrollByPixels(int dyPx, int cellHeight)` advances
+`mTopPixelSubY`; once the sub-offset crosses a cell boundary it rolls into
+`mTopLineId`. The composite pass subtracts `topPixelSubY` from each pane
+composite entry's `dstY` (with source-side cropping when it underflows the
+pane rect), so smooth scroll moves content by its exact pixel delta. Wheel
+ticks dispatch here with `dyPx = tick * scrollStepPx`; positive = into
+history.
+
+**Eviction.** If `mTopLineId`'s backing row evicts past the archive cap,
+`firstAbsOfLine` returns -1 and `viewportOffset()` reports 0 (live). The
+next `resetViewport` / `scrollViewport` / `scrollToPrompt` re-seeds the
+anchor.
+
 ### Stable logical-line IDs
 
 Every logical line (a soft-wrap chain terminated by a hard newline) gets a
@@ -271,6 +306,46 @@ Shell-driven floating cell grids. No PTY — content written via escape sequence
 Protocol: `OSC 58237 ; create/write/focus/blur/destroy ; id=<id> ; ... ST`.
 Keyboard routing: focused popup receives keys; responses go back via owning
 terminal's PTY.
+
+### Embedded terminals (document-anchored)
+
+Headless sibling of popups, anchored to a stable logical-line id rather than
+viewport cell coordinates, so they scroll with the document. Created from JS
+via `pane.createEmbeddedTerminal({rows})`; stored in `Terminal::mEmbedded`
+keyed on the anchor lineId. The anchor is captured from the parent's cursor
+row at create time; the parent cursor is then advanced one row so subsequent
+writes don't target the hidden anchor cell.
+
+**Displacement model.** The parent's cell grid is unchanged — the embedded
+only affects visual layout at composite time. `RenderEngine` splits the
+parent's pane texture into strips around each visible anchor row: the anchor
+row is skipped entirely (covered by the embedded), and every row below is
+shifted down by `(embRows - 1) * cellH` (cumulatively across multiple
+embeddeds). Each embedded renders into its own `embeddedRenderPrivate_`
+texture and composites over the skipped slot. Only embeddeds whose anchor
+line currently resolves to a viewport row in `[0, rows)` are drawn; the rest
+are invisible until the user scrolls them into view.
+
+**Alt-screen.** Hidden entirely while the parent is on alt-screen (no
+persistent scrollback for the anchor to resolve against). New embeddeds are
+refused in that mode; existing ones re-appear when the parent exits alt.
+
+**Lifetime.** When the anchor line evicts past the archive cap,
+`Document::onLineIdEvicted` fires from inside the Document mutex. Because the
+render thread takes (renderMutex → terminalMutex) during snapshot capture,
+the callback cannot take the render mutex itself (cyclic lock order).
+Instead it moves the embedded's `unique_ptr` onto a per-Terminal pending
+queue; the main-thread tick drains the queue (after the terminal mutex has
+released), mirrors the removal into the render shadow copy under the render
+mutex, stages a `DestroyEmbeddedState` op, and defers the Terminal to the
+graveyard. Explicit `close()` from JS takes the same graveyard path directly.
+
+**Focus.** The `FocusPopup` action cycles `pane → popups → embeddeds →
+pane`. Click-to-focus via the same Input hit-test (skipped mid-drag so a
+selection initiated on the parent crosses the embedded region). Esc on a
+focused embedded defocuses back to the parent — intentionally different from
+popups, which forward Esc to their content; applets use `q` / Ctrl-C for
+their own cancel.
 
 ### Resource pools
 

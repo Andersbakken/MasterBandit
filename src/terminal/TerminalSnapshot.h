@@ -13,18 +13,65 @@
 // in `update()`; read without a lock on the render thread.
 //
 // Covers: viewport cells + extras, cursor, default colors, viewport offset +
-// history size (for abs-row conversion), selection, sync-output flag, and
-// image views (kitty graphics placements + current-frame RGBA pointer held
-// alive via shared_ptr). The renderer reads only this snapshot — it never
-// dereferences the live Terminal during rendering.
+// history size (for abs-row conversion), selection, sync-output flag, image
+// views (kitty graphics placements + current-frame RGBA pointer held alive
+// via shared_ptr), and a visual-layout segment list describing the top-down
+// ordering of rows and inline embeddeds inside the viewport. The renderer
+// reads only this snapshot — it never dereferences the live Terminal during
+// rendering.
 struct TerminalSnapshot {
     // Dimensions of the viewport.
     int rows { 0 };
     int cols { 0 };
 
-    // Scrollback position and size, both in rows. `absRow = viewportRow + historySize - viewportOffset`.
+    // Scrollback position and size, both in rows. Legacy mirror of
+    // term.viewportOffset() (derived from topLineId at snapshot time) and
+    // term.document().historySize(). The segment list below is the
+    // authoritative source for per-viewport-row absRow / pixel placement —
+    // use segments[i].absRow rather than `historySize - viewportOffset + i`
+    // whenever possible, since the segment walk accounts for embedded
+    // displacement and topPixelSubY.
     int viewportOffset { 0 };
     int historySize { 0 };
+
+    // Logical-line id at the top of the viewport. Derived from
+    // `historySize - viewportOffset` at update() time. Remains stable across
+    // embedded resizes — only a scroll / write advances it.
+    uint64_t topLineId { 0 };
+
+    // Sub-cell vertical offset for smooth scrolling, in pixels. 0 means
+    // top-aligned on the first visible row. Positive values shift visible
+    // content up (more of the next row revealed at the bottom). Phase 1
+    // leaves this at 0 — no user gesture is wired yet.
+    int topPixelSubY { 0 };
+
+    // Visual-layout segment list. One entry per visible band (row or
+    // embedded). `cellYStart` is in whole-cell units measured from the top
+    // of the viewport; renderer multiplies by cellH to get pixels, then
+    // subtracts `topPixelSubY` for smooth scroll. Populated in update().
+    struct Segment {
+        enum class Kind : uint8_t { Row, Embedded };
+        Kind     kind       { Kind::Row };
+        // Absolute row this segment corresponds to. For Row: the row itself.
+        // For Embedded: the anchor row of the embedded terminal (covered by
+        // the embedded visually, so not otherwise drawn).
+        int      absRow     { -1 };
+        // Logical-line id of `absRow`. For Row: the row's line id. For
+        // Embedded: the anchor line id the embedded Terminal is keyed on.
+        uint64_t lineId     { 0 };
+        // How many cell rows this segment occupies vertically. Row = 1,
+        // Embedded = embedded terminal's row count.
+        int      rowCount   { 1 };
+        // Top edge in whole-cell units, cumulative from the first segment.
+        int      cellYStart { 0 };
+    };
+    std::vector<Segment> segments;
+
+    // Find the segment containing viewport pixel y (measured from the pane's
+    // top content edge, i.e. after padTop has been subtracted). cellH is the
+    // pixel height of one cell row. Returns nullptr when y falls outside any
+    // segment (e.g. past the last row or into the bottom padding).
+    const Segment* segmentAtPixelY(int y, float cellH) const;
 
     // Cursor.
     int cursorX { 0 };

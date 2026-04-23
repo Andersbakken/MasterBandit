@@ -177,10 +177,10 @@ struct AppCallbacks {
     std::function<std::vector<EmbeddedInfo>(PaneId)> paneEmbeddeds;
     // Create an embedded terminal on a pane at the pane's current cursor row.
     // Returns the anchor lineId on success, 0 on failure (alt-screen, rows<=0,
-    // duplicate anchor). onInput callback is invoked when keystrokes route into
-    // the embedded (while focused).
-    std::function<uint64_t(PaneId, int rows,
-                       std::function<void(const char*, size_t)> onInput)> createEmbedded;
+    // duplicate anchor). Keystrokes routed into the focused embedded are
+    // delivered to its JS "input" listeners by Platform via the regKey
+    // "paneId:lineId" — no per-instance callback plumbing here.
+    std::function<uint64_t(PaneId, int rows)> createEmbedded;
     // Destroy an embedded terminal by its anchor lineId.
     std::function<void(PaneId, uint64_t lineId)> destroyEmbedded;
     // Resize an embedded's row count (cols track parent cols automatically).

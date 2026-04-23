@@ -179,7 +179,31 @@ public:
     bool copyViewportRow(int viewRow, std::span<Cell> dst) const;
     void scrollViewport(int delta);
     void resetViewport();
-    int viewportOffset() const { return mViewportOffset; }
+    // Viewport-offset in rows. Derived from mTopLineId: the number of rows
+    // between the top of the viewport and the first screen row. 0 = live
+    // mode (viewport pinned to the screen area's top). Matches the legacy
+    // semantics so existing callers don't need to change.
+    int viewportOffset() const;
+
+    // Authoritative viewport-top anchor. Line-id of the row at the visual
+    // top of the viewport. TerminalSnapshot::update picks this up.
+    uint64_t topLineId() const { return mTopLineId; }
+
+    // Sub-cell vertical offset in pixels — 0 means top-aligned. Advances via
+    // scrollByPixels(); integer-row scrolls clear it.
+    int topPixelSubY() const { return mTopPixelSubY; }
+
+    // Pixels per wheel tick when no user gesture specifies a magnitude.
+    int scrollStepPx() const { return mScrollStepPx; }
+    void setScrollStepPx(int px) { mScrollStepPx = std::max(1, px); }
+
+    // Smooth / sub-line scroll. Positive dyPx = scroll into history (up);
+    // negative = toward live. Advances mTopPixelSubY, rolling overflow into
+    // mTopLineId across integer cellHeight boundaries. Clamps to
+    // [0, historySize * cellHeight] so the viewport can't leave the
+    // document. Marks the grid dirty and fires ScrollbackChanged on any
+    // effective movement.
+    void scrollByPixels(int dyPx, int cellHeight);
     // direction = -1 (previous) or +1 (next). wrap = whether to cycle past
     // the ends of the command ring (true → Cmd+Up at oldest wraps to newest,
     // Cmd+Down at newest wraps to oldest; false → clamps at ends).
@@ -429,6 +453,18 @@ public:
         mCallbacks.onOSC = std::move(cb);
     }
 
+    // Embedded children anchored to logical-line ids. Populated by subclasses
+    // that support inline embedded terminals (Terminal); the base emulator
+    // has none. Consulted by TerminalSnapshot::update() when building the
+    // visual-layout segment list so the snapshot doesn't need to call back
+    // into live Terminal state from the render thread. Called under the
+    // terminal mutex.
+    struct EmbeddedAnchor {
+        uint64_t lineId = 0;
+        int rows = 0;
+    };
+    virtual void collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& /*out*/) const {}
+
     static uint64_t mono();
 
     // 16-color palette (standard + bright) as RGB — current runtime values
@@ -473,7 +509,26 @@ private:
     CellGrid mAltGrid;
     bool mUsingAltScreen { false };
 
-    int mViewportOffset { 0 };
+    // Viewport anchor. mTopLineId is the logical-line id of the row at the
+    // visual top of the viewport; viewportOffset() is derived from it via
+    // Document::firstAbsOfLine so the viewport stays on the same content
+    // when new rows append (unlike the old row-count anchoring, which
+    // required bookkeeping inside scrollUpInRegion to compensate). Eviction
+    // of mTopLineId falls through to firstAbsOfLine == -1; viewportOffset()
+    // then reports 0 (live mode) and rendering snaps forward.
+    //
+    // mTopPixelSubY is the sub-cell shift in pixels, always in
+    // [0, cellHeight). Positive values shift content up — i.e. the
+    // mTopLineId row is drawn with its top this many pixels above the
+    // viewport's top edge, so the row below peeks out further at the
+    // bottom. scrollByPixels() is the only mutator.
+    //
+    // mScrollStepPx is the default per-wheel-tick magnitude (pixels). The
+    // platform wheel handler multiplies the tick count by this to get the
+    // dyPx argument to scrollByPixels.
+    uint64_t mTopLineId { 0 };
+    int mTopPixelSubY { 0 };
+    int mScrollStepPx { 8 };
 
     char32_t mLastPrintedChar { 0 };       // for REP (CSI b)
     int mLastPrintedX { -1 }, mLastPrintedY { -1 }; // position of last stored cell (for combining codepoints)

@@ -3,7 +3,6 @@
 #include "ScriptWsModule.h"
 #include "ScriptLayoutBindings.h"
 #include "Action.h"
-#include "Tab.h"
 #include "LayoutTree.h"
 #include "Terminal.h"
 #include "Utils.h"

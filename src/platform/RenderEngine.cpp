@@ -1,7 +1,10 @@
 #include "RenderEngine.h"
 
+#include "AnimationScheduler.h"
 #include "DebugIPC.h"
+#include "PlatformDawn.h"
 #include "ProceduralGlyphTable.h"
+#include "RenderThread.h"
 #include "Utf8.h"
 #include "Utils.h"
 #include "Observability.h"
@@ -271,7 +274,7 @@ void RenderEngine::resolveRow(PaneRenderPrivate& rs, int row, FontData* font, fl
     auto getReplacementGlyph = [&]() -> const GlyphInfo* {
         if (replacementGlyphReady) return replacementGlyph.is_empty ? nullptr : &replacementGlyph;
         replacementGlyphReady = true;
-        const ShapedRun& rep = host_.textSystem->shapeRun(frameState_.fontName, "\xEF\xBF\xBD", frameState_.fontSize, {});
+        const ShapedRun& rep = platform_->textSystem_.shapeRun(frameState_.fontName, "\xEF\xBF\xBD", frameState_.fontSize, {});
         if (rep.glyphs.empty()) return nullptr;
         std::shared_lock lock(font->mutex);
         auto it = font->glyphs.find(rep.glyphs[0].glyphId);
@@ -349,7 +352,7 @@ void RenderEngine::resolveRow(PaneRenderPrivate& rs, int row, FontData* font, fl
         FontStyle runStyle;
         runStyle.bold = runBold;
         runStyle.italic = runItalic;
-        const ShapedRun& shaped = host_.textSystem->shapeRun(frameState_.fontName, runText, frameState_.fontSize, runStyle, byteToCell);
+        const ShapedRun& shaped = platform_->textSystem_.shapeRun(frameState_.fontName, runText, frameState_.fontSize, runStyle, byteToCell);
 
         struct RtlRange { int firstCell, lastCell; };
         std::vector<RtlRange> rtlRanges;
@@ -528,7 +531,7 @@ void RenderEngine::renderTabBar()
 {
     if (!frameState_.tabBarVisible) return;
     if (frameState_.tabBarCells.empty()) return;
-    const PaneRect& tbRect = frameState_.tabBarRect;
+    const Rect& tbRect = frameState_.tabBarRect;
     if (tbRect.isEmpty()) return;
 
     int cols = frameState_.tabBarCols;
@@ -537,7 +540,7 @@ void RenderEngine::renderTabBar()
     std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
     std::vector<GlyphEntry> tabBarGlyphs;
 
-    FontData* font = const_cast<FontData*>(host_.textSystem->getFont(frameState_.tabBarFontName));
+    FontData* font = const_cast<FontData*>(platform_->textSystem_.getFont(frameState_.tabBarFontName));
     if (!font) return;
     float scale = frameState_.tabBarFontSize / font->baseSize;
 
@@ -577,7 +580,7 @@ void RenderEngine::renderTabBar()
             continue;
         }
 
-        const ShapedText& shaped = host_.textSystem->shapeText(
+        const ShapedText& shaped = platform_->textSystem_.shapeText(
             frameState_.tabBarFontName, tbc.ch, frameState_.tabBarFontSize);
         const GlyphInfo* gi = resolveTabBarGlyph(shaped);
         if (gi) {
@@ -639,19 +642,21 @@ void RenderEngine::renderFrame()
     // have been destroyed. The Graveyard on the main thread waits for this
     // counter to advance past an entry's stamp before freeing it.
     struct FrameCompletionGuard {
-        const std::function<void()>* notify;
-        ~FrameCompletionGuard() { if (notify && *notify) (*notify)(); }
-    } frameGuard { &host_.notifyFrameCompleted };
+        PlatformDawn* platform;
+        ~FrameCompletionGuard() {
+            if (platform) platform->renderThread_->notifyFrameCompleted();
+        }
+    } frameGuard { platform_ };
 
-    const bool headless = host_.headless;
+    const bool headless = platform_->isHeadless();
 
     // Check for pending surface reconfiguration BEFORE acquiring the swapchain
     // texture. configureSurface() invalidates existing textures, so it must
     // happen before GetCurrentTexture.
     if (!headless) {
-        auto [needsReconfigure, w, h] = host_.takeSurfaceReconfigureRequest();
-        if (host_.takeViewportSizeChangedRequest()) {
-            auto [vw, vh] = host_.currentFbSize();
+        auto [needsReconfigure, w, h] = platform_->takeSurfaceReconfigureRequest();
+        if (platform_->takeViewportSizeChangedRequest()) {
+            auto [vw, vh] = platform_->currentFbSize();
             renderer_.setViewportSize(vw, vh);
         }
         if (needsReconfigure && w && h) {
@@ -666,7 +671,7 @@ void RenderEngine::renderFrame()
     if (!headless) {
         surface_.GetCurrentTexture(&surfaceTexture);
         if (surfaceTexture.status == wgpu::SurfaceGetCurrentTextureStatus::Outdated) {
-            auto [w, h] = host_.currentFbSize();
+            auto [w, h] = platform_->currentFbSize();
             if (w && h) {
                 configureSurface(w, h);
                 renderer_.setViewportSize(w, h);
@@ -682,9 +687,9 @@ void RenderEngine::renderFrame()
     }
 
     // Snapshot the render state under the platform lock.
-    if (!host_.snapshotUnderLock(frameState_)) return;
+    if (!platform_->snapshotUnderLock(frameState_)) return;
 
-    auto [fbWidth, fbHeight] = host_.currentFbSize();
+    auto [fbWidth, fbHeight] = platform_->currentFbSize();
     if (fbWidth == 0 || fbHeight == 0) return;
 
     bool focusChanged = frameState_.focusChanged;
@@ -699,14 +704,14 @@ void RenderEngine::renderFrame()
         renderer_.removeFontAtlas(frameState_.fontName);
     }
     if (frameState_.mainFontAtlasChanged) {
-        const FontData* font2 = host_.textSystem->getFont(frameState_.fontName);
+        const FontData* font2 = platform_->textSystem_.getFont(frameState_.fontName);
         if (font2) renderer_.uploadFontAtlas(queue_, frameState_.fontName, *font2);
     }
     if (frameState_.tabBarFontRemoved) {
         renderer_.removeFontAtlas(frameState_.tabBarFontName);
     }
     if (frameState_.tabBarFontAtlasChanged) {
-        const FontData* tbFont = host_.textSystem->getFont(frameState_.tabBarFontName);
+        const FontData* tbFont = platform_->textSystem_.getFont(frameState_.tabBarFontName);
         if (tbFont) renderer_.uploadFontAtlas(queue_, frameState_.tabBarFontName, *tbFont);
     }
     if (frameState_.viewportSizeChanged) {
@@ -834,7 +839,7 @@ void RenderEngine::renderFrame()
         compositeTarget = headlessComposite_;
     }
 
-    FontData* font = const_cast<FontData*>(host_.textSystem->getFont(frameState_.fontName));
+    FontData* font = const_cast<FontData*>(platform_->textSystem_.getFont(frameState_.fontName));
     if (!font) { spdlog::error("renderFrame: font '{}' not found", frameState_.fontName); return; }
 
     float scale = frameState_.fontSize / font->baseSize;
@@ -850,7 +855,7 @@ void RenderEngine::renderFrame()
     }
 
     std::vector<Renderer::CompositeEntry> compositeEntries;
-    DebugIPC* debugIPC = host_.debugIPC ? host_.debugIPC() : nullptr;
+    DebugIPC* debugIPC = platform_->debugIPC_.get();
     bool pngNeeded = debugIPC && debugIPC->pngScreenshotPending();
 
     Uuid currentFocusedPaneId = frameState_.focusedPaneId;
@@ -870,7 +875,7 @@ void RenderEngine::renderFrame()
     struct RenderTarget {
         TerminalEmulator* term;
         PaneRenderPrivate* rs;
-        PaneRect rect;
+        Rect rect;
         bool isFocused;
         Uuid paneId;
         bool hasPopupFocus = false;
@@ -910,7 +915,7 @@ void RenderEngine::renderFrame()
                     prs.rowShapingCache.resize(prows);
                     prs.dirty = true;
                 }
-                PaneRect popupRect;
+                Rect popupRect;
                 popupRect.x = rpi.rect.x + static_cast<int>(frameState_.padLeft) + static_cast<int>(popup.cellX * frameState_.charWidth);
                 popupRect.y = rpi.rect.y + static_cast<int>(frameState_.padTop)  + static_cast<int>(popup.cellY * frameState_.lineHeight);
                 popupRect.w = static_cast<int>(popup.cellW * frameState_.charWidth);
@@ -1055,7 +1060,7 @@ void RenderEngine::renderFrame()
     }
 
     if (anyRunningAnimation && nextAnimationDueAt != std::numeric_limits<uint64_t>::max()) {
-        if (host_.scheduleAnimationAt) host_.scheduleAnimationAt(nextAnimationDueAt);
+        if (platform_->animScheduler_) platform_->animScheduler_->scheduleAnimationAt(nextAnimationDueAt);
     }
 
     if (allWorkItems.size() > 4) {
@@ -1083,7 +1088,7 @@ void RenderEngine::renderFrame()
         auto& target = renderTargets[ti];
         TerminalEmulator* term = target.term;
         PaneRenderPrivate& rs = *target.rs;
-        const PaneRect& paneRect = target.rect;
+        const Rect& paneRect = target.rect;
         if (paneRect.isEmpty()) continue;
         auto& info = resolveInfos[ti];
         bool needsRender = info.needsRender;
@@ -1453,7 +1458,7 @@ void RenderEngine::renderFrame()
     }
 
     if (tabBarTexture_ && !frameState_.tabBarRect.isEmpty()) {
-        const PaneRect& tbRect = frameState_.tabBarRect;
+        const Rect& tbRect = frameState_.tabBarRect;
         {
             Renderer::CompositeEntry entry;
             entry.texture = tabBarTexture_->texture;
@@ -1520,7 +1525,7 @@ void RenderEngine::renderFrame()
 
                 if (bordersChanged) {
                     prs.popupBorders.clear();
-                    const PaneRect& pr = rpi.rect;
+                    const Rect& pr = rpi.rect;
                     float bw = std::max(1.0f, static_cast<float>(frameState_.dividerWidth));
 
                     for (const auto& popup : rpi.popups) {
@@ -1563,7 +1568,7 @@ void RenderEngine::renderFrame()
         if (frameState_.progressBarEnabled) for (const auto& rpi : frameState_.panes) {
             int st = rpi.progressState;
             if (st == 0) continue;
-            const PaneRect& pr = rpi.rect;
+            const Rect& pr = rpi.rect;
             float barHeight = frameState_.progressBarHeight;
             float barY = static_cast<float>(pr.y);
             float barX = static_cast<float>(pr.x);
@@ -1725,11 +1730,9 @@ void RenderEngine::renderFrame()
                             rgba.data(), static_cast<int>(w * 4));
 
                         std::string b64 = base64::encode(pngData.data(), pngData.size());
-                        if (host_.postToMain) {
-                            host_.postToMain([ipc, b64 = std::move(b64)] {
-                                ipc->onPngReady(b64);
-                            });
-                        }
+                        platform_->renderThread_->postToMain([ipc, b64 = std::move(b64)] {
+                            ipc->onPngReady(b64);
+                        });
                     });
             }
         } else {

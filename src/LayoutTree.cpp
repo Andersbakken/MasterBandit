@@ -384,9 +384,9 @@ void LayoutTree::destroyNode(Uuid id)
 // Layout
 // ---------------------------------------------------------------------------
 
-static void layoutSubtree(const LayoutTree& tree, Uuid id, LayoutRect rect,
+static void layoutSubtree(const LayoutTree& tree, Uuid id, Rect rect,
                           int cellW, int cellH,
-                          std::unordered_map<Uuid, LayoutRect, UuidHash>& out)
+                          std::unordered_map<Uuid, Rect, UuidHash>& out)
 {
     const Node* n = tree.node(id);
     if (!n) return;
@@ -477,7 +477,7 @@ static void layoutSubtree(const LayoutTree& tree, Uuid id, LayoutRect rect,
 
             int cursor = horizontal ? rect.x : rect.y;
             for (size_t i = 0; i < n; ++i) {
-                LayoutRect r = rect;
+                Rect r = rect;
                 if (horizontal) { r.x = cursor; r.w = sizes[i]; }
                 else            { r.y = cursor; r.h = sizes[i]; }
                 cursor += sizes[i];
@@ -501,24 +501,24 @@ static void layoutSubtree(const LayoutTree& tree, Uuid id, LayoutRect rect,
     }, n->data);
 }
 
-std::unordered_map<Uuid, LayoutRect, UuidHash> LayoutTree::computeRects(
-    LayoutRect window, int cellW, int cellH) const
+std::unordered_map<Uuid, Rect, UuidHash> LayoutTree::computeRects(
+    Rect window, int cellW, int cellH) const
 {
     return computeRectsFrom(root_, window, cellW, cellH);
 }
 
-std::unordered_map<Uuid, LayoutRect, UuidHash> LayoutTree::computeRectsFrom(
-    Uuid start, LayoutRect window, int cellW, int cellH) const
+std::unordered_map<Uuid, Rect, UuidHash> LayoutTree::computeRectsFrom(
+    Uuid start, Rect window, int cellW, int cellH) const
 {
-    std::unordered_map<Uuid, LayoutRect, UuidHash> out;
+    std::unordered_map<Uuid, Rect, UuidHash> out;
     if (start.isNil() || window.isEmpty()) return out;
     layoutSubtree(*this, start, window, cellW, cellH, out);
     return out;
 }
 
 void LayoutTree::dividersIn(Uuid start, int dividerPixels,
-                            const std::unordered_map<Uuid, LayoutRect, UuidHash>& rects,
-                            std::vector<std::pair<Uuid, LayoutRect>>& out) const
+                            const std::unordered_map<Uuid, Rect, UuidHash>& rects,
+                            std::vector<std::pair<Uuid, Rect>>& out) const
 {
     if (start.isNil() || dividerPixels <= 0) return;
 
@@ -531,7 +531,7 @@ void LayoutTree::dividersIn(Uuid start, int dividerPixels,
             for (size_t i = 0; i + 1 < cd->children.size(); ++i) {
                 auto a = rects.find(cd->children[i].id);
                 if (a == rects.end()) continue;
-                LayoutRect divR;
+                Rect divR;
                 if (cd->dir == SplitDir::Horizontal) {
                     int splitX = a->second.x + a->second.w;
                     divR = {splitX, a->second.y, dividerPixels, a->second.h};
@@ -590,7 +590,7 @@ Uuid LayoutTree::splitByWrapping(Uuid existingChild, SplitDir dir,
 }
 
 bool LayoutTree::resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
-                                      Uuid ancestorRoot, LayoutRect window,
+                                      Uuid ancestorRoot, Rect window,
                                       int cellW, int cellH)
 {
     if (target.isNil() || ancestorRoot.isNil()) return false;

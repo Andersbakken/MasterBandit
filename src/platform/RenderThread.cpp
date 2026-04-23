@@ -1,5 +1,6 @@
 #include "RenderThread.h"
 
+#include "PlatformDawn.h"
 #include "Utils.h"  // overloaded<> helper for std::visit
 
 #include <eventloop/EventLoop.h>
@@ -43,8 +44,7 @@ void RenderThread::postToMain(std::function<void()> fn)
         std::lock_guard<std::mutex> lk(deferredMainMutex_);
         deferredMain_.push_back(std::move(fn));
     }
-    EventLoop* el = host_.eventLoop ? host_.eventLoop() : nullptr;
-    if (el) el->wakeup();
+    if (EventLoop* el = platform_->eventLoop_.get()) el->wakeup();
 }
 
 void RenderThread::drainDeferredMain()
@@ -64,8 +64,7 @@ void RenderThread::enqueueTerminalExit(Terminal* t)
         std::lock_guard<std::mutex> lk(deferredExitMutex_);
         pendingExits_.push_back(t);
     }
-    EventLoop* el = host_.eventLoop ? host_.eventLoop() : nullptr;
-    if (el) el->wakeup();
+    if (EventLoop* el = platform_->eventLoop_.get()) el->wakeup();
 }
 
 void RenderThread::drainPendingExits()
@@ -75,8 +74,7 @@ void RenderThread::drainPendingExits()
         std::lock_guard<std::mutex> lk(deferredExitMutex_);
         exits.swap(pendingExits_);
     }
-    if (!host_.onTerminalExit) return;
-    for (auto* t : exits) host_.onTerminalExit(t);
+    for (auto* t : exits) platform_->terminalExited(t);
 }
 
 void RenderThread::applyPendingMutations()
@@ -91,7 +89,7 @@ void RenderThread::applyPendingMutations()
 
     // Transfer dirty flags. Note: tabBarDirty_ / dividersDirty_ main-thread
     // flags owned by PlatformDawn are merged and cleared inside
-    // host_.buildRenderFrameState().
+    // buildRenderFrameState().
     renderState_.tabBarDirty     |= pending_.tabBarDirty;
     renderState_.dividersDirty   |= pending_.dividersDirty;
     renderState_.focusChanged    |= pending_.focusChanged;
@@ -139,7 +137,7 @@ void RenderThread::applyPendingMutations()
     }
 
     // Rebuild the full shadow copy from live state.
-    if (host_.buildRenderFrameState) host_.buildRenderFrameState();
+    platform_->buildRenderFrameState();
 
     // Transfer per-pane dirty pane entries so the render thread picks
     // them up at snapshot time.
@@ -176,6 +174,17 @@ void RenderThread::threadMain()
             renderWake_.store(false, std::memory_order_relaxed);
         }
         if (renderStop_.load(std::memory_order_acquire)) return;
-        if (host_.onFrame) host_.onFrame();
+        // Tick Dawn on the render thread: drains device-side events
+        // (completion callbacks, deferred destroys). Safe to run without
+        // the render-thread mutex because all GPU calls happen on this
+        // thread only.
+        RenderEngine* re = platform_->renderEngine_.get();
+        if (!re) continue;
+        re->device().Tick();
+        // renderFrame manages the render-thread mutex internally via the
+        // Host snapshot callback — it releases the lock during shaping
+        // so input handlers / deferred callbacks on the main thread can
+        // proceed concurrently with the CPU-heavy section.
+        re->renderFrame();
     }
 }

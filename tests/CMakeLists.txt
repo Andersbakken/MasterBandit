@@ -41,7 +41,6 @@ set(TEST_SOURCES
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp
-    ../src/Tab.cpp
     ../src/LayoutTree.cpp
     ../src/Uuid.cpp
     ../src/script/ScriptEngine_Terminals.cpp

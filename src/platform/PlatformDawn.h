@@ -22,7 +22,6 @@
 #include "text.h"
 #include "DebugIPC.h"
 #include "FontFallback.h"
-#include "Tab.h"
 #include "Action.h"
 #include "Bindings.h"
 #include "WorkerPool.h"
@@ -72,11 +71,28 @@ void platformSendNotification(const std::string& title, const std::string& body)
 void platformOpenURL(const std::string& url);
 std::string platformProcessCWD(pid_t pid);
 
-// LayoutNode/Dir and Tab handle live in Tab.h (legacy scaffold); include
-// to get SplitDir used by split API.
-#include "Tab.h"
+#include "LayoutTree.h"
+#include "Rect.h"
+#include "Uuid.h"
 
 class PlatformDawn {
+    // InputController reaches into private members (renderThread_,
+    // scriptEngine_, animScheduler_, fb/char/pad metrics, tabBarColRanges_).
+    friend class InputController;
+    // ActionRouter::dispatch wraps executeAction + scriptEngine_.executePendingJobs.
+    friend class ActionRouter;
+    // RenderThread drives onFrame on the render thread, buildRenderFrameState
+    // under mutex, and calls terminalExited on drain.
+    friend class RenderThread;
+    // RenderEngine accesses textSystem_, renderThread_, animScheduler_,
+    // debugIPC_ during renderFrame on the render thread.
+    friend class RenderEngine;
+    // ConfigLoader reads eventLoop_ for timer setup and calls applyConfig().
+    friend class ConfigLoader;
+    // AnimationScheduler reads eventLoop_ and calls onBlinkTick /
+    // onResizeDebounceFire / setNeedsRedraw.
+    friend class AnimationScheduler;
+
 public:
     enum Flag : uint32_t {
         FlagNone     = 0,
@@ -92,9 +108,6 @@ public:
     void createTerminal(const TerminalOptions& options);
     void closeTab(int idx);
 
-    wgpu::Device device() const { return renderEngine_ ? renderEngine_->device() : wgpu::Device{}; }
-    wgpu::Queue queue() const { return renderEngine_ ? renderEngine_->queue() : wgpu::Queue{}; }
-    TexturePool& texturePool() { return renderEngine_->texturePool(); }
     bool isHeadless() const { return flags_ & FlagHeadless; }
     bool hasFlag(Flag f) const { return flags_ & f; }
 
@@ -115,8 +128,6 @@ public:
     void adjustFontSize(float delta);
 
     void setNeedsRedraw();
-
-    InputController* inputController() { return inputController_.get(); }
 
     bool shouldClose() {
         if (isHeadless()) return false;
@@ -164,18 +175,18 @@ private:
     // hold Uuid handles into Engine::layoutTree().
     Script::Engine scriptEngine_;
 
-    // --- Tab/pane primitives (formerly TabManager) ----------------------
+    // --- Tab/pane primitives --------------------------------------------
     // Tab identity lives in the shared LayoutTree: each tab is a direct
     // child of Script::Engine::layoutRootStack_, identified by its
-    // subtreeRoot Uuid. tabs() returns a transient vector of handles built
-    // from the tree's root-Stack children.
-    std::vector<Tab> tabs() const;
-    int activeTabIdx() const;
+    // subtreeRoot Uuid. All tab-scoped methods take the subtreeRoot
+    // directly — there is no separate Tab handle.
+    //
+    // The flat tab list, count, and active-tab index live on Script::Engine:
+    // `scriptEngine().tabSubtreeRoots()`, `tabCount()`, `activeTabIndex()`.
     void setActiveTabIdx(int idx);
-    size_t tabCount() const;
 
-    std::optional<Tab> activeTab() const;
-    std::optional<Tab> tabAt(int idx) const;
+    std::optional<Uuid> activeTab() const;
+    std::optional<Uuid> tabAt(int idx) const;
 
     Terminal* activeTerm();
 
@@ -189,7 +200,9 @@ private:
     void addPtyPoll(int fd, Terminal* term);
     void removePtyPoll(int fd);
 
-    void attachLayoutSubtree(Tab tab, bool activate);
+    // Attach an orphan tab subtree (Stack) as a direct child of the root
+    // Stack, optionally activating it.
+    void attachLayoutSubtree(Uuid subtreeRoot, bool activate);
 
     int createEmptyTab(Uuid* outNodeId = nullptr);
     void activateTabByIdx(int idx);
@@ -203,22 +216,22 @@ private:
     bool removeNode(Uuid nodeId);
     bool focusPaneById(Uuid nodeId);
 
-    std::optional<Tab> findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx = nullptr) const;
-    std::optional<Tab> findTabForNode(Uuid nodeId, int* outTabIdx = nullptr) const;
-    std::optional<Tab> findTabForPane(Uuid nodeId, int* outTabIdx = nullptr) const;
+    std::optional<Uuid> findTabForNode(Uuid nodeId, int* outTabIdx = nullptr) const;
+    std::optional<Uuid> findTabForPane(Uuid nodeId, int* outTabIdx = nullptr) const;
 
     void terminalExited(Terminal* terminal);
     bool killTerminal(Uuid nodeId);
 
     void spawnTerminalForPane(Uuid nodeId, int tabIdx, const std::string& cwd = {});
-    void resizeAllPanesInTab(Tab tab);
-    void refreshDividers(Tab tab);
-    void clearDividers(Tab tab);
-    void releaseTabTextures(Tab tab);
+    void resizeAllPanesInTab(Uuid subtreeRoot);
+    void refreshDividers(Uuid subtreeRoot);
+    void clearDividers(Uuid subtreeRoot);
+    void releaseTabTextures(Uuid subtreeRoot);
 
     void updateTabTitleFromFocusedPane(int tabIdx);
     void updateWindowTitle();
-    void notifyPaneFocusChange(Tab tab, Uuid prevId, Uuid newId);
+    void notifyPaneFocusChange(Uuid subtreeRoot, Uuid prevId, Uuid newId);
+
 
 private:
     Uuid tabSubtreeRootAt(int idx) const;
@@ -249,13 +262,12 @@ private:
             // Refresh tab titles from foreground process for tabs that
             // have no OSC title — the callback may have fired before the
             // tab bar existed or before the tab was added to tabs.
-            auto tabList = tabs();
-            for (Tab& tab : tabList) {
-                Terminal* fp = tab.valid() ? tab.focusedPane() : nullptr;
-                if (fp && fp->title().empty() && tab.title().empty()) {
+            for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
+                Terminal* fp = scriptEngine_.focusedTerminalInSubtree(sub);
+                if (fp && fp->title().empty() && scriptEngine_.tabTitle(sub).empty()) {
                     std::string proc = fp->foregroundProcess();
                     if (!proc.empty())
-                        tab.setTitle(proc);
+                        scriptEngine_.setTabTitle(sub, proc);
                 }
             }
         }
@@ -263,7 +275,7 @@ private:
 
     bool tabBarVisible() const {
         if (tabBarConfig_.style == "hidden") return false;
-        if (tabBarConfig_.style == "auto") return tabCount() > 1;
+        if (tabBarConfig_.style == "auto") return scriptEngine_.tabCount() > 1;
         return true;
     }
 
@@ -329,15 +341,6 @@ private:
     int           tabBarAnimFrame_  = 0;
     uint64_t      lastAnimTick_     = 0;
 
-    // Thin forwarders that preserve existing call-site ergonomics.
-    void wakeRenderThread() { if (renderThread_) renderThread_->wake(); }
-    void postToMainThread(std::function<void()> fn) {
-        if (renderThread_) renderThread_->postToMain(std::move(fn));
-    }
-    void drainDeferredMain() { if (renderThread_) renderThread_->drainDeferredMain(); }
-    void drainPendingExits() { if (renderThread_) renderThread_->drainPendingExits(); }
-    void applyPendingMutations() { if (renderThread_) renderThread_->applyPendingMutations(); }
-
     // Pane divider colors
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;
     int   dividerWidth_ = 1;
@@ -381,11 +384,17 @@ private:
     // and the post-dispatch observer-notify + script-microtask flush.
     std::unique_ptr<ActionRouter> actionRouter_;
 
-    // Callback/terminal helpers — stays on PlatformDawn because it
-    // closes over ~20 platform members (title/icon/cwd/progress/OSC/
-    // foreground-process/mouse-cursor-shape) that TabManager doesn't
-    // own. TabManager calls this via Host::buildTerminalCallbacks.
+    // Build the TerminalCallbacks shim for a freshly-spawned Terminal. Lives
+    // on PlatformDawn because it closes over ~20 members (title/icon/cwd/
+    // progress/OSC/foreground-process/mouse-cursor-shape).
     TerminalCallbacks buildTerminalCallbacks(Uuid nodeId);
+
+    // Render-thread hooks (called by RenderEngine::renderFrame). All of
+    // these acquire renderThread_->mutex() internally.
+    bool snapshotUnderLock(RenderFrameState& out);
+    std::tuple<bool, uint32_t, uint32_t> takeSurfaceReconfigureRequest();
+    bool takeViewportSizeChangedRequest();
+    std::pair<uint32_t, uint32_t> currentFbSize();
 };
 
 std::unique_ptr<PlatformDawn> createPlatform(int argc, char** argv, uint32_t flags = PlatformDawn::FlagNone);

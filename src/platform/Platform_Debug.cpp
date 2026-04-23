@@ -24,14 +24,7 @@ static std::string sanitizeUtf8(const std::string& in)
 
 std::string PlatformDawn::gridToJson(Uuid id)
 {
-    // Search for the pane across all tabs
-    Terminal* pane = nullptr;
-    for (Tab tab : tabs()) {
-        if (tab.valid()) {
-            pane = tab.pane(id);
-            if (pane) break;
-        }
-    }
+    Terminal* pane = scriptEngine_.terminal(id);
     if (!pane) return {};
     TerminalEmulator* term = pane;
 
@@ -113,13 +106,12 @@ std::string PlatformDawn::statsJson(int id)
     };
 
     glz::generic::array_t tabsArr;
-    auto allTabs = tabs();
-    int activeIdx = activeTabIdx();
+    auto allTabs = scriptEngine_.tabSubtreeRoots();
+    int activeIdx = scriptEngine_.activeTabIndex();
     for (int ti = 0; ti < static_cast<int>(allTabs.size()); ++ti) {
-        Tab& tab = allTabs[ti];
-        if (!tab.valid()) continue;
+        Uuid sub = allTabs[ti];
         glz::generic::array_t panesArr;
-        for (Terminal* panePtr : tab.panes()) {
+        for (Terminal* panePtr : scriptEngine_.panesInSubtree(sub)) {
             Uuid pid = panePtr->nodeId();
             const PaneRenderPrivate* rs = renderEngine_->paneRenderPrivate(pid);
             Terminal* term = panePtr;
@@ -142,7 +134,6 @@ std::string PlatformDawn::statsJson(int id)
         tabObj["panes"]  = std::move(panesArr);
         // Tree-node UUID for the tab's subtree root (always a Stack). Tests
         // use this to assert tree shape end-to-end via `mb --test`.
-        Uuid sub = tab.subtreeRoot();
         if (!sub.isNil()) tabObj["nodeId"] = sub.toString();
         tabsArr.emplace_back(std::move(tabObj));
     }

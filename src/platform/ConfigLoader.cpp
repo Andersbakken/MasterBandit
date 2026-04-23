@@ -1,5 +1,7 @@
 #include "ConfigLoader.h"
 
+#include "PlatformDawn.h"
+
 ConfigLoader::~ConfigLoader()
 {
     stop();
@@ -7,22 +9,24 @@ ConfigLoader::~ConfigLoader()
 
 void ConfigLoader::stop()
 {
-    if (!host_.eventLoop) return;
+    EventLoop* el = platform_ ? platform_->eventLoop_.get() : nullptr;
+    if (!el) return;
     if (debounceActive_) {
-        host_.eventLoop->removeTimer(debounceTimer_);
+        el->removeTimer(debounceTimer_);
         debounceActive_ = false;
     }
 }
 
 void ConfigLoader::installFileWatch(const std::string& path)
 {
-    if (path.empty() || !host_.eventLoop) return;
-    host_.eventLoop->addFileWatch(path, [this]() {
+    EventLoop* el = platform_ ? platform_->eventLoop_.get() : nullptr;
+    if (path.empty() || !el) return;
+    el->addFileWatch(path, [this, el]() {
         if (debounceActive_) {
-            host_.eventLoop->removeTimer(debounceTimer_);
+            el->removeTimer(debounceTimer_);
             debounceActive_ = false;
         }
-        debounceTimer_ = host_.eventLoop->addTimer(300, false, [this]() {
+        debounceTimer_ = el->addTimer(300, false, [this]() {
             debounceActive_ = false;
             reloadNow();
         });
@@ -32,7 +36,7 @@ void ConfigLoader::installFileWatch(const std::string& path)
 
 void ConfigLoader::reloadNow()
 {
-    if (!host_.applyConfig) return;
+    if (!platform_) return;
     Config config = loadConfig();
-    host_.applyConfig(config);
+    platform_->applyConfig(config);
 }

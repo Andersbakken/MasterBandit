@@ -655,7 +655,7 @@ JSValue jsLayoutComputeRects(JSContext* ctx, JSValueConst, int argc, JSValueCons
         return JS_ThrowTypeError(ctx, "computeRects(window, cellW, cellH)");
 
     bool err = false;
-    LayoutRect win;
+    Rect win;
     win.x = optionalInt(ctx, argv[0], "x", 0, &err);
     win.y = optionalInt(ctx, argv[0], "y", 0, &err);
     win.w = optionalInt(ctx, argv[0], "w", 0, &err);

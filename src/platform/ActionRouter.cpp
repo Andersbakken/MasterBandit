@@ -1,8 +1,11 @@
 #include "ActionRouter.h"
 
+#include "PlatformDawn.h"
+#include "ScriptEngine.h"
+
 void ActionRouter::dispatch(const Action::Any& action)
 {
-    if (host_.executeAction) host_.executeAction(action);
+    platform_->executeAction(action);
     listeners_.notify(action.index(), action);
-    if (host_.flushScriptJobs) host_.flushScriptJobs();
+    platform_->scriptEngine_.executePendingJobs();
 }

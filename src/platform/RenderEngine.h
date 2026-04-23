@@ -20,49 +20,16 @@
 #include <vector>
 
 class DebugIPC;
+class PlatformDawn;
 class TextSystem;
 class Window;
 
 class RenderEngine {
 public:
-    struct Host {
-        TextSystem* textSystem = nullptr;
-
-        // Snapshot: under platformMutex_, consume one-shot flags from
-        // renderState_ after copying. Returns false if the frame should be skipped.
-        std::function<bool(RenderFrameState& out)> snapshotUnderLock;
-
-        // Under platformMutex_, if renderState_.surfaceNeedsReconfigure,
-        // clear it and return {true, fbWidth_, fbHeight_}. Else {false, 0, 0}.
-        std::function<std::tuple<bool, uint32_t, uint32_t>()> takeSurfaceReconfigureRequest;
-        std::function<bool()> takeViewportSizeChangedRequest;
-
-        // Current fb size (main thread updates, under lock).
-        std::function<std::pair<uint32_t, uint32_t>()> currentFbSize;
-
-        // Render thread posts a lambda for main-thread execution.
-        std::function<void(std::function<void()>)> postToMain;
-
-        // Render thread requests an animation wakeup.
-        std::function<void(uint64_t dueAtNs)> scheduleAnimationAt;
-
-        // DebugIPC* (may be null).
-        std::function<DebugIPC*()> debugIPC;
-
-        // Called on the render thread at the end of every renderFrame()
-        // invocation (including early returns), after all local pointers
-        // into frameState_ have gone out of scope. Bumps the
-        // RenderThread::completedFrames() counter that the main-thread
-        // Graveyard uses to know when deferred objects are safe to free.
-        std::function<void()> notifyFrameCompleted;
-
-        bool headless = false;
-    };
-
     RenderEngine();
     ~RenderEngine();
 
-    void setHost(Host host) { host_ = std::move(host); }
+    void setPlatform(PlatformDawn* p) { platform_ = p; }
 
     // One-time GPU initialization. Selects the adapter, creates device/queue,
     // initializes the texture pool. Returns false on failure.
@@ -115,7 +82,7 @@ private:
                     float pixelOriginX, float pixelOriginY);
     void renderTabBar();
 
-    Host host_;
+    PlatformDawn* platform_ = nullptr;
 
     // Dawn core
     wgpu::Device device_;

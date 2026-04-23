@@ -20,8 +20,7 @@ const char* directionName(Action::Direction d) {
 
 void PlatformDawn::dispatchAction(const Action::Any& action)
 {
-    if (actionRouter_) actionRouter_->dispatch(action);
-    else executeAction(action);
+    actionRouter_->dispatch(action);
 }
 
 void PlatformDawn::executeAction(const Action::Any& action)
@@ -73,13 +72,13 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::ZoomPane&)  { invokeOrLog("zoomPane",  nullptr); },
         [&](const Action::FocusPane& a) {
             auto tab = activeTab();
-            if (!tab || !tab->valid()) return;
+            if (!tab) return;
 
             if (a.dir == Action::Direction::Next || a.dir == Action::Direction::Prev) {
-                auto panes = tab->panes();
+                auto panes = scriptEngine_.panesInSubtree(*tab);
                 if (panes.size() <= 1) return;
                 int cur = -1;
-                Uuid focusedId = tab->focusedPaneId();
+                Uuid focusedId = scriptEngine_.focusedPaneInSubtree(*tab);
                 for (int i = 0; i < static_cast<int>(panes.size()); ++i) {
                     if (panes[i]->nodeId() == focusedId) { cur = i; break; }
                 }
@@ -89,19 +88,19 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 int next = ((cur + delta) % n + n) % n;
                 Uuid prev = focusedId;
                 Uuid nextId = panes[next]->nodeId();
-                tab->setFocusedPane(nextId);
+                scriptEngine_.setFocusedTerminalNodeId(nextId);
                 notifyPaneFocusChange(*tab, prev, nextId);
-                updateTabTitleFromFocusedPane(activeTabIdx());
+                updateTabTitleFromFocusedPane(scriptEngine_.activeTabIndex());
                 setNeedsRedraw();
                 return;
             }
 
-            Terminal* fp = tab->focusedPane();
+            Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
             if (!fp) return;
-            const PaneRect& r = fp->rect();
+            const Rect& r = fp->rect();
             // Step past the divider gap; +1 alone lands inside the divider
             // and paneAtPixel returns nil.
-            const int step = tab->dividerPixels() + 1;
+            const int step = scriptEngine_.dividerPixels() + 1;
             int px = 0, py = 0;
             switch (a.dir) {
             case Action::Direction::Left:  px = r.x - step;       py = r.y + r.h / 2; break;
@@ -110,12 +109,12 @@ void PlatformDawn::executeAction(const Action::Any& action)
             case Action::Direction::Down:  px = r.x + r.w / 2;    py = r.y + r.h + step; break;
             default: return;
             }
-            Uuid targetId = tab->paneAtPixel(px, py);
+            Uuid targetId = scriptEngine_.paneAtPixelInSubtree(*tab, px, py);
             if (!targetId.isNil() && targetId != fp->nodeId()) {
-                Uuid prev = tab->focusedPaneId();
-                tab->setFocusedPane(targetId);
+                Uuid prev = scriptEngine_.focusedPaneInSubtree(*tab);
+                scriptEngine_.setFocusedTerminalNodeId(targetId);
                 notifyPaneFocusChange(*tab, prev, targetId);
-                updateTabTitleFromFocusedPane(activeTabIdx());
+                updateTabTitleFromFocusedPane(scriptEngine_.activeTabIndex());
                 setNeedsRedraw();
             }
         },
@@ -203,7 +202,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             if (scriptEngine_.invokeActionHandler("focusPopup", nullptr)) return;
             auto tab = activeTab();
             if (!tab) return;
-            Terminal* fp = tab->focusedPane();
+            Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
             if (!fp || fp->popups().empty()) return;
 
             const auto& popups = fp->popups();
@@ -238,8 +237,8 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::ShowScrollback&) {
             // Spawn a `less` pager as a Stack sibling of the active tab's
             // content. When the user quits `less`, the pager Terminal's
-            // shell-exit path fires → TabManager::killTerminal extracts it →
-            // JS terminalExited handler calls `mb.layout.removeNode` → the
+            // shell-exit path fires → killTerminal extracts it → JS
+            // terminalExited handler calls `mb.layout.removeNode` → the
             // Stack's activeChild auto-retargets to the content Container
             // (first remaining child), so the panes come back. No overlay-
             // specific machinery — the pager IS just another pane, attached
@@ -250,8 +249,8 @@ void PlatformDawn::executeAction(const Action::Any& action)
 
             // Remember which Terminal had focus before the pager takes over
             // so we can restore it when `less` exits. Without this, the
-            // post-removal fallback in TabManager::removeNode just picks
-            // the first pane, which may not be the one the user was on.
+            // post-removal fallback in removeNode just picks the first
+            // pane, which may not be the one the user was on.
             Uuid prevFocus = scriptEngine_.focusedTerminalNodeId();
 
             // Write scrollback to temp file.
@@ -328,14 +327,14 @@ void PlatformDawn::executeAction(const Action::Any& action)
 
             // Attach as a sibling under the tab's Stack. The Stack
             // auto-targets activeChild to this new sibling via setActiveChild.
-            Uuid tabStack = tab->subtreeRoot();
+            Uuid tabStack = *tab;
             tree.appendChild(tabStack, ChildSlot{pagerNode, /*stretch=*/1});
             tree.setActiveChild(tabStack, pagerNode);
 
             addPtyPoll(pagerFD, pagerPtr);
             // Move focus to the pager so input routes to it.
             scriptEngine_.setFocusedTerminalNodeId(pagerNode);
-            scriptEngine_.notifyPaneCreated(activeTabIdx(), pagerNode);
+            scriptEngine_.notifyPaneCreated(scriptEngine_.activeTabIndex(), pagerNode);
 
             // The pager's Terminal has no rect yet — computeRects populates
             // it from the tree shape (now that the node is attached and

@@ -16,8 +16,6 @@
         ret = (op);        \
     } while (ret == -1 && errno == EINTR)
 
-using PaneRect = Rect;
-
 class Terminal; // forward declare for PlatformCallbacks
 
 struct PlatformCallbacks {
@@ -73,9 +71,9 @@ public:
     bool hasResizePending() const { return mResizePending.load(std::memory_order_acquire); }
     void flushPendingResize();
 
-    // --- Pixel rect (set by Tab::computeRects for panes) ---
-    void setRect(const PaneRect& r) { mRect = r; }
-    const PaneRect& rect() const { return mRect; }
+    // --- Pixel rect (set by Engine::computeTabRects for panes) ---
+    void setRect(const Rect& r) { mRect = r; }
+    const Rect& rect() const { return mRect; }
 
     // Resize the terminal to fit current rect given font metrics
     void resizeToRect(float charW, float lineH,
@@ -156,7 +154,7 @@ private:
     std::vector<char> mReadCoalesceBuffer;
 
     // Pixel rect in the window
-    PaneRect mRect;
+    Rect mRect;
 
     // Cell-coordinate position within parent (for popup children)
     int mCellX { 0 }, mCellY { 0 }, mCellW { 0 }, mCellH { 0 };

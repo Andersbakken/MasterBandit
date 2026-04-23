@@ -20,7 +20,6 @@
 
 struct JSRuntime;
 struct JSContext;
-struct Tab;
 class Terminal;
 
 namespace Script {
@@ -126,8 +125,8 @@ struct AppCallbacks {
     // Quit the application. Trivial — wraps PlatformDawn's quit path.
     std::function<void()> quit;
 
-    // JS-facing primitives. Each maps 1:1 to a TabManager method; they're
-    // wired through AppCallbacks so ScriptLayoutBindings can stay decoupled
+    // JS-facing primitives. Each maps 1:1 to a PlatformDawn method; they're
+    // wired through AppCallbacks so ScriptLayoutBindings stays decoupled
     // from the platform layer.
     struct NewPane { std::string nodeId; bool ok; };
     // Empty-tab variant. Returns {tabIdx, subtreeRoot uuid string}.
@@ -135,8 +134,8 @@ struct AppCallbacks {
     std::function<void(int)> activateTab;
     std::function<bool(Uuid)> focusPane;
     // Remove a tree node (Terminal leaf, Container, or Stack) from its
-    // enclosing Tab's Layout. Refuses if any descendant Terminal is still
-    // live — the controller must killTerminal first. See TabManager::removeNode.
+    // enclosing tab's subtree. Refuses if any descendant Terminal is still
+    // live — the controller must killTerminal first.
     std::function<bool(Uuid)> removeNode;
     // Spawn a Terminal inside the Layout that owns `parentContainerNodeId`;
     // append the new Terminal node as the container's last child.
@@ -365,7 +364,7 @@ public:
     // root. The tree's dirty_ flag + cached key (fb/cell dims) short-circuit
     // repeated recomputation: we only run computeRects when the tree has
     // been mutated or the window/font metrics changed.
-    const std::unordered_map<Uuid, LayoutRect, UuidHash>&
+    const std::unordered_map<Uuid, Rect, UuidHash>&
         rootRects(uint32_t fbW, uint32_t fbH, int cellW, int cellH);
 
     // Root Stack holding each Tab's Layout subtree as a direct child.
@@ -388,11 +387,8 @@ public:
 
     // --- Per-tab ownership (engine-wide) ---
     // Tabs are identified by their subtreeRoot Uuid (a direct child of
-    // layoutRootStack_ in the shared tree). Icon + overlay stack live here,
-    // keyed by that Uuid. Title lives on the tree node's `label`.
-    //
-    // Tab.h's handle class calls the accessors below; external callers
-    // should go through Tab, not these directly.
+    // layoutRootStack_ in the shared tree). Icon lives here, keyed by that
+    // Uuid. Title lives on the tree node's `label`.
     const std::string& tabIcon(Uuid subtreeRoot) const;
     void setTabIcon(Uuid subtreeRoot, const std::string& s);
     void eraseTabIcon(Uuid subtreeRoot);
@@ -429,11 +425,12 @@ public:
     uint32_t lastFbHeight() const { return lastFbH_; }
     void setLastFramebuffer(uint32_t w, uint32_t h) { lastFbW_ = w; lastFbH_ = h; }
 
-    // Cell metrics used by Tab helpers (nodeRect, dividersWithOwnerPanes,
-    // resizePaneEdge) to convert ChildSlot cell-based clamps (minCells,
-    // maxCells, fixedCells) into pixels. Updated by Tab::computeRects from
-    // its callers' font metrics. Defaults to 1 so legacy callers that never
-    // touch Tab::computeRects still get the old pixel-equivalent behaviour.
+    // Cell metrics used by the per-tab helpers (nodeRectInSubtree,
+    // tabDividersWithOwnerPanes, resizeTabPaneEdge) to convert ChildSlot
+    // cell-based clamps (minCells/maxCells/fixedCells) into pixels.
+    // Updated by computeTabRects from its callers' font metrics. Defaults
+    // to 1 so callers that never touch computeTabRects still get the old
+    // pixel-equivalent behaviour.
     int lastCellW() const { return lastCellW_; }
     int lastCellH() const { return lastCellH_; }
     void setLastCellMetrics(int cellW, int cellH) {
@@ -460,7 +457,7 @@ public:
     // Every call validates that `subtreeRoot` is a direct child of
     // layoutRootStack_. Caller provides the tab Uuid from tabSubtreeRoots()
     // / activeTabSubtreeRoot() / findTabSubtreeRootForNode(). These
-    // methods replaced the old Tab handle's forwarders.
+    // Tab operations live here; callers pass in the tab's subtreeRoot Uuid.
 
     // Title/icon. Title lives on the tree node's `label`; icon in tabIcons_.
     const std::string& tabTitle(Uuid subtreeRoot) const;
@@ -481,7 +478,7 @@ public:
     bool hasPaneSlotInSubtree(Uuid subtreeRoot, Uuid nodeId) const;
     std::vector<::Terminal*> panesInSubtree(Uuid subtreeRoot) const;
     std::vector<::Terminal*> activePanesInSubtree(Uuid subtreeRoot) const;
-    LayoutRect nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const;
+    Rect nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const;
     Uuid paneAtPixelInSubtree(Uuid subtreeRoot, int px, int py) const;
 
     // Focus scoped to a tab.
@@ -489,11 +486,11 @@ public:
     ::Terminal* focusedTerminalInSubtree(Uuid subtreeRoot);
 
     // Tab-bar rect + tab rect computation.
-    LayoutRect tabBarRect(uint32_t windowW, uint32_t windowH);
+    Rect tabBarRect(uint32_t windowW, uint32_t windowH);
     void computeTabRects(Uuid subtreeRoot, uint32_t windowW, uint32_t windowH,
                          int cellW, int cellH);
-    std::vector<LayoutRect> tabDividerRects(Uuid subtreeRoot, int dividerPixels) const;
-    std::vector<std::pair<Uuid, LayoutRect>>
+    std::vector<Rect> tabDividerRects(Uuid subtreeRoot, int dividerPixels) const;
+    std::vector<std::pair<Uuid, Rect>>
         tabDividersWithOwnerPanes(Uuid subtreeRoot, int dividerPixels) const;
     bool resizeTabPaneEdge(Uuid subtreeRoot, Uuid nodeId,
                            SplitDir axis, int pixelDelta);
@@ -607,7 +604,7 @@ private:
     // recompute. Revision is monotonic (never consumed), so mutations made
     // after the per-frame dirty flag was already taken still invalidate
     // the cache correctly.
-    std::unordered_map<Uuid, LayoutRect, UuidHash> rootRectsCache_;
+    std::unordered_map<Uuid, Rect, UuidHash> rootRectsCache_;
     uint64_t rootRectsKeyFb_       = 0; // (fbW << 32) | fbH
     int      rootRectsKeyCellW_    = 0;
     int      rootRectsKeyCellH_    = 0;

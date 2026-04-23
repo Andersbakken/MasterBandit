@@ -2,9 +2,10 @@
 
 #include <atomic>
 #include <cstdint>
-#include <functional>
 
 #include <eventloop/EventLoop.h>
+
+class PlatformDawn;
 
 // Owns the three main-thread timers that shape rendering cadence outside of
 // normal tick-driven redraws:
@@ -22,14 +23,7 @@
 // scheduleAnimationAt() is safe to call from the render thread.
 class AnimationScheduler {
 public:
-    struct Host {
-        EventLoop* eventLoop = nullptr;
-        std::function<void()> onRedraw;                         // setNeedsRedraw equivalent
-        std::function<void()> onBlinkTick;                      // main thread, fired after opacity update
-        std::function<void(uint32_t w, uint32_t h)> onResizeDebounceFire;  // main thread
-    };
-
-    explicit AnimationScheduler(Host host);
+    explicit AnimationScheduler(PlatformDawn* platform) : platform_(platform) {}
     ~AnimationScheduler();
 
     AnimationScheduler(const AnimationScheduler&) = delete;
@@ -53,7 +47,8 @@ public:
     void stopAllTimers();
 
 private:
-    Host host_;
+    PlatformDawn* platform_;
+    EventLoop* eventLoop() const;
 
     // Blink
     EventLoop::TimerId blinkTimer_ = 0;

@@ -48,142 +48,74 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     renderEngine_ = std::make_unique<RenderEngine>();
     inputController_ = std::make_unique<InputController>();
     actionRouter_ = std::make_unique<ActionRouter>();
-    {
-        ActionRouter::Host rh;
-        rh.executeAction = [this](const Action::Any& a) { executeAction(a); };
-        rh.flushScriptJobs = [this]() { scriptEngine_.executePendingJobs(); };
-        actionRouter_->setHost(std::move(rh));
-    }
+    actionRouter_->setPlatform(this);
     configLoader_ = std::make_unique<ConfigLoader>();
-    {
-        InputController::Host ih;
-        ih.platformMutex = &renderThread_->mutex();
-        ih.headless = isHeadless();
-        ih.activeTab = [this]() -> std::optional<Tab> { return activeTab(); };
-        ih.activeTerm = [this]() -> TerminalEmulator* {
-            return static_cast<TerminalEmulator*>(activeTerm());
-        };
-        ih.activeTabIdx = [this]() -> int { return activeTabIdx(); };
-        ih.dispatchAction = [this](const Action::Any& a) { dispatchAction(a); };
-        ih.setNeedsRedraw = [this]() { setNeedsRedraw(); };
-        ih.resetBlink = [this]() {
-            if (animScheduler_) animScheduler_->resetBlink();
-        };
-        ih.fbWidth = [this]() -> uint32_t { return fbWidth_; };
-        ih.fbHeight = [this]() -> uint32_t { return fbHeight_; };
-        ih.charWidth = [this]() -> float { return charWidth_; };
-        ih.lineHeight = [this]() -> float { return lineHeight_; };
-        ih.contentScaleX = [this]() -> float { return contentScaleX_; };
-        ih.contentScaleY = [this]() -> float { return contentScaleY_; };
-        ih.padLeft = [this]() -> float { return padLeft_; };
-        ih.padTop = [this]() -> float { return padTop_; };
-        ih.tabBarVisible = [this]() -> bool { return tabBarVisible(); };
-        ih.tabBarCharWidth = [this]() -> float { return tabBarCharWidth_; };
-        ih.tabBarColRanges = [this]() -> const std::vector<std::pair<int,int>>& {
-            return tabBarColRanges_;
-        };
-        ih.notifyPaneFocusChange = [this](Tab t, Uuid prev, Uuid next) {
-            notifyPaneFocusChange(t, prev, next);
-        };
-        ih.updateTabTitleFromFocusedPane = [this](int tabIdx) {
-            updateTabTitleFromFocusedPane(tabIdx);
-        };
-        ih.scriptEngine = &scriptEngine_;
-        ih.eventLoop = [this]() -> EventLoop* { return eventLoop_.get(); };
-        ih.window = [this]() -> Window* { return window_.get(); };
-        inputController_->setHost(std::move(ih));
-    }
-
-    RenderEngine::Host host;
-    host.headless = isHeadless();
-    host.textSystem = &textSystem_;
-    host.snapshotUnderLock = [this](RenderFrameState& out) -> bool {
-        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
-        if (fbWidth_ == 0 || fbHeight_ == 0) return false;
-        RenderFrameState& rs = renderThread_->renderState();
-        out = rs;
-        // Consume one-shot flags so the next frame doesn't re-process them.
-        rs.focusChanged = false;
-        rs.mainFontAtlasChanged = false;
-        rs.tabBarFontAtlasChanged = false;
-        rs.mainFontRemoved = false;
-        rs.tabBarFontRemoved = false;
-        rs.viewportSizeChanged = false;
-        rs.tabBarDirty = false;
-        rs.dividersDirty = false;
-        rs.releasePaneTextureIds.clear();
-        rs.releasePopupTextureKeys.clear();
-        rs.releaseAllPaneTextures = false;
-        rs.releaseTabBarTexture = false;
-        rs.invalidateAllRowCaches = false;
-        rs.destroyedPaneIds.clear();
-        rs.destroyedPopupKeys.clear();
-        return true;
-    };
-    host.takeSurfaceReconfigureRequest = [this]() -> std::tuple<bool, uint32_t, uint32_t> {
-        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
-        RenderFrameState& rs = renderThread_->renderState();
-        if (rs.surfaceNeedsReconfigure) {
-            rs.surfaceNeedsReconfigure = false;
-            return {true, fbWidth_, fbHeight_};
-        }
-        return {false, 0u, 0u};
-    };
-    host.takeViewportSizeChangedRequest = [this]() -> bool {
-        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
-        RenderFrameState& rs = renderThread_->renderState();
-        if (rs.viewportSizeChanged) {
-            rs.viewportSizeChanged = false;
-            return true;
-        }
-        return false;
-    };
-    host.currentFbSize = [this]() -> std::pair<uint32_t, uint32_t> {
-        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
-        return {fbWidth_, fbHeight_};
-    };
-    host.postToMain = [this](std::function<void()> fn) { renderThread_->postToMain(std::move(fn)); };
-    host.scheduleAnimationAt = [this](uint64_t dueAtNs) {
-        if (animScheduler_) animScheduler_->scheduleAnimationAt(dueAtNs);
-    };
-    host.debugIPC = [this]() -> DebugIPC* { return debugIPC_.get(); };
-    host.notifyFrameCompleted = [this]() {
-        if (renderThread_) renderThread_->notifyFrameCompleted();
-    };
-    renderEngine_->setHost(std::move(host));
-
-    {
-        RenderThread::Host rtHost;
-        rtHost.eventLoop = [this]() -> EventLoop* { return eventLoop_.get(); };
-        rtHost.onFrame = [this]() {
-            if (!renderEngine_) return;
-            // Tick Dawn on the render thread: drains device-side events
-            // (completion callbacks, deferred destroys). Safe to run without
-            // the render-thread mutex because all GPU calls happen on this
-            // thread only.
-            renderEngine_->device().Tick();
-            // renderFrame manages the render-thread mutex internally via the
-            // Host snapshot callback — it releases the lock during shaping
-            // so input handlers / deferred callbacks on main thread can
-            // proceed concurrently with the CPU-heavy section.
-            renderEngine_->renderFrame();
-        };
-        rtHost.buildRenderFrameState = [this]() { buildRenderFrameState(); };
-        rtHost.onTerminalExit = [this](Terminal* t) { terminalExited(t); };
-        renderThread_->setHost(std::move(rtHost));
-    }
+    inputController_->setPlatform(this);
+    renderEngine_->setPlatform(this);
+    renderThread_->setPlatform(this);
 
     if (!renderEngine_->initGpu()) {
         // initGpu already logged
     }
 }
 
+bool PlatformDawn::snapshotUnderLock(RenderFrameState& out)
+{
+    std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
+    if (fbWidth_ == 0 || fbHeight_ == 0) return false;
+    RenderFrameState& rs = renderThread_->renderState();
+    out = rs;
+    // Consume one-shot flags so the next frame doesn't re-process them.
+    rs.focusChanged = false;
+    rs.mainFontAtlasChanged = false;
+    rs.tabBarFontAtlasChanged = false;
+    rs.mainFontRemoved = false;
+    rs.tabBarFontRemoved = false;
+    rs.viewportSizeChanged = false;
+    rs.tabBarDirty = false;
+    rs.dividersDirty = false;
+    rs.releasePaneTextureIds.clear();
+    rs.releasePopupTextureKeys.clear();
+    rs.releaseAllPaneTextures = false;
+    rs.releaseTabBarTexture = false;
+    rs.invalidateAllRowCaches = false;
+    rs.destroyedPaneIds.clear();
+    rs.destroyedPopupKeys.clear();
+    return true;
+}
+
+std::tuple<bool, uint32_t, uint32_t> PlatformDawn::takeSurfaceReconfigureRequest()
+{
+    std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
+    RenderFrameState& rs = renderThread_->renderState();
+    if (rs.surfaceNeedsReconfigure) {
+        rs.surfaceNeedsReconfigure = false;
+        return {true, fbWidth_, fbHeight_};
+    }
+    return {false, 0u, 0u};
+}
+
+bool PlatformDawn::takeViewportSizeChangedRequest()
+{
+    std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
+    RenderFrameState& rs = renderThread_->renderState();
+    if (rs.viewportSizeChanged) {
+        rs.viewportSizeChanged = false;
+        return true;
+    }
+    return false;
+}
+
+std::pair<uint32_t, uint32_t> PlatformDawn::currentFbSize()
+{
+    std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
+    return {fbWidth_, fbHeight_};
+}
+
 void PlatformDawn::runLayoutIfDirty()
 {
     if (!scriptEngine_.layoutTree().takeDirty()) return;
-    for (Tab& t : tabs()) {
-        if (t.valid()) resizeAllPanesInTab(t);
-    }
+    for (Uuid sub : scriptEngine_.tabSubtreeRoots()) resizeAllPanesInTab(sub);
 }
 
 void PlatformDawn::buildRenderFrameState()
@@ -203,7 +135,7 @@ void PlatformDawn::buildRenderFrameState()
     tabBarDirty_   = false;
     dividersDirty_ = false;
     auto tab = activeTab();
-    renderThread_->renderState().activeTabIdx = activeTabIdx();
+    renderThread_->renderState().activeTabIdx = scriptEngine_.activeTabIndex();
     renderThread_->renderState().fbWidth  = fbWidth_;
     renderThread_->renderState().fbHeight = fbHeight_;
     renderThread_->renderState().charWidth  = charWidth_;
@@ -257,23 +189,24 @@ void PlatformDawn::buildRenderFrameState()
     // Tab bar animation
     renderThread_->renderState().tabBarAnimFrame = tabBarAnimFrame_;
 
-    // Tab bar rect from active tab's layout
+    // Tab bar rect from layout tree (not tab-specific)
     if (tab) {
-        renderThread_->renderState().tabBarRect = tab->tabBarRect(fbWidth_, fbHeight_);
+        renderThread_->renderState().tabBarRect = scriptEngine_.tabBarRect(fbWidth_, fbHeight_);
     } else {
         renderThread_->renderState().tabBarRect = {};
     }
 
-    // Active tab pane info. `activePanes()` walks the tab's subtree honouring
-    // Stack activeChild semantics — inactive Stack siblings (e.g. the content
-    // Container while a scrollback pager is on top) don't contribute.
+    // Active tab pane info. `activePanesInSubtree` walks the tab's subtree
+    // honouring Stack activeChild semantics — inactive Stack siblings (e.g.
+    // the content Container while a scrollback pager is on top) don't
+    // contribute.
     renderThread_->renderState().panes.clear();
     renderThread_->renderState().focusedPaneId = {};
 
     if (tab) {
-        renderThread_->renderState().focusedPaneId = tab->focusedPaneId();
+        renderThread_->renderState().focusedPaneId = scriptEngine_.focusedPaneInSubtree(*tab);
 
-        for (Terminal* pane : tab->activePanes()) {
+        for (Terminal* pane : scriptEngine_.activePanesInSubtree(*tab)) {
             RenderPaneInfo rpi;
             rpi.id = pane->nodeId();
             rpi.rect = pane->rect();
@@ -297,13 +230,13 @@ void PlatformDawn::buildRenderFrameState()
 
     // Tab bar data (all tabs)
     renderThread_->renderState().tabs.clear();
-    auto allTabs = tabs();
-    for (Tab& t : allTabs) {
+    auto allTabs = scriptEngine_.tabSubtreeRoots();
+    for (Uuid sub : allTabs) {
         RenderTabInfo rti;
-        rti.title = t.title();
-        rti.icon  = t.icon();
-        rti.focusedPaneId = t.valid() ? t.focusedPaneId() : Uuid{};
-        Terminal* fp = t.valid() ? t.focusedPane() : nullptr;
+        rti.title = scriptEngine_.tabTitle(sub);
+        rti.icon  = scriptEngine_.tabIcon(sub);
+        rti.focusedPaneId = scriptEngine_.focusedPaneInSubtree(sub);
+        Terminal* fp = scriptEngine_.focusedTerminalInSubtree(sub);
         rti.progressState = fp ? fp->progressState() : 0;
         rti.progressPct   = fp ? fp->progressPct() : 0;
         renderThread_->renderState().tabs.push_back(std::move(rti));
@@ -582,11 +515,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 auto tab = activeTab();
                 if (tab) {
-                    TerminalEmulator* term = nullptr;
-                    Terminal* fp = tab->focusedPane();
-                    term = fp;
+                    Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
+                    TerminalEmulator* term = fp;
                     if (term && term->mouseReportingActive()) {
-                        PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
+                        Rect pr = fp ? fp->rect() : Rect{0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_)};
                         double lastCursorX = inputController_ ? inputController_->lastCursorX() : 0.0;
                         double lastCursorY = inputController_ ? inputController_->lastCursorY() : 0.0;
                         uint32_t lastMods = inputController_ ? inputController_->lastMods() : 0u;
@@ -622,10 +554,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 windowHasFocus_ = focused;
                 renderThread_->pending().focusChanged = true;
                 setNeedsRedraw();
-                auto t = activeTab();
-                if (!t) return;
-                if (t->valid()) {
-                    if (Terminal* fp = t->focusedPane()) fp->focusEvent(focused);
+                if (auto t = activeTab()) {
+                    if (Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*t)) fp->focusEvent(focused);
                 }
                 setNeedsRedraw();
             };
@@ -689,16 +619,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             baseFontSize_ = fontSize_;
         }
 
-        {
-            AnimationScheduler::Host h;
-            h.eventLoop = eventLoop_.get();
-            h.onRedraw = [this]() { setNeedsRedraw(); };
-            h.onBlinkTick = [this]() { onBlinkTick(); };
-            h.onResizeDebounceFire = [this](uint32_t w, uint32_t rh) {
-                onResizeDebounceFire(w, rh);
-            };
-            animScheduler_ = std::make_unique<AnimationScheduler>(std::move(h));
-        }
+        animScheduler_ = std::make_unique<AnimationScheduler>(this);
 
         // Load font
         std::string fontPath;
@@ -925,11 +846,9 @@ void PlatformDawn::invalidateAllRowCaches()
     // The render-private maps are only touched by the render thread, so we
     // communicate via the pending mutations flag.
     renderThread_->pending().invalidateAllRowCaches = true;
-    for (Tab tab : tabs()) {
-        if (tab.valid()) {
-            for (Terminal* panePtr : tab.panes())
-                renderThread_->pending().dirtyPanes.insert(panePtr->id());
-        }
+    for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
+        for (Terminal* panePtr : scriptEngine_.panesInSubtree(sub))
+            renderThread_->pending().dirtyPanes.insert(panePtr->id());
     }
 }
 
@@ -1026,8 +945,7 @@ void PlatformDawn::onBlinkTick()
     auto wantsRedraw = [](TerminalEmulator* term) {
         return term && term->cursorBlinking() && term->cursorVisible();
     };
-    if (!tab->valid()) return;
-    for (Terminal* panePtr : tab->panes()) {
+    for (Terminal* panePtr : scriptEngine_.panesInSubtree(*tab)) {
         if (wantsRedraw(panePtr)) {
             setNeedsRedraw();
             return;
@@ -1058,7 +976,7 @@ void PlatformDawn::onResizeDebounceFire(uint32_t w, uint32_t h)
         tabBarDirty_ = true;
     }
     setNeedsRedraw();
-    wakeRenderThread();
+    renderThread_->wake();
 }
 
 void PlatformDawn::applyConfig(const Config& config)
@@ -1127,9 +1045,8 @@ void PlatformDawn::applyConfig(const Config& config)
     }
     commandDimFactor_ = std::clamp(config.command_dim_factor, 0.0f, 1.0f);
     commandNavigationWrap_ = config.command_navigation_wrap;
-    for (Tab t : tabs()) {
-        if (t.valid()) t.setDividerPixels(dividerWidth_);
-    }
+    // dividerPixels is engine-global — one call covers all tabs.
+    scriptEngine_.setDividerPixels(dividerWidth_);
     opts.dividerWidth = config.divider_width;
     opts.dividerColor = config.divider_color;
     bool dividerChanged = (dividerWidth_ != oldDividerWidth);
@@ -1292,8 +1209,7 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     dividersDirty_ = true;
 
     // Clear divider buffers for all tabs — geometry is now stale
-    auto allTabs = tabs();
-    for (Tab& t : allTabs) clearDividers(t);
+    for (Uuid sub : scriptEngine_.tabSubtreeRoots()) clearDividers(sub);
 
     // Fb change isn't a tree mutation but still invalidates all rects. Mark
     // dirty so runLayoutIfDirty (invoked from buildRenderFrameState next

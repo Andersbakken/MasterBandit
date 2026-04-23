@@ -11,13 +11,13 @@
 namespace {
 
 // Convenience: read a rect if present, else {} so tests can assert on absence.
-LayoutRect rectOf(const std::unordered_map<Uuid, LayoutRect, UuidHash>& map, Uuid id)
+Rect rectOf(const std::unordered_map<Uuid, Rect, UuidHash>& map, Uuid id)
 {
     auto it = map.find(id);
-    return it == map.end() ? LayoutRect{} : it->second;
+    return it == map.end() ? Rect{} : it->second;
 }
 
-bool isPresent(const std::unordered_map<Uuid, LayoutRect, UuidHash>& map, Uuid id)
+bool isPresent(const std::unordered_map<Uuid, Rect, UuidHash>& map, Uuid id)
 {
     return map.count(id) > 0;
 }
@@ -39,7 +39,7 @@ TEST_CASE("LayoutTree: single Terminal as root fills the window")
 
     auto m = t.computeRects({0, 0, 800, 600}, 1, 1);
     CHECK(m.size() == 1);
-    CHECK(rectOf(m, term) == LayoutRect{0, 0, 800, 600});
+    CHECK(rectOf(m, term) == Rect{0, 0, 800, 600});
 }
 
 TEST_CASE("LayoutTree: horizontal container with equal stretch splits evenly")
@@ -56,9 +56,9 @@ TEST_CASE("LayoutTree: horizontal container with equal stretch splits evenly")
 
     auto m = t.computeRects({0, 0, 300, 100}, 1, 1);
     CHECK(m.size() == 4);
-    CHECK(rectOf(m, a) == LayoutRect{  0, 0, 100, 100});
-    CHECK(rectOf(m, b) == LayoutRect{100, 0, 100, 100});
-    CHECK(rectOf(m, c) == LayoutRect{200, 0, 100, 100});
+    CHECK(rectOf(m, a) == Rect{  0, 0, 100, 100});
+    CHECK(rectOf(m, b) == Rect{100, 0, 100, 100});
+    CHECK(rectOf(m, c) == Rect{200, 0, 100, 100});
 }
 
 TEST_CASE("LayoutTree: stretch factors distribute remaining space proportionally")
@@ -74,9 +74,9 @@ TEST_CASE("LayoutTree: stretch factors distribute remaining space proportionally
     REQUIRE(t.appendChild(root, ChildSlot{c, 1}));
 
     auto m = t.computeRects({0, 0, 400, 100}, 1, 1);
-    CHECK(rectOf(m, a) == LayoutRect{  0, 0, 100, 100});
-    CHECK(rectOf(m, b) == LayoutRect{100, 0, 200, 100});
-    CHECK(rectOf(m, c) == LayoutRect{300, 0, 100, 100});
+    CHECK(rectOf(m, a) == Rect{  0, 0, 100, 100});
+    CHECK(rectOf(m, b) == Rect{100, 0, 200, 100});
+    CHECK(rectOf(m, c) == Rect{300, 0, 100, 100});
 }
 
 TEST_CASE("LayoutTree: fixed-size child pins its dimension, rest stretches")
@@ -92,8 +92,8 @@ TEST_CASE("LayoutTree: fixed-size child pins its dimension, rest stretches")
     REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
 
     auto m = t.computeRects({0, 0, 200, 50}, 1, 1);
-    CHECK(rectOf(m, a) == LayoutRect{ 0, 0,  50, 50});
-    CHECK(rectOf(m, b) == LayoutRect{50, 0, 150, 50});
+    CHECK(rectOf(m, a) == Rect{ 0, 0,  50, 50});
+    CHECK(rectOf(m, b) == Rect{50, 0, 150, 50});
 }
 
 TEST_CASE("LayoutTree: vertical container stacks children top to bottom")
@@ -107,8 +107,8 @@ TEST_CASE("LayoutTree: vertical container stacks children top to bottom")
     REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
 
     auto m = t.computeRects({10, 20, 400, 200}, 1, 1);
-    CHECK(rectOf(m, a) == LayoutRect{10,  20, 400, 100});
-    CHECK(rectOf(m, b) == LayoutRect{10, 120, 400, 100});
+    CHECK(rectOf(m, a) == Rect{10,  20, 400, 100});
+    CHECK(rectOf(m, b) == Rect{10, 120, 400, 100});
 }
 
 TEST_CASE("LayoutTree: min cells clamps a child above its stretch share")
@@ -123,8 +123,8 @@ TEST_CASE("LayoutTree: min cells clamps a child above its stretch share")
     REQUIRE(t.appendChild(root, ChildSlot{b, 1, 0,  0, 0}));
 
     auto m = t.computeRects({0, 0, 100, 50}, 1, 1);
-    CHECK(rectOf(m, a) == LayoutRect{ 0, 0, 80, 50});
-    CHECK(rectOf(m, b) == LayoutRect{80, 0, 20, 50});
+    CHECK(rectOf(m, a) == Rect{ 0, 0, 80, 50});
+    CHECK(rectOf(m, b) == Rect{80, 0, 20, 50});
 }
 
 TEST_CASE("LayoutTree: max cells caps a child below its stretch share")
@@ -140,8 +140,8 @@ TEST_CASE("LayoutTree: max cells caps a child below its stretch share")
     REQUIRE(t.appendChild(root, ChildSlot{b, 1, 0,  0, 0}));
 
     auto m = t.computeRects({0, 0, 100, 50}, 1, 1);
-    CHECK(rectOf(m, a) == LayoutRect{ 0, 0, 20, 50});
-    CHECK(rectOf(m, b) == LayoutRect{20, 0, 80, 50});
+    CHECK(rectOf(m, a) == Rect{ 0, 0, 20, 50});
+    CHECK(rectOf(m, b) == Rect{20, 0, 80, 50});
 }
 
 TEST_CASE("LayoutTree: zero-stretch child collapses to min; nonzero-stretch takes the rest")
@@ -155,8 +155,8 @@ TEST_CASE("LayoutTree: zero-stretch child collapses to min; nonzero-stretch take
     REQUIRE(t.appendChild(root, ChildSlot{b, 1,  0, 0, 0}));
 
     auto m = t.computeRects({0, 0, 200, 50}, 1, 1);
-    CHECK(rectOf(m, a) == LayoutRect{ 0, 0,  30, 50});
-    CHECK(rectOf(m, b) == LayoutRect{30, 0, 170, 50});
+    CHECK(rectOf(m, a) == Rect{ 0, 0,  30, 50});
+    CHECK(rectOf(m, b) == Rect{30, 0, 170, 50});
 }
 
 TEST_CASE("LayoutTree: overflow clips trailing children to zero (and they drop from the map)")
@@ -175,8 +175,8 @@ TEST_CASE("LayoutTree: overflow clips trailing children to zero (and they drop f
     auto m = t.computeRects({0, 0, 80, 50}, 1, 1);
     // `a` keeps its full 50. `b` would be 50 but that overflows, so it gets
     // shrunk to the remaining 30 (shrink-below-min after clipping `c`).
-    CHECK(rectOf(m, a) == LayoutRect{ 0, 0, 50, 50});
-    CHECK(rectOf(m, b) == LayoutRect{50, 0, 30, 50});
+    CHECK(rectOf(m, a) == Rect{ 0, 0, 50, 50});
+    CHECK(rectOf(m, b) == Rect{50, 0, 30, 50});
     CHECK_FALSE(isPresent(m, c));
 }
 
@@ -194,15 +194,15 @@ TEST_CASE("LayoutTree: Stack shows only its active child, others are absent")
 
     // First-appended child defaulted to active.
     auto m = t.computeRects({0, 0, 200, 100}, 1, 1);
-    CHECK(rectOf(m, stack) == LayoutRect{0, 0, 200, 100});
-    CHECK(rectOf(m, a) == LayoutRect{0, 0, 200, 100});
+    CHECK(rectOf(m, stack) == Rect{0, 0, 200, 100});
+    CHECK(rectOf(m, a) == Rect{0, 0, 200, 100});
     CHECK_FALSE(isPresent(m, b));
     CHECK_FALSE(isPresent(m, c));
 
     // Switch active and re-layout.
     REQUIRE(t.setActiveChild(stack, c));
     m = t.computeRects({0, 0, 200, 100}, 1, 1);
-    CHECK(rectOf(m, c) == LayoutRect{0, 0, 200, 100});
+    CHECK(rectOf(m, c) == Rect{0, 0, 200, 100});
     CHECK_FALSE(isPresent(m, a));
     CHECK_FALSE(isPresent(m, b));
 }
@@ -215,7 +215,7 @@ TEST_CASE("LayoutTree: empty Stack just emits its own rect")
 
     auto m = t.computeRects({0, 0, 200, 100}, 1, 1);
     CHECK(m.size() == 1);
-    CHECK(rectOf(m, stack) == LayoutRect{0, 0, 200, 100});
+    CHECK(rectOf(m, stack) == Rect{0, 0, 200, 100});
 }
 
 TEST_CASE("LayoutTree: nested containers — splitv inside splith")
@@ -238,11 +238,11 @@ TEST_CASE("LayoutTree: nested containers — splitv inside splith")
     REQUIRE(t.appendChild(inner, ChildSlot{bot,   1}));
 
     auto m = t.computeRects({0, 0, 400, 200}, 1, 1);
-    CHECK(rectOf(m, root)  == LayoutRect{  0,   0, 400, 200});
-    CHECK(rectOf(m, left)  == LayoutRect{  0,   0, 200, 200});
-    CHECK(rectOf(m, inner) == LayoutRect{200,   0, 200, 200});
-    CHECK(rectOf(m, top)   == LayoutRect{200,   0, 200, 100});
-    CHECK(rectOf(m, bot)   == LayoutRect{200, 100, 200, 100});
+    CHECK(rectOf(m, root)  == Rect{  0,   0, 400, 200});
+    CHECK(rectOf(m, left)  == Rect{  0,   0, 200, 200});
+    CHECK(rectOf(m, inner) == Rect{200,   0, 200, 200});
+    CHECK(rectOf(m, top)   == Rect{200,   0, 200, 100});
+    CHECK(rectOf(m, bot)   == Rect{200, 100, 200, 100});
 }
 
 TEST_CASE("LayoutTree: TabBar treated as a plain leaf occupying its slot")
@@ -262,9 +262,9 @@ TEST_CASE("LayoutTree: TabBar treated as a plain leaf occupying its slot")
     REQUIRE(t.setTabBarStack(bar, stk));
 
     auto m = t.computeRects({0, 0, 400, 200}, 1, 1);
-    CHECK(rectOf(m, bar) == LayoutRect{0,  0, 400,  20});
-    CHECK(rectOf(m, stk) == LayoutRect{0, 20, 400, 180});
-    CHECK(rectOf(m, ws1) == LayoutRect{0, 20, 400, 180});
+    CHECK(rectOf(m, bar) == Rect{0,  0, 400,  20});
+    CHECK(rectOf(m, stk) == Rect{0, 20, 400, 180});
+    CHECK(rectOf(m, ws1) == Rect{0, 20, 400, 180});
 }
 
 TEST_CASE("LayoutTree: cell size > 1 scales the sizing math")
@@ -281,8 +281,8 @@ TEST_CASE("LayoutTree: cell size > 1 scales the sizing math")
     REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
 
     auto m = t.computeRects({0, 0, 200, 40}, 8, 16);
-    CHECK(rectOf(m, a) == LayoutRect{ 0, 0,  80, 40});
-    CHECK(rectOf(m, b) == LayoutRect{80, 0, 120, 40});
+    CHECK(rectOf(m, a) == Rect{ 0, 0,  80, 40});
+    CHECK(rectOf(m, b) == Rect{80, 0, 120, 40});
 }
 
 TEST_CASE("LayoutTree: appendChild rejects second parent for the same node")
@@ -327,7 +327,7 @@ TEST_CASE("LayoutTree: destroyNode tears down the subtree and clears dangling st
     // `a` survives; root now has only one child (`a`).
     REQUIRE(t.node(root) != nullptr);
     auto m = t.computeRects({0, 0, 100, 50}, 1, 1);
-    CHECK(rectOf(m, a) == LayoutRect{0, 0, 100, 50});
+    CHECK(rectOf(m, a) == Rect{0, 0, 100, 50});
     CHECK_FALSE(isPresent(m, inner));
 }
 
@@ -356,7 +356,7 @@ TEST_CASE("LayoutTree: removing a stack's active child promotes the new front to
     REQUIRE(t.removeChild(stk, a));
 
     auto m = t.computeRects({0, 0, 200, 100}, 1, 1);
-    CHECK(rectOf(m, b) == LayoutRect{0, 0, 200, 100});
+    CHECK(rectOf(m, b) == Rect{0, 0, 200, 100});
 }
 
 TEST_CASE("LayoutTree: contains walks parent chain")
@@ -411,16 +411,16 @@ TEST_CASE("LayoutTree: dividersIn emits rects between visible siblings")
     REQUIRE(t.appendChild(root, ChildSlot{c, 1}));
 
     auto rects = t.computeRects({0, 0, 300, 100}, 1, 1);
-    std::vector<std::pair<Uuid, LayoutRect>> divs;
+    std::vector<std::pair<Uuid, Rect>> divs;
     t.dividersIn(root, 2, rects, divs);
 
     REQUIRE(divs.size() == 2);
     // First divider between a and b. Owner = a.
     CHECK(divs[0].first == a);
-    CHECK(divs[0].second == LayoutRect{100, 0, 2, 100});
+    CHECK(divs[0].second == Rect{100, 0, 2, 100});
     // Second divider between b and c. Owner = b.
     CHECK(divs[1].first == b);
-    CHECK(divs[1].second == LayoutRect{200, 0, 2, 100});
+    CHECK(divs[1].second == Rect{200, 0, 2, 100});
 }
 
 TEST_CASE("LayoutTree: dividersIn follows only active Stack child")
@@ -443,7 +443,7 @@ TEST_CASE("LayoutTree: dividersIn follows only active Stack child")
     // `visible` was auto-activated by first appendChild.
 
     auto rects = t.computeRects({0, 0, 200, 50}, 1, 1);
-    std::vector<std::pair<Uuid, LayoutRect>> divs;
+    std::vector<std::pair<Uuid, Rect>> divs;
     t.dividersIn(stk, 1, rects, divs);
 
     // Only the visible Container's a/b boundary should produce a divider.
@@ -530,19 +530,19 @@ TEST_CASE("LayoutTree: Stack zoomTarget routes the Stack's rect to the target")
 
     // Sanity: without zoom both siblings share the rect.
     auto m0 = t.computeRects({0, 0, 200, 100}, 1, 1);
-    CHECK(rectOf(m0, a) == LayoutRect{  0, 0, 100, 100});
-    CHECK(rectOf(m0, b) == LayoutRect{100, 0, 100, 100});
+    CHECK(rectOf(m0, a) == Rect{  0, 0, 100, 100});
+    CHECK(rectOf(m0, b) == Rect{100, 0, 100, 100});
 
     // Zoom `a` — the Stack's entire rect goes to a, b is missing.
     REQUIRE(t.setStackZoom(stk, a));
     auto m1 = t.computeRects({0, 0, 200, 100}, 1, 1);
-    CHECK(rectOf(m1, a) == LayoutRect{0, 0, 200, 100});
+    CHECK(rectOf(m1, a) == Rect{0, 0, 200, 100});
     CHECK(m1.find(b) == m1.end());
 
     // Clear: back to the split.
     REQUIRE(t.setStackZoom(stk, Uuid{}));
     auto m2 = t.computeRects({0, 0, 200, 100}, 1, 1);
-    CHECK(rectOf(m2, b) == LayoutRect{100, 0, 100, 100});
+    CHECK(rectOf(m2, b) == Rect{100, 0, 100, 100});
 }
 
 TEST_CASE("LayoutTree: setStackZoom rejects targets outside the Stack's subtree")
@@ -597,5 +597,5 @@ TEST_CASE("LayoutTree: collapseSingletonsAbove folds single-child Containers")
     CHECK(t.node(wrap1) == nullptr);
     CHECK(t.node(wrap2) == nullptr);
     auto rects = t.computeRects({0, 0, 100, 50}, 1, 1);
-    CHECK(rectOf(rects, leaf) == LayoutRect{0, 0, 100, 50});
+    CHECK(rectOf(rects, leaf) == Rect{0, 0, 100, 50});
 }

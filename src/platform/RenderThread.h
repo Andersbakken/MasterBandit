@@ -14,44 +14,27 @@ class Terminal;
 
 // Owns the render worker thread, the cross-thread mutation queues, and the
 // synchronization primitives that connect the main thread to the render
-// thread. Constructed by PlatformDawn early in its ctor (before any
-// component whose Host captures mutex()/pending()/renderState()), wired
-// via setHost() after the collaborators exist, started from
-// createTerminal(), stopped from ~PlatformDawn.
+// thread. Constructed by PlatformDawn early in its ctor, wired via
+// setPlatform() after the collaborators exist, started from createTerminal(),
+// stopped from ~PlatformDawn.
 class PlatformDawn;
 
 class RenderThread {
-    // PlatformDawn is the only legitimate caller of mutex()/pending()/
-    // renderState(); those are coordination primitives, not public API.
-    // Other components receive raw pointers into this state via their
-    // Host wiring, which PlatformDawn sets up at construction time.
+    // mutex()/pending()/renderState() are coordination primitives, not
+    // public API. PlatformDawn and InputController are the only legitimate
+    // callers — they reach in through their own `platform_->renderThread_`
+    // pointer.
     friend class PlatformDawn;
+    friend class InputController;
 
 public:
-    struct Host {
-        // Main-thread event loop; created lazily by createTerminal().
-        std::function<EventLoop*()> eventLoop;
-
-        // Invoked on the render thread each iteration after wake.
-        // Currently wraps renderEngine_->device().Tick() + renderFrame().
-        std::function<void()> onFrame;
-
-        // Called from applyPendingMutations under mutex(), after pending_
-        // flags are transferred into renderState_, to rebuild the tab/pane
-        // shadow copy. Expected to be PlatformDawn::buildRenderFrameState().
-        std::function<void()> buildRenderFrameState;
-
-        // Route a drained terminal exit back to structural cleanup.
-        std::function<void(Terminal*)> onTerminalExit;
-    };
-
     RenderThread();
     ~RenderThread();
 
     RenderThread(const RenderThread&) = delete;
     RenderThread& operator=(const RenderThread&) = delete;
 
-    void setHost(Host host) { host_ = std::move(host); }
+    void setPlatform(PlatformDawn* p) { platform_ = p; }
 
     // Lifecycle
     void start();
@@ -103,7 +86,7 @@ private:
 
     void threadMain();
 
-    Host host_;
+    PlatformDawn* platform_ = nullptr;
 
     // Coarse mutex serializing render-thread reads against main-thread
     // structural mutations (tab/pane/popup create/destroy, tab switch,

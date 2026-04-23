@@ -8,10 +8,9 @@
 #include <eventloop/EventLoop.h>
 #include <eventloop/Window.h>
 
-#include "Tab.h"
+#include "Uuid.h"
 
 #include <cstdint>
-#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -19,66 +18,23 @@
 #include <vector>
 
 namespace Script { class Engine; }
+class PlatformDawn;
 class TerminalEmulator;
 
-// Owns keyboard and mouse input state and dispatch logic.  Constructed by
-// PlatformDawn, wired up via setHost(Host).  Window backend callbacks in
-// PlatformDawn forward raw events here.  Input handlers take the platform
-// mutex via Host::platformMutex() exactly where the original code did.
+// Owns keyboard and mouse input state and dispatch logic. Constructed by
+// PlatformDawn, wired via setPlatform(PlatformDawn*). Window backend callbacks
+// in PlatformDawn forward raw events here. Handlers take the platform mutex
+// (through platform_->renderThread_->mutex()) at the same sites the original
+// code did.
 class InputController {
 public:
-    struct Host {
-        std::recursive_mutex* platformMutex = nullptr;
-        Script::Engine* scriptEngine = nullptr;
-
-        // EventLoop / Window exist only after createTerminal() initializes them;
-        // we read them through getters so the same Host survives construction.
-        std::function<EventLoop*()> eventLoop;
-        std::function<Window*()> window;
-
-        // Active-tab / focused-terminal accessors (caller has locked platformMutex_).
-        std::function<std::optional<Tab>()> activeTab;
-        std::function<TerminalEmulator*()> activeTerm;
-
-        // Active tab index read / write — for switching tabs via mouse.
-        std::function<int()> activeTabIdx;
-
-        // Dispatch a resolved action.  Called under platformMutex_.
-        std::function<void(const Action::Any&)> dispatchAction;
-
-        // Redraw + cursor blink reset.
-        std::function<void()> setNeedsRedraw;
-        std::function<void()> resetBlink;
-
-        // Current framebuffer / padding / cell metrics (caller has lock).
-        std::function<uint32_t()> fbWidth;
-        std::function<uint32_t()> fbHeight;
-        std::function<float()> charWidth;
-        std::function<float()> lineHeight;
-        std::function<float()> contentScaleX;
-        std::function<float()> contentScaleY;
-        std::function<float()> padLeft;
-        std::function<float()> padTop;
-
-        // Tab bar geometry / visibility for hit-testing.
-        std::function<bool()> tabBarVisible;
-        std::function<float()> tabBarCharWidth;
-        std::function<const std::vector<std::pair<int,int>>&()> tabBarColRanges;
-
-        // Focus change notification into PlatformDawn.
-        std::function<void(Tab, Uuid prevId, Uuid newId)> notifyPaneFocusChange;
-        std::function<void(int tabIdx)> updateTabTitleFromFocusedPane;
-
-        bool headless = false;
-    };
-
     InputController();
     ~InputController();
 
     InputController(const InputController&) = delete;
     InputController& operator=(const InputController&) = delete;
 
-    void setHost(Host host) { host_ = std::move(host); }
+    void setPlatform(PlatformDawn* p) { platform_ = p; }
 
     // Raw input handlers (called from Window callbacks in PlatformDawn).
     void onKey(int key, int scancode, int action, int mods);
@@ -133,7 +89,7 @@ private:
     void stopAutoScroll();
     void doAutoScroll();
 
-    Host host_;
+    PlatformDawn* platform_ = nullptr;
 
     std::vector<Binding> bindings_;
     SequenceMatcher sequenceMatcher_;

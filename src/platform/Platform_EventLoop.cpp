@@ -20,8 +20,8 @@ int PlatformDawn::exec()
             [this]() -> Terminal* { return activeTerm(); },
             [this](int id) {
                 auto t = activeTab();
-                if (!t || !t->valid()) return std::string{};
-                Terminal* pane = t->focusedPane();
+                if (!t) return std::string{};
+                Terminal* pane = scriptEngine_.focusedTerminalInSubtree(*t);
                 return pane ? gridToJson(pane->id()) : std::string{};
             },
             [this](int id) { return statsJson(id); },
@@ -42,35 +42,16 @@ int PlatformDawn::exec()
     {
         Script::AppCallbacks scbs;
         scbs.injectPaneData = [this](Script::PaneId paneId, const std::string& data) {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    p->injectData(data.c_str(), data.size());
-                    return;
-                }
-            }
+            if (Terminal* p = scriptEngine_.terminal(paneId)) p->injectData(data.c_str(), data.size());
         };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    p->writeText(data);
-                    return;
-                }
-            }
+            if (Terminal* p = scriptEngine_.terminal(paneId)) p->writeText(data);
         };
         scbs.pastePaneText = [this](Script::PaneId paneId, const std::string& data) {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    p->pasteText(data);
-                    return;
-                }
-            }
+            if (Terminal* p = scriptEngine_.terminal(paneId)) p->pasteText(data);
         };
         scbs.paneHasPty = [this](Script::PaneId paneId) -> bool {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    return p->masterFD() >= 0;
-                }
-            }
+            if (Terminal* p = scriptEngine_.terminal(paneId)) return p->masterFD() >= 0;
             return false;
         };
         scbs.hasActiveTab = [this]() -> bool {
@@ -83,9 +64,8 @@ int PlatformDawn::exec()
             return true;
         };
         scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    bool isFocused = tab.focusedPaneId() == paneId;
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                    bool isFocused = scriptEngine_.focusedTerminalNodeId() == paneId;
                     Script::AppCallbacks::PaneInfo info {
                         p->width(), p->height(),
                         p->title(), p->cwd(),
@@ -122,7 +102,7 @@ int PlatformDawn::exec()
                     }
                     // Mouse position relative to this pane
                     if (inputController_) {
-                        PaneRect pr = p->rect();
+                        Rect pr = p->rect();
                         double sx = inputController_->lastCursorX() * contentScaleX_;
                         double sy = inputController_->lastCursorY() * contentScaleY_;
                         double relX = sx - pr.x;
@@ -136,87 +116,73 @@ int PlatformDawn::exec()
                         }
                     }
                     return info;
-                }
             }
             return {};
         };
         scbs.paneCommands = [this](Script::PaneId paneId, int limit) -> std::vector<Script::CommandInfo> {
             std::vector<Script::CommandInfo> result;
-            for (Tab tab : tabs()) {
-                Terminal* te = tab.valid() ? tab.pane(paneId) : nullptr;
-                if (!te) continue;
-                const auto& ring = te->commands();
-                const auto& doc  = te->document();
-                // Walk backwards collecting completed records — this avoids the
-                // bug where an in-flight record at the ring's tail would be the
-                // "slice window" and then get filtered out, producing an empty
-                // list even though earlier completed records exist.
-                for (auto it = ring.rbegin(); it != ring.rend(); ++it) {
-                    if (!it->complete) continue;
-                    if (limit > 0 && result.size() >= static_cast<size_t>(limit)) break;
-                    const auto& r = *it;
-                    Script::CommandInfo info{
-                        r.id, r.cwd, r.exitCode,
-                        r.startMs, r.endMs,
-                        r.promptStartLineId, r.commandStartLineId,
-                        r.outputStartLineId, r.outputEndLineId,
-                        doc.firstAbsOfLine(r.promptStartLineId),  r.promptStartCol,
-                        doc.firstAbsOfLine(r.commandStartLineId), r.commandStartCol,
-                        doc.firstAbsOfLine(r.outputStartLineId),  r.outputStartCol,
-                        doc.lastAbsOfLine(r.outputEndLineId),     r.outputEndCol
-                    };
-                    result.push_back(std::move(info));
-                }
-                // Callers expect most-recent-last. We collected most-recent-first, so flip.
-                std::reverse(result.begin(), result.end());
-                break;
+            Terminal* te = scriptEngine_.terminal(paneId);
+            if (!te) return result;
+            const auto& ring = te->commands();
+            const auto& doc  = te->document();
+            // Walk backwards collecting completed records — this avoids the
+            // bug where an in-flight record at the ring's tail would be the
+            // "slice window" and then get filtered out, producing an empty
+            // list even though earlier completed records exist.
+            for (auto it = ring.rbegin(); it != ring.rend(); ++it) {
+                if (!it->complete) continue;
+                if (limit > 0 && result.size() >= static_cast<size_t>(limit)) break;
+                const auto& r = *it;
+                Script::CommandInfo info{
+                    r.id, r.cwd, r.exitCode,
+                    r.startMs, r.endMs,
+                    r.promptStartLineId, r.commandStartLineId,
+                    r.outputStartLineId, r.outputEndLineId,
+                    doc.firstAbsOfLine(r.promptStartLineId),  r.promptStartCol,
+                    doc.firstAbsOfLine(r.commandStartLineId), r.commandStartCol,
+                    doc.firstAbsOfLine(r.outputStartLineId),  r.outputStartCol,
+                    doc.lastAbsOfLine(r.outputEndLineId),     r.outputEndCol
+                };
+                result.push_back(std::move(info));
             }
+            // Callers expect most-recent-last. We collected most-recent-first, so flip.
+            std::reverse(result.begin(), result.end());
             return result;
         };
         scbs.paneSetSelectedCommand = [this](Script::PaneId paneId, std::optional<uint64_t> id) -> bool {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    p->setSelectedCommand(id);
-                    return !id.has_value() || p->selectedCommandId() == id;
-                }
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                p->setSelectedCommand(id);
+                return !id.has_value() || p->selectedCommandId() == id;
             }
             return false;
         };
         scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startLineId, int startCol,
                                   uint64_t endLineId, int endCol) -> std::string {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    return p->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
-                }
-            }
+            if (Terminal* p = scriptEngine_.terminal(paneId))
+                return p->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
             return {};
         };
         scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    const auto& doc = p->document();
-                    if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
-                    int abs = doc.historySize() + screenRow;
-                    return doc.lineIdForAbs(abs);
-                }
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                const auto& doc = p->document();
+                if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
+                int abs = doc.historySize() + screenRow;
+                return doc.lineIdForAbs(abs);
             }
             return std::nullopt;
         };
         scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo> {
             std::vector<Script::AppCallbacks::TabInfo> result;
-            auto allTabs = tabs();
-            int active = activeTabIdx();
+            auto allTabs = scriptEngine_.tabSubtreeRoots();
+            int active = scriptEngine_.activeTabIndex();
             for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
-                Tab& t = allTabs[i];
+                Uuid sub = allTabs[i];
                 Script::AppCallbacks::TabInfo ti;
                 ti.id = i;
                 ti.active = (i == active);
-                ti.focusedPane = t.valid() ? t.focusedPaneId() : Uuid{};
-                if (t.valid()) {
-                    for (Terminal* p : t.panes())
-                        ti.panes.push_back(p->nodeId());
-                }
-                Uuid sub = t.subtreeRoot();
+                ti.focusedPane = scriptEngine_.focusedPaneInSubtree(sub);
+                for (Terminal* p : scriptEngine_.panesInSubtree(sub))
+                    ti.panes.push_back(p->nodeId());
                 if (!sub.isNil()) ti.nodeId = sub.toString();
                 result.push_back(std::move(ti));
             }
@@ -273,7 +239,7 @@ int PlatformDawn::exec()
             if (u.isNil()) return false;
             int tabIdx = -1;
             auto tab = findTabForPane(u, &tabIdx);
-            if (!tab || !tab->valid()) return false;
+            if (!tab) return false;
             SplitDir axis;
             int pixelDelta;
             if (dir == "left") {
@@ -291,7 +257,7 @@ int PlatformDawn::exec()
             } else {
                 return false;
             }
-            if (!tab->resizePaneEdge(u, axis, pixelDelta)) return false;
+            if (!scriptEngine_.resizeTabPaneEdge(*tab, u, axis, pixelDelta)) return false;
             resizeAllPanesInTab(*tab);
             return true;
         };
@@ -308,21 +274,17 @@ int PlatformDawn::exec()
             if (!tree.setStackZoom(stackId, targetId)) return false;
             // Trigger resize cascade on the enclosing tab so terminals pick
             // up the new rects (shrunk siblings, zoom target expanded).
-            auto tab = findTabForNode(stackId);
-            if (tab && tab->valid()) resizeAllPanesInTab(*tab);
+            if (auto tab = findTabForNode(stackId)) resizeAllPanesInTab(*tab);
             return true;
         };
         scbs.panePopups = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::PopupInfo> {
             std::vector<Script::AppCallbacks::PopupInfo> result;
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    const std::string& focusedId = p->focusedPopupId();
-                    for (const auto& popup : p->popups()) {
-                        result.push_back({popup->popupId(), popup->cellX(), popup->cellY(),
-                                          popup->cellW(), popup->cellH(),
-                                          popup->popupId() == focusedId});
-                    }
-                    break;
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                const std::string& focusedId = p->focusedPopupId();
+                for (const auto& popup : p->popups()) {
+                    result.push_back({popup->popupId(), popup->cellX(), popup->cellY(),
+                                      popup->cellW(), popup->cellH(),
+                                      popup->popupId() == focusedId});
                 }
             }
             return result;
@@ -330,131 +292,110 @@ int PlatformDawn::exec()
         scbs.createPopup = [this](Script::PaneId paneId, const std::string& popupId,
                                    int x, int y, int w, int h,
                                    std::function<void(const char*, size_t)> onInput) -> bool {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    PlatformCallbacks pcbs;
-                    pcbs.onTerminalExited = [](Terminal*) {};
-                    pcbs.quit = [this]() { quit(); };
-                    pcbs.onInput = std::move(onInput);
-                    if (p->createPopup(popupId, x, y, w, h, std::move(pcbs))) {
-                        // Queue popup render state creation
-                        renderThread_->pending().structuralOps.push_back(
-                            PendingMutations::CreatePopupState{paneId, popupId, w, h});
-                        // Dirty all popup render states for this pane on any content change.
-                        p->onPopupEvent = [this, paneId]() {
-                            renderThread_->pending().dirtyPanes.insert(paneId);
-                            setNeedsRedraw();
-                        };
-                        // Dirty parent pane so the popup composite entry is added
-                        renderThread_->pending().dirtyPanes.insert(paneId);
-                        setNeedsRedraw();
-                        return true;
-                    }
-                    return false;
-                }
-            }
-            return false;
-        };
-        scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
-            for (Tab tab : tabs()) {
-                Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr;
-                if (!p) continue;
-                bool wasPopupFocused = (p->focusedPopupId() == popupId);
-
-                // Extract the popup and stage it into the graveyard under
-                // the render-thread mutex. The mutex ensures the render
-                // thread isn't currently snapshotting, and the stamp taken
-                // now will be surpassed once the frame that may already
-                // hold a raw pointer to this popup's Terminal completes.
-                std::unique_ptr<Terminal> extracted;
-                uint64_t stamp = 0;
-                {
-                    std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                    extracted = p->extractPopup(popupId);
-                    if (!extracted) return;
-                    // Mirror the removal into the shadow copy so the next
-                    // snapshot doesn't hand the render thread a pointer
-                    // into the extracted (graveyard-bound) Terminal.
-                    for (auto& rpi : renderThread_->renderState().panes) {
-                        if (rpi.id != paneId) continue;
-                        auto& popups = rpi.popups;
-                        popups.erase(std::remove_if(popups.begin(), popups.end(),
-                            [&popupId](const RenderPanePopupInfo& pi) { return pi.id == popupId; }),
-                            popups.end());
-                        if (rpi.focusedPopupId == popupId) rpi.focusedPopupId.clear();
-                        break;
-                    }
-                    stamp = renderThread_->completedFrames();
-                }
-                graveyard_.defer(std::move(extracted), stamp);
-
-                if (wasPopupFocused && p->popups().empty())
-                    p->focusEvent(true);
-                p->grid().markAllDirty();
-                std::string key = popupStateKey(paneId, popupId);
-                renderThread_->pending().structuralOps.push_back(
-                    PendingMutations::DestroyPopupState{paneId, popupId});
-                renderThread_->pending().releasePopupTextures.push_back(key);
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p) return false;
+            PlatformCallbacks pcbs;
+            pcbs.onTerminalExited = [](Terminal*) {};
+            pcbs.quit = [this]() { quit(); };
+            pcbs.onInput = std::move(onInput);
+            if (!p->createPopup(popupId, x, y, w, h, std::move(pcbs))) return false;
+            // Queue popup render state creation
+            renderThread_->pending().structuralOps.push_back(
+                PendingMutations::CreatePopupState{paneId, popupId, w, h});
+            // Dirty all popup render states for this pane on any content change.
+            p->onPopupEvent = [this, paneId]() {
                 renderThread_->pending().dirtyPanes.insert(paneId);
                 setNeedsRedraw();
-                return;
+            };
+            // Dirty parent pane so the popup composite entry is added
+            renderThread_->pending().dirtyPanes.insert(paneId);
+            setNeedsRedraw();
+            return true;
+        };
+        scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p) return;
+            bool wasPopupFocused = (p->focusedPopupId() == popupId);
+
+            // Extract the popup and stage it into the graveyard under
+            // the render-thread mutex. The mutex ensures the render
+            // thread isn't currently snapshotting, and the stamp taken
+            // now will be surpassed once the frame that may already
+            // hold a raw pointer to this popup's Terminal completes.
+            std::unique_ptr<Terminal> extracted;
+            uint64_t stamp = 0;
+            {
+                std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
+                extracted = p->extractPopup(popupId);
+                if (!extracted) return;
+                // Mirror the removal into the shadow copy so the next
+                // snapshot doesn't hand the render thread a pointer
+                // into the extracted (graveyard-bound) Terminal.
+                for (auto& rpi : renderThread_->renderState().panes) {
+                    if (rpi.id != paneId) continue;
+                    auto& popups = rpi.popups;
+                    popups.erase(std::remove_if(popups.begin(), popups.end(),
+                        [&popupId](const RenderPanePopupInfo& pi) { return pi.id == popupId; }),
+                        popups.end());
+                    if (rpi.focusedPopupId == popupId) rpi.focusedPopupId.clear();
+                    break;
+                }
+                stamp = renderThread_->completedFrames();
             }
+            graveyard_.defer(std::move(extracted), stamp);
+
+            if (wasPopupFocused && p->popups().empty())
+                p->focusEvent(true);
+            p->grid().markAllDirty();
+            std::string key = popupStateKey(paneId, popupId);
+            renderThread_->pending().structuralOps.push_back(
+                PendingMutations::DestroyPopupState{paneId, popupId});
+            renderThread_->pending().releasePopupTextures.push_back(key);
+            renderThread_->pending().dirtyPanes.insert(paneId);
+            setNeedsRedraw();
         };
         scbs.resizePopup = [this](Script::PaneId paneId, const std::string& popupId,
                                    int x, int y, int w, int h) -> bool {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    if (p->resizePopup(popupId, x, y, w, h)) {
-                        p->grid().markAllDirty();
-                        // Queue popup render state resize
-                        renderThread_->pending().structuralOps.push_back(
-                            PendingMutations::ResizePopupState{paneId, popupId, w, h});
-                        std::string key = popupStateKey(paneId, popupId);
-                        renderThread_->pending().releasePopupTextures.push_back(key);
-                        setNeedsRedraw();
-                        return true;
-                    }
-                    return false;
-                }
-            }
-            return false;
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p || !p->resizePopup(popupId, x, y, w, h)) return false;
+            p->grid().markAllDirty();
+            renderThread_->pending().structuralOps.push_back(
+                PendingMutations::ResizePopupState{paneId, popupId, w, h});
+            std::string key = popupStateKey(paneId, popupId);
+            renderThread_->pending().releasePopupTextures.push_back(key);
+            setNeedsRedraw();
+            return true;
         };
         scbs.injectPopupData = [this](Script::PaneId paneId, const std::string& popupId,
                                        const std::string& data) {
-            for (Tab tab : tabs()) {
-                if (Terminal* p = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    if (Terminal* popup = p->findPopup(popupId)) {
-                        popup->injectData(data.c_str(), data.size());
-                        setNeedsRedraw();
-                    }
-                    return;
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                if (Terminal* popup = p->findPopup(popupId)) {
+                    popup->injectData(data.c_str(), data.size());
+                    setNeedsRedraw();
                 }
             }
         };
         scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string {
-            for (Tab tab : tabs()) {
-                if (Terminal* te = tab.valid() ? tab.pane(paneId) : nullptr) {
-                    const auto& doc = te->document();
-                    int abs = doc.firstAbsOfLine(lineId);
-                    if (abs < 0) return {};
-                    int screenRow = abs - doc.historySize();
-                    // getExtra works on screen rows; for history rows we need historyExtras
-                    const CellExtra* ex = nullptr;
-                    if (screenRow >= 0 && screenRow < te->height()) {
-                        ex = doc.getExtra(col, screenRow);
-                    } else if (abs < doc.historySize()) {
-                        auto* extras = doc.historyExtras(abs);
-                        if (extras) {
-                            auto it = extras->find(col);
-                            if (it != extras->end()) ex = &it->second;
-                        }
-                    }
-                    if (ex && ex->hyperlinkId) {
-                        const std::string* uri = te->hyperlinkURI(ex->hyperlinkId);
-                        if (uri) return *uri;
-                    }
-                    return {};
+            Terminal* te = scriptEngine_.terminal(paneId);
+            if (!te) return {};
+            const auto& doc = te->document();
+            int abs = doc.firstAbsOfLine(lineId);
+            if (abs < 0) return {};
+            int screenRow = abs - doc.historySize();
+            // getExtra works on screen rows; for history rows we need historyExtras
+            const CellExtra* ex = nullptr;
+            if (screenRow >= 0 && screenRow < te->height()) {
+                ex = doc.getExtra(col, screenRow);
+            } else if (abs < doc.historySize()) {
+                auto* extras = doc.historyExtras(abs);
+                if (extras) {
+                    auto it = extras->find(col);
+                    if (it != extras->end()) ex = &it->second;
                 }
+            }
+            if (ex && ex->hyperlinkId) {
+                const std::string* uri = te->hyperlinkURI(ex->hyperlinkId);
+                if (uri) return *uri;
             }
             return {};
         };
@@ -462,8 +403,9 @@ int PlatformDawn::exec()
             -> std::vector<Script::AppCallbacks::LinkInfo>
         {
             std::vector<Script::AppCallbacks::LinkInfo> result;
-            for (Tab tab : tabs()) {
-                if (Terminal* te = tab.valid() ? tab.pane(paneId) : nullptr) {
+            Terminal* te = scriptEngine_.terminal(paneId);
+            if (te) {
+                {
                     const auto& doc = te->document();
                     int startAbs = doc.firstAbsOfLine(startLineId);
                     int endAbs   = doc.lastAbsOfLine(endLineId);
@@ -569,10 +511,7 @@ int PlatformDawn::exec()
     // runs skip the initial apply and the file watch so tests get a clean
     // deterministic environment unaffected by the developer's ~/.config.
     if (configLoader_ && !isHeadless()) {
-        ConfigLoader::Host ch;
-        ch.eventLoop = eventLoop_.get();
-        ch.applyConfig = [this](const Config& c) { applyConfig(c); };
-        configLoader_->setHost(std::move(ch));
+        configLoader_->setPlatform(this);
         configLoader_->installFileWatch(configFilePath());
         configLoader_->reloadNow();
     }
@@ -595,9 +534,8 @@ int PlatformDawn::exec()
                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 // Advance progress animations
                 bool hasAnim = false;
-                for (Tab t : tabs()) {
-                    if (!t.valid()) continue;
-                    for (Terminal* panePtr : t.panes()) {
+                for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
+                    for (Terminal* panePtr : scriptEngine_.panesInSubtree(sub)) {
                         if (panePtr->progressState() == 3) { hasAnim = true; break; }
                     }
                     if (hasAnim) break;
@@ -622,14 +560,14 @@ int PlatformDawn::exec()
                 term->flushReadBuffer();
 
             // Drain deferred callbacks.
-            drainDeferredMain();         // title / icon / cwd / progress / etc.
+            renderThread_->drainDeferredMain();         // title / icon / cwd / progress / etc.
             scriptEngine_.executePendingJobs();
 
             // Apply all accumulated mutations to the shadow render state in
-            // one batch under renderThread_->mutex().  drainPendingExits() runs
+            // one batch under renderThread_->mutex().  renderThread_->drainPendingExits() runs
             // inside the lock so that terminal destruction can't race the
             // render thread's use of frameState_ term pointers.
-            applyPendingMutations();
+            renderThread_->applyPendingMutations();
 
             // Free graveyard entries whose stamp has been surpassed by a
             // completed render frame. Entries were staged from destroy
@@ -663,7 +601,7 @@ int PlatformDawn::exec()
             if (redraw ||
                 (debugIPC_ && debugIPC_->pngScreenshotPending()) ||
                 pendingCbs > 0) {
-                wakeRenderThread();
+                renderThread_->wake();
             }
 
             // If something during this tick requested another frame (e.g. animation),

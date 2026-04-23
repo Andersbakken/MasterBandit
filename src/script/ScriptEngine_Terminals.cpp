@@ -109,7 +109,7 @@ bool Engine::removeNodeSubtree(Uuid scopeRoot, Uuid nodeId)
     return true;
 }
 
-const std::unordered_map<Uuid, LayoutRect, UuidHash>&
+const std::unordered_map<Uuid, Rect, UuidHash>&
 Engine::rootRects(uint32_t fbW, uint32_t fbH, int cellW, int cellH)
 {
     const uint64_t fbKey    = (static_cast<uint64_t>(fbW) << 32) | fbH;
@@ -120,7 +120,7 @@ Engine::rootRects(uint32_t fbW, uint32_t fbH, int cellW, int cellH)
                             rootRectsKeyCellH_    == cellH;
     if (!keyMatches) {
         rootRectsCache_ = layoutTree_->computeRects(
-            LayoutRect{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)},
+            Rect{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)},
             cellW, cellH);
         rootRectsKeyFb_       = fbKey;
         rootRectsKeyCellW_    = cellW;
@@ -222,12 +222,12 @@ namespace {
 //   1) If `subtreeRoot` is the active tab, it's in the root-level rect map.
 //   2) Otherwise use the parent's rect (the tabs Stack) — all tabs share it.
 //   3) Fallback: the full window (test harness, detached subtree).
-LayoutRect resolveSubtreeContentRect(Engine& eng, Uuid subtreeRoot)
+Rect resolveSubtreeContentRect(Engine& eng, Uuid subtreeRoot)
 {
     const ::LayoutTree& tree = eng.layoutTree();
     uint32_t fbW = eng.lastFbWidth();
     uint32_t fbH = eng.lastFbHeight();
-    LayoutRect fallback{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)};
+    Rect fallback{0, 0, static_cast<int>(fbW), static_cast<int>(fbH)};
     if (fbW == 0 || fbH == 0 || tree.root().isNil()) return fallback;
 
     const auto& rects = eng.rootRects(fbW, fbH, eng.lastCellW(), eng.lastCellH());
@@ -349,10 +349,10 @@ std::vector<::Terminal*> Engine::activePanesInSubtree(Uuid subtreeRoot) const
     return out;
 }
 
-LayoutRect Engine::nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const
+Rect Engine::nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const
 {
     if (subtreeRoot.isNil() || nodeId.isNil()) return {};
-    LayoutRect content = resolveSubtreeContentRect(const_cast<Engine&>(*this), subtreeRoot);
+    Rect content = resolveSubtreeContentRect(const_cast<Engine&>(*this), subtreeRoot);
     if (content.isEmpty()) return {};
     auto rects = layoutTree_->computeRectsFrom(subtreeRoot, content,
                                                lastCellW(), lastCellH());
@@ -366,7 +366,7 @@ Uuid Engine::paneAtPixelInSubtree(Uuid subtreeRoot, int px, int py) const
     if (subtreeRoot.isNil()) return {};
     for (::Terminal* t : panesInSubtree(subtreeRoot)) {
         if (!t) continue;
-        const LayoutRect& r = t->rect();
+        const Rect& r = t->rect();
         if (r.isEmpty()) continue;
         if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)
             return t->nodeId();
@@ -388,7 +388,7 @@ Uuid Engine::focusedPaneInSubtree(Uuid subtreeRoot) const
     return u.isNil() ? nullptr : paneInSubtree(subtreeRoot, u);
 }
 
-LayoutRect Engine::tabBarRect(uint32_t windowW, uint32_t windowH)
+Rect Engine::tabBarRect(uint32_t windowW, uint32_t windowH)
 {
     Uuid bar = primaryTabBarNode();
     if (bar.isNil()) return {};
@@ -404,7 +404,7 @@ void Engine::computeTabRects(Uuid subtreeRoot, uint32_t windowW, uint32_t window
     if (subtreeRoot.isNil()) return;
     setLastFramebuffer(windowW, windowH);
     setLastCellMetrics(cellW, cellH);
-    LayoutRect content = resolveSubtreeContentRect(*this, subtreeRoot);
+    Rect content = resolveSubtreeContentRect(*this, subtreeRoot);
 
     // Zoom is tree-native (StackData::zoomTarget); non-zoomed Terminals
     // fall through to the rect-map miss below and get {0,0,0,0}.
@@ -419,33 +419,33 @@ void Engine::computeTabRects(Uuid subtreeRoot, uint32_t windowW, uint32_t window
     }
 }
 
-std::vector<LayoutRect>
+std::vector<Rect>
 Engine::tabDividerRects(Uuid subtreeRoot, int dividerPx) const
 {
     auto pairs = tabDividersWithOwnerPanes(subtreeRoot, dividerPx);
-    std::vector<LayoutRect> out;
+    std::vector<Rect> out;
     out.reserve(pairs.size());
     for (auto& p : pairs) out.push_back(p.second);
     return out;
 }
 
-std::vector<std::pair<Uuid, LayoutRect>>
+std::vector<std::pair<Uuid, Rect>>
 Engine::tabDividersWithOwnerPanes(Uuid subtreeRoot, int dividerPx) const
 {
     if (subtreeRoot.isNil() || dividerPx <= 0) return {};
     auto liveTerminals = activePanesInSubtree(subtreeRoot);
     if (liveTerminals.size() < 2) return {};
 
-    LayoutRect content = resolveSubtreeContentRect(const_cast<Engine&>(*this),
+    Rect content = resolveSubtreeContentRect(const_cast<Engine&>(*this),
                                                     subtreeRoot);
     const ::LayoutTree& tree = *layoutTree_;
     auto rects = tree.computeRectsFrom(subtreeRoot, content,
                                         lastCellW(), lastCellH());
 
-    std::vector<std::pair<Uuid, LayoutRect>> raw;
+    std::vector<std::pair<Uuid, Rect>> raw;
     tree.dividersIn(subtreeRoot, dividerPx, rects, raw);
 
-    std::vector<std::pair<Uuid, LayoutRect>> out;
+    std::vector<std::pair<Uuid, Rect>> out;
     out.reserve(raw.size());
     for (const auto& [firstNode, r] : raw) {
         Uuid leafId = tree.leftmostTerminalIn(firstNode);
@@ -458,7 +458,7 @@ bool Engine::resizeTabPaneEdge(Uuid subtreeRoot, Uuid nodeId,
                                SplitDir axis, int pixelDelta)
 {
     if (subtreeRoot.isNil() || nodeId.isNil()) return false;
-    LayoutRect content = resolveSubtreeContentRect(*this, subtreeRoot);
+    Rect content = resolveSubtreeContentRect(*this, subtreeRoot);
     return layoutTree_->resizeEdgeAlongAxis(
         nodeId, axis, pixelDelta, subtreeRoot,
         content, lastCellW(), lastCellH());

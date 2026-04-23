@@ -39,7 +39,7 @@ struct RenderPanePopupInfo {
 
 struct RenderPaneInfo {
     Uuid id;
-    PaneRect rect;
+    Rect rect;
     TerminalEmulator* term = nullptr;   // raw ptr — valid while tab/pane exist
     int progressState = 0;
     int progressPct = 0;
@@ -79,7 +79,7 @@ struct RenderFrameState {
 
     // Layout geometry
     uint32_t fbWidth = 0, fbHeight = 0;
-    PaneRect tabBarRect;
+    Rect tabBarRect;
     std::string tabBarPosition;
 
     // Font metrics (copied from main thread scalars)

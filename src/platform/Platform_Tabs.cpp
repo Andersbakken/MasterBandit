@@ -4,7 +4,6 @@
 #include "PlatformUtils.h"
 #include "RenderThread.h"
 #include "ScriptEngine.h"
-#include "Tab.h"
 #include "Terminal.h"
 #include "Utils.h"
 
@@ -22,7 +21,6 @@
 // Each tab is a direct child of Engine::layoutRootStack_ in the shared
 // LayoutTree. The tab's identity is its subtreeRoot Uuid. Icon lives in
 // Script::Engine, keyed by that Uuid. Title lives on the tree node's label.
-// Everything here is a thin wrapper around the tree + Engine maps.
 // ---------------------------------------------------------------------------
 
 Uuid PlatformDawn::tabSubtreeRootAt(int idx) const
@@ -33,64 +31,41 @@ Uuid PlatformDawn::tabSubtreeRootAt(int idx) const
     return roots[idx];
 }
 
-std::vector<Tab> PlatformDawn::tabs() const
+std::optional<Uuid> PlatformDawn::activeTab() const
 {
-    std::vector<Tab> out;
-    auto roots = scriptEngine_.tabSubtreeRoots();
-    out.reserve(roots.size());
-    for (Uuid u : roots) out.emplace_back(const_cast<Script::Engine*>(&scriptEngine_), u);
-    return out;
+    return tabAt(scriptEngine_.activeTabIndex());
 }
 
-size_t PlatformDawn::tabCount() const
-{
-    return scriptEngine_.tabCount();
-}
-
-int PlatformDawn::activeTabIdx() const
-{
-    return scriptEngine_.activeTabIndex();
-}
-
-std::optional<Tab> PlatformDawn::activeTab() const
-{
-    int idx = activeTabIdx();
-    if (idx < 0) return std::nullopt;
-    return tabAt(idx);
-}
-
-std::optional<Tab> PlatformDawn::tabAt(int idx) const
+std::optional<Uuid> PlatformDawn::tabAt(int idx) const
 {
     Uuid sub = tabSubtreeRootAt(idx);
     if (sub.isNil()) return std::nullopt;
-    return Tab{const_cast<Script::Engine*>(&scriptEngine_), sub};
+    return sub;
 }
 
 Terminal* PlatformDawn::activeTerm()
 {
     auto tab = activeTab();
     if (!tab) return nullptr;
-    Terminal* pane = tab->focusedPane();
+    Terminal* pane = scriptEngine_.focusedTerminalInSubtree(*tab);
     return pane ? static_cast<Terminal*>(pane->activeTerm()) : nullptr;
 }
 
 void PlatformDawn::notifyAllTerminals(const std::function<void(TerminalEmulator*)>& fn)
 {
-    for (Tab tab : tabs()) {
-        if (tab.valid()) {
-            for (Terminal* panePtr : tab.panes()) fn(panePtr);
-        }
+    for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
+        for (Terminal* panePtr : scriptEngine_.panesInSubtree(sub)) fn(panePtr);
     }
 }
 
-std::optional<Tab> PlatformDawn::findTabForPane(Uuid nodeId, int* outTabIdx) const
+std::optional<Uuid> PlatformDawn::findTabForPane(Uuid nodeId, int* outTabIdx) const
 {
-    // hasPaneSlot (not pane()) so a killed-but-not-yet-removed Terminal's
-    // enclosing Tab is still resolvable — the controller needs it to drive
-    // tree removal in response to `terminalExited`.
-    auto allTabs = tabs();
+    // hasPaneSlotInSubtree (not paneInSubtree) so a killed-but-not-yet-removed
+    // Terminal's enclosing Tab is still resolvable — the controller needs it
+    // to drive tree removal in response to `terminalExited`.
+    auto allTabs = scriptEngine_.tabSubtreeRoots();
     for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
-        if (allTabs[i].valid() && allTabs[i].hasPaneSlot(nodeId)) {
+        if (scriptEngine_.hasPaneSlotInSubtree(allTabs[i], nodeId)) {
             if (outTabIdx) *outTabIdx = i;
             return allTabs[i];
         }
@@ -110,8 +85,7 @@ void PlatformDawn::setActiveTabIdx(int idx)
     // clears focus if the focused pane was inside it) and splitting via a
     // JS action that reads `mb.layout.focusedPane()` would see null focus
     // and no-op the split.
-    Tab activated{&scriptEngine_, sub};
-    auto livePanes = activated.panes();
+    auto livePanes = scriptEngine_.panesInSubtree(sub);
     if (livePanes.empty()) {
         scriptEngine_.setFocusedTerminalNodeId({});
         return;
@@ -124,28 +98,26 @@ void PlatformDawn::setActiveTabIdx(int idx)
     }
 }
 
-void PlatformDawn::attachLayoutSubtree(Tab tab, bool activate)
+void PlatformDawn::attachLayoutSubtree(Uuid subtreeRoot, bool activate)
 {
-    if (!tab) return;
+    if (subtreeRoot.isNil()) return;
     LayoutTree& tree = scriptEngine_.layoutTree();
     Uuid rootStack = scriptEngine_.layoutRootStack();
-    Uuid sub = tab.subtreeRoot();
-    if (sub.isNil()) return;
 
-    tree.appendChild(rootStack, ChildSlot{sub, /*stretch=*/1});
-    if (activate) tree.setActiveChild(rootStack, sub);
+    tree.appendChild(rootStack, ChildSlot{subtreeRoot, /*stretch=*/1});
+    if (activate) tree.setActiveChild(rootStack, subtreeRoot);
 }
 
 void PlatformDawn::updateWindowTitle()
 {
     if (isHeadless()) return;
-    auto t = activeTab();
-    if (!t) return;
-    Terminal* fp = t->focusedPane();
+    auto tab = activeTab();
+    if (!tab) return;
+    Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
     if (!fp) return;
     const std::string& icon = fp->icon();
-    // Prefer the pane's OSC-set title; fall back to the tab title (e.g. foreground process name)
-    const std::string& title = fp->title().empty() ? t->title() : fp->title();
+    // Prefer the pane's OSC-set title; fall back to the tab title.
+    const std::string& title = fp->title().empty() ? scriptEngine_.tabTitle(*tab) : fp->title();
     if (title.empty()) return;
     std::string windowTitle = icon.empty() ? title : icon + " " + title;
     if (window_) window_->setTitle(windowTitle);
@@ -174,24 +146,25 @@ void PlatformDawn::removePtyPoll(int fd)
     ptyPolls_.erase(it);
 }
 
-void PlatformDawn::refreshDividers(Tab tab)
+void PlatformDawn::refreshDividers(Uuid subtreeRoot)
 {
-    if (!tab) return;
+    if (subtreeRoot.isNil()) return;
     int divPx = dividerWidth_;
     if (divPx <= 0) return;
 
     PendingMutations& pending = renderThread_->pending();
 
     // Clear all divider VBs for this tab's panes
-    auto lanes = tab.panes();
+    auto lanes = scriptEngine_.panesInSubtree(subtreeRoot);
     for (Terminal* panePtr : lanes)
         pending.clearDividerPanes.push_back(panePtr->id());
 
     if (lanes.size() <= 1) return;
-    // When zoomed, dividersWithOwnerPanes returns empty naturally (non-zoomed
-    // sibling rects aren't in the map, so dividersIn finds nothing to emit).
+    // When zoomed, tabDividersWithOwnerPanes returns empty naturally
+    // (non-zoomed sibling rects aren't in the map, so dividersIn finds
+    // nothing to emit).
 
-    auto dividers = tab.dividersWithOwnerPanes(divPx);
+    auto dividers = scriptEngine_.tabDividersWithOwnerPanes(subtreeRoot, divPx);
 
     pending.dividersDirty = true;
 
@@ -214,30 +187,30 @@ void PlatformDawn::refreshDividers(Tab tab)
     }
 }
 
-void PlatformDawn::clearDividers(Tab tab)
+void PlatformDawn::clearDividers(Uuid subtreeRoot)
 {
-    if (!tab) return;
+    if (subtreeRoot.isNil()) return;
     PendingMutations& pending = renderThread_->pending();
-    for (Terminal* panePtr : tab.panes())
+    for (Terminal* panePtr : scriptEngine_.panesInSubtree(subtreeRoot))
         pending.clearDividerPanes.push_back(panePtr->id());
     pending.dividersDirty = true;
 }
 
-void PlatformDawn::releaseTabTextures(Tab tab)
+void PlatformDawn::releaseTabTextures(Uuid subtreeRoot)
 {
-    if (!tab) return;
+    if (subtreeRoot.isNil()) return;
     PendingMutations& pending = renderThread_->pending();
-    for (Terminal* panePtr : tab.panes()) {
+    for (Terminal* panePtr : scriptEngine_.panesInSubtree(subtreeRoot)) {
         pending.releasePaneTextures.push_back(panePtr->id());
         pending.dirtyPanes.insert(panePtr->id());
     }
 }
 
-void PlatformDawn::notifyPaneFocusChange(Tab tab, Uuid prevId, Uuid newId)
+void PlatformDawn::notifyPaneFocusChange(Uuid subtreeRoot, Uuid prevId, Uuid newId)
 {
-    if (!tab) return;
+    if (subtreeRoot.isNil()) return;
     if (!prevId.isNil()) {
-        Terminal* p = tab.pane(prevId);
+        Terminal* p = scriptEngine_.paneInSubtree(subtreeRoot, prevId);
         if (p) {
             if (!p->focusedPopupId().empty())
                 scriptEngine_.notifyFocusedPopupChanged(prevId, "");
@@ -247,7 +220,7 @@ void PlatformDawn::notifyPaneFocusChange(Tab tab, Uuid prevId, Uuid newId)
         scriptEngine_.notifyPaneFocusChanged(prevId, false);
     }
     if (!newId.isNil()) {
-        Terminal* p = tab.pane(newId);
+        Terminal* p = scriptEngine_.paneInSubtree(subtreeRoot, newId);
         if (p) p->focusEvent(true);
         scriptEngine_.notifyPaneFocusChanged(newId, true);
     }
@@ -258,14 +231,14 @@ void PlatformDawn::updateTabTitleFromFocusedPane(int tabIdx)
 {
     auto tab = tabAt(tabIdx);
     if (!tab) return;
-    Terminal* fp = tab->focusedPane();
+    Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
     if (!fp) return;
 
     const std::string& title = fp->title();
     const std::string& icon  = fp->icon();
-    tab->setTitle(title);
-    if (!icon.empty()) tab->setIcon(icon);
-    if (tabIdx == activeTabIdx() && !title.empty())
+    scriptEngine_.setTabTitle(*tab, title);
+    if (!icon.empty()) scriptEngine_.setTabIcon(*tab, icon);
+    if (tabIdx == scriptEngine_.activeTabIndex() && !title.empty())
         updateWindowTitle();
     tabBarDirty_ = true;
     setNeedsRedraw();
@@ -275,12 +248,11 @@ void PlatformDawn::closeTab(int idx)
 {
     auto tab = tabAt(idx);
     if (!tab) return;
-    if (tabCount() == 1) return; // can't close the last tab
-    if (!tab->valid()) return;
+    if (scriptEngine_.tabCount() == 1) return; // can't close the last tab
 
     PendingMutations& pending = renderThread_->pending();
 
-    auto tabPanes = tab->panes();
+    auto tabPanes = scriptEngine_.panesInSubtree(*tab);
     for (Terminal* panePtr : tabPanes) {
         removePtyPoll(panePtr->masterFD());
         pending.structuralOps.push_back(PendingMutations::DestroyPaneState{panePtr->id()});
@@ -292,9 +264,9 @@ void PlatformDawn::closeTab(int idx)
         scriptEngine_.notifyPaneDestroyed(panePtr->id(), panePtr->nodeId());
     }
 
-    scriptEngine_.notifyTabDestroyed(idx, tab->subtreeRoot());
+    scriptEngine_.notifyTabDestroyed(idx, *tab);
 
-    Uuid subRoot = tab->subtreeRoot();
+    Uuid subRoot = *tab;
     std::vector<std::unique_ptr<Terminal>> extractedTerminals;
     uint64_t stamp = 0;
     {
@@ -319,8 +291,7 @@ void PlatformDawn::closeTab(int idx)
         Uuid newActive = tabSubtreeRootAt(surviving);
         if (!newActive.isNil()) {
             tree.setActiveChild(scriptEngine_.layoutRootStack(), newActive);
-            Tab newTab{&scriptEngine_, newActive};
-            auto livePanes = newTab.panes();
+            auto livePanes = scriptEngine_.panesInSubtree(newActive);
             if (!livePanes.empty())
                 scriptEngine_.setFocusedTerminalNodeId(livePanes.front()->nodeId());
         }
@@ -339,7 +310,7 @@ void PlatformDawn::closeTab(int idx)
 
 void PlatformDawn::terminalExited(Terminal* terminal)
 {
-    // Called from drainPendingExits() under the render-thread mutex, so
+    // Called from renderThread_->drainPendingExits() under the render-thread mutex, so
     // the render thread cannot be snapshotting while we mutate live state.
     // Shell-exit path: the PTY is closed, the child has exited. Kill the
     // Terminal synchronously (extract + graveyard + fire event) and let JS
@@ -417,13 +388,10 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, int tabIdx, const std::stri
         return;
     }
 
-    PaneRect pr;
-    Tab ownerTab;
-    auto allTabs = tabs();
-    for (Tab& t : allTabs) {
-        pr = t.nodeRect(nodeId);
-        if (!pr.isEmpty()) { ownerTab = t; break; }
-    }
+    // Locate the owning tab via findTabForNode — nodeId has already been
+    // attached to its Container in the tree by the caller.
+    Uuid ownerTab = scriptEngine_.findTabSubtreeRootForNode(nodeId);
+    Rect pr = ownerTab.isNil() ? Rect{} : scriptEngine_.nodeRectInSubtree(ownerTab, nodeId);
     int cols = (pr.w > 0 && charWidth > 0)  ? static_cast<int>((pr.w - padLeft - padRight) / charWidth)  : 80;
     int rows = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
     cols = std::max(cols, 1);
@@ -439,19 +407,20 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, int tabIdx, const std::stri
     int masterFD = terminal->masterFD();
     Terminal* termPtr = terminal.get();
 
-    if (ownerTab) {
-        ownerTab.insertTerminal(nodeId, std::move(terminal));
+    if (!ownerTab.isNil()) {
+        terminal->setNodeId(nodeId);
+        scriptEngine_.insertTerminal(nodeId, std::move(terminal));
     }
     addPtyPoll(masterFD, termPtr);
 
     scriptEngine_.notifyPaneCreated(tabIdx, nodeId);
 }
 
-void PlatformDawn::resizeAllPanesInTab(Tab tab)
+void PlatformDawn::resizeAllPanesInTab(Uuid subtreeRoot)
 {
-    if (!tab) return;
+    if (subtreeRoot.isNil()) return;
 
-    clearDividers(tab);
+    clearDividers(subtreeRoot);
 
     const float charWidth  = charWidth_;
     const float lineHeight = lineHeight_;
@@ -462,11 +431,11 @@ void PlatformDawn::resizeAllPanesInTab(Tab tab)
 
     const int cellW = std::max(1, static_cast<int>(std::round(charWidth)));
     const int cellH = std::max(1, static_cast<int>(std::round(lineHeight)));
-    tab.computeRects(fbWidth_, fbHeight_, cellW, cellH);
+    scriptEngine_.computeTabRects(subtreeRoot, fbWidth_, fbHeight_, cellW, cellH);
 
     PendingMutations& pending = renderThread_->pending();
 
-    for (Terminal* pane : tab.panes()) {
+    for (Terminal* pane : scriptEngine_.panesInSubtree(subtreeRoot)) {
         pane->resizeToRect(charWidth, lineHeight, padLeft, padTop, padRight, padBottom);
 
         int cols = std::max(pane->width(),  1);
@@ -480,23 +449,11 @@ void PlatformDawn::resizeAllPanesInTab(Tab tab)
 
         scriptEngine_.notifyPaneResized(id, cols, rows);
     }
-    refreshDividers(tab);
+    refreshDividers(subtreeRoot);
     setNeedsRedraw();
 }
 
-std::optional<Tab> PlatformDawn::findTabBySubtreeRoot(Uuid subtreeRoot, int* outTabIdx) const
-{
-    auto allTabs = tabs();
-    for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
-        if (allTabs[i].subtreeRoot() == subtreeRoot) {
-            if (outTabIdx) *outTabIdx = i;
-            return allTabs[i];
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<Tab> PlatformDawn::findTabForNode(Uuid nodeId, int* outTabIdx) const
+std::optional<Uuid> PlatformDawn::findTabForNode(Uuid nodeId, int* outTabIdx) const
 {
     Uuid sub = scriptEngine_.findTabSubtreeRootForNode(nodeId);
     if (sub.isNil()) return std::nullopt;
@@ -506,7 +463,7 @@ std::optional<Tab> PlatformDawn::findTabForNode(Uuid nodeId, int* outTabIdx) con
             if (roots[i] == sub) { *outTabIdx = i; break; }
         }
     }
-    return Tab{const_cast<Script::Engine*>(&scriptEngine_), sub};
+    return sub;
 }
 
 int PlatformDawn::createEmptyTab(Uuid* outNodeId)
@@ -514,15 +471,12 @@ int PlatformDawn::createEmptyTab(Uuid* outNodeId)
     const bool headless = isHeadless();
     if (!window_ && !headless) return -1;
 
-    Tab layout = Tab::newSubtree(&scriptEngine_);
-    layout.setDividerPixels(dividerWidth_);
-
-    Uuid subRoot = layout.subtreeRoot();
+    Uuid subRoot = scriptEngine_.createTabSubtree();
+    scriptEngine_.setDividerPixels(dividerWidth_);
     if (outNodeId) *outNodeId = subRoot;
 
-    attachLayoutSubtree(layout, /*activate=*/false);
-    int tabIdx = -1;
-    findTabBySubtreeRoot(subRoot, &tabIdx);
+    attachLayoutSubtree(subRoot, /*activate=*/false);
+    int tabIdx = scriptEngine_.tabCount() - 1; // just appended to the end
 
     updateTabBarVisibility();
     tabBarDirty_ = true;
@@ -534,7 +488,7 @@ int PlatformDawn::createEmptyTab(Uuid* outNodeId)
 
 void PlatformDawn::activateTabByIdx(int idx)
 {
-    if (idx < 0 || idx >= static_cast<int>(tabCount())) return;
+    if (idx < 0 || idx >= static_cast<int>(scriptEngine_.tabCount())) return;
     if (auto prev = activeTab()) {
         clearDividers(*prev);
         releaseTabTextures(*prev);
@@ -555,7 +509,7 @@ bool PlatformDawn::createTerminalInContainer(Uuid parentContainerNodeId,
 
     int tabIdx = -1;
     auto tab = findTabForNode(parentContainerNodeId, &tabIdx);
-    if (!tab || !tab->valid()) return false;
+    if (!tab) return false;
 
     Uuid attachParent = parentContainerNodeId;
     if (const Node* n = tree.node(attachParent)) {
@@ -564,14 +518,14 @@ bool PlatformDawn::createTerminalInContainer(Uuid parentContainerNodeId,
         }
     }
 
-    Uuid newNodeId = tab->allocatePaneNode();
+    Uuid newNodeId = scriptEngine_.allocatePaneNode();
     if (newNodeId.isNil()) return false;
     if (!tree.appendChild(attachParent, ChildSlot{newNodeId, /*stretch=*/1}))
         return false;
 
     const int cellW = std::max(1, static_cast<int>(std::round(charWidth_)));
     const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
-    tab->computeRects(fbWidth_, fbHeight_, cellW, cellH);
+    scriptEngine_.computeTabRects(*tab, fbWidth_, fbHeight_, cellW, cellH);
 
     spawnTerminalForPane(newNodeId, tabIdx, cwd);
     resizeAllPanesInTab(*tab);
@@ -587,19 +541,19 @@ bool PlatformDawn::splitPaneByNodeId(Uuid existingPaneNodeId, SplitDir dir,
     (void)ratio;
     int tabIdx = -1;
     auto tab = findTabForNode(existingPaneNodeId, &tabIdx);
-    if (!tab || !tab->valid()) return false;
+    if (!tab) return false;
 
-    Uuid newNodeId = tab->allocatePaneNode();
+    Uuid newNodeId = scriptEngine_.allocatePaneNode();
     if (newNodeId.isNil()) return false;
-    if (!tab->splitByNodeId(existingPaneNodeId, dir, newNodeId, newIsFirst))
+    if (!scriptEngine_.splitByNodeId(existingPaneNodeId, dir, newNodeId, newIsFirst))
         return false;
 
     const int cellW = std::max(1, static_cast<int>(std::round(charWidth_)));
     const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
-    tab->computeRects(fbWidth_, fbHeight_, cellW, cellH);
+    scriptEngine_.computeTabRects(*tab, fbWidth_, fbHeight_, cellW, cellH);
 
     std::string cwd;
-    if (Terminal* fp = tab->pane(existingPaneNodeId))
+    if (Terminal* fp = scriptEngine_.paneInSubtree(*tab, existingPaneNodeId))
         cwd = paneProcessCWD(fp);
 
     spawnTerminalForPane(newNodeId, tabIdx, cwd);
@@ -613,9 +567,9 @@ bool PlatformDawn::focusPaneById(Uuid nodeId)
 {
     int tabIdx = -1;
     auto tab = findTabForPane(nodeId, &tabIdx);
-    if (!tab || !tab->valid()) return false;
-    Uuid prev = tab->focusedPaneId();
-    tab->setFocusedPane(nodeId);
+    if (!tab) return false;
+    Uuid prev = scriptEngine_.focusedPaneInSubtree(*tab);
+    scriptEngine_.setFocusedTerminalNodeId(nodeId);
     notifyPaneFocusChange(*tab, prev, nodeId);
     updateTabTitleFromFocusedPane(tabIdx);
     setNeedsRedraw();
@@ -626,29 +580,29 @@ bool PlatformDawn::removeNode(Uuid nodeId)
 {
     int tabIdx = -1;
     auto tab = findTabForNode(nodeId, &tabIdx);
-    if (!tab || !tab->valid()) return false;
-    if (nodeId == tab->subtreeRoot()) return false;
+    if (!tab) return false;
+    if (nodeId == *tab) return false;
 
     bool removed = false;
     {
         std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-        removed = tab->removeNodeSubtree(nodeId);
+        removed = scriptEngine_.removeNodeSubtree(*tab, nodeId);
         if (removed) buildRenderFrameState();
     }
     if (!removed) return false;
 
-    auto livePanes = tab->panes();
+    auto livePanes = scriptEngine_.panesInSubtree(*tab);
     if (livePanes.empty()) {
         setNeedsRedraw();
         return true;
     }
 
-    if (tab->focusedPaneId().isNil()) {
-        tab->setFocusedPane(livePanes.front()->nodeId());
+    if (scriptEngine_.focusedPaneInSubtree(*tab).isNil()) {
+        scriptEngine_.setFocusedTerminalNodeId(livePanes.front()->nodeId());
     }
 
     resizeAllPanesInTab(*tab);
-    notifyPaneFocusChange(*tab, Uuid{}, tab->focusedPaneId());
+    notifyPaneFocusChange(*tab, Uuid{}, scriptEngine_.focusedPaneInSubtree(*tab));
     updateTabTitleFromFocusedPane(tabIdx);
     return true;
 }
@@ -666,7 +620,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         case TerminalEmulator::Update:
         case TerminalEmulator::ScrollbackChanged:
             setNeedsRedraw();
-            postToMainThread([this, paneId] {
+            renderThread_->postToMain([this, paneId] {
                 renderThread_->pending().dirtyPanes.insert(paneId);
             });
             break;
@@ -676,13 +630,8 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             if (payload) {
                 const auto* rec = static_cast<const TerminalEmulator::CommandRecord*>(payload);
                 TerminalEmulator::CommandRecord recCopy = *rec;
-                postToMainThread([this, paneId, recCopy = std::move(recCopy)] {
-                    TerminalEmulator* te = nullptr;
-                    for (Tab tab : tabs()) {
-                        if (tab.valid()) {
-                            if (auto* p = tab.pane(paneId)) { te = p; break; }
-                        }
-                    }
+                renderThread_->postToMain([this, paneId, recCopy = std::move(recCopy)] {
+                    TerminalEmulator* te = scriptEngine_.terminal(paneId);
                     if (!te) return;
                     const auto& doc = te->document();
                     Script::CommandInfo info{
@@ -700,13 +649,8 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             }
             break;
         case TerminalEmulator::CommandSelectionChanged:
-            postToMainThread([this, paneId] {
-                Terminal* te = nullptr;
-                for (Tab tab : tabs()) {
-                    if (tab.valid()) {
-                        if (auto* p = tab.pane(paneId)) { te = p; break; }
-                    }
-                }
+            renderThread_->postToMain([this, paneId] {
+                Terminal* te = scriptEngine_.terminal(paneId);
                 if (!te) return;
                 scriptEngine_.notifyCommandSelectionChanged(paneId, te->selectedCommandId());
             });
@@ -716,7 +660,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
 
     if (!isHeadless()) {
         cbs.copyToClipboard = [this](const std::string& text) {
-            postToMainThread([this, text] {
+            renderThread_->postToMain([this, text] {
                 if (window_) window_->setClipboard(text);
             });
         };
@@ -729,14 +673,14 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     }
 
     cbs.onTitleChanged = [this, paneId](const std::string& title) {
-        postToMainThread([this, paneId, title] {
+        renderThread_->postToMain([this, paneId, title] {
             int tabIdx = -1;
-            auto t = findTabForPane(paneId, &tabIdx);
-            if (!t || !t->valid()) return;
-            if (Terminal* p = t->pane(paneId)) p->setTitle(title);
-            if (t->focusedPaneId() == paneId) {
-                t->setTitle(title);
-                if (tabIdx == activeTabIdx()) updateWindowTitle();
+            auto tab = findTabForPane(paneId, &tabIdx);
+            if (!tab) return;
+            if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) p->setTitle(title);
+            if (scriptEngine_.focusedPaneInSubtree(*tab) == paneId) {
+                scriptEngine_.setTabTitle(*tab, title);
+                if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
             }
@@ -744,14 +688,14 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onIconChanged = [this, paneId](const std::string& icon) {
-        postToMainThread([this, paneId, icon] {
+        renderThread_->postToMain([this, paneId, icon] {
             int tabIdx = -1;
-            auto t = findTabForPane(paneId, &tabIdx);
-            if (!t || !t->valid()) return;
-            if (Terminal* p = t->pane(paneId)) p->setIcon(icon);
-            if (t->focusedPaneId() == paneId) {
-                t->setIcon(icon);
-                if (tabIdx == activeTabIdx()) updateWindowTitle();
+            auto tab = findTabForPane(paneId, &tabIdx);
+            if (!tab) return;
+            if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) p->setIcon(icon);
+            if (scriptEngine_.focusedPaneInSubtree(*tab) == paneId) {
+                scriptEngine_.setTabIcon(*tab, icon);
+                if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
             }
@@ -759,10 +703,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onProgressChanged = [this, paneId](int state, int pct) {
-        postToMainThread([this, paneId, state, pct] {
-            auto t = findTabForPane(paneId);
-            if (!t || !t->valid()) return;
-            if (Terminal* p = t->pane(paneId)) {
+        renderThread_->postToMain([this, paneId, state, pct] {
+            auto tab = findTabForPane(paneId);
+            if (!tab) return;
+            if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) {
                 p->setProgress(state, pct);
                 tabBarDirty_ = true;
                 setNeedsRedraw();
@@ -775,10 +719,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     cbs.isDarkMode = isHeadless() ? []() { return true; } : []() { return platformIsDarkMode(); };
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
-        postToMainThread([this, paneId, dir] {
-            auto t = findTabForPane(paneId);
-            if (!t || !t->valid()) return;
-            if (Terminal* p = t->pane(paneId)) p->setCWD(dir);
+        renderThread_->postToMain([this, paneId, dir] {
+            auto tab = findTabForPane(paneId);
+            if (!tab) return;
+            if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) p->setCWD(dir);
         });
     };
 
@@ -786,7 +730,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         cbs.onDesktopNotification = [](const std::string&, const std::string&, const std::string&) {};
     } else {
         cbs.onDesktopNotification = [this](const std::string& title, const std::string& body, const std::string& /*icon*/) {
-            postToMainThread([title, body] {
+            renderThread_->postToMain([title, body] {
                 platformSendNotification(title, body);
             });
         };
@@ -794,7 +738,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
 
     cbs.onOSC = [this, paneId](int oscNum, std::string_view payload) {
         std::string payloadCopy(payload);
-        postToMainThread([this, paneId, oscNum, payloadCopy = std::move(payloadCopy)] {
+        renderThread_->postToMain([this, paneId, oscNum, payloadCopy = std::move(payloadCopy)] {
             scriptEngine_.notifyOSC(paneId, oscNum, payloadCopy);
         });
     };
@@ -804,7 +748,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onMouseCursorShape = [this, paneId](const std::string& shape) {
-        postToMainThread([this, paneId, shape] {
+        renderThread_->postToMain([this, paneId, shape] {
             if (!inputController_) return;
             if (shape.empty()) {
                 inputController_->erasePaneCursorStyle(paneId);
@@ -813,8 +757,8 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                     InputController::pointerShapeNameToCursorStyle(shape));
             }
             if (!window_ || isHeadless()) return;
-            auto t = activeTab();
-            if (!t || !t->valid() || t->focusedPaneId() != paneId) return;
+            auto tab = activeTab();
+            if (!tab || scriptEngine_.focusedPaneInSubtree(*tab) != paneId) return;
             window_->setCursorStyle(shape.empty()
                 ? Window::CursorStyle::IBeam
                 : inputController_->paneCursorStyle(paneId));
@@ -822,15 +766,15 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onForegroundProcessChanged = [this, paneId](const std::string& proc) {
-        postToMainThread([this, paneId, proc] {
+        renderThread_->postToMain([this, paneId, proc] {
             scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
             int tabIdx = -1;
-            auto t = findTabForPane(paneId, &tabIdx);
-            if (!t || !t->valid()) return;
-            Terminal* p = t->pane(paneId);
-            if (p && p->title().empty() && t->focusedPaneId() == paneId) {
-                t->setTitle(proc);
-                if (tabIdx == activeTabIdx()) updateWindowTitle();
+            auto tab = findTabForPane(paneId, &tabIdx);
+            if (!tab) return;
+            Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId);
+            if (p && p->title().empty() && scriptEngine_.focusedPaneInSubtree(*tab) == paneId) {
+                scriptEngine_.setTabTitle(*tab, proc);
+                if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
             }

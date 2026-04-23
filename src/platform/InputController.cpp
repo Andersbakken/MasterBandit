@@ -1,6 +1,8 @@
 #include "InputController.h"
 
-#include "Tab.h"
+#include "AnimationScheduler.h"
+#include "PlatformDawn.h"
+#include "RenderThread.h"
 #include "ScriptEngine.h"
 #include "Terminal.h"
 #include "Utf8.h"
@@ -72,11 +74,11 @@ Window::CursorStyle InputController::pointerShapeNameToCursorStyle(const std::st
 // — the Window backend (XCBWindow/CocoaWindow) does all conversion before calling here.
 void InputController::onKey(int key, int scancode, int action, int mods)
 {
-    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
-    TerminalEmulator* term = host_.activeTerm();
+    std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
+    TerminalEmulator* term = static_cast<TerminalEmulator*>(platform_->activeTerm());
     if (!term) return;
 
-    Window* window = host_.window ? host_.window() : nullptr;
+    Window* window = platform_->window_.get();
 
     spdlog::debug("onKey: key=0x{:x} action={} mods={}", key, action, mods);
 
@@ -93,7 +95,7 @@ void InputController::onKey(int key, int scancode, int action, int mods)
             pendingSequenceKeys_.clear();
             cancelSequenceTimeout();
             for (const auto& act : result.actions)
-                host_.dispatchAction(act);
+                platform_->dispatchAction(act);
             return;
         }
         if (result.result == SequenceMatcher::Result::Prefix) {
@@ -127,7 +129,7 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     // Reset viewport to live when typing (not on release, not for bindings)
     if (action != static_cast<int>(KeyAction_Release)) {
         term->resetViewport();
-        if (host_.resetBlink) host_.resetBlink();
+        if (platform_->animScheduler_) platform_->animScheduler_->resetBlink();
     }
 
     KeyEvent ev;
@@ -199,13 +201,13 @@ void InputController::onKey(int key, int scancode, int action, int mods)
 
 void InputController::onChar(uint32_t codepoint)
 {
-    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
-    TerminalEmulator* term = host_.activeTerm();
+    std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
+    TerminalEmulator* term = static_cast<TerminalEmulator*>(platform_->activeTerm());
     if (!term) return;
 
     spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
     term->resetViewport();
-    if (host_.resetBlink) host_.resetBlink();
+    if (platform_->animScheduler_) platform_->animScheduler_->resetBlink();
 
     // In Kitty mode, onKey handles everything
     if (term->kittyFlags() != 0) return;
@@ -233,12 +235,13 @@ void InputController::onChar(uint32_t codepoint)
 
 MouseRegion InputController::hitTest(double sx, double sy)
 {
-    auto tab = host_.activeTab();
+    auto tab = platform_->activeTab();
     if (!tab) return MouseRegion::Pane;
+    Script::Engine& eng = platform_->scriptEngine_;
 
     // Check tab bar
-    if (host_.tabBarVisible()) {
-        PaneRect tbRect = tab->tabBarRect(host_.fbWidth(), host_.fbHeight());
+    if (platform_->tabBarVisible()) {
+        Rect tbRect = eng.tabBarRect(platform_->fbWidth_, platform_->fbHeight_);
         if (!tbRect.isEmpty() &&
             sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
             sy >= tbRect.y && sy < tbRect.y + tbRect.h)
@@ -250,9 +253,9 @@ MouseRegion InputController::hitTest(double sx, double sy)
     // When zoomed, dividerRects returns nothing: the tree's rect map skips
     // non-zoomed siblings, so no dividers emit from dividersIn. Safe to drop
     // the explicit !isZoomed guard.
-    const int divPx = tab->dividerPixels();
+    const int divPx = eng.dividerPixels();
     if (divPx > 0) {
-        for (const auto& r : tab->dividerRects(divPx)) {
+        for (const auto& r : eng.tabDividerRects(*tab, divPx)) {
             if (sx >= r.x && sx < r.x + r.w &&
                 sy >= r.y && sy < r.y + r.h)
                 return MouseRegion::Divider;
@@ -265,15 +268,15 @@ MouseRegion InputController::hitTest(double sx, double sy)
 // Returns -1 if no tab was hit.
 int InputController::resolveTabBarClickIndex(double sx, double sy)
 {
-    float tbCharWidth = host_.tabBarCharWidth();
+    float tbCharWidth = platform_->tabBarCharWidth_;
     if (tbCharWidth <= 0.0f) return -1;
-    auto tab = host_.activeTab();
+    auto tab = platform_->activeTab();
     if (!tab) return -1;
-    PaneRect tbRect = tab->tabBarRect(host_.fbWidth(), host_.fbHeight());
+    Rect tbRect = platform_->scriptEngine_.tabBarRect(platform_->fbWidth_, platform_->fbHeight_);
     if (tbRect.isEmpty()) return -1;
 
     int clickCol = static_cast<int>((sx - tbRect.x) / tbCharWidth);
-    const auto& ranges = host_.tabBarColRanges();
+    const auto& ranges = platform_->tabBarColRanges_;
     for (int i = 0; i < static_cast<int>(ranges.size()); ++i) {
         auto [start, end] = ranges[i];
         if (start < 0) continue; // not visible
@@ -286,11 +289,12 @@ int InputController::resolveTabBarClickIndex(double sx, double sy)
 
 void InputController::onMouseButton(int button, int action, int mods)
 {
-    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
-    auto tab = host_.activeTab();
+    std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
+    auto tab = platform_->activeTab();
     if (!tab) return;
+    Script::Engine& eng = platform_->scriptEngine_;
 
-    Window* window = host_.window ? host_.window() : nullptr;
+    Window* window = platform_->window_.get();
 
     lastMods_ = static_cast<uint32_t>(mods);
 
@@ -300,14 +304,14 @@ void InputController::onMouseButton(int button, int action, int mods)
     else
         heldButtons_ &= ~static_cast<uint32_t>(button);
 
-    const float contentScaleX = host_.contentScaleX();
-    const float contentScaleY = host_.contentScaleY();
-    const float charWidth = host_.charWidth();
-    const float lineHeight = host_.lineHeight();
-    const float padLeft = host_.padLeft();
-    const float padTop = host_.padTop();
-    const uint32_t fbWidth = host_.fbWidth();
-    const uint32_t fbHeight = host_.fbHeight();
+    const float contentScaleX = platform_->contentScaleX_;
+    const float contentScaleY = platform_->contentScaleY_;
+    const float charWidth = platform_->charWidth_;
+    const float lineHeight = platform_->lineHeight_;
+    const float padLeft = platform_->padLeft_;
+    const float padTop = platform_->padTop_;
+    const uint32_t fbWidth = platform_->fbWidth_;
+    const uint32_t fbHeight = platform_->fbHeight_;
 
     double sx = lastCursorX_ * contentScaleX;
     double sy = lastCursorY_ * contentScaleY;
@@ -316,10 +320,10 @@ void InputController::onMouseButton(int button, int action, int mods)
     if (action == static_cast<int>(KeyAction_Release) && selectionDragActive_) {
         selectionDragActive_ = false;
         stopAutoScroll();
-        Terminal* fp2 = tab->focusedPane();
+        Terminal* fp2 = eng.focusedTerminalInSubtree(*tab);
         TerminalEmulator* term2 = static_cast<TerminalEmulator*>(fp2);
         if (term2) {
-            PaneRect pr = fp2 ? fp2->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
+            Rect pr = fp2 ? fp2->rect() : Rect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
             double cellRelX = sx - pr.x - padLeft;
             double cellRelY = sy - pr.y - padTop;
             MouseEvent ev;
@@ -354,20 +358,20 @@ void InputController::onMouseButton(int button, int action, int mods)
 
     // 2. Click on inactive pane — switch focus (side effect)
     if (action == static_cast<int>(KeyAction_Press) && region == MouseRegion::Pane ) {
-        Uuid clickedId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
-        if (!clickedId.isNil() && clickedId != tab->focusedPaneId()) {
-            Uuid prev = tab->focusedPaneId();
-            tab->setFocusedPane(clickedId);
-            if (host_.notifyPaneFocusChange) host_.notifyPaneFocusChange(*tab, prev, clickedId);
-            if (host_.updateTabTitleFromFocusedPane) host_.updateTabTitleFromFocusedPane(host_.activeTabIdx());
+        Uuid clickedId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx), static_cast<int>(sy));
+        Uuid curFocus = eng.focusedPaneInSubtree(*tab);
+        if (!clickedId.isNil() && clickedId != curFocus) {
+            eng.setFocusedTerminalNodeId(clickedId);
+            platform_->notifyPaneFocusChange(*tab, curFocus, clickedId);
+            platform_->updateTabTitleFromFocusedPane(platform_->scriptEngine_.activeTabIndex());
         }
     }
 
     // 2b. Check if click lands inside a popup — deliver mouse event to JS
     if (region == MouseRegion::Pane ) {
-        Terminal* clickPane = tab->focusedPane();
+        Terminal* clickPane = eng.focusedTerminalInSubtree(*tab);
         if (clickPane) {
-            const PaneRect& pr = clickPane->rect();
+            const Rect& pr = clickPane->rect();
             int cellCol = static_cast<int>((sx - pr.x - padLeft) / charWidth);
             int cellRow = static_cast<int>((sy - pr.y - padTop) / lineHeight);
             for (const auto& popup : clickPane->popups()) {
@@ -380,11 +384,11 @@ void InputController::onMouseButton(int button, int action, int mods)
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
                     int btn = (button == static_cast<int>(LeftButton)) ? 0
                             : (button == static_cast<int>(RightButton)) ? 1 : 2;
-                    host_.scriptEngine->deliverPopupMouseEvent(
+                    platform_->scriptEngine_.deliverPopupMouseEvent(
                         clickPane->id(), popup->popupId(), type,
                         relCol, relRow,
                         static_cast<int>(sx), static_cast<int>(sy), btn);
-                    host_.scriptEngine->executePendingJobs();
+                    platform_->scriptEngine_.executePendingJobs();
                     return;
                 }
             }
@@ -393,7 +397,7 @@ void InputController::onMouseButton(int button, int action, int mods)
             std::string paneEvtType = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
             int paneBtn = (button == static_cast<int>(LeftButton)) ? 0
                         : (button == static_cast<int>(RightButton)) ? 1 : 2;
-            host_.scriptEngine->deliverPaneMouseEvent(
+            platform_->scriptEngine_.deliverPaneMouseEvent(
                 clickPane->id(), paneEvtType,
                 cellCol, cellRow,
                 static_cast<int>(sx), static_cast<int>(sy), paneBtn);
@@ -412,7 +416,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     }
 
     // 5. Resolve focused pane and terminal
-    Terminal* fp = tab->focusedPane();
+    Terminal* fp = eng.focusedTerminalInSubtree(*tab);
     TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
@@ -432,7 +436,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     if (!matched.empty()) {
         // Compute cell coordinates relative to pane (subtract padding so col 0
         // begins at the first cell, not the pane edge)
-        PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
+        Rect pr = fp ? fp->rect() : Rect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
         double cellRelX = sx - pr.x - padLeft;
         double cellRelY = sy - pr.y - padTop;
         int cellCol = static_cast<int>(cellRelX / charWidth);
@@ -558,7 +562,7 @@ void InputController::onMouseButton(int button, int action, int mods)
                 continue;
             }
 
-            host_.dispatchAction(act);
+            platform_->dispatchAction(act);
         }
         return;
     }
@@ -566,7 +570,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     // No binding match — if grabbed, forward to terminal's mouse reporting.
     // Skip when the click landed on a divider — the pane shouldn't see it.
     if (mode == MouseMode::Grabbed && region == MouseRegion::Pane) {
-        PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
+        Rect pr = fp ? fp->rect() : Rect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
         double cellRelX = sx - pr.x - padLeft;
         double cellRelY = sy - pr.y - padTop;
 
@@ -594,23 +598,24 @@ void InputController::onMouseButton(int button, int action, int mods)
 
 void InputController::onCursorPos(double x, double y)
 {
-    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
-    auto tab = host_.activeTab();
+    std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
+    auto tab = platform_->activeTab();
     if (!tab) return;
+    Script::Engine& eng = platform_->scriptEngine_;
 
-    Window* window = host_.window ? host_.window() : nullptr;
-    Terminal* fp = tab->focusedPane();
+    Window* window = platform_->window_.get();
+    Terminal* fp = eng.focusedTerminalInSubtree(*tab);
     TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) return;
 
-    const float contentScaleX = host_.contentScaleX();
-    const float contentScaleY = host_.contentScaleY();
-    const float charWidth = host_.charWidth();
-    const float lineHeight = host_.lineHeight();
-    const float padLeft = host_.padLeft();
-    const float padTop = host_.padTop();
-    const uint32_t fbWidth = host_.fbWidth();
-    const uint32_t fbHeight = host_.fbHeight();
+    const float contentScaleX = platform_->contentScaleX_;
+    const float contentScaleY = platform_->contentScaleY_;
+    const float charWidth = platform_->charWidth_;
+    const float lineHeight = platform_->lineHeight_;
+    const float padLeft = platform_->padLeft_;
+    const float padTop = platform_->padTop_;
+    const uint32_t fbWidth = platform_->fbWidth_;
+    const uint32_t fbHeight = platform_->fbHeight_;
 
     lastCursorX_ = x;
     lastCursorY_ = y;
@@ -627,8 +632,8 @@ void InputController::onCursorPos(double x, double y)
         if (region == MouseRegion::TabBar) {
             window->setCursorStyle(Window::CursorStyle::Arrow);
         } else {
-            Uuid hoveredId = tab->paneAtPixel(static_cast<int>(sx),
-                                               static_cast<int>(sy));
+            Uuid hoveredId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx),
+                                                      static_cast<int>(sy));
             auto it = paneCursorStyle_.find(hoveredId);
             window->setCursorStyle(it != paneCursorStyle_.end()
                 ? it->second
@@ -637,15 +642,15 @@ void InputController::onCursorPos(double x, double y)
     }
 
     // Notify JS mousemove listeners for the hovered pane
-    if (host_.scriptEngine) {
-        Uuid hoveredPaneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
-        if (!hoveredPaneId.isNil() && host_.scriptEngine->hasPaneMouseMoveListeners(hoveredPaneId)) {
-            Terminal* hp = tab->pane(hoveredPaneId);
+    if (&platform_->scriptEngine_) {
+        Uuid hoveredPaneId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx), static_cast<int>(sy));
+        if (!hoveredPaneId.isNil() && platform_->scriptEngine_.hasPaneMouseMoveListeners(hoveredPaneId)) {
+            Terminal* hp = eng.paneInSubtree(*tab, hoveredPaneId);
             if (hp) {
-                PaneRect hpr = hp->rect();
+                Rect hpr = hp->rect();
                 double hcx = sx - hpr.x - padLeft;
                 double hcy = sy - hpr.y - padTop;
-                host_.scriptEngine->notifyPaneMouseMove(
+                platform_->scriptEngine_.notifyPaneMouseMove(
                     hoveredPaneId,
                     static_cast<int>(hcx / charWidth),
                     static_cast<int>(hcy / lineHeight),
@@ -655,7 +660,7 @@ void InputController::onCursorPos(double x, double y)
         }
     }
 
-    PaneRect pr = fp ? fp->rect() : PaneRect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
+    Rect pr = fp ? fp->rect() : Rect{0, 0, static_cast<int>(fbWidth), static_cast<int>(fbHeight)};
     // relX/relY: pane-relative pixels (used for pane bounds tests).
     // cellRelX/cellRelY: cell-grid-relative pixels (used for cell math + pixel reporting).
     double relX = sx - pr.x;
@@ -743,7 +748,7 @@ void InputController::onCursorPos(double x, double y)
                     term->mousePressEvent(&ev);
                     selectionDragActive_ = true;
                 } else {
-                    host_.dispatchAction(act);
+                    platform_->dispatchAction(act);
                 }
                 return;
             }
@@ -774,7 +779,7 @@ void InputController::startAutoScroll(int dir, int col)
     autoScrollDir_ = dir;
     autoScrollCol_ = col;
     if (autoScrollTimerActive_) return; // already running, dir/col updated above
-    EventLoop* el = host_.eventLoop ? host_.eventLoop() : nullptr;
+    EventLoop* el = platform_->eventLoop_.get();
     if (!el) return;
     autoScrollTimer_ = el->addTimer(50, true, [this]() { doAutoScroll(); });
     autoScrollTimerActive_ = true;
@@ -783,7 +788,7 @@ void InputController::startAutoScroll(int dir, int col)
 void InputController::stopAutoScroll()
 {
     if (!autoScrollTimerActive_) return;
-    if (EventLoop* el = host_.eventLoop ? host_.eventLoop() : nullptr)
+    if (EventLoop* el = platform_->eventLoop_.get())
         el->removeTimer(autoScrollTimer_);
     autoScrollTimerActive_ = false;
 }
@@ -792,9 +797,9 @@ void InputController::doAutoScroll()
 {
     if (!selectionDragActive_) { stopAutoScroll(); return; }
 
-    auto tab = host_.activeTab();
+    auto tab = platform_->activeTab();
     if (!tab) { stopAutoScroll(); return; }
-    Terminal* fp = tab->focusedPane();
+    Terminal* fp = platform_->scriptEngine_.focusedTerminalInSubtree(*tab);
     TerminalEmulator* term = static_cast<TerminalEmulator*>(fp);
     if (!term) { stopAutoScroll(); return; }
 
@@ -816,21 +821,21 @@ void InputController::doAutoScroll()
     else if (autoScrollDir_ < 0 && term->viewportOffset() == 0)
         stopAutoScroll();
 
-    if (host_.setNeedsRedraw) host_.setNeedsRedraw();
+    platform_->setNeedsRedraw();
 }
 
 void InputController::refreshPointerShape()
 {
-    Window* window = host_.window ? host_.window() : nullptr;
-    if (!window || host_.headless) return;
-    auto tab = host_.activeTab();
+    Window* window = platform_->window_.get();
+    if (!window || platform_->isHeadless()) return;
+    auto tab = platform_->activeTab();
     if (!tab) return;
     // When the pointer is over the tab bar, show the arrow regardless of the
     // focused pane's cursor shape — matches the hover path in onMouseMove.
     // Without this, clicking a tab triggers a focus change and applies the
     // focused pane's IBeam even though the pointer is still in the tab bar.
-    double sx = lastCursorX_ * host_.contentScaleX();
-    double sy = lastCursorY_ * host_.contentScaleY();
+    double sx = lastCursorX_ * platform_->contentScaleX_;
+    double sy = lastCursorY_ * platform_->contentScaleY_;
     if (hitTest(sx, sy) == MouseRegion::TabBar) {
         window->setCursorStyle(Window::CursorStyle::Arrow);
         return;
@@ -839,9 +844,10 @@ void InputController::refreshPointerShape()
     // don't show a cursor that doesn't match the hovered pane). Falls back to
     // the focused pane when the mouse position isn't usefully hovering one
     // (e.g. before any motion event has fired).
-    Uuid paneId = tab->paneAtPixel(static_cast<int>(sx), static_cast<int>(sy));
+    Script::Engine& eng = platform_->scriptEngine_;
+    Uuid paneId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx), static_cast<int>(sy));
     if (paneId.isNil()) {
-        if (Terminal* focPane = tab->focusedPane()) paneId = focPane->nodeId();
+        if (Terminal* focPane = eng.focusedTerminalInSubtree(*tab)) paneId = focPane->nodeId();
     }
     auto it = paneCursorStyle_.find(paneId);
     window->setCursorStyle(it != paneCursorStyle_.end()
@@ -856,9 +862,9 @@ void InputController::refreshPointerShape()
 // directly instead of deferring.
 void InputController::replayPendingSequenceKey(const PendingKey& p)
 {
-    TerminalEmulator* term = host_.activeTerm();
+    TerminalEmulator* term = static_cast<TerminalEmulator*>(platform_->activeTerm());
     if (!term) return;
-    Window* window = host_.window ? host_.window() : nullptr;
+    Window* window = platform_->window_.get();
 
     Key k = static_cast<Key>(p.key);
     KeyEvent ev;
@@ -921,7 +927,7 @@ void InputController::replayPendingSequenceKey(const PendingKey& p)
 void InputController::scheduleSequenceTimeout()
 {
     if (sequenceTimeoutMs_ <= 0) return;
-    EventLoop* loop = host_.eventLoop ? host_.eventLoop() : nullptr;
+    EventLoop* loop = platform_->eventLoop_.get();
     if (!loop) return;
     cancelSequenceTimeout();
     sequenceTimerId_ = loop->addTimer(
@@ -932,10 +938,8 @@ void InputController::scheduleSequenceTimeout()
 void InputController::cancelSequenceTimeout()
 {
     if (sequenceTimerId_ == 0) return;
-    if (host_.eventLoop) {
-        if (EventLoop* loop = host_.eventLoop()) {
-            loop->removeTimer(sequenceTimerId_);
-        }
+    if (EventLoop* loop = platform_->eventLoop_.get()) {
+        loop->removeTimer(sequenceTimerId_);
     }
     sequenceTimerId_ = 0;
 }
@@ -944,7 +948,7 @@ void InputController::onSequenceTimeout()
 {
     // The timer fires on the main/event-loop thread, same as onKey, so we
     // take the platform mutex to serialize with any in-flight input.
-    std::lock_guard<std::recursive_mutex> plk(*host_.platformMutex);
+    std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
     sequenceTimerId_ = 0;
     if (pendingSequenceKeys_.empty()) {
         sequenceMatcher_.reset();

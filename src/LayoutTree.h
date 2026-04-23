@@ -10,8 +10,6 @@
 #include <variant>
 #include <vector>
 
-using LayoutRect = Rect;
-
 enum class NodeKind : uint8_t {
     Terminal  = 0,
     Container = 1,
@@ -147,14 +145,14 @@ public:
     // returned map are "not visible this frame" — non-active Stack children
     // and container children that clipped to zero area. Returns empty when
     // root is nil.
-    std::unordered_map<Uuid, LayoutRect, UuidHash> computeRects(
-        LayoutRect window, int cellW, int cellH) const;
+    std::unordered_map<Uuid, Rect, UuidHash> computeRects(
+        Rect window, int cellW, int cellH) const;
 
     // Same as computeRects but rooted at an arbitrary node in the tree.
     // Used by Layout to lay out its own subtree inside a shared tree that
     // doesn't (yet) have the subtree hooked up under the tree root.
-    std::unordered_map<Uuid, LayoutRect, UuidHash> computeRectsFrom(
-        Uuid start, LayoutRect window, int cellW, int cellH) const;
+    std::unordered_map<Uuid, Rect, UuidHash> computeRectsFrom(
+        Uuid start, Rect window, int cellW, int cellH) const;
 
     // Collect divider rects between visible siblings inside `start`'s subtree,
     // given a `rects` map produced by computeRects/computeRectsFrom. Each
@@ -165,8 +163,8 @@ public:
     // wired up) naturally bypasses non-zoomed Containers because their
     // children aren't in `rects`.
     void dividersIn(Uuid start, int dividerPixels,
-                    const std::unordered_map<Uuid, LayoutRect, UuidHash>& rects,
-                    std::vector<std::pair<Uuid, LayoutRect>>& out) const;
+                    const std::unordered_map<Uuid, Rect, UuidHash>& rects,
+                    std::vector<std::pair<Uuid, Rect>>& out) const;
 
     // Starting at `fromParent`, walk up the parent chain collapsing each
     // Container that has exactly one child: the only child is promoted into
@@ -192,7 +190,7 @@ public:
     // ancestor exists or if `ancestorRoot` is nil. `window` is the pixel box
     // the subtree lays out into.
     bool resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
-                              Uuid ancestorRoot, LayoutRect window,
+                              Uuid ancestorRoot, Rect window,
                               int cellW, int cellH);
 
     // Collect every Terminal-kind leaf Uuid in `start`'s subtree. If

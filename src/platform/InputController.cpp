@@ -382,7 +382,8 @@ void InputController::onMouseButton(int button, int action, int mods)
         if (!clickedId.isNil() && clickedId != curFocus) {
             eng.setFocusedTerminalNodeId(clickedId);
             platform_->notifyPaneFocusChange(*tab, curFocus, clickedId);
-            platform_->updateTabTitleFromFocusedPane(platform_->scriptEngine_.activeTabIndex());
+            platform_->tabBarDirty_ = true;
+            platform_->updateWindowTitle();
         }
     }
 

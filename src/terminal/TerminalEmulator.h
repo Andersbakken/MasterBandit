@@ -27,11 +27,17 @@ struct TerminalCallbacks {
     std::function<void(TerminalEmulator*, int /*Event*/, void*)> event;
     std::function<void(const std::string&)>      copyToClipboard;
     std::function<std::string()>                 pasteFromClipboard;
-    std::function<void(const std::string&)>      onTitleChanged;
+    // OSC 0/2 sets the title; XTWINOPS 22/23 push/pop the stack.
+    // Fires with Some(str) when OSC writes the top (even an empty string)
+    // or a pop exposes a previously-saved string; fires with nullopt when
+    // the stack pops empty (no title left). Downstream tabs treat nullopt
+    // as "no pane-driven title — fall back to the tab's JS label or the
+    // foreground process name".
+    std::function<void(std::optional<std::string>)> onTitleChanged;
     std::function<float()>                       cellPixelWidth;
     std::function<float()>                       cellPixelHeight;
     std::function<void(int, std::string_view)>  onOSC;    // called for unhandled OSC codes
-    std::function<void(const std::string&)>      onIconChanged;    // OSC 1
+    std::function<void(std::optional<std::string>)> onIconChanged;    // OSC 1; same semantics as onTitleChanged
     std::function<void(int /*state*/, int /*pct*/)> onProgressChanged; // OSC 9;4
     std::function<bool()>                        isDarkMode;         // for mode 2031
     std::function<void(const std::string&)>      onCWDChanged;       // OSC 7
@@ -308,6 +314,18 @@ public:
     void mouseReleaseEvent(const MouseEvent *event);
     void mouseMoveEvent(const MouseEvent *event);
     bool mouseReportingActive() const { return mState->mouseMode1000 || mState->mouseMode1002 || mState->mouseMode1003; }
+
+    // Pull-model title/icon: returns the top of the XTWINOPS stack, or
+    // nullopt when the stack is empty (no OSC 0/2 has set one, or it's been
+    // fully popped away). Push duplicates the current top and is a no-op on
+    // an empty stack, so stack-non-empty is equivalent to "app has set a
+    // title at some point and hasn't fully revoked it."
+    std::optional<std::string> currentTitle() const {
+        return mTitleStack.empty() ? std::optional<std::string>{} : mTitleStack.back();
+    }
+    std::optional<std::string> currentIcon() const {
+        return mIconStack.empty() ? std::optional<std::string>{} : mIconStack.back();
+    }
     bool syncOutputActive() const { return mState->syncOutput; }
     uint8_t kittyFlags() const { return mKittyFlags; }
     bool colorPreferenceReporting() const { return mState->colorPreferenceReporting; }

@@ -446,8 +446,11 @@ public:
     // layoutRootStack_ in the shared tree). Icon lives here, keyed by that
     // Uuid. Title lives on the tree node's `label`.
     const std::string& tabIcon(Uuid subtreeRoot) const;
-    void setTabIcon(Uuid subtreeRoot, const std::string& s);
     void eraseTabIcon(Uuid subtreeRoot);
+    // Drop the per-tab last-focus memory when a tab is destroyed. Stale
+    // entries are also lazy-ignored at read time (see rememberedFocusInSubtree),
+    // so this is purely bookkeeping to bound map growth.
+    void eraseLastFocusedInTab(Uuid subtreeRoot);
 
     // Uuid is the sole pane identity — render state, input routing, and the
     // script surface all key on it. (A previous int paneId index was purged.)
@@ -457,7 +460,11 @@ public:
     // One node is "zoomed" at a time. Both may be nil. Tab switches update
     // these through setFocusedTerminal / setZoomedNode.
     Uuid focusedTerminalNodeId() const { return focusedTerminalNodeId_; }
-    void setFocusedTerminalNodeId(Uuid u) { focusedTerminalNodeId_ = u; }
+    // Out-of-line: also updates lastFocusedInTab_ when u resolves to a pane
+    // inside a known tab subtree. Clearing focus (u = {}) deliberately does
+    // not touch the memory so that transitional clears during pane removal
+    // or tab close preserve the "what was focused here" answer.
+    void setFocusedTerminalNodeId(Uuid u);
     // Convenience: resolve the focused Uuid through the terminal map. Null
     // if no pane is focused or the focused Uuid points at a killed Terminal
     // (the tree node may still exist briefly between killTerminal and the
@@ -516,8 +523,10 @@ public:
     // Tab operations live here; callers pass in the tab's subtreeRoot Uuid.
 
     // Title/icon. Title lives on the tree node's `label`; icon in tabIcons_.
+    // Reads the tab's JS-set label (via mb.layout.setLabel). Pane-driven
+    // title now comes from the pane's emulator title stack, pulled live by
+    // the tab-bar renderer — this getter only surfaces script overrides.
     const std::string& tabTitle(Uuid subtreeRoot) const;
-    void setTabTitle(Uuid subtreeRoot, const std::string& s);
 
     // Create a fresh tab subtree (Stack + content Container) attached as an
     // orphan. Caller attaches it under layoutRootStack_.
@@ -540,6 +549,14 @@ public:
     // Focus scoped to a tab.
     Uuid focusedPaneInSubtree(Uuid subtreeRoot) const;
     ::Terminal* focusedTerminalInSubtree(Uuid subtreeRoot);
+
+    // Per-tab last-focused pane (maintained by setFocusedTerminalNodeId).
+    // Returns the remembered pane's Uuid if still in the subtree, else nil.
+    // Useful when the globally-focused pane lives in another tab but we
+    // want this tab's own notion of "active pane" (e.g. tab-bar progress
+    // glyph, tab-switch focus restore).
+    Uuid rememberedFocusInSubtree(Uuid subtreeRoot) const;
+    ::Terminal* rememberedFocusTerminalInSubtree(Uuid subtreeRoot);
 
     // Tab-bar rect + tab rect computation.
     Rect tabBarRect(uint32_t windowW, uint32_t windowH);
@@ -654,6 +671,10 @@ private:
     // then terminals_, then layoutTree_.
     std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> terminals_;
     std::unordered_map<Uuid, std::string,                 UuidHash> tabIcons_;
+    // tab subtreeRoot → last pane Uuid that was focused inside that tab.
+    // Maintained by setFocusedTerminalNodeId; cleaned up by eraseLastFocusedInTab
+    // when a tab is destroyed. Lazy-validated on read against the tree.
+    std::unordered_map<Uuid, Uuid,                        UuidHash> lastFocusedInTab_;
 
     // Engine-wide focus. Zoom lives on StackData::zoomTarget (tree-side),
     // not on the engine.

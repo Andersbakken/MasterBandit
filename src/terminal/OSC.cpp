@@ -359,7 +359,8 @@ void TerminalEmulator::processStringSequence()
             mIconStack.emplace_back(payload);
         else
             mIconStack.back() = std::string(payload);
-        if (mCallbacks.onIconChanged) mCallbacks.onIconChanged(std::string(payload));
+        if (mCallbacks.onIconChanged)
+            mCallbacks.onIconChanged(std::optional<std::string>(std::string(payload)));
         break;
     case 2: processOSC_Title(payload, true); break;
     case 22: processOSC_PointerShape(payload); break;
@@ -620,7 +621,8 @@ void TerminalEmulator::processOSC_Title(std::string_view text, bool setTitle)
             mTitleStack.emplace_back(text);
         else
             mTitleStack.back() = std::string(text);
-        if (mCallbacks.onTitleChanged) mCallbacks.onTitleChanged(std::string(text));
+        if (mCallbacks.onTitleChanged)
+            mCallbacks.onTitleChanged(std::optional<std::string>(std::string(text)));
     }
 }
 

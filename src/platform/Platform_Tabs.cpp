@@ -79,15 +79,21 @@ void PlatformDawn::setActiveTabIdx(int idx)
     if (sub.isNil()) return;
     scriptEngine_.layoutTree().setActiveChild(scriptEngine_.layoutRootStack(), sub);
 
-    // The engine holds a single focused-terminal Uuid. If the currently
-    // focused Terminal isn't inside the newly active tab, move focus onto
-    // the first Terminal of that tab. Without this, closing a tab (which
-    // clears focus if the focused pane was inside it) and splitting via a
-    // JS action that reads `mb.layout.focusedPane()` would see null focus
-    // and no-op the split.
+    // The engine holds a single focused-terminal Uuid. On tab activation we
+    // want to land on *this* tab's last-focused pane (so switching away and
+    // back restores the pane the user was using). Fall back to the existing
+    // behavior when there's no memory yet: keep focus if it's already in the
+    // tab, else pick the first live pane. Without the fallback, JS actions
+    // reading `mb.layout.focusedPane()` right after a tab switch would see
+    // null focus and no-op.
     auto livePanes = scriptEngine_.panesInSubtree(sub);
     if (livePanes.empty()) {
         scriptEngine_.setFocusedTerminalNodeId({});
+        return;
+    }
+    Uuid remembered = scriptEngine_.rememberedFocusInSubtree(sub);
+    if (!remembered.isNil()) {
+        scriptEngine_.setFocusedTerminalNodeId(remembered);
         return;
     }
     Uuid focus = scriptEngine_.focusedTerminalNodeId();
@@ -113,13 +119,23 @@ void PlatformDawn::updateWindowTitle()
     if (isHeadless()) return;
     auto tab = activeTab();
     if (!tab) return;
-    Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
+    // Use the tab's remembered focus so a just-switched tab doesn't briefly
+    // resolve via the global-focus chain.
+    Terminal* fp = scriptEngine_.rememberedFocusTerminalInSubtree(*tab);
     if (!fp) return;
-    const std::string& icon = fp->icon();
-    // Prefer the pane's OSC-set title; fall back to the tab title.
-    const std::string& title = fp->title().empty() ? scriptEngine_.tabTitle(*tab) : fp->title();
+    // Resolution order for the title: JS-set label on the tab node wins,
+    // then the pane's OSC title, then the pane's foreground process. An
+    // empty string at any level falls through (apps often clear titles
+    // with OSC 2 "").
+    std::string title = scriptEngine_.tabTitle(*tab);
+    if (title.empty()) {
+        auto t = fp->title();
+        if (t.has_value() && !t->empty()) title = *t;
+        else                              title = fp->foregroundProcess();
+    }
     if (title.empty()) return;
-    std::string windowTitle = icon.empty() ? title : icon + " " + title;
+    std::string iconStr = fp->icon().value_or("");
+    std::string windowTitle = iconStr.empty() ? title : iconStr + " " + title;
     if (window_) window_->setTitle(windowTitle);
 }
 
@@ -227,23 +243,6 @@ void PlatformDawn::notifyPaneFocusChange(Uuid subtreeRoot, Uuid prevId, Uuid new
     if (inputController_) inputController_->refreshPointerShape();
 }
 
-void PlatformDawn::updateTabTitleFromFocusedPane(int tabIdx)
-{
-    auto tab = tabAt(tabIdx);
-    if (!tab) return;
-    Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
-    if (!fp) return;
-
-    const std::string& title = fp->title();
-    const std::string& icon  = fp->icon();
-    scriptEngine_.setTabTitle(*tab, title);
-    if (!icon.empty()) scriptEngine_.setTabIcon(*tab, icon);
-    if (tabIdx == scriptEngine_.activeTabIndex() && !title.empty())
-        updateWindowTitle();
-    tabBarDirty_ = true;
-    setNeedsRedraw();
-}
-
 void PlatformDawn::closeTab(int idx)
 {
     auto tab = tabAt(idx);
@@ -277,6 +276,7 @@ void PlatformDawn::closeTab(int idx)
             if (t) extractedTerminals.push_back(std::move(t));
         }
         scriptEngine_.eraseTabIcon(subRoot);
+        scriptEngine_.eraseLastFocusedInTab(subRoot);
         LayoutTree& tree = scriptEngine_.layoutTree();
         tree.removeChild(scriptEngine_.layoutRootStack(), subRoot);
         tree.destroyNode(subRoot);
@@ -292,8 +292,14 @@ void PlatformDawn::closeTab(int idx)
         if (!newActive.isNil()) {
             tree.setActiveChild(scriptEngine_.layoutRootStack(), newActive);
             auto livePanes = scriptEngine_.panesInSubtree(newActive);
-            if (!livePanes.empty())
-                scriptEngine_.setFocusedTerminalNodeId(livePanes.front()->nodeId());
+            if (!livePanes.empty()) {
+                // Prefer this tab's last-focused pane over an arbitrary first
+                // pane so users don't lose their working pane when a
+                // neighboring tab closes.
+                Uuid remembered = scriptEngine_.rememberedFocusInSubtree(newActive);
+                scriptEngine_.setFocusedTerminalNodeId(
+                    remembered.isNil() ? livePanes.front()->nodeId() : remembered);
+            }
         }
         buildRenderFrameState();
         stamp = renderThread_->completedFrames();
@@ -579,7 +585,9 @@ bool PlatformDawn::focusPaneById(Uuid nodeId)
     Uuid prev = scriptEngine_.focusedPaneInSubtree(*tab);
     scriptEngine_.setFocusedTerminalNodeId(nodeId);
     notifyPaneFocusChange(*tab, prev, nodeId);
-    updateTabTitleFromFocusedPane(tabIdx);
+    // Tab bar reads title/icon live off the focused pane, so just mark dirty.
+    tabBarDirty_ = true;
+    if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
     setNeedsRedraw();
     return true;
 }
@@ -611,7 +619,9 @@ bool PlatformDawn::removeNode(Uuid nodeId)
 
     resizeAllPanesInTab(*tab);
     notifyPaneFocusChange(*tab, Uuid{}, scriptEngine_.focusedPaneInSubtree(*tab));
-    updateTabTitleFromFocusedPane(tabIdx);
+    tabBarDirty_ = true;
+    if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
+    setNeedsRedraw();
     return true;
 }
 
@@ -680,14 +690,17 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         cbs.pasteFromClipboard = []() -> std::string { return {}; };
     }
 
-    cbs.onTitleChanged = [this, paneId](const std::string& title) {
-        renderThread_->postToMain([this, paneId, title] {
+    // Pull-model: title/icon live on the emulator's XTWINOPS stack. These
+    // callbacks only need to dirty the tab bar + refresh the window title
+    // so the render thread re-reads. std::nullopt means "stack went empty"
+    // (pop-to-empty); Some("") is an explicit OSC 2 "" — both treated the
+    // same here since the pull side handles resolution.
+    cbs.onTitleChanged = [this, paneId](std::optional<std::string>) {
+        renderThread_->postToMain([this, paneId] {
             int tabIdx = -1;
             auto tab = findTabForPane(paneId, &tabIdx);
             if (!tab) return;
-            if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) p->setTitle(title);
-            if (scriptEngine_.focusedPaneInSubtree(*tab) == paneId) {
-                scriptEngine_.setTabTitle(*tab, title);
+            if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
                 if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
@@ -695,14 +708,12 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         });
     };
 
-    cbs.onIconChanged = [this, paneId](const std::string& icon) {
-        renderThread_->postToMain([this, paneId, icon] {
+    cbs.onIconChanged = [this, paneId](std::optional<std::string>) {
+        renderThread_->postToMain([this, paneId] {
             int tabIdx = -1;
             auto tab = findTabForPane(paneId, &tabIdx);
             if (!tab) return;
-            if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) p->setIcon(icon);
-            if (scriptEngine_.focusedPaneInSubtree(*tab) == paneId) {
-                scriptEngine_.setTabIcon(*tab, icon);
+            if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
                 if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
                 tabBarDirty_ = true;
                 setNeedsRedraw();
@@ -779,9 +790,11 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             int tabIdx = -1;
             auto tab = findTabForPane(paneId, &tabIdx);
             if (!tab) return;
-            Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId);
-            if (p && p->title().empty() && scriptEngine_.focusedPaneInSubtree(*tab) == paneId) {
-                scriptEngine_.setTabTitle(*tab, proc);
+            // Pull-model: no tab-title cache to update. If this pane is the
+            // tab's representative, the tab bar falls back to the fg process
+            // when the pane has no OSC title — so just dirty the bar and
+            // refresh the window title.
+            if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
                 if (tabIdx == scriptEngine_.activeTabIndex()) updateWindowTitle();
                 tabBarDirty_ = true;
                 setNeedsRedraw();

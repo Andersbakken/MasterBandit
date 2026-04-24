@@ -90,7 +90,8 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 Uuid nextId = panes[next]->nodeId();
                 scriptEngine_.setFocusedTerminalNodeId(nextId);
                 notifyPaneFocusChange(*tab, prev, nextId);
-                updateTabTitleFromFocusedPane(scriptEngine_.activeTabIndex());
+                tabBarDirty_ = true;
+                updateWindowTitle();
                 setNeedsRedraw();
                 return;
             }
@@ -114,7 +115,8 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 Uuid prev = scriptEngine_.focusedPaneInSubtree(*tab);
                 scriptEngine_.setFocusedTerminalNodeId(targetId);
                 notifyPaneFocusChange(*tab, prev, targetId);
-                updateTabTitleFromFocusedPane(scriptEngine_.activeTabIndex());
+                tabBarDirty_ = true;
+                updateWindowTitle();
                 setNeedsRedraw();
             }
         },

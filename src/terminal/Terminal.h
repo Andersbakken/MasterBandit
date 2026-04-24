@@ -95,11 +95,11 @@ public:
     const std::string& popupId() const { return mPopupId; }
     void setPopupId(const std::string& id) { mPopupId = id; }
 
-    // --- Title, icon, progress, CWD (set by OSC callbacks) ---
-    const std::string& title() const { return mTitle; }
-    void setTitle(const std::string& t) { mTitle = t; }
-    const std::string& icon() const { return mIcon; }
-    void setIcon(const std::string& i) { mIcon = i; }
+    // --- Title, icon, progress, CWD ---
+    // title/icon are pull-model: reads the emulator's XTWINOPS stack.
+    // nullopt means "no OSC-set title" — callers decide the fallback.
+    std::optional<std::string> title() const { return currentTitle(); }
+    std::optional<std::string> icon() const  { return currentIcon(); }
     int progressState() const { return mProgressState; }
     int progressPct() const { return mProgressPct; }
     void setProgress(int state, int pct) { mProgressState = state; mProgressPct = pct; }
@@ -220,9 +220,8 @@ private:
     // String identifier for popup children (set by createPopup, used for lookup)
     std::string mPopupId;
 
-    // Metadata set by OSC callbacks
-    std::string mTitle;
-    std::string mIcon;
+    // Metadata set by OSC callbacks. Title/icon live on the emulator's
+    // XTWINOPS stacks (pull-model via Terminal::title/icon).
     int mProgressState { 0 };
     int mProgressPct { 0 };
     std::string mCWD;

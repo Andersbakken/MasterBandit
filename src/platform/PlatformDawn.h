@@ -228,7 +228,6 @@ private:
     void clearDividers(Uuid subtreeRoot);
     void releaseTabTextures(Uuid subtreeRoot);
 
-    void updateTabTitleFromFocusedPane(int tabIdx);
     void updateWindowTitle();
     void notifyPaneFocusChange(Uuid subtreeRoot, Uuid prevId, Uuid newId);
 
@@ -260,19 +259,9 @@ private:
         // too so the caller sees fresh rects synchronously (tests, callers
         // that read pane dims right after toggling bar visibility).
         runLayoutIfDirty();
-        if (visible) {
-            // Refresh tab titles from foreground process for tabs that
-            // have no OSC title — the callback may have fired before the
-            // tab bar existed or before the tab was added to tabs.
-            for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
-                Terminal* fp = scriptEngine_.focusedTerminalInSubtree(sub);
-                if (fp && fp->title().empty() && scriptEngine_.tabTitle(sub).empty()) {
-                    std::string proc = fp->foregroundProcess();
-                    if (!proc.empty())
-                        scriptEngine_.setTabTitle(sub, proc);
-                }
-            }
-        }
+        // Pull-model: tab-bar rendering pulls titles live from each tab's
+        // remembered pane on every build, so no explicit refresh is needed
+        // when the bar becomes visible.
     }
 
     bool tabBarVisible() const {

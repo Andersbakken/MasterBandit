@@ -28,7 +28,9 @@ struct TestTerminal {
     // Declared before `term` so they are initialized first and can be
     // safely captured by the callback lambdas passed to term's constructor.
     std::string capturedTitle;
+    bool        capturedTitleHasValue = false;
     std::string capturedIcon;
+    bool        capturedIconHasValue  = false;
     std::string capturedCWD;
     std::string capturedNotifyTitle;
     std::string capturedNotifyBody;
@@ -49,8 +51,14 @@ struct TestTerminal {
     TestTerminal(int cols = 80, int rows = 24)
         : term([this]() {
             TerminalCallbacks cb;
-            cb.onTitleChanged = [this](const std::string& t) { capturedTitle = t; };
-            cb.onIconChanged  = [this](const std::string& i) { capturedIcon  = i; };
+            cb.onTitleChanged = [this](std::optional<std::string> t) {
+                capturedTitle = t.value_or(std::string{});
+                capturedTitleHasValue = t.has_value();
+            };
+            cb.onIconChanged  = [this](std::optional<std::string> i) {
+                capturedIcon = i.value_or(std::string{});
+                capturedIconHasValue = i.has_value();
+            };
             cb.onCWDChanged   = [this](const std::string& d) { capturedCWD = d; };
             cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id) {
                 capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id;

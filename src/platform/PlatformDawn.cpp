@@ -248,10 +248,25 @@ void PlatformDawn::buildRenderFrameState()
     auto allTabs = scriptEngine_.tabSubtreeRoots();
     for (Uuid sub : allTabs) {
         RenderTabInfo rti;
-        rti.title = scriptEngine_.tabTitle(sub);
-        rti.icon  = scriptEngine_.tabIcon(sub);
+        // Title/icon resolution order: JS-set label on the tab node wins
+        // (so scripts can override), else the tab's remembered pane's OSC
+        // title/icon, else the pane's foreground process for title. Icon
+        // has no process fallback — leave empty if unset.
+        //
+        // Empty strings at any level fall through: apps like `claude` clear
+        // the title on exit via OSC 2 "" (instead of XTWINOPS 23 pop),
+        // which arrives as Some("") — treating that as "no title" gives the
+        // same fg-process fallback as nullopt.
         rti.focusedPaneId = scriptEngine_.focusedPaneInSubtree(sub);
-        Terminal* fp = scriptEngine_.focusedTerminalInSubtree(sub);
+        Terminal* fp = scriptEngine_.rememberedFocusTerminalInSubtree(sub);
+        rti.title = scriptEngine_.tabTitle(sub);
+        if (rti.title.empty() && fp) {
+            auto t = fp->title();
+            if (t.has_value() && !t->empty()) rti.title = *t;
+            else                              rti.title = fp->foregroundProcess();
+        }
+        rti.icon = scriptEngine_.tabIcon(sub);
+        if (rti.icon.empty() && fp) rti.icon = fp->icon().value_or("");
         rti.progressState = fp ? fp->progressState() : 0;
         rti.progressPct   = fp ? fp->progressPct() : 0;
         renderThread_->renderState().tabs.push_back(std::move(rti));

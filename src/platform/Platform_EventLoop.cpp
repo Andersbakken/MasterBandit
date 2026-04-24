@@ -70,9 +70,11 @@ int PlatformDawn::exec()
         scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo {
             if (Terminal* p = scriptEngine_.terminal(paneId)) {
                     bool isFocused = scriptEngine_.focusedTerminalNodeId() == paneId;
+                    // PaneInfo.title is a plain string for JS; collapse
+                    // the optional here (nullopt → "").
                     Script::AppCallbacks::PaneInfo info {
                         p->width(), p->height(),
-                        p->title(), p->cwd(),
+                        p->title().value_or(std::string{}), p->cwd(),
                         p->masterFD() >= 0,
                         isFocused, p->focusedPopupId(),
                         p->foregroundProcess()

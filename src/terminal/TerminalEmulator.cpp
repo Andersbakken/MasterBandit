@@ -1588,22 +1588,24 @@ void TerminalEmulator::processCSI()
                 if (mTitleStack.size() > 1) {
                     mTitleStack.pop_back();
                     if (mCallbacks.onTitleChanged)
-                        mCallbacks.onTitleChanged(mTitleStack.back());
+                        mCallbacks.onTitleChanged(std::optional<std::string>(mTitleStack.back()));
                 } else if (!mTitleStack.empty()) {
                     mTitleStack.clear();
+                    // nullopt: no title left on the stack — distinct from
+                    // OSC 2 "" (which fires Some("")).
                     if (mCallbacks.onTitleChanged)
-                        mCallbacks.onTitleChanged(std::string{});
+                        mCallbacks.onTitleChanged(std::nullopt);
                 }
             }
             if (doIcon) {
                 if (mIconStack.size() > 1) {
                     mIconStack.pop_back();
                     if (mCallbacks.onIconChanged)
-                        mCallbacks.onIconChanged(mIconStack.back());
+                        mCallbacks.onIconChanged(std::optional<std::string>(mIconStack.back()));
                 } else if (!mIconStack.empty()) {
                     mIconStack.clear();
                     if (mCallbacks.onIconChanged)
-                        mCallbacks.onIconChanged(std::string{});
+                        mCallbacks.onIconChanged(std::nullopt);
                 }
             }
         }

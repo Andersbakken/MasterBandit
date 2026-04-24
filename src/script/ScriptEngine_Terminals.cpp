@@ -199,15 +199,30 @@ const std::string& Engine::tabIcon(Uuid subtreeRoot) const
     return it == tabIcons_.end() ? kEmptyString() : it->second;
 }
 
-void Engine::setTabIcon(Uuid subtreeRoot, const std::string& s)
-{
-    if (subtreeRoot.isNil()) return;
-    tabIcons_[subtreeRoot] = s;
-}
-
 void Engine::eraseTabIcon(Uuid subtreeRoot)
 {
     tabIcons_.erase(subtreeRoot);
+}
+
+void Engine::eraseLastFocusedInTab(Uuid subtreeRoot)
+{
+    lastFocusedInTab_.erase(subtreeRoot);
+}
+
+void Engine::setFocusedTerminalNodeId(Uuid u)
+{
+    focusedTerminalNodeId_ = u;
+    if (u.isNil()) return;
+    // Record this pane as the "last focused" for whichever tab owns it, so
+    // later tab-switches and inactive-tab reads (progress icon) can restore
+    // the right pane. layoutTree_->contains walks the subtree; tab count is
+    // small, so the linear scan is negligible.
+    for (Uuid sub : tabSubtreeRoots()) {
+        if (layoutTree_->contains(sub, u)) {
+            lastFocusedInTab_[sub] = u;
+            break;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,12 +265,6 @@ const std::string& Engine::tabTitle(Uuid subtreeRoot) const
     if (subtreeRoot.isNil()) return kEmptyStr();
     const Node* n = layoutTree_->node(subtreeRoot);
     return n ? n->label : kEmptyStr();
-}
-
-void Engine::setTabTitle(Uuid subtreeRoot, const std::string& s)
-{
-    if (subtreeRoot.isNil()) return;
-    layoutTree_->setLabel(subtreeRoot, s);
 }
 
 Uuid Engine::createTabSubtree()
@@ -394,6 +403,21 @@ Uuid Engine::focusedPaneInSubtree(Uuid subtreeRoot) const
 ::Terminal* Engine::focusedTerminalInSubtree(Uuid subtreeRoot)
 {
     Uuid u = focusedPaneInSubtree(subtreeRoot);
+    return u.isNil() ? nullptr : paneInSubtree(subtreeRoot, u);
+}
+
+Uuid Engine::rememberedFocusInSubtree(Uuid subtreeRoot) const
+{
+    if (subtreeRoot.isNil()) return {};
+    auto it = lastFocusedInTab_.find(subtreeRoot);
+    if (it == lastFocusedInTab_.end()) return {};
+    // Lazy validate: pane may have been removed since it was remembered.
+    return layoutTree_->contains(subtreeRoot, it->second) ? it->second : Uuid{};
+}
+
+::Terminal* Engine::rememberedFocusTerminalInSubtree(Uuid subtreeRoot)
+{
+    Uuid u = rememberedFocusInSubtree(subtreeRoot);
     return u.isNil() ? nullptr : paneInSubtree(subtreeRoot, u);
 }
 

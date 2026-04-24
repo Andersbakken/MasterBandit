@@ -176,8 +176,21 @@ void Terminal::resize(int width, int height)
 {
     int oldW = this->width(), oldH = this->height();
     TerminalEmulator::resize(width, height);
-    if (this->width() != oldW || this->height() != oldH) {
+    const int newW = this->width();
+    const int newH = this->height();
+    if (newW != oldW || newH != oldH) {
         mResizePending = true;
+    }
+    // Cascade cols into embeddeds — they span the parent's full width.
+    // Rows stay pinned to whatever the applet sized them to. Fire the
+    // platform-wired notifier so JS "resized" listeners see parent-
+    // cascade resizes the same way they see explicit em.resize(rows).
+    if (newW != oldW && !mEmbedded.empty()) {
+        for (auto& [lineId, em] : mEmbedded) {
+            int emRows = em->height();
+            em->resize(newW, emRows);
+            if (onEmbeddedResized) onEmbeddedResized(lineId, newW, emRows);
+        }
     }
 }
 
@@ -572,37 +585,24 @@ bool Terminal::liveSegmentHitTest(double cellRelX, double cellRelY,
         cellWidth <= 0.0f || lineHeight <= 0.0f)
         return false;
 
-    // Shift the click into un-scrolled viewport coordinates so sub-line
-    // scroll doesn't desync the hit-test from what the user visually clicked.
-    double adjY = cellRelY + topPixelSubY();
-
-    struct EmHit { int viewRow; int rows; uint64_t lineId; };
-    std::vector<EmHit> hits;
-    hits.reserve(mEmbedded.size());
-
-    const Document& doc = document();
-    const int origin = doc.historySize() - viewportOffset();
-    const int paneRows = height();
-    for (const auto& [lineId, em] : mEmbedded) {
-        int abs = doc.firstAbsOfLine(lineId);
-        if (abs < 0) continue;
-        int viewRow = abs - origin;
-        if (viewRow < 0 || viewRow >= paneRows) continue;
-        hits.push_back({viewRow, em->height(), lineId});
-    }
-    std::sort(hits.begin(), hits.end(),
-              [](const EmHit& a, const EmHit& b) { return a.viewRow < b.viewRow; });
+    // The main-thread hit-test consumes the same visible-anchor list the
+    // render-thread snapshot builds. Can't read snap.segments from main
+    // thread without racing snap.update(), so we recompute from live
+    // state — the helper shares the build logic so both paths agree on
+    // which anchors are visible and in what order.
+    auto hits = collectVisibleAnchors(*this, viewportOffset(), height());
+    if (hits.empty()) return false;
 
     int cumShiftRows = 0;
     for (const auto& h : hits) {
         double visualYStartPx = (h.viewRow + cumShiftRows) * lineHeight;
         double visualYEndPx   = visualYStartPx + h.rows * lineHeight;
-        if (adjY >= visualYStartPx && adjY < visualYEndPx) {
+        if (cellRelY >= visualYStartPx && cellRelY < visualYEndPx) {
             outLineId      = h.lineId;
             outRelPixelX   = static_cast<int>(cellRelX);
-            outRelPixelY   = static_cast<int>(adjY - visualYStartPx);
+            outRelPixelY   = static_cast<int>(cellRelY - visualYStartPx);
             outRelCol      = static_cast<int>(cellRelX / cellWidth);
-            outRelRow      = static_cast<int>((adjY - visualYStartPx) / lineHeight);
+            outRelRow      = static_cast<int>((cellRelY - visualYStartPx) / lineHeight);
             return true;
         }
         cumShiftRows += (h.rows - 1);

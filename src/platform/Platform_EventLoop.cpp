@@ -45,6 +45,9 @@ int PlatformDawn::exec()
         scbs.fontCellSize = [this]() -> std::pair<float, float> {
             return { charWidth_, lineHeight_ };
         };
+        scbs.tabBarPosition = [this]() -> std::string {
+            return tabBarConfig_.position;
+        };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
             if (Terminal* p = scriptEngine_.terminal(paneId)) p->writeText(data);
         };

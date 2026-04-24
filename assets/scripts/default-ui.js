@@ -15,6 +15,14 @@
 // mb.layout.createTerminal spawns the native PTY + initial resize; we focus
 // the resulting Terminal so keyboard input lands there immediately.
 
+// The root Container is built once with the tab bar on either the "top" or
+// "bottom" side depending on [tab_bar].position. These Uuids are captured
+// so the configChanged listener below can swap the children's order on
+// hot-reload without rebuilding the tree.
+let _rootContainer = null;
+let _tabBarNode    = null;
+let _tabsStackNode = null;
+
 (() => {
     const tabsStack = mb.layout.getRoot();
     if (!tabsStack) {
@@ -25,9 +33,20 @@
     const newRoot = mb.layout.createContainer('vertical');
     const tabBar  = mb.layout.createTabBar();
     mb.layout.setRoot(newRoot);
-    mb.layout.appendChild(newRoot, tabBar, {fixedCells: 1});
-    mb.layout.appendChild(newRoot, tabsStack, {stretch: 1});
+
+    const position = mb.tabBarPosition || 'bottom';
+    if (position === 'top') {
+        mb.layout.appendChild(newRoot, tabBar, {fixedCells: 1});
+        mb.layout.appendChild(newRoot, tabsStack, {stretch: 1});
+    } else {
+        mb.layout.appendChild(newRoot, tabsStack, {stretch: 1});
+        mb.layout.appendChild(newRoot, tabBar, {fixedCells: 1});
+    }
     mb.layout.setTabBarStack(tabBar, tabsStack);
+
+    _rootContainer = newRoot;
+    _tabBarNode    = tabBar;
+    _tabsStackNode = tabsStack;
 
     // Build the first tab: Stack → content Container. appendChild
     // auto-sets the Stack's activeChild to its first child, so both
@@ -44,6 +63,38 @@
     const term = mb.layout.createTerminal(content);
     if (term && term.nodeId) mb.layout.focusPane(term.nodeId);
 })();
+
+// Hot-reload support: if the user toggles [tab_bar].position between "top"
+// and "bottom" at runtime, swap the root Container's children so the tab
+// bar moves side without a restart. LayoutTree has no "reorder children"
+// API; instead we detach and re-append in the new order.
+mb.addEventListener('configChanged', () => {
+    if (!_rootContainer || !_tabBarNode || !_tabsStackNode) return;
+    const want = mb.tabBarPosition || 'bottom';
+
+    // Determine current order by walking children. If already correct,
+    // skip the churn.
+    const rootNode = mb.layout.node(_rootContainer);
+    if (!rootNode || !rootNode.children) return;
+    const ids = rootNode.children.map(c => c.id);
+    const barIdx  = ids.indexOf(_tabBarNode);
+    const stackIdx = ids.indexOf(_tabsStackNode);
+    if (barIdx < 0 || stackIdx < 0) return;
+    const currentlyTop = barIdx < stackIdx;
+    if ((want === 'top') === currentlyTop) return;
+
+    // Reorder: detach both, re-append in new order. The inner subtree
+    // (_tabsStackNode) isn't destroyed — removeChild is structural-only.
+    mb.layout.removeChild(_rootContainer, _tabBarNode);
+    mb.layout.removeChild(_rootContainer, _tabsStackNode);
+    if (want === 'top') {
+        mb.layout.appendChild(_rootContainer, _tabBarNode,    {fixedCells: 1});
+        mb.layout.appendChild(_rootContainer, _tabsStackNode, {stretch: 1});
+    } else {
+        mb.layout.appendChild(_rootContainer, _tabsStackNode, {stretch: 1});
+        mb.layout.appendChild(_rootContainer, _tabBarNode,    {fixedCells: 1});
+    }
+});
 
 mb.actions.register('newTab', () => {
     const tab = mb.layout.createTab();

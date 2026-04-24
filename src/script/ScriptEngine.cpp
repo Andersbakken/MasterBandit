@@ -2235,6 +2235,15 @@ JSContext* Engine::createContext()
 static JSValue jsMbRegisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 static JSValue jsMbUnregisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 
+// mb.tabBarPosition — "top" | "bottom" (from the [tab_bar] config section).
+// Read by default-ui.js to order the root Container's children.
+static JSValue jsMbTabBarPosition(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    auto& cb = engineFromCtx(ctx)->callbacks().tabBarPosition;
+    std::string pos = cb ? cb() : std::string("bottom");
+    return JS_NewStringLen(ctx, pos.data(), pos.size());
+}
+
 // mb.getClipboard(source?) -> string.  source = "clipboard" | "primary" (default "clipboard")
 static JSValue jsMbGetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -2291,6 +2300,7 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
     defineGetter("tabs", jsMbGetTabs);
     defineGetter("activePane", jsMbGetActivePane);
     defineGetter("actions", jsMbGetActions);
+    defineGetter("tabBarPosition", jsMbTabBarPosition);
     JS_SetPropertyStr(ctx, mb, "unloadScript",
         JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, mb, "loadScript",
@@ -2823,6 +2833,21 @@ void Engine::notifyPaneCreated(TabId tab, PaneId pane)
         JSValue paneObj = jsPaneNew(inst.ctx, pane);
         enqueueListeners(inst.ctx, arr, 1, &paneObj);
         JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global);
+    }
+}
+
+void Engine::notifyConfigChanged()
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_configChanged");
+        enqueueListeners(inst.ctx, arr, 0, nullptr);
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);

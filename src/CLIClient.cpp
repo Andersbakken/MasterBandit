@@ -174,6 +174,7 @@ int runCLI(int argc, char** argv)
         ("s,socket", "Connect to specific socket path", cxxopts::value<std::string>()->default_value(""))
         ("t,target", "Screenshot target (pane name or id)", cxxopts::value<std::string>()->default_value(""))
         ("c,cell", "Screenshot cell rect: x,y,w,h", cxxopts::value<std::string>()->default_value(""))
+        ("f,format", "Screenshot format: png | grid", cxxopts::value<std::string>()->default_value("png"))
         ("h,help", "Print usage")
         ("command", "Command to run", cxxopts::value<std::string>())
         ("args", "Command arguments", cxxopts::value<std::vector<std::string>>()->default_value(""));
@@ -190,7 +191,8 @@ int runCLI(int argc, char** argv)
 
     if (result.count("help") || !result.count("command")) {
         fprintf(stderr, "%s\nCommands:\n"
-            "  screenshot [--target <pane|id>] [--cell x,y,w,h]  Take PNG screenshot\n"
+            "  screenshot [--format png|grid] [--target <pane|id>] [--cell x,y,w,h]\n"
+            "                                    Screenshot; --format grid dumps cells\n"
             "  key <key> [<mod>...]              Inject key event\n"
             "  logs                              Stream log output\n"
             "  stats                             Print render stats + observability counters\n"
@@ -208,12 +210,17 @@ int runCLI(int argc, char** argv)
     std::string sockPath = result["socket"].as<std::string>();
     std::string target = result["target"].as<std::string>();
     std::string cellStr = result["cell"].as<std::string>();
+    std::string format = result["format"].as<std::string>();
 
     glz::generic::object_t reqObj;
     bool streaming = false;
 
     if (command == "screenshot") {
-        reqObj["cmd"] = "screenshot_png";
+        // The server accepts `{cmd: "screenshot", format: "grid"|"png"}`.
+        // Keep defaulting to PNG for scripts that ran the old CLI; the
+        // user picks "grid" with --format grid for a cell dump.
+        reqObj["cmd"] = "screenshot";
+        reqObj["format"] = format;
         if (!target.empty()) reqObj["target"] = target;
         if (!cellStr.empty()) {
             int x=0,y=0,w=0,h=0;

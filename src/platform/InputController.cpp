@@ -400,6 +400,8 @@ void InputController::onMouseButton(int button, int action, int mods)
                     cellRow >= popup->cellY() && cellRow < popup->cellY() + popup->cellH()) {
                     int relCol = cellCol - popup->cellX();
                     int relRow = cellRow - popup->cellY();
+                    int relPixelX = static_cast<int>(cellRelX) - popup->cellX() * static_cast<int>(charWidth);
+                    int relPixelY = static_cast<int>(cellRelY) - popup->cellY() * static_cast<int>(lineHeight);
 
                     // Deliver mouse event to JS popup listeners
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
@@ -410,6 +412,26 @@ void InputController::onMouseButton(int button, int action, int mods)
                         relCol, relRow,
                         static_cast<int>(sx), static_cast<int>(sy), btn);
                     platform_->scriptEngine_.executePendingJobs();
+
+                    // VT mouse-reporting forward. If the applet has
+                    // DECSET 1000/1002/1006 active inside the popup, its
+                    // emulator serializes the click to SGR bytes via
+                    // writeToOutput -> onInput -> JS "input" listener.
+                    // Skipped when reporting is inactive so we don't arm
+                    // a spurious text selection on a headless popup.
+                    if (popup->mouseReportingActive()) {
+                        MouseEvent mev;
+                        mev.x = relCol; mev.y = relRow;
+                        mev.globalX = static_cast<int>(sx);
+                        mev.globalY = static_cast<int>(sy);
+                        mev.pixelX = relPixelX; mev.pixelY = relPixelY;
+                        mev.button = static_cast<Button>(button);
+                        mev.modifiers = lastMods_;
+                        if (action == static_cast<int>(KeyAction_Press))
+                            popup->mousePressEvent(&mev);
+                        else
+                            popup->mouseReleaseEvent(&mev);
+                    }
                     return;
                 }
             }
@@ -445,6 +467,26 @@ void InputController::onMouseButton(int button, int action, int mods)
                         clickPane->id(), hitLineId, type,
                         emRelCol, emRelRow, emRelPx, emRelPy, btn);
                     platform_->scriptEngine_.executePendingJobs();
+
+                    // VT mouse-reporting forward for embedded — same as
+                    // the popup path. Only fires when DECSET 1000/1002/
+                    // 1006 are active, so the classic no-reporting case
+                    // doesn't spuriously arm a text selection.
+                    if (Terminal* em = clickPane->findEmbedded(hitLineId)) {
+                        if (em->mouseReportingActive()) {
+                            MouseEvent mev;
+                            mev.x = emRelCol; mev.y = emRelRow;
+                            mev.globalX = static_cast<int>(sx);
+                            mev.globalY = static_cast<int>(sy);
+                            mev.pixelX = emRelPx; mev.pixelY = emRelPy;
+                            mev.button = static_cast<Button>(button);
+                            mev.modifiers = lastMods_;
+                            if (action == static_cast<int>(KeyAction_Press))
+                                em->mousePressEvent(&mev);
+                            else
+                                em->mouseReleaseEvent(&mev);
+                        }
+                    }
                     return;
                 }
                 // Click outside any embedded: if one is currently focused,

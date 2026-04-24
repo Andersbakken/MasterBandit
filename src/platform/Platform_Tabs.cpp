@@ -378,6 +378,14 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, int tabIdx, const std::stri
         scriptEngine->filterPaneInput(nodeId, data);
     };
     auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
+    // Fire the JS "resized" event on any embedded whose cols got updated
+    // as a side effect of the parent's resize. Explicit em.resize(rows)
+    // from JS fires via the resizeEmbedded platform callback; this
+    // handles the orthogonal case where the parent pane itself changed
+    // width (split, tab-bar toggle, live-resize).
+    terminal->onEmbeddedResized = [this, nodeId](uint64_t lineId, int cols, int rows) {
+        scriptEngine_.deliverEmbeddedResized(nodeId, lineId, cols, rows);
+    };
     auto opts = terminalOptions_;
     if (!cwd.empty()) opts.cwd = cwd;
 

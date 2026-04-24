@@ -62,6 +62,11 @@ struct AppCallbacks {
     // Pixel dimensions of one cell at the current font/DPI. Window-global —
     // popups and embeddeds share the parent pane's font metrics.
     std::function<std::pair<float, float>()> fontCellSize;
+
+    // Tab bar position from config — "top" | "bottom". Read by default-ui.js
+    // to decide the root Container's child ordering. Config default is
+    // "bottom".
+    std::function<std::string()> tabBarPosition;
     // Write to PTY master fd (shell stdin) — raw bytes, no bracketing.
     std::function<void(PaneId, const std::string&)> writePaneToShell;
     // Paste to PTY master fd — wraps in \x1b[200~/\x1b[201~ when the terminal
@@ -264,6 +269,11 @@ public:
 
     // --- Async events (enqueued as microtasks) ---
     void notifyAction(const std::string& actionName);
+    // Fired from PlatformDawn::applyConfig after a successful hot-reload.
+    // No payload — listeners re-read whatever they care about via the
+    // relevant `mb.*` getters (e.g. `mb.tabBarPosition`).
+    void notifyConfigChanged();
+
     void notifyPaneCreated(TabId tab, PaneId pane);
     // nodeId is the UUID of the destroyed Terminal's tree node — passed through
     // so listeners can correlate with handles they captured from paneCreated.

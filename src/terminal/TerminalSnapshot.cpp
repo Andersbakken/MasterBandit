@@ -221,28 +221,13 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     segments.reserve(static_cast<size_t>(rows));
 
     const int origin = historySize - viewportOffset; // absRow at viewport top
-    // Prefer the emulator's authoritative anchor. Falls back to a derived
-    // lineId if the term hasn't initialized mTopLineId yet (e.g. initial
-    // frame before the first scroll).
-    topLineId = term.topLineId();
-    if (topLineId == 0) topLineId = doc.lineIdForAbs(origin);
-    topPixelSubY = term.topPixelSubY();
+    // Derived for the segment list (and any consumer that wants the anchor
+    // line id without touching Document). Emulator owns the integer offset;
+    // line id follows.
+    topLineId = doc.lineIdForAbs(origin);
+    topPixelSubY = 0; // smooth / sub-cell scroll is out of scope for v1
 
-    std::vector<TerminalEmulator::EmbeddedAnchor> anchors;
-    term.collectEmbeddedAnchors(anchors);
-    // Resolve each anchor to a viewport row, filter to in-view, sort.
-    struct ViewAnchor { int viewRow; int rows; uint64_t lineId; };
-    std::vector<ViewAnchor> viewAnchors;
-    viewAnchors.reserve(anchors.size());
-    for (const auto& a : anchors) {
-        int absRow = doc.firstAbsOfLine(a.lineId);
-        if (absRow < 0) continue;
-        int viewRow = absRow - origin;
-        if (viewRow < 0 || viewRow >= rows) continue;
-        viewAnchors.push_back({viewRow, a.rows, a.lineId});
-    }
-    std::sort(viewAnchors.begin(), viewAnchors.end(),
-              [](const ViewAnchor& a, const ViewAnchor& b) { return a.viewRow < b.viewRow; });
+    auto viewAnchors = TerminalEmulator::collectVisibleAnchors(term, viewportOffset, rows);
 
     int cellY = 0;
     size_t anchorIdx = 0;

@@ -242,15 +242,17 @@ private:
     void updateTabBarVisibility() {
         if (tabBarConfig_.style != "auto") return;
         bool visible = tabBarVisible();
-        // Toggle the TabBar node's slot size in the tree. fixedCells=1 shows
-        // the bar at one line; fixedCells=0 means "use stretch" (which is 0
-        // by default for bar slots → invisible). All tabs share the same
-        // TabBar node, so one mutation is enough.
+        // Toggle the TabBar node's slot size in the tree. fixedCells=1 pins
+        // the bar to one cell row. fixedCells=0 + stretch=0 makes the slot
+        // collapse to zero (without the explicit stretch=0 the default
+        // stretch=1 would split the parent container 50/50 with the
+        // content slot — see setBarSlot in initTabBar).
         Uuid bar = scriptEngine_.primaryTabBarNode();
         if (!bar.isNil()) {
             LayoutTree& tree = scriptEngine_.layoutTree();
             if (const Node* n = tree.node(bar); n && !n->parent.isNil()) {
                 tree.setSlotFixedCells(n->parent, bar, visible ? 1 : 0);
+                tree.setSlotStretch(n->parent, bar, 0);
             }
         }
         // setSlotFixedCells marks the tree dirty; the per-frame gate in

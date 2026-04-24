@@ -59,8 +59,11 @@ struct RenderPaneInfo {
     int progressPct = 0;
     std::vector<RenderPanePopupInfo> popups;
     std::string focusedPopupId;
-    // Embedded children. Rendered only when `onAltScreen` is false — alt-screen
-    // mode has no persistent scrollback for the anchor lineId to resolve against.
+    // Embedded children. The composite only ever sees Embedded segments
+    // when the parent is on main screen — TerminalSnapshot::update drops
+    // them under alt — but `onAltScreen` is still used to skip the
+    // per-embedded RenderTarget construction phase so we don't acquire
+    // textures that would never be composited.
     std::vector<RenderPaneEmbeddedInfo> embeddeds;
     uint64_t focusedEmbeddedLineId = 0;
     bool onAltScreen = false;
@@ -215,8 +218,14 @@ struct PaneRenderPrivate {
     };
     std::vector<PopupBorder> popupBorders;
 
-    int lastViewportOffset = 0;
-    int lastHistorySize = 0;
+    // Content-level viewport-shift detection. Tracked as the line id at
+    // viewport row 0: changes iff viewport row 0 now shows different
+    // content (user scroll, live-tail roll). Scroll-back pinning (content
+    // streams while user is scrolled back) leaves topLineId unchanged
+    // because the visible abs rows don't change — so we correctly SKIP
+    // invalidating the per-row shape caches in that case, unlike the
+    // legacy `viewportOffset`-based heuristic which over-invalidated.
+    uint64_t lastTopLineId = 0;
     TerminalEmulator::Selection lastSelection{};
     std::optional<TerminalSnapshot::SelectedCommandRegion> lastSelectedCommand;
     uint32_t lastCommandOutlineColor = 0;

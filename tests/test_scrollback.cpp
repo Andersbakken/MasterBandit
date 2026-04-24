@@ -58,94 +58,30 @@ TEST_CASE("resetViewport returns to live view")
     CHECK(t.term.viewportOffset() == 0);
 }
 
-TEST_CASE("scrollByPixels: integer rows behave like scrollViewport")
-{
-    TestTerminal t(20, 5);
-    fillScrollback(t, 5);
-    int cellH = 20;
-    t.term.scrollByPixels(cellH * 2, cellH); // two full cells up
-    CHECK(t.term.viewportOffset() == 2);
-    CHECK(t.term.topPixelSubY() == 0);
-}
-
-TEST_CASE("scrollByPixels: sub-cell advances only topPixelSubY, clamps to [0, cellH)")
-{
-    TestTerminal t(20, 5);
-    fillScrollback(t, 5);
-    int cellH = 20;
-    t.term.scrollByPixels(5, cellH);
-    CHECK(t.term.viewportOffset() == 0);
-    CHECK(t.term.topPixelSubY() == 5);
-
-    // Another 18 pixels rolls 3 px over into a whole row.
-    t.term.scrollByPixels(18, cellH);
-    CHECK(t.term.viewportOffset() == 1);
-    CHECK(t.term.topPixelSubY() == 3);
-}
-
-TEST_CASE("scrollByPixels: clamps at top (can't scroll past live)")
-{
-    TestTerminal t(20, 5);
-    fillScrollback(t, 5);
-    int cellH = 20;
-    t.term.scrollByPixels(-9999, cellH);
-    CHECK(t.term.viewportOffset() == 0);
-    CHECK(t.term.topPixelSubY() == 0);
-}
-
-TEST_CASE("scrollByPixels: clamps at oldest history")
-{
-    TestTerminal t(20, 5);
-    fillScrollback(t, 5);
-    int cellH = 20;
-    int histSize = t.term.document().historySize();
-    t.term.scrollByPixels(999999, cellH);
-    CHECK(t.term.viewportOffset() == histSize);
-    CHECK(t.term.topPixelSubY() == 0);
-}
-
-TEST_CASE("topLineId stays stable while content streams in (user scrolled back)")
+TEST_CASE("scrollback pinning: scrolled-back viewport stays on same content as new lines append")
 {
     TestTerminal t(20, 5);
     fillScrollback(t, 5);
     t.term.scrollViewport(2);
-    uint64_t pinnedLineId = t.term.topLineId();
-    int pinnedOffset = t.term.viewportOffset();
-    REQUIRE(pinnedOffset == 2);
+    REQUIRE(t.term.viewportOffset() == 2);
 
-    // Three more lines stream in. User stays pinned to the same CONTENT —
-    // topLineId unchanged, viewportOffset grows by 3 because historySize
-    // grew by 3 with a stable abs anchor below it.
+    // Three more lines stream in. Each pushes one row into history. The
+    // user should stay pinned to the same content — offset grows by 3 so
+    // the viewport still points at the same absolute rows.
     t.feed("newA\r\nnewB\r\nnewC\r\n");
-    CHECK(t.term.topLineId() == pinnedLineId);
-    CHECK(t.term.viewportOffset() == pinnedOffset + 3);
+    CHECK(t.term.viewportOffset() == 2 + 3);
 }
 
-TEST_CASE("topLineId advances automatically while live-tailing")
+TEST_CASE("scrollback live-tail: offset stays 0 as new lines append")
 {
     TestTerminal t(20, 5);
     fillScrollback(t, 5);
     REQUIRE(t.term.viewportOffset() == 0);
-    uint64_t liveBefore = t.term.topLineId();
 
-    // One more line appends into history. In live mode the anchor must
-    // advance; otherwise the viewport drifts backward one row per line.
+    // In live mode the viewport auto-follows — offset must stay 0 so the
+    // bottom-most row (prompt / fresh output) is always visible.
     t.feed("newD\r\n");
     CHECK(t.term.viewportOffset() == 0);
-    CHECK(t.term.topLineId() != liveBefore);
-}
-
-TEST_CASE("resetViewport restores live after scrollByPixels")
-{
-    TestTerminal t(20, 5);
-    fillScrollback(t, 5);
-    int cellH = 20;
-    t.term.scrollByPixels(cellH + 7, cellH);
-    REQUIRE(t.term.viewportOffset() == 1);
-    REQUIRE(t.term.topPixelSubY() == 7);
-    t.term.resetViewport();
-    CHECK(t.term.viewportOffset() == 0);
-    CHECK(t.term.topPixelSubY() == 0);
 }
 
 TEST_CASE("viewportRow with offset returns history content")

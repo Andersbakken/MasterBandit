@@ -167,10 +167,9 @@ public:
     // InputController can't read the render thread's
     // TerminalSnapshot.segments from the main thread without racing
     // snapshot.update(). `cellWidth` / `lineHeight` = pixel dimensions of
-    // one cell. `topPixelSubY` is applied automatically so sub-line-
-    // scrolled viewports resolve hits correctly. On hit, outRelCol /
-    // outRelRow are the embedded-local cell coordinates, and
-    // outRelPixelX / outRelPixelY are the embedded-local pixel offsets.
+    // one cell. On hit, outRelCol / outRelRow are the embedded-local cell
+    // coordinates, and outRelPixelX / outRelPixelY are the embedded-local
+    // pixel offsets.
     bool liveSegmentHitTest(double cellRelX, double cellRelY,
                             float cellWidth, float lineHeight,
                             uint64_t& outLineId,
@@ -179,6 +178,14 @@ public:
 
     // Set by platform; called when a popup or embedded emulator fires an event (triggers redraw)
     std::function<void()> onPopupEvent;
+
+    // Set by platform; called when an embedded gets resized as a side
+    // effect of the parent pane's cols changing. Fires after the resize
+    // so the callback can read `em->width()/height()` directly. Platform
+    // wires this to scriptEngine_.deliverEmbeddedResized so the JS
+    // "resized" event fires uniformly whether the resize was initiated
+    // by JS (em.resize) or cascaded from the parent.
+    std::function<void(uint64_t lineId, int cols, int rows)> onEmbeddedResized;
 
 protected:
     void writeToOutput(const char* data, size_t len) override;

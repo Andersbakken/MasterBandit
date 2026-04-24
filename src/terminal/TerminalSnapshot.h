@@ -34,15 +34,15 @@ struct TerminalSnapshot {
     int viewportOffset { 0 };
     int historySize { 0 };
 
-    // Logical-line id at the top of the viewport. Derived from
-    // `historySize - viewportOffset` at update() time. Remains stable across
-    // embedded resizes — only a scroll / write advances it.
+    // Logical-line id at the top of the viewport, derived from
+    // `doc.lineIdForAbs(historySize - viewportOffset)` at update() time.
+    // Used for the segment list's Row kinds and as the stable key for
+    // embedded-anchor resolution.
     uint64_t topLineId { 0 };
 
-    // Sub-cell vertical offset for smooth scrolling, in pixels. 0 means
-    // top-aligned on the first visible row. Positive values shift visible
-    // content up (more of the next row revealed at the bottom). Phase 1
-    // leaves this at 0 — no user gesture is wired yet.
+    // Reserved for future smooth / sub-cell scroll work. Always 0 today —
+    // wheel scrolling is cell-granular. Kept on the snapshot so a later
+    // implementation has a place to land without reshaping consumers.
     int topPixelSubY { 0 };
 
     // Visual-layout segment list. One entry per visible band (row or

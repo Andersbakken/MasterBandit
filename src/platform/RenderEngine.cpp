@@ -1112,12 +1112,13 @@ void RenderEngine::renderFrame()
             if (rs.resolvedCells.size() != needed)
                 rs.resolvedCells.resize(needed);
 
-            int vo = snap.viewportOffset;
-            int histSize = snap.historySize;
-            bool viewportShifted = (vo != rs.lastViewportOffset ||
-                                    (vo != 0 && histSize != rs.lastHistorySize));
-            rs.lastViewportOffset = vo;
-            rs.lastHistorySize = histSize;
+            // Shape caches are invalidated only when the viewport's top
+            // content changes — i.e. when viewport row 0 shows a different
+            // document line than last frame. User scroll, live-tail roll
+            // both shift topLineId; scroll-back pinning does not (the
+            // visible abs rows stay constant while vo/histSize both grow).
+            bool viewportShifted = (snap.topLineId != rs.lastTopLineId);
+            rs.lastTopLineId = snap.topLineId;
 
             if (static_cast<int>(rs.rowShapingCache.size()) != snap.rows)
                 rs.rowShapingCache.resize(snap.rows);
@@ -1195,11 +1196,9 @@ void RenderEngine::renderFrame()
             bool selectionVisible = snap.selection.valid || snap.selection.active;
             if (selectionVisible) {
                 for (int row = 0; row < snap.rows; ++row) {
-                    // Pull absRow from the segment list so embedded and
-                    // sub-line-scrolled viewports still resolve correctly.
-                    int absRow = (row < static_cast<int>(snap.segments.size()))
-                                    ? snap.segments[row].absRow
-                                    : snap.historySize - snap.viewportOffset + row;
+                    // segments is always sized == snap.rows (built by
+                    // TerminalSnapshot::update).
+                    int absRow = snap.segments[row].absRow;
                     for (int col = 0; col < snap.cols; ++col) {
                         if (snap.isCellSelected(col, absRow)) {
                             int idx = row * snap.cols + col;
@@ -1384,11 +1383,8 @@ void RenderEngine::renderFrame()
             params.selection_outline_flags = 0;
             params.selection_outline_color = 0;
             if (snap.selectedCommand) {
-                // Origin (absRow at viewport top) comes from segments[0]
-                // when populated; segments carry the authoritative anchor.
-                int origin = snap.segments.empty()
-                                ? (snap.historySize - snap.viewportOffset)
-                                : snap.segments.front().absRow;
+                // Segment 0 carries the absRow at viewport top.
+                int origin = snap.segments.front().absRow;
                 int startView = snap.selectedCommand->startAbsRow - origin;
                 int endView   = snap.selectedCommand->endAbsRow   - origin;
                 if (endView >= 0 && startView < snap.rows) {
@@ -1420,18 +1416,15 @@ void RenderEngine::renderFrame()
                 }
             } else {
                 bool popupHasFocus = target.hasPopupFocus;
-                // Cursor's viewport row: search segments for the row whose
-                // absRow matches the live cursor's abs position, falling
-                // back to the legacy derivation when segments are absent.
-                int cursorAbsRow = snap.historySize + snap.cursorY;
+                // Cursor's viewport row. `cursorY + viewportOffset` holds
+                // for every segment layout we actually produce: Row
+                // segments have absRow == histSize - vo + viewRow, so
+                // when the cursor's absRow (= histSize + cursorY) matches
+                // segment[K].absRow the answer is K = cursorY + vo. Even
+                // when an Embedded segment replaces the anchor row, the
+                // same arithmetic holds because the Embedded inherits
+                // that slot's absRow.
                 int cursorViewRow = snap.cursorY + snap.viewportOffset;
-                for (int vr = 0; vr < static_cast<int>(snap.segments.size()); ++vr) {
-                    if (snap.segments[vr].absRow == cursorAbsRow &&
-                        snap.segments[vr].kind == TerminalSnapshot::Segment::Kind::Row) {
-                        cursorViewRow = vr;
-                        break;
-                    }
-                }
                 bool cursorCovered = false;
                 if (target.paneInfo) {
                     for (const auto& popup : target.paneInfo->popups) {
@@ -1496,9 +1489,7 @@ void RenderEngine::renderFrame()
             Renderer::DimParams dim;
             if (snap.selectedCommand) {
                 dim.factor = frameState_.commandDimFactor;
-                int origin = snap.segments.empty()
-                                ? (snap.historySize - snap.viewportOffset)
-                                : snap.segments.front().absRow;
+                int origin = snap.segments.front().absRow;
                 int startView = snap.selectedCommand->startAbsRow - origin;
                 int endView   = snap.selectedCommand->endAbsRow   - origin;
                 if (endView < 0 || startView >= snap.rows) {
@@ -1536,57 +1527,51 @@ void RenderEngine::renderFrame()
                 // parent pane's strips (see parent branch below), since
                 // dst placement depends on the parent's viewport.
             } else if (!target.isPopup) {
-                // Parent pane composite. Apply topPixelSubY as a vertical
-                // shift so smooth (sub-cell) scroll moves content by its
-                // exact pixel delta. Positive subY = content shifts up
-                // (more of the next row revealed at the bottom); the source
-                // copy advances by subY pixels from the top of the texture.
+                // Parent pane composite. Either a single full-pane blit
+                // when no embeddeds displace rows, or a sequence of strips
+                // around each embedded's anchor row (Model B displacement).
+                // Alt-screen is already filtered at segment-build time
+                // (Terminal::collectEmbeddedAnchors returns empty), so
+                // Embedded segments only ever appear on the main screen.
                 const TerminalSnapshot& psnap = rs.snapshot;
-                const int subY = psnap.topPixelSubY;
                 const int paneTexH = paneRect.h;
-                const int paneBottom = paneRect.y + paneTexH;
                 uint32_t texW = rs.heldTexture->texture.GetWidth();
 
-                // Push a strip from the parent texture, applying the
-                // topPixelSubY translation. srcY/dstY are in natural
-                // (unscrolled) coordinates — the shift is applied inside.
-                auto pushParentStrip = [&](int srcYi, int dstYi, int hPx) {
-                    if (hPx <= 0) return;
-                    int effDstY = dstYi - subY;
-                    int effSrcY = srcYi;
-                    if (effDstY < paneRect.y) {
-                        int crop = paneRect.y - effDstY;
-                        effSrcY += crop;
-                        hPx -= crop;
-                        effDstY = paneRect.y;
-                        if (hPx <= 0) return;
-                    }
-                    if (effDstY + hPx > paneBottom) hPx = paneBottom - effDstY;
-                    if (hPx <= 0) return;
-                    Renderer::CompositeEntry e;
-                    e.texture = rs.heldTexture->texture;
-                    e.srcX = 0;
-                    e.srcY = static_cast<uint32_t>(std::max(0, effSrcY));
-                    e.srcW = texW;
-                    e.srcH = static_cast<uint32_t>(hPx);
-                    e.dstX = static_cast<uint32_t>(paneRect.x);
-                    e.dstY = static_cast<uint32_t>(effDstY);
-                    compositeEntries.push_back(e);
-                };
-
                 bool anyEmbedded = false;
-                if (target.paneInfo && !target.paneInfo->onAltScreen) {
-                    for (const auto& seg : psnap.segments)
-                        if (seg.kind == TerminalSnapshot::Segment::Kind::Embedded) { anyEmbedded = true; break; }
+                for (const auto& seg : psnap.segments) {
+                    if (seg.kind == TerminalSnapshot::Segment::Kind::Embedded) {
+                        anyEmbedded = true;
+                        break;
+                    }
                 }
 
                 if (!anyEmbedded) {
-                    pushParentStrip(0, paneRect.y, paneTexH);
+                    Renderer::CompositeEntry entry;
+                    entry.texture = rs.heldTexture->texture;
+                    entry.srcW = static_cast<uint32_t>(paneRect.w);
+                    entry.srcH = static_cast<uint32_t>(paneRect.h);
+                    entry.dstX = static_cast<uint32_t>(paneRect.x);
+                    entry.dstY = static_cast<uint32_t>(paneRect.y);
+                    compositeEntries.push_back(entry);
                 } else {
                     const float cellH = frameState_.lineHeight;
                     const float cellW = frameState_.charWidth;
                     const float padT  = frameState_.padTop;
                     const float padL  = frameState_.padLeft;
+
+                    auto pushStrip = [&](int srcYi, int dstYi, int hPx) {
+                        if (hPx <= 0) return;
+                        Renderer::CompositeEntry e;
+                        e.texture = rs.heldTexture->texture;
+                        e.srcX = 0;
+                        e.srcY = static_cast<uint32_t>(std::max(0, srcYi));
+                        e.srcW = texW;
+                        e.srcH = static_cast<uint32_t>(hPx);
+                        e.dstX = static_cast<uint32_t>(paneRect.x);
+                        e.dstY = static_cast<uint32_t>(std::max(0, dstYi));
+                        compositeEntries.push_back(e);
+                    };
+
                     int srcY = 0;
                     int dstY = paneRect.y;
                     int embWPx = static_cast<int>(std::round(psnap.cols * cellW));
@@ -1595,42 +1580,26 @@ void RenderEngine::renderFrame()
                         const auto& seg = psnap.segments[viewRow];
                         if (seg.kind != TerminalSnapshot::Segment::Kind::Embedded) continue;
                         int anchorSrcY = static_cast<int>(std::round(padT + viewRow * cellH));
-                        pushParentStrip(srcY, dstY, anchorSrcY - srcY);
+                        pushStrip(srcY, dstY, anchorSrcY - srcY);
                         dstY += std::max(0, anchorSrcY - srcY);
 
                         int embHPx = static_cast<int>(std::round(seg.rowCount * cellH));
                         std::string key = embeddedStateKey(target.paneId, seg.lineId);
                         auto emIt = embeddedRenderPrivate_.find(key);
                         if (emIt != embeddedRenderPrivate_.end() && emIt->second.heldTexture) {
-                            // Embedded overlay follows the same topPixelSubY
-                            // shift as surrounding parent strips so smooth
-                            // scroll doesn't desync parent and embedded.
-                            int effDstY = dstY - subY;
-                            int effSrcY = 0;
-                            int effH    = embHPx;
-                            if (effDstY < paneRect.y) {
-                                int crop = paneRect.y - effDstY;
-                                effSrcY += crop;
-                                effH    -= crop;
-                                effDstY  = paneRect.y;
-                            }
-                            if (effDstY + effH > paneBottom) effH = paneBottom - effDstY;
-                            if (effH > 0) {
-                                Renderer::CompositeEntry e;
-                                e.texture = emIt->second.heldTexture->texture;
-                                e.srcX = 0;
-                                e.srcY = static_cast<uint32_t>(effSrcY);
-                                e.srcW = static_cast<uint32_t>(embWPx);
-                                e.srcH = static_cast<uint32_t>(effH);
-                                e.dstX = static_cast<uint32_t>(paneRect.x + padL);
-                                e.dstY = static_cast<uint32_t>(effDstY);
-                                compositeEntries.push_back(e);
-                            }
+                            Renderer::CompositeEntry e;
+                            e.texture = emIt->second.heldTexture->texture;
+                            e.srcX = 0; e.srcY = 0;
+                            e.srcW = static_cast<uint32_t>(embWPx);
+                            e.srcH = static_cast<uint32_t>(embHPx);
+                            e.dstX = static_cast<uint32_t>(paneRect.x + padL);
+                            e.dstY = static_cast<uint32_t>(dstY);
+                            compositeEntries.push_back(e);
                         }
                         dstY += embHPx;
                         srcY = anchorSrcY + static_cast<int>(std::round(cellH));
                     }
-                    pushParentStrip(srcY, dstY, paneTexH - srcY);
+                    pushStrip(srcY, dstY, paneTexH - srcY);
                 }
             } else {
                 // Popup: no scroll, no topPixelSubY — straight blit.

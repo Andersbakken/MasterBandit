@@ -552,22 +552,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                         return;
                     }
                 }
-                // Pixel-scroll. Wheel-tick magnitudes vary by platform
-                // (XCB emits ±1 per detent, Cocoa emits continuous
-                // fractional dy). Multiplying by term->scrollStepPx() gives
-                // a consistent pixel advance either way; scrollByPixels
-                // rolls sub-cell overflow into mTopLineId. Sign: dy > 0
-                // means "scroll content up" (reveal older) → scroll INTO
-                // history, which is a positive dyPx for scrollByPixels.
-                if (auto t2 = activeTab()) {
-                    if (Terminal* fp2 = scriptEngine_.focusedTerminalInSubtree(*t2)) {
-                        int dyPx = static_cast<int>(std::lround(dy * fp2->scrollStepPx()));
-                        if (dyPx != 0) {
-                            fp2->scrollByPixels(dyPx, static_cast<int>(std::lround(lineHeight_)));
-                            setNeedsRedraw();
-                        }
-                    }
-                }
+                if (dy > 0) dispatchAction(Action::ScrollUp{});
+                else if (dy < 0) dispatchAction(Action::ScrollDown{});
             };
             window_->onExpose = [this]() { setNeedsRedraw(); };
             window_->onLiveResizeEnd = [this]() {
@@ -1148,6 +1134,11 @@ void PlatformDawn::applyConfig(const Config& config)
     tabBarDirty_ = true;
     setNeedsRedraw();
     spdlog::info("Config reloaded: {} user keybindings", userBindings.size());
+
+    // Fire JS `configChanged` so scripts (default-ui, applets) can re-read
+    // whatever config bits they care about — e.g. default-ui checks
+    // mb.tabBarPosition to decide whether to reorder the root container.
+    scriptEngine_.notifyConfigChanged();
 }
 
 // ========================================================================
@@ -1272,8 +1263,14 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
         Uuid bar = scriptEngine_.primaryTabBarNode();
         if (bar.isNil()) return;
         LayoutTree& tree = scriptEngine_.layoutTree();
-        if (const Node* n = tree.node(bar); n && !n->parent.isNil())
+        if (const Node* n = tree.node(bar); n && !n->parent.isNil()) {
             tree.setSlotFixedCells(n->parent, bar, cells);
+            // stretch defaults to 1, so fixedCells=0 alone would let the
+            // bar's slot compete with the content slot for leftover space
+            // (gives 50/50 in a 2-child container). Pin stretch to 0 so
+            // the "hidden" state collapses the bar cleanly.
+            tree.setSlotStretch(n->parent, bar, 0);
+        }
     };
     if (cfg.style == "hidden") {
         setBarSlot(0);

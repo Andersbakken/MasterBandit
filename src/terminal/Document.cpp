@@ -353,6 +353,7 @@ void Document::clearRow(int screenRow) {
     Cell* r = rowPtr(phys);
     for (int c = 0; c < cols_; ++c) r[c] = Cell{};
     ringExtras_[phys].clear();
+    continued_[phys] = false;
     markRowDirty(screenRow);
 }
 
@@ -365,8 +366,15 @@ void Document::clearRow(int screenRow, int startCol, int endCol) {
     for (int c = startCol; c < endCol; ++c) r[c] = Cell{};
     if (startCol == 0 && endCol == cols_) {
         ringExtras_[phys].clear();
+        continued_[phys] = false;
     } else {
         for (int c = startCol; c < endCol; ++c) ringExtras_[phys].erase(c);
+        // A partial clear that includes the last column removes the cells that
+        // would have driven an autowrap. The old soft-wrap relationship is no
+        // longer valid — clear the flag so reflow doesn't join this row with
+        // the next.
+        if (endCol == cols_)
+            continued_[phys] = false;
     }
     markRowDirty(screenRow);
 }
@@ -396,10 +404,12 @@ void Document::scrollUp(int top, int bottom, int n) {
         int frozenCount = screenHeight_ - bottom;
         std::vector<Cell> frozen(static_cast<size_t>(frozenCount) * cols_);
         std::vector<std::unordered_map<int, CellExtra>> frozenExtras(frozenCount);
+        std::vector<bool> frozenCont(frozenCount, false);
         for (int i = 0; i < frozenCount; ++i) {
             int phys = screenRowToPhysical(bottom + i);
             std::memcpy(&frozen[static_cast<size_t>(i) * cols_], rowPtr(phys), cols_ * sizeof(Cell));
             frozenExtras[i] = std::move(ringExtras_[phys]);
+            frozenCont[i] = continued_[phys];
         }
 
         // Advance ring head
@@ -417,6 +427,7 @@ void Document::scrollUp(int top, int bottom, int n) {
             int phys = screenRowToPhysical(bottom + i);
             std::memcpy(rowPtr(phys), &frozen[static_cast<size_t>(i) * cols_], cols_ * sizeof(Cell));
             ringExtras_[phys] = std::move(frozenExtras[i]);
+            continued_[phys] = frozenCont[i];
         }
         // Clear the gap [bottom-n..bottom-1]
         for (int r = bottom - n; r < bottom; ++r) {
@@ -430,6 +441,7 @@ void Document::scrollUp(int top, int bottom, int n) {
             int srcPhys = screenRowToPhysical(r + n);
             std::memcpy(rowPtr(dstPhys), rowPtr(srcPhys), cols_ * sizeof(Cell));
             ringExtras_[dstPhys] = std::move(ringExtras_[srcPhys]);
+            continued_[dstPhys] = continued_[srcPhys];
             markRowDirty(r);
         }
         for (int r = bottom - n; r < bottom; ++r) {
@@ -447,6 +459,7 @@ void Document::scrollDown(int top, int bottom, int n) {
         int srcPhys = screenRowToPhysical(r - n);
         std::memcpy(rowPtr(dstPhys), rowPtr(srcPhys), cols_ * sizeof(Cell));
         ringExtras_[dstPhys] = std::move(ringExtras_[srcPhys]);
+        continued_[dstPhys] = continued_[srcPhys];
         markRowDirty(r);
     }
     for (int r = top; r < top + n; ++r) {

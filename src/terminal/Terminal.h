@@ -161,15 +161,21 @@ public:
     // stays empty there.
     void collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const override;
 
-    // Input-path hit-test. Returns true if viewport-pixel-Y (pane-relative,
-    // i.e. after padTop subtraction) falls inside a visible embedded's
-    // displaced band. Walks live state — InputController can't read the
-    // render thread's TerminalSnapshot.segments from the main thread
-    // without racing snapshot.update(). `lineHeight` = cell height in
-    // pixels. `topPixelSubY` is applied automatically so sub-line-scrolled
-    // viewports resolve hits correctly.
-    bool liveSegmentHitTest(double cellRelY, float lineHeight,
-                            uint64_t& outLineId) const;
+    // Input-path hit-test. Returns true if viewport-pixel-(X,Y) (pane-
+    // content-relative, i.e. after padLeft / padTop subtraction) falls
+    // inside a visible embedded's displaced band. Walks live state —
+    // InputController can't read the render thread's
+    // TerminalSnapshot.segments from the main thread without racing
+    // snapshot.update(). `cellWidth` / `lineHeight` = pixel dimensions of
+    // one cell. `topPixelSubY` is applied automatically so sub-line-
+    // scrolled viewports resolve hits correctly. On hit, outRelCol /
+    // outRelRow are the embedded-local cell coordinates, and
+    // outRelPixelX / outRelPixelY are the embedded-local pixel offsets.
+    bool liveSegmentHitTest(double cellRelX, double cellRelY,
+                            float cellWidth, float lineHeight,
+                            uint64_t& outLineId,
+                            int& outRelCol, int& outRelRow,
+                            int& outRelPixelX, int& outRelPixelY) const;
 
     // Set by platform; called when a popup or embedded emulator fires an event (triggers redraw)
     std::function<void()> onPopupEvent;

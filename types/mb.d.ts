@@ -2,7 +2,7 @@
 //
 // Covers:
 //   - `mb` global (tabs, actions, events, script management, createSecureToken)
-//   - Pane / Popup / Tab / Overlay object APIs
+//   - Terminal base + Pane / Popup / EmbeddedTerminal / Tab / Overlay APIs
 //   - The `mb:ws` module
 //   - Timer globals (setTimeout / setInterval / clear*)
 //   - Console globals
@@ -120,10 +120,46 @@ interface MbCommand {
     readonly outputEnd: MbPosition;
 }
 
-interface MbPane {
-    readonly id: number;
+/**
+ * Common base for everything backed by a live terminal emulator:
+ * `MbPane`, `MbPopup`, `MbEmbeddedTerminal`. Lets applets write generic
+ * helpers that take "any terminal-like" without branching on kind.
+ *
+ * The global `Terminal` exposes this class — `x instanceof Terminal` is
+ * true for every subclass instance.
+ */
+interface MbTerminal {
+    /** Viewport width in character cells. */
     readonly cols: number;
+    /** Viewport height in character cells. */
     readonly rows: number;
+    /**
+     * Current cursor state. `rowId` is a stable logical-line id (same
+     * numbering as `pane.oldestRowId`/`newestRowId`). On a pane this is
+     * gated on `pane.selection`; on popups/embeddeds it's ungated —
+     * applets can always introspect their own children.
+     */
+    readonly cursor: {
+        readonly rowId: number;
+        readonly col: number;
+        readonly visible: boolean;
+    } | null;
+    /** Discriminator for the concrete subclass. */
+    readonly kind: "pane" | "popup" | "embedded";
+    /** Pixel width of one cell at the current font / DPI. Window-global. */
+    readonly cellWidth: number;
+    /** Pixel height of one cell at the current font / DPI. Window-global. */
+    readonly cellHeight: number;
+
+    /** Emit data into the terminal emulator (as if the PTY wrote it). Requires `io.inject`. */
+    inject(data: string): void;
+}
+
+declare const Terminal: MbTerminal;
+
+interface MbPane extends MbTerminal {
+    /** Pane's tree-node UUID (stringified). */
+    readonly id: string;
     /** OSC 2 title set by the shell. */
     readonly title: string;
     /** Working directory reported via OSC 7. */
@@ -150,11 +186,9 @@ interface MbPane {
         /** Exclusive — one past the last selected column. */
         readonly endCol: number;
     } | null;
-    /** Current cursor position, or `null` if `pane.selection` permission not granted. Requires `pane.selection`. */
-    readonly cursor: {
-        readonly rowId: number;
-        readonly col: number;
-    } | null;
+    // `cursor` is inherited from MbTerminal. On a pane specifically,
+    // reading it still requires `pane.selection` at runtime.
+
     /** Mouse position within this pane, or `null` if the mouse is outside. */
     readonly mousePosition: {
         readonly cellX: number;
@@ -219,8 +253,8 @@ interface MbPane {
      */
     selectCommand(id: number | null): void;
 
-    /** Emit data into the terminal emulator (as if the PTY wrote it). Requires `io.inject`. */
-    inject(data: string): void;
+    // `inject` is inherited from MbTerminal.
+
     /**
      * Write raw bytes to the PTY master (shell stdin). No bracketed-paste
      * wrapping — use this for synthetic keystrokes, OSC responses, or any
@@ -239,6 +273,22 @@ interface MbPane {
     paste(data: string): void;
     /** Create a popup on this pane. Requires `ui.popup.create`. Returns null on failure. */
     createPopup(opts: { id: string; x: number; y: number; w: number; h: number }): MbPopup | null;
+
+    /**
+     * Create an inline embedded terminal anchored at the current cursor
+     * row. The returned object is a full `MbTerminal`: inject bytes,
+     * resize, listen for user keystrokes when focused, listen for
+     * destruction (either explicit `close()` or eviction once the anchor
+     * row falls off the archive cap). `cols` matches this pane's cols;
+     * `rows` is the caller-specified height. Returns `null` while the
+     * pane is on alt-screen, when `rows <= 0`, or when an embedded
+     * already exists on the current cursor row. Requires
+     * `ui.popup.create` (embeddeds share the popup authority bit).
+     */
+    createEmbeddedTerminal(opts: { rows: number }): MbEmbeddedTerminal | null;
+
+    /** Active embedded terminals on this pane. */
+    readonly embeddeds: MbEmbeddedTerminal[];
 
     /** Synchronous input filter — return a replacement string, or void to pass through. Requires `io.filter.input`. */
     addEventListener(event: "input",  fn: (data: string) => string | void): void;
@@ -304,31 +354,95 @@ interface MbPopupInfo {
 // Popup
 // ============================================================================
 
-interface MbPopup {
-    readonly paneId: number;
+interface MbPopup extends MbTerminal {
+    /** Parent pane's tree-node UUID (stringified). */
+    readonly paneId: string;
+    /** Popup's caller-supplied string id (unique within its pane). */
     readonly id: string;
+    /** True when this popup is its pane's focused popup. */
     readonly focused: boolean;
-    readonly cols: number;
-    readonly rows: number;
     readonly x: number;
     readonly y: number;
 
-    /** Render data into the popup (treated like PTY output). */
-    inject(data: string): void;
-    /** Resize/move the popup. */
+    /** Resize/move the popup. Requires `ui.popup.create`. */
     resize(opts: { x: number; y: number; w: number; h: number }): void;
-    /** Close and destroy the popup. */
+    /** Close and destroy the popup. Requires `ui.popup.destroy`. */
     close(): void;
 
     /** Keyboard events when the popup has focus. Requires `io.filter.input`. */
     addEventListener(event: "input", fn: (data: string) => void): void;
-    /** Mouse events on the popup. Requires `ui`. */
+    /** Mouse press/release on the popup. Requires `ui`. */
     addEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
+    /**
+     * Hover events — fires as the mouse cursor moves inside the popup's
+     * rect. Coordinates are popup-local. Requires `ui`.
+     */
+    addEventListener(event: "mousemove", fn: (ev: {
+        cellX: number; cellY: number; pixelX: number; pixelY: number;
+    }) => void): void;
+    /** Fires after a successful `resize({x,y,w,h})`. Payload: (cols, rows). */
+    addEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
     /** Fired once when the popup is closed. */
     addEventListener(event: "destroyed", fn: () => void): void;
 
     removeEventListener(event: "input", fn: (data: string) => void): void;
     removeEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
+    removeEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
+    removeEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
+    removeEventListener(event: "destroyed", fn: () => void): void;
+}
+
+// ============================================================================
+// Embedded terminal
+// ============================================================================
+
+/**
+ * Headless child terminal anchored to a Document line id in its parent pane.
+ * Renders inline at the anchor row; Model B displacement shifts subsequent
+ * rows down by `(rows - 1) * cellH` at composite time. Hidden while the
+ * parent is on alt-screen; auto-destroyed when the anchor line evicts past
+ * the archive cap (fires the `"destroyed"` event).
+ */
+interface MbEmbeddedTerminal extends MbTerminal {
+    /** Parent pane's tree-node UUID (stringified). */
+    readonly paneId: string;
+    /** Anchor line id — the stable Document line id where this embedded was created. */
+    readonly id: number;
+    /** True when this embedded is its pane's focused embedded (activeTerm points here). */
+    readonly focused: boolean;
+
+    /** Change the embedded's row count. Returns true on success. Requires `ui.popup.create`. */
+    resize(rows: number): boolean;
+    /**
+     * Destroy this embedded. Fires the `"destroyed"` event. Requires
+     * `ui.popup.destroy`.
+     */
+    close(): void;
+
+    /** Keystrokes delivered to the embedded while it has focus. Requires `io.filter.input`. */
+    addEventListener(event: "input", fn: (data: string) => void): void;
+    /**
+     * Mouse press/release within the embedded's displaced band. Coordinates
+     * are embedded-local (col 0 / row 0 = the embedded's top-left). Requires `ui`.
+     */
+    addEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
+    /** Hover events while the mouse is over this embedded. Requires `ui`. */
+    addEventListener(event: "mousemove", fn: (ev: {
+        cellX: number; cellY: number; pixelX: number; pixelY: number;
+    }) => void): void;
+    /**
+     * Fires after a successful `resize(rows)`. Payload: (cols, rows). Cols
+     * is the parent pane's width at the time — currently doesn't fire when
+     * the parent pane cols change (that cascade isn't wired).
+     */
+    addEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
+    /** Fired once when the embedded is destroyed (either `close()` or anchor eviction). */
+    addEventListener(event: "destroyed", fn: () => void): void;
+
+    removeEventListener(event: "input", fn: (data: string) => void): void;
+    removeEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
+    removeEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
+    removeEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
     removeEventListener(event: "destroyed", fn: () => void): void;
 }
 

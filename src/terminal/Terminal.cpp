@@ -562,10 +562,15 @@ void Terminal::collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const
     }
 }
 
-bool Terminal::liveSegmentHitTest(double cellRelY, float lineHeight,
-                                  uint64_t& outLineId) const
+bool Terminal::liveSegmentHitTest(double cellRelX, double cellRelY,
+                                  float cellWidth, float lineHeight,
+                                  uint64_t& outLineId,
+                                  int& outRelCol, int& outRelRow,
+                                  int& outRelPixelX, int& outRelPixelY) const
 {
-    if (usingAltScreen() || mEmbedded.empty() || lineHeight <= 0.0f) return false;
+    if (usingAltScreen() || mEmbedded.empty() ||
+        cellWidth <= 0.0f || lineHeight <= 0.0f)
+        return false;
 
     // Shift the click into un-scrolled viewport coordinates so sub-line
     // scroll doesn't desync the hit-test from what the user visually clicked.
@@ -593,7 +598,11 @@ bool Terminal::liveSegmentHitTest(double cellRelY, float lineHeight,
         double visualYStartPx = (h.viewRow + cumShiftRows) * lineHeight;
         double visualYEndPx   = visualYStartPx + h.rows * lineHeight;
         if (adjY >= visualYStartPx && adjY < visualYEndPx) {
-            outLineId = h.lineId;
+            outLineId      = h.lineId;
+            outRelPixelX   = static_cast<int>(cellRelX);
+            outRelPixelY   = static_cast<int>(adjY - visualYStartPx);
+            outRelCol      = static_cast<int>(cellRelX / cellWidth);
+            outRelRow      = static_cast<int>((adjY - visualYStartPx) / lineHeight);
             return true;
         }
         cumShiftRows += (h.rows - 1);

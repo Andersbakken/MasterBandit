@@ -54,8 +54,14 @@ struct CommandInfo {
 };
 
 struct AppCallbacks {
-    // Inject data directly into a terminal emulator (bypass PTY)
-    std::function<void(PaneId, const std::string&)> injectPaneData;
+    // Request a render frame. The JS-side Terminal base class calls this
+    // after inject / other mutators so changes become visible without
+    // triple-dispatching through kind-specific callbacks.
+    std::function<void()> requestRedraw;
+
+    // Pixel dimensions of one cell at the current font/DPI. Window-global —
+    // popups and embeddeds share the parent pane's font metrics.
+    std::function<std::pair<float, float>()> fontCellSize;
     // Write to PTY master fd (shell stdin) — raw bytes, no bracketing.
     std::function<void(PaneId, const std::string&)> writePaneToShell;
     // Paste to PTY master fd — wraps in \x1b[200~/\x1b[201~ when the terminal
@@ -168,8 +174,6 @@ struct AppCallbacks {
     std::function<void(PaneId, const std::string& id)> destroyPopup;
     // Resize/move a popup on a pane.
     std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h)> resizePopup;
-    // Inject data into a popup's terminal.
-    std::function<void(PaneId, const std::string& id, const std::string& data)> injectPopupData;
 
     // --- Embedded terminals (document-anchored inline surfaces) ---
     // Query embeddeds on a pane.
@@ -185,8 +189,6 @@ struct AppCallbacks {
     std::function<void(PaneId, uint64_t lineId)> destroyEmbedded;
     // Resize an embedded's row count (cols track parent cols automatically).
     std::function<bool(PaneId, uint64_t lineId, int rows)> resizeEmbedded;
-    // Inject data into an embedded's terminal (parses through VT emulator).
-    std::function<void(PaneId, uint64_t lineId, const std::string& data)> injectEmbeddedData;
 
     // Clipboard access. source is "clipboard" or "primary".
     std::function<std::string(const std::string& source)> getClipboard;
@@ -304,6 +306,23 @@ public:
                                  int pixelX, int pixelY, int button);
     void deliverPaneMouseEvent(PaneId pane, const std::string& type,
                                 int cellX, int cellY, int pixelX, int pixelY, int button);
+    // Embedded mouse events. `type` is "press" / "release" / "move" (press
+    // and release gated on the `ui` group when the applet registers the
+    // listener; move is also gated on `ui`).
+    void deliverEmbeddedMouseEvent(PaneId pane, uint64_t lineId,
+                                    const std::string& type, int cellX, int cellY,
+                                    int pixelX, int pixelY, int button);
+
+    // Mousemove fanout. Reads `__evt_mousemove` on the registered object.
+    void deliverPopupMouseMove(PaneId pane, const std::string& popupId,
+                                int cellX, int cellY, int pixelX, int pixelY);
+    void deliverEmbeddedMouseMove(PaneId pane, uint64_t lineId,
+                                   int cellX, int cellY, int pixelX, int pixelY);
+
+    // Resized event. Fires on popup.resize({x,y,w,h}) and embedded.resize(rows).
+    // Reads `__evt_resized` on the registered object. Payload: (cols, rows).
+    void deliverPopupResized(PaneId pane, const std::string& popupId, int cols, int rows);
+    void deliverEmbeddedResized(PaneId pane, uint64_t lineId, int cols, int rows);
 
     // Run pending JS jobs. Call from main loop.
     void executePendingJobs();
@@ -596,6 +615,18 @@ private:
                                    uint32_t permissions);
     void notifyPermissionRequired(const std::string& path, const std::string& permissions,
                                    const std::string& hash);
+
+    // Fan out a mousemove event to the `__evt_mousemove` array stored on the
+    // JS object registered under `registryName[key]`. Shared by popup and
+    // embedded mousemove delivery paths.
+    void deliverMousemoveToRegistry(const char* registryName,
+                                     const std::string& key,
+                                     int cellX, int cellY, int pixelX, int pixelY);
+
+    // Fan out a resized event to the `__evt_resized` array on the object at
+    // `registryName[key]`. Listeners receive `(cols, rows)`.
+    void deliverResizedToRegistry(const char* registryName,
+                                   const std::string& key, int cols, int rows);
 
     void deliverMouseToRegistry(const char* registryName, const std::string& key,
                                  const std::string& type, int cellX, int cellY,

@@ -41,8 +41,9 @@ int PlatformDawn::exec()
     // Set up script engine callbacks
     {
         Script::AppCallbacks scbs;
-        scbs.injectPaneData = [this](Script::PaneId paneId, const std::string& data) {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) p->injectData(data.c_str(), data.size());
+        scbs.requestRedraw = [this]() { setNeedsRedraw(); };
+        scbs.fontCellSize = [this]() -> std::pair<float, float> {
+            return { charWidth_, lineHeight_ };
         };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
             if (Terminal* p = scriptEngine_.terminal(paneId)) p->writeText(data);
@@ -363,17 +364,9 @@ int PlatformDawn::exec()
                 PendingMutations::ResizePopupState{paneId, popupId, w, h});
             std::string key = popupStateKey(paneId, popupId);
             renderThread_->pending().releasePopupTextures.push_back(key);
+            scriptEngine_.deliverPopupResized(paneId, popupId, w, h);
             setNeedsRedraw();
             return true;
-        };
-        scbs.injectPopupData = [this](Script::PaneId paneId, const std::string& popupId,
-                                       const std::string& data) {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
-                if (Terminal* popup = p->findPopup(popupId)) {
-                    popup->injectData(data.c_str(), data.size());
-                    setNeedsRedraw();
-                }
-            }
         };
         scbs.paneEmbeddeds = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::EmbeddedInfo> {
             std::vector<Script::AppCallbacks::EmbeddedInfo> result;
@@ -456,17 +449,14 @@ int PlatformDawn::exec()
             Terminal* p = scriptEngine_.terminal(paneId);
             if (!p) return false;
             bool ok = p->resizeEmbedded(lineId, rows);
-            if (ok) setNeedsRedraw();
-            return ok;
-        };
-        scbs.injectEmbeddedData = [this](Script::PaneId paneId, uint64_t lineId,
-                                          const std::string& data) {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
-                if (Terminal* em = p->findEmbedded(lineId)) {
-                    em->injectData(data.c_str(), data.size());
-                    setNeedsRedraw();
-                }
+            if (ok) {
+                // Parent-cascade resize (pane cols change) isn't wired yet;
+                // if/when it lands, fire the event from there too so applets
+                // see all size changes uniformly.
+                scriptEngine_.deliverEmbeddedResized(paneId, lineId, p->width(), rows);
+                setNeedsRedraw();
             }
+            return ok;
         };
         scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string {
             Terminal* te = scriptEngine_.terminal(paneId);

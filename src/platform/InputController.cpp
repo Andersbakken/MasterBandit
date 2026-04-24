@@ -422,19 +422,29 @@ void InputController::onMouseButton(int button, int action, int mods)
             if (!selectionDragActive_ && !clickPane->usingAltScreen() &&
                 !clickPane->embeddeds().empty()) {
                 uint64_t hitLineId = 0;
+                int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
                 bool clickedEmbedded = clickPane->liveSegmentHitTest(
-                    cellRelY, lineHeight, /*out*/ hitLineId);
-                if (clickedEmbedded && action == static_cast<int>(KeyAction_Press)) {
-                    // Focus the embedded; subsequent activeTerm() resolves to it.
-                    clickPane->clearFocusedPopup();
-                    clickPane->setFocusedEmbeddedLineId(hitLineId);
-                    clickPane->focusEvent(false);
-                    platform_->renderThread_->pending().dirtyPanes.insert(clickPane->id());
-                    platform_->setNeedsRedraw();
-                    return;
-                }
+                    cellRelX, cellRelY, static_cast<float>(charWidth), lineHeight,
+                    hitLineId, emRelCol, emRelRow, emRelPx, emRelPy);
                 if (clickedEmbedded) {
-                    // Release inside embedded — swallow without further action.
+                    // On press: focus the embedded (subsequent activeTerm()
+                    // resolves to it for keyboard). Always deliver the
+                    // mouse event to JS listeners — applets drive their
+                    // own widget logic from press + release.
+                    if (action == static_cast<int>(KeyAction_Press)) {
+                        clickPane->clearFocusedPopup();
+                        clickPane->setFocusedEmbeddedLineId(hitLineId);
+                        clickPane->focusEvent(false);
+                        platform_->renderThread_->pending().dirtyPanes.insert(clickPane->id());
+                        platform_->setNeedsRedraw();
+                    }
+                    std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
+                    int btn = (button == static_cast<int>(LeftButton)) ? 0
+                            : (button == static_cast<int>(RightButton)) ? 1 : 2;
+                    platform_->scriptEngine_.deliverEmbeddedMouseEvent(
+                        clickPane->id(), hitLineId, type,
+                        emRelCol, emRelRow, emRelPx, emRelPy, btn);
+                    platform_->scriptEngine_.executePendingJobs();
                     return;
                 }
                 // Click outside any embedded: if one is currently focused,
@@ -697,15 +707,53 @@ void InputController::onCursorPos(double x, double y)
         }
     }
 
-    // Notify JS mousemove listeners for the hovered pane
+    // Notify JS mousemove listeners for the hovered pane — and, when the
+    // cursor is inside a popup or embedded on that pane, for those too.
+    // Popup/embedded takes precedence (it's "on top of" the pane visually).
     if (&platform_->scriptEngine_) {
         Uuid hoveredPaneId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx), static_cast<int>(sy));
-        if (!hoveredPaneId.isNil() && platform_->scriptEngine_.hasPaneMouseMoveListeners(hoveredPaneId)) {
-            Terminal* hp = eng.paneInSubtree(*tab, hoveredPaneId);
-            if (hp) {
-                Rect hpr = hp->rect();
-                double hcx = sx - hpr.x - padLeft;
-                double hcy = sy - hpr.y - padTop;
+        Terminal* hp = hoveredPaneId.isNil() ? nullptr : eng.paneInSubtree(*tab, hoveredPaneId);
+        if (hp) {
+            Rect hpr = hp->rect();
+            double hcx = sx - hpr.x - padLeft;
+            double hcy = sy - hpr.y - padTop;
+
+            bool routedToChild = false;
+            // Popup first (on top in the z-order).
+            if (!routedToChild) {
+                int cellCol = static_cast<int>(hcx / charWidth);
+                int cellRow = static_cast<int>(hcy / lineHeight);
+                for (const auto& popup : hp->popups()) {
+                    if (cellCol >= popup->cellX() && cellCol < popup->cellX() + popup->cellW() &&
+                        cellRow >= popup->cellY() && cellRow < popup->cellY() + popup->cellH()) {
+                        int relPxX = static_cast<int>(hcx) - popup->cellX() * static_cast<int>(charWidth);
+                        int relPxY = static_cast<int>(hcy) - popup->cellY() * static_cast<int>(lineHeight);
+                        platform_->scriptEngine_.deliverPopupMouseMove(
+                            hp->id(), popup->popupId(),
+                            cellCol - popup->cellX(), cellRow - popup->cellY(),
+                            relPxX, relPxY);
+                        routedToChild = true;
+                        break;
+                    }
+                }
+            }
+            // Then embedded.
+            if (!routedToChild && !hp->usingAltScreen() && !hp->embeddeds().empty()) {
+                uint64_t hitLineId = 0;
+                int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
+                if (hp->liveSegmentHitTest(hcx, hcy,
+                                           static_cast<float>(charWidth), lineHeight,
+                                           hitLineId, emRelCol, emRelRow, emRelPx, emRelPy)) {
+                    platform_->scriptEngine_.deliverEmbeddedMouseMove(
+                        hp->id(), hitLineId, emRelCol, emRelRow, emRelPx, emRelPy);
+                    routedToChild = true;
+                }
+            }
+
+            // Pane mousemove still fires regardless — it's the existing
+            // contract. Applets that register on both pane and child will
+            // see both events; they can filter in JS if needed.
+            if (platform_->scriptEngine_.hasPaneMouseMoveListeners(hoveredPaneId)) {
                 platform_->scriptEngine_.notifyPaneMouseMove(
                     hoveredPaneId,
                     static_cast<int>(hcx / charWidth),

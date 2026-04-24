@@ -386,21 +386,6 @@ static JSValue jsPaneRemoveEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsPaneInject(JSContext* ctx, JSValueConst this_val,
-                             int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
-    REQUIRE_PERM(ctx, IoInject);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
-    engineFromCtx(ctx)->callbacks().injectPaneData(pane->id, std::string(str, len));
-    JS_FreeCString(ctx, str);
-    return JS_UNDEFINED;
-}
-
 static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
                             int argc, JSValueConst* argv)
 {
@@ -692,9 +677,11 @@ static JSValue jsPaneCreateEmbedded(JSContext*, JSValueConst, int, JSValueConst*
 static JSValue jsPaneGetEmbeddeds(JSContext*, JSValueConst);
 
 static const JSCFunctionListEntry jsPaneProto[] = {
+    // Methods & getters listed here are PANE-SPECIFIC. `inject`, `cols`,
+    // `rows`, `cursor`, `kind` are inherited from the Terminal base
+    // prototype (see jsTerminalProto).
     JS_CFUNC_DEF("addEventListener", 2, jsPaneAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsPaneRemoveEventListener),
-    JS_CFUNC_DEF("inject", 1, jsPaneInject),
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
     JS_CFUNC_DEF("paste", 1, jsPanePaste),
     JS_CFUNC_DEF("getTextFromRows", 4, jsPaneGetTextFromRows),
@@ -704,8 +691,6 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CFUNC_DEF("createEmbeddedTerminal", 1, jsPaneCreateEmbedded),
     JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
-    JS_CGETSET_MAGIC_DEF("cols", jsPaneGetProp, nullptr, 1),
-    JS_CGETSET_MAGIC_DEF("rows", jsPaneGetProp, nullptr, 2),
     JS_CGETSET_MAGIC_DEF("title", jsPaneGetProp, nullptr, 3),
     JS_CGETSET_MAGIC_DEF("cwd", jsPaneGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
@@ -717,7 +702,6 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("selectedCommand", jsPaneGetProp, nullptr, 9),
     JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
     JS_CGETSET_MAGIC_DEF("selection",    jsPaneGetProp, nullptr, 11),
-    JS_CGETSET_MAGIC_DEF("cursor",      jsPaneGetProp, nullptr, 12),
     JS_CGETSET_MAGIC_DEF("oldestRowId",     jsPaneGetProp, nullptr, 13),
     JS_CGETSET_MAGIC_DEF("newestRowId",     jsPaneGetProp, nullptr, 14),
     JS_CGETSET_MAGIC_DEF("mousePosition",   jsPaneGetProp, nullptr, 15),
@@ -755,23 +739,6 @@ static JSValue jsPopupNew(JSContext* ctx, PaneId paneId, const std::string& popu
 static JsPopupData* jsPopupGet(JSContext* ctx, JSValueConst val)
 {
     return static_cast<JsPopupData*>(JS_GetOpaque(val, jsPopupClassId));
-}
-
-// popup.inject(data)
-static JSValue jsPopupInject(JSContext* ctx, JSValueConst this_val,
-                              int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
-    REQUIRE_PERM(ctx, IoInject);
-    auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
-    size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
-    engineFromCtx(ctx)->callbacks().injectPopupData(popup->paneId, popup->popupId,
-                                                     std::string(str, len));
-    JS_FreeCString(ctx, str);
-    return JS_UNDEFINED;
 }
 
 // popup.close()
@@ -816,6 +783,9 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
     } else if (strcmp(event, "mouse") == 0) {
         if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
         prop = "__mouse_listeners";
+    } else if (strcmp(event, "mousemove") == 0) {
+        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        prop = "__evt_mousemove";
     } else {
         prop = std::string("__evt_") + event;
     }
@@ -886,17 +856,13 @@ static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         auto info = eng->callbacks().paneInfo(popup->paneId);
         return JS_NewBool(ctx, info.focusedPopupId == popup->popupId);
     }
-    case 3: case 4: case 5: case 6: {
-        // cols, rows, x, y — look up from panePopups
+    case 5: case 6: {
+        // x, y — look up from panePopups (cols/rows come from Terminal base).
         auto popups = eng->callbacks().panePopups(popup->paneId);
         for (const auto& p : popups) {
             if (p.id == popup->popupId) {
-                switch (magic) {
-                case 3: return JS_NewInt32(ctx, p.w);
-                case 4: return JS_NewInt32(ctx, p.h);
-                case 5: return JS_NewInt32(ctx, p.x);
-                case 6: return JS_NewInt32(ctx, p.y);
-                }
+                if (magic == 5) return JS_NewInt32(ctx, p.x);
+                if (magic == 6) return JS_NewInt32(ctx, p.y);
             }
         }
         return JS_UNDEFINED;
@@ -929,16 +895,14 @@ static JSValue jsPopupResize(JSContext* ctx, JSValueConst this_val,
 }
 
 static const JSCFunctionListEntry jsPopupProto[] = {
+    // `inject`, `cols`, `rows`, `cursor`, `kind` inherited from Terminal base.
     JS_CFUNC_DEF("addEventListener", 2, jsPopupAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsPopupRemoveEventListener),
-    JS_CFUNC_DEF("inject", 1, jsPopupInject),
     JS_CFUNC_DEF("resize", 1, jsPopupResize),
     JS_CFUNC_DEF("close", 0, jsPopupClose),
     JS_CGETSET_MAGIC_DEF("paneId", jsPopupGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("id", jsPopupGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("focused", jsPopupGetProp, nullptr, 2),
-    JS_CGETSET_MAGIC_DEF("cols", jsPopupGetProp, nullptr, 3),
-    JS_CGETSET_MAGIC_DEF("rows", jsPopupGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("x", jsPopupGetProp, nullptr, 5),
     JS_CGETSET_MAGIC_DEF("y", jsPopupGetProp, nullptr, 6),
 };
@@ -1030,23 +994,6 @@ static JsEmbeddedData* jsEmbeddedGet(JSContext*, JSValueConst val)
     return static_cast<JsEmbeddedData*>(JS_GetOpaque(val, jsEmbeddedClassId));
 }
 
-// embedded.inject(data)
-static JSValue jsEmbeddedInject(JSContext* ctx, JSValueConst this_val,
-                                  int argc, JSValueConst* argv)
-{
-    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
-    REQUIRE_PERM(ctx, IoInject);
-    auto* em = jsEmbeddedGet(ctx, this_val);
-    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
-    size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
-    engineFromCtx(ctx)->callbacks().injectEmbeddedData(em->paneId, em->lineId,
-                                                       std::string(str, len));
-    JS_FreeCString(ctx, str);
-    return JS_UNDEFINED;
-}
-
 // embedded.resize(rows)
 static JSValue jsEmbeddedResize(JSContext* ctx, JSValueConst this_val,
                                   int argc, JSValueConst* argv)
@@ -1103,6 +1050,10 @@ static JSValue jsEmbeddedAddEventListener(JSContext* ctx, JSValueConst this_val,
     if (strcmp(event, "input") == 0) {
         if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
         prop = "__input_filters";
+    } else if (strcmp(event, "mouse") == 0 || strcmp(event, "mousemove") == 0) {
+        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        // Mirror pane: "mouse" → dedicated list (press/release), "mousemove" → __evt_ bucket.
+        prop = (strcmp(event, "mouse") == 0) ? "__mouse_listeners" : "__evt_mousemove";
     } else {
         prop = std::string("__evt_") + event;
     }
@@ -1144,8 +1095,9 @@ static JSValue jsEmbeddedRemoveEventListener(JSContext* ctx, JSValueConst this_v
     const char* event = JS_ToCString(ctx, argv[0]);
     if (!event) return JS_EXCEPTION;
     std::string prop;
-    if (strcmp(event, "input") == 0) prop = "__input_filters";
-    else                              prop = std::string("__evt_") + event;
+    if (strcmp(event, "input") == 0)           prop = "__input_filters";
+    else if (strcmp(event, "mouse") == 0)      prop = "__mouse_listeners";
+    else                                        prop = std::string("__evt_") + event;
     JS_FreeCString(ctx, event);
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
     removeFromJSArray(ctx, arr, argv[1]);
@@ -1162,15 +1114,11 @@ static JSValue jsEmbeddedGetProp(JSContext* ctx, JSValueConst this_val, int magi
     switch (magic) {
     case 0: { std::string s = em->paneId.toString(); return JS_NewStringLen(ctx, s.data(), s.size()); }
     case 1: return JS_NewInt64(ctx, static_cast<int64_t>(em->lineId));
-    case 2: case 3: case 4: {
-        // rows / cols / focused — look up from paneEmbeddeds
+    case 4: {
+        // focused — cols/rows now come from the Terminal base class.
         auto embeds = eng->callbacks().paneEmbeddeds(em->paneId);
-        for (const auto& e : embeds) {
-            if (e.lineId != em->lineId) continue;
-            if (magic == 2) return JS_NewInt32(ctx, e.rows);
-            if (magic == 3) return JS_NewInt32(ctx, 0); // cols (parent's cols) — caller can query pane
-            if (magic == 4) return JS_NewBool(ctx, e.focused);
-        }
+        for (const auto& e : embeds)
+            if (e.lineId == em->lineId) return JS_NewBool(ctx, e.focused);
         return JS_UNDEFINED;
     }
     }
@@ -1180,14 +1128,122 @@ static JSValue jsEmbeddedGetProp(JSContext* ctx, JSValueConst this_val, int magi
 static const JSCFunctionListEntry jsEmbeddedProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsEmbeddedAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsEmbeddedRemoveEventListener),
-    JS_CFUNC_DEF("inject", 1, jsEmbeddedInject),
     JS_CFUNC_DEF("resize", 1, jsEmbeddedResize),
     JS_CFUNC_DEF("close", 0, jsEmbeddedClose),
     JS_CGETSET_MAGIC_DEF("paneId", jsEmbeddedGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("id",     jsEmbeddedGetProp, nullptr, 1),
-    JS_CGETSET_MAGIC_DEF("rows",   jsEmbeddedGetProp, nullptr, 2),
-    JS_CGETSET_MAGIC_DEF("cols",   jsEmbeddedGetProp, nullptr, 3),
     JS_CGETSET_MAGIC_DEF("focused", jsEmbeddedGetProp, nullptr, 4),
+};
+
+// ============================================================================
+// Terminal JS base class — shared prototype for Pane / Popup / EmbeddedTerminal
+// ============================================================================
+//
+// Every concrete class backed by a live `TerminalEmulator` inherits from this.
+// The base carries methods that delegate purely to `TerminalEmulator` state
+// (inject, width/height, cursor). Kind-specific lifecycle + identity stay on
+// subclasses: Pane has cwd/title/commands/selection, Popup has resize({x,y,w,h})
+// and close(), Embedded has resize(rows) and close(), etc.
+//
+// The base class is abstract — `new Terminal()` from JS would create an object
+// with no opaque, and every base method resolves the backing emulator via
+// resolveEmulatorFromVal, which returns nullptr for the base itself.
+
+static JSClassID jsTerminalClassId;
+static JSClassDef jsTerminalClassDef = { "Terminal", nullptr };
+
+// Branch on the concrete JS class. JS_GetOpaque returns non-null only when
+// `val` is exactly that class id, so the chain finds the right opaque in O(1).
+static TerminalEmulator* resolveEmulatorFromVal(JSContext* ctx, JSValueConst val)
+{
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng) return nullptr;
+    if (auto* p = static_cast<JsPaneData*>(JS_GetOpaque(val, jsPaneClassId))) {
+        if (!p->alive) return nullptr;
+        return eng->terminal(p->id);
+    }
+    if (auto* d = static_cast<JsPopupData*>(JS_GetOpaque(val, jsPopupClassId))) {
+        if (!d->alive) return nullptr;
+        Terminal* parent = eng->terminal(d->paneId);
+        return parent ? parent->findPopup(d->popupId) : nullptr;
+    }
+    if (auto* d = static_cast<JsEmbeddedData*>(JS_GetOpaque(val, jsEmbeddedClassId))) {
+        if (!d->alive) return nullptr;
+        Terminal* parent = eng->terminal(d->paneId);
+        return parent ? parent->findEmbedded(d->lineId) : nullptr;
+    }
+    return nullptr;
+}
+
+// terminal.inject(data)
+static JSValue jsTerminalInject(JSContext* ctx, JSValueConst this_val,
+                                 int argc, JSValueConst* argv)
+{
+    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
+    REQUIRE_PERM(ctx, IoInject);
+    TerminalEmulator* emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    size_t len;
+    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) return JS_EXCEPTION;
+    emu->injectData(str, len);
+    JS_FreeCString(ctx, str);
+    if (auto& cb = engineFromCtx(ctx)->callbacks().requestRedraw) cb();
+    return JS_UNDEFINED;
+}
+
+// Shared getters: 0 = cols, 1 = rows, 2 = cursor, 3 = kind, 4 = cellWidth, 5 = cellHeight.
+static JSValue jsTerminalGetProp(JSContext* ctx, JSValueConst this_val, int magic)
+{
+    if (magic == 3) {
+        // `kind` — discriminator for subclass. Doesn't require a live emulator.
+        JSClassID cid = JS_GetClassID(this_val);
+        if (cid == jsPaneClassId)     return JS_NewString(ctx, "pane");
+        if (cid == jsPopupClassId)    return JS_NewString(ctx, "popup");
+        if (cid == jsEmbeddedClassId) return JS_NewString(ctx, "embedded");
+        return JS_NewString(ctx, "terminal");
+    }
+    if (magic == 4 || magic == 5) {
+        // cellWidth / cellHeight in pixels — window-global font metrics.
+        auto& cb = engineFromCtx(ctx)->callbacks().fontCellSize;
+        if (!cb) return JS_NewFloat64(ctx, 0.0);
+        auto [cw, ch] = cb();
+        return JS_NewFloat64(ctx, magic == 4 ? cw : ch);
+    }
+    TerminalEmulator* emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) return JS_UNDEFINED;
+    switch (magic) {
+    case 0: return JS_NewInt32(ctx, emu->width());
+    case 1: return JS_NewInt32(ctx, emu->height());
+    case 2: {
+        // cursor → { rowId, col, visible }.  PaneSelection gate applies
+        // only when the caller is a shell pane — applets querying their
+        // own popup/embedded don't need the extra grant (the cursor they
+        // see is their own drawing).
+        if (JS_GetClassID(this_val) == jsPaneClassId) {
+            REQUIRE_PERM(ctx, PaneSelection);
+        }
+        std::lock_guard<std::recursive_mutex> _lk(emu->mutex());
+        int absRow = emu->document().historySize() + emu->cursorY();
+        uint64_t rowId = emu->document().lineIdForAbs(absRow);
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "rowId",   JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
+        JS_SetPropertyStr(ctx, obj, "col",     JS_NewInt32(ctx, emu->cursorX()));
+        JS_SetPropertyStr(ctx, obj, "visible", JS_NewBool(ctx, emu->cursorVisible()));
+        return obj;
+    }
+    }
+    return JS_UNDEFINED;
+}
+
+static const JSCFunctionListEntry jsTerminalProto[] = {
+    JS_CFUNC_DEF("inject", 1, jsTerminalInject),
+    JS_CGETSET_MAGIC_DEF("cols",       jsTerminalGetProp, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("rows",       jsTerminalGetProp, nullptr, 1),
+    JS_CGETSET_MAGIC_DEF("cursor",     jsTerminalGetProp, nullptr, 2),
+    JS_CGETSET_MAGIC_DEF("kind",       jsTerminalGetProp, nullptr, 3),
+    JS_CGETSET_MAGIC_DEF("cellWidth",  jsTerminalGetProp, nullptr, 4),
+    JS_CGETSET_MAGIC_DEF("cellHeight", jsTerminalGetProp, nullptr, 5),
 };
 
 // pane.createEmbeddedTerminal({rows}) -> EmbeddedTerminal | null
@@ -2035,6 +2091,9 @@ Engine::Engine()
 
     JS_SetModuleLoaderFunc(rt_, moduleNormalize, moduleLoader, this);
 
+    JS_NewClassID(rt_, &jsTerminalClassId);
+    JS_NewClass(rt_, jsTerminalClassId, &jsTerminalClassDef);
+
     JS_NewClassID(rt_, &jsPaneClassId);
     JS_NewClass(rt_, jsPaneClassId, &jsPaneClassDef);
 
@@ -2094,9 +2153,31 @@ JSContext* Engine::createContext()
 {
     JSContext* ctx = JS_NewContext(rt_);
 
-    JSValue paneProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, paneProto,
-        jsPaneProto, sizeof(jsPaneProto) / sizeof(jsPaneProto[0]));
+    // Terminal base prototype — shared across Pane / Popup / EmbeddedTerminal.
+    // Methods on the base (`inject`, `cols`, `rows`, `cursor`, `kind`) resolve
+    // the backing TerminalEmulator via a class-id-branching resolver, so
+    // applets don't need to know or care which concrete kind they're holding.
+    JSValue terminalProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, terminalProto,
+        jsTerminalProto, sizeof(jsTerminalProto) / sizeof(jsTerminalProto[0]));
+    JS_SetClassProto(ctx, jsTerminalClassId, terminalProto);
+
+    // Expose `Terminal` on the global so `x instanceof Terminal` works.
+    {
+        JSValue global = JS_GetGlobalObject(ctx);
+        JS_SetPropertyStr(ctx, global, "Terminal", JS_DupValue(ctx, terminalProto));
+        JS_FreeValue(ctx, global);
+    }
+
+    auto makeSubProto = [&](const JSCFunctionListEntry* entries, size_t count) {
+        JSValue p = JS_NewObject(ctx);
+        JS_SetPropertyFunctionList(ctx, p, entries, static_cast<int>(count));
+        // Chain to Terminal.prototype so instances inherit base methods.
+        JS_SetPrototype(ctx, p, terminalProto);
+        return p;
+    };
+
+    JSValue paneProto = makeSubProto(jsPaneProto, sizeof(jsPaneProto) / sizeof(jsPaneProto[0]));
     JS_SetClassProto(ctx, jsPaneClassId, paneProto);
 
     JSValue tabProto = JS_NewObject(ctx);
@@ -2104,14 +2185,10 @@ JSContext* Engine::createContext()
         jsTabProto, sizeof(jsTabProto) / sizeof(jsTabProto[0]));
     JS_SetClassProto(ctx, jsTabClassId, tabProto);
 
-    JSValue popupProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, popupProto,
-        jsPopupProto, sizeof(jsPopupProto) / sizeof(jsPopupProto[0]));
+    JSValue popupProto = makeSubProto(jsPopupProto, sizeof(jsPopupProto) / sizeof(jsPopupProto[0]));
     JS_SetClassProto(ctx, jsPopupClassId, popupProto);
 
-    JSValue embeddedProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, embeddedProto,
-        jsEmbeddedProto, sizeof(jsEmbeddedProto) / sizeof(jsEmbeddedProto[0]));
+    JSValue embeddedProto = makeSubProto(jsEmbeddedProto, sizeof(jsEmbeddedProto) / sizeof(jsEmbeddedProto[0]));
     JS_SetClassProto(ctx, jsEmbeddedClassId, embeddedProto);
 
     JSValue commandProto = JS_NewObject(ctx);
@@ -3435,6 +3512,138 @@ void Engine::deliverMouseToRegistry(const char* registryName,
         JS_FreeValue(inst.ctx, obj);
         JS_FreeValue(inst.ctx, registry);
     }
+}
+
+void Engine::deliverEmbeddedMouseEvent(PaneId pane, uint64_t lineId,
+                                        const std::string& type,
+                                        int cellX, int cellY, int pixelX, int pixelY,
+                                        int button)
+{
+    deliverMouseToRegistry("__embedded_registry",
+                           pane.toString() + ":" + std::to_string(lineId),
+                           type, cellX, cellY, pixelX, pixelY, button);
+}
+
+void Engine::deliverMousemoveToRegistry(const char* regName,
+                                         const std::string& key,
+                                         int cellX, int cellY, int pixelX, int pixelY)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, regName);
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue obj = JS_GetPropertyStr(inst.ctx, registry, key.c_str());
+        if (!JS_IsUndefined(obj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__evt_mousemove");
+            if (!JS_IsUndefined(arr)) {
+                JSValue ev = JS_NewObject(inst.ctx);
+                JS_SetPropertyStr(inst.ctx, ev, "cellX",  JS_NewInt32(inst.ctx, cellX));
+                JS_SetPropertyStr(inst.ctx, ev, "cellY",  JS_NewInt32(inst.ctx, cellY));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
+                JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
+                JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+                int32_t arrLen = 0; JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                JS_FreeValue(inst.ctx, lenVal);
+                for (int32_t i = 0; i < arrLen; ++i) {
+                    JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
+                    if (JS_IsFunction(inst.ctx, fn)) {
+                        JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &ev);
+                        if (JS_IsException(ret)) {
+                            JSValue exc = JS_GetException(inst.ctx);
+                            const char* s = JS_ToCString(inst.ctx, exc);
+                            sLog().error("ScriptEngine: mousemove error: {}", s ? s : "(null)");
+                            if (s) JS_FreeCString(inst.ctx, s);
+                            JS_FreeValue(inst.ctx, exc);
+                        }
+                        JS_FreeValue(inst.ctx, ret);
+                    }
+                    JS_FreeValue(inst.ctx, fn);
+                }
+                JS_FreeValue(inst.ctx, ev);
+            }
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::deliverPopupMouseMove(PaneId pane, const std::string& popupId,
+                                    int cellX, int cellY, int pixelX, int pixelY)
+{
+    deliverMousemoveToRegistry("__popup_registry",
+                               pane.toString() + ":" + popupId,
+                               cellX, cellY, pixelX, pixelY);
+}
+
+void Engine::deliverEmbeddedMouseMove(PaneId pane, uint64_t lineId,
+                                       int cellX, int cellY, int pixelX, int pixelY)
+{
+    deliverMousemoveToRegistry("__embedded_registry",
+                               pane.toString() + ":" + std::to_string(lineId),
+                               cellX, cellY, pixelX, pixelY);
+}
+
+void Engine::deliverResizedToRegistry(const char* regName, const std::string& key,
+                                       int cols, int rows)
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, regName);
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+        JSValue obj = JS_GetPropertyStr(inst.ctx, registry, key.c_str());
+        if (!JS_IsUndefined(obj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__evt_resized");
+            if (!JS_IsUndefined(arr)) {
+                JSValue argv[2] = {
+                    JS_NewInt32(inst.ctx, cols),
+                    JS_NewInt32(inst.ctx, rows),
+                };
+                JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+                int32_t arrLen = 0; JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                JS_FreeValue(inst.ctx, lenVal);
+                for (int32_t i = 0; i < arrLen; ++i) {
+                    JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
+                    if (JS_IsFunction(inst.ctx, fn)) {
+                        JSValue ret = JS_Call(inst.ctx, fn, obj, 2, argv);
+                        if (JS_IsException(ret)) {
+                            JSValue exc = JS_GetException(inst.ctx);
+                            const char* s = JS_ToCString(inst.ctx, exc);
+                            sLog().error("ScriptEngine: resized error: {}", s ? s : "(null)");
+                            if (s) JS_FreeCString(inst.ctx, s);
+                            JS_FreeValue(inst.ctx, exc);
+                        }
+                        JS_FreeValue(inst.ctx, ret);
+                    }
+                    JS_FreeValue(inst.ctx, fn);
+                }
+                JS_FreeValue(inst.ctx, argv[0]);
+                JS_FreeValue(inst.ctx, argv[1]);
+            }
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, obj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::deliverPopupResized(PaneId pane, const std::string& popupId, int cols, int rows)
+{
+    deliverResizedToRegistry("__popup_registry",
+                             pane.toString() + ":" + popupId, cols, rows);
+}
+
+void Engine::deliverEmbeddedResized(PaneId pane, uint64_t lineId, int cols, int rows)
+{
+    deliverResizedToRegistry("__embedded_registry",
+                             pane.toString() + ":" + std::to_string(lineId), cols, rows);
 }
 
 void Engine::deliverPaneMouseEvent(PaneId pane, const std::string& type,

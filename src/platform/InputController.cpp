@@ -402,13 +402,18 @@ void InputController::onMouseButton(int button, int action, int mods)
                     int relRow = cellRow - popup->cellY();
                     int relPixelX = static_cast<int>(cellRelX) - popup->cellX() * static_cast<int>(charWidth);
                     int relPixelY = static_cast<int>(cellRelY) - popup->cellY() * static_cast<int>(lineHeight);
+                    std::string popupIdCopy = popup->popupId();
 
-                    // Deliver mouse event to JS popup listeners
+                    // Deliver mouse event to JS popup listeners. The JS handler
+                    // may call popup.close() synchronously, which extracts the
+                    // popup from clickPane->popups() and invalidates the
+                    // reference we're iterating. Don't touch `popup` after
+                    // this point — re-resolve by id.
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
                     int btn = (button == static_cast<int>(LeftButton)) ? 0
                             : (button == static_cast<int>(RightButton)) ? 1 : 2;
                     platform_->scriptEngine_.deliverPopupMouseEvent(
-                        clickPane->id(), popup->popupId(), type,
+                        clickPane->id(), popupIdCopy, type,
                         relCol, relRow,
                         static_cast<int>(sx), static_cast<int>(sy), btn);
                     platform_->scriptEngine_.executePendingJobs();
@@ -419,7 +424,11 @@ void InputController::onMouseButton(int button, int action, int mods)
                     // writeToOutput -> onInput -> JS "input" listener.
                     // Skipped when reporting is inactive so we don't arm
                     // a spurious text selection on a headless popup.
-                    if (popup->mouseReportingActive()) {
+                    Terminal* livePopup = nullptr;
+                    for (const auto& p : clickPane->popups()) {
+                        if (p->popupId() == popupIdCopy) { livePopup = p.get(); break; }
+                    }
+                    if (livePopup && livePopup->mouseReportingActive()) {
                         MouseEvent mev;
                         mev.x = relCol; mev.y = relRow;
                         mev.globalX = static_cast<int>(sx);
@@ -428,9 +437,9 @@ void InputController::onMouseButton(int button, int action, int mods)
                         mev.button = static_cast<Button>(button);
                         mev.modifiers = lastMods_;
                         if (action == static_cast<int>(KeyAction_Press))
-                            popup->mousePressEvent(&mev);
+                            livePopup->mousePressEvent(&mev);
                         else
-                            popup->mouseReleaseEvent(&mev);
+                            livePopup->mouseReleaseEvent(&mev);
                     }
                     return;
                 }

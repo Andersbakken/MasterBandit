@@ -56,7 +56,14 @@ function createInlineWidget() {
         const line = (color, text) =>
             border + "|" + reset + color + pad(text, innerW) + reset + border + "|" + reset + "\r\n";
 
-        // Clear + home, then paint from (0,0).
+        // Clear + home, then paint from (0,0). Rows are 0-indexed:
+        //   0: top border
+        //   1: title (header — click target)
+        //   2..rows-3: body / blanks
+        //   rows-2: bottom border
+        //   rows-1: hint text (written with explicit cursor positioning so
+        //           it doesn't autowrap past the last row and scroll the
+        //           top border off).
         let out = "\x1b[2J\x1b[H";
         out += top + "\r\n";
         out += line(accent, title);
@@ -65,13 +72,14 @@ function createInlineWidget() {
             out += line("", " Cols x Rows = " + cols + " x " + rows);
             out += line("", " Cell px      = " + em.cellWidth + " x " + em.cellHeight);
         } else {
-            out += line("", " (click header to expand)");
+            out += line("", " (body)");
         }
-        // Fill remaining rows with blanks.
-        const drawn = expanded ? 5 : 3; // header + N body lines
-        for (let i = drawn; i < rows - 1; ++i) out += line("", "");
+        // Fill remaining body rows with blanks, stopping before the bottom border.
+        const drawn = expanded ? 5 : 3; // top + title + N body lines
+        for (let i = drawn; i < rows - 2; ++i) out += line("", "");
         out += bottom;
-        out += hint;
+        // Hint on the final row, placed with an absolute cursor move.
+        out += "\x1b[" + rows + ";1H" + hint;
         em.inject(out);
     }
 

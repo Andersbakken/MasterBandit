@@ -129,6 +129,17 @@ int naturalCells(int pixels, float cellPixels)
 
 void TerminalEmulator::processOSC_iTerm(std::string_view payload)
 {
+    // OSC 1337 carries many KVP forms. Notification= is the modern iTerm2
+    // route to a desktop notification (single-string body, no metadata).
+    // Treat it the same way as OSC 9 — single string as title.
+    constexpr std::string_view kNotificationKey = "Notification=";
+    if (payload.substr(0, kNotificationKey.size()) == kNotificationKey) {
+        if (mCallbacks.onDesktopNotification)
+            mCallbacks.onDesktopNotification(
+                std::string(payload.substr(kNotificationKey.size())), {}, {});
+        return;
+    }
+
     // Format: "File=[params]:base64data". Params are ";"-separated name=value
     // pairs. Per iTerm spec, inline=1 is required for display (otherwise the
     // sequence is a "download to disk" request, which we don't implement).
@@ -482,30 +493,28 @@ void TerminalEmulator::processStringSequence()
         processOSC_PaletteReset(payload);
         break;
     case 9: {
-        // OSC 9;4 progress: "9;4;state" or "9;4;state;pct"
-        // Split mStringSequence on ';' after the "9" prefix
-        std::vector<std::string_view> parts;
-        {
-            std::string_view sv(mStringSequence);
-            size_t pos = 0;
-            while (pos <= sv.size()) {
-                size_t sep = sv.find(';', pos);
-                if (sep == std::string_view::npos) {
-                    parts.push_back(sv.substr(pos));
-                    break;
-                }
-                parts.push_back(sv.substr(pos, sep - pos));
-                pos = sep + 1;
-            }
-        }
-        if (parts.size() >= 3 && parts[0] == "9" && parts[1] == "4") {
-            int state = 0;
-            int pct = 0;
-            try { state = std::stoi(std::string(parts[2])); } catch (...) {}
-            if (parts.size() >= 4) {
-                try { pct = std::stoi(std::string(parts[3])); } catch (...) {}
+        // OSC 9 has two overloaded uses:
+        //   1. ConEmu progress: "4;<state>[;<pct>]"
+        //   2. iTerm2 growl-style desktop notification: any other text
+        // Detect the progress form first, fall through to notification.
+        if (payload.substr(0, 2) == "4;") {
+            std::string_view rest = payload.substr(2);
+            auto semi = rest.find(';');
+            std::string_view stateStr = (semi == std::string_view::npos) ? rest : rest.substr(0, semi);
+            std::string_view pctStr   = (semi == std::string_view::npos) ? std::string_view{} : rest.substr(semi + 1);
+            int state = 0, pct = 0;
+            try { state = std::stoi(std::string(stateStr)); } catch (...) {}
+            if (!pctStr.empty()) {
+                try { pct = std::stoi(std::string(pctStr)); } catch (...) {}
             }
             if (mCallbacks.onProgressChanged) mCallbacks.onProgressChanged(state, pct);
+        } else if (mCallbacks.onDesktopNotification) {
+            // Per Kitty's interpretation (kitty/notifications.py:1074),
+            // the single string is the *title* (body empty). iTerm2
+            // historically uses it as the body, but title-only renders
+            // cleanly on macOS and the platform fills the title slot
+            // from the bundle name.
+            mCallbacks.onDesktopNotification(std::string(payload), {}, {});
         }
         break;
     }
@@ -563,6 +572,19 @@ void TerminalEmulator::processStringSequence()
         }
         break;
     case 52: processOSC_Clipboard(payload); break;
+    case 777: // urxvt notify protocol: "[notify;]<title>[;<body>]"
+        {
+            std::string_view rest = payload;
+            if (rest.substr(0, 7) == "notify;") rest.remove_prefix(7);
+            auto semi = rest.find(';');
+            std::string title(semi == std::string_view::npos
+                              ? rest : rest.substr(0, semi));
+            std::string body(semi == std::string_view::npos
+                             ? std::string{} : std::string(rest.substr(semi + 1)));
+            if (mCallbacks.onDesktopNotification)
+                mCallbacks.onDesktopNotification(title, body, {});
+        }
+        break;
     case 99: // Desktop notifications (kitty protocol)
         {
             // Format: "metadata;content" where metadata is colon-separated key=value pairs

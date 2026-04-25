@@ -6,6 +6,7 @@
 #include <pwd.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/sinks/basic_file_sink.h>
 #include <sstream>
 #include "CLIClient.h"
 #include <cxxopts.hpp>
@@ -105,11 +106,26 @@ int main(int argc, char **argv)
     const auto globalLevel = kLevelMap[logLevel];
 
     static const char* kSubsystems[] = { "script", "render", "terminal", "input", "font", nullptr };
+
+    std::vector<spdlog::sink_ptr> sharedSinks;
+    try {
+        sharedSinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true));
+    } catch (...) {}
+    sharedSinks.push_back(std::make_shared<spdlog::sinks::stderr_color_sink_mt>());
+
+    auto makeLogger = [&](const char* name, spdlog::level::level_enum lvl) {
+        auto l = std::make_shared<spdlog::logger>(name, sharedSinks.begin(), sharedSinks.end());
+        l->set_level(lvl);
+        l->flush_on(spdlog::level::trace);
+        spdlog::register_logger(l);
+        return l;
+    };
+
     spdlog::set_level(globalLevel);
+    spdlog::set_default_logger(makeLogger("mb", globalLevel));
     for (int i = 0; kSubsystems[i]; ++i)
-        spdlog::stdout_color_mt(kSubsystems[i])->set_level(globalLevel);
-    spdlog::stdout_color_mt("js")->set_level(
-        globalLevel < spdlog::level::info ? globalLevel : spdlog::level::info);
+        makeLogger(kSubsystems[i], globalLevel);
+    makeLogger("js", globalLevel < spdlog::level::info ? globalLevel : spdlog::level::info);
 
     if (result.count("log")) {
         std::string spec = result["log"].as<std::string>();

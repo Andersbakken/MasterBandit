@@ -16,8 +16,6 @@
 #  include <epoll/EventLoop_epoll.h>
 #  include <xcb/Window_xcb.h>
 #endif
-#include <spdlog/sinks/basic_file_sink.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <sys/ioctl.h>
 #include <cmath>
 #include <filesystem>
@@ -33,16 +31,10 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     : flags_(flags)
     , renderThread_(std::make_unique<RenderThread>())
 {
-    try {
-        auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true);
-        auto stderrSink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
-        debugSink_ = std::make_shared<DebugIPCSink>();
-        std::vector<spdlog::sink_ptr> sinks = {fileSink, stderrSink, debugSink_};
-        auto logger = std::make_shared<spdlog::logger>("mb", sinks.begin(), sinks.end());
-        logger->set_level(spdlog::default_logger()->level()); // inherit level set in main()
-        logger->flush_on(spdlog::level::warn);
-        spdlog::set_default_logger(logger);
-    } catch (...) {}
+    debugSink_ = std::make_shared<DebugIPCSink>();
+    spdlog::apply_all([this](const std::shared_ptr<spdlog::logger>& l) {
+        l->sinks().push_back(debugSink_);
+    });
 
     exeDir_ = fs::weakly_canonical(fs::path(argv[0])).parent_path().string();
     Resources::init(exeDir_);

@@ -64,6 +64,22 @@
 - [ ] Refactor MouseSelection and OpenHyperlink — these are mouse-input-path concepts that need mouse coordinates, not general actions. They should be removed from the `Action` variant and handled purely as mouse binding result types. Similarly, PushOverlay needs parameters (command/shell) so it can't work as a parameterless action — it's script-only.
 - [ ] Pane swap/rotate — swap focused pane with another, rotate panes clockwise/counterclockwise.
 - [ ] Move pane to new tab or new window.
+- [ ] Kill the implicit-singleton-tab-bar assumption across the JS surface, and replace int tab IDs with UUIDs. The whole "tabs are a global ordered list" model is baked into multiple APIs that break the moment a layout uses `mb.layout.createTabBar()` + `setTabBarStack()` to host more than one TabBar. Two coupled problems:
+    - **Int tab IDs.** `tab.id` is a positional index into the implicit global list (`Platform_EventLoop.cpp:188` sets `ti.id = i;`), so `mb.activateTab(2)` and `tab.id == 2` have no unique meaning under multi-TabBar layouts.
+    - **Singleton tab queries.** `mb.tabs`, `mb.activeTab`, `mb.layout.activeTab()`, `mb.tabBarPosition`, `tabCreated`/`tabDestroyed` events, and `mb.layout.createTab()` all assume one TabBar. `activeTab` collapses multiple per-Stack `activeChild` values to one tab; `mb.tabs` returns one merged list with no TabBar context; `mb.tabBarPosition` is one global string when the layout supports multiple TabBars at independent positions; `createTab()` appends to the implicit primary Stack with no way to target a specific Stack.
+
+    Migration steps:
+    1. **C++** — replace `TabId = int` (`ScriptEngine.h:32`) with `Uuid`; drop the positional `TabInfo::id` field; activate/close paths take UUID directly.
+    2. **JS surface — narrow to UUIDs.** Remove `tab.id` (`number`); narrow `mb.activateTab` / `mb.closeTab` / `mb.layout.activateTab` / `mb.layout.closeTab` to UUIDs only; drop the `id: number` field from `mb.layout.createTab()`'s return; drop the int from `tabCreated` / `tabDestroyed` event payloads.
+    3. **Add bar-relative + generic-query APIs.** Replace the singleton accessors with relational lookups composed from one generic enumeration primitive:
+        - `mb.layout.queryNodes(kind: "Terminal" | "Container" | "Stack" | "TabBar", subtreeRoot?: string): string[]` — UUIDs of every node of the given kind, in tree-walk order; optional subtree scoping. One small API replacing dedicated `tabBars()` / `terminals()` / `containers()` accessors. Attribute filtering is the caller's job (`.filter(u => mb.layout.node(u).label === "foo")`) — keep the API small.
+        - Per-node relational accessors via `mb.layout.node(uuid)`: TabBar gets `boundStack`; Stack gets `activeChild` and `children`; etc. (most are already in `node()`'s output — audit and fill gaps.)
+        - `mb.layout.activateTabInBar(tabBarUuid, indexOrChildUuid)` — the keybinding-style "switch to tab N" use case, scoped to a specific TabBar via UUID.
+    4. **Drop the singleton APIs.** `mb.tabs`, `mb.activeTab`, `mb.layout.activeTab()`, `mb.tabBarPosition` come out. They're replaced by composing `queryNodes("TabBar")` + per-TabBar lookups.
+    5. **Update `default-ui.js`** to use UUIDs throughout; bar-relative addressing where it currently relies on `tab.id`.
+    6. **Update `mb.d.ts`** to match.
+
+    Visible tab-bar numbering (the `1 / 2 / 3` a user sees rendered) is purely a render-time decision per TabBar and stays as-is — display, not identity.
 - [ ] Full-screen overlays — Tab::pushOverlay / popOverlay are implemented; need a way to trigger (e.g. Cmd+Shift+Enter kitty-style).
 - [x] Popup panes (OSC 58237) — fully implemented with JS-driven API: `pane.createPopup({id, x, y, w, h})`, `popup.inject(data)`, `popup.close()`, `popup.resize({x, y, w, h})`, `popup.addEventListener("input"/"mouse")`. Popup properties: `cols`, `rows`, `x`, `y`, `focused`.
 - [x] Popup focus cycling — `FocusPopup` action (Cmd+Shift+I / Ctrl+Shift+I) cycles focus between main terminal and popups. When focused, keystrokes route to the popup's emulator → JS input listeners. Popup cursor renders at popup position; main cursor hidden behind popups.

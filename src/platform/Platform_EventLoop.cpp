@@ -607,6 +607,7 @@ int PlatformDawn::exec()
 
     // Set up the per-iteration tick
     if (eventLoop_) {
+        eventLoop_->onQuitRequested = [this]() { quit(); };
         eventLoop_->onTick = [this]() {
             if (shouldClose()) {
                 eventLoop_->stop();

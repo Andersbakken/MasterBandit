@@ -16,15 +16,71 @@ static constexpr int MaxKqEvents = 64;
 
 // ---------- Objective-C glue ----------
 
-@interface MBAppDelegate : NSObject <NSApplicationDelegate>
+@interface MBAppDelegate : NSObject <NSApplicationDelegate> {
+@public
+    NSAppEventLoop* loop;
+}
+- (void)mbQuit:(id)sender;
 @end
 
 @implementation MBAppDelegate
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
     (void)sender;
-    return NSTerminateCancel;  // let PlatformDawn handle quit
+    // Route through the shared quit callback (same path as mb.quit()) and
+    // cancel the OS-driven termination so AppKit doesn't bypass our cleanup.
+    if (loop && loop->onQuitRequested) loop->onQuitRequested();
+    else if (loop) loop->stop();
+    return NSTerminateCancel;
+}
+- (void)mbQuit:(id)sender {
+    (void)sender;
+    if (loop && loop->onQuitRequested) loop->onQuitRequested();
+    else if (loop) loop->stop();
 }
 @end
+
+// Build the standard macOS app menu (App > [About, Hide…, Quit]). The bundle
+// name supplies "<App>" via NSRunningApplication.localizedName; falls back to
+// "MasterBandit" when running the bare binary. The Quit item targets our
+// delegate's mbQuit: rather than NSApp.terminate: so the cleanup path goes
+// through onQuitRequested directly without involving applicationShouldTerminate.
+static void installMainMenu(MBAppDelegate* delegate)
+{
+    NSString* appName = [[NSRunningApplication currentApplication] localizedName];
+    if (!appName.length) appName = @"MasterBandit";
+
+    NSMenu* mainMenu = [[NSMenu alloc] init];
+    NSMenuItem* appMenuItem = [[NSMenuItem alloc] init];
+    [mainMenu addItem:appMenuItem];
+
+    NSMenu* appMenu = [[NSMenu alloc] init];
+    [appMenu addItemWithTitle:[@"About " stringByAppendingString:appName]
+                       action:@selector(orderFrontStandardAboutPanel:)
+                keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* hide = [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:appName]
+                                          action:@selector(hide:)
+                                   keyEquivalent:@"h"];
+    (void)hide;
+    NSMenuItem* hideOthers = [appMenu addItemWithTitle:@"Hide Others"
+                                                action:@selector(hideOtherApplications:)
+                                         keyEquivalent:@"h"];
+    [hideOthers setKeyEquivalentModifierMask:(NSEventModifierFlagOption | NSEventModifierFlagCommand)];
+    [appMenu addItemWithTitle:@"Show All"
+                       action:@selector(unhideAllApplications:)
+                keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:[@"Quit " stringByAppendingString:appName]
+                                                  action:@selector(mbQuit:)
+                                           keyEquivalent:@"q"];
+    [quit setTarget:delegate];
+    [appMenu addItem:quit];
+
+    [appMenuItem setSubmenu:appMenu];
+    [NSApp setMainMenu:mainMenu];
+}
 
 // ---------- FSEvents callback ----------
 
@@ -53,8 +109,10 @@ NSAppEventLoop::NSAppEventLoop()
     // Ensure NSApp exists
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    id delegate = [[MBAppDelegate alloc] init];
+    MBAppDelegate* delegate = [[MBAppDelegate alloc] init];
+    delegate->loop = this;
     [NSApp setDelegate:delegate];
+    installMainMenu(delegate);
 
     // Create kqueue
     kqFd_ = kqueue();

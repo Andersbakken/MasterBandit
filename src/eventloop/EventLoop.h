@@ -42,6 +42,12 @@ public:
     // Called each iteration after waking, before sleeping again
     // Set by PlatformDawn to drive rendering
     std::function<void()> onTick;
+
+    // Called when the platform-native UI (e.g. macOS app menu's Quit, dock
+    // Quit, or Cmd+Q routed through NSApp.terminate:) asks the app to exit.
+    // PlatformDawn sets this to its own quit() so the cleanup path is shared
+    // with the JS-driven mb.quit().
+    std::function<void()> onQuitRequested;
 };
 
 inline EventLoop::FdEvents operator|(EventLoop::FdEvents a, EventLoop::FdEvents b)

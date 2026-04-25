@@ -1,5 +1,6 @@
 #include "PlatformDawn.h"
 #include "Config.h"
+#include "Resources.h"
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -583,7 +584,7 @@ int PlatformDawn::exec()
     // terminalExited cascade. A failed load means those actions have no
     // handler, so we refuse to start rather than run in a broken state.
     {
-        std::string scriptsDir = exeDir_ + "/scripts/";
+        std::string scriptsDir = Resources::path("scripts").string() + "/";
         scriptEngine_.setBuiltinModulesDir(scriptsDir + "modules");
         scriptEngine_.loadController(scriptsDir + "applet-loader.js");
         scriptEngine_.loadController(scriptsDir + "command-palette.js");

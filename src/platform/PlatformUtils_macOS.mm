@@ -1,9 +1,18 @@
 #import <Cocoa/Cocoa.h>
 #import <UserNotifications/UserNotifications.h>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <sys/types.h>
 #include <libproc.h>
+#include <spdlog/spdlog.h>
+
+extern "C" const char* macResourcePathOrNull()
+{
+    if (![[NSBundle mainBundle] bundleIdentifier]) return nullptr;
+    NSString* p = [[NSBundle mainBundle] resourcePath];
+    return p ? [p UTF8String] : nullptr;
+}
 
 bool platformIsDarkMode()
 {
@@ -21,6 +30,16 @@ static id g_appearanceObserver = nil;
 
 void platformSendNotification(const std::string& title, const std::string& body)
 {
+    // UNUserNotificationCenter asserts on construction when there is no main
+    // bundle (running the bare binary, not a .app). Bail before touching it.
+    if (![[NSBundle mainBundle] bundleIdentifier]) {
+        static std::once_flag warned;
+        std::call_once(warned, [&]{
+            spdlog::warn("Notifications disabled: no bundle identifier "
+                         "(running bare binary, not a .app). Title='{}'", title);
+        });
+        return;
+    }
     if (@available(macOS 10.14, *)) {
         UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
         [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)

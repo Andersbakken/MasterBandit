@@ -21,9 +21,21 @@ add_executable(mb
     script/ScriptPermissions.cpp script/ScriptFsModule.cpp
     script/ScriptWsModule.cpp script/ScriptLayoutBindings.cpp
     ClickDetector.cpp
+    Resources.cpp
     Uuid.cpp
     LayoutTree.cpp
 )
+
+if(APPLE)
+    set_target_properties(mb PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "MasterBandit"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.jhanssen.masterbandit"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        MACOSX_BUNDLE_INFO_STRING "MasterBandit terminal"
+    )
+endif()
 
 target_include_directories(mb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -58,35 +70,35 @@ endmacro()
 file(GLOB SHADER_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")
 foreach(SHADER ${SHADER_FILES})
     get_filename_component(SHADER_NAME ${SHADER} NAME)
-    mb_copy_asset(${SHADER} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/${SHADER_NAME}")
+    mb_copy_asset(${SHADER} "${MB_RESOURCES_ROOT}/shaders/${SHADER_NAME}")
 endforeach()
 
 # Bundled fonts (preserving subdirectory structure)
 file(GLOB_RECURSE FONT_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/fonts/**/*.ttf")
 foreach(FONT ${FONT_FILES})
     file(RELATIVE_PATH FONT_REL "${CMAKE_SOURCE_DIR}/assets/fonts" ${FONT})
-    mb_copy_asset(${FONT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/${FONT_REL}")
+    mb_copy_asset(${FONT} "${MB_RESOURCES_ROOT}/fonts/${FONT_REL}")
 endforeach()
 
 # Bundled scripts
 file(GLOB SCRIPT_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/scripts/*.js")
 foreach(SCRIPT ${SCRIPT_FILES})
     get_filename_component(SCRIPT_NAME ${SCRIPT} NAME)
-    mb_copy_asset(${SCRIPT} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/${SCRIPT_NAME}")
+    mb_copy_asset(${SCRIPT} "${MB_RESOURCES_ROOT}/scripts/${SCRIPT_NAME}")
 endforeach()
 
 # Bundled JS modules
 file(GLOB MODULE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/scripts/modules/*.js")
 foreach(MOD ${MODULE_FILES})
     get_filename_component(MOD_NAME ${MOD} NAME)
-    mb_copy_asset(${MOD} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scripts/modules/${MOD_NAME}")
+    mb_copy_asset(${MOD} "${MB_RESOURCES_ROOT}/scripts/modules/${MOD_NAME}")
 endforeach()
 
 # hb-gpu WGSL helper shaders from harfbuzz source
 mb_copy_asset("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
-              "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-vertex.wgsl")
+              "${MB_RESOURCES_ROOT}/shaders/hb-gpu-vertex.wgsl")
 mb_copy_asset("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-fragment.wgsl"
-              "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/hb-gpu-fragment.wgsl")
+              "${MB_RESOURCES_ROOT}/shaders/hb-gpu-fragment.wgsl")
 
 add_custom_target(mb_assets ALL DEPENDS ${COPIED_ASSETS})
 add_dependencies(mb mb_assets)

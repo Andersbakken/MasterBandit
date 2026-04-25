@@ -3,6 +3,7 @@
 #include "AnimationScheduler.h"
 #include "ConfigLoader.h"
 #include "InputController.h"
+#include "Resources.h"
 #include "Utils.h"
 #include "FontResolver.h"
 #include "Utf8.h"
@@ -44,6 +45,7 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
     } catch (...) {}
 
     exeDir_ = fs::weakly_canonical(fs::path(argv[0])).parent_path().string();
+    Resources::init(exeDir_);
 
     renderEngine_ = std::make_unique<RenderEngine>();
     inputController_ = std::make_unique<InputController>();
@@ -733,7 +735,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             }
 
             // Load bundled Symbols Nerd Font Mono as a built-in fallback
-            auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
+            auto nerdFontPath = Resources::path("fonts/nerd/SymbolsNerdFontMono-Regular.ttf");
             auto nerdFontData = loadFontFile(nerdFontPath.string());
             if (!nerdFontData.empty()) {
                 textSystem_.addFallbackFont(fontName_, nerdFontData);
@@ -795,8 +797,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             spdlog::info("Headless framebuffer: {}x{} ({}x{} cells)", fbWidth_, fbHeight_, testCols_, testRows_);
         }
 
-        std::string shaderDir = fs::weakly_canonical(
-            fs::path(exeDir_) / "shaders").string();
+        std::string shaderDir = fs::weakly_canonical(Resources::path("shaders")).string();
         if (!fs::exists(shaderDir)) {
             shaderDir = (fs::path(__FILE__).parent_path().parent_path() / "shaders").string();
         }
@@ -944,7 +945,7 @@ void PlatformDawn::applyFontChange(const Config& config)
         textSystem_.addSyntheticBoldVariant(fontName_, config.bold_strength, config.bold_strength);
     textSystem_.setBoldStrength(config.bold_strength, config.bold_strength);
 
-    auto nerdFontPath = fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf";
+    auto nerdFontPath = Resources::path("fonts/nerd/SymbolsNerdFontMono-Regular.ttf");
     auto nerdData = loadFontFile(nerdFontPath.string());
     if (!nerdData.empty())
         textSystem_.addFallbackFont(fontName_, nerdData);
@@ -1304,7 +1305,7 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
     auto fontData = loadFontFile(fontPath);
     if (!fontData.empty()) {
         std::vector<std::vector<uint8_t>> fl = {fontData};
-        auto nerdPath = (fs::path(exeDir_) / "fonts" / "nerd" / "SymbolsNerdFontMono-Regular.ttf").string();
+        auto nerdPath = Resources::path("fonts/nerd/SymbolsNerdFontMono-Regular.ttf").string();
         auto nerdData = loadFontFile(nerdPath);
         if (!nerdData.empty()) fl.push_back(std::move(nerdData));
         textSystem_.registerFont(tabBarFontName_, fl, 48.0f);

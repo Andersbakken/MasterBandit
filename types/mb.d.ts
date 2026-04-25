@@ -1,8 +1,11 @@
 // MasterBandit scripting API — ambient TypeScript declarations.
 //
 // Covers:
-//   - `mb` global (tabs, actions, events, script management, createSecureToken)
-//   - Terminal base + Pane / Popup / EmbeddedTerminal / Tab / Overlay APIs
+//   - `mb` global (tabs, actions, events, script management, createSecureToken,
+//     createUuid, quit, tabBarPosition, clipboard, tcap, lifecycle events)
+//   - `mb.layout` — LayoutTree primitives (containers, stacks, tab bars,
+//     tabs, terminal spawn, slot constraints, queries)
+//   - Terminal base + Pane / Popup / EmbeddedTerminal / Tab APIs
 //   - The `mb:ws` module
 //   - Timer globals (setTimeout / setInterval / clear*)
 //   - Console globals
@@ -21,9 +24,8 @@
  */
 type MbPermission =
     // Groups
-    | "ui" | "io" | "shell" | "actions" | "tabs" | "scripts" | "fs" | "net" | "clipboard"
+    | "ui" | "io" | "shell" | "actions" | "tabs" | "scripts" | "fs" | "net" | "clipboard" | "layout"
     // Individual bits
-    | "ui.overlay.create" | "ui.overlay.close"
     | "ui.popup.create"   | "ui.popup.destroy"
     | "io.filter.input"   | "io.filter.output" | "io.inject"
     | "shell.write"       | "shell.commands"
@@ -33,7 +35,8 @@ type MbPermission =
     | "fs.read"           | "fs.write"
     | "net.listen.local"
     | "clipboard.read"    | "clipboard.write"
-    | "pane.selection";
+    | "pane.selection"
+    | "layout.modify";
 
 /** Comma-separated permission string, e.g. `"shell,net.listen.local"`. */
 type MbPermissionList = string;
@@ -158,8 +161,20 @@ interface MbTerminal {
 declare const Terminal: MbTerminal;
 
 interface MbPane extends MbTerminal {
-    /** Pane's tree-node UUID (stringified). */
+    /**
+     * Pane handle — a stringified UUID that also matches this pane's Terminal
+     * node id in the layout tree. Equal to `nodeId` for live panes; kept as
+     * its own getter for symmetry with the other handle-bearing types.
+     */
     readonly id: string;
+    /**
+     * Stable UUID of this pane's Terminal node in `mb.layout`, or `null` if
+     * the pane is unattached. Use this with `mb.layout.splitPane(...)`,
+     * `focusPane(...)`, `removeNode(...)`, `killTerminal(...)`, and
+     * `node(...)`. Ungated — UUIDs are just handles; mutations through
+     * `mb.layout` carry their own permission discipline.
+     */
+    readonly nodeId: string | null;
     /** OSC 2 title set by the shell. */
     readonly title: string;
     /** Working directory reported via OSC 7. */
@@ -451,60 +466,24 @@ interface MbEmbeddedTerminal extends MbTerminal {
 // ============================================================================
 
 interface MbTab {
+    /**
+     * Positional index of this tab within the tab list at query time. Volatile
+     * — closing an earlier tab shifts every later tab's `id` down by one. Use
+     * `nodeId` (below) for any handle that has to outlive the next tab close.
+     * (See TODO.md — int tab IDs are slated to be replaced by UUIDs everywhere.)
+     */
     readonly id: number;
+    /**
+     * Stable UUID of this tab's Container in the shared `mb.layout` tree, or
+     * `null` while the tab has no tree representation. Round-trips through
+     * `mb.layout.activateTab(nodeId)` / `closeTab(nodeId)` / `node(id)`.
+     */
+    readonly nodeId: string | null;
     readonly panes: MbPane[];
     readonly activePane: MbPane | undefined;
-    readonly overlay: MbOverlay | undefined;
 
-    /** Create a headless overlay on this tab. Requires `ui.overlay.create`. */
-    createOverlay(): MbOverlay | null;
-    /** Close the tab's active overlay, if any. */
-    closeOverlay(): void;
-    /** Close this tab. Requires `tabs.close`. */
-    close(): void;
-
+    /** Fired once when this tab is destroyed. */
     addEventListener(event: "destroyed", fn: () => void): void;
-    addEventListener(event: "overlayCreated", fn: (overlay: MbOverlay) => void): void;
-    addEventListener(event: "overlayDestroyed", fn: () => void): void;
-
-    removeEventListener(event: "destroyed", fn: () => void): void;
-    removeEventListener(event: "overlayCreated", fn: (overlay: MbOverlay) => void): void;
-    removeEventListener(event: "overlayDestroyed", fn: () => void): void;
-}
-
-// ============================================================================
-// Overlay
-// ============================================================================
-
-interface MbOverlay {
-    readonly cols: number;
-    readonly rows: number;
-    readonly hasPty: boolean;
-
-    /** Emit data into the overlay's terminal. */
-    inject(data: string): void;
-    /** Write raw bytes to the overlay's PTY. No bracketed-paste wrapping. */
-    write(data: string): void;
-    /**
-     * Paste text to the overlay's PTY — wraps in `\x1b[200~` / `\x1b[201~`
-     * when the overlay has DECSET 2004 active, otherwise same as `write()`.
-     */
-    paste(data: string): void;
-    /** Close this overlay. */
-    close(): void;
-
-    /** Extract plain text from a stable row-id range. `startCol` inclusive, `endCol` exclusive. */
-    getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
-    /** Stable row ID for a screen row (0 = top). Returns null if out of range. */
-    rowIdAt(screenRow: number): number | null;
-
-    /** Keyboard events when the overlay is focused. Requires `io.filter.input`. */
-    addEventListener(event: "input", fn: (data: string) => void): void;
-    addEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
-    addEventListener(event: "destroyed", fn: () => void): void;
-
-    removeEventListener(event: "input", fn: (data: string) => void): void;
-    removeEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
     removeEventListener(event: "destroyed", fn: () => void): void;
 }
 
@@ -535,6 +514,35 @@ interface MbActionInfo {
     args?: string[];
 }
 
+/**
+ * The array returned by `mb.actions` is augmented with handler-registry
+ * methods. Capturing `const a = mb.actions; a.register(...)` works because the
+ * methods are bound to the snapshot. The array itself is regenerated on every
+ * `mb.actions` access.
+ */
+interface MbActions extends ReadonlyArray<MbActionInfo> {
+    /**
+     * Register a JS handler invoked when the action fires. Requires
+     * `layout.modify` (used by built-in scripts that own action plumbing).
+     */
+    register(name: string, fn: (...args: string[]) => void): void;
+    /** Drop a previously-registered handler. Requires `layout.modify`. */
+    unregister(name: string): void;
+}
+
+/**
+ * Payload for the `terminalExited` event on the `mb` global. Emitted after a
+ * Terminal node's PTY child exits. The Terminal node remains in the layout
+ * tree so the controller can decide whether to remove the node, transform the
+ * tab, or spawn a replacement in response.
+ */
+interface MbTerminalExitedEvent {
+    /** Stringified pane handle (UUID). */
+    readonly paneId: string;
+    /** Stable layout-tree node id of the now-empty Terminal node, or `null`. */
+    readonly paneNodeId: string | null;
+}
+
 // ============================================================================
 // mb global
 // ============================================================================
@@ -544,10 +552,23 @@ interface MbGlobal {
     readonly tabs: MbTab[];
     /** The currently focused pane, or undefined if none. */
     readonly activePane: MbPane | undefined;
-    /** The currently active tab, or undefined if none. */
-    readonly activeTab: MbTab | undefined;
-    /** All available actions (built-in + script-registered). */
-    readonly actions: MbActionInfo[];
+    /**
+     * All available actions (built-in + script-registered), with `register` /
+     * `unregister` methods attached. Regenerated on every read.
+     */
+    readonly actions: MbActions;
+    /**
+     * Layout-tree primitives: containers, stacks, tab bars, terminal spawn,
+     * slot constraints, and queries. Mutating methods require `layout.modify`.
+     */
+    readonly layout: MbLayout;
+    /**
+     * Where the chrome tab bar sits relative to the document area: `"top"`,
+     * `"bottom"`, or `"none"` when chrome is suppressed (in-tree TabBar nodes
+     * only). Reflects the live config; subscribe to `configChanged` to react
+     * to live updates.
+     */
+    readonly tabBarPosition: "top" | "bottom" | "none";
 
     // --- Actions ---
     invokeAction(name: string, ...args: string[]): boolean;
@@ -555,12 +576,6 @@ interface MbGlobal {
     setNamespace(namespace: string): boolean;
     /** Register `<namespace>.<name>` as a script action. */
     registerAction(name: string): boolean;
-
-    // --- Tabs ---
-    /** Requires `tabs.create`. Returns the new tab's id. */
-    createTab(): number;
-    /** Requires `tabs.close`. Closes the given tab (or the active one if omitted). */
-    closeTab(id?: number): void;
 
     // --- Script management ---
     /**
@@ -585,6 +600,8 @@ interface MbGlobal {
     approveScript(path: string, response: "y" | "n" | "a" | "d"): MbLoadResult;
     /** Schedule self-unload via a zero-delay timer. */
     exit(): void;
+    /** Quit the application. */
+    quit(): void;
 
     // --- Tokens / crypto ---
     /**
@@ -593,6 +610,13 @@ interface MbGlobal {
      * chars). Ungated — no permission required.
      */
     createSecureToken(length?: number): string;
+    /**
+     * Generate a random UUID v4 (36-char canonical string form). Ungated —
+     * randomness alone confers no capability. String form is the only
+     * JS-safe representation; 128-bit integers don't round-trip through
+     * JS Number.
+     */
+    createUuid(): string;
 
     // --- Custom terminal capabilities ---
     /** Register a custom XTGETTCAP capability. */
@@ -615,8 +639,34 @@ interface MbGlobal {
     // --- Lifecycle events ---
     /** Fires once per new pane. Fires on every loaded instance. */
     addEventListener(event: "paneCreated", fn: (pane: MbPane) => void): void;
+    /**
+     * Fires after a pane has been destroyed. The pane handle is no longer
+     * usable, so the payload is the scalar `(paneId, paneNodeId)` pair.
+     * `paneNodeId` is `null` if the pane had already detached from the tree.
+     */
+    addEventListener(
+        event: "paneDestroyed",
+        fn: (paneId: string, paneNodeId: string | null) => void
+    ): void;
     /** Fires once per new tab. */
     addEventListener(event: "tabCreated", fn: (tab: MbTab) => void): void;
+    /**
+     * Fires after a tab has been destroyed. Payload is the scalar
+     * `(tabId, tabNodeId)` pair; `tabNodeId` is `null` if there was no
+     * tree representation at destruction.
+     */
+    addEventListener(
+        event: "tabDestroyed",
+        fn: (tabId: number, tabNodeId: string | null) => void
+    ): void;
+    /**
+     * Fires when a Terminal node's child process exits. The Terminal node is
+     * left in place so the controller can decide what to do (remove node,
+     * transform the tab, respawn).
+     */
+    addEventListener(event: "terminalExited", fn: (ev: MbTerminalExitedEvent) => void): void;
+    /** Fires when the persisted config has been reloaded from disk. */
+    addEventListener(event: "configChanged", fn: () => void): void;
     /** Fires when any action is invoked, with the action's full name. */
     addEventListener(event: "action", fn: (actionName: string) => void): void;
     /**
@@ -634,13 +684,231 @@ interface MbGlobal {
     ): void;
 
     removeEventListener(event: "paneCreated", fn: (pane: MbPane) => void): void;
+    removeEventListener(
+        event: "paneDestroyed",
+        fn: (paneId: string, paneNodeId: string | null) => void
+    ): void;
     removeEventListener(event: "tabCreated", fn: (tab: MbTab) => void): void;
+    removeEventListener(
+        event: "tabDestroyed",
+        fn: (tabId: number, tabNodeId: string | null) => void
+    ): void;
+    removeEventListener(event: "terminalExited", fn: (ev: MbTerminalExitedEvent) => void): void;
+    removeEventListener(event: "configChanged", fn: () => void): void;
     removeEventListener(event: "action", fn: (actionName: string) => void): void;
     removeEventListener(event: "action", actionName: string, fn: (...args: string[]) => void): void;
     removeEventListener(
         event: "scriptPermissionRequired",
         fn: (path: string, permissions: string, hash: string) => void
     ): void;
+}
+
+// ============================================================================
+// mb.layout — LayoutTree primitives
+// ============================================================================
+
+/**
+ * Per-child slot constraints inside a Container. All cell counts are 0 when
+ * unset; defaults match the C++ `ChildSlot` struct.
+ */
+interface MbChildSlotOptions {
+    /** Relative growth weight when distributing leftover space. Default 1. */
+    stretch?: number;
+    /** Lower bound on the child's allocation, in cells. Default 0 = unset. */
+    minCells?: number;
+    /** Upper bound on the child's allocation, in cells. Default 0 = unset. */
+    maxCells?: number;
+    /** Pin the child to an exact cell count. Default 0 = unset. */
+    fixedCells?: number;
+}
+
+interface MbChildSlot {
+    /** UUID of the child node. */
+    readonly id: string;
+    readonly stretch: number;
+    readonly minCells: number;
+    readonly maxCells: number;
+    readonly fixedCells: number;
+}
+
+interface MbRect {
+    readonly x: number;
+    readonly y: number;
+    readonly w: number;
+    readonly h: number;
+}
+
+interface MbContainerNode {
+    readonly id: string;
+    readonly kind: "container";
+    readonly label: string;
+    readonly parent: string | null;
+    readonly direction: "horizontal" | "vertical";
+    readonly children: MbChildSlot[];
+}
+
+interface MbStackNode {
+    readonly id: string;
+    readonly kind: "stack";
+    readonly label: string;
+    readonly parent: string | null;
+    readonly children: MbChildSlot[];
+    readonly activeChild: string | null;
+    readonly opaque: boolean;
+    readonly zoomTarget: string | null;
+}
+
+interface MbTabBarNode {
+    readonly id: string;
+    readonly kind: "tabbar";
+    readonly label: string;
+    readonly parent: string | null;
+    readonly boundStack: string | null;
+}
+
+interface MbTerminalNode {
+    readonly id: string;
+    readonly kind: "terminal";
+    readonly label: string;
+    readonly parent: string | null;
+}
+
+type MbLayoutNode = MbContainerNode | MbStackNode | MbTabBarNode | MbTerminalNode;
+
+/** Tab handle returned by `createTab` / `activeTab`. */
+interface MbLayoutTabHandle {
+    readonly id: number;
+    readonly nodeId: string | null;
+}
+
+/** Pane handle returned by `createTerminal` / `splitPane`. */
+interface MbLayoutPaneHandle {
+    /** Same as `nodeId` — kept for symmetry with `MbPane.id`. */
+    readonly id: string | null;
+    readonly nodeId: string | null;
+}
+
+/** Focused-pane snapshot returned by `focusedPane()`. */
+interface MbFocusedPaneInfo {
+    readonly id: string;
+    readonly nodeId: string | null;
+    readonly tabId: number;
+    readonly tabNodeId: string | null;
+}
+
+/**
+ * `splitPane` direction. Cardinal forms (`"left"`/`"right"`/`"up"`/`"down"`)
+ * imply orientation AND placement of the new pane relative to the existing
+ * one; the orientation-only forms place the new pane second by default.
+ */
+type MbSplitDir = "horizontal" | "vertical" | "h" | "v" | "left" | "right" | "up" | "down";
+
+interface MbLayout {
+    // --- Node creation (UUID returned). All require `layout.modify`. ---
+
+    /**
+     * Spawn a PTY child terminal and attach the resulting Terminal node under
+     * `parentNodeId` (a Container or Stack). Returns the new pane's handle, or
+     * `null` if the spawn failed.
+     */
+    createTerminal(parentNodeId: string, opts?: { cwd?: string }): MbLayoutPaneHandle | null;
+    /** Create a free-floating Container node. Returns its UUID. */
+    createContainer(direction?: "horizontal" | "vertical" | "h" | "v"): string;
+    /** Create a free-floating Stack node. Returns its UUID. */
+    createStack(): string;
+    /** Create a free-floating TabBar node. Returns its UUID. */
+    createTabBar(): string;
+
+    // --- Tab lifecycle (route through Platform so PTY/graveyard stay in sync) ---
+
+    /** Create an empty tab. Returns the new tab handle, or `null` on failure. */
+    createTab(): MbLayoutTabHandle | null;
+    /**
+     * Close a tab by positional id or by its layout-tree node id.
+     * Returns `false` when no tab matched the argument.
+     */
+    closeTab(idOrNodeId: number | string): boolean;
+    /** Activate a tab by positional id or by its layout-tree node id. */
+    activateTab(idOrNodeId: number | string): void;
+
+    // --- Pane lifecycle ---
+
+    /** Move keyboard focus to the pane identified by its tree node id. */
+    focusPane(nodeId: string): boolean;
+    /**
+     * Remove a non-Terminal subtree (Container, Stack, or already-empty Terminal
+     * leaf). Refuses if any descendant Terminal is still live — call
+     * `killTerminal` first for those.
+     */
+    removeNode(nodeId: string): boolean;
+    /**
+     * Synchronously kill a Terminal's PTY child. The Terminal is graveyarded;
+     * the tree node is left in place so the controller can decide whether to
+     * remove it (or transform the tab) from the `terminalExited` event.
+     */
+    killTerminal(nodeId: string): boolean;
+    /**
+     * Split an existing pane. The direction string accepts orientation aliases
+     * (`"horizontal"`/`"h"` and `"vertical"`/`"v"`) plus cardinal placements
+     * (`"left"`/`"right"` for horizontal, `"up"`/`"down"` for vertical).
+     * `newIsFirst` defaults to `false` for orientation-only and right/down forms,
+     * `true` for left/up. The boolean argument, when provided, OR's into that
+     * default. Returns the new pane's handle, or `null` on failure.
+     */
+    splitPane(existingNodeId: string, dir: MbSplitDir, newIsFirst?: boolean): MbLayoutPaneHandle | null;
+
+    // --- Slot constraints ---
+
+    setSlotStretch(parent: string, child: string, stretch: number): boolean;
+    setSlotMinCells(parent: string, child: string, minCells: number): boolean;
+    setSlotMaxCells(parent: string, child: string, maxCells: number): boolean;
+    setSlotFixedCells(parent: string, child: string, fixedCells: number): boolean;
+
+    /**
+     * Adjust a pane's allocation along `dir`. `dir` is one of `"left"`,
+     * `"right"`, `"up"`, `"down"`; `amount` is in cells (negative shrinks).
+     */
+    adjustPaneSize(paneNodeId: string, dir: "left" | "right" | "up" | "down", amount: number): boolean;
+
+    // --- Stack zoom ---
+
+    /**
+     * Pin a Stack to render only `targetNodeId`. Pass `null`/omit to clear
+     * the zoom and restore normal rendering.
+     */
+    setStackZoom(stackNodeId: string, targetNodeId?: string | null): boolean;
+
+    // --- Tree mutation primitives ---
+
+    /** Promote a free-floating subtree to root. */
+    setRoot(nodeId: string): void;
+    /** Returns the root node id, or `null` if there is none. */
+    getRoot(): string | null;
+    /** Append `child` under `parent` with optional slot constraints. */
+    appendChild(parent: string, child: string, opts?: MbChildSlotOptions): void;
+    removeChild(parent: string, child: string): void;
+    /** Set the active child of a Stack. */
+    setActiveChild(stack: string, child: string): void;
+    /** Bind a TabBar to a Stack (or pass `null`/omit to clear the binding). */
+    setTabBarStack(tabBar: string, stackOrNull: string | null | undefined): void;
+    /** Set the human-readable label on a node. */
+    setLabel(nodeId: string, label: string): void;
+    /** Drop a node from the tree (no recursion guard — see `removeNode` for safer leaf removal). */
+    destroyNode(nodeId: string): void;
+
+    // --- Queries / introspection (ungated) ---
+
+    /** Return the node record for `id`, or `null` if unknown. */
+    node(id: string): MbLayoutNode | null;
+    /**
+     * Compute pixel rects for every node, given the window rect and per-cell
+     * pixel dimensions. Result is a UUID-keyed map.
+     */
+    computeRects(window: MbRect, cellW?: number, cellH?: number): { [nodeId: string]: MbRect };
+    /** Snapshot of the focused pane and its enclosing tab, or `null`. */
+    focusedPane(): MbFocusedPaneInfo | null;
+    /** The currently active tab handle, or `null`. */
+    activeTab(): MbLayoutTabHandle | null;
 }
 
 // ============================================================================

@@ -35,8 +35,10 @@ cmake --build --preset release
 
 ## macOS
 
-The build produces a `.app` bundle at `build/bin/mb.app`. Launch with `open ./build/bin/mb.app`. Desktop notifications (OSC 99) require the bundle to be signed; ad-hoc signing is enough and must be re-applied after each rebuild:
+The build produces a `.app` bundle at `build/bin/mb.app` and ad-hoc signs it automatically as a post-build step (required for `UNUserNotificationCenter` and other privacy-gated APIs to accept the bundle). Launch with `open ./build/bin/mb.app`.
+
+For a release pipeline that signs with a real Developer ID identity, disable the auto-sign so the proper signature isn't immediately overwritten:
 
 ```sh
-codesign --sign - --force --deep ./build/bin/mb.app
+cmake --preset release -DMB_ADHOC_SIGN=OFF
 ```

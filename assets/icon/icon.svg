@@ -20,11 +20,11 @@
   <rect x="34" y="34" width="956" height="956" rx="126" fill="none" stroke="#111" stroke-width="4"/>
 
   <g fill="#2bbf3a" filter="url(#softGlow)">
-    <text x="96" y="380"
+    <text x="96" y="508"
           font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace"
           font-size="320"
           font-weight="700"
           letter-spacing="8">mb&gt;</text>
-    <rect x="700" y="118" width="156" height="284" rx="4"/>
+    <rect x="700" y="246" width="156" height="284" rx="4"/>
   </g>
 </svg>

@@ -559,7 +559,9 @@ wgpu::Surface CocoaWindow::createWgpuSurface(wgpu::Instance instance)
     CAMetalLayer* layer = static_cast<CAMetalLayer*>([mbView_ layer]);
 
     wgpu::SurfaceSourceMetalLayer metalSource;
-    metalSource.layer = layer;
+    // ARC: hand a non-retained void* to Dawn — the layer is owned by the
+    // NSView (mbView_) for the lifetime of the surface, so no transfer.
+    metalSource.layer = (__bridge void*)layer;
 
     wgpu::SurfaceDescriptor desc;
     desc.nextInChain = &metalSource;

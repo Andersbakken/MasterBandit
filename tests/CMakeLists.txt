@@ -54,6 +54,7 @@ else()
 endif()
 
 add_executable(mb-tests ${TEST_SOURCES})
+mb_enable_arc_on_mm(TEST_SOURCES)
 
 target_include_directories(mb-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src

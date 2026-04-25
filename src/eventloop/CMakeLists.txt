@@ -16,6 +16,7 @@ else()
 endif()
 
 add_library(eventloop OBJECT ${EVENTLOOP_SOURCES})
+mb_enable_arc_on_mm(EVENTLOOP_SOURCES)
 
 target_include_directories(eventloop PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

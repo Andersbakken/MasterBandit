@@ -5,17 +5,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# Where bundled assets (shaders, fonts, scripts) get copied. On macOS this is
-# inside the .app bundle's Contents/Resources so the binary picks them up via
-# [NSBundle mainBundle]; elsewhere it's flat next to the executable.
-if(APPLE)
-    set(MB_RESOURCES_ROOT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mb.app/Contents/Resources")
-else()
-    set(MB_RESOURCES_ROOT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-endif()
+# ── Build options ─────────────────────────────────────────────────────────────
+option(ASAN          "Enable AddressSanitizer"                        OFF)
+option(TSAN          "Enable ThreadSanitizer"                         OFF)
+option(MB_ADHOC_SIGN "Ad-hoc codesign the macOS .app after each build" ON)
 
-option(ASAN "Enable AddressSanitizer" OFF)
-option(TSAN "Enable ThreadSanitizer" OFF)
 if(ASAN AND TSAN)
     message(FATAL_ERROR "ASAN and TSAN cannot be enabled simultaneously")
 endif()
@@ -27,6 +21,32 @@ if(TSAN)
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
 endif()
+
+# Where bundled assets (shaders, fonts, scripts) get copied. On macOS this is
+# inside the .app bundle's Contents/Resources so the binary picks them up via
+# [NSBundle mainBundle]; elsewhere it's flat next to the executable.
+if(APPLE)
+    set(MB_RESOURCES_ROOT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mb.app/Contents/Resources")
+else()
+    set(MB_RESOURCES_ROOT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+endif()
+
+# Enable ARC on the .mm files in a source-list variable. Filters by extension
+# rather than requiring a separate hand-maintained list — pass the same var
+# you handed to add_library/add_executable. No-op on non-Apple. Source-file
+# properties are directory-scoped, so call this from the subdir CMakeLists
+# that owns the sources, not from here.
+function(mb_enable_arc_on_mm sources_var)
+    if(NOT APPLE)
+        return()
+    endif()
+    set(_mm ${${sources_var}})
+    list(FILTER _mm INCLUDE REGEX "\\.mm$")
+    if(_mm)
+        set_source_files_properties(${_mm}
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    endif()
+endfunction()
 
 add_subdirectory(3rdparty)
 add_subdirectory(src)

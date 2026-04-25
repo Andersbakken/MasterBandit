@@ -35,6 +35,18 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_VERSION "1"
         MACOSX_BUNDLE_INFO_STRING "MasterBandit terminal"
     )
+
+    # Ad-hoc codesign every build so UNUserNotificationCenter and other
+    # privacy-gated APIs stop refusing the bundle. The MB_ADHOC_SIGN option
+    # is declared at the top of the top-level CMakeLists.txt; CI disables it
+    # when running a full Developer ID + notarization pipeline so the proper
+    # signature isn't immediately overwritten.
+    if(MB_ADHOC_SIGN)
+        add_custom_command(TARGET mb POST_BUILD
+            COMMAND codesign --sign - --force --deep "$<TARGET_BUNDLE_DIR:mb>"
+            VERBATIM
+        )
+    endif()
 endif()
 
 target_include_directories(mb PRIVATE

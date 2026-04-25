@@ -21,6 +21,7 @@ else()
 endif()
 
 add_library(platform OBJECT ${PLATFORM_SOURCES})
+mb_enable_arc_on_mm(PLATFORM_SOURCES)
 
 target_include_directories(platform PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="title desc">
+  <title id="title">mb terminal emulator icon</title>
+  <desc id="desc">A black rounded-square terminal icon with green mb&gt; prompt text and cursor.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070707"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+    <filter id="softGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="13" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="128" fill="url(#bg)"/>
+  <rect x="34" y="34" width="956" height="956" rx="126" fill="none" stroke="#111" stroke-width="4"/>
+
+  <g fill="#2bbf3a" filter="url(#softGlow)">
+    <text x="96" y="380"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace"
+          font-size="320"
+          font-weight="700"
+          letter-spacing="8">mb&gt;</text>
+    <rect x="700" y="118" width="156" height="284" rx="4"/>
+  </g>
+</svg>

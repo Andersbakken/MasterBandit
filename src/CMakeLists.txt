@@ -36,6 +36,34 @@ if(APPLE)
         MACOSX_BUNDLE_INFO_STRING "MasterBandit terminal"
     )
 
+    # Bundle icon: pack assets/icon/mb.iconset/ into mb.icns via iconutil
+    # (ships with macOS). Skipped silently if the iconset PNGs aren't
+    # present — run assets/icon/regen.sh to (re)generate them from icon.svg
+    # before committing.
+    set(MB_ICONSET_DIR ${CMAKE_SOURCE_DIR}/assets/icon/mb.iconset)
+    set(MB_ICNS_OUT    ${CMAKE_CURRENT_BINARY_DIR}/mb.icns)
+    file(GLOB MB_ICONSET_PNGS CONFIGURE_DEPENDS "${MB_ICONSET_DIR}/*.png")
+    find_program(ICONUTIL iconutil)
+    if(ICONUTIL AND MB_ICONSET_PNGS)
+        add_custom_command(
+            OUTPUT ${MB_ICNS_OUT}
+            COMMAND ${ICONUTIL} -c icns ${MB_ICONSET_DIR} -o ${MB_ICNS_OUT}
+            DEPENDS ${MB_ICONSET_PNGS}
+            COMMENT "Packing mb.icns from ${MB_ICONSET_DIR}"
+            VERBATIM
+        )
+        set_source_files_properties(${MB_ICNS_OUT} PROPERTIES
+            GENERATED TRUE
+            MACOSX_PACKAGE_LOCATION "Resources"
+        )
+        target_sources(mb PRIVATE ${MB_ICNS_OUT})
+        set_target_properties(mb PROPERTIES MACOSX_BUNDLE_ICON_FILE mb)
+    elseif(NOT MB_ICONSET_PNGS)
+        message(STATUS
+            "MasterBandit: no icon — assets/icon/mb.iconset/ is empty "
+            "(run assets/icon/regen.sh to generate PNGs from icon.svg)")
+    endif()
+
     # Ad-hoc codesign every build so UNUserNotificationCenter and other
     # privacy-gated APIs stop refusing the bundle. The MB_ADHOC_SIGN option
     # is declared at the top of the top-level CMakeLists.txt; CI disables it

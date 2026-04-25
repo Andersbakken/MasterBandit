@@ -387,6 +387,80 @@ TEST_CASE("OSC 99 does not fire without d=1")
     CHECK(t.capturedNotifyTitle.empty());
 }
 
+// ── OSC 9 / 777 / 1337 notification forms ────────────────────────────────────
+// OSC 9 is shared with ConEmu progress (handled separately above); the
+// non-progress payload is treated as a title-only notification, matching
+// Kitty's interpretation (kitty/notifications.py:1074). OSC 777 follows urxvt
+// (optional leading "notify;", then title[;body]). OSC 1337 Notification= is
+// iTerm2's KVP form, equivalent to a single-string title.
+
+TEST_CASE("OSC 9 (non-progress) fires notification with payload as title")
+{
+    TestTerminal t;
+    t.osc("9;Hello from OSC 9");
+    CHECK(t.capturedNotifyTitle == "Hello from OSC 9");
+    CHECK(t.capturedNotifyBody.empty());
+    CHECK(t.capturedNotifyId.empty());
+}
+
+TEST_CASE("OSC 9 progress ('4;...' prefix) does NOT fire notification")
+{
+    TestTerminal t;
+    t.osc("9;4;1;42");
+    CHECK(t.capturedNotifyTitle.empty());
+    CHECK(t.progressCallCount == 1);
+}
+
+TEST_CASE("OSC 777 splits 'title;body' on first semicolon")
+{
+    TestTerminal t;
+    t.osc("777;notify;Build done;All tests passed");
+    CHECK(t.capturedNotifyTitle == "Build done");
+    CHECK(t.capturedNotifyBody == "All tests passed");
+}
+
+TEST_CASE("OSC 777 accepts payload without leading 'notify;'")
+{
+    TestTerminal t;
+    t.osc("777;Build done;All tests passed");
+    CHECK(t.capturedNotifyTitle == "Build done");
+    CHECK(t.capturedNotifyBody == "All tests passed");
+}
+
+TEST_CASE("OSC 777 with title only (no body separator)")
+{
+    TestTerminal t;
+    t.osc("777;notify;Just a title");
+    CHECK(t.capturedNotifyTitle == "Just a title");
+    CHECK(t.capturedNotifyBody.empty());
+}
+
+TEST_CASE("OSC 777 body may contain semicolons (only first separates)")
+{
+    TestTerminal t;
+    t.osc("777;notify;Title;part one;part two");
+    CHECK(t.capturedNotifyTitle == "Title");
+    CHECK(t.capturedNotifyBody == "part one;part two");
+}
+
+TEST_CASE("OSC 1337 Notification= fires title-only notification")
+{
+    TestTerminal t;
+    t.osc("1337;Notification=Hello via 1337");
+    CHECK(t.capturedNotifyTitle == "Hello via 1337");
+    CHECK(t.capturedNotifyBody.empty());
+}
+
+TEST_CASE("OSC 1337 non-Notification key does not fire notification")
+{
+    // OSC 1337 with File= (or any other key) goes through inline-image
+    // handling, not the notification path. We only check that no notification
+    // was emitted; the image path itself is exercised by test_osc_1337.
+    TestTerminal t;
+    t.osc("1337;SetMark");
+    CHECK(t.capturedNotifyTitle.empty());
+}
+
 // === OSC 10/11/12 — default color query/set ===
 
 TEST_CASE("OSC 10 query returns default foreground")
@@ -666,9 +740,13 @@ TEST_CASE("OSC 9;4 states 2/3/4: error, indeterminate, pause")
 
 TEST_CASE("OSC 9 without ;4 does not fire progress callback")
 {
+    // The non-progress payload routes to the notification handler instead
+    // (covered by the OSC 9 notification tests above); progress must stay
+    // untouched so the two interpretations don't bleed into each other.
     TestTerminal t;
     t.osc("9;some other payload");
     CHECK(t.progressCallCount == 0);
+    CHECK(t.capturedNotifyTitle == "some other payload");
 }
 
 // ── XTGETTCAP (DCS + q ... ST) ────────────────────────────────────────────────

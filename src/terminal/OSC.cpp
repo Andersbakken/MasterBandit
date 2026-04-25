@@ -595,9 +595,9 @@ void TerminalEmulator::processStringSequence()
             std::string text = (payloadSemi != std::string_view::npos)
                 ? std::string(payload.substr(payloadSemi + 1)) : std::string{};
 
-            std::string pType;
+            std::string pType = "title";
             std::string nId;
-            bool done = false;
+            bool done = true;
 
             std::string_view sv = metadata;
             while (!sv.empty()) {
@@ -611,7 +611,7 @@ void TerminalEmulator::processStringSequence()
                 else sv = {};
 
                 if (key == "i") nId = std::string(val);
-                else if (key == "d" && val == "1") done = true;
+                else if (key == "d") done = (val == "1");
                 else if (key == "p") pType = std::string(val);
             }
 

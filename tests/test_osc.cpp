@@ -387,6 +387,61 @@ TEST_CASE("OSC 99 does not fire without d=1")
     CHECK(t.capturedNotifyTitle.empty());
 }
 
+// kitty notifications.py: `done` defaults to True (line 250); only an explicit
+// `d=0` keeps the notification buffered. A bare `99;;<text>` is the simplest
+// valid form and must fire immediately.
+TEST_CASE("OSC 99 default d=1: empty metadata fires title-only notification")
+{
+    TestTerminal t;
+    t.osc("99;;Hello via OSC 99");
+    CHECK(t.capturedNotifyTitle == "Hello via OSC 99");
+    CHECK(t.capturedNotifyBody.empty());
+}
+
+// kitty notifications.py:285 — payload_type defaults to title when `p` is
+// absent. Without this default the payload was dropped on the floor.
+TEST_CASE("OSC 99 default p=title: payload becomes the title")
+{
+    TestTerminal t;
+    t.osc("99;i=42;Just a title");
+    CHECK(t.capturedNotifyTitle == "Just a title");
+    CHECK(t.capturedNotifyId == "42");
+}
+
+TEST_CASE("OSC 99 explicit d=1 fires single chunk")
+{
+    TestTerminal t;
+    t.osc("99;i=1:d=1;Done in one");
+    CHECK(t.capturedNotifyTitle == "Done in one");
+    CHECK(t.capturedNotifyId == "1");
+}
+
+TEST_CASE("OSC 99 chunked: title then body with same id")
+{
+    TestTerminal t;
+    t.osc("99;i=7:d=0:p=title;The Title");
+    CHECK(t.capturedNotifyTitle.empty());          // buffered
+    t.osc("99;i=7:d=1:p=body;The Body");
+    CHECK(t.capturedNotifyTitle == "The Title");
+    CHECK(t.capturedNotifyBody == "The Body");
+    CHECK(t.capturedNotifyId == "7");
+}
+
+TEST_CASE("OSC 99 firing clears buffered state")
+{
+    TestTerminal t;
+    t.osc("99;i=1:d=1;First");
+    CHECK(t.capturedNotifyTitle == "First");
+    t.capturedNotifyTitle.clear();
+    t.capturedNotifyBody.clear();
+    t.capturedNotifyId.clear();
+    // A second notification with no id should not inherit anything from the first.
+    t.osc("99;;Second");
+    CHECK(t.capturedNotifyTitle == "Second");
+    CHECK(t.capturedNotifyBody.empty());
+    CHECK(t.capturedNotifyId.empty());
+}
+
 // ── OSC 9 / 777 / 1337 notification forms ────────────────────────────────────
 // OSC 9 is shared with ConEmu progress (handled separately above); the
 // non-progress payload is treated as a title-only notification, matching

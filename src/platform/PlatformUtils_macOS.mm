@@ -26,11 +26,7 @@ API_AVAILABLE(macos(10.14))
         completionHandler(UNNotificationPresentationOptionNone);
         return;
     }
-    if (@available(macOS 11.0, *)) {
-        completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
-    } else {
-        completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound);
-    }
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
 }
 @end
 

@@ -6,7 +6,6 @@
 #include "ScriptEngine.h"
 #include "Terminal.h"
 #include "Utf8.h"
-#include "Utils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -762,57 +761,55 @@ void InputController::onCursorPos(double x, double y)
     // Notify JS mousemove listeners for the hovered pane — and, when the
     // cursor is inside a popup or embedded on that pane, for those too.
     // Popup/embedded takes precedence (it's "on top of" the pane visually).
-    if (&platform_->scriptEngine_) {
-        Uuid hoveredPaneId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx), static_cast<int>(sy));
-        Terminal* hp = hoveredPaneId.isNil() ? nullptr : eng.paneInSubtree(*tab, hoveredPaneId);
-        if (hp) {
-            Rect hpr = hp->rect();
-            double hcx = sx - hpr.x - padLeft;
-            double hcy = sy - hpr.y - padTop;
+    Uuid hoveredPaneId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx), static_cast<int>(sy));
+    Terminal* hp = hoveredPaneId.isNil() ? nullptr : eng.paneInSubtree(*tab, hoveredPaneId);
+    if (hp) {
+        Rect hpr = hp->rect();
+        double hcx = sx - hpr.x - padLeft;
+        double hcy = sy - hpr.y - padTop;
 
-            bool routedToChild = false;
-            // Popup first (on top in the z-order).
-            if (!routedToChild) {
-                int cellCol = static_cast<int>(hcx / charWidth);
-                int cellRow = static_cast<int>(hcy / lineHeight);
-                for (const auto& popup : hp->popups()) {
-                    if (cellCol >= popup->cellX() && cellCol < popup->cellX() + popup->cellW() &&
-                        cellRow >= popup->cellY() && cellRow < popup->cellY() + popup->cellH()) {
-                        int relPxX = static_cast<int>(hcx) - popup->cellX() * static_cast<int>(charWidth);
-                        int relPxY = static_cast<int>(hcy) - popup->cellY() * static_cast<int>(lineHeight);
-                        platform_->scriptEngine_.deliverPopupMouseMove(
-                            hp->id(), popup->popupId(),
-                            cellCol - popup->cellX(), cellRow - popup->cellY(),
-                            relPxX, relPxY);
-                        routedToChild = true;
-                        break;
-                    }
-                }
-            }
-            // Then embedded.
-            if (!routedToChild && !hp->usingAltScreen() && !hp->embeddeds().empty()) {
-                uint64_t hitLineId = 0;
-                int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
-                if (hp->liveSegmentHitTest(hcx, hcy,
-                                           static_cast<float>(charWidth), lineHeight,
-                                           hitLineId, emRelCol, emRelRow, emRelPx, emRelPy)) {
-                    platform_->scriptEngine_.deliverEmbeddedMouseMove(
-                        hp->id(), hitLineId, emRelCol, emRelRow, emRelPx, emRelPy);
+        bool routedToChild = false;
+        // Popup first (on top in the z-order).
+        if (!routedToChild) {
+            int cellCol = static_cast<int>(hcx / charWidth);
+            int cellRow = static_cast<int>(hcy / lineHeight);
+            for (const auto& popup : hp->popups()) {
+                if (cellCol >= popup->cellX() && cellCol < popup->cellX() + popup->cellW() &&
+                    cellRow >= popup->cellY() && cellRow < popup->cellY() + popup->cellH()) {
+                    int relPxX = static_cast<int>(hcx) - popup->cellX() * static_cast<int>(charWidth);
+                    int relPxY = static_cast<int>(hcy) - popup->cellY() * static_cast<int>(lineHeight);
+                    platform_->scriptEngine_.deliverPopupMouseMove(
+                        hp->id(), popup->popupId(),
+                        cellCol - popup->cellX(), cellRow - popup->cellY(),
+                        relPxX, relPxY);
                     routedToChild = true;
+                    break;
                 }
             }
-
-            // Pane mousemove still fires regardless — it's the existing
-            // contract. Applets that register on both pane and child will
-            // see both events; they can filter in JS if needed.
-            if (platform_->scriptEngine_.hasPaneMouseMoveListeners(hoveredPaneId)) {
-                platform_->scriptEngine_.notifyPaneMouseMove(
-                    hoveredPaneId,
-                    static_cast<int>(hcx / charWidth),
-                    static_cast<int>(hcy / lineHeight),
-                    static_cast<int>(hcx),
-                    static_cast<int>(hcy));
+        }
+        // Then embedded.
+        if (!routedToChild && !hp->usingAltScreen() && !hp->embeddeds().empty()) {
+            uint64_t hitLineId = 0;
+            int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
+            if (hp->liveSegmentHitTest(hcx, hcy,
+                                       static_cast<float>(charWidth), lineHeight,
+                                       hitLineId, emRelCol, emRelRow, emRelPx, emRelPy)) {
+                platform_->scriptEngine_.deliverEmbeddedMouseMove(
+                    hp->id(), hitLineId, emRelCol, emRelRow, emRelPx, emRelPy);
+                routedToChild = true;
             }
+        }
+
+        // Pane mousemove still fires regardless — it's the existing
+        // contract. Applets that register on both pane and child will
+        // see both events; they can filter in JS if needed.
+        if (platform_->scriptEngine_.hasPaneMouseMoveListeners(hoveredPaneId)) {
+            platform_->scriptEngine_.notifyPaneMouseMove(
+                hoveredPaneId,
+                static_cast<int>(hcx / charWidth),
+                static_cast<int>(hcy / lineHeight),
+                static_cast<int>(hcx),
+                static_cast<int>(hcy));
         }
     }
 

@@ -16,6 +16,16 @@ void platformObserveAppearanceChanges(std::function<void(bool isDark)> /*callbac
     // TODO: monitor org.freedesktop.appearance.color-scheme via D-Bus
 }
 
+void platformInitNotifications()
+{
+    // notify-send is invoked per send; nothing to initialize.
+}
+
+void platformSetNotificationsShowWhenForeground(bool /*show*/)
+{
+    // Linux notification daemon (libnotify) doesn't differentiate; no-op.
+}
+
 static void spawnDetached(const char* path, char* const argv[])
 {
     pid_t pid = fork();

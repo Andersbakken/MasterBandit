@@ -67,6 +67,8 @@ private:
 // Implemented in platform-specific files (PlatformUtils_macOS.mm / PlatformUtils_Linux.cpp)
 bool platformIsDarkMode();
 void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback);
+void platformInitNotifications();
+void platformSetNotificationsShowWhenForeground(bool show);
 void platformSendNotification(const std::string& title, const std::string& body);
 void platformOpenURL(const std::string& url);
 std::string platformProcessCWD(pid_t pid);

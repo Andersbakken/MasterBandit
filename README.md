@@ -32,3 +32,11 @@ cmake --build --preset default
 cmake --preset release
 cmake --build --preset release
 ```
+
+## macOS
+
+The build produces a `.app` bundle at `build/bin/mb.app`. Launch with `open ./build/bin/mb.app`. Desktop notifications (OSC 99) require the bundle to be signed; ad-hoc signing is enough and must be re-applied after each rebuild:
+
+```sh
+codesign --sign - --force --deep ./build/bin/mb.app
+```

@@ -1,11 +1,40 @@
 #import <Cocoa/Cocoa.h>
 #import <UserNotifications/UserNotifications.h>
+#include <atomic>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <sys/types.h>
 #include <libproc.h>
 #include <spdlog/spdlog.h>
+
+// Foreground-banner toggle. Default: present banners even when mb is the
+// active app — this is what a terminal user wants since long-running tasks
+// are usually launched from inside mb (build complete, tests done, etc.).
+static std::atomic<bool> g_showWhenForeground{true};
+
+API_AVAILABLE(macos(10.14))
+@interface MBNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@implementation MBNotificationDelegate
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler
+{
+    if (!g_showWhenForeground.load()) {
+        completionHandler(UNNotificationPresentationOptionNone);
+        return;
+    }
+    if (@available(macOS 11.0, *)) {
+        completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
+    } else {
+        completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound);
+    }
+}
+@end
+
+static MBNotificationDelegate* g_notifDelegate = nil;
 
 extern "C" const char* macResourcePathOrNull()
 {
@@ -28,34 +57,61 @@ bool platformIsDarkMode()
 static std::function<void(bool)> g_appearanceCallback;
 static id g_appearanceObserver = nil;
 
-void platformSendNotification(const std::string& title, const std::string& body)
+void platformInitNotifications()
 {
     // UNUserNotificationCenter asserts on construction when there is no main
     // bundle (running the bare binary, not a .app). Bail before touching it.
     if (![[NSBundle mainBundle] bundleIdentifier]) {
-        static std::once_flag warned;
-        std::call_once(warned, [&]{
-            spdlog::warn("Notifications disabled: no bundle identifier "
-                         "(running bare binary, not a .app). Title='{}'", title);
-        });
+        spdlog::warn("Notifications disabled: no bundle identifier "
+                     "(running bare binary, not a .app)");
         return;
     }
     if (@available(macOS 10.14, *)) {
         UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+        if (!g_notifDelegate) g_notifDelegate = [[MBNotificationDelegate alloc] init];
+        center.delegate = g_notifDelegate;
         [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
             completionHandler:^(BOOL granted, NSError* error) {
-                if (!granted) return;
-                UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
-                content.title = [NSString stringWithUTF8String:title.c_str()];
-                content.body = [NSString stringWithUTF8String:body.c_str()];
-                content.sound = [UNNotificationSound defaultSound];
-
-                UNNotificationRequest* request = [UNNotificationRequest
-                    requestWithIdentifier:[[NSUUID UUID] UUIDString]
-                    content:content
-                    trigger:nil];
-                [center addNotificationRequest:request withCompletionHandler:nil];
+                if (granted) {
+                    spdlog::info("Notifications: authorization granted");
+                } else {
+                    const char* err = error ? [[error localizedDescription] UTF8String] : "(no error info)";
+                    spdlog::warn("Notifications: authorization not granted ({})", err);
+                }
             }];
+    }
+}
+
+void platformSetNotificationsShowWhenForeground(bool show)
+{
+    g_showWhenForeground.store(show);
+}
+
+void platformSendNotification(const std::string& title, const std::string& body)
+{
+    if (![[NSBundle mainBundle] bundleIdentifier]) return;
+    if (@available(macOS 10.14, *)) {
+        UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+        // Convert to NSString before any async hop. Block-copy semantics
+        // retain captured Objective-C objects, so the NSStrings outlive the
+        // caller's std::string parameters; capturing those C++ references
+        // directly would be a use-after-free when the block fires later.
+        NSString* nsTitle = [NSString stringWithUTF8String:title.c_str()];
+        NSString* nsBody = [NSString stringWithUTF8String:body.c_str()];
+        UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+        content.title = nsTitle;
+        content.body = nsBody;
+        content.sound = [UNNotificationSound defaultSound];
+        UNNotificationRequest* request = [UNNotificationRequest
+            requestWithIdentifier:[[NSUUID UUID] UUIDString]
+            content:content
+            trigger:nil];
+        [center addNotificationRequest:request withCompletionHandler:^(NSError* postErr) {
+            if (postErr) {
+                spdlog::warn("Notifications: post failed: {}",
+                             [[postErr localizedDescription] UTF8String]);
+            }
+        }];
     }
 }
 

@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <assert.h>
+#include <pwd.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
@@ -119,9 +120,23 @@ bool Terminal::init(const TerminalOptions &options)
 
         EINTRWRAP(ret, ::close(slaveFD));
 
-        if (!mOptions.cwd.empty()) {
-            if (chdir(mOptions.cwd.c_str()) == -1) {
-                spdlog::warn("Failed to chdir to '{}' -> {} {}", mOptions.cwd, errno, strerror(errno));
+        // Pick a sane starting directory. When launched via Launch Services
+        // (open mb.app), the inherited cwd is "/", which is never what a user
+        // wants for a new shell. Fall back to $HOME (or the passwd entry) if
+        // no explicit cwd was requested for this spawn.
+        {
+            std::string startCwd = mOptions.cwd;
+            if (startCwd.empty()) {
+                if (const char* home = getenv("HOME"); home && *home) {
+                    startCwd = home;
+                } else if (const struct passwd* pw = getpwuid(getuid())) {
+                    startCwd = pw->pw_dir;
+                }
+            }
+            if (!startCwd.empty()) {
+                if (chdir(startCwd.c_str()) == -1) {
+                    spdlog::warn("Failed to chdir to '{}' -> {} {}", startCwd, errno, strerror(errno));
+                }
             }
         }
 

@@ -146,6 +146,17 @@ struct CursorConfig {
     };
 };
 
+struct NotificationsConfig {
+    bool show_when_foreground = true;  // present banners even when mb is the active app
+
+    struct glaze {
+        using T = NotificationsConfig;
+        static constexpr auto value = glz::object(
+            "show_when_foreground", &T::show_when_foreground
+        );
+    };
+};
+
 struct PaddingConfig {
     int left   = 0;
     int top    = 6;  // room for progress bar
@@ -186,6 +197,7 @@ struct Config {
     bool alt_sends_esc = true;        // Alt+<printable> sends ESC-prefix (xterm convention) instead of the composed character
     bool command_navigation_wrap = true; // Cmd+Up at oldest wraps to newest; Cmd+Down at newest wraps to oldest
     int  key_sequence_timeout_ms = 0; // Multi-key binding timeout in ms (0 = disabled). Aborts an in-progress sequence after idle.
+    NotificationsConfig notifications;
 
     struct glaze {
         using T = Config;
@@ -211,7 +223,8 @@ struct Config {
             "command_dim_factor", &T::command_dim_factor,
             "alt_sends_esc", &T::alt_sends_esc,
             "command_navigation_wrap", &T::command_navigation_wrap,
-            "key_sequence_timeout_ms", &T::key_sequence_timeout_ms
+            "key_sequence_timeout_ms", &T::key_sequence_timeout_ms,
+            "notifications", &T::notifications
         );
     };
 };

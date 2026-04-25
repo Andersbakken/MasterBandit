@@ -639,6 +639,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                     term->notifyColorPreference(isDark);
                 });
             });
+
+            // One-time notification setup: install the foreground-presentation
+            // delegate and request authorization. Per-send paths just post.
+            platformInitNotifications();
         } else {
             // --- Headless: event loop but no window/surface ---
 #ifdef __APPLE__
@@ -1036,6 +1040,8 @@ void PlatformDawn::applyConfig(const Config& config)
         inputController_->setKeySequenceTimeoutMs(config.key_sequence_timeout_ms);
     }
     if (window_) window_->setAltSendsEsc(config.alt_sends_esc);
+
+    platformSetNotificationsShowWhenForeground(config.notifications.show_when_foreground);
 
     // Colors
     TerminalOptions& opts = terminalOptions();

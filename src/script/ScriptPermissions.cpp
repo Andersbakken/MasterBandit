@@ -253,7 +253,9 @@ void Allowlist::load(const std::string& configDir)
             if (fileVersion != kAllowlistVersion) {
                 spdlog::warn("ScriptPermissions: version mismatch (file={}, expected={}), discarding cached entries",
                              fileVersion, kAllowlistVersion);
-                return; // discard all entries
+                f.close();
+                save(); // rewrite file at current version so the warning doesn't fire every launch
+                return;
             }
             continue;
         }

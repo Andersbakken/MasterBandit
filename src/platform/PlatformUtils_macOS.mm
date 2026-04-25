@@ -123,6 +123,10 @@ void platformOpenURL(const std::string& url)
 
 std::string platformProcessCWD(pid_t pid)
 {
+    // Works without entitlements for child processes of the same UID, which
+    // is the only normal call site (PTY descendants). Cross-UID PIDs and
+    // other-team-id processes silently return empty under the hardened
+    // runtime — there's no error indicator beyond the empty result.
     struct proc_vnodepathinfo vpi;
     if (proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, sizeof(vpi)) > 0)
         return vpi.pvi_cdir.vip_path;

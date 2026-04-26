@@ -901,6 +901,35 @@ interface MbLayout {
     /** Return the node record for `id`, or `null` if unknown. */
     node(id: string): MbLayoutNode | null;
     /**
+     * Enumerate every node of `kind` reachable from `subtreeRoot` (or from the
+     * tree root if omitted). Recursion follows Container and Stack children;
+     * TabBar has no children. Returned UUIDs are in implementation-defined
+     * tree-walk order.
+     */
+    queryNodes(
+        kind: "Terminal" | "Container" | "Stack" | "TabBar"
+            | "terminal" | "container" | "stack" | "tabbar",
+        subtreeRoot?: string | null
+    ): string[];
+    /**
+     * Find the first node whose `label` exactly equals `label`. Returns
+     * `null` if none. Empty strings never match (unlabeled nodes are
+     * not findable).
+     */
+    findByLabel(label: string): string | null;
+    /**
+     * Activate a child of the Stack bound to `barUuid`. The second argument
+     * may be a positional index into the bound Stack's `children` array, or
+     * the UUID of one of those children. Returns `true` on success, `false`
+     * if the index is out of range or the child UUID is not in the Stack.
+     * Throws if `barUuid` is not a TabBar or its `boundStack` is nil.
+     *
+     * Distinct from `activateTab`, which targets the global "active tab"
+     * (root-Stack activeChild). Use this for per-bar activation in layouts
+     * with more than one TabBar.
+     */
+    activateTabInBar(barUuid: string, indexOrChildUuid: number | string): boolean;
+    /**
      * Compute pixel rects for every node, given the window rect and per-cell
      * pixel dimensions. Result is a UUID-keyed map.
      */

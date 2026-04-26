@@ -484,6 +484,19 @@ public:
     // first such node so renderers and input can query its rect from a
     // root-level computeRects.
     Uuid primaryTabBarNode() const;
+
+    // Walk the layout tree from `subtreeRoot` (or root() if nil) and collect
+    // every node whose kind() matches. Recurses through Container and Stack
+    // children only — TabBar has no children to descend into. Order is
+    // implementation-defined tree-walk order; callers needing a specific
+    // ordering should sort/filter on the returned UUIDs.
+    std::vector<Uuid> queryNodesByKind(NodeKind kind, Uuid subtreeRoot = {}) const;
+
+    // Find the first node (BFS from root) whose label exactly equals
+    // `label`. Returns nil if none. Empty `label` always returns nil so
+    // unlabeled nodes (the default) cannot be matched by accident.
+    Uuid findNodeByLabel(const std::string& label) const;
+
     uint32_t lastFbWidth() const { return lastFbW_; }
     uint32_t lastFbHeight() const { return lastFbH_; }
     void setLastFramebuffer(uint32_t w, uint32_t h) { lastFbW_ = w; lastFbH_ = h; }

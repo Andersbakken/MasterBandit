@@ -592,6 +592,100 @@ const char* kindName(NodeKind k)
     return "unknown";
 }
 
+// Accept either lower-case ("terminal", "stack") or capitalised ("Terminal",
+// "Stack") forms. Returns false on unknown kind name.
+bool kindFromName(std::string_view name, NodeKind& out)
+{
+    if (name == "Terminal"  || name == "terminal")  { out = NodeKind::Terminal;  return true; }
+    if (name == "Container" || name == "container") { out = NodeKind::Container; return true; }
+    if (name == "Stack"     || name == "stack")     { out = NodeKind::Stack;     return true; }
+    if (name == "TabBar"    || name == "tabbar")    { out = NodeKind::TabBar;    return true; }
+    return false;
+}
+
+JSValue jsLayoutQueryNodes(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "queryNodes(kind, subtreeRoot?)");
+    size_t len = 0;
+    const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    NodeKind kind;
+    bool ok = kindFromName(std::string_view(s, len), kind);
+    JS_FreeCString(ctx, s);
+    if (!ok) return JS_ThrowTypeError(ctx, "queryNodes: unknown kind");
+
+    Uuid subtree;
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        subtree = parseUuidArg(ctx, argv[1], "queryNodes(subtreeRoot)");
+        if (subtree.isNil()) return JS_EXCEPTION;
+    }
+
+    auto uuids = engineFromCtx(ctx)->queryNodesByKind(kind, subtree);
+    JSValue arr = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < uuids.size(); ++i) {
+        JS_SetPropertyUint32(ctx, arr, i, uuidToJs(ctx, uuids[i]));
+    }
+    return arr;
+}
+
+JSValue jsLayoutFindByLabel(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "findByLabel(label)");
+    size_t len = 0;
+    const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    Uuid u = engineFromCtx(ctx)->findNodeByLabel(std::string(s, len));
+    JS_FreeCString(ctx, s);
+    return u.isNil() ? JS_NULL : uuidToJs(ctx, u);
+}
+
+// activateTabInBar(barUuid, indexOrChildUuid)
+//   - barUuid: must be a TabBar node with a non-nil boundStack.
+//   - indexOrChildUuid: number → index into boundStack.children;
+//                       string → must be the UUID of a direct child of boundStack.
+// Routes through LayoutTree::setActiveChild — does not touch the global
+// "active tab" (root Stack) wiring. Returns true on success.
+JSValue jsLayoutActivateTabInBar(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify))
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    if (argc < 2) return JS_ThrowTypeError(ctx, "activateTabInBar(barUuid, indexOrChildUuid)");
+    Uuid bar = parseUuidArg(ctx, argv[0], "activateTabInBar(barUuid)");
+    if (bar.isNil()) return JS_EXCEPTION;
+
+    auto* eng = engineFromCtx(ctx);
+    LayoutTree& tree = eng->layoutTree();
+    const Node* barNode = tree.node(bar);
+    if (!barNode || barNode->kind() != NodeKind::TabBar)
+        return JS_ThrowTypeError(ctx, "activateTabInBar: barUuid is not a TabBar");
+    const auto* bd = std::get_if<TabBarData>(&barNode->data);
+    Uuid stack = bd ? bd->boundStack : Uuid{};
+    if (stack.isNil())
+        return JS_ThrowTypeError(ctx, "activateTabInBar: TabBar has no boundStack");
+    const Node* stackNode = tree.node(stack);
+    const auto* sd = stackNode ? std::get_if<StackData>(&stackNode->data) : nullptr;
+    if (!sd) return JS_ThrowTypeError(ctx, "activateTabInBar: boundStack is not a Stack");
+
+    Uuid target;
+    if (JS_IsNumber(argv[1])) {
+        int32_t idx = -1;
+        if (JS_ToInt32(ctx, &idx, argv[1]) != 0) return JS_EXCEPTION;
+        if (idx < 0 || static_cast<size_t>(idx) >= sd->children.size())
+            return JS_FALSE;
+        target = sd->children[idx].id;
+    } else if (JS_IsString(argv[1])) {
+        target = parseUuidArg(ctx, argv[1], "activateTabInBar(child)");
+        if (target.isNil()) return JS_EXCEPTION;
+    } else {
+        return JS_ThrowTypeError(ctx, "activateTabInBar: second arg must be number or UUID string");
+    }
+
+    if (!tree.setActiveChild(stack, target)) return JS_FALSE;
+    return JS_TRUE;
+}
+
 JSValue childSlotToJs(JSContext* ctx, const ChildSlot& s)
 {
     JSValue o = JS_NewObject(ctx);
@@ -749,6 +843,12 @@ void installLayoutBindings(Engine&, JSContext* ctx, JSValue mb)
 
     JS_SetPropertyStr(ctx, layout, "node",
         JS_NewCFunction(ctx, jsLayoutNode, "node", 1));
+    JS_SetPropertyStr(ctx, layout, "queryNodes",
+        JS_NewCFunction(ctx, jsLayoutQueryNodes, "queryNodes", 2));
+    JS_SetPropertyStr(ctx, layout, "findByLabel",
+        JS_NewCFunction(ctx, jsLayoutFindByLabel, "findByLabel", 1));
+    JS_SetPropertyStr(ctx, layout, "activateTabInBar",
+        JS_NewCFunction(ctx, jsLayoutActivateTabInBar, "activateTabInBar", 2));
     JS_SetPropertyStr(ctx, layout, "computeRects",
         JS_NewCFunction(ctx, jsLayoutComputeRects, "computeRects", 3));
 

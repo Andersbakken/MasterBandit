@@ -136,7 +136,40 @@ Uuid Engine::primaryTabBarNode() const
     // default-ui.js setup has exactly one; multiple TabBars are allowed
     // structurally but unusual. Returns nil if none exists (including the
     // empty-tree case before default-ui.js has run).
-    if (!layoutTree_) return {};
+    auto bars = queryNodesByKind(NodeKind::TabBar);
+    return bars.empty() ? Uuid{} : bars.front();
+}
+
+std::vector<Uuid> Engine::queryNodesByKind(NodeKind kind, Uuid subtreeRoot) const
+{
+    std::vector<Uuid> out;
+    if (!layoutTree_) return out;
+    const LayoutTree& tree = *layoutTree_;
+    Uuid start = subtreeRoot.isNil() ? tree.root() : subtreeRoot;
+    if (start.isNil()) return out;
+
+    std::vector<Uuid> queue{start};
+    while (!queue.empty()) {
+        Uuid cur = queue.back();
+        queue.pop_back();
+        const Node* n = tree.node(cur);
+        if (!n) continue;
+        if (n->kind() == kind) out.push_back(cur);
+        std::visit([&](const auto& d) {
+            using T = std::decay_t<decltype(d)>;
+            if constexpr (std::is_same_v<T, ContainerData>) {
+                for (const auto& s : d.children) queue.push_back(s.id);
+            } else if constexpr (std::is_same_v<T, StackData>) {
+                for (const auto& s : d.children) queue.push_back(s.id);
+            }
+        }, n->data);
+    }
+    return out;
+}
+
+Uuid Engine::findNodeByLabel(const std::string& label) const
+{
+    if (label.empty() || !layoutTree_) return {};
     const LayoutTree& tree = *layoutTree_;
     Uuid r = tree.root();
     if (r.isNil()) return {};
@@ -147,7 +180,7 @@ Uuid Engine::primaryTabBarNode() const
         queue.pop_back();
         const Node* n = tree.node(cur);
         if (!n) continue;
-        if (n->kind() == NodeKind::TabBar) return cur;
+        if (n->label == label) return cur;
         std::visit([&](const auto& d) {
             using T = std::decay_t<decltype(d)>;
             if constexpr (std::is_same_v<T, ContainerData>) {

@@ -67,10 +67,10 @@ popup.addEventListener("input", (data) => {
         popup.close();
         return;
     } else if (data === "t" || data === "T") {
-        const tab = mb.layout.createTab();
-        if (tab && tab.nodeId) {
-            mb.layout.createTerminal(tab.nodeId);
-            mb.layout.activateTab(tab.nodeId);
+        const tabUuid = mb.layout.createTab();
+        if (tabUuid) {
+            mb.layout.createTerminal(tabUuid);
+            mb.layout.activateTab(tabUuid);
         }
         return;
     }

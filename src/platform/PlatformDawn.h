@@ -108,7 +108,7 @@ public:
     int exec();
     void quit(int status = 0);
     void createTerminal(const TerminalOptions& options);
-    void closeTab(int idx);
+    void closeTab(Uuid subtreeRoot);
 
     bool isHeadless() const { return flags_ & FlagHeadless; }
     bool hasFlag(Flag f) const { return flags_ & f; }
@@ -185,7 +185,7 @@ private:
     //
     // The flat tab list, count, and active-tab index live on Script::Engine:
     // `scriptEngine().tabSubtreeRoots()`, `tabCount()`, `activeTabIndex()`.
-    void setActiveTabIdx(int idx);
+    void setActiveTab(Uuid subtreeRoot);
 
     std::optional<Uuid> activeTab() const;
     std::optional<Uuid> tabAt(int idx) const;
@@ -206,8 +206,10 @@ private:
     // Stack, optionally activating it.
     void attachLayoutSubtree(Uuid subtreeRoot, bool activate);
 
-    int createEmptyTab(Uuid* outNodeId = nullptr);
-    void activateTabByIdx(int idx);
+    // Allocate an empty tab subtree (Stack at the root, Container child).
+    // Returns the new tab's subtreeRoot Uuid (nil on failure).
+    Uuid createEmptyTab();
+    void activateTabByUuid(Uuid subtreeRoot);
 
     bool createTerminalInContainer(Uuid parentContainerNodeId,
                                    const std::string& cwd,
@@ -218,13 +220,15 @@ private:
     bool removeNode(Uuid nodeId);
     bool focusPaneById(Uuid nodeId);
 
-    std::optional<Uuid> findTabForNode(Uuid nodeId, int* outTabIdx = nullptr) const;
-    std::optional<Uuid> findTabForPane(Uuid nodeId, int* outTabIdx = nullptr) const;
+    // Walk pane/node membership against tab subtreeRoots; return the owning
+    // tab's subtreeRoot Uuid, or nullopt if the node isn't under any tab.
+    std::optional<Uuid> findTabForNode(Uuid nodeId) const;
+    std::optional<Uuid> findTabForPane(Uuid nodeId) const;
 
     void terminalExited(Terminal* terminal);
     bool killTerminal(Uuid nodeId);
 
-    void spawnTerminalForPane(Uuid nodeId, int tabIdx, const std::string& cwd = {});
+    void spawnTerminalForPane(Uuid nodeId, Uuid subtreeRoot, const std::string& cwd = {});
     void resizeAllPanesInTab(Uuid subtreeRoot);
     void refreshDividers(Uuid subtreeRoot);
     void clearDividers(Uuid subtreeRoot);

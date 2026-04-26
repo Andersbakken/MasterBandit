@@ -60,8 +60,8 @@ let _tabsStackNode = null;
     // Spawn the first Terminal. Native handles PTY + initial resize; the
     // returned nodeId is the Terminal's tree Uuid. Focus it so keyboard
     // input lands there on the first frame.
-    const term = mb.layout.createTerminal(content);
-    if (term && term.nodeId) mb.layout.focusPane(term.nodeId);
+    const termNodeId = mb.layout.createTerminal(content);
+    if (termNodeId) mb.layout.focusPane(termNodeId);
 })();
 
 // Hot-reload support: if the user toggles [tab_bar].position between "top"
@@ -120,11 +120,11 @@ function _activeTabUuid() {
 }
 
 mb.actions.register('newTab', () => {
-    const tab = mb.layout.createTab();
-    if (!tab || !tab.nodeId) return;
-    const term = mb.layout.createTerminal(tab.nodeId);
-    if (term) mb.layout.focusPane(term.id);
-    mb.layout.activateTab(tab.nodeId);
+    const tabUuid = mb.layout.createTab();
+    if (!tabUuid) return;
+    const termNodeId = mb.layout.createTerminal(tabUuid);
+    if (termNodeId) mb.layout.focusPane(termNodeId);
+    mb.layout.activateTab(tabUuid);
 });
 
 mb.actions.register('closeTab', ({index}) => {
@@ -162,8 +162,8 @@ mb.actions.register('activateTabRelative', ({delta}) => {
 mb.actions.register('splitPane', ({dir}) => {
     const fp = mb.layout.focusedPane();
     if (!fp) return;
-    const result = mb.layout.splitPane(fp.nodeId, dir);
-    if (result) mb.layout.focusPane(result.id);
+    const newNodeId = mb.layout.splitPane(fp.nodeId, dir);
+    if (newNodeId) mb.layout.focusPane(newNodeId);
 });
 
 mb.actions.register('closePane', () => {
@@ -173,7 +173,7 @@ mb.actions.register('closePane', () => {
     // tree removal and any tab/quit cascade. Keeping the user-keybind and
     // shell-exit paths on the same flow means there's only one place where
     // the empty-tab / last-tab policy is expressed.
-    mb.layout.killTerminal(fp.id);
+    mb.layout.killTerminal(fp.nodeId);
 });
 
 mb.actions.register('zoomPane', () => {
@@ -186,7 +186,7 @@ mb.actions.register('zoomPane', () => {
     for (let cur = fp.nodeId; cur; ) {
         const n = mb.layout.node(cur);
         if (!n) break;
-        if (n.kind === 'Stack') { tabStack = cur; break; }
+        if (n.kind === 'stack') { tabStack = cur; break; }
         cur = n.parent;
     }
     if (!tabStack) return;

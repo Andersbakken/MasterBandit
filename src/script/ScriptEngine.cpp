@@ -690,7 +690,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CFUNC_DEF("createEmbeddedTerminal", 1, jsPaneCreateEmbedded),
-    JS_CGETSET_MAGIC_DEF("id", jsPaneGetProp, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("nodeId", jsPaneGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("title", jsPaneGetProp, nullptr, 3),
     JS_CGETSET_MAGIC_DEF("cwd", jsPaneGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
@@ -1287,142 +1287,10 @@ static JSValue jsPaneGetEmbeddeds(JSContext* ctx, JSValueConst this_val)
     return arr;
 }
 
-static JSClassID jsTabClassId;
-
-struct JsTabData {
-    TabId id;
-    bool alive;
-};
-
-static void jsTabFinalize(JSRuntime*, JSValue val)
-{
-    delete static_cast<JsTabData*>(JS_GetOpaque(val, jsTabClassId));
-}
-
-static JSClassDef jsTabClassDef = { "Tab", jsTabFinalize };
-
-static JSValue jsTabNew(JSContext* ctx, TabId id)
-{
-    JSValue obj = JS_NewObjectClass(ctx, jsTabClassId);
-    JS_SetOpaque(obj, new JsTabData{id, true});
-    return obj;
-}
-
-static JsTabData* jsTabGet(JSContext* ctx, JSValueConst val)
-{
-    return static_cast<JsTabData*>(JS_GetOpaque(val, jsTabClassId));
-}
-
-static JSValue jsTabAddEventListener(JSContext* ctx, JSValueConst this_val,
-                                      int argc, JSValueConst* argv)
-{
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
-
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
-    std::string prop = std::string("__evt_") + event;
-    JS_FreeCString(ctx, event);
-
-    registerInGlobal(ctx, "__tab_registry", static_cast<uint32_t>(tab->id), this_val);
-
-    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
-    if (JS_IsUndefined(arr)) {
-        arr = JS_NewArray(ctx);
-        JS_SetPropertyStr(ctx, this_val, prop.c_str(), JS_DupValue(ctx, arr));
-    }
-    JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
-    JS_Call(ctx, pushFn, arr, 1, &argv[1]);
-    JS_FreeValue(ctx, pushFn);
-    JS_FreeValue(ctx, arr);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsTabRemoveEventListener(JSContext* ctx, JSValueConst this_val,
-                                         int argc, JSValueConst* argv)
-{
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_ThrowTypeError(ctx, "tab is destroyed");
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
-    std::string prop = std::string("__evt_") + event;
-    JS_FreeCString(ctx, event);
-    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
-    removeFromJSArray(ctx, arr, argv[1]);
-    JS_FreeValue(ctx, arr);
-    return JS_UNDEFINED;
-}
-
-static JSValue jsTabGetId(JSContext* ctx, JSValueConst this_val)
-{
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab) return JS_UNDEFINED;
-    return JS_NewInt32(ctx, tab->id);
-}
-
-// tab.nodeId → UUID string of this tab's Container in the shared LayoutTree,
-// or null when the tab has no tree representation. Ungated — see pane.nodeId.
-static JSValue jsTabGetNodeId(JSContext* ctx, JSValueConst this_val)
-{
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    auto tabInfos = eng->callbacks().tabs();
-    for (auto& ti : tabInfos) {
-        if (ti.id == tab->id) {
-            return ti.nodeId.empty()
-                     ? JS_NULL
-                     : JS_NewStringLen(ctx, ti.nodeId.data(), ti.nodeId.size());
-        }
-    }
-    return JS_NULL;
-}
-
-// tab.panes — returns array of Pane objects
-static JSValue jsTabGetPanes(JSContext* ctx, JSValueConst this_val)
-{
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    auto tabInfos = eng->callbacks().tabs();
-    for (auto& ti : tabInfos) {
-        if (ti.id == tab->id) {
-            JSValue arr = JS_NewArray(ctx);
-            for (uint32_t i = 0; i < ti.panes.size(); ++i)
-                JS_SetPropertyUint32(ctx, arr, i, jsPaneNew(ctx, ti.panes[i]));
-            return arr;
-        }
-    }
-    return JS_NewArray(ctx);
-}
-
-// tab.activePane — returns focused pane or undefined
-static JSValue jsTabGetActivePane(JSContext* ctx, JSValueConst this_val)
-{
-    auto* tab = jsTabGet(ctx, this_val);
-    if (!tab || !tab->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    auto tabInfos = eng->callbacks().tabs();
-    for (auto& ti : tabInfos) {
-        if (ti.id == tab->id && !ti.focusedPane.isNil())
-            return jsPaneNew(ctx, ti.focusedPane);
-    }
-    return JS_UNDEFINED;
-}
-
-// tab.close()
-static const JSCFunctionListEntry jsTabProto[] = {
-    JS_CFUNC_DEF("addEventListener", 2, jsTabAddEventListener),
-    JS_CFUNC_DEF("removeEventListener", 2, jsTabRemoveEventListener),
-    JS_CGETSET_DEF("id", jsTabGetId, nullptr),
-    JS_CGETSET_DEF("nodeId", jsTabGetNodeId, nullptr),
-    JS_CGETSET_DEF("panes", jsTabGetPanes, nullptr),
-    JS_CGETSET_DEF("activePane", jsTabGetActivePane, nullptr),
-};
+// JS `Tab` class is gone. Tab identity is the subtreeRoot Uuid string —
+// scripts handle tabs as bare UUIDs, query their structure through
+// `mb.layout.queryNodes("Stack", root)` / `mb.layout.node(uuid)`, and
+// build Pane objects via `mb.pane(uuid)` from `queryNodes("Terminal", tab)`.
 
 // ============================================================================
 // mb global — controller API
@@ -1548,24 +1416,14 @@ static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbGetTabs(JSContext* ctx, JSValueConst, int, JSValueConst*)
-{
-    Engine* eng = engineFromCtx(ctx);
-    auto tabInfos = eng->callbacks().tabs();
-    JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < tabInfos.size(); ++i)
-        JS_SetPropertyUint32(ctx, arr, i, jsTabNew(ctx, tabInfos[i].id));
-    return arr;
-}
-
 static JSValue jsMbGetActivePane(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
+    // Engine holds the global focused-terminal Uuid — no need to walk through
+    // the tabs() callback (which is itself derived from the layout tree).
     Engine* eng = engineFromCtx(ctx);
-    auto tabInfos = eng->callbacks().tabs();
-    for (auto& ti : tabInfos)
-        if (ti.active && !ti.focusedPane.isNil())
-            return jsPaneNew(ctx, ti.focusedPane);
-    return JS_UNDEFINED;
+    Uuid focused = eng->focusedTerminalNodeId();
+    if (focused.isNil() || !eng->terminal(focused)) return JS_UNDEFINED;
+    return jsPaneNew(ctx, focused);
 }
 
 // PascalCase → snake_case: "FocusPane" → "focus_pane"
@@ -2097,9 +1955,6 @@ Engine::Engine()
     JS_NewClassID(rt_, &jsPaneClassId);
     JS_NewClass(rt_, jsPaneClassId, &jsPaneClassDef);
 
-    JS_NewClassID(rt_, &jsTabClassId);
-    JS_NewClass(rt_, jsTabClassId, &jsTabClassDef);
-
     JS_NewClassID(rt_, &jsPopupClassId);
     JS_NewClass(rt_, jsPopupClassId, &jsPopupClassDef);
 
@@ -2179,11 +2034,6 @@ JSContext* Engine::createContext()
 
     JSValue paneProto = makeSubProto(jsPaneProto, sizeof(jsPaneProto) / sizeof(jsPaneProto[0]));
     JS_SetClassProto(ctx, jsPaneClassId, paneProto);
-
-    JSValue tabProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, tabProto,
-        jsTabProto, sizeof(jsTabProto) / sizeof(jsTabProto[0]));
-    JS_SetClassProto(ctx, jsTabClassId, tabProto);
 
     JSValue popupProto = makeSubProto(jsPopupProto, sizeof(jsPopupProto) / sizeof(jsPopupProto[0]));
     JS_SetClassProto(ctx, jsPopupClassId, popupProto);
@@ -2314,7 +2164,6 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
             JS_PROP_ENUMERABLE | JS_PROP_CONFIGURABLE);
         JS_FreeAtom(ctx, atom);
     };
-    defineGetter("tabs", jsMbGetTabs);
     defineGetter("activePane", jsMbGetActivePane);
     defineGetter("actions", jsMbGetActions);
     defineGetter("tabBarPosition", jsMbTabBarPosition);
@@ -2905,38 +2754,34 @@ void Engine::notifyPaneDestroyed(PaneId pane, Uuid nodeId)
 void Engine::notifyTabCreated(TabId tab)
 {
     IterGuard guard(this);
+    std::string s = tab.toString();
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
-        JSValue tabObj = jsTabNew(inst.ctx, tab);
-        enqueueListeners(inst.ctx, arr, 1, &tabObj);
-        JS_FreeValue(inst.ctx, tabObj);
+        JSValue tabIdStr = JS_NewStringLen(inst.ctx, s.data(), s.size());
+        enqueueListeners(inst.ctx, arr, 1, &tabIdStr);
+        JS_FreeValue(inst.ctx, tabIdStr);
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);
     }
 }
 
-void Engine::notifyTabDestroyed(TabId tab, Uuid nodeId)
+void Engine::notifyTabDestroyed(TabId tab)
 {
     IterGuard guard(this);
+    std::string s = tab.toString();
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabDestroyed");
-        JSValue args[2] = {
-            JS_NewInt32(inst.ctx, tab),
-            nodeId.isNil()
-              ? JS_NULL
-              : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36),
-        };
-        enqueueListeners(inst.ctx, arr, 2, args);
-        JS_FreeValue(inst.ctx, args[0]);
-        JS_FreeValue(inst.ctx, args[1]);
+        JSValue tabIdStr = JS_NewStringLen(inst.ctx, s.data(), s.size());
+        enqueueListeners(inst.ctx, arr, 1, &tabIdStr);
+        JS_FreeValue(inst.ctx, tabIdStr);
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);
@@ -3741,33 +3586,12 @@ void Engine::cleanupPane(PaneId pane)
     }
 }
 
-void Engine::cleanupTab(TabId tab)
+void Engine::cleanupTab(TabId)
 {
-    IterGuard guard(this);
-
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-
-
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__tab_registry");
-        JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
-
-        JSValue tabObj = JS_GetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(tab));
-        if (!JS_IsUndefined(tabObj)) {
-            JSValue arr = JS_GetPropertyStr(inst.ctx, tabObj, "__evt_destroyed");
-            enqueueListeners(inst.ctx, arr, 0, nullptr);
-            JS_FreeValue(inst.ctx, arr);
-
-            auto* data = jsTabGet(inst.ctx, tabObj);
-            if (data) data->alive = false;
-
-            JS_SetPropertyUint32(inst.ctx, registry, static_cast<uint32_t>(tab), JS_UNDEFINED);
-        }
-        JS_FreeValue(inst.ctx, tabObj);
-        JS_FreeValue(inst.ctx, registry);
-    }
+    // No per-tab JS object exists anymore — tab identity is just the
+    // subtreeRoot Uuid, delivered as a string in the tabDestroyed event
+    // payload. Listeners that tracked tabs by UUID are responsible for their
+    // own bookkeeping. Kept as a no-op so existing call sites still link.
 }
 
 // ============================================================================

@@ -29,7 +29,12 @@ using InstanceId = uint64_t;
 // (monotonic counter that bridged render/input/script surfaces) is gone —
 // nothing outside the Terminal itself uses it.
 using PaneId = Uuid;
-using TabId = int;
+// Tabs are identified by their subtreeRoot Uuid — the direct child of
+// `Engine::layoutRootStack_` whose subtree IS the tab. Round-trips through
+// `mb.layout.activateTab(uuid)` / `closeTab(uuid)` / `node(uuid)`. There is
+// no separate TabBar-relative or positional identity; the visible "1 / 2"
+// numbering is render-time decoration only.
+using TabId = Uuid;
 
 // OSC 133 command record as surfaced to scripts — shared between AppCallbacks
 // (for pane.commands / pane.selectedCommand queries) and
@@ -113,19 +118,24 @@ struct AppCallbacks {
     // Returns the stable row ID for a screen row, or nullopt if out of range.
     // Resolve the logical-line id for a screen row position.
     std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneLineIdAt;
-    // Query tab/pane structure
+    // Query tab/pane structure. `id` IS the tab's subtreeRoot Uuid (same
+    // value as `nodeId` would have been under the old int alias); the
+    // separate `nodeId` string field is kept as a convenience for scripts
+    // that need the UUID rendered without round-tripping through
+    // Uuid::toString. `active` is true on the one tab whose subtreeRoot is
+    // the root Stack's activeChild.
     struct TabInfo {
         TabId id;
         bool active;
         std::vector<PaneId> panes;
         PaneId focusedPane;
-        // UUID string of this Tab's root Container in the shared LayoutTree,
-        // or empty when the tab has no tree representation.
+        // UUID string mirror of `id`. Empty when the tab has no tree
+        // representation (transient state during destruction).
         std::string nodeId;
     };
     std::function<std::vector<TabInfo>()> tabs;
-    // Close a tab by index.
-    std::function<void(int)> closeTab;
+    // Close a tab by its subtreeRoot Uuid.
+    std::function<void(Uuid)> closeTab;
 
     // Synchronously kill a Terminal by its tree-node UUID. Extracts the
     // Terminal from the engine map, graveyards it, and fires the
@@ -140,9 +150,10 @@ struct AppCallbacks {
     // wired through AppCallbacks so ScriptLayoutBindings stays decoupled
     // from the platform layer.
     struct NewPane { std::string nodeId; bool ok; };
-    // Empty-tab variant. Returns {tabIdx, subtreeRoot uuid string}.
-    std::function<std::pair<int, std::string>()> createEmptyTab;
-    std::function<void(int)> activateTab;
+    // Empty-tab variant. Returns the new tab's subtreeRoot Uuid (nil on
+    // failure).
+    std::function<Uuid()> createEmptyTab;
+    std::function<void(Uuid)> activateTab;
     std::function<bool(Uuid)> focusPane;
     // Remove a tree node (Terminal leaf, Container, or Stack) from its
     // enclosing tab's subtree. Refuses if any descendant Terminal is still
@@ -280,7 +291,9 @@ public:
     // Empty UUID is allowed (paths that don't have the UUID handy still work).
     void notifyPaneDestroyed(PaneId pane, Uuid nodeId = {});
     void notifyTabCreated(TabId tab);
-    void notifyTabDestroyed(TabId tab, Uuid nodeId = {});
+    // Tab destruction notification. The tab's subtreeRoot Uuid IS its
+    // identity; listeners receive the UUID string in the JS event payload.
+    void notifyTabDestroyed(TabId tab);
     // Fired before the native cleanup cascade so listeners see the live
     // pane/tab state. Exit code / signal are not plumbed yet — the v1
     // payload is {paneId, paneNodeId}.

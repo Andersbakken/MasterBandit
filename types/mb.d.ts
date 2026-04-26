@@ -162,19 +162,13 @@ declare const Terminal: MbTerminal;
 
 interface MbPane extends MbTerminal {
     /**
-     * Pane handle — a stringified UUID that also matches this pane's Terminal
-     * node id in the layout tree. Equal to `nodeId` for live panes; kept as
-     * its own getter for symmetry with the other handle-bearing types.
+     * Stable UUID of this pane's Terminal node in `mb.layout`. Use this with
+     * `mb.layout.splitPane(...)`, `focusPane(...)`, `removeNode(...)`,
+     * `killTerminal(...)`, and `node(...)`. Ungated — UUIDs are just
+     * handles; mutations through `mb.layout` carry their own permission
+     * discipline.
      */
-    readonly id: string;
-    /**
-     * Stable UUID of this pane's Terminal node in `mb.layout`, or `null` if
-     * the pane is unattached. Use this with `mb.layout.splitPane(...)`,
-     * `focusPane(...)`, `removeNode(...)`, `killTerminal(...)`, and
-     * `node(...)`. Ungated — UUIDs are just handles; mutations through
-     * `mb.layout` carry their own permission discipline.
-     */
-    readonly nodeId: string | null;
+    readonly nodeId: string;
     /** OSC 2 title set by the shell. */
     readonly title: string;
     /** Working directory reported via OSC 7. */
@@ -462,30 +456,15 @@ interface MbEmbeddedTerminal extends MbTerminal {
 }
 
 // ============================================================================
-// Tab
+// Tab identity
 // ============================================================================
-
-interface MbTab {
-    /**
-     * Positional index of this tab within the tab list at query time. Volatile
-     * — closing an earlier tab shifts every later tab's `id` down by one. Use
-     * `nodeId` (below) for any handle that has to outlive the next tab close.
-     * (See TODO.md — int tab IDs are slated to be replaced by UUIDs everywhere.)
-     */
-    readonly id: number;
-    /**
-     * Stable UUID of this tab's Container in the shared `mb.layout` tree, or
-     * `null` while the tab has no tree representation. Round-trips through
-     * `mb.layout.activateTab(nodeId)` / `closeTab(nodeId)` / `node(id)`.
-     */
-    readonly nodeId: string | null;
-    readonly panes: MbPane[];
-    readonly activePane: MbPane | undefined;
-
-    /** Fired once when this tab is destroyed. */
-    addEventListener(event: "destroyed", fn: () => void): void;
-    removeEventListener(event: "destroyed", fn: () => void): void;
-}
+// Tabs have no JS class — identity is the subtreeRoot UUID string. To inspect
+// or operate on a tab:
+//   - `mb.layout.queryNodes("Stack", root)` enumerates tab subtree roots
+//   - `mb.layout.node(tabUuid)` returns layout-tree info for the tab
+//   - `mb.layout.queryNodes("Terminal", tabUuid)` lists the tab's terminals
+//   - `mb.pane(termUuid)` constructs Pane objects from those terminal UUIDs
+//   - `mb.layout.activateTab(tabUuid)` / `mb.layout.closeTab(tabUuid)` mutate
 
 // ============================================================================
 // Script loading result
@@ -548,8 +527,6 @@ interface MbTerminalExitedEvent {
 // ============================================================================
 
 interface MbGlobal {
-    /** All open tabs. */
-    readonly tabs: MbTab[];
     /** The currently focused pane, or undefined if none. */
     readonly activePane: MbPane | undefined;
     /**
@@ -653,17 +630,10 @@ interface MbGlobal {
         event: "paneDestroyed",
         fn: (paneId: string, paneNodeId: string | null) => void
     ): void;
-    /** Fires once per new tab. */
-    addEventListener(event: "tabCreated", fn: (tab: MbTab) => void): void;
-    /**
-     * Fires after a tab has been destroyed. Payload is the scalar
-     * `(tabId, tabNodeId)` pair; `tabNodeId` is `null` if there was no
-     * tree representation at destruction.
-     */
-    addEventListener(
-        event: "tabDestroyed",
-        fn: (tabId: number, tabNodeId: string | null) => void
-    ): void;
+    /** Fires once per new tab. Payload is the new tab's subtreeRoot UUID. */
+    addEventListener(event: "tabCreated", fn: (tabNodeId: string) => void): void;
+    /** Fires after a tab has been destroyed. Payload is the closed tab's UUID. */
+    addEventListener(event: "tabDestroyed", fn: (tabNodeId: string) => void): void;
     /**
      * Fires when a Terminal node's child process exits. The Terminal node is
      * left in place so the controller can decide what to do (remove node,
@@ -693,11 +663,8 @@ interface MbGlobal {
         event: "paneDestroyed",
         fn: (paneId: string, paneNodeId: string | null) => void
     ): void;
-    removeEventListener(event: "tabCreated", fn: (tab: MbTab) => void): void;
-    removeEventListener(
-        event: "tabDestroyed",
-        fn: (tabId: number, tabNodeId: string | null) => void
-    ): void;
+    removeEventListener(event: "tabCreated", fn: (tabNodeId: string) => void): void;
+    removeEventListener(event: "tabDestroyed", fn: (tabNodeId: string) => void): void;
     removeEventListener(event: "terminalExited", fn: (ev: MbTerminalExitedEvent) => void): void;
     removeEventListener(event: "configChanged", fn: () => void): void;
     removeEventListener(event: "action", fn: (actionName: string) => void): void;
@@ -780,24 +747,11 @@ interface MbTerminalNode {
 
 type MbLayoutNode = MbContainerNode | MbStackNode | MbTabBarNode | MbTerminalNode;
 
-/** Tab handle returned by `createTab` / `activeTab`. */
-interface MbLayoutTabHandle {
-    readonly id: number;
-    readonly nodeId: string | null;
-}
-
-/** Pane handle returned by `createTerminal` / `splitPane`. */
-interface MbLayoutPaneHandle {
-    /** Same as `nodeId` — kept for symmetry with `MbPane.id`. */
-    readonly id: string | null;
-    readonly nodeId: string | null;
-}
-
 /** Focused-pane snapshot returned by `focusedPane()`. */
 interface MbFocusedPaneInfo {
-    readonly id: string;
-    readonly nodeId: string | null;
-    readonly tabId: number;
+    /** The focused pane's Terminal-node UUID. */
+    readonly nodeId: string;
+    /** The enclosing tab's subtreeRoot UUID, or `null` if not in a tab. */
     readonly tabNodeId: string | null;
 }
 
@@ -813,10 +767,10 @@ interface MbLayout {
 
     /**
      * Spawn a PTY child terminal and attach the resulting Terminal node under
-     * `parentNodeId` (a Container or Stack). Returns the new pane's handle, or
-     * `null` if the spawn failed.
+     * `parentNodeId` (a Container or Stack). Returns the new pane's UUID
+     * string, or `null` if the spawn failed.
      */
-    createTerminal(parentNodeId: string, opts?: { cwd?: string }): MbLayoutPaneHandle | null;
+    createTerminal(parentNodeId: string, opts?: { cwd?: string }): string | null;
     /** Create a free-floating Container node. Returns its UUID. */
     createContainer(direction?: "horizontal" | "vertical" | "h" | "v"): string;
     /** Create a free-floating Stack node. Returns its UUID. */
@@ -826,15 +780,18 @@ interface MbLayout {
 
     // --- Tab lifecycle (route through Platform so PTY/graveyard stay in sync) ---
 
-    /** Create an empty tab. Returns the new tab handle, or `null` on failure. */
-    createTab(): MbLayoutTabHandle | null;
     /**
-     * Close a tab by positional id or by its layout-tree node id.
-     * Returns `false` when no tab matched the argument.
+     * Create an empty tab. Returns the new tab's subtreeRoot UUID string, or
+     * `null` on failure.
      */
-    closeTab(idOrNodeId: number | string): boolean;
-    /** Activate a tab by positional id or by its layout-tree node id. */
-    activateTab(idOrNodeId: number | string): void;
+    createTab(): string | null;
+    /**
+     * Close a tab by its subtreeRoot UUID. Returns `false` when no tab
+     * matched the argument (e.g. nil UUID, garbage, or last-tab guard).
+     */
+    closeTab(nodeId: string): boolean;
+    /** Activate a tab by its subtreeRoot UUID. */
+    activateTab(nodeId: string): void;
 
     // --- Pane lifecycle ---
 
@@ -858,9 +815,9 @@ interface MbLayout {
      * (`"left"`/`"right"` for horizontal, `"up"`/`"down"` for vertical).
      * `newIsFirst` defaults to `false` for orientation-only and right/down forms,
      * `true` for left/up. The boolean argument, when provided, OR's into that
-     * default. Returns the new pane's handle, or `null` on failure.
+     * default. Returns the new pane's UUID string, or `null` on failure.
      */
-    splitPane(existingNodeId: string, dir: MbSplitDir, newIsFirst?: boolean): MbLayoutPaneHandle | null;
+    splitPane(existingNodeId: string, dir: MbSplitDir, newIsFirst?: boolean): string | null;
 
     // --- Slot constraints ---
 
@@ -941,8 +898,6 @@ interface MbLayout {
     computeRects(window: MbRect, cellW?: number, cellH?: number): { [nodeId: string]: MbRect };
     /** Snapshot of the focused pane and its enclosing tab, or `null`. */
     focusedPane(): MbFocusedPaneInfo | null;
-    /** The currently active tab handle, or `null`. */
-    activeTab(): MbLayoutTabHandle | null;
 }
 
 // ============================================================================

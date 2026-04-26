@@ -372,7 +372,7 @@ void PlatformDawn::executeAction(const Action::Any& action)
             addPtyPoll(pagerFD, pagerPtr);
             // Move focus to the pager so input routes to it.
             scriptEngine_.setFocusedTerminalNodeId(pagerNode);
-            scriptEngine_.notifyPaneCreated(scriptEngine_.activeTabIndex(), pagerNode);
+            scriptEngine_.notifyPaneCreated(scriptEngine_.activeTabSubtreeRoot(), pagerNode);
 
             // The pager's Terminal has no rect yet — computeRects populates
             // it from the tree shape (now that the node is attached and

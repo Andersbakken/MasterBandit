@@ -265,40 +265,20 @@ JSValue jsLayoutCreateTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
     auto* eng = engineFromCtx(ctx);
     if (!eng->callbacks().createEmptyTab)
         return JS_ThrowTypeError(ctx, "createTab: not wired");
-    auto [idx, nodeIdStr] = eng->callbacks().createEmptyTab();
-    if (idx < 0) return JS_NULL;
-    JSValue o = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, o, "id",     JS_NewInt32(ctx, idx));
-    JS_SetPropertyStr(ctx, o, "nodeId", nodeIdStr.empty() ? JS_NULL :
-        JS_NewStringLen(ctx, nodeIdStr.data(), nodeIdStr.size()));
-    return o;
+    Uuid sub = eng->callbacks().createEmptyTab();
+    if (sub.isNil()) return JS_NULL;
+    return uuidToJs(ctx, sub);
 }
 
 JSValue jsLayoutActivateTab(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    if (argc < 1) return JS_ThrowTypeError(ctx, "activateTab(idOrNodeId)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "activateTab(nodeId)");
+    Uuid sub = parseUuidArg(ctx, argv[0], "activateTab(nodeId)");
+    if (sub.isNil()) return JS_EXCEPTION;
     auto* eng = engineFromCtx(ctx);
-    int idx = -1;
-    if (JS_IsNumber(argv[0])) {
-        if (JS_ToInt32(ctx, &idx, argv[0]) != 0) return JS_EXCEPTION;
-    } else if (JS_IsString(argv[0])) {
-        // Resolve via tabs() callback — match by tab's nodeId.
-        size_t len = 0;
-        const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
-        if (!s) return JS_EXCEPTION;
-        std::string want(s, len);
-        JS_FreeCString(ctx, s);
-        if (eng->callbacks().tabs) {
-            auto all = eng->callbacks().tabs();
-            for (const auto& t : all) {
-                if (t.nodeId == want) { idx = t.id; break; }
-            }
-        }
-    }
-    if (idx < 0) return JS_ThrowTypeError(ctx, "activateTab: unknown tab");
-    if (eng->callbacks().activateTab) eng->callbacks().activateTab(idx);
+    if (eng->callbacks().activateTab) eng->callbacks().activateTab(sub);
     return JS_UNDEFINED;
 }
 
@@ -353,26 +333,11 @@ JSValue jsLayoutCloseTab(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    if (argc < 1) return JS_ThrowTypeError(ctx, "closeTab(idOrNodeId)");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "closeTab(nodeId)");
+    Uuid sub = parseUuidArg(ctx, argv[0], "closeTab(nodeId)");
+    if (sub.isNil()) return JS_EXCEPTION;
     auto* eng = engineFromCtx(ctx);
-    int idx = -1;
-    if (JS_IsNumber(argv[0])) {
-        if (JS_ToInt32(ctx, &idx, argv[0]) != 0) return JS_EXCEPTION;
-    } else if (JS_IsString(argv[0])) {
-        size_t len = 0;
-        const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
-        if (!s) return JS_EXCEPTION;
-        std::string want(s, len);
-        JS_FreeCString(ctx, s);
-        if (eng->callbacks().tabs) {
-            auto all = eng->callbacks().tabs();
-            for (const auto& t : all) {
-                if (t.nodeId == want) { idx = t.id; break; }
-            }
-        }
-    }
-    if (idx < 0) return JS_FALSE;
-    if (eng->callbacks().closeTab) eng->callbacks().closeTab(idx);
+    if (eng->callbacks().closeTab) eng->callbacks().closeTab(sub);
     return JS_TRUE;
 }
 
@@ -401,17 +366,11 @@ JSValue jsLayoutCreateTerminalComposite(JSContext* ctx, JSValueConst, int argc, 
     if (!eng->callbacks().createTerminalInContainer)
         return JS_ThrowTypeError(ctx, "createTerminal: not wired");
     auto np = eng->callbacks().createTerminalInContainer(parent.toString(), cwd);
-    if (!np.ok) return JS_NULL;
-    JSValue o = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, o, "nodeId", np.nodeId.empty() ? JS_NULL :
-        JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
-    // Alias: `id` is the same as nodeId now that paneId has been purged.
-    JS_SetPropertyStr(ctx, o, "id", np.nodeId.empty() ? JS_NULL :
-        JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
-    return o;
+    if (!np.ok || np.nodeId.empty()) return JS_NULL;
+    return JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size());
 }
 
-// splitPane(existingPaneNodeId, dir, newIsFirst?) → {id, nodeId}
+// splitPane(existingPaneNodeId, dir, newIsFirst?) → nodeId | null
 JSValue jsLayoutSplitPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
@@ -441,14 +400,8 @@ JSValue jsLayoutSplitPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
     if (!eng->callbacks().splitPaneByNodeId)
         return JS_ThrowTypeError(ctx, "splitPane: not wired");
     auto np = eng->callbacks().splitPaneByNodeId(existing.toString(), wireDir, newIsFirst);
-    if (!np.ok) return JS_NULL;
-    JSValue o = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, o, "nodeId", np.nodeId.empty() ? JS_NULL :
-        JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
-    // Alias: `id` is the same as nodeId now that paneId has been purged.
-    JS_SetPropertyStr(ctx, o, "id", np.nodeId.empty() ? JS_NULL :
-        JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size()));
-    return o;
+    if (!np.ok || np.nodeId.empty()) return JS_NULL;
+    return JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size());
 }
 
 // Shared implementation for setSlotStretch/MinCells/MaxCells/FixedCells.
@@ -548,29 +501,12 @@ JSValue jsLayoutFocusedPane(JSContext* ctx, JSValueConst, int, JSValueConst*)
         if (t.focusedPane.isNil()) return JS_NULL;
         auto pi = eng->callbacks().paneInfo(t.focusedPane);
         JSValue o = JS_NewObject(ctx);
-        std::string pids = t.focusedPane.toString();
-        JS_SetPropertyStr(ctx, o, "id",        JS_NewStringLen(ctx, pids.data(), pids.size()));
-        JS_SetPropertyStr(ctx, o, "nodeId",    pi.nodeId.empty() ? JS_NULL :
-            JS_NewStringLen(ctx, pi.nodeId.data(), pi.nodeId.size()));
-        JS_SetPropertyStr(ctx, o, "tabId",     JS_NewInt32(ctx, t.id));
+        // pi.nodeId may be empty in transient states (pane just attached but
+        // tree id not yet propagated through the pane info pull); fall back
+        // to the pane Uuid we already have so callers always get the UUID.
+        const std::string& nodeIdStr = pi.nodeId.empty() ? t.focusedPane.toString() : pi.nodeId;
+        JS_SetPropertyStr(ctx, o, "nodeId",    JS_NewStringLen(ctx, nodeIdStr.data(), nodeIdStr.size()));
         JS_SetPropertyStr(ctx, o, "tabNodeId", t.nodeId.empty() ? JS_NULL :
-            JS_NewStringLen(ctx, t.nodeId.data(), t.nodeId.size()));
-        return o;
-    }
-    return JS_NULL;
-}
-
-// activeTab() → {id, nodeId} | null
-JSValue jsLayoutActiveTab(JSContext* ctx, JSValueConst, int, JSValueConst*)
-{
-    auto* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().tabs) return JS_NULL;
-    auto all = eng->callbacks().tabs();
-    for (const auto& t : all) {
-        if (!t.active) continue;
-        JSValue o = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, o, "id",     JS_NewInt32(ctx, t.id));
-        JS_SetPropertyStr(ctx, o, "nodeId", t.nodeId.empty() ? JS_NULL :
             JS_NewStringLen(ctx, t.nodeId.data(), t.nodeId.size()));
         return o;
     }
@@ -820,8 +756,6 @@ void installLayoutBindings(Engine&, JSContext* ctx, JSValue mb)
         JS_NewCFunction(ctx, jsLayoutAdjustPaneSize, "adjustPaneSize", 3));
     JS_SetPropertyStr(ctx, layout, "focusedPane",
         JS_NewCFunction(ctx, jsLayoutFocusedPane, "focusedPane", 0));
-    JS_SetPropertyStr(ctx, layout, "activeTab",
-        JS_NewCFunction(ctx, jsLayoutActiveTab, "activeTab", 0));
 
     JS_SetPropertyStr(ctx, layout, "setRoot",
         JS_NewCFunction(ctx, jsLayoutSetRoot, "setRoot", 1));

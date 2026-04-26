@@ -180,13 +180,11 @@ int PlatformDawn::exec()
         };
         scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo> {
             std::vector<Script::AppCallbacks::TabInfo> result;
-            auto allTabs = scriptEngine_.tabSubtreeRoots();
-            int active = scriptEngine_.activeTabIndex();
-            for (int i = 0; i < static_cast<int>(allTabs.size()); ++i) {
-                Uuid sub = allTabs[i];
+            Uuid activeSub = scriptEngine_.activeTabSubtreeRoot();
+            for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
                 Script::AppCallbacks::TabInfo ti;
-                ti.id = i;
-                ti.active = (i == active);
+                ti.id = sub;
+                ti.active = (sub == activeSub);
                 ti.focusedPane = scriptEngine_.focusedPaneInSubtree(sub);
                 for (Terminal* p : scriptEngine_.panesInSubtree(sub))
                     ti.panes.push_back(p->nodeId());
@@ -195,16 +193,14 @@ int PlatformDawn::exec()
             }
             return result;
         };
-        scbs.closeTab = [this](int tabId) {
-            closeTab(tabId);
+        scbs.closeTab = [this](Uuid sub) {
+            closeTab(sub);
         };
-        scbs.createEmptyTab = [this]() -> std::pair<int, std::string> {
-            Uuid nodeId;
-            int idx = createEmptyTab(&nodeId);
-            return {idx, nodeId.isNil() ? std::string{} : nodeId.toString()};
+        scbs.createEmptyTab = [this]() -> Uuid {
+            return createEmptyTab();
         };
-        scbs.activateTab = [this](int idx) {
-            activateTabByIdx(idx);
+        scbs.activateTab = [this](Uuid sub) {
+            activateTabByUuid(sub);
             tabBarDirty_ = true;
         };
         scbs.focusPane = [this](Uuid nodeId) {
@@ -244,8 +240,7 @@ int PlatformDawn::exec()
                                       const std::string& dir, int amount) -> bool {
             Uuid u = Uuid::fromString(paneNodeId);
             if (u.isNil()) return false;
-            int tabIdx = -1;
-            auto tab = findTabForPane(u, &tabIdx);
+            auto tab = findTabForPane(u);
             if (!tab) return false;
             SplitDir axis;
             int pixelDelta;

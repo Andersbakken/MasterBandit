@@ -68,10 +68,11 @@ struct AppCallbacks {
     // popups and embeddeds share the parent pane's font metrics.
     std::function<std::pair<float, float>()> fontCellSize;
 
-    // Tab bar position from config — "top" | "bottom". Read by default-ui.js
-    // to decide the root Container's child ordering. Config default is
-    // "bottom".
-    std::function<std::string()> tabBarPosition;
+    // Snapshot the live Config as a JSON string. Wraps glz::write_json on
+    // the loaded `Config` struct. JS `mb.config` getter calls this and
+    // `JSON.parse`s the result; scripts re-read after the `configChanged`
+    // event to pick up hot-reload changes.
+    std::function<std::string()> configJson;
     // Write to PTY master fd (shell stdin) — raw bytes, no bracketing.
     std::function<void(PaneId, const std::string&)> writePaneToShell;
     // Paste to PTY master fd — wraps in \x1b[200~/\x1b[201~ when the terminal

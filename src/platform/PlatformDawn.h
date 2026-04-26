@@ -323,6 +323,11 @@ private:
     // call this.
     void runLayoutIfDirty();
 
+    // Most-recent Config snapshot. Updated by applyConfig() on each
+    // (re)load and read by the `mb.config` JS getter (via the configJson
+    // AppCallbacks hook).
+    Config        lastConfig_;
+
     // Tab bar
     TabBarConfig  tabBarConfig_;
     std::string   tabBarFontName_   = "tab_bar";

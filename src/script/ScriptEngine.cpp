@@ -2085,13 +2085,18 @@ JSContext* Engine::createContext()
 static JSValue jsMbRegisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 static JSValue jsMbUnregisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 
-// mb.tabBarPosition — "top" | "bottom" (from the [tab_bar] config section).
-// Read by default-ui.js to order the root Container's children.
-static JSValue jsMbTabBarPosition(JSContext* ctx, JSValueConst, int, JSValueConst*)
+// mb.config — frozen JS snapshot of the loaded TOML Config (the same struct
+// PlatformDawn applies on hot-reload). Re-fetch after the `configChanged`
+// event to pick up live updates. Implemented as a JSON round-trip through
+// glz::write_json + JS_ParseJSON so the JS surface tracks the C++ struct
+// shape automatically.
+static JSValue jsMbConfig(JSContext* ctx, JSValueConst, int, JSValueConst*)
 {
-    auto& cb = engineFromCtx(ctx)->callbacks().tabBarPosition;
-    std::string pos = cb ? cb() : std::string("bottom");
-    return JS_NewStringLen(ctx, pos.data(), pos.size());
+    auto& cb = engineFromCtx(ctx)->callbacks().configJson;
+    if (!cb) return JS_NULL;
+    std::string json = cb();
+    if (json.empty()) return JS_NULL;
+    return JS_ParseJSON(ctx, json.data(), json.size(), "<mb.config>");
 }
 
 // mb.pane(nodeId) -> Pane | null. Construct a Pane object wrapping the
@@ -2166,7 +2171,7 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
     };
     defineGetter("activePane", jsMbGetActivePane);
     defineGetter("actions", jsMbGetActions);
-    defineGetter("tabBarPosition", jsMbTabBarPosition);
+    defineGetter("config", jsMbConfig);
     JS_SetPropertyStr(ctx, mb, "pane",
         JS_NewCFunction(ctx, jsMbPane, "pane", 1));
     JS_SetPropertyStr(ctx, mb, "unloadScript",

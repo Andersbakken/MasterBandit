@@ -34,7 +34,7 @@ let _tabsStackNode = null;
     const tabBar  = mb.layout.createTabBar();
     mb.layout.setRoot(newRoot);
 
-    const position = mb.tabBarPosition || 'bottom';
+    const position = mb.config?.tab_bar?.position || 'bottom';
     if (position === 'top') {
         mb.layout.appendChild(newRoot, tabBar, {fixedCells: 1});
         mb.layout.appendChild(newRoot, tabsStack, {stretch: 1});
@@ -70,7 +70,7 @@ let _tabsStackNode = null;
 // API; instead we detach and re-append in the new order.
 mb.addEventListener('configChanged', () => {
     if (!_rootContainer || !_tabBarNode || !_tabsStackNode) return;
-    const want = mb.tabBarPosition || 'bottom';
+    const want = mb.config?.tab_bar?.position || 'bottom';
 
     // Determine current order by walking children. If already correct,
     // skip the churn.

@@ -1,6 +1,7 @@
 #include "PlatformDawn.h"
 #include "Config.h"
 #include "Resources.h"
+#include <glaze/glaze.hpp>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -46,8 +47,10 @@ int PlatformDawn::exec()
         scbs.fontCellSize = [this]() -> std::pair<float, float> {
             return { charWidth_, lineHeight_ };
         };
-        scbs.tabBarPosition = [this]() -> std::string {
-            return tabBarConfig_.position;
+        scbs.configJson = [this]() -> std::string {
+            std::string buf;
+            (void)glz::write_json(lastConfig_, buf);
+            return buf;
         };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
             if (Terminal* p = scriptEngine_.terminal(paneId)) p->writeText(data);

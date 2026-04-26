@@ -481,6 +481,81 @@ type MbLoadResult =
     | { status: "error"; error?: string };
 
 // ============================================================================
+// Config snapshot — mirrors the C++ Config struct via glaze JSON
+// ============================================================================
+
+interface MbConfigPadding { left: number; top: number; right: number; bottom: number; }
+
+interface MbConfigCursor {
+    shape: "block" | "underline" | "bar";
+    blink: boolean;
+    blink_rate: number;
+    blink_fps: number;
+}
+
+interface MbConfigColors {
+    foreground: string;
+    background: string;
+    cursor: string;
+    color0:  string; color1:  string; color2:  string; color3:  string;
+    color4:  string; color5:  string; color6:  string; color7:  string;
+    color8:  string; color9:  string; color10: string; color11: string;
+    color12: string; color13: string; color14: string; color15: string;
+}
+
+interface MbConfigTabBarColors {
+    background?:        string;
+    active_text?:       string;
+    active_bg?:         string;
+    inactive_text?:     string;
+    inactive_bg?:       string;
+    separator?:         string;
+}
+
+interface MbConfigTabBar {
+    style: "auto" | "visible" | "hidden";
+    /** Where the chrome tab bar sits relative to the document area. */
+    position: "top" | "bottom";
+    font: string;
+    font_size: number;
+    max_title_length: number;
+    progress_icon: boolean;
+    progress_bar: boolean;
+    progress_color: string;
+    progress_height: number;
+    colors: MbConfigTabBarColors;
+}
+
+interface MbConfigNotifications { show_when_foreground: boolean; }
+
+interface MbConfig {
+    font: string;
+    font_size: number;
+    bold_strength: number;
+    scrollback_lines: number;
+    padding: MbConfigPadding;
+    cursor: MbConfigCursor;
+    colors: MbConfigColors;
+    tab_bar: MbConfigTabBar;
+    /** Glaze serialises the keybindings vector under the singular key. */
+    keybinding: unknown[];
+    mousebinding: unknown[];
+    divider_color: string;
+    divider_width: number;
+    inactive_pane_tint: string;
+    inactive_pane_tint_alpha: number;
+    active_pane_tint: string;
+    active_pane_tint_alpha: number;
+    replacement_char: string;
+    command_outline_color: string;
+    command_dim_factor: number;
+    alt_sends_esc: boolean;
+    command_navigation_wrap: boolean;
+    key_sequence_timeout_ms: number;
+    notifications: MbConfigNotifications;
+}
+
+// ============================================================================
 // Action registry
 // ============================================================================
 
@@ -545,12 +620,12 @@ interface MbGlobal {
      */
     readonly layout: MbLayout;
     /**
-     * Where the chrome tab bar sits relative to the document area: `"top"`,
-     * `"bottom"`, or `"none"` when chrome is suppressed (in-tree TabBar nodes
-     * only). Reflects the live config; subscribe to `configChanged` to react
-     * to live updates.
+     * Frozen snapshot of the loaded TOML config (the same struct
+     * `PlatformDawn::applyConfig` consumes). Re-read after the
+     * `configChanged` event to pick up hot-reload updates. Shape mirrors the
+     * C++ `Config` struct via glaze JSON serialization.
      */
-    readonly tabBarPosition: "top" | "bottom" | "none";
+    readonly config: MbConfig;
 
     // --- Actions ---
     invokeAction(name: string, ...args: string[]): boolean;

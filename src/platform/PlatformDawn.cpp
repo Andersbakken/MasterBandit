@@ -1017,6 +1017,11 @@ void PlatformDawn::applyConfig(const Config& config)
     // expect the lock to be held already.
     std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
 
+    // Stash the snapshot before any sub-section copies. `mb.config` reads
+    // from this on each access; the configChanged event then prompts scripts
+    // to re-fetch.
+    lastConfig_ = config;
+
     // Keybindings
     std::vector<Binding> allKey = defaultBindings();
     auto userBindings = parseBindings(config.keybindings);

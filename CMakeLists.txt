@@ -1,4 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
+
+# macOS deployment floor. Must be set before project() so the toolchain
+# initialization picks it up. 12.0 (Monterey) matches the prebuilt Dawn
+# tarball's own floor, so the binary's effective minimum is consistent
+# across our code, Dawn, and any future vcpkg rebuilds at the same target.
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "macOS deployment target")
+endif()
+
 project(masterbandit LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)

@@ -5,9 +5,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(DAWN_PLATFORM "ubuntu-latest")
     set(DAWN_LIB_DIR "lib64")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # Patched Dawn: uses presentDrawable: instead of [drawable present] on Metal
-    set(DAWN_VERSION "v20260410-presentDrawable-fix")
-    set(DAWN_COMMIT "dbecffe5b105a638907d5c88e0973f6f24f91411")
+    # Patched Dawn: uses presentDrawable: instead of [drawable present] on Metal,
+    # built with MACOSX_DEPLOYMENT_TARGET=12.0.
+    set(DAWN_VERSION "v20260426-deployment-12")
+    set(DAWN_COMMIT "abd6d976f07a9550f43031b525b41395af85fba2")
     set(DAWN_REPO "jhanssen/dawn")
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
         set(DAWN_PLATFORM "macos-15-intel")

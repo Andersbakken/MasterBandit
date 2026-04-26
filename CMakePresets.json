@@ -27,6 +27,53 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo"
             }
+        },
+
+        {
+            "name": "macos",
+            "displayName": "macOS Default",
+            "inherits": "default",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "arm64-osx-12"
+            }
+        },
+        {
+            "name": "macos-release",
+            "displayName": "macOS Release",
+            "inherits": "release",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "arm64-osx-12"
+            }
+        },
+        {
+            "name": "macos-profile",
+            "displayName": "macOS Profile (Release + Debug Symbols)",
+            "inherits": "profile",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "arm64-osx-12"
+            }
+        },
+
+        {
+            "name": "linux",
+            "displayName": "Linux Default",
+            "inherits": "default",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Linux Release",
+            "inherits": "release",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-profile",
+            "displayName": "Linux Profile (Release + Debug Symbols)",
+            "inherits": "profile",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
         }
     ],
     "buildPresets": [
@@ -42,6 +89,36 @@
         {
             "name": "profile",
             "configurePreset": "profile",
+            "configuration": "RelWithDebInfo"
+        },
+
+        {
+            "name": "macos",
+            "configurePreset": "macos"
+        },
+        {
+            "name": "macos-release",
+            "configurePreset": "macos-release",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-profile",
+            "configurePreset": "macos-profile",
+            "configuration": "RelWithDebInfo"
+        },
+
+        {
+            "name": "linux",
+            "configurePreset": "linux"
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux-release",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-profile",
+            "configurePreset": "linux-profile",
             "configuration": "RelWithDebInfo"
         }
     ]

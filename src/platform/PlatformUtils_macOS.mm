@@ -41,13 +41,10 @@ extern "C" const char* macResourcePathOrNull()
 
 bool platformIsDarkMode()
 {
-    if (@available(macOS 10.14, *)) {
-        NSAppearance* appearance = [NSApp effectiveAppearance];
-        NSAppearanceName best = [appearance bestMatchFromAppearancesWithNames:
-            @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
-        return [best isEqualToString:NSAppearanceNameDarkAqua];
-    }
-    return true;
+    NSAppearance* appearance = [NSApp effectiveAppearance];
+    NSAppearanceName best = [appearance bestMatchFromAppearancesWithNames:
+        @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    return [best isEqualToString:NSAppearanceNameDarkAqua];
 }
 
 static std::function<void(bool)> g_appearanceCallback;
@@ -62,20 +59,18 @@ void platformInitNotifications()
                      "(running bare binary, not a .app)");
         return;
     }
-    if (@available(macOS 10.14, *)) {
-        UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
-        if (!g_notifDelegate) g_notifDelegate = [[MBNotificationDelegate alloc] init];
-        center.delegate = g_notifDelegate;
-        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
-            completionHandler:^(BOOL granted, NSError* error) {
-                if (granted) {
-                    spdlog::info("Notifications: authorization granted");
-                } else {
-                    const char* err = error ? [[error localizedDescription] UTF8String] : "(no error info)";
-                    spdlog::warn("Notifications: authorization not granted ({})", err);
-                }
-            }];
-    }
+    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+    if (!g_notifDelegate) g_notifDelegate = [[MBNotificationDelegate alloc] init];
+    center.delegate = g_notifDelegate;
+    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+        completionHandler:^(BOOL granted, NSError* error) {
+            if (granted) {
+                spdlog::info("Notifications: authorization granted");
+            } else {
+                const char* err = error ? [[error localizedDescription] UTF8String] : "(no error info)";
+                spdlog::warn("Notifications: authorization not granted ({})", err);
+            }
+        }];
 }
 
 void platformSetNotificationsShowWhenForeground(bool show)
@@ -86,35 +81,51 @@ void platformSetNotificationsShowWhenForeground(bool show)
 void platformSendNotification(const std::string& title, const std::string& body)
 {
     if (![[NSBundle mainBundle] bundleIdentifier]) return;
-    if (@available(macOS 10.14, *)) {
-        UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
-        // Convert to NSString before any async hop. Block-copy semantics
-        // retain captured Objective-C objects, so the NSStrings outlive the
-        // caller's std::string parameters; capturing those C++ references
-        // directly would be a use-after-free when the block fires later.
-        NSString* nsTitle = [NSString stringWithUTF8String:title.c_str()];
-        NSString* nsBody = [NSString stringWithUTF8String:body.c_str()];
-        UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
-        content.title = nsTitle;
-        content.body = nsBody;
-        content.sound = [UNNotificationSound defaultSound];
-        UNNotificationRequest* request = [UNNotificationRequest
-            requestWithIdentifier:[[NSUUID UUID] UUIDString]
-            content:content
-            trigger:nil];
-        [center addNotificationRequest:request withCompletionHandler:^(NSError* postErr) {
-            if (postErr) {
-                spdlog::warn("Notifications: post failed: {}",
-                             [[postErr localizedDescription] UTF8String]);
-            }
-        }];
-    }
+    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+    // Convert to NSString before any async hop. Block-copy semantics
+    // retain captured Objective-C objects, so the NSStrings outlive the
+    // caller's std::string parameters; capturing those C++ references
+    // directly would be a use-after-free when the block fires later.
+    NSString* nsTitle = [NSString stringWithUTF8String:title.c_str()];
+    NSString* nsBody = [NSString stringWithUTF8String:body.c_str()];
+    UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+    content.title = nsTitle;
+    content.body = nsBody;
+    content.sound = [UNNotificationSound defaultSound];
+    UNNotificationRequest* request = [UNNotificationRequest
+        requestWithIdentifier:[[NSUUID UUID] UUIDString]
+        content:content
+        trigger:nil];
+    [center addNotificationRequest:request withCompletionHandler:^(NSError* postErr) {
+        if (postErr) {
+            spdlog::warn("Notifications: post failed: {}",
+                         [[postErr localizedDescription] UTF8String]);
+        }
+    }];
 }
 
 void platformOpenURL(const std::string& url)
 {
     NSString* nsUrl = [NSString stringWithUTF8String:url.c_str()];
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:nsUrl]];
+    if (!nsUrl) {
+        spdlog::warn("openURL: input is not valid UTF-8");
+        return;
+    }
+    NSURL* parsed = [NSURL URLWithString:nsUrl];
+    if (!parsed) {
+        spdlog::warn("openURL: malformed URL: {}", url);
+        return;
+    }
+    NSWorkspaceOpenConfiguration* cfg = [NSWorkspaceOpenConfiguration configuration];
+    [[NSWorkspace sharedWorkspace] openURL:parsed
+                             configuration:cfg
+                         completionHandler:^(NSRunningApplication* app, NSError* err) {
+        (void)app;
+        if (err) {
+            spdlog::warn("openURL failed: {}",
+                         [[err localizedDescription] UTF8String]);
+        }
+    }];
 }
 
 std::string platformProcessCWD(pid_t pid)

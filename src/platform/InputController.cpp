@@ -383,6 +383,12 @@ void InputController::onMouseButton(int button, int action, int mods)
             platform_->notifyPaneFocusChange(*tab, curFocus, clickedId);
             platform_->tabBarDirty_ = true;
             platform_->updateWindowTitle();
+            // Cursor outline / divider tint / pane tint all key off the
+            // shadow-state focusedPaneId — `applyPendingMutations` rebuilds
+            // it on the next tick, but without this kick the render thread
+            // has no reason to draw a new frame and the user sees stale
+            // focus indication until the next input event.
+            platform_->setNeedsRedraw();
         }
     }
 

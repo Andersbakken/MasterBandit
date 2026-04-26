@@ -82,7 +82,14 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     spdlog::debug("onKey: key=0x{:x} action={} mods={}", key, action, mods);
 
     controlPressed_ = (mods & CtrlModifier) != 0;
+    const uint32_t prevMods = lastMods_;
     lastMods_ = static_cast<uint32_t>(mods);
+    if (lastMods_ != prevMods) {
+        // Modifier transition (e.g. Ctrl pressed/released) may flip whether a
+        // Left+Click on the cell under the cursor would open a hyperlink, so
+        // refresh the pointer shape without waiting for mouse motion.
+        refreshPointerShape();
+    }
 
     Key k = static_cast<Key>(key);
     spdlog::debug("onKey: key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
@@ -754,6 +761,8 @@ void InputController::onCursorPos(double x, double y)
         MouseRegion region = hitTest(sx, sy);
         if (region == MouseRegion::TabBar) {
             window->setCursorStyle(Window::CursorStyle::Arrow);
+        } else if (wouldOpenHyperlinkAt(sx, sy)) {
+            window->setCursorStyle(Window::CursorStyle::Pointer);
         } else {
             Uuid hoveredId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx),
                                                       static_cast<int>(sy));
@@ -983,6 +992,51 @@ void InputController::doAutoScroll()
     platform_->setNeedsRedraw();
 }
 
+bool InputController::wouldOpenHyperlinkAt(double sx, double sy)
+{
+    if (!platform_) return false;
+    auto tab = platform_->activeTab();
+    if (!tab) return false;
+    Script::Engine& eng = platform_->scriptEngine_;
+    Uuid hoveredId = eng.paneAtPixelInSubtree(*tab, static_cast<int>(sx), static_cast<int>(sy));
+    if (hoveredId.isNil()) return false;
+    Terminal* hp = eng.paneInSubtree(*tab, hoveredId);
+    auto* term = dynamic_cast<TerminalEmulator*>(hp);
+    if (!term) return false;
+
+    const float charWidth = platform_->charWidth_;
+    const float lineHeight = platform_->lineHeight_;
+    const float padLeft = platform_->padLeft_;
+    const float padTop = platform_->padTop_;
+    if (charWidth <= 0.0f || lineHeight <= 0.0f) return false;
+
+    Rect pr = hp->rect();
+    double relX = sx - pr.x - padLeft;
+    double relY = sy - pr.y - padTop;
+    if (relX < 0 || relY < 0) return false;
+    int col = static_cast<int>(relX / charWidth);
+    int row = static_cast<int>(relY / lineHeight);
+    if (col < 0 || col >= term->width() || row < 0 || row >= term->height()) return false;
+
+    const CellExtra* extra = term->grid().getExtra(col, row);
+    if (!extra || !extra->hyperlinkId) return false;
+    const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
+    if (!uri || uri->empty()) return false;
+
+    MouseStroke stroke;
+    stroke.button = MouseButton::Left;
+    stroke.mods = lastMods_;
+    stroke.event = MouseEventType::Click;
+    stroke.mode = term->mouseReportingActive() ? MouseMode::Grabbed : MouseMode::Ungrabbed;
+    stroke.region = MouseRegion::Pane;
+    auto matched = matchMouseBindings(stroke, mouseBindings_);
+    for (const auto& act : matched) {
+        if (std::holds_alternative<Action::OpenHyperlink>(act))
+            return true;
+    }
+    return false;
+}
+
 void InputController::refreshPointerShape()
 {
     Window* window = platform_->window_.get();
@@ -997,6 +1051,10 @@ void InputController::refreshPointerShape()
     double sy = lastCursorY_ * platform_->contentScaleY_;
     if (hitTest(sx, sy) == MouseRegion::TabBar) {
         window->setCursorStyle(Window::CursorStyle::Arrow);
+        return;
+    }
+    if (wouldOpenHyperlinkAt(sx, sy)) {
+        window->setCursorStyle(Window::CursorStyle::Pointer);
         return;
     }
     // Prefer the pane the mouse is physically over (so split/focus changes

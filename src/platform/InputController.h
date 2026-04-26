@@ -89,6 +89,12 @@ private:
     void stopAutoScroll();
     void doAutoScroll();
 
+    // True if a Left+Click at the given screen pixel with the current modifier
+    // state (`lastMods_`) would resolve to an `OpenHyperlink` binding AND the
+    // cell under the cursor carries an OSC 8 hyperlink. Drives the hand-cursor
+    // hover affordance.
+    bool wouldOpenHyperlinkAt(double sx, double sy);
+
     PlatformDawn* platform_ = nullptr;
 
     std::vector<Binding> bindings_;

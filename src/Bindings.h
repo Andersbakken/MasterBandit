@@ -68,6 +68,13 @@ struct MouseBinding {
 
 std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfig>& configs);
 std::vector<MouseBinding> defaultMouseBindings();
+// Merge defaults with user bindings: any default whose action type is bound
+// by at least one user binding is dropped, then user bindings are appended.
+// Lets a user binding for e.g. ctrl+left → open_hyperlink suppress every
+// default that maps to OpenHyperlink (regardless of stroke), so the user can
+// fully take over an action without inheriting the built-in trigger.
+std::vector<MouseBinding> mergeMouseBindings(std::vector<MouseBinding> defaults,
+                                              std::vector<MouseBinding> user);
 // Returns every action bound to this stroke, in declaration order. Callers
 // run them in sequence; binding two actions to the same stroke is supported
 // so e.g. Cmd+Click can both open a hyperlink and select the containing

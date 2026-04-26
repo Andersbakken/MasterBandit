@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 static std::string toLower(std::string s)
 {
@@ -549,5 +550,25 @@ std::vector<Action::Any> matchMouseBindings(const MouseStroke& stroke,
         if (b.trigger.matches(stroke))
             result.push_back(b.action);
     }
+    return result;
+}
+
+std::vector<MouseBinding> mergeMouseBindings(std::vector<MouseBinding> defaults,
+                                              std::vector<MouseBinding> user)
+{
+    std::unordered_set<Action::TypeIndex> userActionTypes;
+    userActionTypes.reserve(user.size());
+    for (const auto& u : user)
+        userActionTypes.insert(Action::typeOf(u.action));
+
+    std::vector<MouseBinding> result;
+    result.reserve(defaults.size() + user.size());
+    for (auto& d : defaults) {
+        if (userActionTypes.count(Action::typeOf(d.action)))
+            continue;
+        result.push_back(std::move(d));
+    }
+    for (auto& u : user)
+        result.push_back(std::move(u));
     return result;
 }

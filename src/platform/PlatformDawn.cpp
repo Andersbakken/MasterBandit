@@ -830,9 +830,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
         inputController_->setKeyBindings(std::move(all));
     }
     {
-        std::vector<MouseBinding> all = defaultMouseBindings();
         auto userMouseBindings = parseMouseBindings(options.mousebindings);
-        all.insert(all.end(), userMouseBindings.begin(), userMouseBindings.end());
+        auto all = mergeMouseBindings(defaultMouseBindings(), std::move(userMouseBindings));
         inputController_->setMouseBindings(std::move(all));
     }
 
@@ -1026,9 +1025,8 @@ void PlatformDawn::applyConfig(const Config& config)
     std::vector<Binding> allKey = defaultBindings();
     auto userBindings = parseBindings(config.keybindings);
     allKey.insert(allKey.end(), userBindings.begin(), userBindings.end());
-    std::vector<MouseBinding> allMouse = defaultMouseBindings();
     auto userMouseBindings = parseMouseBindings(config.mousebindings);
-    allMouse.insert(allMouse.end(), userMouseBindings.begin(), userMouseBindings.end());
+    auto allMouse = mergeMouseBindings(defaultMouseBindings(), std::move(userMouseBindings));
     if (inputController_) {
         inputController_->setKeyBindings(std::move(allKey));
         inputController_->setMouseBindings(std::move(allMouse));

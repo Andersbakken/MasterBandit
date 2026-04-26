@@ -38,6 +38,8 @@ set(TEST_SOURCES
     test_charset.cpp
     test_layout_tree.cpp
     test_tree_shape.cpp
+    test_tabs_uuid.cpp
+    test_tabs_multibar.cpp
     test_uuid.cpp
     MBConnection.cpp
     ../src/text.cpp

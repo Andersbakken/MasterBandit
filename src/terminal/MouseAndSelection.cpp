@@ -194,13 +194,28 @@ static char32_t cellAt(const TerminalEmulator& te, int col, int absRow)
 }
 
 // Selection implementation
+//
+// Storage is `(lineId, cellOffsetWithinLine)` per anchor — see
+// TerminalEmulator.h Selection for details. Same model as iTerm2's
+// `LineBufferPosition.absolutePosition`: a logical text position that's
+// invariant under column reflow.
+namespace {
+inline int cellOffsetWithinLine(const Document& doc, uint64_t id, int absRow,
+                                int col, int width)
+{
+    int firstAbs = doc.firstAbsOfLine(id);
+    int rowOff = (firstAbs < 0) ? 0 : (absRow - firstAbs);
+    return rowOff * width + col;
+}
+} // namespace
+
 void TerminalEmulator::startSelection(int col, int absRow)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    mSelection.startCol = col;
-    mSelection.startAbsRow = absRow;
-    mSelection.endCol = col;
-    mSelection.endAbsRow = absRow;
+    uint64_t id = mDocument.lineIdForAbs(absRow);
+    int off = cellOffsetWithinLine(mDocument, id, absRow, col, mWidth);
+    mSelection.startLineId = id; mSelection.startCellOffset = off;
+    mSelection.endLineId   = id; mSelection.endCellOffset   = off;
     mSelection.active = true;
     mSelection.valid = false;
     mSelection.mode = SelectionMode::Normal;
@@ -225,10 +240,11 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
         right++;
     }
 
-    mSelection.startCol = left;
-    mSelection.startAbsRow = absRow;
-    mSelection.endCol = right;
-    mSelection.endAbsRow = absRow;
+    uint64_t id = mDocument.lineIdForAbs(absRow);
+    mSelection.startLineId = id;
+    mSelection.startCellOffset = cellOffsetWithinLine(mDocument, id, absRow, left,  mWidth);
+    mSelection.endLineId   = id;
+    mSelection.endCellOffset   = cellOffsetWithinLine(mDocument, id, absRow, right, mWidth);
     mSelection.active = true;
     mSelection.valid = false;
     mSelection.mode = SelectionMode::Word;
@@ -243,10 +259,15 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
 void TerminalEmulator::startLineSelection(int absRow)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    mSelection.startCol = 0;
-    mSelection.startAbsRow = absRow;
-    mSelection.endCol = mWidth - 1;
-    mSelection.endAbsRow = absRow;
+    uint64_t id = mDocument.lineIdForAbs(absRow);
+    // Span the entire logical line, including any wrapped continuation
+    // rows. Use lastAbsOfLine to get the final visual row of this line at
+    // the current width; the end cellOffset is the last cell of that row.
+    int firstAbs = mDocument.firstAbsOfLine(id);
+    int lastAbs  = mDocument.lastAbsOfLine(id);
+    int rowSpan  = (firstAbs < 0 || lastAbs < 0) ? 0 : (lastAbs - firstAbs);
+    mSelection.startLineId = id; mSelection.startCellOffset = 0;
+    mSelection.endLineId   = id; mSelection.endCellOffset   = rowSpan * mWidth + (mWidth - 1);
     mSelection.active = true;
     mSelection.valid = false;
     mSelection.mode = SelectionMode::Line;
@@ -262,23 +283,26 @@ void TerminalEmulator::extendSelection(int col, int absRow)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (!mSelection.valid && !mSelection.active) {
-        // No existing selection — start a new one
         startSelection(col, absRow);
         return;
     }
 
-    // Move the endpoint closest to the new position
-    int distToStart = std::abs(absRow - mSelection.startAbsRow) * mWidth +
-                      std::abs(col - mSelection.startCol);
-    int distToEnd = std::abs(absRow - mSelection.endAbsRow) * mWidth +
-                    std::abs(col - mSelection.endCol);
+    auto resOpt = resolveSelection();
+    if (!resOpt) {
+        startSelection(col, absRow);
+        return;
+    }
+    int distToStart = std::abs(absRow - resOpt->startAbsRow) * mWidth +
+                      std::abs(col - resOpt->startCol);
+    int distToEnd   = std::abs(absRow - resOpt->endAbsRow)   * mWidth +
+                      std::abs(col - resOpt->endCol);
 
+    uint64_t newId = mDocument.lineIdForAbs(absRow);
+    int newOff = cellOffsetWithinLine(mDocument, newId, absRow, col, mWidth);
     if (distToStart < distToEnd) {
-        mSelection.startCol = col;
-        mSelection.startAbsRow = absRow;
+        mSelection.startLineId = newId; mSelection.startCellOffset = newOff;
     } else {
-        mSelection.endCol = col;
-        mSelection.endAbsRow = absRow;
+        mSelection.endLineId   = newId; mSelection.endCellOffset   = newOff;
     }
     mSelection.active = true;
     mSelection.valid = false;
@@ -294,10 +318,10 @@ void TerminalEmulator::extendSelection(int col, int absRow)
 void TerminalEmulator::startRectangleSelection(int col, int absRow)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    mSelection.startCol = col;
-    mSelection.startAbsRow = absRow;
-    mSelection.endCol = col;
-    mSelection.endAbsRow = absRow;
+    uint64_t id = mDocument.lineIdForAbs(absRow);
+    int off = cellOffsetWithinLine(mDocument, id, absRow, col, mWidth);
+    mSelection.startLineId = id; mSelection.startCellOffset = off;
+    mSelection.endLineId   = id; mSelection.endCellOffset   = off;
     mSelection.active = true;
     mSelection.valid = false;
     mSelection.mode = SelectionMode::Rectangle;
@@ -306,8 +330,9 @@ void TerminalEmulator::startRectangleSelection(int col, int absRow)
 void TerminalEmulator::updateSelection(int col, int absRow)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    mSelection.endCol = col;
-    mSelection.endAbsRow = absRow;
+    uint64_t id = mDocument.lineIdForAbs(absRow);
+    mSelection.endLineId     = id;
+    mSelection.endCellOffset = cellOffsetWithinLine(mDocument, id, absRow, col, mWidth);
 }
 
 void TerminalEmulator::finalizeSelection()
@@ -327,14 +352,56 @@ void TerminalEmulator::clearSelection()
         mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
+std::optional<TerminalEmulator::ResolvedSelection>
+TerminalEmulator::resolveSelection() const
+{
+    if (!mSelection.active && !mSelection.valid) return std::nullopt;
+    int startFirst = mDocument.firstAbsOfLine(mSelection.startLineId);
+    int endFirst   = mDocument.firstAbsOfLine(mSelection.endLineId);
+    if (startFirst < 0 || endFirst < 0) return std::nullopt;
+    // Convert cell offset back to current visual coordinates. Reflow
+    // re-wrapped the logical line into rows of the current `mWidth`, so
+    // cell N of the line is at row `firstAbs + N/mWidth`, col `N%mWidth`.
+    // Clamp to the line's last visible row + col (a wider new layout may
+    // mean the offset's row falls past the line's actual extent).
+    int w = std::max(1, mWidth);
+    auto resolve = [&](uint64_t id, int firstAbs, int cellOff,
+                       int& outRow, int& outCol) {
+        int row = firstAbs + cellOff / w;
+        int col = cellOff % w;
+        int lastAbs = mDocument.lastAbsOfLine(id);
+        if (lastAbs >= 0 && row > lastAbs) {
+            row = lastAbs;
+            col = w - 1;
+        }
+        outRow = row;
+        outCol = col;
+    };
+    ResolvedSelection r;
+    resolve(mSelection.startLineId, startFirst, mSelection.startCellOffset,
+            r.startAbsRow, r.startCol);
+    resolve(mSelection.endLineId,   endFirst,   mSelection.endCellOffset,
+            r.endAbsRow, r.endCol);
+    r.active = mSelection.active;
+    r.valid  = mSelection.valid;
+    r.mode   = mSelection.mode;
+    return r;
+}
+
+bool TerminalEmulator::hasSelection() const
+{
+    return resolveSelection().has_value();
+}
+
 bool TerminalEmulator::isCellSelected(int col, int absRow) const
 {
-    if (!mSelection.active && !mSelection.valid) return false;
+    auto resOpt = resolveSelection();
+    if (!resOpt) return false;
+    const auto& res = *resOpt;
+    int r0 = res.startAbsRow, c0 = res.startCol;
+    int r1 = res.endAbsRow,   c1 = res.endCol;
 
-    int r0 = mSelection.startAbsRow, c0 = mSelection.startCol;
-    int r1 = mSelection.endAbsRow, c1 = mSelection.endCol;
-
-    if (mSelection.mode == SelectionMode::Rectangle) {
+    if (res.mode == SelectionMode::Rectangle) {
         // Rectangle: column range is independent of row
         int minR = std::min(r0, r1), maxR = std::max(r0, r1);
         int minC = std::min(c0, c1), maxC = std::max(c0, c1);
@@ -356,12 +423,13 @@ bool TerminalEmulator::isCellSelected(int col, int absRow) const
 
 std::string TerminalEmulator::selectedText() const
 {
-    if (!mSelection.active && !mSelection.valid) return {};
+    auto resOpt = resolveSelection();
+    if (!resOpt) return {};
+    const auto& res = *resOpt;
+    int r0 = res.startAbsRow, c0 = res.startCol;
+    int r1 = res.endAbsRow,   c1 = res.endCol;
 
-    int r0 = mSelection.startAbsRow, c0 = mSelection.startCol;
-    int r1 = mSelection.endAbsRow, c1 = mSelection.endCol;
-
-    if (mSelection.mode == SelectionMode::Rectangle) {
+    if (res.mode == SelectionMode::Rectangle) {
         // Rectangle: same column range on every row
         int minR = std::min(r0, r1), maxR = std::max(r0, r1);
         int minC = std::min(c0, c1), maxC = std::max(c0, c1);
@@ -391,7 +459,7 @@ std::string TerminalEmulator::selectedText() const
         if (!row) continue;
 
         int colStart, colEnd;
-        if (mSelection.mode == SelectionMode::Rectangle) {
+        if (res.mode == SelectionMode::Rectangle) {
             colStart = c0;
             colEnd = c1;
         } else {

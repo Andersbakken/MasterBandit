@@ -79,8 +79,14 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     cursorBlinking = term.cursorBlinking();
     defaults = term.defaultColors();
 
-    // Selection: copy by value. Cheap; re-evaluated every frame.
-    selection = term.selection();
+    // Selection: resolve line-id anchors to abs rows under the lock so the
+    // renderer reads stable rendering coordinates. Empty when an anchor has
+    // evicted past the archive cap.
+    if (auto resOpt = term.resolveSelection()) {
+        selection = *resOpt;
+    } else {
+        selection = TerminalEmulator::ResolvedSelection{};
+    }
 
     // OSC 133 selected command region. Resolve line ids to current absolute
     // rows under the mutex; a pruned command id clears to nullopt inside

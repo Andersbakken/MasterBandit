@@ -203,13 +203,9 @@ void TerminalEmulator::resize(int width, int height)
     mState->savedCursorX = std::min(mState->savedCursorX, width - 1);
     mState->savedCursorY = std::min(mState->savedCursorY, height - 1);
     mState->savedWrapPending = false;
-    // Column-change reflow rebuilds tier-1/archive in new abs-row space, so
-    // a selection anchored to pre-reflow abs rows would point at unrelated
-    // content. Height-only changes preserve abs-row → content mapping (rows
-    // just move between screen and tier-1), so the selection stays valid —
-    // letting it survive means adding a sibling pane or toggling the tab
-    // bar doesn't wipe an active selection in the other panes.
-    if (oldCols != width) clearSelection();
+    // Selection anchors are line-id based, so they survive both height and
+    // width reflow — Document::firstAbsOfLine/lastAbsOfLine resolve back to
+    // the post-reflow rows. No clearSelection() needed here.
     pruneCommandRing();
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }

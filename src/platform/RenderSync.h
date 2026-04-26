@@ -226,7 +226,7 @@ struct PaneRenderPrivate {
     // invalidating the per-row shape caches in that case, unlike the
     // legacy `viewportOffset`-based heuristic which over-invalidated.
     uint64_t lastTopLineId = 0;
-    TerminalEmulator::Selection lastSelection{};
+    TerminalEmulator::ResolvedSelection lastSelection{};
     std::optional<TerminalSnapshot::SelectedCommandRegion> lastSelectedCommand;
     uint32_t lastCommandOutlineColor = 0;
 

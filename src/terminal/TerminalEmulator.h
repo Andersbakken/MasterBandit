@@ -351,15 +351,39 @@ public:
     void notifyColorPreference(bool isDark);
     void focusEvent(bool focused);
 
-    // Selection
+    // Selection — each anchor stores `(lineId, cellOffset)` where
+    // cellOffset is the index of the anchored cell within the logical line,
+    // counted in reading order (0 = first cell of the line). This is the
+    // same model iTerm2 uses (`LineBufferPosition.absolutePosition`): a
+    // logical text position that's independent of the current visual
+    // layout. Computed at write as `rowOffsetWithinLine * mWidth + col`
+    // (autowrap fills each non-last row of a wrapped logical line to
+    // exactly mWidth, so this counts cells in reading order). Resolved at
+    // read as `(row = firstAbs + cellOffset / mWidth, col = cellOffset %
+    // mWidth)`, clamped to lastAbsOfLine — invariant across column reflow
+    // because reflow re-wraps the same cells into new visual rows. A line
+    // that evicts past the archive cap becomes unresolvable and the
+    // selection self-clears via hasSelection().
     enum class SelectionMode { Normal, Word, Line, Rectangle };
     struct Selection {
-        int startCol { 0 }, startAbsRow { 0 };
-        int endCol { 0 }, endAbsRow { 0 };
+        uint64_t startLineId { 0 }; int startCellOffset { 0 };
+        uint64_t endLineId   { 0 }; int endCellOffset   { 0 };
         bool active { false };
-        bool valid { false };
+        bool valid  { false };
         SelectionMode mode { SelectionMode::Normal };
     };
+
+    // Resolved view of a Selection — abs rows looked up at the time of the
+    // call. Used by snapshot mirroring and by callers that need rendering
+    // coordinates rather than logical-line identity.
+    struct ResolvedSelection {
+        int startCol { 0 }; int startAbsRow { 0 };
+        int endCol   { 0 }; int endAbsRow   { 0 };
+        bool active  { false };
+        bool valid   { false };
+        SelectionMode mode { SelectionMode::Normal };
+    };
+
     void startSelection(int col, int absRow);
     void startWordSelection(int col, int absRow);
     void startLineSelection(int absRow);
@@ -368,8 +392,16 @@ public:
     void updateSelection(int col, int absRow);
     void finalizeSelection();
     void clearSelection();
-    bool hasSelection() const { return mSelection.valid || mSelection.active; }
+    // True iff a current selection still resolves to live rows. Internally
+    // calls resolveSelection(); a stale selection (anchor evicted) reports
+    // false here even if the underlying flags are still set — the next
+    // snapshot.update() will prune the flags too.
+    bool hasSelection() const;
     const Selection& selection() const { return mSelection; }
+    // Resolve `mSelection`'s lineIds to current abs rows. Returns empty
+    // optional when there's no active/valid selection or when either anchor
+    // has evicted past the archive cap.
+    std::optional<ResolvedSelection> resolveSelection() const;
     bool isCellSelected(int col, int absRow) const;
     std::string selectedText() const;
 

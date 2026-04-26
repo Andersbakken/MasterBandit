@@ -97,9 +97,12 @@ struct TerminalSnapshot {
     };
     std::vector<RowExtras> rowExtras;
 
-    // Selection. Mirrors TerminalEmulator::Selection so isCellSelected() can
-    // be evaluated without calling back into Terminal.
-    TerminalEmulator::Selection selection {};
+    // Selection — resolved to current abs rows under the Terminal mutex in
+    // update() (live `Selection` is line-id-anchored and survives reflow).
+    // Renderer reads abs-row fields directly, no Terminal call-back needed.
+    // Empty when there's no selection or when an anchor evicted past the
+    // archive cap.
+    TerminalEmulator::ResolvedSelection selection {};
     bool isCellSelected(int col, int absRow) const;
 
     // OSC 133 command highlight. Populated when a CommandRecord is selected

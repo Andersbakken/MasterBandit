@@ -93,20 +93,18 @@ int PlatformDawn::exec()
                         info.oldestLineId = doc.lineIdForAbs(0);
                         int total = static_cast<int>(doc.archiveSize()) + doc.historySize() + p->height();
                         info.newestLineId = doc.lineIdForAbs(total - 1);
-                        if (p->hasSelection()) {
-                            const auto& sel = p->selection();
-                            if (sel.valid && !sel.active) {
-                                int r0 = sel.startAbsRow, c0 = sel.startCol;
-                                int r1 = sel.endAbsRow,   c1 = sel.endCol;
-                                if (r0 > r1 || (r0 == r1 && c0 > c1)) {
-                                    std::swap(r0, r1); std::swap(c0, c1);
-                                }
-                                info.hasSelection = true;
-                                info.selectionStartLineId = doc.lineIdForAbs(r0);
-                                info.selectionStartCol    = c0;
-                                info.selectionEndLineId   = doc.lineIdForAbs(r1);
-                                info.selectionEndCol      = c1 + 1; // exclusive
+                        if (auto resOpt = p->resolveSelection(); resOpt && resOpt->valid && !resOpt->active) {
+                            const auto& res = *resOpt;
+                            int r0 = res.startAbsRow, c0 = res.startCol;
+                            int r1 = res.endAbsRow,   c1 = res.endCol;
+                            if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+                                std::swap(r0, r1); std::swap(c0, c1);
                             }
+                            info.hasSelection = true;
+                            info.selectionStartLineId = doc.lineIdForAbs(r0);
+                            info.selectionStartCol    = c0;
+                            info.selectionEndLineId   = doc.lineIdForAbs(r1);
+                            info.selectionEndCol      = c1 + 1; // exclusive
                         }
                         info.selectedCommandId = p->selectedCommandId();
                     }

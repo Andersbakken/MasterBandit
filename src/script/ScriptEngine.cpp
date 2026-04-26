@@ -2244,6 +2244,23 @@ static JSValue jsMbTabBarPosition(JSContext* ctx, JSValueConst, int, JSValueCons
     return JS_NewStringLen(ctx, pos.data(), pos.size());
 }
 
+// mb.pane(nodeId) -> Pane | null. Construct a Pane object wrapping the
+// terminal at `nodeId`. Returns null when the UUID is malformed or doesn't
+// refer to a live Terminal in the engine's terminal map.
+static JSValue jsMbPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0])) return JS_NULL;
+    size_t len = 0;
+    const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) return JS_NULL;
+    Uuid u = Uuid::fromString(std::string_view(s, len));
+    JS_FreeCString(ctx, s);
+    if (u.isNil()) return JS_NULL;
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->terminal(u)) return JS_NULL;
+    return jsPaneNew(ctx, u);
+}
+
 // mb.getClipboard(source?) -> string.  source = "clipboard" | "primary" (default "clipboard")
 static JSValue jsMbGetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -2301,6 +2318,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
     defineGetter("activePane", jsMbGetActivePane);
     defineGetter("actions", jsMbGetActions);
     defineGetter("tabBarPosition", jsMbTabBarPosition);
+    JS_SetPropertyStr(ctx, mb, "pane",
+        JS_NewCFunction(ctx, jsMbPane, "pane", 1));
     JS_SetPropertyStr(ctx, mb, "unloadScript",
         JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, mb, "loadScript",

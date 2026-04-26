@@ -199,10 +199,9 @@ mb.addEventListener("paneCreated", (pane) => {
 });
 
 // Also register on existing panes at startup
-for (const tab of mb.tabs) {
-    for (const pane of tab.panes) {
-        registerPane(pane);
-    }
+for (const nodeId of mb.layout.queryNodes("terminal")) {
+    const pane = mb.pane(nodeId);
+    if (pane) registerPane(pane);
 }
 
 // Handle permission prompts from the engine

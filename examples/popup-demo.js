@@ -68,9 +68,9 @@ popup.addEventListener("input", (data) => {
         return;
     } else if (data === "t" || data === "T") {
         const tab = mb.layout.createTab();
-        if (tab) {
+        if (tab && tab.nodeId) {
             mb.layout.createTerminal(tab.nodeId);
-            mb.layout.activateTab(tab.id);
+            mb.layout.activateTab(tab.nodeId);
         }
         return;
     }

@@ -553,6 +553,11 @@ interface MbGlobal {
     /** The currently focused pane, or undefined if none. */
     readonly activePane: MbPane | undefined;
     /**
+     * Construct a Pane object wrapping the live Terminal at `nodeId`. Returns
+     * `null` when the UUID is malformed or doesn't refer to a live Terminal.
+     */
+    pane(nodeId: string): MbPane | null;
+    /**
      * All available actions (built-in + script-registered), with `register` /
      * `unregister` methods attached. Regenerated on every read.
      */

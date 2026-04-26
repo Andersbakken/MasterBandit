@@ -96,31 +96,67 @@ mb.addEventListener('configChanged', () => {
     }
 });
 
+// Resolve `idx` to a tab UUID by indexing into the chrome TabBar's bound
+// Stack. Used by keybinding-driven actions whose payload is a positional
+// integer (`meta+1..9`, mouse clicks on the tab bar). Returns null on
+// out-of-range or if the bar has no boundStack.
+function _tabUuidByIndex(idx) {
+    if (!_tabBarNode) return null;
+    const bar = mb.layout.node(_tabBarNode);
+    if (!bar || !bar.boundStack) return null;
+    const stack = mb.layout.node(bar.boundStack);
+    if (!stack || !stack.children) return null;
+    if (idx < 0 || idx >= stack.children.length) return null;
+    return stack.children[idx].id;
+}
+
+// Currently active tab UUID (the chrome TabBar's bound Stack's activeChild).
+function _activeTabUuid() {
+    if (!_tabBarNode) return null;
+    const bar = mb.layout.node(_tabBarNode);
+    if (!bar || !bar.boundStack) return null;
+    const stack = mb.layout.node(bar.boundStack);
+    return stack ? stack.activeChild : null;
+}
+
 mb.actions.register('newTab', () => {
     const tab = mb.layout.createTab();
-    if (!tab) return;
+    if (!tab || !tab.nodeId) return;
     const term = mb.layout.createTerminal(tab.nodeId);
     if (term) mb.layout.focusPane(term.id);
-    mb.layout.activateTab(tab.id);
+    mb.layout.activateTab(tab.nodeId);
 });
 
 mb.actions.register('closeTab', ({index}) => {
+    let target = null;
     if (typeof index === 'number' && index >= 0) {
-        mb.layout.closeTab(index);
+        target = _tabUuidByIndex(index);
     } else {
-        const t = mb.layout.activeTab();
-        if (t) mb.layout.closeTab(t.id);
+        target = _activeTabUuid();
     }
+    if (target) mb.layout.closeTab(target);
 });
 
 mb.actions.register('activateTab', ({index}) => {
-    mb.layout.activateTab(index);
+    const target = _tabUuidByIndex(index);
+    if (target) mb.layout.activateTab(target);
 });
 
 mb.actions.register('activateTabRelative', ({delta}) => {
-    const t = mb.layout.activeTab();
-    if (!t) return;
-    mb.layout.activateTab(t.id + delta);
+    if (!_tabBarNode) return;
+    const bar = mb.layout.node(_tabBarNode);
+    if (!bar || !bar.boundStack) return;
+    const stack = mb.layout.node(bar.boundStack);
+    if (!stack || !stack.children || stack.children.length === 0) return;
+    const active = stack.activeChild;
+    let curIdx = -1;
+    for (let i = 0; i < stack.children.length; i++) {
+        if (stack.children[i].id === active) { curIdx = i; break; }
+    }
+    if (curIdx < 0) return;
+    const newIdx = curIdx + delta;
+    if (newIdx < 0 || newIdx >= stack.children.length) return;
+    mb.layout.activateTab(stack.children[newIdx].id);
 });
 
 mb.actions.register('splitPane', ({dir}) => {
@@ -173,19 +209,28 @@ mb.addEventListener('terminalExited', ({paneId, paneNodeId}) => {
     // tab, quit.
     mb.layout.removeNode(paneNodeId);
 
-    // Walk tabs: find the one containing no live panes. (The killed pane
-    // is already filtered out of mb.tabs[i].panes — `panes` reflects live
-    // Terminals only.)
-    const tabs = mb.tabs;
-    let emptyIdx = -1;
-    for (let i = 0; i < tabs.length; i++) {
-        if (tabs[i].panes.length === 0) { emptyIdx = i; break; }
+    // Find a tab subtree that contains zero live Terminal nodes. The killed
+    // pane's tree node is gone (removeNode above); queryNodes("Terminal", subtree)
+    // returns only what's left. We walk the chrome TabBar's bound Stack since
+    // that's the canonical tabs list.
+    if (!_tabBarNode) return;
+    const bar = mb.layout.node(_tabBarNode);
+    if (!bar || !bar.boundStack) return;
+    const stack = mb.layout.node(bar.boundStack);
+    if (!stack || !stack.children) return;
+
+    let emptyTab = null;
+    for (const child of stack.children) {
+        if (mb.layout.queryNodes('terminal', child.id).length === 0) {
+            emptyTab = child.id;
+            break;
+        }
     }
-    if (emptyIdx < 0) return;
-    if (tabs.length <= 1) {
+    if (!emptyTab) return;
+    if (stack.children.length <= 1) {
         mb.quit();
     } else {
-        mb.layout.closeTab(emptyIdx);
+        mb.layout.closeTab(emptyTab);
     }
 });
 

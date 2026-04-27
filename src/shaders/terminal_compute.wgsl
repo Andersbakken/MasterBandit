@@ -243,8 +243,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let or_a = f32((params.selection_outline_color >> 24u) & 0xFFu) / 255.0;
         let ot = 2.0; // outline thickness in pixels
 
+        // Frame the cell grid, not the full pane: viewport_w == paneRect.w
+        // (includes padLeft + padRight) but pane_origin_x == padLeft, so
+        // pane_origin_x + viewport_w overshoots the cell-grid right edge by
+        // padRight. Use cols*cell_width to land on the actual grid extent —
+        // matches the bg-rect math at line 136 / 150.
         let ox0 = params.pane_origin_x;
-        let ox1 = params.pane_origin_x + params.viewport_w;
+        let ox1 = params.pane_origin_x + f32(params.cols) * params.cell_width;
         let oy0 = params.pane_origin_y + sr * params.cell_height;
         let oy1 = params.pane_origin_y + (er + 1.0) * params.cell_height;
 

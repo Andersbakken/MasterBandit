@@ -39,6 +39,7 @@ public:
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
     void setCursorStyle(CursorStyle shape) override;
+    void raise() override;
 
     // Called by EpollEventLoop when the XCB fd is readable
     void processEvents();

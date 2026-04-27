@@ -641,6 +641,128 @@ TEST_CASE("OSC 99 p=alive without i= is dropped (no callback)")
     CHECK(t.queryAliveCalls == 0);
 }
 
+// ── OSC 99 a= (action set) ───────────────────────────────────────────────────
+
+// kitty notifications.py:232 — actions defaults to {focus}.
+TEST_CASE("OSC 99 a= absent: actionFocus=true, actionReport=false (default)")
+{
+    TestTerminal t;
+    t.osc("99;;default actions");
+    CHECK(t.capturedNotifyActionFocus == true);
+    CHECK(t.capturedNotifyActionReport == false);
+}
+
+TEST_CASE("OSC 99 a=focus,report sets both actions")
+{
+    TestTerminal t;
+    t.osc("99;a=focus,report;both");
+    CHECK(t.capturedNotifyActionFocus == true);
+    CHECK(t.capturedNotifyActionReport == true);
+}
+
+TEST_CASE("OSC 99 a=-focus removes focus action")
+{
+    TestTerminal t;
+    t.osc("99;a=-focus;no focus");
+    CHECK(t.capturedNotifyActionFocus == false);
+    CHECK(t.capturedNotifyActionReport == false);
+}
+
+TEST_CASE("OSC 99 a=+report keeps default focus and adds report")
+{
+    TestTerminal t;
+    // +/- prefixes are deltas onto the default {focus}; without leading
+    // bare token, focus stays.
+    t.osc("99;a=+report;adds report");
+    CHECK(t.capturedNotifyActionFocus == true);
+    CHECK(t.capturedNotifyActionReport == true);
+}
+
+TEST_CASE("OSC 99 a= unknown tokens are silently ignored")
+{
+    TestTerminal t;
+    t.osc("99;a=focus,report,bogus,nonsense;ignored extras");
+    CHECK(t.capturedNotifyActionFocus == true);
+    CHECK(t.capturedNotifyActionReport == true);
+}
+
+TEST_CASE("OSC 99 a= resets to default after dispatch")
+{
+    TestTerminal t;
+    t.osc("99;a=report,-focus;first");
+    CHECK(t.capturedNotifyActionFocus == false);
+    CHECK(t.capturedNotifyActionReport == true);
+    t.osc("99;;second");
+    CHECK(t.capturedNotifyActionFocus == true);
+    CHECK(t.capturedNotifyActionReport == false);
+}
+
+TEST_CASE("OSC 99 a= carries across chunks")
+{
+    TestTerminal t;
+    t.osc("99;i=7:d=0:a=report,-focus:p=title;Title");
+    CHECK(t.capturedNotifyActionFocus == true);  // not fired yet
+    t.osc("99;i=7:d=1:p=body;Body");
+    CHECK(t.capturedNotifyActionFocus == false);
+    CHECK(t.capturedNotifyActionReport == true);
+}
+
+// ── OSC 99 p=buttons ─────────────────────────────────────────────────────────
+
+// kitty notifications.py:421 — split on U+2028 (UTF-8: E2 80 A8).
+TEST_CASE("OSC 99 p=buttons split on U+2028")
+{
+    TestTerminal t;
+    // U+2028 is encoded as the 3-byte sequence 0xE2 0x80 0xA8.
+    const char kU2028[] = "\xE2\x80\xA8";
+    std::string payload = std::string("99;i=1:d=0:p=title;Title");
+    t.osc(payload);
+    payload = std::string("99;i=1:d=1:p=buttons;Open log") + kU2028 + "Retry" + kU2028 + "Ignore";
+    t.osc(payload);
+    REQUIRE(t.capturedNotifyButtons.size() == 3);
+    CHECK(t.capturedNotifyButtons[0] == "Open log");
+    CHECK(t.capturedNotifyButtons[1] == "Retry");
+    CHECK(t.capturedNotifyButtons[2] == "Ignore");
+}
+
+TEST_CASE("OSC 99 p=buttons drops empty entries")
+{
+    TestTerminal t;
+    const char kU2028[] = "\xE2\x80\xA8";
+    std::string payload = std::string("99;p=buttons;A") + kU2028 + kU2028 + "B";
+    t.osc(payload);
+    REQUIRE(t.capturedNotifyButtons.size() == 2);
+    CHECK(t.capturedNotifyButtons[0] == "A");
+    CHECK(t.capturedNotifyButtons[1] == "B");
+}
+
+TEST_CASE("OSC 99 p=buttons caps at 8")
+{
+    TestTerminal t;
+    const char kU2028[] = "\xE2\x80\xA8";
+    std::string payload = "99;p=buttons;1";
+    for (int i = 2; i <= 12; ++i) {
+        payload += kU2028;
+        payload += std::to_string(i);
+    }
+    t.osc(payload);
+    CHECK(t.capturedNotifyButtons.size() == 8);
+    CHECK(t.capturedNotifyButtons[0] == "1");
+    CHECK(t.capturedNotifyButtons[7] == "8");
+}
+
+TEST_CASE("OSC 99 buttons reset across dispatch")
+{
+    TestTerminal t;
+    const char kU2028[] = "\xE2\x80\xA8";
+    std::string payload = std::string("99;p=buttons;A") + kU2028 + "B";
+    t.osc(payload);
+    REQUIRE(t.capturedNotifyButtons.size() == 2);
+    t.capturedNotifyButtons.clear();
+    t.osc("99;;next");
+    CHECK(t.capturedNotifyButtons.empty());
+}
+
 // ── OSC 9 / 777 / 1337 notification forms ────────────────────────────────────
 // OSC 9 is shared with ConEmu progress (handled separately above); the
 // non-progress payload is treated as a title-only notification, matching

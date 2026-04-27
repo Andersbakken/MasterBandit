@@ -465,6 +465,43 @@ void XCBWindow::destroy()
 
 // ---------- properties ----------
 
+void XCBWindow::raise()
+{
+    if (!conn_ || !window_) return;
+    // EWMH _NET_ACTIVE_WINDOW client message. source_indication = 2 means
+    // "request from a pager / taskbar / notification daemon proxy" — most
+    // EWMH-compliant compositors honor source=2 without a focus-stealing
+    // demotion. source=1 (normal app) is more frequently demoted to an
+    // urgency hint. We don't have an activation token (X11 has no such
+    // concept) so this is best-effort by design; some compositors
+    // (notably some tiling WMs) ignore _NET_ACTIVE_WINDOW entirely.
+    xcb_atom_t atomNetActiveWindow = internAtom("_NET_ACTIVE_WINDOW");
+    if (atomNetActiveWindow != 0) {
+        xcb_client_message_event_t ev{};
+        ev.response_type = XCB_CLIENT_MESSAGE;
+        ev.format        = 32;
+        ev.window        = window_;
+        ev.type          = atomNetActiveWindow;
+        ev.data.data32[0] = 2;                   // source: pager
+        ev.data.data32[1] = XCB_CURRENT_TIME;    // timestamp
+        ev.data.data32[2] = 0;                   // requestor's currently-active window (none)
+        ev.data.data32[3] = 0;
+        ev.data.data32[4] = 0;
+        xcb_send_event(conn_, 0, screen_->root,
+                       XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
+                       XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT,
+                       reinterpret_cast<const char*>(&ev));
+    }
+    // Also raise + request input focus directly. Compositors that honor
+    // _NET_ACTIVE_WINDOW will overwrite these; on simpler WMs this is the
+    // fallback that actually works.
+    const uint32_t values[] = { XCB_STACK_MODE_ABOVE };
+    xcb_configure_window(conn_, window_, XCB_CONFIG_WINDOW_STACK_MODE, values);
+    xcb_set_input_focus(conn_, XCB_INPUT_FOCUS_POINTER_ROOT, window_,
+                        XCB_CURRENT_TIME);
+    xcb_flush(conn_);
+}
+
 void XCBWindow::setTitle(const std::string& title)
 {
     if (!conn_ || !window_) return;

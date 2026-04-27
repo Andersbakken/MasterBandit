@@ -134,9 +134,11 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
     // Treat it the same way as OSC 9 — single string as title.
     constexpr std::string_view kNotificationKey = "Notification=";
     if (payload.substr(0, kNotificationKey.size()) == kNotificationKey) {
-        if (mCallbacks.onDesktopNotification)
-            mCallbacks.onDesktopNotification(
-                std::string(payload.substr(kNotificationKey.size())), {}, {}, 1, false);
+        if (mCallbacks.onDesktopNotification) {
+            TerminalCallbacks::DesktopNotification n;
+            n.title = std::string(payload.substr(kNotificationKey.size()));
+            mCallbacks.onDesktopNotification(n);
+        }
         return;
     }
 
@@ -514,7 +516,11 @@ void TerminalEmulator::processStringSequence()
             // historically uses it as the body, but title-only renders
             // cleanly on macOS and the platform fills the title slot
             // from the bundle name.
-            mCallbacks.onDesktopNotification(std::string(payload), {}, {}, 1, false);
+            {
+                TerminalCallbacks::DesktopNotification n;
+                n.title = std::string(payload);
+                mCallbacks.onDesktopNotification(n);
+            }
         }
         break;
     }
@@ -581,8 +587,12 @@ void TerminalEmulator::processStringSequence()
                               ? rest : rest.substr(0, semi));
             std::string body(semi == std::string_view::npos
                              ? std::string{} : std::string(rest.substr(semi + 1)));
-            if (mCallbacks.onDesktopNotification)
-                mCallbacks.onDesktopNotification(title, body, {}, 1, false);
+            if (mCallbacks.onDesktopNotification) {
+                TerminalCallbacks::DesktopNotification n;
+                n.title = title;
+                n.body = body;
+                mCallbacks.onDesktopNotification(n);
+            }
         }
         break;
     case 99: // Desktop notifications (kitty protocol)
@@ -633,6 +643,29 @@ void TerminalEmulator::processStringSequence()
                     // resets on dispatch.
                     mNotifyCloseResponseRequested = (val != "0");
                 }
+                else if (key == "a") {
+                    // kitty notifications.py:303-315 — comma-separated list
+                    // of action tokens, optionally prefixed with '+' (add)
+                    // or '-' (remove). Tokens not in {focus, report} are
+                    // silently ignored. Carries across chunks; resets on
+                    // dispatch to the default {focus}.
+                    std::string_view list = val;
+                    while (!list.empty()) {
+                        auto comma = list.find(',');
+                        std::string_view tok = (comma != std::string_view::npos)
+                            ? list.substr(0, comma) : list;
+                        if (comma != std::string_view::npos) list.remove_prefix(comma + 1);
+                        else list = {};
+                        bool remove = false;
+                        if (!tok.empty() && (tok.front() == '+' || tok.front() == '-')) {
+                            remove = (tok.front() == '-');
+                            tok.remove_prefix(1);
+                        }
+                        if (tok == "focus")  mNotifyActionFocus  = !remove;
+                        else if (tok == "report") mNotifyActionReport = !remove;
+                        // Unknown tokens silently ignored.
+                    }
+                }
             }
 
             // p=close and p=alive are stateless commands keyed off this
@@ -652,17 +685,46 @@ void TerminalEmulator::processStringSequence()
             if (!nId.empty()) mNotifyId = nId;
             if (pType == "title") mNotifyTitle = text;
             else if (pType == "body") mNotifyBody = text;
+            else if (pType == "buttons") {
+                // kitty notifications.py:421 — split on U+2028 (LINE
+                // SEPARATOR), drop empty entries, cap at 8.
+                constexpr const char* kU2028 = "\xE2\x80\xA8"; // UTF-8 of U+2028
+                size_t i = 0;
+                while (i < text.size() && mNotifyButtons.size() < 8) {
+                    size_t pos = text.find(kU2028, i);
+                    std::string label;
+                    if (pos == std::string::npos) {
+                        label = text.substr(i);
+                        i = text.size();
+                    } else {
+                        label = text.substr(i, pos - i);
+                        i = pos + 3;  // U+2028 is 3 bytes in UTF-8
+                    }
+                    if (!label.empty()) mNotifyButtons.push_back(std::move(label));
+                }
+            }
 
             if (done) {
-                if (mCallbacks.onDesktopNotification)
-                    mCallbacks.onDesktopNotification(mNotifyTitle, mNotifyBody,
-                                                     mNotifyId, mNotifyUrgency,
-                                                     mNotifyCloseResponseRequested);
+                if (mCallbacks.onDesktopNotification) {
+                    TerminalCallbacks::DesktopNotification n;
+                    n.title    = mNotifyTitle;
+                    n.body     = mNotifyBody;
+                    n.id       = mNotifyId;
+                    n.urgency  = mNotifyUrgency;
+                    n.closeResponseRequested = mNotifyCloseResponseRequested;
+                    n.actionFocus  = mNotifyActionFocus;
+                    n.actionReport = mNotifyActionReport;
+                    n.buttons = mNotifyButtons;
+                    mCallbacks.onDesktopNotification(n);
+                }
                 mNotifyId.clear();
                 mNotifyTitle.clear();
                 mNotifyBody.clear();
                 mNotifyUrgency = 1;
                 mNotifyCloseResponseRequested = false;
+                mNotifyActionFocus  = true;   // default per kitty
+                mNotifyActionReport = false;
+                mNotifyButtons.clear();
             }
         }
         break;

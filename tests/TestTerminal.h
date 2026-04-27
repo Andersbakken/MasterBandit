@@ -37,6 +37,9 @@ struct TestTerminal {
     std::string capturedNotifyId;
     uint8_t     capturedNotifyUrgency { 1 };
     bool        capturedNotifyCloseResponse { false };
+    bool        capturedNotifyActionFocus  { true };
+    bool        capturedNotifyActionReport { false };
+    std::vector<std::string> capturedNotifyButtons;
     std::string capturedCloseId;            // last p=close target id
     std::string capturedAliveResponderId;   // last p=alive responder id
     int         closeNotificationCalls { 0 };
@@ -66,9 +69,15 @@ struct TestTerminal {
                 capturedIconHasValue = i.has_value();
             };
             cb.onCWDChanged   = [this](const std::string& d) { capturedCWD = d; };
-            cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id, uint8_t u, bool cr) {
-                capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id;
-                capturedNotifyUrgency = u; capturedNotifyCloseResponse = cr;
+            cb.onDesktopNotification = [this](const TerminalCallbacks::DesktopNotification& n) {
+                capturedNotifyTitle = n.title;
+                capturedNotifyBody = n.body;
+                capturedNotifyId = n.id;
+                capturedNotifyUrgency = n.urgency;
+                capturedNotifyCloseResponse = n.closeResponseRequested;
+                capturedNotifyActionFocus  = n.actionFocus;
+                capturedNotifyActionReport = n.actionReport;
+                capturedNotifyButtons = n.buttons;
             };
             cb.onCloseNotification = [this](const std::string& id) {
                 capturedCloseId = id;

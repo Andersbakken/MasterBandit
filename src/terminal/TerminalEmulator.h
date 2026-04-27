@@ -42,19 +42,25 @@ struct TerminalCallbacks {
     std::function<bool()>                        isDarkMode;         // for mode 2031
     std::function<void(const std::string&)>      onCWDChanged;       // OSC 7
     std::function<void(const std::string&)>      onMouseCursorShape; // OSC 22 (CSS pointer name; "" = default)
-    // Desktop notification dispatch. Urgency follows the freedesktop
-    // Notifications spec ("urgency" hint, byte): 0=low, 1=normal, 2=critical.
-    // OSC 99 supports "u=" in metadata to set this; OSC 9 / 777 / 1337
-    // Notification= have no urgency channel and default to 1.
-    // closeResponseRequested mirrors OSC 99's "c=1" — when set, the platform
-    // is expected to send back \e]99;i=<id>:p=close;<reason> when the user
-    // (or the daemon) dismisses the notification. Always false for the other
-    // notification protocols (no channel for it).
-    std::function<void(const std::string& /*title*/,
-                       const std::string& /*body*/,
-                       const std::string& /*id*/,
-                       uint8_t            /*urgency*/,
-                       bool               /*closeResponseRequested*/)> onDesktopNotification;
+    // Desktop notification payload — passed to onDesktopNotification.
+    // Aggregates everything the OSC 99 parser accumulated by the time
+    // d=1 fired. Other notification protocols (OSC 9 / 777 / 1337) fill
+    // a subset and use defaults for the rest.
+    struct DesktopNotification {
+        std::string title;
+        std::string body;
+        std::string id;                      // OSC i= (may be empty)
+        uint8_t     urgency = 1;             // 0=low, 1=normal, 2=critical
+        bool        closeResponseRequested = false;  // c=1
+        // Default action set is {focus} per kitty notifications.py:232.
+        // OSC 99 a= can add/remove either with +/- prefixes.
+        bool        actionFocus  = true;
+        bool        actionReport = false;
+        // Up to 8 button labels from p=buttons (U+2028-split, max-8 cap
+        // in kitty notifications.py:422). Empty for non-OSC-99 sources.
+        std::vector<std::string> buttons;
+    };
+    std::function<void(const DesktopNotification&)> onDesktopNotification;
 
     // OSC 99 "p=close": ask the platform to programmatically dismiss a
     // previously-shown notification keyed by id. id is the OSC i= value
@@ -785,6 +791,14 @@ private:
     std::string mNotifyBody;
     uint8_t     mNotifyUrgency { 1 };  // 0=low, 1=normal, 2=critical
     bool        mNotifyCloseResponseRequested { false };  // c=1
+    // Action set per kitty notifications.py:160-162. Default {focus} when
+    // a= is not specified. +/- prefixes add/remove individual values.
+    bool        mNotifyActionFocus  { true };
+    bool        mNotifyActionReport { false };
+    // Up to 8 button labels (kitty cap, notifications.py:422).
+    // U+2028-separated when sent as one p=buttons payload; multiple
+    // p=buttons payloads concatenate.
+    std::vector<std::string> mNotifyButtons;
 
     // OSC 133 shell-integration state.
     SemanticMode mSemanticMode { SemanticMode::Inactive };

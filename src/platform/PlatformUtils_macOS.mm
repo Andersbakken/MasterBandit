@@ -4,6 +4,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 #include <sys/types.h>
 #include <libproc.h>
 #include <spdlog/spdlog.h>
@@ -104,7 +105,9 @@ void platformSendNotification(const std::string& /*sourceTag*/,
                               const std::string& title, const std::string& body,
                               uint8_t /*urgency*/,
                               bool /*closeResponseRequested*/,
-                              std::function<void(const std::string&)> /*onClosed*/)
+                              std::function<void(const std::string&)> /*onClosed*/,
+                              const std::vector<std::string>& /*buttons*/,
+                              std::function<void(const std::string&)> /*onActivated*/)
 {
     // TODO macOS: map urgency to UNNotificationContent.interruptionLevel
     // (passive/active/timeSensitive/critical), and use clientId as the
@@ -122,6 +125,12 @@ void platformSendNotification(const std::string& /*sourceTag*/,
     // untracked matches kitty's MacOSIntegration (supports_close_events =
     // False). Wire form: \e]99;i=<id>:p=close;untracked\a — written via
     // term->writeText from inside Platform_Tabs.cpp's onClosed lambda.
+    //
+    // buttons + onActivated need a UNNotificationCategory per unique
+    // button-set hash, registered via setNotificationCategories. The
+    // delegate's didReceiveNotificationResponse: gives back the action
+    // identifier and triggers onActivated. The body (default) click maps
+    // to UNNotificationDefaultActionIdentifier → call onActivated("").
     if (![[NSBundle mainBundle] bundleIdentifier]) return;
     UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
     // Convert to NSString before any async hop. Block-copy semantics

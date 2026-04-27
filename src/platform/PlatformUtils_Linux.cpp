@@ -6,6 +6,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <functional>
@@ -15,6 +16,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -58,6 +61,8 @@ struct NotificationQueued {
     uint8_t     urgency = 1;
     bool        closeResponseRequested = false;
     std::function<void(const std::string& reason)> onClosed;
+    std::vector<std::string> buttons;
+    std::function<void(const std::string& buttonId)> onActivated;
 };
 
 struct NotificationEntry {
@@ -67,12 +72,18 @@ struct NotificationEntry {
     bool        inFlight = false; // a Notify is awaiting reply
     bool        closeResponseRequested = false;  // for the currently-active notification
     std::function<void(const std::string& reason)> onClosed;  // active onClosed
+    std::function<void(const std::string& buttonId)> onActivated;  // body/button click
     std::unique_ptr<NotificationQueued> queued;  // payload waiting for reply
 };
 
 std::mutex                                          g_notifyMu;
 std::unordered_map<std::string, NotificationEntry>  g_entries;     // key → Entry
 std::unordered_map<uint32_t, std::string>           g_daemonToKey; // daemonId → key
+
+// Daemon capabilities, populated on init by GetCapabilities. False until
+// the reply lands (so the very first send may go out without buttons even
+// if the daemon supports them — same race as wezterm/kitty have).
+std::atomic<bool> g_supportsActions{false};
 
 constexpr char kNotifyKeySep = '\x1f';
 
@@ -120,6 +131,8 @@ void publishDarkMode(bool isDark)
 // Worker-thread.
 void handleSettingChanged(DBusMessage* msg)
 {
+    if (!dbus_message_is_signal(msg, "org.freedesktop.portal.Settings",
+                                "SettingChanged")) return;
     DBusMessageIter args;
     if (!dbus_message_iter_init(msg, &args)) return;
 
@@ -205,9 +218,69 @@ void handleColorSchemeReadReply(DBusMessage* reply, bool ok)
     publishDarkMode(scheme == 1);
 }
 
+// Worker-thread. ActionInvoked payload is "us" — (id, action_key).
+void handleActionInvoked(DBusMessage* msg)
+{
+    if (!dbus_message_is_signal(msg, "org.freedesktop.Notifications",
+                                "ActionInvoked")) return;
+    DBusMessageIter args;
+    if (!dbus_message_iter_init(msg, &args)) return;
+    if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_UINT32) return;
+    dbus_uint32_t nid = 0;
+    dbus_message_iter_get_basic(&args, &nid);
+
+    if (!dbus_message_iter_next(&args)) return;
+    if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_STRING) return;
+    const char* key = nullptr;
+    dbus_message_iter_get_basic(&args, &key);
+    if (!key) return;
+
+    // Map our wire form: "default" → "" (body click), numeric "1".."N"
+    // → button index passed through verbatim. Anything else gets passed
+    // through as-is — kitty doesn't define non-numeric custom actions
+    // for OSC 99 today.
+    std::string buttonId = (strcmp(key, "default") == 0) ? std::string{}
+                                                         : std::string(key);
+
+    std::function<void(const std::string&)> cb;
+    {
+        std::lock_guard<std::mutex> lk(g_notifyMu);
+        auto dit = g_daemonToKey.find(nid);
+        if (dit == g_daemonToKey.end()) return;
+        auto eit = g_entries.find(dit->second);
+        if (eit == g_entries.end()) return;
+        NotificationEntry& e = eit->second;
+        cb = e.onActivated;
+        // Match kitty notifications.py:902-903: if close-response wasn't
+        // requested, the notification is single-shot — purge after first
+        // activation so subsequent ActionInvoked from the same daemon id
+        // don't refire the callback. If c=1 was set, leave the entry
+        // intact so onClosed can still fire when the user eventually
+        // dismisses (and to keep multiple-click reports working under
+        // kitty's spec).
+        if (!e.closeResponseRequested) {
+            e.onActivated = nullptr;
+            g_daemonToKey.erase(dit);
+            // Drop the entry entirely if nothing else is keeping it
+            // alive (no close-response, no in-flight, no queued).
+            if (!e.inFlight && !e.queued && !e.onClosed) {
+                g_entries.erase(eit);
+            } else {
+                e.daemonId = 0;
+            }
+        }
+    }
+    if (!cb || !g_eventLoop) return;
+    g_eventLoop->post([cb = std::move(cb), buttonId = std::move(buttonId)]() mutable {
+        cb(buttonId);
+    });
+}
+
 // Worker-thread. NotificationClosed payload is "uu" — (id, reason).
 void handleNotificationClosed(DBusMessage* msg)
 {
+    if (!dbus_message_is_signal(msg, "org.freedesktop.Notifications",
+                                "NotificationClosed")) return;
     DBusMessageIter args;
     if (!dbus_message_iter_init(msg, &args)) return;
     if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_UINT32) return;
@@ -275,19 +348,70 @@ DBusMessage* buildSettingsReadCall()
 
 void spawnDetached(const char* path, char* const argv[])
 {
+    // Errno-reporting pipe. Both ends are O_CLOEXEC so a successful
+    // execvp in the grandchild closes the write end automatically; the
+    // parent's read returns EOF and we know exec succeeded. If exec
+    // fails (or the inner fork fails), the failing process writes the
+    // errno to the pipe before _exit, and the parent's read picks it
+    // up. Pattern is well-known; see e.g. APUE §10.18.
+    int errPipe[2];
+    if (pipe2(errPipe, O_CLOEXEC) < 0) {
+        spdlog::warn("spawnDetached({}): pipe2: {}", path, strerror(errno));
+        return;
+    }
+
     pid_t pid = fork();
+    if (pid < 0) {
+        close(errPipe[0]);
+        close(errPipe[1]);
+        spdlog::warn("spawnDetached({}): fork: {}", path, strerror(errno));
+        return;
+    }
     if (pid == 0) {
+        // Child: only the grandchild needs the write end. Drop the
+        // read end so we can't accidentally read our own errno.
+        close(errPipe[0]);
         pid_t inner = fork();
         if (inner == 0) {
+            // Grandchild. setsid detaches from our process group so
+            // the launched program isn't killed when mb's controlling
+            // terminal goes away.
             setsid();
             execvp(path, argv);
+            int err = errno;
+            ssize_t n = write(errPipe[1], &err, sizeof(err));
+            (void)n;
             _exit(127);
         }
+        if (inner < 0) {
+            int err = errno;
+            ssize_t n = write(errPipe[1], &err, sizeof(err));
+            (void)n;
+        }
+        close(errPipe[1]);
         _exit(0);
-    } else if (pid > 0) {
-        int status;
-        waitpid(pid, &status, 0);
     }
+
+    // Parent: close write end so EOF is detectable on read once the
+    // grandchild's copy goes away (either via exec or _exit).
+    close(errPipe[1]);
+    int status;
+    waitpid(pid, &status, 0);
+
+    int err = 0;
+    ssize_t n;
+    do {
+        n = read(errPipe[0], &err, sizeof(err));
+    } while (n < 0 && errno == EINTR);
+    close(errPipe[0]);
+
+    if (n == static_cast<ssize_t>(sizeof(err))) {
+        spdlog::warn("spawnDetached({}): execvp failed: {}",
+                     path, strerror(err));
+    }
+    // n == 0  → exec succeeded (write end closed by O_CLOEXEC); no log.
+    // n == -1 → read error (rare, e.g. EBADF if pipe was closed twice);
+    //          treat as "unknown outcome" and stay silent.
 }
 
 } // namespace
@@ -326,8 +450,45 @@ void platformInit(EventLoop& loop)
         "path='/org/freedesktop/Notifications'",
         &handleNotificationClosed);
 
+    // ActionInvoked carries (id, action_key). We map "default" to the
+    // body-click report (empty button id); numeric keys "1".."N" map to
+    // button indices passed through to OSC 99 a=report.
+    g_bridge->addSignalMatch(
+        "type='signal',"
+        "interface='org.freedesktop.Notifications',"
+        "member='ActionInvoked',"
+        "path='/org/freedesktop/Notifications'",
+        &handleActionInvoked);
+
     if (DBusMessage* call = buildSettingsReadCall()) {
         g_bridge->sendAsync(call, &handleColorSchemeReadReply);
+    }
+
+    // Query daemon capabilities. We currently only care about 'actions'
+    // for gating button payloads — daemons that don't advertise it would
+    // silently drop the buttons array, but we drop them ourselves to
+    // avoid sending dead bytes (matches kitty notifications.py:733).
+    if (DBusMessage* call = dbus_message_new_method_call(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "GetCapabilities")) {
+        g_bridge->sendAsync(call, [](DBusMessage* reply, bool ok) {
+            if (!ok || !reply) return;
+            DBusMessageIter args, sub;
+            if (!dbus_message_iter_init(reply, &args)) return;
+            if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_ARRAY) return;
+            dbus_message_iter_recurse(&args, &sub);
+            while (dbus_message_iter_get_arg_type(&sub) == DBUS_TYPE_STRING) {
+                const char* cap = nullptr;
+                dbus_message_iter_get_basic(&sub, &cap);
+                if (cap && strcmp(cap, "actions") == 0) {
+                    g_supportsActions.store(true, std::memory_order_release);
+                    break;
+                }
+                if (!dbus_message_iter_next(&sub)) break;
+            }
+        });
     }
 }
 
@@ -383,7 +544,8 @@ void dispatchNotify(const std::string& key,
                     const std::string& title,
                     const std::string& body,
                     uint8_t urgency,
-                    dbus_uint32_t replacesId);
+                    dbus_uint32_t replacesId,
+                    const std::vector<std::string>& buttons);
 
 void onNotifyReply(const std::string& key, dbus_uint32_t replacesAtSend,
                    const std::string& titleForLog,
@@ -440,6 +602,7 @@ void onNotifyReply(const std::string& key, dbus_uint32_t replacesAtSend,
             queued = std::move(e.queued);
             e.closeResponseRequested = queued->closeResponseRequested;
             e.onClosed = std::move(queued->onClosed);
+            e.onActivated = std::move(queued->onActivated);
             replacesForQueued = e.daemonId;  // 0 if previous send failed
             // inFlight stays true.
         } else {
@@ -454,7 +617,7 @@ void onNotifyReply(const std::string& key, dbus_uint32_t replacesAtSend,
 
     if (queued) {
         dispatchNotify(key, queued->title, queued->body, queued->urgency,
-                       replacesForQueued);
+                       replacesForQueued, queued->buttons);
     }
 }
 
@@ -462,7 +625,8 @@ void dispatchNotify(const std::string& key,
                     const std::string& title,
                     const std::string& body,
                     uint8_t urgency,
-                    dbus_uint32_t replacesId)
+                    dbus_uint32_t replacesId,
+                    const std::vector<std::string>& buttons)
 {
     DBusMessage* call = dbus_message_new_method_call(
         "org.freedesktop.Notifications",
@@ -497,8 +661,31 @@ void dispatchNotify(const std::string& key,
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &summary);
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &bodyP);
 
+    // Actions array: alternating (action_key, label) string pairs.
+    // We always include "default" with a single space (dbus rejects empty
+    // strings for action labels) — that makes the body clickable on
+    // daemons that support actions; daemons that don't will ignore it.
+    // Buttons are added 1-based only if the daemon advertised 'actions'
+    // via GetCapabilities; otherwise we skip the byte cost.
     DBusMessageIter actionsArr;
     dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "s", &actionsArr);
+    {
+        const char* defKey = "default";
+        const char* defLbl = " ";
+        dbus_message_iter_append_basic(&actionsArr, DBUS_TYPE_STRING, &defKey);
+        dbus_message_iter_append_basic(&actionsArr, DBUS_TYPE_STRING, &defLbl);
+    }
+    if (g_supportsActions.load(std::memory_order_acquire)) {
+        for (size_t i = 0; i < buttons.size() && i < 8; ++i) {
+            char keyBuf[8];
+            int kn = snprintf(keyBuf, sizeof(keyBuf), "%zu", i + 1);
+            if (kn <= 0) continue;
+            const char* keyP = keyBuf;
+            const char* lblP = buttons[i].c_str();
+            dbus_message_iter_append_basic(&actionsArr, DBUS_TYPE_STRING, &keyP);
+            dbus_message_iter_append_basic(&actionsArr, DBUS_TYPE_STRING, &lblP);
+        }
+    }
     dbus_message_iter_close_container(&args, &actionsArr);
 
     DBusMessageIter hintsArr;
@@ -529,6 +716,14 @@ void dispatchNotify(const std::string& key,
 
     dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &expire);
 
+    // Capture buttons by value into the reply lambda so it can re-dispatch
+    // a chained queued send while preserving the original button labels.
+    std::vector<std::string> buttonsCopy;  // unused at this point — buttons
+                                           // travel through entry.queued for
+                                           // chains. Reply handler doesn't
+                                           // need them.
+    (void)buttonsCopy;
+
     g_bridge->sendAsync(call, [keyCopy = key, replacesCopy = replacesId,
                                titleCopy = title]
                               (DBusMessage* reply, bool ok) {
@@ -541,7 +736,9 @@ void platformSendNotification(const std::string& sourceTag,
                               const std::string& title, const std::string& body,
                               uint8_t urgency,
                               bool closeResponseRequested,
-                              std::function<void(const std::string& reason)> onClosed)
+                              std::function<void(const std::string& reason)> onClosed,
+                              const std::vector<std::string>& buttons,
+                              std::function<void(const std::string& buttonId)> onActivated)
 {
     if (!g_bridge || !g_bridge->connected()) {
         spdlog::warn("platformSendNotification: D-Bus session bus unavailable; "
@@ -550,27 +747,22 @@ void platformSendNotification(const std::string& sourceTag,
     }
 
     // Untracked path: no replace bookkeeping, just send. Suitable for
-    // notifications that don't carry an OSC i= identifier.
+    // notifications that don't carry an OSC i= identifier. We still
+    // install onActivated if provided — body clicks fire ActionInvoked
+    // and we want the focus action to work even without an id.
     if (sourceTag.empty() || clientId.empty()) {
-        // Use a stable per-call key so the entry can be cleaned up on
-        // reply error. Suffix with a counter? For simplicity we make
-        // the key sourceTag+sep+empty here — acceptable because such
-        // entries can't be looked up for replace anyway.
         std::string key = makeNotifyKey(sourceTag, clientId);
         {
             std::lock_guard<std::mutex> lk(g_notifyMu);
-            // Don't queue/replace untracked sends; just spawn a fresh
-            // entry per send. Multiple untracked sends with the same
-            // (empty) key would collide here — accept this since no
-            // sensible semantic exists for replace-without-id anyway.
             NotificationEntry& e = g_entries[key];
             e.sourceTag = sourceTag;
             e.clientId = clientId;
             e.inFlight = true;
             e.closeResponseRequested = false;
             e.onClosed = nullptr;
+            e.onActivated = std::move(onActivated);
         }
-        dispatchNotify(key, title, body, urgency, 0);
+        dispatchNotify(key, title, body, urgency, 0, buttons);
         return;
     }
 
@@ -588,27 +780,28 @@ void platformSendNotification(const std::string& sourceTag,
             // A Notify is already in flight for this key. Stash the new
             // payload — when the in-flight reply lands, it'll be promoted
             // and dispatched with the freshly-known daemonId. If a queued
-            // payload was already pending, it gets replaced (latest wins)
-            // — this caps the daemon load at one duplicate per flight
-            // window even under rapid bursts.
+            // payload was already pending, it gets replaced (latest wins).
             auto q = std::make_unique<NotificationQueued>();
             q->title    = title;
             q->body     = body;
             q->urgency  = urgency;
             q->closeResponseRequested = closeResponseRequested;
             q->onClosed = std::move(onClosed);
+            q->buttons = buttons;
+            q->onActivated = std::move(onActivated);
             e.queued = std::move(q);
         } else {
             e.inFlight = true;
             e.closeResponseRequested = closeResponseRequested;
             e.onClosed = closeResponseRequested ? std::move(onClosed) : nullptr;
+            e.onActivated = std::move(onActivated);
             replacesId = e.daemonId;
             sendNow = true;
         }
     }
 
     if (sendNow) {
-        dispatchNotify(key, title, body, urgency, replacesId);
+        dispatchNotify(key, title, body, urgency, replacesId, buttons);
     }
 }
 

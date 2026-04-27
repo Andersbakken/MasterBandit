@@ -75,6 +75,17 @@ public:
     // macOS: set by window delegate callbacks; Linux: debounced via timestamp.
     virtual bool inLiveResize() const { return inLiveResize_; }
 
+    // Best-effort window activation. Driven by OSC 99 a=focus when the
+    // user clicks a notification. Each backend implements as much as the
+    // window system allows:
+    //   xcb : _NET_ACTIVE_WINDOW source=2 (pager) + xcb_set_input_focus
+    //   wayland (future): xdg_activation_v1.activate(token, surface)
+    //   macOS (future): [NSApp activateIgnoringOtherApps:YES] + makeKeyAndOrderFront
+    // Compositors may demote to an urgency hint (taskbar bounce / tab
+    // highlight) instead of granting focus — that's the user-side policy
+    // and not something we can override from the requesting side.
+    virtual void raise() {}
+
 protected:
     bool inLiveResize_ = false;
 };

@@ -741,35 +741,61 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     if (isHeadless()) {
-        cbs.onDesktopNotification    = [](const std::string&, const std::string&, const std::string&, uint8_t, bool) {};
+        cbs.onDesktopNotification    = [](const TerminalCallbacks::DesktopNotification&) {};
         cbs.onCloseNotification      = [](const std::string&) {};
         cbs.onQueryAliveNotifications = [](const std::string&) {};
     } else {
         // sourceTag = pane uuid stringified. clientId = OSC i= (may be
         // empty for un-tracked notifications, in which case the platform
         // skips replaces_id bookkeeping).
-        cbs.onDesktopNotification = [this, paneId](const std::string& title,
-                                                   const std::string& body,
-                                                   const std::string& clientId,
-                                                   uint8_t urgency,
-                                                   bool closeResponseRequested) {
+        cbs.onDesktopNotification = [this, paneId](const TerminalCallbacks::DesktopNotification& n) {
             std::string sourceTag = paneId.toString();
-            eventLoop_->post([this, paneId, sourceTag, clientId, title, body,
-                              urgency, closeResponseRequested]() mutable {
+            // Capture the notification by value (struct holds vectors/strings).
+            eventLoop_->post([this, paneId, sourceTag, n]() mutable {
                 std::function<void(const std::string&)> onClosed;
-                if (closeResponseRequested && !clientId.empty()) {
+                if (n.closeResponseRequested && !n.id.empty()) {
+                    std::string clientId = n.id;
                     onClosed = [this, paneId, clientId](const std::string& reason) {
-                        // Write OSC 99 close-response back to the pane's PTY
-                        // so the program that sent c=1 learns when the user
-                        // dismissed (or the daemon expired) its notification.
                         std::string osc = "\x1b]99;i=" + clientId
                                         + ":p=close;" + reason + "\a";
                         if (Terminal* term = scriptEngine_.terminal(paneId))
                             term->writeText(osc);
                     };
                 }
-                platformSendNotification(sourceTag, clientId, title, body, urgency,
-                                         closeResponseRequested, std::move(onClosed));
+                // onActivated fires when the user clicks the body or a button.
+                // buttonId is empty for the body click, "1".."N" for buttons.
+                std::function<void(const std::string&)> onActivated;
+                if (n.actionFocus || n.actionReport) {
+                    bool focusReq  = n.actionFocus;
+                    bool reportReq = n.actionReport;
+                    std::string clientId = n.id;
+                    onActivated = [this, paneId, focusReq, reportReq, clientId]
+                                   (const std::string& buttonId) {
+                        if (focusReq) {
+                            // Activate the tab that owns the pane (if not
+                            // already active), focus the pane within it,
+                            // then raise the window. Order matters: pane
+                            // focus updates the per-tab "remembered focus"
+                            // state, which the window's focus handler reads
+                            // on activation.
+                            if (auto tab = findTabForPane(paneId)) {
+                                if (*tab != scriptEngine_.activeTabSubtreeRoot())
+                                    setActiveTab(*tab);
+                                focusPaneById(paneId);
+                            }
+                            if (window_) window_->raise();
+                        }
+                        if (reportReq && !clientId.empty()) {
+                            std::string osc = "\x1b]99;i=" + clientId + ";"
+                                            + buttonId + "\a";
+                            if (Terminal* term = scriptEngine_.terminal(paneId))
+                                term->writeText(osc);
+                        }
+                    };
+                }
+                platformSendNotification(sourceTag, n.id, n.title, n.body, n.urgency,
+                                         n.closeResponseRequested, std::move(onClosed),
+                                         n.buttons, std::move(onActivated));
             });
         };
 

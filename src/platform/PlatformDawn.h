@@ -92,13 +92,23 @@ void platformSetNotificationsShowWhenForeground(bool show);
 // — expiry, user-dismissal, programmatic close). Linux maps freedesktop
 // reasons 1/2/3/4 → "expired"/"dismissed-by-user"/"closed"/"". onClosed
 // runs on the main thread.
+//
+// buttons + onActivated wire the OSC 99 `p=buttons` / `a=` action surface.
+// Each label in `buttons` becomes a clickable button on the daemon side
+// (capped at 8 by the OSC parser). onActivated fires on the main thread
+// when the user clicks the body or one of the buttons; the buttonId is
+// "" for the body/default click, or "1".."N" for a specific button (1-
+// based). Empty buttons + null onActivated → notification has no
+// interactive surface at all.
 void platformSendNotification(const std::string& sourceTag,
                               const std::string& clientId,
                               const std::string& title,
                               const std::string& body,
                               uint8_t urgency,
                               bool closeResponseRequested,
-                              std::function<void(const std::string& reason)> onClosed);
+                              std::function<void(const std::string& reason)> onClosed,
+                              const std::vector<std::string>& buttons,
+                              std::function<void(const std::string& buttonId)> onActivated);
 
 // Programmatically dismiss a previously-shown notification. No-op if the
 // (sourceTag, clientId) pair isn't currently tracked (for example: the

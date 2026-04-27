@@ -45,15 +45,12 @@ struct FocusPopup          {}; // Cycle focus: main terminal → popup1 → popu
 struct ReloadConfig        {};
 struct ScriptAction        { std::string name; std::vector<std::string> args; };
 
-// Mouse actions
-enum class SelectionType { Normal, Word, Line, Extend, Rectangle };
-struct MouseSelection      { SelectionType type; };
-struct OpenHyperlink       {};
+// Mouse actions. PasteSelection is cell-independent (pastes the system
+// primary/clipboard regardless of click position) so it stays here and
+// remains keyboard- and IPC-callable. The cell-aware mouse types
+// (StartSelection, OpenHyperlink, SelectCommand) live in MouseAction::Any
+// and are dispatched by InputController where click context is in scope.
 struct PasteSelection      {};
-// Set the OSC 133 selected-command highlight to the command containing the
-// click's row (or clear it if the row has no command). Fires from the mouse
-// binding path so it can use the click's cell coordinates.
-struct SelectCommand       {};
 
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
@@ -64,7 +61,7 @@ using Any = std::variant<
     ScrollToPrompt, SelectCommandOutput, ShowScrollback,
     CopyLastCommand, CopySelectedCommandOutput, CopyDocument,
     FocusPopup, ReloadConfig, ScriptAction,
-    MouseSelection, OpenHyperlink, PasteSelection, SelectCommand
+    PasteSelection
 >;
 
 // Action type identity is the variant index.

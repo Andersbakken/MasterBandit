@@ -3,6 +3,7 @@
 #include "Action.h"
 #include "Bindings.h"
 #include "ClickDetector.h"
+#include "DragHandler.h"
 #include "InputTypes.h"
 
 #include <eventloop/EventLoop.h>
@@ -11,6 +12,7 @@
 #include "Uuid.h"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -103,10 +105,12 @@ private:
     std::vector<MouseBinding> mouseBindings_;
     ClickDetector clickDetector_;
 
-    bool selectionDragActive_ = false;
-    bool selectionDragStarted_ = false;
-    double selectionDragOriginX_ = 0;
-    double selectionDragOriginY_ = 0;
+    // Holds the currently in-progress drag gesture (text selection today;
+    // future divider/pane/tab drags will install their own DragHandler
+    // subclasses). null when no drag is active. Replaces the previous
+    // selectionDrag* bools — polymorphic so each drag kind can override
+    // motion/release without growing more flags here.
+    std::unique_ptr<DragHandler> activeDrag_;
 
     EventLoop::TimerId autoScrollTimer_ = 0;
     bool autoScrollTimerActive_ = false;

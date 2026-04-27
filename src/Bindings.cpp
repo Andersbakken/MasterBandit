@@ -199,26 +199,36 @@ std::optional<Action::Any> parseAction(const std::string& name,
     if (name == "copy_document")             return Action::CopyDocument{};
     if (name == "reload_config")            return Action::ReloadConfig{};
 
-    if (name == "mouse_selection") {
-        if (args.empty()) return Action::MouseSelection{Action::SelectionType::Normal};
-        std::string m = toLower(args[0]);
-        if (m == "normal")    return Action::MouseSelection{Action::SelectionType::Normal};
-        if (m == "word")      return Action::MouseSelection{Action::SelectionType::Word};
-        if (m == "line")      return Action::MouseSelection{Action::SelectionType::Line};
-        if (m == "extend")    return Action::MouseSelection{Action::SelectionType::Extend};
-        if (m == "rectangle") return Action::MouseSelection{Action::SelectionType::Rectangle};
-        spdlog::warn("Bindings: unknown mouse_selection mode '{}'", args[0]);
-        return std::nullopt;
-    }
-    if (name == "open_hyperlink")  return Action::OpenHyperlink{};
+    // mouse_selection / open_hyperlink / select_command moved to
+    // parseMouseAction — they need cell context so they live in
+    // MouseAction::Any and only resolve via the mouse-binding path.
     if (name == "paste_selection") return Action::PasteSelection{};
-    if (name == "select_command")  return Action::SelectCommand{};
 
     // Script actions: any name containing a '.' is treated as namespace.action
     if (name.find('.') != std::string::npos)
         return Action::ScriptAction{name, args};
 
     spdlog::warn("Bindings: unknown action '{}'", name);
+    return std::nullopt;
+}
+
+std::optional<MouseAction::Any> parseMouseAction(const std::string& name,
+                                                  const std::vector<std::string>& args)
+{
+    if (name == "mouse_selection") {
+        using S = MouseAction::SelectionType;
+        if (args.empty()) return MouseAction::StartSelection{S::Normal};
+        std::string m = toLower(args[0]);
+        if (m == "normal")    return MouseAction::StartSelection{S::Normal};
+        if (m == "word")      return MouseAction::StartSelection{S::Word};
+        if (m == "line")      return MouseAction::StartSelection{S::Line};
+        if (m == "extend")    return MouseAction::StartSelection{S::Extend};
+        if (m == "rectangle") return MouseAction::StartSelection{S::Rectangle};
+        spdlog::warn("Bindings: unknown mouse_selection mode '{}'", args[0]);
+        return std::nullopt;
+    }
+    if (name == "open_hyperlink") return MouseAction::OpenHyperlink{};
+    if (name == "select_command") return MouseAction::SelectCommand{};
     return std::nullopt;
 }
 
@@ -465,8 +475,18 @@ std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfi
             }
         }
 
-        auto action = parseAction(cfg.action, cfg.args);
-        if (!action) continue;
+        // Mouse-only names (mouse_selection, open_hyperlink, select_command)
+        // resolve via parseMouseAction; everything else is a keyboard-style
+        // Action::Any. The split keeps cell-context-bearing types separate
+        // from the generic dispatcher's input.
+        MouseBindingResult result_action;
+        if (auto ma = parseMouseAction(cfg.action, cfg.args)) {
+            result_action = *ma;
+        } else if (auto ka = parseAction(cfg.action, cfg.args)) {
+            result_action = *ka;
+        } else {
+            continue;
+        }
 
         MouseStroke stroke;
         stroke.button = parseMouseButton(buttonStr);
@@ -475,38 +495,38 @@ std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfi
         stroke.mode = parseMouseMode(cfg.mode.empty() ? "ungrabbed" : cfg.mode);
         stroke.region = parseMouseRegion(cfg.region.empty() ? "any" : cfg.region);
 
-        result.push_back({stroke, *action});
+        result.push_back({stroke, std::move(result_action)});
     }
     return result;
 }
 
 std::vector<MouseBinding> defaultMouseBindings()
 {
-    using S = Action::SelectionType;
+    using S = MouseAction::SelectionType;
     return {
         // Character selection
         {{MouseButton::Left, 0, MouseEventType::Press, MouseMode::Ungrabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Normal}},
+         MouseAction::StartSelection{S::Normal}},
         // Word selection (double-click)
         {{MouseButton::Left, 0, MouseEventType::DoublePress, MouseMode::Ungrabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Word}},
+         MouseAction::StartSelection{S::Word}},
         // Line selection (triple-click)
         {{MouseButton::Left, 0, MouseEventType::TriplePress, MouseMode::Ungrabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Line}},
+         MouseAction::StartSelection{S::Line}},
         // Extend selection
         {{MouseButton::Left, ShiftModifier, MouseEventType::Press, MouseMode::Ungrabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Extend}},
+         MouseAction::StartSelection{S::Extend}},
         // Rectangle selection
         {{MouseButton::Left, AltModifier, MouseEventType::Press, MouseMode::Ungrabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Rectangle}},
+         MouseAction::StartSelection{S::Rectangle}},
 
         // Shift-override in grabbed mode
         {{MouseButton::Left, ShiftModifier, MouseEventType::Press, MouseMode::Grabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Normal}},
+         MouseAction::StartSelection{S::Normal}},
         {{MouseButton::Left, ShiftModifier, MouseEventType::DoublePress, MouseMode::Grabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Word}},
+         MouseAction::StartSelection{S::Word}},
         {{MouseButton::Left, ShiftModifier, MouseEventType::TriplePress, MouseMode::Grabbed, MouseRegion::Pane},
-         Action::MouseSelection{S::Line}},
+         MouseAction::StartSelection{S::Line}},
 
         // Middle-click paste (Click = single press+release without drag)
         {{MouseButton::Middle, 0, MouseEventType::Click, MouseMode::Ungrabbed, MouseRegion::Pane},
@@ -518,18 +538,18 @@ std::vector<MouseBinding> defaultMouseBindings()
         // unconditionally.
 #ifdef __APPLE__
         {{MouseButton::Left, MetaModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
-         Action::OpenHyperlink{}},
+         MouseAction::OpenHyperlink{}},
         {{MouseButton::Left, MetaModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
-         Action::SelectCommand{}},
+         MouseAction::SelectCommand{}},
         // Cmd+double-click promotes the OSC 133 outline into a real text selection
         // over the clicked command's output rows (and auto-copies to clipboard).
         {{MouseButton::Left, MetaModifier, MouseEventType::DoublePress, MouseMode::Any, MouseRegion::Pane},
          Action::SelectCommandOutput{}},
 #else
         {{MouseButton::Left, CtrlModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
-         Action::OpenHyperlink{}},
+         MouseAction::OpenHyperlink{}},
         {{MouseButton::Left, CtrlModifier, MouseEventType::Click, MouseMode::Any, MouseRegion::Pane},
-         Action::SelectCommand{}},
+         MouseAction::SelectCommand{}},
         {{MouseButton::Left, CtrlModifier, MouseEventType::DoublePress, MouseMode::Any, MouseRegion::Pane},
          Action::SelectCommandOutput{}},
 #endif
@@ -542,10 +562,10 @@ std::vector<MouseBinding> defaultMouseBindings()
     };
 }
 
-std::vector<Action::Any> matchMouseBindings(const MouseStroke& stroke,
-                                            const std::vector<MouseBinding>& bindings)
+std::vector<MouseBindingResult> matchMouseBindings(const MouseStroke& stroke,
+                                                    const std::vector<MouseBinding>& bindings)
 {
-    std::vector<Action::Any> result;
+    std::vector<MouseBindingResult> result;
     for (const auto& b : bindings) {
         if (b.trigger.matches(stroke))
             result.push_back(b.action);
@@ -556,15 +576,15 @@ std::vector<Action::Any> matchMouseBindings(const MouseStroke& stroke,
 std::vector<MouseBinding> mergeMouseBindings(std::vector<MouseBinding> defaults,
                                               std::vector<MouseBinding> user)
 {
-    std::unordered_set<Action::TypeIndex> userActionTypes;
+    std::unordered_set<std::size_t> userActionTypes;
     userActionTypes.reserve(user.size());
     for (const auto& u : user)
-        userActionTypes.insert(Action::typeOf(u.action));
+        userActionTypes.insert(mouseBindingTypeKey(u.action));
 
     std::vector<MouseBinding> result;
     result.reserve(defaults.size() + user.size());
     for (auto& d : defaults) {
-        if (userActionTypes.count(Action::typeOf(d.action)))
+        if (userActionTypes.count(mouseBindingTypeKey(d.action)))
             continue;
         result.push_back(std::move(d));
     }

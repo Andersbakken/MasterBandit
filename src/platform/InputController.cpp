@@ -4,6 +4,7 @@
 #include "PlatformDawn.h"
 #include "RenderThread.h"
 #include "ScriptEngine.h"
+#include "SelectionDrag.h"
 #include "Terminal.h"
 #include "Utf8.h"
 
@@ -342,8 +343,9 @@ void InputController::onMouseButton(int button, int action, int mods)
     double sy = lastCursorY_ * contentScaleY;
 
     // Clear selection drag on release and finalize selection
-    if (action == static_cast<int>(KeyAction_Release) && selectionDragActive_) {
-        selectionDragActive_ = false;
+    if (action == static_cast<int>(KeyAction_Release)
+        && dynamic_cast<SelectionDrag*>(activeDrag_.get())) {
+        activeDrag_.reset();
         stopAutoScroll();
         Terminal* fp2 = eng.focusedTerminalInSubtree(*tab);
         TerminalEmulator* term2 = static_cast<TerminalEmulator*>(fp2);
@@ -464,7 +466,7 @@ void InputController::onMouseButton(int button, int action, int mods)
             // originated outside the embedded — let the selection continue
             // across its rect instead of stealing focus). Also skipped on
             // alt-screen where embeddeds are hidden anyway.
-            if (!selectionDragActive_ && !clickPane->usingAltScreen() &&
+            if (!activeDrag_ && !clickPane->usingAltScreen() &&
                 !clickPane->embeddeds().empty()) {
                 uint64_t hitLineId = 0;
                 int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
@@ -582,126 +584,129 @@ void InputController::onMouseButton(int button, int action, int mods)
             ? resolveTabBarClickIndex(sx, sy)
             : -1;
 
-        for (Action::Any& act : matched) {
-            // Resolve ActivateTab{-1} / CloseTab{-1} using tab bar click index
-            if (auto* at = std::get_if<Action::ActivateTab>(&act)) {
-                if (at->index == -1) at->index = mouseCtx_.tabBarClickIndex;
-                if (at->index < 0) continue; // no tab hit
-            }
-            if (auto* ct = std::get_if<Action::CloseTab>(&act)) {
-                if (ct->index == -1) ct->index = mouseCtx_.tabBarClickIndex;
-                if (ct->index < 0) continue; // no tab hit
-            }
+        for (MouseBindingResult& res : matched) {
+            std::visit(overloaded{
+                [&](Action::Any& act) {
+                    // Resolve ActivateTab{-1} / CloseTab{-1} using tab bar click index
+                    if (auto* at = std::get_if<Action::ActivateTab>(&act)) {
+                        if (at->index == -1) at->index = mouseCtx_.tabBarClickIndex;
+                        if (at->index < 0) return; // no tab hit
+                    }
+                    if (auto* ct = std::get_if<Action::CloseTab>(&act)) {
+                        if (ct->index == -1) ct->index = mouseCtx_.tabBarClickIndex;
+                        if (ct->index < 0) return; // no tab hit
+                    }
 
-            // MouseSelection: dispatch based on selection type
-            if (auto* ms = std::get_if<Action::MouseSelection>(&act)) {
-                int col = mouseCtx_.cellCol, row = mouseCtx_.cellRow;
-                int absRow = term->document().historySize() - term->viewportOffset() + row;
+                    // SelectCommandOutput on the mouse path: hit-test the
+                    // clicked row to find its command and convert the output
+                    // range into a text selection. Falling through to the
+                    // generic dispatch would instead use the viewport-center
+                    // heuristic, which is wrong for a click.
+                    if (std::holds_alternative<Action::SelectCommandOutput>(act)) {
+                        if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
+                            int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
+                            uint64_t lineId = term->document().lineIdForAbs(absRow);
+                            const auto* rec = term->commandForLineId(lineId);
+                            if (rec) term->selectCommandOutputForRecord(rec);
+                        }
+                        return;
+                    }
 
-                // Wezterm-style boundary anchor: clicks past the cell
-                // midpoint snap to the next boundary, so selection start
-                // and "trailing" end exclude the click cell when the click
-                // is closer to the cell edge than its center.
-                bool xRightHalf = (cellRelX - cellCol * charWidth) >= (charWidth * 0.5);
-                switch (ms->type) {
-                case Action::SelectionType::Normal: {
-                    // Arm pending selection via mousePressEvent
-                    MouseEvent ev;
-                    ev.x = col; ev.y = row;
-                    ev.globalX = static_cast<int>(sx);
-                    ev.globalY = static_cast<int>(sy);
-                    ev.pixelX = static_cast<int>(cellRelX);
-                    ev.pixelY = static_cast<int>(cellRelY);
-                    ev.xRightHalf = xRightHalf;
-                    ev.modifiers = lastMods_;
-                    ev.button = LeftButton;
-                    ev.buttons = ev.button;
-                    term->mousePressEvent(&ev);
-                    selectionDragActive_ = true;
-                    selectionDragOriginX_ = sx;
-                    selectionDragOriginY_ = sy;
-                    selectionDragStarted_ = false;
-                    break;
-                }
-                case Action::SelectionType::Word:
-                    term->startWordSelection(col, absRow);
-#if defined(__linux__)
-                    if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
-#endif
-                    break;
-                case Action::SelectionType::Line:
-                    term->startLineSelection(absRow);
-#if defined(__linux__)
-                    if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
-#endif
-                    break;
-                case Action::SelectionType::Extend:
-                    term->extendSelection(col, absRow, xRightHalf);
-#if defined(__linux__)
-                    if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
-#endif
-                    break;
-                case Action::SelectionType::Rectangle:
-                    term->startRectangleSelection(col, absRow, xRightHalf);
-                    selectionDragActive_ = true;
-                    break;
-                }
-                continue;
-            }
+                    // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere
+                    if (std::holds_alternative<Action::PasteSelection>(act)) {
+                        auto* t = dynamic_cast<Terminal*>(term);
+                        if (t && window) {
+                            std::string text = window->getPrimarySelection();
+                            if (text.empty()) text = window->getClipboard();
+                            if (!text.empty()) t->pasteText(text);
+                        }
+                        return;
+                    }
 
-            // OpenHyperlink: resolve hyperlink at cell position; no-op when
-            // no URL is present. Command selection is a separate action.
-            if (std::holds_alternative<Action::OpenHyperlink>(act)) {
-                int col = cellCol, row = cellRow;
-                if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
-                    const CellExtra* extra = term->grid().getExtra(col, row);
-                    if (extra && extra->hyperlinkId) {
-                        const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
-                        if (uri && !uri->empty())
-                            platformOpenURL(*uri);
+                    platform_->dispatchAction(act);
+                },
+                [&](MouseAction::Any& mact) {
+                    // StartSelection: dispatch based on selection type
+                    if (auto* ss = std::get_if<MouseAction::StartSelection>(&mact)) {
+                        int col = mouseCtx_.cellCol, row = mouseCtx_.cellRow;
+                        int absRow = term->document().historySize() - term->viewportOffset() + row;
+
+                        // Wezterm-style boundary anchor: clicks past the cell
+                        // midpoint snap to the next boundary, so selection start
+                        // and "trailing" end exclude the click cell when the click
+                        // is closer to the cell edge than its center.
+                        bool xRightHalf = (cellRelX - cellCol * charWidth) >= (charWidth * 0.5);
+                        switch (ss->type) {
+                        case MouseAction::SelectionType::Normal: {
+                            // Arm pending selection via mousePressEvent
+                            MouseEvent ev;
+                            ev.x = col; ev.y = row;
+                            ev.globalX = static_cast<int>(sx);
+                            ev.globalY = static_cast<int>(sy);
+                            ev.pixelX = static_cast<int>(cellRelX);
+                            ev.pixelY = static_cast<int>(cellRelY);
+                            ev.xRightHalf = xRightHalf;
+                            ev.modifiers = lastMods_;
+                            ev.button = LeftButton;
+                            ev.buttons = ev.button;
+                            term->mousePressEvent(&ev);
+                            activeDrag_ = std::make_unique<SelectionDrag>(sx, sy, MouseButton::Left, term);
+                            break;
+                        }
+                        case MouseAction::SelectionType::Word:
+                            term->startWordSelection(col, absRow);
+#if defined(__linux__)
+                            if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
+#endif
+                            break;
+                        case MouseAction::SelectionType::Line:
+                            term->startLineSelection(absRow);
+#if defined(__linux__)
+                            if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
+#endif
+                            break;
+                        case MouseAction::SelectionType::Extend:
+                            term->extendSelection(col, absRow, xRightHalf);
+#if defined(__linux__)
+                            if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
+#endif
+                            break;
+                        case MouseAction::SelectionType::Rectangle:
+                            term->startRectangleSelection(col, absRow, xRightHalf);
+                            activeDrag_ = std::make_unique<SelectionDrag>(sx, sy, MouseButton::Left, term);
+                            break;
+                        }
+                        return;
+                    }
+
+                    // OpenHyperlink: resolve hyperlink at cell position; no-op when
+                    // no URL is present. Command selection is a separate action.
+                    if (std::holds_alternative<MouseAction::OpenHyperlink>(mact)) {
+                        int col = cellCol, row = cellRow;
+                        if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
+                            const CellExtra* extra = term->grid().getExtra(col, row);
+                            if (extra && extra->hyperlinkId) {
+                                const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
+                                if (uri && !uri->empty())
+                                    platformOpenURL(*uri);
+                            }
+                        }
+                        return;
+                    }
+
+                    // SelectCommand: set OSC 133 highlight to the command containing
+                    // this row (or clear if none). Skipped on alt screen.
+                    if (std::holds_alternative<MouseAction::SelectCommand>(mact)) {
+                        if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
+                            int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
+                            uint64_t lineId = term->document().lineIdForAbs(absRow);
+                            const auto* rec = term->commandForLineId(lineId);
+                            term->setSelectedCommand(rec ? std::optional<uint64_t>{rec->id} : std::nullopt);
+                        }
+                        return;
                     }
                 }
-                continue;
-            }
-
-            // SelectCommand: set OSC 133 highlight to the command containing
-            // this row (or clear if none). Skipped on alt screen.
-            if (std::holds_alternative<Action::SelectCommand>(act)) {
-                if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
-                    int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
-                    uint64_t lineId = term->document().lineIdForAbs(absRow);
-                    const auto* rec = term->commandForLineId(lineId);
-                    term->setSelectedCommand(rec ? std::optional<uint64_t>{rec->id} : std::nullopt);
-                }
-                continue;
-            }
-
-            // SelectCommandOutput on the mouse path: hit-test the clicked row to
-            // find its command and convert the output range into a text
-            // selection. Falling through to the generic dispatch would instead
-            // use the viewport-center heuristic, which is wrong for a click.
-            if (std::holds_alternative<Action::SelectCommandOutput>(act)) {
-                if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
-                    int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
-                    uint64_t lineId = term->document().lineIdForAbs(absRow);
-                    const auto* rec = term->commandForLineId(lineId);
-                    if (rec) term->selectCommandOutputForRecord(rec);
-                }
-                continue;
-            }
-
-            // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere
-            if (std::holds_alternative<Action::PasteSelection>(act)) {
-                auto* t = dynamic_cast<Terminal*>(term);
-                if (t && window) {
-                    std::string text = window->getPrimarySelection();
-                    if (text.empty()) text = window->getClipboard();
-                    if (!text.empty()) t->pasteText(text);
-                }
-                continue;
-            }
-
-            platform_->dispatchAction(act);
+            }, res);
         }
         return;
     }
@@ -866,22 +871,25 @@ void InputController::onCursorPos(double x, double y)
         return ev;
     };
 
-    // 1. If selection drag is active, forward directly to terminal
-    if (selectionDragActive_) {
+    // 1. If a selection drag is active, forward directly to terminal.
+    // (Other DragHandler kinds are handled inline by their owners; selection
+    // motion stays here until the second drag kind forces extraction into
+    // SelectionDrag::onMotion.)
+    if (auto* sel = dynamic_cast<SelectionDrag*>(activeDrag_.get())) {
         // Require movement beyond a threshold before activating the pending
         // selection, so that subpixel jitter during a click doesn't start one.
-        if (!selectionDragStarted_) {
-            double dx = sx - selectionDragOriginX_;
-            double dy = sy - selectionDragOriginY_;
+        if (!sel->started()) {
+            double dx = sx - sel->originX();
+            double dy = sy - sel->originY();
             if (dx * dx + dy * dy < 9.0) // 3px threshold
                 return;
-            selectionDragStarted_ = true;
+            sel->setStarted(true);
         }
         MouseEvent ev = buildMouseEvent();
         term->mouseMoveEvent(&ev);
         // Clear drag active on release (no buttons held)
         if (ev.buttons == 0) {
-            selectionDragActive_ = false;
+            activeDrag_.reset();
             stopAutoScroll();
             return;
         }
@@ -920,14 +928,19 @@ void InputController::onCursorPos(double x, double y)
             if (!matched.empty()) {
                 // Drag bindings are rare and overlapping ones on the same
                 // stroke don't compose cleanly — use the first match only.
-                const Action::Any& act = matched.front();
-                if (std::holds_alternative<Action::MouseSelection>(act)) {
-                    MouseEvent ev = buildMouseEvent();
-                    term->mousePressEvent(&ev);
-                    selectionDragActive_ = true;
-                } else {
-                    platform_->dispatchAction(act);
-                }
+                MouseBindingResult& res = matched.front();
+                std::visit(overloaded{
+                    [&](Action::Any& act) { platform_->dispatchAction(act); },
+                    [&](MouseAction::Any& mact) {
+                        if (std::holds_alternative<MouseAction::StartSelection>(mact)) {
+                            MouseEvent ev = buildMouseEvent();
+                            term->mousePressEvent(&ev);
+                            activeDrag_ = std::make_unique<SelectionDrag>(sx, sy, dragResult->button, term);
+                            activeDrag_->setStarted(true); // drag detector already passed threshold
+                        }
+                        // OpenHyperlink/SelectCommand don't begin drags; ignore on Drag event.
+                    }
+                }, res);
                 return;
             }
 
@@ -973,7 +986,9 @@ void InputController::stopAutoScroll()
 
 void InputController::doAutoScroll()
 {
-    if (!selectionDragActive_) { stopAutoScroll(); return; }
+    // Only the selection drag drives auto-scroll today; future drags can opt
+    // in by checking activeDrag_ kind here when they need it.
+    if (!dynamic_cast<SelectionDrag*>(activeDrag_.get())) { stopAutoScroll(); return; }
 
     auto tab = platform_->activeTab();
     if (!tab) { stopAutoScroll(); return; }
@@ -1040,9 +1055,11 @@ bool InputController::wouldOpenHyperlinkAt(double sx, double sy)
     stroke.mode = term->mouseReportingActive() ? MouseMode::Grabbed : MouseMode::Ungrabbed;
     stroke.region = MouseRegion::Pane;
     auto matched = matchMouseBindings(stroke, mouseBindings_);
-    for (const auto& act : matched) {
-        if (std::holds_alternative<Action::OpenHyperlink>(act))
-            return true;
+    for (const auto& res : matched) {
+        if (auto* mact = std::get_if<MouseAction::Any>(&res)) {
+            if (std::holds_alternative<MouseAction::OpenHyperlink>(*mact))
+                return true;
+        }
     }
     return false;
 }

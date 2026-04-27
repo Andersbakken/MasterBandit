@@ -1,5 +1,6 @@
 #pragma once
 #include "Action.h"
+#include "MouseAction.h"
 #include "InputTypes.h"
 #include <optional>
 #include <string>
@@ -41,6 +42,13 @@ std::optional<KeyStroke>   parseKeyStroke(const std::string& s);
 std::optional<Action::Any> parseAction(const std::string& name,
                                         const std::vector<std::string>& args);
 
+// Parse a mouse-only action name + args → MouseAction::Any. Recognizes the
+// names that need cell context: "mouse_selection [normal|word|line|extend|
+// rectangle]", "open_hyperlink", "select_command". Mouse bindings try this
+// first, then fall back to parseAction for keyboard-callable actions.
+std::optional<MouseAction::Any> parseMouseAction(const std::string& name,
+                                                  const std::vector<std::string>& args);
+
 // Convert a list of BindingConfigs (from TOML) into Bindings.
 std::vector<Binding>        parseBindings(const std::vector<BindingConfig>& configs);
 
@@ -61,9 +69,24 @@ struct MouseStroke {
     bool matches(const MouseStroke& incoming) const noexcept;
 };
 
+// Result of a mouse-binding lookup: either a keyboard-style action (forwarded
+// to PlatformDawn::dispatchAction) or a mouse-only action that needs cell
+// context (handled inline in InputController). The split is intentional —
+// mouse-only types can't usefully run from a keyboard context, and keyboard
+// types can't carry click coordinates.
+using MouseBindingResult = std::variant<Action::Any, MouseAction::Any>;
+
+// Unified type-index key across both halves of MouseBindingResult, used by
+// mergeMouseBindings dedup. Action::Any indices occupy [0, Action::count);
+// MouseAction::Any indices are offset by Action::count to share one space.
+inline std::size_t mouseBindingTypeKey(const MouseBindingResult& r) {
+    if (auto* a = std::get_if<Action::Any>(&r)) return Action::typeOf(*a);
+    return Action::count + MouseAction::typeOf(std::get<MouseAction::Any>(r));
+}
+
 struct MouseBinding {
-    MouseStroke trigger;
-    Action::Any action;
+    MouseStroke         trigger;
+    MouseBindingResult  action;
 };
 
 std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfig>& configs);
@@ -79,8 +102,8 @@ std::vector<MouseBinding> mergeMouseBindings(std::vector<MouseBinding> defaults,
 // run them in sequence; binding two actions to the same stroke is supported
 // so e.g. Cmd+Click can both open a hyperlink and select the containing
 // OSC 133 command.
-std::vector<Action::Any> matchMouseBindings(const MouseStroke& stroke,
-                                            const std::vector<MouseBinding>& bindings);
+std::vector<MouseBindingResult> matchMouseBindings(const MouseStroke& stroke,
+                                                    const std::vector<MouseBinding>& bindings);
 
 // Sequence state machine: accumulates keypresses and matches against a binding table.
 class SequenceMatcher {

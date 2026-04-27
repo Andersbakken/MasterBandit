@@ -52,6 +52,12 @@ public:
     std::function<void(double x, double y)> onCursorPos;
     std::function<void(double dx, double dy)> onScroll;
     std::function<void(bool focused)> onFocus;
+    // Visibility tracks the kitty `os_window_is_invisible` shape (glfw.c:2563-2571):
+    // visible iff mapped && !iconified && !fully-obscured. Backends fire this
+    // when any of those inputs change. Used by OSC 99 `o=invisible` gating in
+    // PlatformUtils_Linux.cpp; macOS reads NSWindow.occlusionState directly
+    // and ignores this hook.
+    std::function<void(bool visible)> onVisibility;
     std::function<void()> onExpose;        // called when window content needs redraw
     std::function<void()> onLiveResizeEnd; // called when live resize settles
     // Mouse cursor style

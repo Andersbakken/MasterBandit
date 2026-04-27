@@ -414,6 +414,28 @@ void spawnDetached(const char* path, char* const argv[])
     //          treat as "unknown outcome" and stay silent.
 }
 
+// OSC 99 o= gating state (kitty notifications.py:955-962). Pushed in by
+// PlatformDawn.cpp's onFocus / onVisibility hooks via
+// platformSetNotificationWindowState; read by platformSendNotification at
+// send time. Atomic because the hooks and the send path both run on the
+// event loop thread today, but a future move of either off-thread should
+// not silently turn this into a data race. Defaults are "true" so a send
+// that races ahead of the first hook fire isn't suppressed by mistake.
+std::atomic<bool> g_windowFocused{true};
+std::atomic<bool> g_windowVisible{true};
+
+// kitty is_notification_allowed parity (notifications.py:955-962). Returns
+// true if the notification should be shown. Empty/unknown → always allow.
+bool isAllowedByOnlyWhen(const std::string& onlyWhen)
+{
+    if (onlyWhen.empty() || onlyWhen == "always") return true;
+    bool focused = g_windowFocused.load(std::memory_order_relaxed);
+    bool visible = g_windowVisible.load(std::memory_order_relaxed);
+    if (focused) return false;
+    if (onlyWhen == "invisible" && visible) return false;
+    return true;
+}
+
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -537,6 +559,12 @@ void platformInitNotifications()
 void platformSetNotificationsShowWhenForeground(bool /*show*/)
 {
     // Linux notification daemons (libnotify-style) do not differentiate.
+}
+
+void platformSetNotificationWindowState(bool focused, bool visible)
+{
+    g_windowFocused.store(focused, std::memory_order_relaxed);
+    g_windowVisible.store(visible, std::memory_order_relaxed);
 }
 
 // Forward decl — the reply handler may chain into another dispatch.
@@ -739,11 +767,15 @@ void platformSendNotification(const std::string& sourceTag,
                               std::function<void(const std::string& reason)> onClosed,
                               const std::vector<std::string>& buttons,
                               std::function<void(const std::string& buttonId)> onActivated,
-                              const std::string& /*onlyWhen*/)
+                              const std::string& onlyWhen)
 {
-    // TODO Linux: honor o= (only_when) gate per kitty notifications.py:955-962.
-    // macOS impl in PlatformUtils_macOS.mm is the reference. Suppression must
-    // still fire onClosed("untracked") if c=1 to keep the wire side honest.
+    // OSC 99 o= gating (kitty notifications.py:955-962, 978-993). Suppression
+    // silently drops — no banner, no in-flight tracking, no onClosed fired
+    // even when c=1. Matches kitty notify_with_command and is consistent with
+    // PlatformUtils_macOS.mm.
+    if (!isAllowedByOnlyWhen(onlyWhen)) {
+        return;
+    }
     if (!g_bridge || !g_bridge->connected()) {
         spdlog::warn("platformSendNotification: D-Bus session bus unavailable; "
                      "dropping notification: {}", title);

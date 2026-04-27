@@ -61,6 +61,17 @@ private:
     void handleSelectionRequest(xcb_selection_request_event_t* ev);
     void handleSelectionNotify(xcb_selection_notify_event_t* ev);
     void handleExpose(xcb_expose_event_t* ev);
+    void handleVisibilityNotify(xcb_visibility_notify_event_t* ev);
+    void handleMapNotify(xcb_map_notify_event_t* ev);
+    void handleUnmapNotify(xcb_unmap_notify_event_t* ev);
+    void handlePropertyNotify(xcb_property_notify_event_t* ev);
+
+    // Recompute is_visible from mapped_/iconified_/fullyObscured_ and fire
+    // onVisibility iff the result changed. Mirrors kitty's
+    // os_window_is_invisible (glfw.c:2563-2571), inverted.
+    void refreshVisibility();
+    // Re-read _NET_WM_STATE and update iconified_ from _NET_WM_STATE_HIDDEN.
+    void updateIconifiedFromNetWmState();
 
     xcb_atom_t internAtom(const char* name, bool onlyIfExists = false) const;
 
@@ -110,11 +121,23 @@ private:
     xcb_atom_t atomWmDeleteWindow_       = 0;
     xcb_atom_t atomNetWmSyncRequest_     = 0;
     xcb_atom_t atomNetWmSyncRequestCtr_  = 0;
+    xcb_atom_t atomNetWmState_           = 0;
+    xcb_atom_t atomNetWmStateHidden_     = 0;
     xcb_atom_t atomClipboard_       = 0;
     xcb_atom_t atomPrimary_         = 0;  // XA_PRIMARY
     xcb_atom_t atomTargets_         = 0;
     xcb_atom_t atomUtf8String_      = 0;
     xcb_atom_t atomMbSelection_     = 0;  // scratch property for incoming data
+
+    // Visibility tracking (kitty os_window_is_invisible parity, glfw.c:2563-2571).
+    // Defaults assume the window is visible until xcb tells us otherwise — the
+    // very first MapNotify/VisibilityNotify after create() will confirm or
+    // overwrite. visible_ is the last value reported via onVisibility so we
+    // can suppress redundant fires.
+    bool mapped_         = false;
+    bool iconified_      = false;
+    bool fullyObscured_  = false;
+    bool visible_        = true;
 
     // Clipboard ownership and content
     std::string clipboardContent_;

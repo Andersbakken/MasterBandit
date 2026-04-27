@@ -297,6 +297,8 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     atomWmDeleteWindow_      = internAtom("WM_DELETE_WINDOW");
     atomNetWmSyncRequest_    = internAtom("_NET_WM_SYNC_REQUEST");
     atomNetWmSyncRequestCtr_ = internAtom("_NET_WM_SYNC_REQUEST_COUNTER");
+    atomNetWmState_          = internAtom("_NET_WM_STATE");
+    atomNetWmStateHidden_    = internAtom("_NET_WM_STATE_HIDDEN");
     atomClipboard_           = internAtom("CLIPBOARD");
     atomPrimary_             = XCB_ATOM_PRIMARY;
     atomTargets_             = internAtom("TARGETS");
@@ -315,7 +317,12 @@ bool XCBWindow::create(int width, int height, const std::string& title)
         XCB_EVENT_MASK_POINTER_MOTION |
         XCB_EVENT_MASK_EXPOSURE |
         XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-        XCB_EVENT_MASK_FOCUS_CHANGE
+        XCB_EVENT_MASK_FOCUS_CHANGE |
+        // VisibilityChange feeds the "occluded" input to onVisibility (kitty
+        // OSC 99 o=invisible parity); PropertyChange picks up _NET_WM_STATE
+        // updates so the iconified bit tracks WM-driven hide/minimize.
+        XCB_EVENT_MASK_VISIBILITY_CHANGE |
+        XCB_EVENT_MASK_PROPERTY_CHANGE
     };
     xcb_create_window(conn_,
         XCB_COPY_FROM_PARENT, window_, screen_->root,
@@ -664,6 +671,22 @@ void XCBWindow::processEvents()
         case XCB_EXPOSE:
             if (onExpose) onExpose();
             break;
+        case XCB_VISIBILITY_NOTIFY: {
+            handleVisibilityNotify(reinterpret_cast<xcb_visibility_notify_event_t*>(event));
+            break;
+        }
+        case XCB_MAP_NOTIFY: {
+            handleMapNotify(reinterpret_cast<xcb_map_notify_event_t*>(event));
+            break;
+        }
+        case XCB_UNMAP_NOTIFY: {
+            handleUnmapNotify(reinterpret_cast<xcb_unmap_notify_event_t*>(event));
+            break;
+        }
+        case XCB_PROPERTY_NOTIFY: {
+            handlePropertyNotify(reinterpret_cast<xcb_property_notify_event_t*>(event));
+            break;
+        }
         default:
             if (xkbEventBase_ && type == xkbEventBase_) {
                 auto* xkbEvent = reinterpret_cast<xcb_xkb_state_notify_event_t*>(event);
@@ -793,6 +816,76 @@ void XCBWindow::handleFocusIn(xcb_focus_in_event_t*)
 void XCBWindow::handleFocusOut(xcb_focus_out_event_t*)
 {
     if (onFocus) onFocus(false);
+}
+
+void XCBWindow::handleVisibilityNotify(xcb_visibility_notify_event_t* ev)
+{
+    // XCB_VISIBILITY_FULLY_OBSCURED == 2: every pixel of the window is
+    // covered by other windows. Treat partially-obscured/unobscured as
+    // visible (matches kitty/glfw GLFW_OCCLUDED, which only flips on
+    // VisibilityFullyObscured per the X11 protocol).
+    bool obscured = (ev->state == XCB_VISIBILITY_FULLY_OBSCURED);
+    if (obscured == fullyObscured_) return;
+    fullyObscured_ = obscured;
+    refreshVisibility();
+}
+
+void XCBWindow::handleMapNotify(xcb_map_notify_event_t*)
+{
+    if (mapped_) return;
+    mapped_ = true;
+    refreshVisibility();
+}
+
+void XCBWindow::handleUnmapNotify(xcb_unmap_notify_event_t*)
+{
+    if (!mapped_) return;
+    mapped_ = false;
+    refreshVisibility();
+}
+
+void XCBWindow::handlePropertyNotify(xcb_property_notify_event_t* ev)
+{
+    if (atomNetWmState_ && ev->atom == atomNetWmState_) {
+        updateIconifiedFromNetWmState();
+    }
+}
+
+void XCBWindow::updateIconifiedFromNetWmState()
+{
+    // _NET_WM_STATE is a list of atoms. Iconified ⇔ _NET_WM_STATE_HIDDEN
+    // is in the list (set by mutter/kwin/openbox/etc. on minimize). Modern
+    // WMs use _NET_WM_STATE_HIDDEN in preference to the legacy WM_STATE
+    // IconicState; we check the new path only.
+    if (!atomNetWmState_ || !atomNetWmStateHidden_) return;
+    xcb_get_property_cookie_t c = xcb_get_property(
+        conn_, 0, window_, atomNetWmState_, XCB_ATOM_ATOM, 0, 64);
+    xcb_generic_error_t* err = nullptr;
+    xcb_get_property_reply_t* r = xcb_get_property_reply(conn_, c, &err);
+    if (err) { free(err); }
+    bool hidden = false;
+    if (r) {
+        if (r->type == XCB_ATOM_ATOM && r->format == 32) {
+            int n = xcb_get_property_value_length(r) / 4;
+            const xcb_atom_t* atoms = static_cast<const xcb_atom_t*>(
+                xcb_get_property_value(r));
+            for (int i = 0; i < n; ++i) {
+                if (atoms[i] == atomNetWmStateHidden_) { hidden = true; break; }
+            }
+        }
+        free(r);
+    }
+    if (hidden == iconified_) return;
+    iconified_ = hidden;
+    refreshVisibility();
+}
+
+void XCBWindow::refreshVisibility()
+{
+    bool nowVisible = mapped_ && !iconified_ && !fullyObscured_;
+    if (nowVisible == visible_) return;
+    visible_ = nowVisible;
+    if (onVisibility) onVisibility(nowVisible);
 }
 
 void XCBWindow::handleConfigureNotify(xcb_configure_notify_event_t* ev)

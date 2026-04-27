@@ -77,6 +77,12 @@ bool platformIsDarkMode();
 void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback);
 void platformInitNotifications();
 void platformSetNotificationsShowWhenForeground(bool show);
+// Push the current window focus + visibility into the notification layer so
+// platformSendNotification can apply OSC 99 `o=` (only_when) gating without
+// querying the windowing-toolkit at send time. PlatformDawn calls this from
+// its onFocus / onVisibility hooks. macOS reads NSWindow state directly and
+// implements this as a no-op.
+void platformSetNotificationWindowState(bool focused, bool visible);
 // urgency: 0=low, 1=normal, 2=critical (freedesktop Notifications "urgency"
 // hint). Currently honored on Linux; macOS impl ignores the value pending a
 // per-platform mapping.
@@ -101,13 +107,13 @@ void platformSetNotificationsShowWhenForeground(bool show);
 // based). Empty buttons + null onActivated → notification has no
 // interactive surface at all.
 //
-// onlyWhen is the OSC 99 `o=` gate (kitty notifications.py:153-157).
+// onlyWhen is the OSC 99 `o=` gate (kitty notifications.py:955-962).
 // Empty == always-allow. "unfocused" suppresses when our window has
 // focus; "invisible" suppresses when focused or visible-but-unfocused;
-// "always" allows. When suppressed, the platform must still fire the
-// `untracked` close-response synchronously if closeResponseRequested
-// is set, so the wire side doesn't hang. Currently honored on macOS;
-// Linux still treats every value as always-allow (TODO).
+// "always" allows. Suppression silently drops — no banner, no in-flight
+// tracking, no `onClosed` fired even when c=1 (matches kitty
+// notify_with_command at notifications.py:978-993 — c=1 clients are
+// expected to use p=alive polling, not synchronous wait-for-close).
 void platformSendNotification(const std::string& sourceTag,
                               const std::string& clientId,
                               const std::string& title,
@@ -356,6 +362,12 @@ private:
     uint32_t defaultFgColor_ = 0xFFDDDDDD;
     uint32_t defaultBgColor_ = 0x00000000;
     bool              windowHasFocus_ = true;
+    // Mirrors the windowing toolkit's visibility state — fed by
+    // Window::onVisibility (xcb tracks mapped/iconified/fully-obscured).
+    // Used together with windowHasFocus_ to drive OSC 99 `o=` gating via
+    // platformSetNotificationWindowState. macOS reads NSWindow state
+    // directly inside the platform layer and ignores this field.
+    bool              windowVisible_  = true;
 
     // Owns the render worker thread, coarse mutex, pending mutations,
     // renderState shadow copy, and the deferred main/exit queues.

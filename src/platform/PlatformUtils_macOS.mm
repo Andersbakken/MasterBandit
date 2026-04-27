@@ -242,6 +242,12 @@ void platformSetNotificationsShowWhenForeground(bool show)
     g_showWhenForeground.store(show);
 }
 
+void platformSetNotificationWindowState(bool /*focused*/, bool /*visible*/)
+{
+    // No-op: macOS reads NSApp.isActive / NSWindow.isKeyWindow /
+    // NSWindow.occlusionState directly inside isAllowedByOnlyWhen().
+}
+
 void platformSendNotification(const std::string& sourceTag,
                               const std::string& clientId,
                               const std::string& title, const std::string& body,
@@ -252,20 +258,19 @@ void platformSendNotification(const std::string& sourceTag,
                               std::function<void(const std::string&)> onActivated,
                               const std::string& onlyWhen)
 {
-    // Bundle-bail: same path as platformInitNotifications. Even when we
-    // can't deliver, c=1 must still fire onClosed("untracked") synchronously
-    // so the wire side doesn't wait forever for a close event that never
-    // arrives (kitty notifications.py:991-992 pattern).
+    // Bundle-bail: same path as platformInitNotifications. Silent drop with
+    // no onClosed fire matches kitty's pattern for can't-deliver / suppressed
+    // notifications (notifications.py:978-993): silently return None.
     if (![[NSBundle mainBundle] bundleIdentifier]) {
-        if (closeResponseRequested && onClosed) onClosed("untracked");
         return;
     }
 
-    // OSC 99 o= gating (kitty notifications.py:955-962). Suppression drops
-    // the notification entirely — no banner, no Notification Center entry,
-    // no in-flight tracking. c=1 still fires untracked-at-send.
+    // OSC 99 o= gating (kitty notifications.py:955-962, 978-993). Suppression
+    // drops the notification entirely — no banner, no Notification Center
+    // entry, no in-flight tracking, no close response. Kitty's notify_with_command
+    // silently returns None on is_notification_allowed=False; c=1 clients are
+    // expected to use p=alive polling, not synchronous wait-for-close.
     if (!isAllowedByOnlyWhen(onlyWhen)) {
-        if (closeResponseRequested && onClosed) onClosed("untracked");
         return;
     }
 

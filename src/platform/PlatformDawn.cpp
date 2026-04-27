@@ -472,6 +472,7 @@ PlatformDawn::~PlatformDawn()
         window_->onExpose = nullptr;
         window_->onLiveResizeEnd = nullptr;
         window_->onFocus = nullptr;
+        window_->onVisibility = nullptr;
     }
 
     // Render thread is joined; anything still deferred can now run its
@@ -589,12 +590,18 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 // we don't double-fire focusEvent OSC sequences.
                 if (windowHasFocus_ == focused) return;
                 windowHasFocus_ = focused;
+                platformSetNotificationWindowState(windowHasFocus_, windowVisible_);
                 renderThread_->pending().focusChanged = true;
                 setNeedsRedraw();
                 if (auto t = activeTab()) {
                     if (Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*t)) fp->focusEvent(focused);
                 }
                 setNeedsRedraw();
+            };
+            window_->onVisibility = [this](bool visible) {
+                if (windowVisible_ == visible) return;
+                windowVisible_ = visible;
+                platformSetNotificationWindowState(windowHasFocus_, windowVisible_);
             };
 
             if (!window_->create(800, 600, "MasterBandit")) {

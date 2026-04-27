@@ -23,6 +23,7 @@ public:
     bool create(int width, int height, const std::string& title) override;
     void destroy() override;
     bool shouldClose() const override { return shouldClose_; }
+    void raise() override;
 
     void setTitle(const std::string& title) override;
     void getFramebufferSize(int& w, int& h) const override;
@@ -65,6 +66,11 @@ public:
 
     // Internal — used by the CFRunLoopTimer callback to release its own ref.
     void cancelResizeDebounce();
+
+    // Exposes the underlying NSWindow* for the macOS platform layer
+    // (notification gating needs it for focus/occlusion queries). Returns
+    // nullptr before create() / after destroy().
+    NSWindow* nsWindowRaw() const;
 
 private:
     NSWindow*   nsWindow_   = nullptr;

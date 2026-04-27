@@ -795,7 +795,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                 }
                 platformSendNotification(sourceTag, n.id, n.title, n.body, n.urgency,
                                          n.closeResponseRequested, std::move(onClosed),
-                                         n.buttons, std::move(onActivated));
+                                         n.buttons, std::move(onActivated), n.onlyWhen);
             });
         };
 

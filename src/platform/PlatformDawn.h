@@ -100,6 +100,14 @@ void platformSetNotificationsShowWhenForeground(bool show);
 // "" for the body/default click, or "1".."N" for a specific button (1-
 // based). Empty buttons + null onActivated → notification has no
 // interactive surface at all.
+//
+// onlyWhen is the OSC 99 `o=` gate (kitty notifications.py:153-157).
+// Empty == always-allow. "unfocused" suppresses when our window has
+// focus; "invisible" suppresses when focused or visible-but-unfocused;
+// "always" allows. When suppressed, the platform must still fire the
+// `untracked` close-response synchronously if closeResponseRequested
+// is set, so the wire side doesn't hang. Currently honored on macOS;
+// Linux still treats every value as always-allow (TODO).
 void platformSendNotification(const std::string& sourceTag,
                               const std::string& clientId,
                               const std::string& title,
@@ -108,7 +116,8 @@ void platformSendNotification(const std::string& sourceTag,
                               bool closeResponseRequested,
                               std::function<void(const std::string& reason)> onClosed,
                               const std::vector<std::string>& buttons,
-                              std::function<void(const std::string& buttonId)> onActivated);
+                              std::function<void(const std::string& buttonId)> onActivated,
+                              const std::string& onlyWhen);
 
 // Programmatically dismiss a previously-shown notification. No-op if the
 // (sourceTag, clientId) pair isn't currently tracked (for example: the

@@ -59,6 +59,11 @@ struct TerminalCallbacks {
         // Up to 8 button labels from p=buttons (U+2028-split, max-8 cap
         // in kitty notifications.py:422). Empty for non-OSC-99 sources.
         std::vector<std::string> buttons;
+        // OSC 99 o= (only_when) gate. Empty == always-allow.
+        // "unfocused" — suppress at send time when our window has focus.
+        // "invisible" — suppress when focused or visible-but-unfocused.
+        // "always" — allow. Other values treated as empty (kitty parity).
+        std::string onlyWhen;
     };
     std::function<void(const DesktopNotification&)> onDesktopNotification;
 
@@ -806,6 +811,11 @@ private:
     // U+2028-separated when sent as one p=buttons payload; multiple
     // p=buttons payloads concatenate.
     std::vector<std::string> mNotifyButtons;
+    // OSC 99 o= (only_when). Empty == "unset/always". Accepted values per
+    // kitty notifications.py:153-157: "always", "unfocused", "invisible".
+    // Unknown values silently ignored (no-op assignment). Carries across
+    // chunks; resets on dispatch.
+    std::string mNotifyOnlyWhen;
 
     // OSC 133 shell-integration state.
     SemanticMode mSemanticMode { SemanticMode::Inactive };

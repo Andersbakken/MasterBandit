@@ -643,6 +643,14 @@ void TerminalEmulator::processStringSequence()
                     // resets on dispatch.
                     mNotifyCloseResponseRequested = (val != "0");
                 }
+                else if (key == "o") {
+                    // kitty notifications.py:153-157, 318. Accepted values:
+                    // "always", "unfocused", "invisible". Unknown values
+                    // silently ignored (kitty raises ValueError but the
+                    // surrounding parser swallows it; we no-op directly).
+                    if (val == "always" || val == "unfocused" || val == "invisible")
+                        mNotifyOnlyWhen = std::string(val);
+                }
                 else if (key == "a") {
                     // kitty notifications.py:303-315 — comma-separated list
                     // of action tokens, optionally prefixed with '+' (add)
@@ -715,6 +723,7 @@ void TerminalEmulator::processStringSequence()
                     n.actionFocus  = mNotifyActionFocus;
                     n.actionReport = mNotifyActionReport;
                     n.buttons = mNotifyButtons;
+                    n.onlyWhen = mNotifyOnlyWhen;
                     mCallbacks.onDesktopNotification(n);
                 }
                 mNotifyId.clear();
@@ -725,6 +734,7 @@ void TerminalEmulator::processStringSequence()
                 mNotifyActionFocus  = true;   // default per kitty
                 mNotifyActionReport = false;
                 mNotifyButtons.clear();
+                mNotifyOnlyWhen.clear();
             }
         }
         break;

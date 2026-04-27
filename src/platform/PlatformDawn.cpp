@@ -581,6 +581,13 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 setNeedsRedraw();
             };
             window_->onFocus = [this](bool focused) {
+                // Idempotent: macOS now feeds focus from both
+                // windowDidBecomeKey: and NSApplicationDidBecomeActive
+                // (the former is unreliable after [NSApp activateIgnoringOtherApps:]
+                // when the window had retained key status across app
+                // deactivation — see Window_cocoa.mm). Suppress duplicates so
+                // we don't double-fire focusEvent OSC sequences.
+                if (windowHasFocus_ == focused) return;
                 windowHasFocus_ = focused;
                 renderThread_->pending().focusChanged = true;
                 setNeedsRedraw();

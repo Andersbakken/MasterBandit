@@ -149,6 +149,8 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 
 @interface MBWindowDelegate : NSObject <NSWindowDelegate>
 @property (nonatomic, assign) CocoaWindow* cppWindow;
+- (void)installAppActivationObservers;
+- (void)removeAppActivationObservers;
 @end
 
 @implementation MBWindowDelegate
@@ -157,6 +159,31 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     self.cppWindow->dispatchClose();
     return NO;
 }
+
+- (void)installAppActivationObservers {
+    // windowDidBecomeKey: doesn't fire reliably after [NSApp activateIgnoringOtherApps:]
+    // when the window was already the last key window of the inactive app —
+    // AppKit considers the window's key status unchanged. That path is hit
+    // by Window::raise() in response to a notification click, leaving the
+    // cursor drawn as inactive (hollow) until typing nudges state. Use
+    // app-active notifications as the authoritative focus signal; they fire
+    // reliably across both ⌘-Tab and notification-click activation.
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(appDidBecomeActive:)
+               name:NSApplicationDidBecomeActiveNotification
+             object:nil];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(appDidResignActive:)
+               name:NSApplicationDidResignActiveNotification
+             object:nil];
+}
+- (void)removeAppActivationObservers {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+- (void)appDidBecomeActive:(NSNotification*)notification { (void)notification; self.cppWindow->dispatchFocus(true); }
+- (void)appDidResignActive:(NSNotification*)notification { (void)notification; self.cppWindow->dispatchFocus(false); }
 - (void)windowDidResize:(NSNotification*)notification {
     NSWindow* win = notification.object;
     NSRect frame = [win contentView].frame;
@@ -413,12 +440,39 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 
 // ---------- CocoaWindow ----------
 
-CocoaWindow::CocoaWindow() = default;
+// Single-window assumption (mb is single-window today). The notification
+// gating in PlatformUtils_macOS.mm needs an NSWindow* to query focus and
+// occlusion at send time; this exposes the live nsWindow_ via a plain
+// extern "C" hook so the platform layer doesn't need the eventloop header.
+static CocoaWindow* s_active = nullptr;
+
+NSWindow* CocoaWindow::nsWindowRaw() const { return nsWindow_; }
+
+extern "C" void* macActiveNSWindow()
+{
+    if (!s_active) return nullptr;
+    return (__bridge void*)s_active->nsWindowRaw();
+}
+
+CocoaWindow::CocoaWindow() { s_active = this; }
 
 CocoaWindow::~CocoaWindow()
 {
     cancelResizeDebounce();
     destroy();
+    if (s_active == this) s_active = nullptr;
+}
+
+void CocoaWindow::raise()
+{
+    // Notification-action invocation is a user gesture from macOS's POV,
+    // so activateIgnoringOtherApps: succeeds even under the macOS 14+
+    // self-activation tightening. Deprecation warning on 14+ acceptable —
+    // deployment target is 12.0; switching to NSApplicationActivationOptions
+    // would require gating on @available.
+    if (!nsWindow_) return;
+    [NSApp activateIgnoringOtherApps:YES];
+    [nsWindow_ makeKeyAndOrderFront:nil];
 }
 
 void CocoaWindow::cancelResizeDebounce()
@@ -502,6 +556,7 @@ bool CocoaWindow::create(int width, int height, const std::string& title)
     MBWindowDelegate* delegate = [[MBWindowDelegate alloc] init];
     delegate.cppWindow = this;
     nsWindow_.delegate = delegate;
+    [delegate installAppActivationObservers];
 
     NSRect contentRect = [nsWindow_ contentRectForFrameRect:frame];
     mbView_ = [[MBView alloc] initWithFrame:contentRect cppWindow:this];
@@ -519,6 +574,14 @@ bool CocoaWindow::create(int width, int height, const std::string& title)
 void CocoaWindow::destroy()
 {
     if (nsWindow_) {
+        // Unsubscribe the delegate from NSNotificationCenter before tearing
+        // down — the notifications hold a strong reference to the delegate
+        // and would otherwise keep firing into a dangling cppWindow pointer
+        // if the app outlives the window (e.g. partial-shutdown paths).
+        id<NSWindowDelegate> raw = nsWindow_.delegate;
+        if ([raw isKindOfClass:[MBWindowDelegate class]]) {
+            [(MBWindowDelegate*)raw removeAppActivationObservers];
+        }
         [nsWindow_ close];
         nsWindow_ = nullptr;
         mbView_   = nullptr;

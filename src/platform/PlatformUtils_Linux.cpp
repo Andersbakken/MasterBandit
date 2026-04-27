@@ -738,8 +738,12 @@ void platformSendNotification(const std::string& sourceTag,
                               bool closeResponseRequested,
                               std::function<void(const std::string& reason)> onClosed,
                               const std::vector<std::string>& buttons,
-                              std::function<void(const std::string& buttonId)> onActivated)
+                              std::function<void(const std::string& buttonId)> onActivated,
+                              const std::string& /*onlyWhen*/)
 {
+    // TODO Linux: honor o= (only_when) gate per kitty notifications.py:955-962.
+    // macOS impl in PlatformUtils_macOS.mm is the reference. Suppression must
+    // still fire onClosed("untracked") if c=1 to keep the wire side honest.
     if (!g_bridge || !g_bridge->connected()) {
         spdlog::warn("platformSendNotification: D-Bus session bus unavailable; "
                      "dropping notification: {}", title);

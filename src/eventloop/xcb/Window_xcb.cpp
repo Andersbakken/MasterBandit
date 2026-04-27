@@ -12,6 +12,7 @@
 
 #include <xcb/xcb.h>
 #include <xcb/xcb_util.h>
+#include <xcb/xcb_cursor.h>
 // xcb/xkb.h uses "explicit" as a C field name which is reserved in C++.
 #define explicit explicit_
 #include <xcb/xkb.h>
@@ -208,35 +209,35 @@ XCBWindow::~XCBWindow()
 
 // ---------- cursors ----------
 
-static xcb_cursor_t createGlyphCursor(xcb_connection_t* conn, xcb_font_t font, uint16_t glyph)
-{
-    xcb_cursor_t cursor = xcb_generate_id(conn);
-    xcb_create_glyph_cursor(conn, cursor, font, font,
-        glyph, glyph + 1,
-        0xFFFF, 0xFFFF, 0xFFFF,  // fg: white
-        0, 0, 0);                // bg: black
-    return cursor;
-}
-
 void XCBWindow::createCursors()
 {
-    // Glyphs from <X11/cursorfont.h>. The cursor font lacks a true
-    // not-allowed/forbidden glyph; X_cursor (0) is the closest.
-    xcb_font_t font = xcb_generate_id(conn_);
-    xcb_open_font(conn_, font, 6, "cursor");
-    cursorArrow_      = createGlyphCursor(conn_, font,  68); // XC_left_ptr
-    cursorIBeam_      = createGlyphCursor(conn_, font, 152); // XC_xterm
-    cursorPointer_    = createGlyphCursor(conn_, font,  60); // XC_hand2
-    cursorCrosshair_  = createGlyphCursor(conn_, font,  34); // XC_crosshair
-    cursorWait_       = createGlyphCursor(conn_, font, 150); // XC_watch
-    cursorHelp_       = createGlyphCursor(conn_, font,  92); // XC_question_arrow
-    cursorMove_       = createGlyphCursor(conn_, font,  52); // XC_fleur
-    cursorNotAllowed_ = createGlyphCursor(conn_, font,   0); // XC_X_cursor
-    cursorResizeH_    = createGlyphCursor(conn_, font, 108); // XC_sb_h_double_arrow
-    cursorResizeV_    = createGlyphCursor(conn_, font, 116); // XC_sb_v_double_arrow
-    cursorResizeNESW_ = createGlyphCursor(conn_, font, 136); // XC_top_right_corner
-    cursorResizeNWSE_ = createGlyphCursor(conn_, font, 134); // XC_top_left_corner
-    xcb_close_font(conn_, font);
+    // Names follow the freedesktop cursor-name spec
+    // (https://www.freedesktop.org/wiki/Specifications/cursor-spec/).
+    // libxcb-cursor reads the user's gtk-cursor-theme-name / Xcursor.theme
+    // and resolves to themed PNGs; on a name miss it falls back to the
+    // legacy cursor-font glyph automatically (so behavior on a system
+    // with no theme installed degrades to what we had before).
+    if (xcb_cursor_context_new(conn_, screen_, &cursorCtx_) < 0) {
+        spdlog::warn("XCBWindow: xcb_cursor_context_new failed; "
+                     "cursors will not be themed");
+        cursorCtx_ = nullptr;
+        return;
+    }
+    auto load = [this](const char* name) {
+        return xcb_cursor_load_cursor(cursorCtx_, name);
+    };
+    cursorArrow_      = load("default");        // alias of left_ptr
+    cursorIBeam_      = load("text");           // alias of xterm
+    cursorPointer_    = load("pointer");        // alias of hand2 / hand1
+    cursorCrosshair_  = load("crosshair");
+    cursorWait_       = load("wait");           // alias of watch
+    cursorHelp_       = load("help");           // alias of question_arrow
+    cursorMove_       = load("move");           // alias of fleur
+    cursorNotAllowed_ = load("not-allowed");    // alias of crossed_circle
+    cursorResizeH_    = load("ew-resize");      // alias of sb_h_double_arrow
+    cursorResizeV_    = load("ns-resize");      // alias of sb_v_double_arrow
+    cursorResizeNESW_ = load("nesw-resize");
+    cursorResizeNWSE_ = load("nwse-resize");
 }
 
 void XCBWindow::setCursorStyle(CursorStyle shape)
@@ -448,11 +449,18 @@ void XCBWindow::destroy()
     if (xkbCtx_)     { xkb_context_unref(xkbCtx_);    xkbCtx_     = nullptr; }
 
     if (conn_) {
-        if (cursorArrow_)   xcb_free_cursor(conn_, cursorArrow_);
-        if (cursorIBeam_)   xcb_free_cursor(conn_, cursorIBeam_);
-        if (cursorResizeH_) xcb_free_cursor(conn_, cursorResizeH_);
-        if (cursorResizeV_) xcb_free_cursor(conn_, cursorResizeV_);
-        cursorArrow_ = cursorIBeam_ = cursorResizeH_ = cursorResizeV_ = 0;
+        xcb_cursor_t* all[] = {
+            &cursorArrow_, &cursorIBeam_, &cursorPointer_, &cursorCrosshair_,
+            &cursorWait_,  &cursorHelp_,  &cursorMove_,    &cursorNotAllowed_,
+            &cursorResizeH_, &cursorResizeV_, &cursorResizeNESW_, &cursorResizeNWSE_,
+        };
+        for (xcb_cursor_t* c : all) {
+            if (*c) { xcb_free_cursor(conn_, *c); *c = 0; }
+        }
+        if (cursorCtx_) {
+            xcb_cursor_context_free(cursorCtx_);
+            cursorCtx_ = nullptr;
+        }
         if (window_) xcb_destroy_window(conn_, window_);
         window_ = 0;
         conn_   = nullptr;  // owned by Xlib display, don't disconnect separately
@@ -681,10 +689,20 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
     xkb_keycode_t keycode = ev->detail;
 
     // Sync modifier state from the server's mask embedded in the event.
+    // X11 reports `state` as the modifier mask *before* the event, so a
+    // bare Ctrl press arrives with state=0 (Ctrl isn't applied yet). To
+    // get a post-event mod mask — needed by InputController so Ctrl-hover
+    // can flip the cursor to the link-pointer shape without waiting for
+    // a subsequent key event — we apply the key to our local xkb state
+    // ourselves after syncing. The keysym lookup runs first so it sees
+    // the pre-event state (matters for Shift-modified character lookup).
     updateXKBStateFromCore(ev->state);
 
     xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
     Key k = keysymToKey(sym);
+
+    xkb_state_update_key(xkbState_, keycode, XKB_KEY_DOWN);
+
     uint32_t mods = xkbStateToModifiers(xkbState_);
     KeyAction action = isRepeat ? KeyAction_Repeat : KeyAction_Press;
 
@@ -705,10 +723,17 @@ void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
 
     xkb_keycode_t keycode = ev->detail;
 
+    // Same pre/post-event distinction as handleKeyPress: ev->state still
+    // includes the modifier being released; applying the release to our
+    // local xkb state gives a post-event mod mask so InputController
+    // sees Ctrl drop on key-up rather than at the next event.
     updateXKBStateFromCore(ev->state);
 
     xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
     Key k = keysymToKey(sym);
+
+    xkb_state_update_key(xkbState_, keycode, XKB_KEY_UP);
+
     uint32_t mods = xkbStateToModifiers(xkbState_);
 
     if (onKey) onKey(static_cast<int>(k), static_cast<int>(keycode),

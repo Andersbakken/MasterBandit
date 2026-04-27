@@ -128,7 +128,11 @@ private:
     xcb_keycode_t lastPressKeycode_ = 0;
     uint32_t      lastPressTime_    = 0;
 
-    // Cached X11 cursors (from cursor font)
+    // Cached themed cursors loaded by libxcb-cursor from the user's
+    // freedesktop cursor theme (gtk-cursor-theme-name / Xcursor.theme).
+    // Falls back to the legacy cursor-font glyph if the theme is missing
+    // a particular name.
+    struct xcb_cursor_context_t* cursorCtx_ = nullptr;
     xcb_cursor_t cursorArrow_      = 0;
     xcb_cursor_t cursorIBeam_      = 0;
     xcb_cursor_t cursorPointer_    = 0;

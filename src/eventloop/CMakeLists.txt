@@ -42,7 +42,7 @@ if(APPLE)
     )
 else()
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(XCB REQUIRED xcb xcb-util xcb-sync xcb-xkb)
+    pkg_check_modules(XCB REQUIRED xcb xcb-util xcb-sync xcb-xkb xcb-cursor)
     pkg_check_modules(XKBCOMMON REQUIRED xkbcommon xkbcommon-x11)
     pkg_check_modules(X11 REQUIRED x11 x11-xcb)
 

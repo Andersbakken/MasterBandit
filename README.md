@@ -15,8 +15,8 @@ export VCPKG_ROOT=/path/to/vcpkg
 
 ```sh
 sudo apt install pkg-config libxcb1-dev libxcb-util-dev libxcb-sync-dev \
-    libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev \
-    libx11-xcb-dev libfontconfig-dev libdbus-1-dev
+    libxcb-xkb-dev libxcb-cursor-dev libxkbcommon-dev libxkbcommon-x11-dev \
+    libx11-dev libx11-xcb-dev libfontconfig-dev libdbus-1-dev
 ```
 
 ### Build presets

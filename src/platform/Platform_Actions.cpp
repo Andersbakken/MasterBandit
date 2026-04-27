@@ -98,19 +98,14 @@ void PlatformDawn::executeAction(const Action::Any& action)
 
             Terminal* fp = scriptEngine_.focusedTerminalInSubtree(*tab);
             if (!fp) return;
-            const Rect& r = fp->rect();
-            // Step past the divider gap; +1 alone lands inside the divider
-            // and paneAtPixel returns nil.
-            const int step = scriptEngine_.dividerPixels() + 1;
-            int px = 0, py = 0;
+            Uuid targetId;
             switch (a.dir) {
-            case Action::Direction::Left:  px = r.x - step;       py = r.y + r.h / 2; break;
-            case Action::Direction::Right: px = r.x + r.w + step; py = r.y + r.h / 2; break;
-            case Action::Direction::Up:    px = r.x + r.w / 2;    py = r.y - step;    break;
-            case Action::Direction::Down:  px = r.x + r.w / 2;    py = r.y + r.h + step; break;
+            case Action::Direction::Left:  targetId = scriptEngine_.paneLeftOf(*tab, fp->nodeId());  break;
+            case Action::Direction::Right: targetId = scriptEngine_.paneRightOf(*tab, fp->nodeId()); break;
+            case Action::Direction::Up:    targetId = scriptEngine_.paneAboveOf(*tab, fp->nodeId()); break;
+            case Action::Direction::Down:  targetId = scriptEngine_.paneBelowOf(*tab, fp->nodeId()); break;
             default: return;
             }
-            Uuid targetId = scriptEngine_.paneAtPixelInSubtree(*tab, px, py);
             if (!targetId.isNil() && targetId != fp->nodeId()) {
                 Uuid prev = scriptEngine_.focusedPaneInSubtree(*tab);
                 scriptEngine_.setFocusedTerminalNodeId(targetId);
@@ -129,6 +124,105 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 JS_SetPropertyStr(ctx, o, "amount", JS_NewInt32(ctx, amount));
                 return o;
             });
+        },
+        [&](const Action::MoveTab& a) {
+            // Reorder the active tab among its siblings under the root stack.
+            // activeChild stores a Uuid, so swap preserves focus on the moved
+            // tab automatically. moveChild marks the tree dirty; the next
+            // frame's runLayoutIfDirty cascades resize.
+            auto& tree = scriptEngine_.layoutTree();
+            Uuid tab = scriptEngine_.activeTabSubtreeRoot();
+            if (tab.isNil()) return;
+            Node* tabNode = tree.node(tab);
+            if (!tabNode) return;
+            Uuid rootStack = tabNode->parent;
+            if (rootStack.isNil()) return;
+            if (tree.moveChild(rootStack, tab, a.delta)) {
+                tabBarDirty_ = true;
+                setNeedsRedraw();
+            }
+        },
+        [&](const Action::SwapPane& a) {
+            // Swap focused pane with the pane in the requested direction.
+            // Spatial L/R/U/D use the same neighbor lookup as FocusPane;
+            // Next/Prev wraps through the tab's leaves in tree-traversal
+            // order. swapLeaves preserves slot weights at each position so
+            // the layout doesn't change — only the leaves move. Focus
+            // follows the same Uuid (now in a different visual slot).
+            auto tab = activeTab();
+            if (!tab) return;
+            Uuid focused = scriptEngine_.focusedPaneInSubtree(*tab);
+            if (focused.isNil()) return;
+            Uuid target;
+            switch (a.dir) {
+            case Action::Direction::Left:  target = scriptEngine_.paneLeftOf(*tab, focused);  break;
+            case Action::Direction::Right: target = scriptEngine_.paneRightOf(*tab, focused); break;
+            case Action::Direction::Up:    target = scriptEngine_.paneAboveOf(*tab, focused); break;
+            case Action::Direction::Down:  target = scriptEngine_.paneBelowOf(*tab, focused); break;
+            case Action::Direction::Next:
+            case Action::Direction::Prev: {
+                auto panes = scriptEngine_.panesInSubtree(*tab);
+                if (panes.size() < 2) return;
+                int cur = -1;
+                for (int i = 0; i < static_cast<int>(panes.size()); ++i) {
+                    if (panes[i]->nodeId() == focused) { cur = i; break; }
+                }
+                if (cur < 0) return;
+                int delta = (a.dir == Action::Direction::Next) ? 1 : -1;
+                int n = static_cast<int>(panes.size());
+                int idx = ((cur + delta) % n + n) % n;
+                target = panes[idx]->nodeId();
+                break;
+            }
+            }
+            if (target.isNil() || target == focused) return;
+            if (scriptEngine_.layoutTree().swapLeaves(focused, target)) {
+                // dividersDirty_ (member) reaches renderState_ via the merge
+                // inside buildRenderFrameState. pending_.dividersDirty set by
+                // refreshDividers (called later, from runLayoutIfDirty) does
+                // not — it's wiped by pending_.clear() before the next tick.
+                // Without this, the renderer skips its VB update path and
+                // dividers render with stale geometry after the swap.
+                dividersDirty_ = true;
+                setNeedsRedraw();
+            }
+        },
+        [&](const Action::RotatePanes& a) {
+            // Rotate every leaf in the active tab through tree-traversal
+            // order. delta=+1 ("clockwise") → each leaf advances one slot
+            // forward, the last leaf wraps to the front. delta=-1 reverses.
+            // Implementation: pick one leaf and bubble it across n-1 slots
+            // via successive swapLeaves calls. The same leaf is always one
+            // half of the swap, so it carries forward through every step
+            // (snapshotting both sides instead would only do single-step
+            // adjacent shifts and produce the opposite rotation).
+            auto tab = activeTab();
+            if (!tab) return;
+            if (a.delta == 0) return;
+            auto& tree = scriptEngine_.layoutTree();
+            for (int s = 0; s < std::abs(a.delta); ++s) {
+                auto p = scriptEngine_.panesInSubtree(*tab);
+                int m = static_cast<int>(p.size());
+                if (m < 2) break;
+                if (a.delta > 0) {
+                    // Bubble the last leaf to the front.
+                    Uuid bubble = p.back()->nodeId();
+                    for (int i = m - 2; i >= 0; --i) {
+                        tree.swapLeaves(bubble, p[i]->nodeId());
+                    }
+                } else {
+                    // Bubble the first leaf to the back.
+                    Uuid bubble = p.front()->nodeId();
+                    for (int i = 1; i < m; ++i) {
+                        tree.swapLeaves(bubble, p[i]->nodeId());
+                    }
+                }
+            }
+            // See SwapPane comment: pending_.dividersDirty set by the eventual
+            // refreshDividers doesn't propagate to renderState_; the member
+            // flag does (merged in buildRenderFrameState).
+            dividersDirty_ = true;
+            setNeedsRedraw();
         },
         [&](const Action::Copy&) {
             Terminal* term = activeTerm();

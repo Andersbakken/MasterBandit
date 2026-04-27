@@ -36,6 +36,16 @@ struct IncreaseFontSize    {};
 struct DecreaseFontSize    {};
 struct ResetFontSize       {};
 struct ScrollToPrompt      { int direction = -1; }; // -1 = previous, +1 = next
+// Reorder actions. MoveTab swaps the active tab with its left/right neighbor
+// in the root stack (delta ±1). SwapPane swaps the focused pane with the
+// pane in the given direction — spatial Left/Right/Up/Down mirrors FocusPane
+// (pixel-step past divider gap), Next/Prev wraps through the tab's leaves
+// in tree-traversal order. RotatePanes circular-shifts every leaf in the
+// active tab by `delta` positions, regardless of nested container shape;
+// the active focus follows the same Uuid into its new visual position.
+struct MoveTab             { int delta; };
+struct SwapPane            { Direction dir; };
+struct RotatePanes         { int delta; };
 struct SelectCommandOutput   {};
 struct ShowScrollback        {};
 struct CopyLastCommand       {}; // prompt + input + output of last command to clipboard
@@ -61,7 +71,8 @@ using Any = std::variant<
     ScrollToPrompt, SelectCommandOutput, ShowScrollback,
     CopyLastCommand, CopySelectedCommandOutput, CopyDocument,
     FocusPopup, ReloadConfig, ScriptAction,
-    PasteSelection
+    PasteSelection,
+    MoveTab, SwapPane, RotatePanes
 >;
 
 // Action type identity is the variant index.

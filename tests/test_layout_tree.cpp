@@ -599,3 +599,208 @@ TEST_CASE("LayoutTree: collapseSingletonsAbove folds single-child Containers")
     auto rects = t.computeRects({0, 0, 100, 50}, 1, 1);
     CHECK(rectOf(rects, leaf) == Rect{0, 0, 100, 50});
 }
+
+namespace {
+// Snapshot the order of a Container/Stack's children as a vector of Uuids.
+std::vector<Uuid> childIds(LayoutTree& t, Uuid parent)
+{
+    std::vector<Uuid> out;
+    Node* p = t.node(parent);
+    if (!p) return out;
+    if (auto* cd = std::get_if<ContainerData>(&p->data)) {
+        for (const auto& s : cd->children) out.push_back(s.id);
+    } else if (auto* sd = std::get_if<StackData>(&p->data)) {
+        for (const auto& s : sd->children) out.push_back(s.id);
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("LayoutTree::moveChild swaps adjacent siblings")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal(), b = t.createTerminal(), c = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{c, 1}));
+
+    REQUIRE(t.moveChild(root, b, +1));            // [a,b,c] → [a,c,b]
+    CHECK(childIds(t, root) == std::vector<Uuid>{a, c, b});
+
+    REQUIRE(t.moveChild(root, b, -1));            // [a,c,b] → [a,b,c]
+    CHECK(childIds(t, root) == std::vector<Uuid>{a, b, c});
+
+    REQUIRE(t.moveChild(root, a, +2));            // [a,b,c] → [b,c,a]
+    CHECK(childIds(t, root) == std::vector<Uuid>{b, c, a});
+}
+
+TEST_CASE("LayoutTree::moveChild boundaries return false")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal(), b = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
+
+    CHECK_FALSE(t.moveChild(root, a, -1));        // already at index 0
+    CHECK_FALSE(t.moveChild(root, b, +1));        // already at end
+    CHECK_FALSE(t.moveChild(root, a, +5));        // overshoot
+    CHECK_FALSE(t.moveChild(root, a, 0));         // zero delta is meaningless
+    CHECK(childIds(t, root) == std::vector<Uuid>{a, b});
+}
+
+TEST_CASE("LayoutTree::moveChild rejects unrelated parent/child")
+{
+    LayoutTree t;
+    Uuid p1 = t.createContainer(SplitDir::Horizontal);
+    Uuid p2 = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal(), b = t.createTerminal();
+    REQUIRE(t.appendChild(p1, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(p2, ChildSlot{b, 1}));
+
+    CHECK_FALSE(t.moveChild(p1, b, +1));          // b is not a child of p1
+    CHECK_FALSE(t.moveChild(Uuid{}, a, +1));      // bogus parent
+}
+
+TEST_CASE("LayoutTree::moveChild on a Stack preserves activeChild Uuid")
+{
+    LayoutTree t;
+    Uuid stack = t.createStack();
+    Uuid a = t.createTerminal(), b = t.createTerminal(), c = t.createTerminal();
+    REQUIRE(t.appendChild(stack, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(stack, ChildSlot{b, 1}));
+    REQUIRE(t.appendChild(stack, ChildSlot{c, 1}));
+    REQUIRE(t.setActiveChild(stack, b));
+
+    REQUIRE(t.moveChild(stack, b, +1));           // [a,b,c] → [a,c,b]
+    CHECK(childIds(t, stack) == std::vector<Uuid>{a, c, b});
+    auto* sd = std::get_if<StackData>(&t.node(stack)->data);
+    REQUIRE(sd);
+    CHECK(sd->activeChild == b);                  // active still tracks b
+}
+
+TEST_CASE("LayoutTree::rotateChildren cyclic shift in both directions")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal(), b = t.createTerminal(), c = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{c, 1}));
+
+    REQUIRE(t.rotateChildren(root, +1));          // [a,b,c] → [c,a,b]
+    CHECK(childIds(t, root) == std::vector<Uuid>{c, a, b});
+
+    REQUIRE(t.rotateChildren(root, -1));          // [c,a,b] → [a,b,c]
+    CHECK(childIds(t, root) == std::vector<Uuid>{a, b, c});
+
+    // Larger delta wraps mod n.
+    REQUIRE(t.rotateChildren(root, +4));          // == +1 for n=3
+    CHECK(childIds(t, root) == std::vector<Uuid>{c, a, b});
+}
+
+TEST_CASE("LayoutTree::rotateChildren rejects degenerate cases")
+{
+    LayoutTree t;
+    Uuid empty = t.createContainer(SplitDir::Horizontal);
+    Uuid single = t.createContainer(SplitDir::Horizontal);
+    Uuid only = t.createTerminal();
+    REQUIRE(t.appendChild(single, ChildSlot{only, 1}));
+
+    CHECK_FALSE(t.rotateChildren(empty,  +1));    // 0 children
+    CHECK_FALSE(t.rotateChildren(single, +1));    // 1 child
+    CHECK_FALSE(t.rotateChildren(empty,  0));     // zero delta
+    CHECK_FALSE(t.rotateChildren(Uuid{}, +1));    // bogus parent
+}
+
+TEST_CASE("LayoutTree::swapLeaves swaps within the same parent")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal(), b = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{a, /*stretch=*/1, /*min=*/0, /*max=*/0, /*fixed=*/0}));
+    REQUIRE(t.appendChild(root, ChildSlot{b, /*stretch=*/3, /*min=*/0, /*max=*/0, /*fixed=*/0}));
+
+    REQUIRE(t.swapLeaves(a, b));
+    // Slot weights stay with the position; only the ids swap.
+    CHECK(childIds(t, root) == std::vector<Uuid>{b, a});
+    auto* cd = std::get_if<ContainerData>(&t.node(root)->data);
+    REQUIRE(cd);
+    CHECK(cd->children[0].stretch == 1);  // pos 0 still has stretch=1
+    CHECK(cd->children[1].stretch == 3);  // pos 1 still has stretch=3
+    // Parent pointers unchanged for same-parent swap.
+    CHECK(t.node(a)->parent == root);
+    CHECK(t.node(b)->parent == root);
+}
+
+TEST_CASE("LayoutTree::swapLeaves swaps across different parents")
+{
+    LayoutTree t;
+    //   root (H)
+    //   ├── A (left col)
+    //   └── inner (V)
+    //       ├── B
+    //       └── C
+    Uuid root  = t.createContainer(SplitDir::Horizontal);
+    Uuid inner = t.createContainer(SplitDir::Vertical);
+    Uuid a = t.createTerminal(), b = t.createTerminal(), c = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root,  ChildSlot{a,     1}));
+    REQUIRE(t.appendChild(root,  ChildSlot{inner, 1}));
+    REQUIRE(t.appendChild(inner, ChildSlot{b, 1}));
+    REQUIRE(t.appendChild(inner, ChildSlot{c, 1}));
+
+    REQUIRE(t.swapLeaves(a, b));
+    // A is now where B was (inside inner); B is where A was (left col of root).
+    CHECK(childIds(t, root)  == std::vector<Uuid>{b, inner});
+    CHECK(childIds(t, inner) == std::vector<Uuid>{a, c});
+    CHECK(t.node(a)->parent == inner);
+    CHECK(t.node(b)->parent == root);
+    CHECK(t.node(c)->parent == inner);
+}
+
+TEST_CASE("LayoutTree::swapLeaves preserves Stack activeChild on cross-parent swap")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid s1 = t.createStack();
+    Uuid s2 = t.createStack();
+    Uuid a = t.createTerminal(), b = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{s1, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{s2, 1}));
+    REQUIRE(t.appendChild(s1, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(s2, ChildSlot{b, 1}));
+    REQUIRE(t.setActiveChild(s1, a));
+    REQUIRE(t.setActiveChild(s2, b));
+
+    REQUIRE(t.swapLeaves(a, b));
+    // After swap, s1 contains b and s2 contains a. activeChild Uuids should
+    // track the leaves that NOW live in each stack.
+    auto* sd1 = std::get_if<StackData>(&t.node(s1)->data);
+    auto* sd2 = std::get_if<StackData>(&t.node(s2)->data);
+    REQUIRE(sd1); REQUIRE(sd2);
+    CHECK(sd1->activeChild == b);
+    CHECK(sd2->activeChild == a);
+}
+
+TEST_CASE("LayoutTree::swapLeaves rejects bad inputs")
+{
+    LayoutTree t;
+    Uuid root = t.createContainer(SplitDir::Horizontal);
+    Uuid a = t.createTerminal(), b = t.createTerminal(), orphan = t.createTerminal();
+    REQUIRE(t.setRoot(root));
+    REQUIRE(t.appendChild(root, ChildSlot{a, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot{b, 1}));
+
+    CHECK_FALSE(t.swapLeaves(Uuid{}, a));         // nil id
+    CHECK_FALSE(t.swapLeaves(a, a));              // equal
+    CHECK_FALSE(t.swapLeaves(a, orphan));         // orphan has no parent
+    CHECK_FALSE(t.swapLeaves(root, a));           // ancestor of a
+    CHECK_FALSE(t.swapLeaves(a, root));           // a is descendant of root
+}

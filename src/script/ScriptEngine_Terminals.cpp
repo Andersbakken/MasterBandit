@@ -425,6 +425,45 @@ Uuid Engine::paneAtPixelInSubtree(Uuid subtreeRoot, int px, int py) const
     return {};
 }
 
+// Spatial neighbor helpers. Pixel-step from `from`'s rect past the divider
+// gap, then resolve the pane at that point. Mirror of the inline logic that
+// used to live in PlatformDawn::executeAction(FocusPane); now shared so
+// SwapPane / future drag handlers can reuse the same semantics.
+namespace {
+Uuid neighborInDir(const Engine& eng, Uuid subtreeRoot, Uuid from,
+                   int dx, int dy)
+{
+    if (subtreeRoot.isNil() || from.isNil()) return {};
+    Rect r = eng.nodeRectInSubtree(subtreeRoot, from);
+    if (r.isEmpty()) return {};
+    const int step = eng.dividerPixels() + 1;
+    int px = r.x + r.w / 2 + dx * (r.w / 2 + step);
+    int py = r.y + r.h / 2 + dy * (r.h / 2 + step);
+    Uuid hit = eng.paneAtPixelInSubtree(subtreeRoot, px, py);
+    return (hit == from) ? Uuid{} : hit;
+}
+} // namespace
+
+Uuid Engine::paneLeftOf(Uuid subtreeRoot, Uuid fromPaneId) const
+{
+    return neighborInDir(*this, subtreeRoot, fromPaneId, -1, 0);
+}
+
+Uuid Engine::paneRightOf(Uuid subtreeRoot, Uuid fromPaneId) const
+{
+    return neighborInDir(*this, subtreeRoot, fromPaneId, +1, 0);
+}
+
+Uuid Engine::paneAboveOf(Uuid subtreeRoot, Uuid fromPaneId) const
+{
+    return neighborInDir(*this, subtreeRoot, fromPaneId, 0, -1);
+}
+
+Uuid Engine::paneBelowOf(Uuid subtreeRoot, Uuid fromPaneId) const
+{
+    return neighborInDir(*this, subtreeRoot, fromPaneId, 0, +1);
+}
+
 Uuid Engine::focusedPaneInSubtree(Uuid subtreeRoot) const
 {
     if (subtreeRoot.isNil()) return {};

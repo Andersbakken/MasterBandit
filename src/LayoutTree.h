@@ -105,6 +105,29 @@ public:
     bool setTabBarStack(Uuid tabBar, Uuid stack); // stack must be kind Stack
     void setLabel(Uuid node, std::string label);
 
+    // Move `child` within `parent`'s child list by `delta` positions. delta=+1
+    // swaps with the next sibling, delta=-1 with the previous. Out-of-bounds
+    // moves return false (caller treats as no-op). Wraparound is NOT performed
+    // (use rotateChildren). Marks dirty on success. Stack `activeChild` stores
+    // a Uuid, so reordering preserves focus on the moved entry automatically.
+    bool moveChild(Uuid parent, Uuid child, int delta);
+
+    // Circular shift all children of `parent` by `delta` positions. Positive
+    // `delta` advances each child to a higher index; the last wraps to first.
+    // Negative reverses. Returns false if parent invalid, not Container/Stack,
+    // or has fewer than 2 children. Marks dirty on success.
+    bool rotateChildren(Uuid parent, int delta);
+
+    // Swap two leaves' positions across the tree, including the cross-parent
+    // case. Slot weights (stretch/min/max/fixed) stay with the position so
+    // the visual layout doesn't change — only the leaves move. Updates each
+    // node's parent pointer and any Stack activeChild Uuids that referenced
+    // a moved leaf. Refuses nil ids, equal ids, missing nodes, detached
+    // nodes (no parent), or pairs where one is an ancestor of the other.
+    // Marks dirty on success. Used to express "rotate / swap panes across
+    // arbitrary tree shapes" in terms of a single primitive.
+    bool swapLeaves(Uuid a, Uuid b);
+
     // Zoom override on a Stack. `target == nil` clears. Otherwise:
     //   - `stack` must be an existing Stack node.
     //   - `target` must live in `stack`'s subtree (reflexive disallowed).

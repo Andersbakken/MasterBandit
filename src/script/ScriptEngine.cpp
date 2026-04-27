@@ -1469,6 +1469,9 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
         {"FocusPane",  {{"next", "Next"}, {"prev", "Previous"}, {"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}}},
         {"AdjustPaneSize", {{"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}}},
         {"ScrollToPrompt", {{"-1", "Previous"}, {"1", "Next"}}},
+        {"MoveTab",     {{"left", "Left"}, {"right", "Right"}}},
+        {"SwapPane",    {{"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}, {"next", "Next"}, {"prev", "Previous"}}},
+        {"RotatePanes", {{"cw", "Clockwise"}, {"ccw", "Counterclockwise"}}},
     };
 
     JSValue arr = JS_NewArray(ctx);

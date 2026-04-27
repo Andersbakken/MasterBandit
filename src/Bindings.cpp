@@ -172,6 +172,34 @@ std::optional<Action::Any> parseAction(const std::string& name,
         return std::nullopt;
     }
 
+    // Reorder actions. Each takes an optional direction string; missing args
+    // fall back to a sensible default ("right"/"next"/"cw").
+    if (name == "move_tab") {
+        std::string d = args.empty() ? "right" : toLower(args[0]);
+        if (d == "left"  || d == "prev") return Action::MoveTab{-1};
+        if (d == "right" || d == "next") return Action::MoveTab{+1};
+        spdlog::warn("Bindings: unknown move_tab direction '{}'", args[0]);
+        return std::nullopt;
+    }
+    if (name == "swap_pane") {
+        std::string d = args.empty() ? "next" : toLower(args[0]);
+        if (d == "left")  return Action::SwapPane{Action::Direction::Left};
+        if (d == "right") return Action::SwapPane{Action::Direction::Right};
+        if (d == "up")    return Action::SwapPane{Action::Direction::Up};
+        if (d == "down")  return Action::SwapPane{Action::Direction::Down};
+        if (d == "next")  return Action::SwapPane{Action::Direction::Next};
+        if (d == "prev")  return Action::SwapPane{Action::Direction::Prev};
+        spdlog::warn("Bindings: unknown swap_pane direction '{}'", args.empty() ? "" : args[0]);
+        return std::nullopt;
+    }
+    if (name == "rotate_panes") {
+        std::string d = args.empty() ? "cw" : toLower(args[0]);
+        if (d == "cw"  || d == "clockwise"        || d == "next") return Action::RotatePanes{+1};
+        if (d == "ccw" || d == "counterclockwise" || d == "prev") return Action::RotatePanes{-1};
+        spdlog::warn("Bindings: unknown rotate_panes direction '{}'", args[0]);
+        return std::nullopt;
+    }
+
     if (name == "focus_popup") return Action::FocusPopup{};
 
     if (name == "copy")  return Action::Copy{};
@@ -303,6 +331,17 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("meta+down") },         Action::ScrollToPrompt{1}  },
         // Scrollback search
         { { *parseKeyStroke("meta+f") },            Action::ShowScrollback{} },
+        // Tab / pane reorder
+        { { *parseKeyStroke("meta+shift+pageup") },   Action::MoveTab{-1} },
+        { { *parseKeyStroke("meta+shift+pagedown") }, Action::MoveTab{+1} },
+        { { *parseKeyStroke("meta+ctrl+left") },      Action::SwapPane{Action::Direction::Left}  },
+        { { *parseKeyStroke("meta+ctrl+right") },     Action::SwapPane{Action::Direction::Right} },
+        { { *parseKeyStroke("meta+ctrl+up") },        Action::SwapPane{Action::Direction::Up}    },
+        { { *parseKeyStroke("meta+ctrl+down") },      Action::SwapPane{Action::Direction::Down}  },
+        { { *parseKeyStroke("meta+alt+n") },          Action::SwapPane{Action::Direction::Next}  },
+        { { *parseKeyStroke("meta+alt+p") },          Action::SwapPane{Action::Direction::Prev}  },
+        { { *parseKeyStroke("meta+alt+r") },          Action::RotatePanes{+1} },
+        { { *parseKeyStroke("meta+alt+shift+r") },    Action::RotatePanes{-1} },
     };
 #else
     return {
@@ -349,6 +388,17 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("ctrl+alt+x") },        Action::ScrollToPrompt{1}  },
         // Scrollback search
         { { *parseKeyStroke("ctrl+shift+f") },      Action::ShowScrollback{} },
+        // Tab / pane reorder
+        { { *parseKeyStroke("ctrl+alt+pageup") },   Action::MoveTab{-1} },
+        { { *parseKeyStroke("ctrl+alt+pagedown") }, Action::MoveTab{+1} },
+        { { *parseKeyStroke("ctrl+alt+left") },     Action::SwapPane{Action::Direction::Left}  },
+        { { *parseKeyStroke("ctrl+alt+right") },    Action::SwapPane{Action::Direction::Right} },
+        { { *parseKeyStroke("ctrl+alt+up") },       Action::SwapPane{Action::Direction::Up}    },
+        { { *parseKeyStroke("ctrl+alt+down") },     Action::SwapPane{Action::Direction::Down}  },
+        { { *parseKeyStroke("ctrl+alt+n") },        Action::SwapPane{Action::Direction::Next}  },
+        { { *parseKeyStroke("ctrl+alt+p") },        Action::SwapPane{Action::Direction::Prev}  },
+        { { *parseKeyStroke("ctrl+alt+r") },        Action::RotatePanes{+1} },
+        { { *parseKeyStroke("ctrl+alt+shift+r") },  Action::RotatePanes{-1} },
     };
 #endif
 }

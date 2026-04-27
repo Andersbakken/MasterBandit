@@ -573,6 +573,16 @@ public:
     Rect nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const;
     Uuid paneAtPixelInSubtree(Uuid subtreeRoot, int px, int py) const;
 
+    // Spatial neighbor lookups: from the rect of `fromPaneId` (must be a
+    // Terminal leaf in `subtreeRoot`), step past the divider gap in the given
+    // direction and resolve via paneAtPixelInSubtree. Returns nil Uuid when
+    // there is no pane in that direction. Used by FocusPane and SwapPane to
+    // share spatial-direction semantics.
+    Uuid paneLeftOf(Uuid subtreeRoot, Uuid fromPaneId) const;
+    Uuid paneRightOf(Uuid subtreeRoot, Uuid fromPaneId) const;
+    Uuid paneAboveOf(Uuid subtreeRoot, Uuid fromPaneId) const;
+    Uuid paneBelowOf(Uuid subtreeRoot, Uuid fromPaneId) const;
+
     // Focus scoped to a tab.
     Uuid focusedPaneInSubtree(Uuid subtreeRoot) const;
     ::Terminal* focusedTerminalInSubtree(Uuid subtreeRoot);

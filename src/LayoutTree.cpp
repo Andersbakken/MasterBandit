@@ -215,6 +215,109 @@ bool LayoutTree::replaceChild(Uuid parent, Uuid oldChild, ChildSlot newSlot)
     return true;
 }
 
+bool LayoutTree::moveChild(Uuid parent, Uuid child, int delta)
+{
+    if (delta == 0) return false;
+    Node* p = node(parent);
+    if (!p) return false;
+    auto* kids = childrenOf(p);
+    if (!kids) return false;
+
+    auto it = std::find_if(kids->begin(), kids->end(),
+                           [&](const ChildSlot& s) { return s.id == child; });
+    if (it == kids->end()) return false;
+
+    int idx = static_cast<int>(it - kids->begin());
+    int target = idx + delta;
+    if (target < 0 || target >= static_cast<int>(kids->size())) return false;
+
+    // std::rotate is overkill for adjacent swaps but generalizes when |delta|>1
+    // (caller passing larger jumps gets a single move past the intermediates).
+    if (delta > 0) {
+        std::rotate(kids->begin() + idx,
+                    kids->begin() + idx + 1,
+                    kids->begin() + target + 1);
+    } else {
+        std::rotate(kids->begin() + target,
+                    kids->begin() + idx,
+                    kids->begin() + idx + 1);
+    }
+    // activeChild stores a Uuid, not an index — reordering preserves it.
+    markDirty();
+    return true;
+}
+
+bool LayoutTree::rotateChildren(Uuid parent, int delta)
+{
+    if (delta == 0) return false;
+    Node* p = node(parent);
+    if (!p) return false;
+    auto* kids = childrenOf(p);
+    if (!kids) return false;
+    int n = static_cast<int>(kids->size());
+    if (n < 2) return false;
+
+    // Normalize delta to [0, n). Positive delta advances each child to a
+    // higher index; the last child wraps to position 0.
+    int shift = ((delta % n) + n) % n;
+    if (shift == 0) return false;
+
+    // std::rotate's `middle` iterator becomes the new first element. To
+    // shift everyone forward by `shift`, the new first must be the element
+    // currently at index (n - shift).
+    std::rotate(kids->begin(),
+                kids->begin() + (n - shift),
+                kids->end());
+    markDirty();
+    return true;
+}
+
+bool LayoutTree::swapLeaves(Uuid aId, Uuid bId)
+{
+    if (aId.isNil() || bId.isNil() || aId == bId) return false;
+    Node* a = node(aId);
+    Node* b = node(bId);
+    if (!a || !b) return false;
+    Uuid paId = a->parent;
+    Uuid pbId = b->parent;
+    if (paId.isNil() || pbId.isNil()) return false; // detached / root
+    if (contains(aId, bId) || contains(bId, aId)) return false; // ancestor pair
+
+    Node* pa = node(paId);
+    Node* pb = node(pbId);
+    if (!pa || !pb) return false;
+    auto* aKids = childrenOf(pa);
+    auto* bKids = childrenOf(pb);
+    if (!aKids || !bKids) return false;
+
+    auto itA = std::find_if(aKids->begin(), aKids->end(),
+                            [&](const ChildSlot& s) { return s.id == aId; });
+    auto itB = std::find_if(bKids->begin(), bKids->end(),
+                            [&](const ChildSlot& s) { return s.id == bId; });
+    if (itA == aKids->end() || itB == bKids->end()) return false;
+
+    // Slot weights stay with the slot (visual layout preserved); only the
+    // leaf id stored at each position changes.
+    itA->id = bId;
+    itB->id = aId;
+
+    if (paId != pbId) {
+        a->parent = pbId;
+        b->parent = paId;
+        // If a was the active child of pa, pa's active should now be b
+        // (because b sits where a used to live). Same in reverse.
+        if (auto* sd = std::get_if<StackData>(&pa->data); sd && sd->activeChild == aId) {
+            sd->activeChild = bId;
+        }
+        if (auto* sd = std::get_if<StackData>(&pb->data); sd && sd->activeChild == bId) {
+            sd->activeChild = aId;
+        }
+    }
+    // Same-parent: activeChild is a Uuid that's still in this parent, no change needed.
+    markDirty();
+    return true;
+}
+
 bool LayoutTree::setStackZoom(Uuid stack, Uuid target)
 {
     Node* s = node(stack);

@@ -42,7 +42,14 @@ struct TerminalCallbacks {
     std::function<bool()>                        isDarkMode;         // for mode 2031
     std::function<void(const std::string&)>      onCWDChanged;       // OSC 7
     std::function<void(const std::string&)>      onMouseCursorShape; // OSC 22 (CSS pointer name; "" = default)
-    std::function<void(const std::string&, const std::string&, const std::string&)> onDesktopNotification; // OSC 99
+    // Desktop notification dispatch. Urgency follows the freedesktop
+    // Notifications spec ("urgency" hint, byte): 0=low, 1=normal, 2=critical.
+    // OSC 99 supports "u=" in metadata to set this; OSC 9 / 777 / 1337
+    // Notification= have no urgency channel and default to 1.
+    std::function<void(const std::string& /*title*/,
+                       const std::string& /*body*/,
+                       const std::string& /*id*/,
+                       uint8_t            /*urgency*/)> onDesktopNotification;
     std::function<void(const std::string&)>      onForegroundProcessChanged;
     // Called for XTGETTCAP queries not found in the built-in table.
     // Returns the capability value (may be empty for boolean caps), or nullopt if unknown.
@@ -757,6 +764,7 @@ private:
     std::string mNotifyId;
     std::string mNotifyTitle;
     std::string mNotifyBody;
+    uint8_t     mNotifyUrgency { 1 };  // 0=low, 1=normal, 2=critical
 
     // OSC 133 shell-integration state.
     SemanticMode mSemanticMode { SemanticMode::Inactive };

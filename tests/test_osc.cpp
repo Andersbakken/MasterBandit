@@ -442,6 +442,95 @@ TEST_CASE("OSC 99 firing clears buffered state")
     CHECK(t.capturedNotifyId.empty());
 }
 
+// kitty notifications.py:132 — Urgency enum is Low=0, Normal=1, Critical=2.
+// Default is Normal (line 438) when u= is not specified or is malformed.
+TEST_CASE("OSC 99 urgency defaults to normal (1) without u=")
+{
+    TestTerminal t;
+    t.osc("99;;default urgency");
+    CHECK(t.capturedNotifyUrgency == 1);
+}
+
+TEST_CASE("OSC 99 u=0 sets urgency low")
+{
+    TestTerminal t;
+    t.osc("99;u=0;low urgency");
+    CHECK(t.capturedNotifyUrgency == 0);
+}
+
+TEST_CASE("OSC 99 u=2 sets urgency critical")
+{
+    TestTerminal t;
+    t.osc("99;u=2;critical urgency");
+    CHECK(t.capturedNotifyUrgency == 2);
+}
+
+// kitty silently ignores u= values that don't parse to {0,1,2}; we match that
+// by leaving the previous urgency in place. Default for a fresh notification
+// is still 1.
+TEST_CASE("OSC 99 invalid u= is ignored (out-of-range single digit)")
+{
+    TestTerminal t;
+    t.osc("99;u=3;ignored");
+    CHECK(t.capturedNotifyUrgency == 1);
+}
+
+TEST_CASE("OSC 99 invalid u= is ignored (multi-character)")
+{
+    TestTerminal t;
+    t.osc("99;u=12;ignored");
+    CHECK(t.capturedNotifyUrgency == 1);
+}
+
+TEST_CASE("OSC 99 invalid u= is ignored (non-digit)")
+{
+    TestTerminal t;
+    t.osc("99;u=x;ignored");
+    CHECK(t.capturedNotifyUrgency == 1);
+}
+
+// Urgency, like the other accumulator fields, must reset to the default
+// after a notification fires. Otherwise a critical notification followed by
+// a default-urgency one would still be reported critical.
+TEST_CASE("OSC 99 urgency resets to default after dispatch")
+{
+    TestTerminal t;
+    t.osc("99;u=2;critical one");
+    CHECK(t.capturedNotifyUrgency == 2);
+    t.capturedNotifyUrgency = 1;  // observer reset; emulator state should also have reset
+    t.osc("99;;normal one");
+    CHECK(t.capturedNotifyUrgency == 1);
+}
+
+// Urgency carries across chunks within the same notification (same id, d=0
+// then d=1). The u= value seen on any chunk wins (last write).
+TEST_CASE("OSC 99 urgency carries across chunks")
+{
+    TestTerminal t;
+    t.osc("99;i=7:d=0:u=2:p=title;Title");
+    CHECK(t.capturedNotifyUrgency == 1);  // not fired yet, observer untouched
+    t.osc("99;i=7:d=1:p=body;Body");
+    CHECK(t.capturedNotifyUrgency == 2);
+}
+
+// Other notification entry points have no urgency channel and must default
+// to normal (1).
+TEST_CASE("OSC 9 notification has default urgency")
+{
+    TestTerminal t;
+    t.osc("9;hello from osc9");
+    CHECK(t.capturedNotifyTitle == "hello from osc9");
+    CHECK(t.capturedNotifyUrgency == 1);
+}
+
+TEST_CASE("OSC 777 notification has default urgency")
+{
+    TestTerminal t;
+    t.osc("777;notify;Title;Body");
+    CHECK(t.capturedNotifyTitle == "Title");
+    CHECK(t.capturedNotifyUrgency == 1);
+}
+
 // ── OSC 9 / 777 / 1337 notification forms ────────────────────────────────────
 // OSC 9 is shared with ConEmu progress (handled separately above); the
 // non-progress payload is treated as a title-only notification, matching

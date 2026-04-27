@@ -38,26 +38,6 @@ void RenderThread::wake()
     renderCv_.notify_one();
 }
 
-void RenderThread::postToMain(std::function<void()> fn)
-{
-    {
-        std::lock_guard<std::mutex> lk(deferredMainMutex_);
-        deferredMain_.push_back(std::move(fn));
-    }
-    if (EventLoop* el = platform_->eventLoop_.get()) el->wakeup();
-}
-
-void RenderThread::drainDeferredMain()
-{
-    // Called on the main thread from onTick (without mutex_).
-    std::vector<std::function<void()>> pending;
-    {
-        std::lock_guard<std::mutex> lk(deferredMainMutex_);
-        pending.swap(deferredMain_);
-    }
-    for (auto& fn : pending) fn();
-}
-
 void RenderThread::enqueueTerminalExit(Terminal* t)
 {
     {

@@ -338,6 +338,17 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
         atomWmProtocols_, XCB_ATOM_ATOM, 32, 2, protocols);
 
+    // WM_CLASS — two NUL-terminated strings: instance, class. GNOME Shell's
+    // notification daemon traces a notification's sender PID back to its
+    // window and reads WM_CLASS to derive the source label. Match the same
+    // reverse-DNS string we put in the desktop-entry hint so a single
+    // identifier covers both paths and a future .desktop file resolves
+    // cleanly.
+    static const char kWmClass[] = "it.masterband.mb\0it.masterband.mb";
+    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
+        XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8,
+        sizeof(kWmClass) - 1, kWmClass);
+
     setTitle(title);
     xcb_map_window(conn_, window_);
     // Request keyboard focus immediately after mapping

@@ -65,11 +65,23 @@ private:
 };
 
 // Implemented in platform-specific files (PlatformUtils_macOS.mm / PlatformUtils_Linux.cpp)
+//
+// platformInit must run before any of the other platform calls. On Linux
+// it opens the session-bus connection used for dark-mode discovery and
+// notifications; on macOS it is currently a no-op. platformShutdown is the
+// counterpart, called from PlatformDawn's destructor before the EventLoop
+// itself is torn down.
+void platformInit(EventLoop& loop);
+void platformShutdown();
 bool platformIsDarkMode();
 void platformObserveAppearanceChanges(std::function<void(bool isDark)> callback);
 void platformInitNotifications();
 void platformSetNotificationsShowWhenForeground(bool show);
-void platformSendNotification(const std::string& title, const std::string& body);
+// urgency: 0=low, 1=normal, 2=critical (freedesktop Notifications "urgency"
+// hint). Currently honored on Linux; macOS impl ignores the value pending a
+// per-platform mapping.
+void platformSendNotification(const std::string& title, const std::string& body,
+                              uint8_t urgency);
 void platformOpenURL(const std::string& url);
 std::string platformProcessCWD(pid_t pid);
 

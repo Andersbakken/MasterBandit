@@ -635,7 +635,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         case TerminalEmulator::Update:
         case TerminalEmulator::ScrollbackChanged:
             setNeedsRedraw();
-            renderThread_->postToMain([this, paneId] {
+            eventLoop_->post([this, paneId] {
                 renderThread_->pending().dirtyPanes.insert(paneId);
             });
             break;
@@ -645,7 +645,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             if (payload) {
                 const auto* rec = static_cast<const TerminalEmulator::CommandRecord*>(payload);
                 TerminalEmulator::CommandRecord recCopy = *rec;
-                renderThread_->postToMain([this, paneId, recCopy = std::move(recCopy)] {
+                eventLoop_->post([this, paneId, recCopy = std::move(recCopy)] {
                     TerminalEmulator* te = scriptEngine_.terminal(paneId);
                     if (!te) return;
                     const auto& doc = te->document();
@@ -664,7 +664,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             }
             break;
         case TerminalEmulator::CommandSelectionChanged:
-            renderThread_->postToMain([this, paneId] {
+            eventLoop_->post([this, paneId] {
                 Terminal* te = scriptEngine_.terminal(paneId);
                 if (!te) return;
                 scriptEngine_.notifyCommandSelectionChanged(paneId, te->selectedCommandId());
@@ -675,7 +675,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
 
     if (!isHeadless()) {
         cbs.copyToClipboard = [this](const std::string& text) {
-            renderThread_->postToMain([this, text] {
+            eventLoop_->post([this, text] {
                 if (window_) window_->setClipboard(text);
             });
         };
@@ -693,7 +693,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     // (pop-to-empty); Some("") is an explicit OSC 2 "" — both treated the
     // same here since the pull side handles resolution.
     cbs.onTitleChanged = [this, paneId](std::optional<std::string>) {
-        renderThread_->postToMain([this, paneId] {
+        eventLoop_->post([this, paneId] {
             auto tab = findTabForPane(paneId);
             if (!tab) return;
             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
@@ -705,7 +705,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onIconChanged = [this, paneId](std::optional<std::string>) {
-        renderThread_->postToMain([this, paneId] {
+        eventLoop_->post([this, paneId] {
             auto tab = findTabForPane(paneId);
             if (!tab) return;
             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
@@ -717,7 +717,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onProgressChanged = [this, paneId](int state, int pct) {
-        renderThread_->postToMain([this, paneId, state, pct] {
+        eventLoop_->post([this, paneId, state, pct] {
             auto tab = findTabForPane(paneId);
             if (!tab) return;
             if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) {
@@ -733,7 +733,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     cbs.isDarkMode = isHeadless() ? []() { return true; } : []() { return platformIsDarkMode(); };
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
-        renderThread_->postToMain([this, paneId, dir] {
+        eventLoop_->post([this, paneId, dir] {
             auto tab = findTabForPane(paneId);
             if (!tab) return;
             if (Terminal* p = scriptEngine_.paneInSubtree(*tab, paneId)) p->setCWD(dir);
@@ -741,18 +741,18 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     if (isHeadless()) {
-        cbs.onDesktopNotification = [](const std::string&, const std::string&, const std::string&) {};
+        cbs.onDesktopNotification = [](const std::string&, const std::string&, const std::string&, uint8_t) {};
     } else {
-        cbs.onDesktopNotification = [this](const std::string& title, const std::string& body, const std::string& /*icon*/) {
-            renderThread_->postToMain([title, body] {
-                platformSendNotification(title, body);
+        cbs.onDesktopNotification = [this](const std::string& title, const std::string& body, const std::string& /*icon*/, uint8_t urgency) {
+            eventLoop_->post([title, body, urgency] {
+                platformSendNotification(title, body, urgency);
             });
         };
     }
 
     cbs.onOSC = [this, paneId](int oscNum, std::string_view payload) {
         std::string payloadCopy(payload);
-        renderThread_->postToMain([this, paneId, oscNum, payloadCopy = std::move(payloadCopy)] {
+        eventLoop_->post([this, paneId, oscNum, payloadCopy = std::move(payloadCopy)] {
             scriptEngine_.notifyOSC(paneId, oscNum, payloadCopy);
         });
     };
@@ -762,7 +762,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onMouseCursorShape = [this, paneId](const std::string& shape) {
-        renderThread_->postToMain([this, paneId, shape] {
+        eventLoop_->post([this, paneId, shape] {
             if (!inputController_) return;
             if (shape.empty()) {
                 inputController_->erasePaneCursorStyle(paneId);
@@ -780,7 +780,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     cbs.onForegroundProcessChanged = [this, paneId](const std::string& proc) {
-        renderThread_->postToMain([this, paneId, proc] {
+        eventLoop_->post([this, paneId, proc] {
             scriptEngine_.notifyForegroundProcessChanged(paneId, proc);
             auto tab = findTabForPane(paneId);
             if (!tab) return;

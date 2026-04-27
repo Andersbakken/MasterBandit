@@ -32,6 +32,14 @@ API_AVAILABLE(macos(10.14))
 
 static MBNotificationDelegate* g_notifDelegate = nil;
 
+// macOS doesn't need a global init/shutdown step: notifications are wired
+// up in platformInitNotifications, and appearance observing uses Cocoa's
+// own NSDistributedNotificationCenter. These exist to match the
+// cross-platform signature.
+class EventLoop;
+void platformInit(EventLoop& /*loop*/) {}
+void platformShutdown() {}
+
 extern "C" const char* macResourcePathOrNull()
 {
     if (![[NSBundle mainBundle] bundleIdentifier]) return nullptr;
@@ -78,8 +86,12 @@ void platformSetNotificationsShowWhenForeground(bool show)
     g_showWhenForeground.store(show);
 }
 
-void platformSendNotification(const std::string& title, const std::string& body)
+void platformSendNotification(const std::string& title, const std::string& body,
+                              uint8_t /*urgency*/)
 {
+    // TODO: map urgency to UNNotificationContent.interruptionLevel
+    // (passive/active/timeSensitive/critical) when wiring up the macOS
+    // side; currently ignored.
     if (![[NSBundle mainBundle] bundleIdentifier]) return;
     UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
     // Convert to NSString before any async hop. Block-copy semantics

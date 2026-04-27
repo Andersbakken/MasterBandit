@@ -446,6 +446,12 @@ void PlatformDawn::buildRenderFrameState()
 
 PlatformDawn::~PlatformDawn()
 {
+    // Tear down platform-wide background workers (D-Bus bridge on Linux)
+    // before the event loop dies. The bridge's worker thread is joined
+    // synchronously inside platformShutdown so no callback can outlive
+    // this point.
+    platformShutdown();
+
     // Stop the render thread before destroying any Dawn / window state it
     // might be reading. RenderThread::stop() signals stop, wakes the
     // thread if idle, and joins.
@@ -624,6 +630,12 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
                 spdlog::info("TexturePool: screen {}x{}, limit set to {:.0f} MB",
                              sw, sh, limit / (1024.0 * 1024.0));
             }
+
+            // Bring up any platform-wide state (D-Bus session-bus connection
+            // on Linux). Must run before the appearance observer / notification
+            // init so the underlying transport is ready when those entry
+            // points are wired.
+            platformInit(*eventLoop_);
 
             // Observe system appearance changes for mode 2031
             platformObserveAppearanceChanges([this](bool isDark) {

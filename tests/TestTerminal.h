@@ -35,6 +35,7 @@ struct TestTerminal {
     std::string capturedNotifyTitle;
     std::string capturedNotifyBody;
     std::string capturedNotifyId;
+    uint8_t     capturedNotifyUrgency { 1 };
     std::string capturedPointerShape;
     int         pointerShapeCallCount = 0;
     // OSC 52: text sent to copyToClipboard; clipboardContent is what
@@ -60,8 +61,8 @@ struct TestTerminal {
                 capturedIconHasValue = i.has_value();
             };
             cb.onCWDChanged   = [this](const std::string& d) { capturedCWD = d; };
-            cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id) {
-                capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id;
+            cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id, uint8_t u) {
+                capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id; capturedNotifyUrgency = u;
             };
             cb.onMouseCursorShape = [this](const std::string& s) {
                 capturedPointerShape = s;

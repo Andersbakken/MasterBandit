@@ -1907,7 +1907,7 @@ void RenderEngine::renderFrame()
                             rgba.data(), static_cast<int>(w * 4));
 
                         std::string b64 = base64::encode(pngData.data(), pngData.size());
-                        platform_->renderThread_->postToMain([ipc, b64 = std::move(b64)] {
+                        platform_->eventLoop_->post([ipc, b64 = std::move(b64)] {
                             ipc->onPngReady(b64);
                         });
                     });

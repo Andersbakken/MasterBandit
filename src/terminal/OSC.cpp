@@ -136,7 +136,7 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
     if (payload.substr(0, kNotificationKey.size()) == kNotificationKey) {
         if (mCallbacks.onDesktopNotification)
             mCallbacks.onDesktopNotification(
-                std::string(payload.substr(kNotificationKey.size())), {}, {});
+                std::string(payload.substr(kNotificationKey.size())), {}, {}, 1);
         return;
     }
 
@@ -514,7 +514,7 @@ void TerminalEmulator::processStringSequence()
             // historically uses it as the body, but title-only renders
             // cleanly on macOS and the platform fills the title slot
             // from the bundle name.
-            mCallbacks.onDesktopNotification(std::string(payload), {}, {});
+            mCallbacks.onDesktopNotification(std::string(payload), {}, {}, 1);
         }
         break;
     }
@@ -582,7 +582,7 @@ void TerminalEmulator::processStringSequence()
             std::string body(semi == std::string_view::npos
                              ? std::string{} : std::string(rest.substr(semi + 1)));
             if (mCallbacks.onDesktopNotification)
-                mCallbacks.onDesktopNotification(title, body, {});
+                mCallbacks.onDesktopNotification(title, body, {}, 1);
         }
         break;
     case 99: // Desktop notifications (kitty protocol)
@@ -613,6 +613,15 @@ void TerminalEmulator::processStringSequence()
                 if (key == "i") nId = std::string(val);
                 else if (key == "d") done = (val == "1");
                 else if (key == "p") pType = std::string(val);
+                else if (key == "u" && val.size() == 1) {
+                    // 0=low, 1=normal, 2=critical (kitty notifications.py:132 +
+                    // freedesktop urgency hint). Kitty silently ignores any
+                    // value that doesn't parse to one of {0,1,2}; we do the
+                    // same by accepting only single-digit '0'..'2' and
+                    // leaving the previous (default 1) in place otherwise.
+                    char c = val[0];
+                    if (c >= '0' && c <= '2') mNotifyUrgency = static_cast<uint8_t>(c - '0');
+                }
             }
 
             if (!nId.empty()) mNotifyId = nId;
@@ -621,10 +630,12 @@ void TerminalEmulator::processStringSequence()
 
             if (done) {
                 if (mCallbacks.onDesktopNotification)
-                    mCallbacks.onDesktopNotification(mNotifyTitle, mNotifyBody, mNotifyId);
+                    mCallbacks.onDesktopNotification(mNotifyTitle, mNotifyBody,
+                                                     mNotifyId, mNotifyUrgency);
                 mNotifyId.clear();
                 mNotifyTitle.clear();
                 mNotifyBody.clear();
+                mNotifyUrgency = 1;
             }
         }
         break;

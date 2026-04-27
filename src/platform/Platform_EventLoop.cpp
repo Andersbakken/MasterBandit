@@ -687,7 +687,7 @@ int PlatformDawn::exec()
             }
 
             // Drain deferred callbacks.
-            renderThread_->drainDeferredMain();         // title / icon / cwd / progress / etc.
+            eventLoop_->drainPosts();                   // title / icon / cwd / progress / etc.
             scriptEngine_.executePendingJobs();
 
             // Apply all accumulated mutations to the shadow render state in

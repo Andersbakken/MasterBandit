@@ -43,10 +43,6 @@ public:
     // Cross-thread wake signal
     void wake();
 
-    // Main-thread post queue
-    void postToMain(std::function<void()> fn);
-    void drainDeferredMain();
-
     // Terminal exit queue
     void enqueueTerminalExit(Terminal* t);
     void drainPendingExits();
@@ -113,12 +109,6 @@ private:
     // without holding mutex_, drained under mutex_.
     std::mutex                      deferredExitMutex_;
     std::vector<Terminal*>          pendingExits_;
-
-    // Generic main-thread post queue. Parse-time callbacks enqueue
-    // lambdas; drainDeferredMain() runs them on the main thread after
-    // parse completes.
-    std::mutex                      deferredMainMutex_;
-    std::vector<std::function<void()>> deferredMain_;
 
     // Frame-completion counter. See completedFrames() / notifyFrameCompleted().
     std::atomic<uint64_t>           completedFrames_ { 0 };

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <EventLoop.h>
 #include <Window.h>
 
 #include <dawn/webgpu_cpp.h>
@@ -17,7 +18,7 @@ using MBView   = objc_object;
 
 class CocoaWindow : public Window {
 public:
-    CocoaWindow();
+    explicit CocoaWindow(EventLoop& loop);
     ~CocoaWindow() override;
 
     bool create(int width, int height, const std::string& title) override;
@@ -52,11 +53,32 @@ public:
     void dispatchContentScale(float sx, float sy);
     void dispatchClose();
     void dispatchExpose();
-    void setLiveResize(bool v) { inLiveResize_ = v; }
+
+    // Called from MBView's setFrameSize: each time AppKit reports a new
+    // size during a drag. Marks live-resize as in-progress and (re)starts
+    // the gap-based debounce timer; SIGWINCH stays suppressed until the
+    // timer fires (~100ms with no further size changes) or the drag ends.
+    void noteResizeDuringDrag();
+    // Called from MBView's viewDidEndLiveResize. Cancels the debounce and
+    // fires onLiveResizeEnd immediately so the SIGWINCH lands on mouse-up
+    // rather than after the 100ms grace period.
+    void endLiveResize();
+
+    // Internal — used by the CFRunLoopTimer callback to release its own ref.
+    void cancelResizeDebounce();
 
 private:
-    NSWindow* nsWindow_  = nullptr;
-    MBView*   mbView_    = nullptr;
-    bool      shouldClose_ = false;
-    bool      altSendsEsc_ = true;
+    EventLoop&  loop_;
+    NSWindow*   nsWindow_   = nullptr;
+    MBView*     mbView_     = nullptr;
+    bool        shouldClose_ = false;
+    bool        altSendsEsc_ = true;
+    // CFRunLoopTimer (not the EventLoop's kqueue-based timer) so the
+    // debounce fires during AppKit's tracking-mode loop while the user
+    // is dragging the window. The kqueue path can be starved by AppKit
+    // event processing and never fire until mouse-up; CFRunLoopTimer is
+    // serviced directly by the run loop in commonModes (which includes
+    // NSEventTrackingRunLoopMode), so the 100 ms idle gap actually wakes
+    // us mid-drag the way XCB's epoll-driven timer does on Linux.
+    void*       resizeDebounceTimer_ = nullptr;  // CFRunLoopTimerRef
 };

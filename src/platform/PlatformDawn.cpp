@@ -519,7 +519,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             // --- Windowed: create EventLoop + Window ---
 #ifdef __APPLE__
             eventLoop_ = std::make_unique<NSAppEventLoop>();
-            window_    = std::make_unique<CocoaWindow>();
+            window_    = std::make_unique<CocoaWindow>(*eventLoop_);
 #elif defined(__linux__)
             eventLoop_ = std::make_unique<EpollEventLoop>();
             window_.reset(new XCBWindow(*eventLoop_));
@@ -1205,22 +1205,28 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
     std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
 
-    // During a live window drag, debounce the full resize work (surface
-    // reconfigure + layout recompute + pane/terminal reflow) to 25 ms.
-    // One-off resizes (first show, programmatic, live-resize end) apply
-    // immediately.
+    // During a live drag, only do the cheap surface reconfigure + texture
+    // release so the GPU surface tracks the window dimensions. Skip the
+    // layout cascade and per-Terminal soft-wrap reflow — those would be
+    // expensive on large scrollbacks at the per-frame drag rate. The full
+    // reflow runs on the 100 ms idle gap or mouse-up via onLiveResizeEnd
+    // → flushPendingFramebufferResize → applyFramebufferResize.
+    //
+    // (On Linux this used to be deferred via a 25 ms scheduleResize timer;
+    // on macOS the kqueue source is starved by AppKit's tracking mode so
+    // we just do the same work synchronously every drag step. It's only a
+    // few flag updates plus a render-thread wake.)
     const bool live = window_ && window_->inLiveResize();
     if (live) {
-        if (animScheduler_) {
-            animScheduler_->scheduleResize(static_cast<uint32_t>(width),
-                                           static_cast<uint32_t>(height));
-        }
-        // Even while debounced, update fbWidth_/fbHeight_ so other main-thread
-        // readers (tab bar layout, hit-testing) see the latest window size.
-        // The actual surface reconfigure + reflow happens when the timer fires.
         fbWidth_  = static_cast<uint32_t>(width);
         fbHeight_ = static_cast<uint32_t>(height);
+        renderThread_->pending().surfaceNeedsReconfigure = true;
+        renderThread_->pending().viewportSizeChanged = true;
+        renderThread_->pending().releaseAllPaneTextures = true;
+        renderThread_->pending().releaseTabBarTexture = true;
+        tabBarDirty_ = true;
         setNeedsRedraw();
+        renderThread_->wake();
         return;
     }
 
@@ -1229,22 +1235,15 @@ void PlatformDawn::onFramebufferResize(int width, int height)
 
 void PlatformDawn::flushPendingFramebufferResize()
 {
-    // Called on main thread under renderThread_->mutex() from onLiveResizeEnd.
-    if (!animScheduler_) return;
-    uint32_t w = 0, h = 0;
-    if (!animScheduler_->takePendingResize(w, h)) {
-        // On XCB (and similar backends) the 25ms debounce timer fires before
-        // the 100ms live-resize-end timer, consuming pendingResizeW_/H_ via
-        // onResizeDebounceFire (lightweight surface reconfigure only).  When
-        // onLiveResizeEnd fires, takePendingResize finds nothing — but the
-        // full terminal reflow (and therefore SIGWINCH) was never done.
-        // Fall back to the current fb dimensions which onResizeDebounceFire
-        // kept up to date.
-        w = fbWidth_;
-        h = fbHeight_;
-    }
-    if (w && h)
-        applyFramebufferResize(static_cast<int>(w), static_cast<int>(h));
+    // Called on the main thread (under renderThread_->mutex() via onLiveResizeEnd)
+    // when the live-resize debounce expires or the mouse is released. The
+    // surface dimensions were kept current by the cheap path in
+    // onFramebufferResize; here we run the deferred heavy work — layout
+    // cascade, per-Terminal soft-wrap reflow, divider rebuild — and let the
+    // PTY-flush gate at Platform_EventLoop.cpp deliver SIGWINCH on the next
+    // tick.
+    if (fbWidth_ && fbHeight_)
+        applyFramebufferResize(static_cast<int>(fbWidth_), static_cast<int>(fbHeight_));
 }
 
 void PlatformDawn::applyFramebufferResize(int width, int height)

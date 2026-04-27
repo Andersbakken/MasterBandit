@@ -228,27 +228,27 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     }
 }
 
-- (void)viewWillStartLiveResize {
-    [super viewWillStartLiveResize];
-    _cppWindow->setLiveResize(true);
-}
-
 - (void)viewDidEndLiveResize {
     [super viewDidEndLiveResize];
-    _cppWindow->setLiveResize(false);
-    // Dispatch final size so SIGWINCH goes out
+    // Dispatch final size and immediately end live-resize so SIGWINCH
+    // lands on mouse-up instead of after the 100ms debounce grace period.
     NSRect backing = [self convertRectToBacking:self.bounds];
     _cppWindow->dispatchResize(static_cast<int>(backing.size.width),
                                 static_cast<int>(backing.size.height));
-    if (_cppWindow->onLiveResizeEnd) _cppWindow->onLiveResizeEnd();
+    _cppWindow->endLiveResize();
 }
 
 - (void)setFrameSize:(NSSize)newSize {
     [super setFrameSize:newSize];
     if (self.window && [self.window inLiveResize]) {
+        // Mid-drag resize: push the new framebuffer size for repaint and
+        // (re)start the SIGWINCH debounce. inLiveResize stays true while
+        // the timer is pending; child apps see SIGWINCH only after a
+        // ~100ms gap or on mouse-up.
         NSRect backing = [self convertRectToBacking:self.bounds];
         _cppWindow->dispatchResize(static_cast<int>(backing.size.width),
                                     static_cast<int>(backing.size.height));
+        _cppWindow->noteResizeDuringDrag();
     }
 }
 
@@ -413,11 +413,79 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 
 // ---------- CocoaWindow ----------
 
-CocoaWindow::CocoaWindow() = default;
+CocoaWindow::CocoaWindow(EventLoop& loop)
+    : loop_(loop)
+{
+}
 
 CocoaWindow::~CocoaWindow()
 {
+    cancelResizeDebounce();
     destroy();
+}
+
+void CocoaWindow::cancelResizeDebounce()
+{
+    if (!resizeDebounceTimer_) return;
+    CFRunLoopTimerRef timer = static_cast<CFRunLoopTimerRef>(resizeDebounceTimer_);
+    CFRunLoopTimerInvalidate(timer);
+    CFRelease(timer);
+    resizeDebounceTimer_ = nullptr;
+}
+
+void CocoaWindow::noteResizeDuringDrag()
+{
+    // Cancel any pending debounce and start a fresh 100 ms one-shot.
+    // While the timer is pending, inLiveResize() returns true so SIGWINCH
+    // is deferred. When the timer fires it clears the flag and runs
+    // onLiveResizeEnd, which lets the main loop dispatch SIGWINCH on the
+    // next onTick.
+    //
+    // Use CFRunLoopTimer rather than EventLoop's kqueue-based addTimer:
+    // during a drag AppKit's tracking mode can starve the kqueue source
+    // that wraps our kqueue fd, so the EVFILT_TIMER event would not be
+    // serviced until mouse-up. CFRunLoopTimer is dispatched directly by
+    // the run loop in commonModes (which includes
+    // NSEventTrackingRunLoopMode), so the gap-based debounce actually
+    // wakes us during a pause mid-drag — matching XCB's epoll-driven
+    // behavior on Linux.
+    cancelResizeDebounce();
+    inLiveResize_ = true;
+    CFRunLoopTimerContext ctx{};
+    ctx.info = this;
+    CFRunLoopTimerRef timer = CFRunLoopTimerCreate(
+        kCFAllocatorDefault,
+        CFAbsoluteTimeGetCurrent() + 0.100,
+        0.0,                  // one-shot (interval = 0)
+        0, 0,
+        [](CFRunLoopTimerRef, void* info) {
+            auto* self = static_cast<CocoaWindow*>(info);
+            // Release the timer ref before firing the callback so a
+            // re-entrant noteResizeDuringDrag() inside onLiveResizeEnd
+            // doesn't double-release.
+            if (self->resizeDebounceTimer_) {
+                CFRunLoopTimerRef t = static_cast<CFRunLoopTimerRef>(self->resizeDebounceTimer_);
+                CFRelease(t);
+                self->resizeDebounceTimer_ = nullptr;
+            }
+            self->inLiveResize_ = false;
+            if (self->onLiveResizeEnd) self->onLiveResizeEnd();
+        },
+        &ctx);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);
+    resizeDebounceTimer_ = timer;
+}
+
+void CocoaWindow::endLiveResize()
+{
+    // Mouse released — fire SIGWINCH immediately rather than waiting out
+    // the 100 ms grace period. (XCB has no equivalent signal so it always
+    // waits; macOS gives us viewDidEndLiveResize for free.)
+    cancelResizeDebounce();
+    if (inLiveResize_) {
+        inLiveResize_ = false;
+        if (onLiveResizeEnd) onLiveResizeEnd();
+    }
 }
 
 bool CocoaWindow::create(int width, int height, const std::string& title)

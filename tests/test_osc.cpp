@@ -531,6 +531,116 @@ TEST_CASE("OSC 777 notification has default urgency")
     CHECK(t.capturedNotifyUrgency == 1);
 }
 
+// kitty notifications.py:301 — done = (v != "0"). Empty d= and any non-"0"
+// value should fire; only an explicit d=0 buffers.
+TEST_CASE("OSC 99 d= non-'0' values all fire")
+{
+    {
+        TestTerminal t;
+        t.osc("99;d=2;via d=2");
+        CHECK(t.capturedNotifyTitle == "via d=2");
+    }
+    {
+        TestTerminal t;
+        t.osc("99;d=yes;via d=yes");
+        CHECK(t.capturedNotifyTitle == "via d=yes");
+    }
+}
+
+// ── OSC 99 c= (close-response request) ───────────────────────────────────────
+
+TEST_CASE("OSC 99 c= absent: closeResponseRequested defaults to false")
+{
+    TestTerminal t;
+    t.osc("99;;no c");
+    CHECK(t.capturedNotifyCloseResponse == false);
+}
+
+TEST_CASE("OSC 99 c=1 sets closeResponseRequested")
+{
+    TestTerminal t;
+    t.osc("99;c=1;wants close");
+    CHECK(t.capturedNotifyCloseResponse == true);
+}
+
+TEST_CASE("OSC 99 c=0 explicitly sets closeResponseRequested false")
+{
+    TestTerminal t;
+    t.osc("99;c=0;explicit no");
+    CHECK(t.capturedNotifyCloseResponse == false);
+}
+
+TEST_CASE("OSC 99 c=1 carries across chunks")
+{
+    TestTerminal t;
+    t.osc("99;i=7:d=0:c=1:p=title;Title");
+    CHECK(t.capturedNotifyCloseResponse == false);  // not fired yet
+    t.osc("99;i=7:d=1:p=body;Body");
+    CHECK(t.capturedNotifyCloseResponse == true);
+}
+
+TEST_CASE("OSC 99 closeResponseRequested resets after dispatch")
+{
+    TestTerminal t;
+    t.osc("99;c=1;first");
+    CHECK(t.capturedNotifyCloseResponse == true);
+    t.osc("99;;second");
+    CHECK(t.capturedNotifyCloseResponse == false);
+}
+
+// ── OSC 99 p=close (programmatic dismissal) ──────────────────────────────────
+
+TEST_CASE("OSC 99 p=close routes to onCloseNotification with the i= value")
+{
+    TestTerminal t;
+    t.osc("99;i=42:p=close;");
+    CHECK(t.closeNotificationCalls == 1);
+    CHECK(t.capturedCloseId == "42");
+    // Title/body accumulator must not have been touched.
+    CHECK(t.capturedNotifyTitle.empty());
+}
+
+TEST_CASE("OSC 99 p=close without i= is dropped (no callback)")
+{
+    TestTerminal t;
+    t.osc("99;p=close;");
+    CHECK(t.closeNotificationCalls == 0);
+}
+
+TEST_CASE("OSC 99 p=close does not consume buffered title/body")
+{
+    TestTerminal t;
+    // Buffer a title under id=7.
+    t.osc("99;i=7:d=0:p=title;Buffered");
+    CHECK(t.capturedNotifyTitle.empty());
+    // Close a different id; should not fire the notification.
+    t.osc("99;i=99:p=close;");
+    CHECK(t.closeNotificationCalls == 1);
+    CHECK(t.capturedCloseId == "99");
+    CHECK(t.capturedNotifyTitle.empty());
+    // Now finish the original.
+    t.osc("99;i=7:d=1:p=body;Body");
+    CHECK(t.capturedNotifyTitle == "Buffered");
+}
+
+// ── OSC 99 p=alive (existence query) ─────────────────────────────────────────
+
+TEST_CASE("OSC 99 p=alive routes to onQueryAliveNotifications with the responder id")
+{
+    TestTerminal t;
+    t.osc("99;i=q1:p=alive;");
+    CHECK(t.queryAliveCalls == 1);
+    CHECK(t.capturedAliveResponderId == "q1");
+    CHECK(t.capturedNotifyTitle.empty());
+}
+
+TEST_CASE("OSC 99 p=alive without i= is dropped (no callback)")
+{
+    TestTerminal t;
+    t.osc("99;p=alive;");
+    CHECK(t.queryAliveCalls == 0);
+}
+
 // ── OSC 9 / 777 / 1337 notification forms ────────────────────────────────────
 // OSC 9 is shared with ConEmu progress (handled separately above); the
 // non-progress payload is treated as a title-only notification, matching

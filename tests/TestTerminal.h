@@ -36,6 +36,11 @@ struct TestTerminal {
     std::string capturedNotifyBody;
     std::string capturedNotifyId;
     uint8_t     capturedNotifyUrgency { 1 };
+    bool        capturedNotifyCloseResponse { false };
+    std::string capturedCloseId;            // last p=close target id
+    std::string capturedAliveResponderId;   // last p=alive responder id
+    int         closeNotificationCalls { 0 };
+    int         queryAliveCalls { 0 };
     std::string capturedPointerShape;
     int         pointerShapeCallCount = 0;
     // OSC 52: text sent to copyToClipboard; clipboardContent is what
@@ -61,8 +66,17 @@ struct TestTerminal {
                 capturedIconHasValue = i.has_value();
             };
             cb.onCWDChanged   = [this](const std::string& d) { capturedCWD = d; };
-            cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id, uint8_t u) {
-                capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id; capturedNotifyUrgency = u;
+            cb.onDesktopNotification = [this](const std::string& t, const std::string& b, const std::string& id, uint8_t u, bool cr) {
+                capturedNotifyTitle = t; capturedNotifyBody = b; capturedNotifyId = id;
+                capturedNotifyUrgency = u; capturedNotifyCloseResponse = cr;
+            };
+            cb.onCloseNotification = [this](const std::string& id) {
+                capturedCloseId = id;
+                ++closeNotificationCalls;
+            };
+            cb.onQueryAliveNotifications = [this](const std::string& responderId) {
+                capturedAliveResponderId = responderId;
+                ++queryAliveCalls;
             };
             cb.onMouseCursorShape = [this](const std::string& s) {
                 capturedPointerShape = s;

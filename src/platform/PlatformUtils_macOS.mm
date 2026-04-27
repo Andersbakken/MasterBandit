@@ -40,6 +40,19 @@ class EventLoop;
 void platformInit(EventLoop& /*loop*/) {}
 void platformShutdown() {}
 
+void platformCloseNotification(const std::string& /*sourceTag*/,
+                               const std::string& /*clientId*/)
+{
+    // TODO macOS: [UNUserNotificationCenter removeDeliveredNotificationsWithIdentifiers:].
+}
+
+std::vector<std::string> platformActiveNotifications(const std::string& /*sourceTag*/)
+{
+    // TODO macOS: query via getDeliveredNotificationsWithCompletionHandler:.
+    // For now report none active; OSC 99 p=alive will reply with an empty list.
+    return {};
+}
+
 extern "C" const char* macResourcePathOrNull()
 {
     if (![[NSBundle mainBundle] bundleIdentifier]) return nullptr;
@@ -86,12 +99,29 @@ void platformSetNotificationsShowWhenForeground(bool show)
     g_showWhenForeground.store(show);
 }
 
-void platformSendNotification(const std::string& title, const std::string& body,
-                              uint8_t /*urgency*/)
+void platformSendNotification(const std::string& /*sourceTag*/,
+                              const std::string& /*clientId*/,
+                              const std::string& title, const std::string& body,
+                              uint8_t /*urgency*/,
+                              bool /*closeResponseRequested*/,
+                              std::function<void(const std::string&)> /*onClosed*/)
 {
-    // TODO: map urgency to UNNotificationContent.interruptionLevel
-    // (passive/active/timeSensitive/critical) when wiring up the macOS
-    // side; currently ignored.
+    // TODO macOS: map urgency to UNNotificationContent.interruptionLevel
+    // (passive/active/timeSensitive/critical), and use clientId as the
+    // UNNotificationRequest identifier so re-issues replace in place.
+    //
+    // closeResponseRequested + onClosed currently dropped on macOS — the
+    // delegate fires only on user-action invocations, not on swipe-away or
+    // expiry, so the wire-back is at best partial. Pending macOS pass.
+    //
+    // Note for the macOS pass: when closeResponseRequested is set, fire
+    // onClosed *immediately at send time* with reason "untracked" (kitty's
+    // notifications.py:991-992 path). UNUserNotificationCenter doesn't
+    // emit a callback on swipe-away/auto-expire, so we can't honor c=1
+    // properly — telling the program up front that the close-response is
+    // untracked matches kitty's MacOSIntegration (supports_close_events =
+    // False). Wire form: \e]99;i=<id>:p=close;untracked\a — written via
+    // term->writeText from inside Platform_Tabs.cpp's onClosed lambda.
     if (![[NSBundle mainBundle] bundleIdentifier]) return;
     UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
     // Convert to NSString before any async hop. Block-copy semantics

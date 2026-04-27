@@ -80,8 +80,37 @@ void platformSetNotificationsShowWhenForeground(bool show);
 // urgency: 0=low, 1=normal, 2=critical (freedesktop Notifications "urgency"
 // hint). Currently honored on Linux; macOS impl ignores the value pending a
 // per-platform mapping.
-void platformSendNotification(const std::string& title, const std::string& body,
-                              uint8_t urgency);
+//
+// sourceTag + clientId form a composite key under which the platform tracks
+// the live notification. If a previous notification with the same key is
+// still live, the new send replaces it in place (Linux: replaces_id;
+// macOS: pending). Empty sourceTag or empty clientId disables tracking —
+// the notification is sent fresh and never replaceable.
+//
+// closeResponseRequested mirrors OSC 99 c=1: when set, the platform will
+// invoke `onClosed` once the daemon dismisses the notification (any reason
+// — expiry, user-dismissal, programmatic close). Linux maps freedesktop
+// reasons 1/2/3/4 → "expired"/"dismissed-by-user"/"closed"/"". onClosed
+// runs on the main thread.
+void platformSendNotification(const std::string& sourceTag,
+                              const std::string& clientId,
+                              const std::string& title,
+                              const std::string& body,
+                              uint8_t urgency,
+                              bool closeResponseRequested,
+                              std::function<void(const std::string& reason)> onClosed);
+
+// Programmatically dismiss a previously-shown notification. No-op if the
+// (sourceTag, clientId) pair isn't currently tracked (for example: the
+// daemon already auto-expired it, or the original send never landed a
+// reply yet).
+void platformCloseNotification(const std::string& sourceTag,
+                               const std::string& clientId);
+
+// Return the clientIds of currently-active notifications belonging to
+// sourceTag — i.e. those with a daemon id that hasn't been dropped via
+// NotificationClosed yet. Used to satisfy OSC 99 p=alive queries.
+std::vector<std::string> platformActiveNotifications(const std::string& sourceTag);
 void platformOpenURL(const std::string& url);
 std::string platformProcessCWD(pid_t pid);
 

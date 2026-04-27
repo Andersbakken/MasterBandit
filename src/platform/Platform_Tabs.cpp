@@ -741,11 +741,57 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     if (isHeadless()) {
-        cbs.onDesktopNotification = [](const std::string&, const std::string&, const std::string&, uint8_t) {};
+        cbs.onDesktopNotification    = [](const std::string&, const std::string&, const std::string&, uint8_t, bool) {};
+        cbs.onCloseNotification      = [](const std::string&) {};
+        cbs.onQueryAliveNotifications = [](const std::string&) {};
     } else {
-        cbs.onDesktopNotification = [this](const std::string& title, const std::string& body, const std::string& /*icon*/, uint8_t urgency) {
-            eventLoop_->post([title, body, urgency] {
-                platformSendNotification(title, body, urgency);
+        // sourceTag = pane uuid stringified. clientId = OSC i= (may be
+        // empty for un-tracked notifications, in which case the platform
+        // skips replaces_id bookkeeping).
+        cbs.onDesktopNotification = [this, paneId](const std::string& title,
+                                                   const std::string& body,
+                                                   const std::string& clientId,
+                                                   uint8_t urgency,
+                                                   bool closeResponseRequested) {
+            std::string sourceTag = paneId.toString();
+            eventLoop_->post([this, paneId, sourceTag, clientId, title, body,
+                              urgency, closeResponseRequested]() mutable {
+                std::function<void(const std::string&)> onClosed;
+                if (closeResponseRequested && !clientId.empty()) {
+                    onClosed = [this, paneId, clientId](const std::string& reason) {
+                        // Write OSC 99 close-response back to the pane's PTY
+                        // so the program that sent c=1 learns when the user
+                        // dismissed (or the daemon expired) its notification.
+                        std::string osc = "\x1b]99;i=" + clientId
+                                        + ":p=close;" + reason + "\a";
+                        if (Terminal* term = scriptEngine_.terminal(paneId))
+                            term->writeText(osc);
+                    };
+                }
+                platformSendNotification(sourceTag, clientId, title, body, urgency,
+                                         closeResponseRequested, std::move(onClosed));
+            });
+        };
+
+        cbs.onCloseNotification = [this, paneId](const std::string& clientId) {
+            std::string sourceTag = paneId.toString();
+            eventLoop_->post([sourceTag, clientId] {
+                platformCloseNotification(sourceTag, clientId);
+            });
+        };
+
+        cbs.onQueryAliveNotifications = [this, paneId](const std::string& responderId) {
+            std::string sourceTag = paneId.toString();
+            eventLoop_->post([this, paneId, sourceTag, responderId] {
+                std::vector<std::string> alive = platformActiveNotifications(sourceTag);
+                std::string csv;
+                for (size_t i = 0; i < alive.size(); ++i) {
+                    if (i) csv.push_back(',');
+                    csv.append(alive[i]);
+                }
+                std::string osc = "\x1b]99;i=" + responderId + ":p=alive;" + csv + "\a";
+                if (Terminal* term = scriptEngine_.terminal(paneId))
+                    term->writeText(osc);
             });
         };
     }

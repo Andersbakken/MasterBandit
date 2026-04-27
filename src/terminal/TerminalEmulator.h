@@ -46,10 +46,29 @@ struct TerminalCallbacks {
     // Notifications spec ("urgency" hint, byte): 0=low, 1=normal, 2=critical.
     // OSC 99 supports "u=" in metadata to set this; OSC 9 / 777 / 1337
     // Notification= have no urgency channel and default to 1.
+    // closeResponseRequested mirrors OSC 99's "c=1" — when set, the platform
+    // is expected to send back \e]99;i=<id>:p=close;<reason> when the user
+    // (or the daemon) dismisses the notification. Always false for the other
+    // notification protocols (no channel for it).
     std::function<void(const std::string& /*title*/,
                        const std::string& /*body*/,
                        const std::string& /*id*/,
-                       uint8_t            /*urgency*/)> onDesktopNotification;
+                       uint8_t            /*urgency*/,
+                       bool               /*closeResponseRequested*/)> onDesktopNotification;
+
+    // OSC 99 "p=close": ask the platform to programmatically dismiss a
+    // previously-shown notification keyed by id. id is the OSC i= value
+    // from the close command's metadata; never empty (parser drops the
+    // call if i= is missing).
+    std::function<void(const std::string& /*id*/)> onCloseNotification;
+
+    // OSC 99 "p=alive": query which of the originating channel's
+    // notifications are still active. responderId is the i= from the
+    // query command — the platform must reply by writing
+    // \e]99;i=<responderId>:p=alive;<csv>\a back into the terminal's
+    // input stream (kitty notifications.py:1047-1053). The csv lists the
+    // OSC i= values still alive on this channel.
+    std::function<void(const std::string& /*responderId*/)> onQueryAliveNotifications;
     std::function<void(const std::string&)>      onForegroundProcessChanged;
     // Called for XTGETTCAP queries not found in the built-in table.
     // Returns the capability value (may be empty for boolean caps), or nullopt if unknown.
@@ -765,6 +784,7 @@ private:
     std::string mNotifyTitle;
     std::string mNotifyBody;
     uint8_t     mNotifyUrgency { 1 };  // 0=low, 1=normal, 2=critical
+    bool        mNotifyCloseResponseRequested { false };  // c=1
 
     // OSC 133 shell-integration state.
     SemanticMode mSemanticMode { SemanticMode::Inactive };

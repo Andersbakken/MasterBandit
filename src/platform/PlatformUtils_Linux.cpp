@@ -12,6 +12,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <stdio.h>
 #include <sys/types.h>
@@ -34,6 +36,72 @@ WaitableValue<bool>              g_darkMode;
 // happen on the same thread but at different points in the loop iteration.
 std::mutex                       g_appearanceMu;
 std::function<void(bool)>        g_appearanceCallback;
+
+// Notification-tracking state. Mutated on both the main thread (sends,
+// queries) and the DBus worker thread (Notify reply, NotificationClosed
+// signal); g_notifyMu serializes both.
+//
+// Per (sourceTag, clientId): one Entry. The Entry tracks the live daemon
+// id (after the first reply lands) and an in-flight flag covering the
+// gap between Notify send and reply. A second send arriving while
+// inFlight overwrites Queued — the latest payload wins, replacing the
+// oldest queued, so the daemon never sees more than one duplicate per
+// rapid burst regardless of how many we receive.
+//
+// Composite key uses \x1f (US) as the separator. sourceTag is a Uuid
+// stringification (hex + dashes); clientId is an OSC 99 i= which kitty
+// passes through sanitize_id (alphanumeric + dash + underscore, plus a
+// few separators). Neither contains \x1f, so the encoding is unambiguous.
+struct NotificationQueued {
+    std::string title;
+    std::string body;
+    uint8_t     urgency = 1;
+    bool        closeResponseRequested = false;
+    std::function<void(const std::string& reason)> onClosed;
+};
+
+struct NotificationEntry {
+    std::string sourceTag;
+    std::string clientId;
+    uint32_t    daemonId = 0;     // 0 until first successful Notify reply
+    bool        inFlight = false; // a Notify is awaiting reply
+    bool        closeResponseRequested = false;  // for the currently-active notification
+    std::function<void(const std::string& reason)> onClosed;  // active onClosed
+    std::unique_ptr<NotificationQueued> queued;  // payload waiting for reply
+};
+
+std::mutex                                          g_notifyMu;
+std::unordered_map<std::string, NotificationEntry>  g_entries;     // key → Entry
+std::unordered_map<uint32_t, std::string>           g_daemonToKey; // daemonId → key
+
+constexpr char kNotifyKeySep = '\x1f';
+
+std::string makeNotifyKey(const std::string& sourceTag, const std::string& clientId)
+{
+    std::string out;
+    out.reserve(sourceTag.size() + 1 + clientId.size());
+    out.append(sourceTag);
+    out.push_back(kNotifyKeySep);
+    out.append(clientId);
+    return out;
+}
+
+const char* freedesktopReasonToText(uint32_t reason)
+{
+    // org.freedesktop.Notifications.NotificationClosed reason codes:
+    //   1 — expired
+    //   2 — dismissed by user
+    //   3 — closed via CloseNotification
+    //   4 — undefined / reserved
+    // Maps to the OSC 99 close-response reason strings used by kitty's
+    // send_closed_response (notifications.py:1043-1045).
+    switch (reason) {
+    case 1: return "expired";
+    case 2: return "dismissed-by-user";
+    case 3: return "closed";
+    default: return "";
+    }
+}
 
 void publishDarkMode(bool isDark)
 {
@@ -137,6 +205,54 @@ void handleColorSchemeReadReply(DBusMessage* reply, bool ok)
     publishDarkMode(scheme == 1);
 }
 
+// Worker-thread. NotificationClosed payload is "uu" — (id, reason).
+void handleNotificationClosed(DBusMessage* msg)
+{
+    DBusMessageIter args;
+    if (!dbus_message_iter_init(msg, &args)) return;
+    if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_UINT32) return;
+    dbus_uint32_t nid = 0;
+    dbus_message_iter_get_basic(&args, &nid);
+
+    dbus_uint32_t reason = 4;  // undefined if absent
+    if (dbus_message_iter_next(&args) &&
+        dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_UINT32) {
+        dbus_message_iter_get_basic(&args, &reason);
+    }
+
+    std::function<void(const std::string&)> cb;
+    {
+        std::lock_guard<std::mutex> lk(g_notifyMu);
+        auto dit = g_daemonToKey.find(nid);
+        if (dit == g_daemonToKey.end()) return;
+        std::string key = std::move(dit->second);
+        g_daemonToKey.erase(dit);
+
+        auto eit = g_entries.find(key);
+        if (eit == g_entries.end()) return;
+        NotificationEntry& e = eit->second;
+        if (e.daemonId != nid) {
+            // The daemon id we just got a close for is not the entry's
+            // current id — already replaced. Nothing to fire.
+            return;
+        }
+        cb = std::move(e.onClosed);
+        e.onClosed = nullptr;
+        e.closeResponseRequested = false;
+        e.daemonId = 0;
+        // If nothing is in-flight or queued, drop the entry entirely.
+        if (!e.inFlight && !e.queued) {
+            g_entries.erase(eit);
+        }
+    }
+    if (!cb || !g_eventLoop) return;
+    std::string reasonText = freedesktopReasonToText(reason);
+    g_eventLoop->post([cb = std::move(cb),
+                       reasonText = std::move(reasonText)]() mutable {
+        cb(reasonText);
+    });
+}
+
 DBusMessage* buildSettingsReadCall()
 {
     DBusMessage* call = dbus_message_new_method_call(
@@ -200,6 +316,16 @@ void platformInit(EventLoop& loop)
         "path='/org/freedesktop/portal/desktop'",
         &handleSettingChanged);
 
+    // Subscribe to NotificationClosed so we can drop entries from the
+    // tracking map when the daemon dismisses them, and propagate
+    // close-response back to terminals that asked for it (OSC 99 c=1).
+    g_bridge->addSignalMatch(
+        "type='signal',"
+        "interface='org.freedesktop.Notifications',"
+        "member='NotificationClosed',"
+        "path='/org/freedesktop/Notifications'",
+        &handleNotificationClosed);
+
     if (DBusMessage* call = buildSettingsReadCall()) {
         g_bridge->sendAsync(call, &handleColorSchemeReadReply);
     }
@@ -207,6 +333,10 @@ void platformInit(EventLoop& loop)
 
 void platformShutdown()
 {
+    // Tear the bridge down first; its dtor joins the worker thread, so any
+    // signal callback or Notify-reply that was in flight is fully drained
+    // before we touch the maps. After this point no posted lambdas can land
+    // either (the bridge's worker is the source of those for notifications).
     g_bridge.reset();
     g_eventLoop = nullptr;
     {
@@ -214,6 +344,11 @@ void platformShutdown()
         g_appearanceCallback = nullptr;
     }
     g_darkMode.unset();
+    {
+        std::lock_guard<std::mutex> lk(g_notifyMu);
+        g_entries.clear();
+        g_daemonToKey.clear();
+    }
 }
 
 bool platformIsDarkMode()
@@ -243,40 +378,121 @@ void platformSetNotificationsShowWhenForeground(bool /*show*/)
     // Linux notification daemons (libnotify-style) do not differentiate.
 }
 
-void platformSendNotification(const std::string& title, const std::string& body,
-                              uint8_t urgency)
+// Forward decl — the reply handler may chain into another dispatch.
+void dispatchNotify(const std::string& key,
+                    const std::string& title,
+                    const std::string& body,
+                    uint8_t urgency,
+                    dbus_uint32_t replacesId);
+
+void onNotifyReply(const std::string& key, dbus_uint32_t replacesAtSend,
+                   const std::string& titleForLog,
+                   DBusMessage* reply, bool ok)
 {
-    if (!g_bridge || !g_bridge->connected()) {
-        spdlog::warn("platformSendNotification: D-Bus session bus unavailable; "
-                     "dropping notification: {}", title);
-        return;
+    dbus_uint32_t newDaemonId = 0;
+    if (ok && reply) {
+        DBusMessageIter it;
+        if (dbus_message_iter_init(reply, &it) &&
+            dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_UINT32) {
+            dbus_message_iter_get_basic(&it, &newDaemonId);
+        }
+    }
+    if (!ok) {
+        const char* errName = reply ? dbus_message_get_error_name(reply) : nullptr;
+        const char* errMsg  = nullptr;
+        if (reply && errName) {
+            DBusMessageIter it;
+            if (dbus_message_iter_init(reply, &it) &&
+                dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_STRING) {
+                dbus_message_iter_get_basic(&it, &errMsg);
+            }
+        }
+        spdlog::warn("Notify({}) failed: {} {}",
+                     titleForLog,
+                     errName ? errName : "(no reply)",
+                     errMsg ? errMsg : "");
     }
 
+    std::unique_ptr<NotificationQueued> queued;
+    dbus_uint32_t replacesForQueued = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_notifyMu);
+        auto eit = g_entries.find(key);
+        if (eit == g_entries.end()) return;
+        NotificationEntry& e = eit->second;
+
+        if (ok) {
+            // Refresh daemon-id mappings. If we replaced an existing
+            // daemonId and the daemon allocated a fresh one, drop the old
+            // mapping. Same for replacesAtSend captured at send time
+            // (covers the unusual case where it differed from e.daemonId).
+            if (e.daemonId != 0 && e.daemonId != newDaemonId)
+                g_daemonToKey.erase(e.daemonId);
+            if (replacesAtSend != 0 && replacesAtSend != newDaemonId &&
+                replacesAtSend != e.daemonId)
+                g_daemonToKey.erase(replacesAtSend);
+            e.daemonId = newDaemonId;
+            g_daemonToKey[newDaemonId] = key;
+        }
+
+        if (e.queued) {
+            // Promote the queued payload to the active in-flight slot.
+            queued = std::move(e.queued);
+            e.closeResponseRequested = queued->closeResponseRequested;
+            e.onClosed = std::move(queued->onClosed);
+            replacesForQueued = e.daemonId;  // 0 if previous send failed
+            // inFlight stays true.
+        } else {
+            e.inFlight = false;
+            // Failed send with no daemon id and nothing queued: drop the
+            // entry entirely so we don't leak a permanent placeholder.
+            if (!ok && e.daemonId == 0) {
+                g_entries.erase(eit);
+            }
+        }
+    }
+
+    if (queued) {
+        dispatchNotify(key, queued->title, queued->body, queued->urgency,
+                       replacesForQueued);
+    }
+}
+
+void dispatchNotify(const std::string& key,
+                    const std::string& title,
+                    const std::string& body,
+                    uint8_t urgency,
+                    dbus_uint32_t replacesId)
+{
     DBusMessage* call = dbus_message_new_method_call(
         "org.freedesktop.Notifications",
         "/org/freedesktop/Notifications",
         "org.freedesktop.Notifications",
         "Notify");
     if (!call) {
-        spdlog::warn("platformSendNotification: dbus_message_new_method_call failed");
+        spdlog::warn("dispatchNotify: dbus_message_new_method_call failed");
+        // Mark not in-flight and drop entry if needed; otherwise we'd
+        // leak the in-flight state forever.
+        std::lock_guard<std::mutex> lk(g_notifyMu);
+        auto it = g_entries.find(key);
+        if (it != g_entries.end()) {
+            it->second.inFlight = false;
+            if (it->second.daemonId == 0 && !it->second.queued)
+                g_entries.erase(it);
+        }
         return;
     }
 
-    const char*     app      = "mb";
-    dbus_uint32_t   replaces = 0;
-    // Reverse-DNS identifier — GNOME Shell uses this as the source label
-    // when no .desktop file is installed for the app. Other daemons
-    // (dunst/mako/xfce4-notifyd) treat it as an icon name and fall back
-    // to a generic icon if no matching theme entry exists.
-    const char*     icon     = "it.masterband.mb";
-    const char*     summary  = title.c_str();
-    const char*     bodyP    = body.c_str();
-    dbus_int32_t    expire   = -1;
+    const char*  app     = "mb";
+    const char*  icon    = "it.masterband.mb";
+    const char*  summary = title.c_str();
+    const char*  bodyP   = body.c_str();
+    dbus_int32_t expire  = -1;
 
     DBusMessageIter args;
     dbus_message_iter_init_append(call, &args);
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &app);
-    dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &replaces);
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &replacesId);
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &icon);
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &summary);
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &bodyP);
@@ -288,31 +504,24 @@ void platformSendNotification(const std::string& title, const std::string& body,
     DBusMessageIter hintsArr;
     dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &hintsArr);
     {
-        // desktop-entry hint: basename (no .desktop suffix) of the
-        // installed .desktop file. Used by mako/dunst/xfce4-notifyd; GNOME
-        // Shell ignores this and uses WM_CLASS instead, but we set it for
-        // multi-daemon coverage.
         DBusMessageIter entry, variant;
-        const char* key = "desktop-entry";
-        const char* val = "it.masterband.mb";
+        const char* hk = "desktop-entry";
+        const char* hv = "it.masterband.mb";
         dbus_message_iter_open_container(&hintsArr, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &hk);
         dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "s", &variant);
-        dbus_message_iter_append_basic(&variant, DBUS_TYPE_STRING, &val);
+        dbus_message_iter_append_basic(&variant, DBUS_TYPE_STRING, &hv);
         dbus_message_iter_close_container(&entry, &variant);
         dbus_message_iter_close_container(&hintsArr, &entry);
     }
     {
-        // urgency hint: byte 0=low, 1=normal, 2=critical. Spec section
-        // "Notification Urgency Levels". Critical notifications are typically
-        // not auto-expired by the daemon.
         DBusMessageIter entry, variant;
-        const char* key = "urgency";
-        uint8_t      val = (urgency > 2) ? 1 : urgency;
+        const char* hk = "urgency";
+        uint8_t     hv = (urgency > 2) ? 1 : urgency;
         dbus_message_iter_open_container(&hintsArr, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &hk);
         dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "y", &variant);
-        dbus_message_iter_append_basic(&variant, DBUS_TYPE_BYTE, &val);
+        dbus_message_iter_append_basic(&variant, DBUS_TYPE_BYTE, &hv);
         dbus_message_iter_close_container(&entry, &variant);
         dbus_message_iter_close_container(&hintsArr, &entry);
     }
@@ -320,22 +529,165 @@ void platformSendNotification(const std::string& title, const std::string& body,
 
     dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &expire);
 
-    g_bridge->sendAsync(call, [titleCopy = title](DBusMessage* reply, bool ok) {
-        if (ok) return;
-        const char* errName = reply ? dbus_message_get_error_name(reply) : nullptr;
-        const char* errMsg  = nullptr;
-        if (reply && errName) {
-            DBusMessageIter it;
-            if (dbus_message_iter_init(reply, &it) &&
-                dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_STRING) {
-                dbus_message_iter_get_basic(&it, &errMsg);
-            }
-        }
-        spdlog::warn("Notify({}) failed: {} {}",
-                     titleCopy,
-                     errName ? errName : "(no reply)",
-                     errMsg ? errMsg : "");
+    g_bridge->sendAsync(call, [keyCopy = key, replacesCopy = replacesId,
+                               titleCopy = title]
+                              (DBusMessage* reply, bool ok) {
+        onNotifyReply(keyCopy, replacesCopy, titleCopy, reply, ok);
     });
+}
+
+void platformSendNotification(const std::string& sourceTag,
+                              const std::string& clientId,
+                              const std::string& title, const std::string& body,
+                              uint8_t urgency,
+                              bool closeResponseRequested,
+                              std::function<void(const std::string& reason)> onClosed)
+{
+    if (!g_bridge || !g_bridge->connected()) {
+        spdlog::warn("platformSendNotification: D-Bus session bus unavailable; "
+                     "dropping notification: {}", title);
+        return;
+    }
+
+    // Untracked path: no replace bookkeeping, just send. Suitable for
+    // notifications that don't carry an OSC i= identifier.
+    if (sourceTag.empty() || clientId.empty()) {
+        // Use a stable per-call key so the entry can be cleaned up on
+        // reply error. Suffix with a counter? For simplicity we make
+        // the key sourceTag+sep+empty here — acceptable because such
+        // entries can't be looked up for replace anyway.
+        std::string key = makeNotifyKey(sourceTag, clientId);
+        {
+            std::lock_guard<std::mutex> lk(g_notifyMu);
+            // Don't queue/replace untracked sends; just spawn a fresh
+            // entry per send. Multiple untracked sends with the same
+            // (empty) key would collide here — accept this since no
+            // sensible semantic exists for replace-without-id anyway.
+            NotificationEntry& e = g_entries[key];
+            e.sourceTag = sourceTag;
+            e.clientId = clientId;
+            e.inFlight = true;
+            e.closeResponseRequested = false;
+            e.onClosed = nullptr;
+        }
+        dispatchNotify(key, title, body, urgency, 0);
+        return;
+    }
+
+    std::string key = makeNotifyKey(sourceTag, clientId);
+    bool sendNow = false;
+    dbus_uint32_t replacesId = 0;
+
+    {
+        std::lock_guard<std::mutex> lk(g_notifyMu);
+        NotificationEntry& e = g_entries[key];
+        e.sourceTag = sourceTag;
+        e.clientId  = clientId;
+
+        if (e.inFlight) {
+            // A Notify is already in flight for this key. Stash the new
+            // payload — when the in-flight reply lands, it'll be promoted
+            // and dispatched with the freshly-known daemonId. If a queued
+            // payload was already pending, it gets replaced (latest wins)
+            // — this caps the daemon load at one duplicate per flight
+            // window even under rapid bursts.
+            auto q = std::make_unique<NotificationQueued>();
+            q->title    = title;
+            q->body     = body;
+            q->urgency  = urgency;
+            q->closeResponseRequested = closeResponseRequested;
+            q->onClosed = std::move(onClosed);
+            e.queued = std::move(q);
+        } else {
+            e.inFlight = true;
+            e.closeResponseRequested = closeResponseRequested;
+            e.onClosed = closeResponseRequested ? std::move(onClosed) : nullptr;
+            replacesId = e.daemonId;
+            sendNow = true;
+        }
+    }
+
+    if (sendNow) {
+        dispatchNotify(key, title, body, urgency, replacesId);
+    }
+}
+
+void platformCloseNotification(const std::string& sourceTag,
+                               const std::string& clientId)
+{
+    if (!g_bridge || !g_bridge->connected()) return;
+    if (sourceTag.empty() || clientId.empty()) return;
+
+    dbus_uint32_t daemonId = 0;
+    std::function<void(const std::string&)> immediateOnClosed;
+    {
+        std::lock_guard<std::mutex> lk(g_notifyMu);
+        auto it = g_entries.find(makeNotifyKey(sourceTag, clientId));
+        if (it == g_entries.end()) return;  // never sent or already cleaned up
+        NotificationEntry& e = it->second;
+        if (e.daemonId != 0) {
+            daemonId = e.daemonId;
+        } else if (e.closeResponseRequested) {
+            // In-flight: no daemonId yet, so we can't dispatch
+            // CloseNotification to the daemon. Match kitty
+            // notifications.py:1031 — fire close-response immediately with
+            // empty reason. Move onClosed out so the eventual
+            // NotificationClosed signal won't fire it again. The
+            // notification will still display when the Notify reply lands;
+            // user must dismiss it manually (kitty has the same gap).
+            immediateOnClosed = std::move(e.onClosed);
+            e.closeResponseRequested = false;
+        }
+    }
+
+    if (daemonId != 0) {
+        DBusMessage* call = dbus_message_new_method_call(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "CloseNotification");
+        if (!call) {
+            spdlog::warn("platformCloseNotification: dbus_message_new_method_call failed");
+            return;
+        }
+        if (!dbus_message_append_args(call,
+                DBUS_TYPE_UINT32, &daemonId,
+                DBUS_TYPE_INVALID)) {
+            dbus_message_unref(call);
+            return;
+        }
+        // Don't drop the entry locally — wait for NotificationClosed to
+        // fire so the close-response wireback reflects the daemon's reason
+        // code (3 = closed).
+        g_bridge->sendAsync(call, nullptr);
+        return;
+    }
+
+    if (immediateOnClosed && g_eventLoop) {
+        g_eventLoop->post([cb = std::move(immediateOnClosed)]() mutable {
+            cb("");  // empty reason, matches kitty's send_closed_response default
+        });
+    }
+}
+
+std::vector<std::string> platformActiveNotifications(const std::string& sourceTag)
+{
+    std::vector<std::string> out;
+    if (sourceTag.empty()) return out;
+    std::lock_guard<std::mutex> lk(g_notifyMu);
+    out.reserve(g_entries.size());
+    for (auto& kv : g_entries) {
+        const NotificationEntry& e = kv.second;
+        // Include any entry that's been sent for this source — whether
+        // it's still in-flight (no daemonId yet) or has landed and isn't
+        // closed (daemonId != 0). Matches kitty's "alive from send time"
+        // semantic in notifications.py.
+        if (e.sourceTag != sourceTag) continue;
+        if (e.clientId.empty()) continue;
+        if (!e.inFlight && e.daemonId == 0) continue;  // post-error remnant
+        out.push_back(e.clientId);
+    }
+    return out;
 }
 
 void platformOpenURL(const std::string& url)

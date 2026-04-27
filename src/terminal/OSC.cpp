@@ -136,7 +136,7 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
     if (payload.substr(0, kNotificationKey.size()) == kNotificationKey) {
         if (mCallbacks.onDesktopNotification)
             mCallbacks.onDesktopNotification(
-                std::string(payload.substr(kNotificationKey.size())), {}, {}, 1);
+                std::string(payload.substr(kNotificationKey.size())), {}, {}, 1, false);
         return;
     }
 
@@ -514,7 +514,7 @@ void TerminalEmulator::processStringSequence()
             // historically uses it as the body, but title-only renders
             // cleanly on macOS and the platform fills the title slot
             // from the bundle name.
-            mCallbacks.onDesktopNotification(std::string(payload), {}, {}, 1);
+            mCallbacks.onDesktopNotification(std::string(payload), {}, {}, 1, false);
         }
         break;
     }
@@ -582,7 +582,7 @@ void TerminalEmulator::processStringSequence()
             std::string body(semi == std::string_view::npos
                              ? std::string{} : std::string(rest.substr(semi + 1)));
             if (mCallbacks.onDesktopNotification)
-                mCallbacks.onDesktopNotification(title, body, {}, 1);
+                mCallbacks.onDesktopNotification(title, body, {}, 1, false);
         }
         break;
     case 99: // Desktop notifications (kitty protocol)
@@ -611,7 +611,12 @@ void TerminalEmulator::processStringSequence()
                 else sv = {};
 
                 if (key == "i") nId = std::string(val);
-                else if (key == "d") done = (val == "1");
+                else if (key == "d") {
+                    // kitty notifications.py:301 — `done = v != '0'`. Empty
+                    // d= and any non-"0" value are treated as done. Only an
+                    // explicit d=0 keeps the notification buffered.
+                    done = (val != "0");
+                }
                 else if (key == "p") pType = std::string(val);
                 else if (key == "u" && val.size() == 1) {
                     // 0=low, 1=normal, 2=critical (kitty notifications.py:132 +
@@ -622,6 +627,26 @@ void TerminalEmulator::processStringSequence()
                     char c = val[0];
                     if (c >= '0' && c <= '2') mNotifyUrgency = static_cast<uint8_t>(c - '0');
                 }
+                else if (key == "c") {
+                    // kitty notifications.py:322-323 — close_response_requested
+                    // = v != '0'. Carries across chunks via accumulator;
+                    // resets on dispatch.
+                    mNotifyCloseResponseRequested = (val != "0");
+                }
+            }
+
+            // p=close and p=alive are stateless commands keyed off this
+            // metadata's i=, not the title/body accumulator. They route to
+            // dedicated callbacks and skip the accumulator entirely.
+            if (pType == "close") {
+                if (mCallbacks.onCloseNotification && !nId.empty())
+                    mCallbacks.onCloseNotification(nId);
+                break;
+            }
+            if (pType == "alive") {
+                if (mCallbacks.onQueryAliveNotifications && !nId.empty())
+                    mCallbacks.onQueryAliveNotifications(nId);
+                break;
             }
 
             if (!nId.empty()) mNotifyId = nId;
@@ -631,11 +656,13 @@ void TerminalEmulator::processStringSequence()
             if (done) {
                 if (mCallbacks.onDesktopNotification)
                     mCallbacks.onDesktopNotification(mNotifyTitle, mNotifyBody,
-                                                     mNotifyId, mNotifyUrgency);
+                                                     mNotifyId, mNotifyUrgency,
+                                                     mNotifyCloseResponseRequested);
                 mNotifyId.clear();
                 mNotifyTitle.clear();
                 mNotifyBody.clear();
                 mNotifyUrgency = 1;
+                mNotifyCloseResponseRequested = false;
             }
         }
         break;

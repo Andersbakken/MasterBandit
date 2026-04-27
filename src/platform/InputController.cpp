@@ -358,6 +358,7 @@ void InputController::onMouseButton(int button, int action, int mods)
             ev.globalY = static_cast<int>(sy);
             ev.pixelX = static_cast<int>(cellRelX);
             ev.pixelY = static_cast<int>(cellRelY);
+            ev.xRightHalf = (cellRelX - ev.x * charWidth) >= (charWidth * 0.5);
             ev.button = NoButton;
             ev.modifiers = lastMods_;
             term2->mouseReleaseEvent(&ev);
@@ -597,6 +598,11 @@ void InputController::onMouseButton(int button, int action, int mods)
                 int col = mouseCtx_.cellCol, row = mouseCtx_.cellRow;
                 int absRow = term->document().historySize() - term->viewportOffset() + row;
 
+                // Wezterm-style boundary anchor: clicks past the cell
+                // midpoint snap to the next boundary, so selection start
+                // and "trailing" end exclude the click cell when the click
+                // is closer to the cell edge than its center.
+                bool xRightHalf = (cellRelX - cellCol * charWidth) >= (charWidth * 0.5);
                 switch (ms->type) {
                 case Action::SelectionType::Normal: {
                     // Arm pending selection via mousePressEvent
@@ -604,6 +610,9 @@ void InputController::onMouseButton(int button, int action, int mods)
                     ev.x = col; ev.y = row;
                     ev.globalX = static_cast<int>(sx);
                     ev.globalY = static_cast<int>(sy);
+                    ev.pixelX = static_cast<int>(cellRelX);
+                    ev.pixelY = static_cast<int>(cellRelY);
+                    ev.xRightHalf = xRightHalf;
                     ev.modifiers = lastMods_;
                     ev.button = LeftButton;
                     ev.buttons = ev.button;
@@ -627,13 +636,13 @@ void InputController::onMouseButton(int button, int action, int mods)
 #endif
                     break;
                 case Action::SelectionType::Extend:
-                    term->extendSelection(col, absRow);
+                    term->extendSelection(col, absRow, xRightHalf);
 #if defined(__linux__)
                     if (term->hasSelection()) { auto s = term->selectedText(); if (!s.empty()) if (window) window->setPrimarySelection(s); }
 #endif
                     break;
                 case Action::SelectionType::Rectangle:
-                    term->startRectangleSelection(col, absRow);
+                    term->startRectangleSelection(col, absRow, xRightHalf);
                     selectionDragActive_ = true;
                     break;
                 }
@@ -845,6 +854,7 @@ void InputController::onCursorPos(double x, double y)
         ev.globalY = static_cast<int>(sy);
         ev.pixelX = static_cast<int>(cellRelX);
         ev.pixelY = static_cast<int>(cellRelY);
+        ev.xRightHalf = (cellRelX - ev.x * charWidth) >= (charWidth * 0.5);
         ev.button = NoButton;
         ev.modifiers = lastMods_;
         if ((heldButtons_ & LeftButton) != 0)

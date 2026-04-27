@@ -22,7 +22,6 @@ void AnimationScheduler::stopAllTimers()
     if (blinkTimer_) { el->removeTimer(blinkTimer_); blinkTimer_ = 0; }
     if (animTimer_)  { el->removeTimer(animTimer_);  animTimer_ = 0; }
     animDueAt_ = 0;
-    if (resizeTimer_) { el->removeTimer(resizeTimer_); resizeTimer_ = 0; }
 }
 
 void AnimationScheduler::applyBlinkConfig(int rateMs, int fps)
@@ -107,35 +106,4 @@ void AnimationScheduler::applyPendingAnimation()
         animDueAt_ = 0;
         platform_->setNeedsRedraw();
     });
-}
-
-void AnimationScheduler::scheduleResize(uint32_t w, uint32_t h)
-{
-    pendingResizeW_ = w;
-    pendingResizeH_ = h;
-    EventLoop* el = eventLoop();
-    if (!el || resizeTimer_ != 0) return;
-    resizeTimer_ = el->addTimer(25, false, [this]() {
-        resizeTimer_ = 0;
-        uint32_t rw = pendingResizeW_;
-        uint32_t rh = pendingResizeH_;
-        pendingResizeW_ = 0;
-        pendingResizeH_ = 0;
-        if (rw && rh) platform_->onResizeDebounceFire(rw, rh);
-    });
-}
-
-bool AnimationScheduler::takePendingResize(uint32_t& outW, uint32_t& outH)
-{
-    EventLoop* el = eventLoop();
-    if (resizeTimer_ && el) {
-        el->removeTimer(resizeTimer_);
-        resizeTimer_ = 0;
-    }
-    if (!pendingResizeW_ || !pendingResizeH_) return false;
-    outW = pendingResizeW_;
-    outH = pendingResizeH_;
-    pendingResizeW_ = 0;
-    pendingResizeH_ = 0;
-    return true;
 }

@@ -416,12 +416,18 @@ public:
         SelectionMode mode { SelectionMode::Normal };
     };
 
-    void startSelection(int col, int absRow);
+    // `col` and `xRightHalf` together form a wezterm-style cell-boundary
+    // index: boundary = col + (xRightHalf ? 1 : 0), in [0, mWidth]. The
+    // boundary is what gets stored in mSelection — resolveSelection then
+    // shifts whichever side is "extending" by one cell so the cell under
+    // the cursor is excluded until the click crosses the cell midpoint
+    // (matches wezterm/iTerm2/Terminal.app).
+    void startSelection(int col, int absRow, bool xRightHalf = false);
     void startWordSelection(int col, int absRow);
     void startLineSelection(int absRow);
-    void extendSelection(int col, int absRow);
-    void startRectangleSelection(int col, int absRow);
-    void updateSelection(int col, int absRow);
+    void extendSelection(int col, int absRow, bool xRightHalf = false);
+    void startRectangleSelection(int col, int absRow, bool xRightHalf = false);
+    void updateSelection(int col, int absRow, bool xRightHalf = false);
     void finalizeSelection();
     void clearSelection();
     // True iff a current selection still resolves to live rows. Internally
@@ -762,6 +768,7 @@ private:
     bool mPendingSelection { false };
     int  mPendingSelCol { 0 };
     int  mPendingSelAbsRow { 0 };
+    bool mPendingSelXRightHalf { false };
 
     Selection mSelection;
 

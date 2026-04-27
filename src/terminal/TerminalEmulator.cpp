@@ -495,8 +495,11 @@ void TerminalEmulator::selectCommandOutputForRecord(const CommandRecord* rec)
 
     int startCol = std::max(0, rec->promptStartCol);
 
-    startSelection(startCol, startAbs);
-    updateSelection(endCol, endAbs);
+    // SelectCommand wants endCol *included* in the selection (mouse-style
+    // semantics don't apply — there's no click). Use xRightHalf=true on
+    // the end to advance the trailing boundary past endCol.
+    startSelection(startCol, startAbs, /*xRightHalf=*/false);
+    updateSelection(endCol, endAbs, /*xRightHalf=*/true);
     finalizeSelection();
 
     std::string text = selectedText();

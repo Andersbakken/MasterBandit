@@ -38,10 +38,6 @@ public:
     void scheduleAnimationAt(uint64_t dueAtNs);
     void applyPendingAnimation();
 
-    // Resize debounce — main thread only.
-    void scheduleResize(uint32_t w, uint32_t h);
-    bool takePendingResize(uint32_t& outW, uint32_t& outH);
-
     // Cancel all active timers. Called during shutdown before the event loop
     // is torn down.
     void stopAllTimers();
@@ -62,9 +58,4 @@ private:
     EventLoop::TimerId animTimer_ = 0;
     uint64_t animDueAt_ = 0;
     std::atomic<uint64_t> pendingAnimDueAt_ { 0 };
-
-    // Resize debounce
-    EventLoop::TimerId resizeTimer_ = 0;
-    uint32_t pendingResizeW_ = 0;
-    uint32_t pendingResizeH_ = 0;
 };

@@ -519,7 +519,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             // --- Windowed: create EventLoop + Window ---
 #ifdef __APPLE__
             eventLoop_ = std::make_unique<NSAppEventLoop>();
-            window_    = std::make_unique<CocoaWindow>(*eventLoop_);
+            window_    = std::make_unique<CocoaWindow>();
 #elif defined(__linux__)
             eventLoop_ = std::make_unique<EpollEventLoop>();
             window_.reset(new XCBWindow(*eventLoop_));
@@ -997,26 +997,6 @@ void PlatformDawn::onBlinkTick()
     }
 }
 
-void PlatformDawn::onResizeDebounceFire(uint32_t w, uint32_t h)
-{
-    // Lightweight update during live drag: signal the render thread
-    // to reconfigure the surface and release stale textures.
-    // The heavy work (terminal reflow, GPU buffer updates, dividers)
-    // is deferred to onLiveResizeEnd → flushPendingFramebufferResize.
-    {
-        std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-        fbWidth_  = w;
-        fbHeight_ = h;
-        renderThread_->pending().surfaceNeedsReconfigure = true;
-        renderThread_->pending().viewportSizeChanged = true;
-        renderThread_->pending().releaseAllPaneTextures = true;
-        renderThread_->pending().releaseTabBarTexture = true;
-        tabBarDirty_ = true;
-    }
-    setNeedsRedraw();
-    renderThread_->wake();
-}
-
 void PlatformDawn::applyConfig(const Config& config)
 {
     spdlog::info("Config: hot-reload triggered");
@@ -1211,11 +1191,6 @@ void PlatformDawn::onFramebufferResize(int width, int height)
     // expensive on large scrollbacks at the per-frame drag rate. The full
     // reflow runs on the 100 ms idle gap or mouse-up via onLiveResizeEnd
     // → flushPendingFramebufferResize → applyFramebufferResize.
-    //
-    // (On Linux this used to be deferred via a 25 ms scheduleResize timer;
-    // on macOS the kqueue source is starved by AppKit's tracking mode so
-    // we just do the same work synchronously every drag step. It's only a
-    // few flag updates plus a render-thread wake.)
     const bool live = window_ && window_->inLiveResize();
     if (live) {
         fbWidth_  = static_cast<uint32_t>(width);

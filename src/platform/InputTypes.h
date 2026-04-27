@@ -596,6 +596,11 @@ struct MouseEvent
     int globalY { 0 };
     int pixelX { 0 };  // pane-relative pixel coordinates (for SGR-Pixel mode 1016)
     int pixelY { 0 };
+    // True if the click landed in the right half of cell `x`. Used by the
+    // selection code to convert a click position into a wezterm-style
+    // cell-boundary index (boundary = x + (xRightHalf ? 1 : 0), range
+    // [0, mWidth]). Mouse-reporting and other cell-index consumers ignore it.
+    bool xRightHalf { false };
 
     static std::string buttonName(uint32_t buttons)
     {

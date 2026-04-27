@@ -1,13 +1,15 @@
 #include <doctest/doctest.h>
 #include "TestTerminal.h"
 
-static MouseEvent makeMouseEvent(int col, int row, Button button = LeftButton)
+static MouseEvent makeMouseEvent(int col, int row, Button button = LeftButton,
+                                 bool xRightHalf = false)
 {
     MouseEvent ev;
     ev.x = col;
     ev.y = row;
     ev.globalX = col;
     ev.globalY = row;
+    ev.xRightHalf = xRightHalf;
     ev.button  = button;
     ev.buttons = button;
     ev.modifiers = 0;
@@ -73,9 +75,11 @@ TEST_CASE("selection text matches dragged range")
     TestTerminal t(20, 5);
     t.feed("Hello");
 
+    // Drag from left edge of col 0 to right half of col 4 — the right-half
+    // bit advances the trailing boundary past col 4 so 'o' is included.
     auto press = makeMouseEvent(0, 0);
-    auto move  = makeMouseEvent(4, 0);
-    auto rel   = makeMouseEvent(4, 0);
+    auto move  = makeMouseEvent(4, 0, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(4, 0, LeftButton, /*xRightHalf=*/true);
 
     t.term.mousePressEvent(&press);
     t.term.mouseMoveEvent(&move);
@@ -90,8 +94,8 @@ TEST_CASE("selection survives width-change reflow")
     t.feed("Hello");
 
     auto press = makeMouseEvent(0, 0);
-    auto move  = makeMouseEvent(4, 0);
-    auto rel   = makeMouseEvent(4, 0);
+    auto move  = makeMouseEvent(4, 0, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(4, 0, LeftButton, /*xRightHalf=*/true);
     t.term.mousePressEvent(&press);
     t.term.mouseMoveEvent(&move);
     t.term.mouseReleaseEvent(&rel);
@@ -120,10 +124,11 @@ TEST_CASE("multi-row selection of a wrapped line preserves text across reflow")
     //   row 2: "CCCCCCCCCC"  (cells 20..29)
     t.feed("AAAAAAAAAABBBBBBBBBBCCCCCCCCCC");
 
-    // Select all of row 0 + first 5 cols of row 1: cells 0..14.
+    // Select all of row 0 + first 5 cols of row 1: cells 0..14. Right-half
+    // of col 4 advances the trailing boundary past col 4.
     auto press = makeMouseEvent(0, 0);
-    auto move  = makeMouseEvent(4, 1);
-    auto rel   = makeMouseEvent(4, 1);
+    auto move  = makeMouseEvent(4, 1, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(4, 1, LeftButton, /*xRightHalf=*/true);
     t.term.mousePressEvent(&press);
     t.term.mouseMoveEvent(&move);
     t.term.mouseReleaseEvent(&rel);
@@ -145,8 +150,8 @@ TEST_CASE("selection survives height-change reflow (regression)")
     t.feed("Hello");
 
     auto press = makeMouseEvent(0, 0);
-    auto move  = makeMouseEvent(4, 0);
-    auto rel   = makeMouseEvent(4, 0);
+    auto move  = makeMouseEvent(4, 0, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(4, 0, LeftButton, /*xRightHalf=*/true);
     t.term.mousePressEvent(&press);
     t.term.mouseMoveEvent(&move);
     t.term.mouseReleaseEvent(&rel);
@@ -170,10 +175,11 @@ TEST_CASE("selection on inner row of a wrapped logical line points at that row")
     //   row 2: "CCCCC"
     t.feed("AAAAAAAAAABBBBBBBBBBCCCCC");
 
-    // Click row 0 col 0, drag to row 1 col 4 (inner row of wrapped line).
+    // Click row 0 col 0, drag to row 1 col 4 right-half (inner row of
+    // wrapped line). Right-half advances the trailing boundary past col 4.
     auto press = makeMouseEvent(0, 0);
-    auto move  = makeMouseEvent(4, 1);
-    auto rel   = makeMouseEvent(4, 1);
+    auto move  = makeMouseEvent(4, 1, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(4, 1, LeftButton, /*xRightHalf=*/true);
     t.term.mousePressEvent(&press);
     t.term.mouseMoveEvent(&move);
     t.term.mouseReleaseEvent(&rel);
@@ -183,6 +189,52 @@ TEST_CASE("selection on inner row of a wrapped logical line points at that row")
     // first 5 cols of second row. Pre-fix it would have included the third
     // row's "CCCCC" too because end resolved to the line's LAST visual row.
     CHECK(t.term.selectedText() == "AAAAAAAAAABBBBB");
+}
+
+TEST_CASE("backward drag from left edge of cell excludes that cell")
+{
+    // wezterm/iTerm2/Terminal.app behavior: starting a drag at the left
+    // edge of a cell and dragging upward/backward should NOT include that
+    // anchor cell. It only becomes part of the selection when the click
+    // started past the cell midpoint.
+    TestTerminal t(20, 5);
+    t.feed("AAAAA\r\nBBBBB");
+
+    // Press at far-left of (row 1, col 3) — left half of the cell.
+    auto press = makeMouseEvent(3, 1, LeftButton, /*xRightHalf=*/false);
+    // Drag backward/up to (row 0, col 1).
+    auto move  = makeMouseEvent(1, 0, LeftButton, /*xRightHalf=*/false);
+    auto rel   = makeMouseEvent(1, 0, LeftButton, /*xRightHalf=*/false);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+    // Cell (1, 3) — the anchor cell — must not be in the selection.
+    // Selection should cover (0, 1)..(0, last) and continue through
+    // (1, 0)..(1, 2). The text on row 1 should stop before the 4th 'B'.
+    std::string sel = t.term.selectedText();
+    REQUIRE_FALSE(sel.empty());
+    // Row 1 contribution: "BBB" (cols 0..2), not "BBBB".
+    CHECK(sel.find("BBBB") == std::string::npos);
+    CHECK(sel.find("BBB") != std::string::npos);
+}
+
+TEST_CASE("backward drag from right half of cell includes that cell")
+{
+    // Mirror of the above: starting in the right half snaps the anchor
+    // boundary to the cell's right edge, so the cell is included.
+    TestTerminal t(20, 5);
+    t.feed("AAAAA\r\nBBBBB");
+
+    auto press = makeMouseEvent(3, 1, LeftButton, /*xRightHalf=*/true);
+    auto move  = makeMouseEvent(1, 0, LeftButton, /*xRightHalf=*/false);
+    auto rel   = makeMouseEvent(1, 0, LeftButton, /*xRightHalf=*/false);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+    std::string sel = t.term.selectedText();
+    REQUIRE_FALSE(sel.empty());
+    // Row 1 contribution: "BBBB" (cols 0..3), including the anchor cell.
+    CHECK(sel.find("BBBB") != std::string::npos);
 }
 
 // (Eviction-past-archive-cap drop is exercised by hasSelection() /

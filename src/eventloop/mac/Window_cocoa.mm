@@ -413,10 +413,7 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 
 // ---------- CocoaWindow ----------
 
-CocoaWindow::CocoaWindow(EventLoop& loop)
-    : loop_(loop)
-{
-}
+CocoaWindow::CocoaWindow() = default;
 
 CocoaWindow::~CocoaWindow()
 {

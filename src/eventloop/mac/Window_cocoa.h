@@ -1,6 +1,5 @@
 #pragma once
 
-#include <EventLoop.h>
 #include <Window.h>
 
 #include <dawn/webgpu_cpp.h>
@@ -18,7 +17,7 @@ using MBView   = objc_object;
 
 class CocoaWindow : public Window {
 public:
-    explicit CocoaWindow(EventLoop& loop);
+    CocoaWindow();
     ~CocoaWindow() override;
 
     bool create(int width, int height, const std::string& title) override;
@@ -68,7 +67,6 @@ public:
     void cancelResizeDebounce();
 
 private:
-    EventLoop&  loop_;
     NSWindow*   nsWindow_   = nullptr;
     MBView*     mbView_     = nullptr;
     bool        shouldClose_ = false;

@@ -143,7 +143,7 @@ class PlatformDawn {
     // ConfigLoader reads eventLoop_ for timer setup and calls applyConfig().
     friend class ConfigLoader;
     // AnimationScheduler reads eventLoop_ and calls onBlinkTick /
-    // onResizeDebounceFire / setNeedsRedraw.
+    // setNeedsRedraw.
     friend class AnimationScheduler;
 
 public:
@@ -216,7 +216,6 @@ private:
     // tab-bar GPU texture). Created early in ctor so accessors work.
     std::unique_ptr<RenderEngine> renderEngine_;
     void                       onBlinkTick();
-    void                       onResizeDebounceFire(uint32_t w, uint32_t h);
     void                       applyFramebufferResize(int width, int height);
     void                       flushPendingFramebufferResize();
     std::string exeDir_;

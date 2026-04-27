@@ -94,9 +94,10 @@ void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
 
     // Arm pending selection — actual selection starts only when the mouse moves
     clearSelection();
-    mPendingSelection    = true;
-    mPendingSelCol       = ev->x;
-    mPendingSelAbsRow    = mDocument.historySize() - viewportOffset() + ev->y;
+    mPendingSelection      = true;
+    mPendingSelCol         = ev->x;
+    mPendingSelAbsRow      = mDocument.historySize() - viewportOffset() + ev->y;
+    mPendingSelXRightHalf  = ev->xRightHalf;
 }
 
 void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
@@ -135,14 +136,17 @@ void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
     // First move after press — activate the pending selection
     if (mPendingSelection) {
         mPendingSelection = false;
-        startSelection(mPendingSelCol, mPendingSelAbsRow);
+        startSelection(mPendingSelCol, mPendingSelAbsRow, mPendingSelXRightHalf);
     }
 
     if (mSelection.active) {
+        // Boundary clamp: ev->x is a cell index in [0, mWidth-1] but
+        // boundaries live in [0, mWidth]. Allow ev->x == mWidth-1 with
+        // xRightHalf=true to address the right edge of the last cell.
         int col = std::max(0, std::min(ev->x, mWidth - 1));
         int row = std::max(0, std::min(ev->y, mHeight - 1));
         int absRow = mDocument.historySize() - viewportOffset() + row;
-        updateSelection(col, absRow);
+        updateSelection(col, absRow, ev->xRightHalf);
         if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
         return;
     }
@@ -195,25 +199,33 @@ static char32_t cellAt(const TerminalEmulator& te, int col, int absRow)
 
 // Selection implementation
 //
-// Storage is `(lineId, cellOffsetWithinLine)` per anchor — see
-// TerminalEmulator.h Selection for details. Same model as iTerm2's
-// `LineBufferPosition.absolutePosition`: a logical text position that's
-// invariant under column reflow.
+// Storage is `(lineId, cellBoundaryOffset)` per anchor: a wezterm-style
+// cell-boundary index in [0, lineLen]. Same logical-position model as
+// iTerm2's `LineBufferPosition.absolutePosition` (invariant under column
+// reflow), shifted half a cell so that anchors live on cell *boundaries*
+// rather than cell centers. Forward selection covers cells [start, end-1];
+// backward selection covers [end, start-1]; start == end is empty. The
+// shift is applied in resolveSelection().
 namespace {
-inline int cellOffsetWithinLine(const Document& doc, uint64_t id, int absRow,
-                                int col, int width)
+// Convert (col, xRightHalf) plus row offset within the line into a stored
+// boundary offset. Boundary in-row is in [0, width].
+inline int boundaryOffsetWithinLine(const Document& doc, uint64_t id, int absRow,
+                                     int col, bool xRightHalf, int width)
 {
     int firstAbs = doc.firstAbsOfLine(id);
     int rowOff = (firstAbs < 0) ? 0 : (absRow - firstAbs);
-    return rowOff * width + col;
+    int boundary = col + (xRightHalf ? 1 : 0);
+    if (boundary < 0) boundary = 0;
+    if (boundary > width) boundary = width;
+    return rowOff * width + boundary;
 }
 } // namespace
 
-void TerminalEmulator::startSelection(int col, int absRow)
+void TerminalEmulator::startSelection(int col, int absRow, bool xRightHalf)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     uint64_t id = mDocument.lineIdForAbs(absRow);
-    int off = cellOffsetWithinLine(mDocument, id, absRow, col, mWidth);
+    int off = boundaryOffsetWithinLine(mDocument, id, absRow, col, xRightHalf, mWidth);
     mSelection.startLineId = id; mSelection.startCellOffset = off;
     mSelection.endLineId   = id; mSelection.endCellOffset   = off;
     mSelection.active = true;
@@ -240,11 +252,13 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
         right++;
     }
 
+    // Word: store boundaries enclosing cells [left..right] inclusive,
+    // i.e. start boundary = left, end boundary = right + 1.
     uint64_t id = mDocument.lineIdForAbs(absRow);
     mSelection.startLineId = id;
-    mSelection.startCellOffset = cellOffsetWithinLine(mDocument, id, absRow, left,  mWidth);
+    mSelection.startCellOffset = boundaryOffsetWithinLine(mDocument, id, absRow, left, false, mWidth);
     mSelection.endLineId   = id;
-    mSelection.endCellOffset   = cellOffsetWithinLine(mDocument, id, absRow, right, mWidth);
+    mSelection.endCellOffset   = boundaryOffsetWithinLine(mDocument, id, absRow, right, true,  mWidth);
     mSelection.active = true;
     mSelection.valid = false;
     mSelection.mode = SelectionMode::Word;
@@ -266,8 +280,10 @@ void TerminalEmulator::startLineSelection(int absRow)
     int firstAbs = mDocument.firstAbsOfLine(id);
     int lastAbs  = mDocument.lastAbsOfLine(id);
     int rowSpan  = (firstAbs < 0 || lastAbs < 0) ? 0 : (lastAbs - firstAbs);
+    // Line: enclose every cell of the wrapped line. End boundary is past
+    // the last cell of the last visual row.
     mSelection.startLineId = id; mSelection.startCellOffset = 0;
-    mSelection.endLineId   = id; mSelection.endCellOffset   = rowSpan * mWidth + (mWidth - 1);
+    mSelection.endLineId   = id; mSelection.endCellOffset   = rowSpan * mWidth + mWidth;
     mSelection.active = true;
     mSelection.valid = false;
     mSelection.mode = SelectionMode::Line;
@@ -279,17 +295,17 @@ void TerminalEmulator::startLineSelection(int absRow)
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
-void TerminalEmulator::extendSelection(int col, int absRow)
+void TerminalEmulator::extendSelection(int col, int absRow, bool xRightHalf)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (!mSelection.valid && !mSelection.active) {
-        startSelection(col, absRow);
+        startSelection(col, absRow, xRightHalf);
         return;
     }
 
     auto resOpt = resolveSelection();
     if (!resOpt) {
-        startSelection(col, absRow);
+        startSelection(col, absRow, xRightHalf);
         return;
     }
     int distToStart = std::abs(absRow - resOpt->startAbsRow) * mWidth +
@@ -298,7 +314,7 @@ void TerminalEmulator::extendSelection(int col, int absRow)
                       std::abs(col - resOpt->endCol);
 
     uint64_t newId = mDocument.lineIdForAbs(absRow);
-    int newOff = cellOffsetWithinLine(mDocument, newId, absRow, col, mWidth);
+    int newOff = boundaryOffsetWithinLine(mDocument, newId, absRow, col, xRightHalf, mWidth);
     if (distToStart < distToEnd) {
         mSelection.startLineId = newId; mSelection.startCellOffset = newOff;
     } else {
@@ -315,11 +331,11 @@ void TerminalEmulator::extendSelection(int col, int absRow)
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
-void TerminalEmulator::startRectangleSelection(int col, int absRow)
+void TerminalEmulator::startRectangleSelection(int col, int absRow, bool xRightHalf)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     uint64_t id = mDocument.lineIdForAbs(absRow);
-    int off = cellOffsetWithinLine(mDocument, id, absRow, col, mWidth);
+    int off = boundaryOffsetWithinLine(mDocument, id, absRow, col, xRightHalf, mWidth);
     mSelection.startLineId = id; mSelection.startCellOffset = off;
     mSelection.endLineId   = id; mSelection.endCellOffset   = off;
     mSelection.active = true;
@@ -327,12 +343,12 @@ void TerminalEmulator::startRectangleSelection(int col, int absRow)
     mSelection.mode = SelectionMode::Rectangle;
 }
 
-void TerminalEmulator::updateSelection(int col, int absRow)
+void TerminalEmulator::updateSelection(int col, int absRow, bool xRightHalf)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     uint64_t id = mDocument.lineIdForAbs(absRow);
     mSelection.endLineId     = id;
-    mSelection.endCellOffset = cellOffsetWithinLine(mDocument, id, absRow, col, mWidth);
+    mSelection.endCellOffset = boundaryOffsetWithinLine(mDocument, id, absRow, col, xRightHalf, mWidth);
 }
 
 void TerminalEmulator::finalizeSelection()
@@ -359,29 +375,78 @@ TerminalEmulator::resolveSelection() const
     int startFirst = mDocument.firstAbsOfLine(mSelection.startLineId);
     int endFirst   = mDocument.firstAbsOfLine(mSelection.endLineId);
     if (startFirst < 0 || endFirst < 0) return std::nullopt;
-    // Convert cell offset back to current visual coordinates. Reflow
-    // re-wrapped the logical line into rows of the current `mWidth`, so
-    // cell N of the line is at row `firstAbs + N/mWidth`, col `N%mWidth`.
-    // Clamp to the line's last visible row + col (a wider new layout may
-    // mean the offset's row falls past the line's actual extent).
+    // Convert stored boundary offset back to current visual coordinates.
+    // Reflow re-wrapped the logical line into rows of the current `mWidth`,
+    // so boundary B of the line maps to row `firstAbs + B/mWidth`,
+    // col `B%mWidth` (col is in [0, w], where w == "right edge of last
+    // cell of this row" / "left edge of next row").
     int w = std::max(1, mWidth);
-    auto resolve = [&](uint64_t id, int firstAbs, int cellOff,
-                       int& outRow, int& outCol) {
-        int row = firstAbs + cellOff / w;
-        int col = cellOff % w;
+    auto resolveBoundary = [&](uint64_t id, int firstAbs, int boundaryOff,
+                               int& outRow, int& outCol) {
+        int row = firstAbs + boundaryOff / w;
+        int col = boundaryOff % w;
         int lastAbs = mDocument.lastAbsOfLine(id);
         if (lastAbs >= 0 && row > lastAbs) {
             row = lastAbs;
-            col = w - 1;
+            col = w; // boundary past last cell of last row
         }
         outRow = row;
         outCol = col;
     };
+    int sRow, sCol, eRow, eCol;
+    resolveBoundary(mSelection.startLineId, startFirst, mSelection.startCellOffset,
+                    sRow, sCol);
+    resolveBoundary(mSelection.endLineId,   endFirst,   mSelection.endCellOffset,
+                    eRow, eCol);
+
+    // Empty selection: boundaries equal => no cell covered.
+    if (sRow == eRow && sCol == eCol) return std::nullopt;
+
+    // Wezterm shift: convert boundary positions into cell positions for
+    // the rendered range. Rectangle mode shifts only on x; linear modes
+    // shift the "trailing" boundary by one cell so the cell under the
+    // cursor is excluded until the click crosses the cell midpoint.
+    auto shiftBack = [&](int& row, int& col) {
+        // Move one cell back (saturating at row 0 col 0).
+        if (col > 0) { col -= 1; return; }
+        if (row > 0) { row -= 1; col = w - 1; return; }
+        col = 0;
+    };
+
+    if (mSelection.mode == SelectionMode::Rectangle) {
+        // Rectangle: x is independent of y. The right-side boundary
+        // (whichever has the larger x) shifts back to a cell index.
+        int minC = std::min(sCol, eCol);
+        int maxC = std::max(sCol, eCol);
+        int minR = std::min(sRow, eRow);
+        int maxR = std::max(sRow, eRow);
+        if (maxC > minC) {
+            maxC -= 1;
+        } else {
+            // Same x boundary on both sides: empty x-range.
+            return std::nullopt;
+        }
+        sRow = minR; sCol = minC;
+        eRow = maxR; eCol = maxC;
+    } else {
+        bool forward = (sRow < eRow) || (sRow == eRow && sCol < eCol);
+        if (forward) {
+            // end is the trailing boundary — shift back by one cell.
+            shiftBack(eRow, eCol);
+        } else {
+            // start is the trailing boundary (we dragged backwards).
+            shiftBack(sRow, sCol);
+            // Normalize end if it sits at the right edge of a row.
+            if (eCol == w) { eCol = 0; eRow += 1; }
+        }
+        // Normalize the leading boundary too: if it sits at col == w
+        // (right edge), it's equivalent to col 0 of the next row.
+        if (forward && sCol == w) { sCol = 0; sRow += 1; }
+    }
+
     ResolvedSelection r;
-    resolve(mSelection.startLineId, startFirst, mSelection.startCellOffset,
-            r.startAbsRow, r.startCol);
-    resolve(mSelection.endLineId,   endFirst,   mSelection.endCellOffset,
-            r.endAbsRow, r.endCol);
+    r.startAbsRow = sRow; r.startCol = sCol;
+    r.endAbsRow   = eRow; r.endCol   = eCol;
     r.active = mSelection.active;
     r.valid  = mSelection.valid;
     r.mode   = mSelection.mode;

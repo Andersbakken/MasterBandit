@@ -119,10 +119,22 @@ function _activeTabUuid() {
     return stack ? stack.activeChild : null;
 }
 
+// Read the focused pane's effective CWD (OSC 7 if known; falls back to
+// /proc/<pgid>/cwd or proc_pidpath on the C++ side). Empty string means
+// "no inheritance" — C++ then uses TerminalOptions.cwd → $HOME.
+function _focusedPaneCwd() {
+    const fp = mb.layout.focusedPane();
+    if (!fp) return '';
+    const pane = mb.pane(fp.nodeId);
+    return pane ? (pane.cwd || '') : '';
+}
+
 mb.actions.register('newTab', () => {
+    const cwd = _focusedPaneCwd();
     const tabUuid = mb.layout.createTab();
     if (!tabUuid) return;
-    const termNodeId = mb.layout.createTerminal(tabUuid);
+    const opts = cwd ? { cwd } : undefined;
+    const termNodeId = mb.layout.createTerminal(tabUuid, opts);
     if (termNodeId) mb.layout.focusPane(termNodeId);
     mb.layout.activateTab(tabUuid);
 });
@@ -162,7 +174,10 @@ mb.actions.register('activateTabRelative', ({delta}) => {
 mb.actions.register('splitPane', ({dir}) => {
     const fp = mb.layout.focusedPane();
     if (!fp) return;
-    const newNodeId = mb.layout.splitPane(fp.nodeId, dir);
+    const pane = mb.pane(fp.nodeId);
+    const cwd = pane ? (pane.cwd || '') : '';
+    const opts = cwd ? { cwd } : undefined;
+    const newNodeId = mb.layout.splitPane(fp.nodeId, dir, opts);
     if (newNodeId) mb.layout.focusPane(newNodeId);
 });
 

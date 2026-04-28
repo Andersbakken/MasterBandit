@@ -165,10 +165,13 @@ struct AppCallbacks {
     std::function<NewPane(const std::string& parentContainerNodeId,
                           const std::string& cwd)> createTerminalInContainer;
     // Wrap `existingPaneNodeId` in a new Container and spawn a Terminal as
-    // the sibling. `dir` is "horizontal" or "vertical".
+    // the sibling. `dir` is "horizontal" or "vertical". `cwd` is the
+    // explicit caller-supplied working directory; if empty, the C++ side
+    // falls back to paneProcessCWD(existingPane) (OSC 7 → /proc).
     std::function<NewPane(const std::string& existingPaneNodeId,
                           const std::string& dir,
-                          bool newIsFirst)> splitPaneByNodeId;
+                          bool newIsFirst,
+                          const std::string& cwd)> splitPaneByNodeId;
     // Apply a Stack zoom override. `stackNodeId` is the Stack whose rect
     // should be redirected; `targetOrEmpty == ""` clears the override.
     // Wraps LayoutTree::setStackZoom and then triggers a resize cascade

@@ -285,8 +285,13 @@ private:
     bool createTerminalInContainer(Uuid parentContainerNodeId,
                                    const std::string& cwd,
                                    Uuid* outNodeId);
+    // `cwd` is the explicit caller-supplied working directory for the
+    // new pane. If empty, falls back to paneProcessCWD(existingPane)
+    // (OSC 7 → /proc) so callers that don't supply one (e.g. user
+    // scripts that bypass default-ui) still get sensible inheritance.
     bool splitPaneByNodeId(Uuid existingPaneNodeId, SplitDir dir,
                            float ratio, bool newIsFirst,
+                           const std::string& cwd,
                            Uuid* outNodeId);
     bool removeNode(Uuid nodeId);
     bool focusPaneById(Uuid nodeId);

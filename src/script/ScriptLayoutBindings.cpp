@@ -370,12 +370,15 @@ JSValue jsLayoutCreateTerminalComposite(JSContext* ctx, JSValueConst, int argc, 
     return JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size());
 }
 
-// splitPane(existingPaneNodeId, dir, newIsFirst?) → nodeId | null
+// splitPane(existingPaneNodeId, dir, opts?) → nodeId | null
+//   opts: { newIsFirst?: bool, cwd?: string }
+//   Legacy: opts can also be a bare boolean meaning newIsFirst (kept for
+//   backward-compat with the previous (existing, dir, bool) signature).
 JSValue jsLayoutSplitPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify))
         return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
-    if (argc < 2) return JS_ThrowTypeError(ctx, "splitPane(existingNodeId, dir, newIsFirst?)");
+    if (argc < 2) return JS_ThrowTypeError(ctx, "splitPane(existingNodeId, dir, opts?)");
     Uuid existing = parseUuidArg(ctx, argv[0], "splitPane(existing)");
     if (existing.isNil()) return JS_EXCEPTION;
     if (!JS_IsString(argv[1])) return JS_ThrowTypeError(ctx,
@@ -394,12 +397,31 @@ JSValue jsLayoutSplitPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
     else if (dir == "down")  { wireDir = "vertical"; }
     else if (dir == "up")    { wireDir = "vertical"; newIsFirst = true; }
     else return JS_ThrowTypeError(ctx, "splitPane: bad dir");
-    if (argc >= 3) newIsFirst = JS_ToBool(ctx, argv[2]) ? true : newIsFirst;
+
+    std::string cwd;
+    if (argc >= 3) {
+        if (JS_IsObject(argv[2]) && !JS_IsNull(argv[2])) {
+            JSValue nf = JS_GetPropertyStr(ctx, argv[2], "newIsFirst");
+            if (!JS_IsUndefined(nf) && !JS_IsNull(nf))
+                newIsFirst = JS_ToBool(ctx, nf) ? true : newIsFirst;
+            JS_FreeValue(ctx, nf);
+            JSValue cwdv = JS_GetPropertyStr(ctx, argv[2], "cwd");
+            if (JS_IsString(cwdv)) {
+                size_t len = 0;
+                const char* s = JS_ToCStringLen(ctx, &len, cwdv);
+                if (s) { cwd.assign(s, len); JS_FreeCString(ctx, s); }
+            }
+            JS_FreeValue(ctx, cwdv);
+        } else {
+            // Legacy: bare boolean = newIsFirst
+            newIsFirst = JS_ToBool(ctx, argv[2]) ? true : newIsFirst;
+        }
+    }
 
     auto* eng = engineFromCtx(ctx);
     if (!eng->callbacks().splitPaneByNodeId)
         return JS_ThrowTypeError(ctx, "splitPane: not wired");
-    auto np = eng->callbacks().splitPaneByNodeId(existing.toString(), wireDir, newIsFirst);
+    auto np = eng->callbacks().splitPaneByNodeId(existing.toString(), wireDir, newIsFirst, cwd);
     if (!np.ok || np.nodeId.empty()) return JS_NULL;
     return JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size());
 }

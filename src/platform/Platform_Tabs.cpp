@@ -517,7 +517,7 @@ void PlatformDawn::activateTabByUuid(Uuid sub)
 }
 
 bool PlatformDawn::createTerminalInContainer(Uuid parentContainerNodeId,
-                                             const std::string& cwd,
+                                             const std::string& cwdIn,
                                              Uuid* outNodeId)
 {
     LayoutTree& tree = scriptEngine_.layoutTree();
@@ -541,6 +541,19 @@ bool PlatformDawn::createTerminalInContainer(Uuid parentContainerNodeId,
     const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
     scriptEngine_.computeTabRects(*tab, fbWidth_, fbHeight_, cellW, cellH);
 
+    // Caller-supplied cwd wins; fall back to the globally-focused pane's
+    // process cwd so user scripts that call mb.layout.createTerminal(tab)
+    // without opts still get automatic inheritance from the user's
+    // current pane (symmetric with splitPane).
+    std::string cwd = cwdIn;
+    if (cwd.empty()) {
+        Uuid focusedNode = scriptEngine_.focusedTerminalNodeId();
+        if (!focusedNode.isNil()) {
+            if (Terminal* fp = scriptEngine_.terminal(focusedNode))
+                cwd = paneProcessCWD(fp);
+        }
+    }
+
     spawnTerminalForPane(newNodeId, *tab, cwd);
     resizeAllPanesInTab(*tab);
 
@@ -550,6 +563,7 @@ bool PlatformDawn::createTerminalInContainer(Uuid parentContainerNodeId,
 
 bool PlatformDawn::splitPaneByNodeId(Uuid existingPaneNodeId, SplitDir dir,
                                      float ratio, bool newIsFirst,
+                                     const std::string& cwdIn,
                                      Uuid* outNodeId)
 {
     (void)ratio;
@@ -565,9 +579,14 @@ bool PlatformDawn::splitPaneByNodeId(Uuid existingPaneNodeId, SplitDir dir,
     const int cellH = std::max(1, static_cast<int>(std::round(lineHeight_)));
     scriptEngine_.computeTabRects(*tab, fbWidth_, fbHeight_, cellW, cellH);
 
-    std::string cwd;
-    if (Terminal* fp = scriptEngine_.paneInSubtree(*tab, existingPaneNodeId))
-        cwd = paneProcessCWD(fp);
+    // Caller-supplied cwd wins; fall back to paneProcessCWD so user
+    // scripts that call mb.layout.splitPane(...) without opts still get
+    // automatic inheritance.
+    std::string cwd = cwdIn;
+    if (cwd.empty()) {
+        if (Terminal* fp = scriptEngine_.paneInSubtree(*tab, existingPaneNodeId))
+            cwd = paneProcessCWD(fp);
+    }
 
     spawnTerminalForPane(newNodeId, *tab, cwd);
     resizeAllPanesInTab(*tab);

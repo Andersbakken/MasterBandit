@@ -1,5 +1,6 @@
 #include "PlatformDawn.h"
 #include "Config.h"
+#include "PlatformUtils.h"
 #include "Resources.h"
 #include <glaze/glaze.hpp>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -76,9 +77,16 @@ int PlatformDawn::exec()
                     bool isFocused = scriptEngine_.focusedTerminalNodeId() == paneId;
                     // PaneInfo.title is a plain string for JS; collapse
                     // the optional here (nullopt → "").
+                    // pane.cwd in JS prefers OSC 7 (set by the shell);
+                    // when the shell doesn't emit OSC 7, fall back to
+                    // tcgetpgrp + /proc/<pgid>/cwd (Linux) /
+                    // proc_pidpath (macOS) so JS gets a meaningful value
+                    // regardless of shell config. paneProcessCWD does
+                    // exactly that ordering.
                     Script::AppCallbacks::PaneInfo info {
                         p->width(), p->height(),
-                        p->title().value_or(std::string{}), p->cwd(),
+                        p->title().value_or(std::string{}),
+                        paneProcessCWD(p),
                         p->masterFD() >= 0,
                         isFocused, p->focusedPopupId(),
                         p->foregroundProcess()
@@ -226,7 +234,8 @@ int PlatformDawn::exec()
         };
         scbs.splitPaneByNodeId = [this](const std::string& existingNodeId,
                                          const std::string& dir,
-                                         bool newIsFirst)
+                                         bool newIsFirst,
+                                         const std::string& cwd)
                 -> Script::AppCallbacks::NewPane {
             Uuid p = Uuid::fromString(existingNodeId);
             if (p.isNil()) return {{}, false};
@@ -234,7 +243,7 @@ int PlatformDawn::exec()
                 ? SplitDir::Vertical : SplitDir::Horizontal;
             Uuid n;
             bool ok = splitPaneByNodeId(p, d, /*ratio=*/0.5f,
-                                                     newIsFirst, &n);
+                                        newIsFirst, cwd, &n);
             return {n.isNil() ? std::string{} : n.toString(), ok};
         };
         scbs.adjustPaneSize = [this](const std::string& paneNodeId,

@@ -209,35 +209,80 @@ XCBWindow::~XCBWindow()
 
 // ---------- cursors ----------
 
+static xcb_cursor_t createGlyphCursor(xcb_connection_t* conn, xcb_font_t font, uint16_t glyph)
+{
+    xcb_cursor_t cursor = xcb_generate_id(conn);
+    xcb_create_glyph_cursor(conn, cursor, font, font,
+        glyph, glyph + 1,
+        0, 0, 0,                 // fg: black
+        0xFFFF, 0xFFFF, 0xFFFF); // bg: white
+    return cursor;
+}
+
 void XCBWindow::createCursors()
 {
     // Names follow the freedesktop cursor-name spec
     // (https://www.freedesktop.org/wiki/Specifications/cursor-spec/).
     // libxcb-cursor reads the user's gtk-cursor-theme-name / Xcursor.theme
-    // and resolves to themed PNGs; on a name miss it falls back to the
-    // legacy cursor-font glyph automatically (so behavior on a system
-    // with no theme installed degrades to what we had before).
-    if (xcb_cursor_context_new(conn_, screen_, &cursorCtx_) < 0) {
-        spdlog::warn("XCBWindow: xcb_cursor_context_new failed; "
-                     "cursors will not be themed");
-        cursorCtx_ = nullptr;
-        return;
-    }
-    auto load = [this](const char* name) {
-        return xcb_cursor_load_cursor(cursorCtx_, name);
+    // and resolves to themed PNGs. Despite what the spec implies, on a
+    // name miss xcb_cursor_load_cursor returns 0 with no automatic glyph
+    // fallback (and on systems with no theme configured at all,
+    // xcb_cursor_context_new can fail outright). Setting XCB_CW_CURSOR to
+    // 0 leaves the window inheriting the root window's cursor (the big
+    // "X"), so we need our own fallback to the legacy cursor-font glyphs.
+    // Glyph indices are from <X11/cursorfont.h>.
+    struct CursorSpec {
+        xcb_cursor_t XCBWindow::* member;
+        const char*               themeName;
+        uint16_t                  glyph;
     };
-    cursorArrow_      = load("default");        // alias of left_ptr
-    cursorIBeam_      = load("text");           // alias of xterm
-    cursorPointer_    = load("pointer");        // alias of hand2 / hand1
-    cursorCrosshair_  = load("crosshair");
-    cursorWait_       = load("wait");           // alias of watch
-    cursorHelp_       = load("help");           // alias of question_arrow
-    cursorMove_       = load("move");           // alias of fleur
-    cursorNotAllowed_ = load("not-allowed");    // alias of crossed_circle
-    cursorResizeH_    = load("ew-resize");      // alias of sb_h_double_arrow
-    cursorResizeV_    = load("ns-resize");      // alias of sb_v_double_arrow
-    cursorResizeNESW_ = load("nesw-resize");
-    cursorResizeNWSE_ = load("nwse-resize");
+    // The cursor font lacks a true not-allowed/forbidden glyph;
+    // X_cursor (0) is the closest.
+    static const CursorSpec specs[] = {
+        { &XCBWindow::cursorArrow_,      "default",     68  }, // XC_left_ptr
+        { &XCBWindow::cursorIBeam_,      "text",        152 }, // XC_xterm
+        { &XCBWindow::cursorPointer_,    "pointer",     60  }, // XC_hand2
+        { &XCBWindow::cursorCrosshair_,  "crosshair",   34  }, // XC_crosshair
+        { &XCBWindow::cursorWait_,       "wait",        150 }, // XC_watch
+        { &XCBWindow::cursorHelp_,       "help",        92  }, // XC_question_arrow
+        { &XCBWindow::cursorMove_,       "move",        52  }, // XC_fleur
+        { &XCBWindow::cursorNotAllowed_, "not-allowed", 0   }, // XC_X_cursor
+        { &XCBWindow::cursorResizeH_,    "ew-resize",   108 }, // XC_sb_h_double_arrow
+        { &XCBWindow::cursorResizeV_,    "ns-resize",   116 }, // XC_sb_v_double_arrow
+        { &XCBWindow::cursorResizeNESW_, "nesw-resize", 136 }, // XC_top_right_corner
+        { &XCBWindow::cursorResizeNWSE_, "nwse-resize", 134 }, // XC_top_left_corner
+    };
+
+    bool haveCtx = (xcb_cursor_context_new(conn_, screen_, &cursorCtx_) >= 0);
+    if (!haveCtx) {
+        spdlog::warn("XCBWindow: xcb_cursor_context_new failed; "
+                     "falling back to legacy cursor-font glyphs");
+        cursorCtx_ = nullptr;
+    }
+
+    // Open the legacy cursor font lazily (only if we actually need a fallback).
+    xcb_font_t glyphFont = 0;
+    bool glyphFontOpened = false;
+    auto ensureGlyphFont = [&]() {
+        if (glyphFontOpened) return;
+        glyphFontOpened = true;
+        glyphFont = xcb_generate_id(conn_);
+        xcb_open_font(conn_, glyphFont, 6, "cursor");
+    };
+
+    for (const auto& s : specs) {
+        xcb_cursor_t c = 0;
+        if (haveCtx)
+            c = xcb_cursor_load_cursor(cursorCtx_, s.themeName);
+        if (!c) {
+            ensureGlyphFont();
+            c = createGlyphCursor(conn_, glyphFont, s.glyph);
+        }
+        this->*(s.member) = c;
+    }
+
+    if (glyphFontOpened)
+        xcb_close_font(conn_, glyphFont);
 }
 
 void XCBWindow::setCursorStyle(CursorStyle shape)
@@ -260,6 +305,7 @@ void XCBWindow::setCursorStyle(CursorStyle shape)
     case CursorStyle::ResizeNWSE:  c = cursorResizeNWSE_; break;
     default: return;
     }
+    if (!c) return; // never replace a valid cursor with XCB_CURSOR_NONE
     xcb_change_window_attributes(conn_, window_, XCB_CW_CURSOR, &c);
     xcb_flush(conn_);
 }

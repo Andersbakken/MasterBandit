@@ -509,6 +509,20 @@ Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
     // Alt-screen mode has no persistent scrollback — embedded has nowhere to
     // anchor. Applets must wait until the shell returns to main screen.
     if (usingAltScreen()) return nullptr;
+    // The anchor row is covered by the embedded and rows below are displaced
+    // by (rows-1). Plus we advance one parent row for the cursor below the
+    // embedded — that landing row is itself displaced. So we need `rows`
+    // viewport rows of room beneath the cursor's logical position; if the
+    // embedded plus its trailing cursor row can't fit at all, refuse.
+    if (rows >= height()) return nullptr;
+
+    // If the cursor is too close to the bottom of the viewport, the embedded
+    // would extend past the visible area and the user couldn't scroll down to
+    // see the rest (the live grid is already at the document tail). Push the
+    // top of the document into history far enough that the future anchor sits
+    // at viewport row <= height()-1-rows, leaving exactly one row below the
+    // embedded for the displaced cursor.
+    scrollCursorUpToFitBelow(rows);
 
     // Current cursor row → anchor lineId. historySize() + cursorY() is the
     // absolute row of the current cursor position on main screen.
@@ -580,6 +594,21 @@ TerminalEmulator* Terminal::activeTerm()
     if (auto* em = focusedEmbedded())
         return em;
     return this;
+}
+
+void Terminal::onFullReset()
+{
+    // RIS wipes scrollback / line ids, so anchored embeddeds become orphans.
+    // Move them onto the same queue the line-id eviction callback uses; the
+    // main-thread platform tick (drainEvictedEmbeddeds) does the render-
+    // shadow mirror + graveyard defer + JS "destroyed" delivery.
+    if (mEmbedded.empty()) return;
+    for (auto& [lineId, term] : mEmbedded) {
+        mEvictedEmbeddeds.push_back({lineId, std::move(term)});
+    }
+    mEmbedded.clear();
+    mFocusedEmbeddedLineId = 0;
+    if (onPopupEvent) onPopupEvent();
 }
 
 void Terminal::collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const

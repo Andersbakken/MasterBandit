@@ -115,14 +115,17 @@ function createInlineWidget() {
     });
 
     em.addEventListener("resized", (_cols, _rows) => render());
-    em.addEventListener("destroyed", () => {
-        console.log("[embedded-demo] widget #" + id + " destroyed");
-    });
 
     // Re-render when focus changes (focused cursor vs hollow outline differs
     // visually; the applet can also switch color scheme). FocusPopup is the
-    // action that cycles pane → popups → embeddeds → pane.
+    // action that cycles pane → popups → embeddeds → pane. Drop the listener
+    // on destroy — render() touches `em` and would throw "terminal is
+    // destroyed" on every subsequent cycle.
     mb.addEventListener("action", "FocusPopup", render);
+    em.addEventListener("destroyed", () => {
+        mb.removeEventListener("action", "FocusPopup", render);
+        console.log("[embedded-demo] widget #" + id + " destroyed");
+    });
 
     render();
 }

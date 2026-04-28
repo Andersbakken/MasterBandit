@@ -210,6 +210,20 @@ void TerminalEmulator::resize(int width, int height)
     if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
+void TerminalEmulator::scrollCursorUpToFitBelow(int rowsBelow)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    if (mUsingAltScreen) return;
+    if (rowsBelow <= 0 || mHeight <= 0) return;
+    int desired = mHeight - 1 - rowsBelow;
+    if (desired < 0) desired = 0;
+    int curY = mState->cursorY;
+    if (curY <= desired) return;
+    int n = curY - desired;
+    scrollUpInRegion(n);
+    mState->cursorY -= n;
+}
+
 void TerminalEmulator::scrollUpInRegion(int n)
 {
     IGrid& g = grid();
@@ -988,6 +1002,10 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 // screens' state reverts to configured defaults, image
                 // registry wiped, scrollback cleared, pointer shape and kitty
                 // keyboard stacks emptied, both grids blanked.
+                // Subclass hand-off first: Terminal moves its embeddeds to the
+                // eviction queue so they're torn down via the same render-
+                // shadow + graveyard path the line-id eviction callback uses.
+                onFullReset();
                 resetToDefault(mMainState);
                 resetToDefault(mAltState);
                 mState = &mMainState;

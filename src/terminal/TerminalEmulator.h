@@ -538,6 +538,20 @@ public:
     };
     virtual void collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& /*out*/) const {}
 
+    // Called from RIS (full reset) before scrollback / line ids are wiped, so
+    // subclasses can hand off document-anchored children (embedded terminals
+    // on Terminal) for orderly teardown. Default no-op. Called under the
+    // terminal mutex.
+    virtual void onFullReset() {}
+
+    // Push enough rows from the top of the document into history so that the
+    // cursor sits at or above viewport row `viewportRows - 1 - rowsBelow`,
+    // leaving `rowsBelow` viewport rows of room beneath the cursor (plus the
+    // cursor's row itself). Cursor screen position is adjusted so it stays on
+    // the same logical line. Used by Terminal::createEmbedded to make space
+    // for an inline embedded that would otherwise extend past the bottom.
+    void scrollCursorUpToFitBelow(int rowsBelow);
+
     // One visible embedded as (viewport-row, embedded-rows, lineId).
     // Produced by collectVisibleAnchors() for use by both snapshot build
     // (render thread, under terminal mutex) and live hit-test (main

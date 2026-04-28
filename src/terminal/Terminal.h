@@ -161,6 +161,11 @@ public:
     // stays empty there.
     void collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const override;
 
+    // RIS hand-off: move every embedded onto the eviction queue so the
+    // platform main-thread tick tears them down via the same render-shadow
+    // mirror + graveyard path the line-id eviction callback uses.
+    void onFullReset() override;
+
     // Input-path hit-test. Returns true if viewport-pixel-(X,Y) (pane-
     // content-relative, i.e. after padLeft / padTop subtraction) falls
     // inside a visible embedded's displaced band. Walks live state —

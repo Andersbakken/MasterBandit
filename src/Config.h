@@ -197,6 +197,13 @@ struct Config {
     bool alt_sends_esc = true;        // Alt+<printable> sends ESC-prefix (xterm convention) instead of the composed character
     bool command_navigation_wrap = true; // Cmd+Up at oldest wraps to newest; Cmd+Down at newest wraps to oldest
     int  key_sequence_timeout_ms = 0; // Multi-key binding timeout in ms (0 = disabled). Aborts an in-progress sequence after idle.
+    // Reported color preference for mode 2031 / DSR-997. "auto" (default)
+    // queries the system: NSApp.effectiveAppearance on macOS,
+    // org.freedesktop.portal.Settings (color-scheme) on Linux. "light" /
+    // "dark" forces the reported value and bypasses the system query
+    // entirely — useful when the portal is broken/missing or when the
+    // user wants to override the system preference.
+    std::string color_scheme = "auto"; // "auto" | "light" | "dark"
     NotificationsConfig notifications;
 
     struct glaze {
@@ -224,6 +231,7 @@ struct Config {
             "alt_sends_esc", &T::alt_sends_esc,
             "command_navigation_wrap", &T::command_navigation_wrap,
             "key_sequence_timeout_ms", &T::key_sequence_timeout_ms,
+            "color_scheme", &T::color_scheme,
             "notifications", &T::notifications
         );
     };

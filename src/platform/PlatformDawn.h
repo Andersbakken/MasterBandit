@@ -205,6 +205,12 @@ public:
     std::string gridToJson(Uuid id);
     std::string statsJson(int requestId);
 
+    // Resolves the effective dark-mode value for mode 2031 / DSR-997.
+    // Honors the `color_scheme` config override ("light" / "dark") when
+    // set; otherwise queries the system (DBus portal on Linux,
+    // NSApp.effectiveAppearance on macOS).
+    bool effectiveIsDarkMode() const;
+
 private:
     int exitStatus_ = 0;
     bool running_ = false;

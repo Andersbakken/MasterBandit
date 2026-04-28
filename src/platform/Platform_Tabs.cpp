@@ -730,7 +730,10 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
 
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    cbs.isDarkMode = isHeadless() ? []() { return true; } : []() { return platformIsDarkMode(); };
+    // Captures `this` so the callback always reflects the current config
+    // override (config.color_scheme = "auto" | "light" | "dark"); only
+    // "auto" defers to the system query.
+    cbs.isDarkMode = [this]() { return effectiveIsDarkMode(); };
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
         eventLoop_->post([this, paneId, dir] {

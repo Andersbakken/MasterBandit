@@ -651,8 +651,13 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             // points are wired.
             platformInit(*eventLoop_);
 
-            // Observe system appearance changes for mode 2031
+            // Observe system appearance changes for mode 2031.
+            // Suppress when an explicit config override is in effect; the
+            // user's choice should not be flipped by the OS theme changing
+            // underneath them.
             platformObserveAppearanceChanges([this](bool isDark) {
+                const std::string& cs = lastConfig_.color_scheme;
+                if (cs == "light" || cs == "dark") return;
                 notifyAllTerminals([isDark](TerminalEmulator* term) {
                     term->notifyColorPreference(isDark);
                 });
@@ -1011,6 +1016,20 @@ void PlatformDawn::onBlinkTick()
     }
 }
 
+bool PlatformDawn::effectiveIsDarkMode() const
+{
+    // Config override wins over system. "auto" (default) defers to the
+    // system query; "light" / "dark" forces the value, which is the only
+    // way to get a sensible answer on systems where the freedesktop
+    // portal Settings interface is missing or broken (the query then
+    // hard-fails and falls back to light).
+    const std::string& cs = lastConfig_.color_scheme;
+    if (cs == "dark")  return true;
+    if (cs == "light") return false;
+    if (isHeadless()) return true;
+    return platformIsDarkMode();
+}
+
 void PlatformDawn::applyConfig(const Config& config)
 {
     spdlog::info("Config: hot-reload triggered");
@@ -1025,7 +1044,20 @@ void PlatformDawn::applyConfig(const Config& config)
     // Stash the snapshot before any sub-section copies. `mb.config` reads
     // from this on each access; the configChanged event then prompts scripts
     // to re-fetch.
+    std::string oldColorScheme = lastConfig_.color_scheme;
     lastConfig_ = config;
+
+    // If the color_scheme override changed (or the resolved value
+    // differs from what we'd compute now), notify all terminals so apps
+    // that subscribed to mode 2031 see the flip immediately rather than
+    // waiting for the next system appearance change. Cheap: just an
+    // emulator-side state push.
+    if (oldColorScheme != config.color_scheme) {
+        bool isDark = effectiveIsDarkMode();
+        notifyAllTerminals([isDark](TerminalEmulator* term) {
+            term->notifyColorPreference(isDark);
+        });
+    }
 
     // Keybindings
     std::vector<Binding> allKey = defaultBindings();

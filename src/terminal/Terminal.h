@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -55,7 +56,28 @@ public:
     int masterFD() const { return mMasterFD; }
     bool isHeadless() const { return mHeadless; }
     void readFromFD();
+    // Synchronous parse on the calling thread. Used by tests and by
+    // headless code paths that don't have a worker pool. Production
+    // PTY ticks should call queueParse() instead.
     void flushReadBuffer();
+
+    // Asynchronous parse. Atomically swaps mReadCoalesceBuffer into a
+    // worker-owned buffer and submits an injectData task to `submit`.
+    // Caller passes the submission function (typically WorkerPool::submit
+    // bound to PlatformDawn's pool). At most one parse task per Terminal
+    // is in flight at a time: if a task is already queued, queueParse
+    // returns immediately and the in-flight worker will pick up any
+    // newly-arrived bytes when it loops at the end of its current batch.
+    // Returns true iff a new task was submitted (caller can use this to
+    // skip wakeups, etc.).
+    using ParseSubmitFn = std::function<void(std::function<void()>)>;
+    bool queueParse(const ParseSubmitFn& submit);
+
+    // True iff a parse task is queued or currently running on a worker.
+    // Used by the graveyard to defer destruction until parsing finishes.
+    bool parseInFlight() const {
+        return mParseInFlight.load(std::memory_order_acquire) != 0;
+    }
     void flushWriteQueue();
     // Paste: wraps in \x1b[200~/\x1b[201~ when DECSET 2004 is active on the
     // terminal. Use for real clipboard/selection pastes so the shell's paste
@@ -144,11 +166,40 @@ public:
     // Resize an existing embedded. Only rows change; cols track parent cols.
     bool resizeEmbedded(uint64_t lineId, int rows);
     Terminal* findEmbedded(uint64_t lineId);
-    const std::unordered_map<uint64_t, std::unique_ptr<Terminal>>& embeddeds() const { return mEmbedded; }
+    // Embedded-map iteration helper. Pass a callback that takes
+    // (uint64_t lineId, Terminal& em) — runs under mEmbeddedMu. Use
+    // this instead of exposing the map directly so callers can't
+    // iterate without the lock.
+    template <typename Fn>
+    void forEachEmbedded(Fn&& fn) const {
+        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+        for (const auto& [lineId, em] : mEmbedded) fn(lineId, *em);
+    }
+    bool hasEmbeddeds() const {
+        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+        return !mEmbedded.empty();
+    }
+    size_t embeddedCount() const {
+        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+        return mEmbedded.size();
+    }
+    // Return a snapshot vector of (lineId, height) pairs. Used by main-
+    // thread paths that need a stable view (e.g. JS event payload).
+    std::vector<std::pair<uint64_t, int>> embeddedSnapshot() const {
+        std::vector<std::pair<uint64_t, int>> out;
+        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+        out.reserve(mEmbedded.size());
+        for (const auto& [lineId, em] : mEmbedded)
+            out.emplace_back(lineId, em->height());
+        return out;
+    }
 
-    uint64_t focusedEmbeddedLineId() const { return mFocusedEmbeddedLineId; }
-    void setFocusedEmbeddedLineId(uint64_t id) { mFocusedEmbeddedLineId = id; }
-    void clearFocusedEmbedded() { mFocusedEmbeddedLineId = 0; }
+    // Atomic: written by the parse-worker eviction callback (clears to 0
+    // when the focused embedded's anchor evicts) and by main-thread
+    // create/destroy/focus paths. Read on the per-tick render path.
+    uint64_t focusedEmbeddedLineId() const { return mFocusedEmbeddedLineId.load(std::memory_order_acquire); }
+    void setFocusedEmbeddedLineId(uint64_t id) { mFocusedEmbeddedLineId.store(id, std::memory_order_release); }
+    void clearFocusedEmbedded() { mFocusedEmbeddedLineId.store(0, std::memory_order_release); }
     Terminal* focusedEmbedded();
 
     // Returns the focused popup's emulator if one exists, else the focused
@@ -214,7 +265,19 @@ private:
     // deferred terminalExited callback.
     bool mExited { false };
     std::vector<char> mWriteQueue;
+    // Bytes read from the PTY and not yet handed to a parse task. Written
+    // from the main-thread fd callback (readFromFD); drained from main in
+    // queueParse() under mReadBufferMutex which is also taken by the
+    // worker when it loops to pick up newly-arrived data. Distinct from
+    // TerminalEmulator::mMutex (which serializes parse vs. snapshot) so
+    // the main thread can keep coalescing reads while the worker parses.
     std::vector<char> mReadCoalesceBuffer;
+    std::mutex        mReadBufferMutex;
+    // Counts queued+running parse tasks for this Terminal. Always 0 or 1
+    // in normal operation (queueParse is gated by this flag), but typed
+    // as int so the graveyard can defer destruction while a worker still
+    // references the Terminal.
+    std::atomic<int>  mParseInFlight { 0 };
 
     // Pixel rect in the window
     Rect mRect;
@@ -239,8 +302,19 @@ private:
     // rendered inline in the scrollback. Destroyed when the anchor row
     // evicts past the archive cap (via Document::onRowEvicted callback wired
     // in the constructor). Keyed on lineId so each row holds at most one.
+    //
+    // mEmbeddedMu is a *small* dedicated mutex covering this map and
+    // anything iterating it. The parse worker mutates the map (eviction
+    // callback, onFullReset) on its thread; main-thread paths
+    // (createEmbedded, extractEmbedded, findEmbedded, resizeEmbedded,
+    // embeddeds()) and the render-thread snapshot path
+    // (collectEmbeddedAnchors) all take this lock. We deliberately do
+    // NOT use the per-Terminal mMutex here because main-thread accessors
+    // would otherwise block for the duration of the worker's parse
+    // batch (which can be milliseconds for a flooding pane).
     std::unordered_map<uint64_t, std::unique_ptr<Terminal>> mEmbedded;
-    uint64_t mFocusedEmbeddedLineId { 0 }; // 0 = none focused
+    mutable std::mutex mEmbeddedMu;
+    std::atomic<uint64_t> mFocusedEmbeddedLineId { 0 }; // 0 = none focused
 
     // Embeddeds that the eviction callback extracted from mEmbedded.  The
     // callback fires under this Terminal's mutex from deep inside
@@ -249,8 +323,18 @@ private:
     // snapshot capture).  Instead we hold the unique_ptr here and let the
     // main-thread Platform drain this list (drainEvictedEmbeddeds()) after
     // the evict path unwinds, at which point the render mutex is free.
+    //
+    // Protected by mEvictedEmbeddedsMu — a *small* dedicated mutex, NOT
+    // the per-Terminal mMutex. We can't reuse mMutex because the parse
+    // worker holds it for the entire injectData run, and the main-thread
+    // tick polls hasEvictedEmbeddeds() every iteration; blocking the
+    // main thread for the duration of a parse re-introduces exactly the
+    // tab-switch latency this refactor was meant to fix. mEvictedHasItems
+    // is a wait-free fast-path so the polling check never has to lock.
     struct EvictedEmbedded { uint64_t lineId; std::unique_ptr<Terminal> term; };
     std::vector<EvictedEmbedded> mEvictedEmbeddeds;
+    mutable std::mutex           mEvictedEmbeddedsMu;
+    std::atomic<bool>            mEvictedHasItems { false };
 
 public:
     // Called by Platform on each main-thread tick after the terminal mutex
@@ -260,16 +344,17 @@ public:
     void drainEvictedEmbeddeds(Fn&& fn) {
         std::vector<EvictedEmbedded> drained;
         {
-            std::lock_guard<std::recursive_mutex> _lk(mutex());
+            std::lock_guard<std::mutex> _lk(mEvictedEmbeddedsMu);
             drained.swap(mEvictedEmbeddeds);
+            mEvictedHasItems.store(false, std::memory_order_release);
         }
         for (auto& e : drained) fn(e.lineId, std::move(e.term));
     }
     // True if there are evicted embeddeds waiting for the main thread to
-    // graveyard them.
+    // graveyard them. Wait-free — main-thread tick polls this every
+    // iteration, so it must never block on the parse worker's mMutex.
     bool hasEvictedEmbeddeds() const {
-        std::lock_guard<std::recursive_mutex> _lk(const_cast<Terminal*>(this)->mutex());
-        return !mEvictedEmbeddeds.empty();
+        return mEvictedHasItems.load(std::memory_order_acquire);
     }
 
 private:

@@ -1011,6 +1011,7 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
                 mState = &mMainState;
                 if (mUsingAltScreen) {
                     mUsingAltScreen = false;
+                    mUsingAltScreenAtomic.store(false, std::memory_order_release);
                     mDocument.markAllDirty();
                 }
                 // Kitty graphics: drop all stored images and reset ID counters.
@@ -2018,6 +2019,7 @@ void TerminalEmulator::onAction(const Action *action)
             resetToDefault(mAltState);
             mState = &mAltState;
             mUsingAltScreen = true;
+            mUsingAltScreenAtomic.store(true, std::memory_order_release);
             // Kitty: switch to alt screen's stack
             mKittyFlags = (mKittyStackDepthAlt > 0) ? mKittyStackAlt[mKittyStackDepthAlt - 1] : 0;
             notifyPointerShapeChanged();  // alt stack is now active
@@ -2079,6 +2081,7 @@ void TerminalEmulator::onAction(const Action *action)
         case 1049: // Alt screen off: swap back to main — state restored implicitly
             mState = &mMainState;
             mUsingAltScreen = false;
+            mUsingAltScreenAtomic.store(false, std::memory_order_release);
             // Kitty: switch back to main screen's stack
             mKittyFlags = (mKittyStackDepthMain > 0) ? mKittyStackMain[mKittyStackDepthMain - 1] : 0;
             notifyPointerShapeChanged();  // main stack is active again

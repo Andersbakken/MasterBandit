@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -30,13 +31,19 @@ public:
     Graveyard& operator=(const Graveyard&) = delete;
 
     // Take ownership of a unique_ptr; destroy after one render frame.
+    // `ready` (optional) is consulted in addition to the frame-stamp
+    // gate: even if completedFrames has surpassed `stamp`, the entry is
+    // held until `ready()` returns true. Used to keep a Terminal alive
+    // until any in-flight parse worker that captured `this` has
+    // returned.
     template <typename T>
-    void defer(std::unique_ptr<T> ptr, uint64_t stamp) {
+    void defer(std::unique_ptr<T> ptr, uint64_t stamp,
+               std::function<bool()> ready = {}) {
         if (!ptr) return;
         std::shared_ptr<void> holder(ptr.release(), [](void* p) {
             delete static_cast<T*>(p);
         });
-        entries_.push_back({stamp, std::move(holder)});
+        entries_.push_back({stamp, std::move(holder), std::move(ready)});
     }
 
     // Take ownership of a value (moved into a heap allocation).
@@ -48,10 +55,15 @@ public:
     }
 
     // Called on the main thread each tick. Frees entries whose stamp has
-    // been surpassed by at least one completed renderFrame.
+    // been surpassed by at least one completed renderFrame AND whose
+    // optional `ready` predicate returns true.
     void sweep(uint64_t completedFrames) {
         auto it = std::remove_if(entries_.begin(), entries_.end(),
-            [completedFrames](const Entry& e) { return completedFrames > e.stamp; });
+            [completedFrames](const Entry& e) {
+                if (completedFrames <= e.stamp) return false;
+                if (e.ready && !e.ready()) return false;
+                return true;
+            });
         entries_.erase(it, entries_.end());
     }
 
@@ -65,6 +77,7 @@ private:
     struct Entry {
         uint64_t stamp;
         std::shared_ptr<void> holder;
+        std::function<bool()> ready; // empty == always ready (only stamp gates)
     };
     std::vector<Entry> entries_;
 };

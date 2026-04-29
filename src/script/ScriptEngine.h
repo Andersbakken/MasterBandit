@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <set>
@@ -294,12 +295,27 @@ public:
     void unregisterTcap(const std::string& name);
 
     // --- Synchronous filters (called from PTY read / input path) ---
+    // filterPaneOutput is called from the parse worker thread; the
+    // Platform_Tabs build wraps it with runOnMain to bounce back to
+    // the main thread for the actual JS invocation. The fast-path
+    // "are there any filters?" check uses outputFilterFlag() which
+    // returns a stable atomic-bool pointer the worker reads
+    // wait-free (avoids the per-batch cost of an unordered_map lookup
+    // on the main thread).
     bool filterPaneOutput(PaneId pane, std::string& data);
     bool filterPaneInput(PaneId pane, std::string& data);
 
     bool hasPaneOutputFilters(PaneId pane) const;
     bool hasPaneInputFilters(PaneId pane) const;
     bool hasPaneMouseMoveListeners(PaneId pane) const;
+
+    // Stable (lifetime-safe) pointers to atomic flags mirroring the
+    // *FilterCount maps. The shared_ptr keeps the atomic alive even
+    // after the pane's map entry is erased, so the parse-worker
+    // closure can read it without taking the engine mutex / risking
+    // a use-after-free.
+    std::shared_ptr<std::atomic<bool>> outputFilterFlag(PaneId pane);
+    std::shared_ptr<std::atomic<bool>> inputFilterFlag(PaneId pane);
 
     // --- Async events (enqueued as microtasks) ---
     void notifyAction(const std::string& actionName);
@@ -701,6 +717,16 @@ private:
     std::unordered_map<PaneId, int, UuidHash> paneOutputFilterCount_;
     std::unordered_map<PaneId, int, UuidHash> paneInputFilterCount_;
     std::unordered_map<PaneId, int, UuidHash> paneMouseMoveCount_;
+    // Mirrors of the above counts as atomic-bool shared_ptrs. Read by
+    // the parse worker (output) / writeToOutput path (input) without
+    // locking; written by the main thread alongside the count maps.
+    // shared_ptr keeps the atomic alive past pane destruction so an
+    // in-flight worker that captured the pointer can still read it
+    // safely (it just sees a stale `false`).
+    std::unordered_map<PaneId, std::shared_ptr<std::atomic<bool>>, UuidHash>
+        paneOutputFilterFlag_;
+    std::unordered_map<PaneId, std::shared_ptr<std::atomic<bool>>, UuidHash>
+        paneInputFilterFlag_;
 
     JSContext* createContext();
     void setupGlobals(JSContext* ctx, InstanceId id);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -96,6 +97,26 @@ public:
     // script callbacks fired synchronously from inside injectData (OSC
     // handlers, action dispatch) can re-enter mutation APIs on the same
     // thread. Using std::recursive_mutex avoids deadlock in that path.
+    //
+    // Held by:
+    //   * The parse worker thread for the entirety of injectData
+    //     (TerminalEmulator.cpp:692). Worker batches are typically
+    //     microseconds but can run into the millisecond range under a
+    //     flooding producer.
+    //   * The render thread during snapshot capture
+    //     (TerminalSnapshot.cpp:53), briefly.
+    //   * Main-thread one-off readers (mouse/scroll handlers, JS
+    //     getters, action dispatch, OSC reply construction). These
+    //     accept the brief block as the cost of consistent reads of
+    //     parse-mutated state (cursor, grid contents, document line
+    //     ids, etc.).
+    //
+    // **Hot main-thread paths must not take this mutex.** In particular
+    // buildRenderFrameState, eviction polling, and per-tick onTick
+    // bookkeeping use atomic snapshots or dedicated small mutexes
+    // (mEmbeddedMu, mEvictedEmbeddedsMu, mUsingAltScreenAtomic,
+    // mFocusedEmbeddedLineId) so that they never serialize on a
+    // long-running parse batch.
     std::recursive_mutex& mutex() const { return mMutex; }
 
     // DECSCUSR cursor shapes
@@ -202,9 +223,16 @@ public:
     int width() const { return mWidth; }
     int height() const { return mHeight; }
 
+    // grid() and the bool member mUsingAltScreen are read/written by the
+    // parse worker thread inside injectData (mode 1049/47 toggles), and
+    // also read on the main thread (e.g. snapshot building, hit-testing,
+    // platform layout decisions). Worker uses the plain bool internally
+    // for performance; main-thread external readers use usingAltScreen()
+    // which goes through mUsingAltScreenAtomic (kept in sync alongside
+    // every mutation of mUsingAltScreen).
     const IGrid& grid() const { return mUsingAltScreen ? static_cast<const IGrid&>(mAltGrid) : static_cast<const IGrid&>(mDocument); }
     IGrid& grid() { return mUsingAltScreen ? static_cast<IGrid&>(mAltGrid) : static_cast<IGrid&>(mDocument); }
-    bool usingAltScreen() const { return mUsingAltScreen; }
+    bool usingAltScreen() const { return mUsingAltScreenAtomic.load(std::memory_order_acquire); }
     const Document& document() const { return mDocument; }
     Document& document() { return mDocument; }
 
@@ -613,6 +641,10 @@ private:
     Document mDocument;
     CellGrid mAltGrid;
     bool mUsingAltScreen { false };
+    // Mirror of mUsingAltScreen kept in sync at every write site
+    // (TerminalEmulator.cpp:1013, 2020, 2081). Read by main-thread
+    // callers via the usingAltScreen() accessor with acquire ordering.
+    std::atomic<bool> mUsingAltScreenAtomic { false };
 
     // Integer row-count viewport anchor. `scrollUpInRegion` compensates by
     // += n when the user is scrolled back (non-zero offset) so they stay

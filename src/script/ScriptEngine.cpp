@@ -2631,16 +2631,27 @@ void Engine::unload(InstanceId id)
         for (auto& ref : it->ownedEmbeddeds)
             if (callbacks_.destroyEmbedded) callbacks_.destroyEmbedded(ref.pane, ref.lineId);
 
-        // 3. Decrement filter counts for this instance's registrations
+        // 3. Decrement filter counts for this instance's registrations.
+        //    Mirror the count change into the per-pane atomic flag so
+        //    the parse-worker fast-path observes the state change
+        //    without locking.
         for (auto pane : it->paneOutputFilters) {
             auto fc = paneOutputFilterCount_.find(pane);
-            if (fc != paneOutputFilterCount_.end() && --fc->second <= 0)
+            if (fc != paneOutputFilterCount_.end() && --fc->second <= 0) {
                 paneOutputFilterCount_.erase(fc);
+                if (auto fl = paneOutputFilterFlag_.find(pane);
+                    fl != paneOutputFilterFlag_.end())
+                    fl->second->store(false, std::memory_order_release);
+            }
         }
         for (auto pane : it->paneInputFilters) {
             auto fc = paneInputFilterCount_.find(pane);
-            if (fc != paneInputFilterCount_.end() && --fc->second <= 0)
+            if (fc != paneInputFilterCount_.end() && --fc->second <= 0) {
                 paneInputFilterCount_.erase(fc);
+                if (auto fl = paneInputFilterFlag_.find(pane);
+                    fl != paneInputFilterFlag_.end())
+                    fl->second->store(false, std::memory_order_release);
+            }
         }
         for (auto pane : it->paneMouseMoveListeners) {
             auto fc = paneMouseMoveCount_.find(pane);
@@ -3925,6 +3936,20 @@ void Engine::cleanupPane(PaneId pane)
     IterGuard guard(this);
     paneOutputFilterCount_.erase(pane);
     paneInputFilterCount_.erase(pane);
+    // Drop the count *and* the flag — but flip the flag to false first
+    // so any in-flight parse worker that captured a shared_ptr to the
+    // atomic sees no-filters (instead of taking the slow runOnMain
+    // path against a now-erased registry).
+    if (auto fl = paneOutputFilterFlag_.find(pane);
+        fl != paneOutputFilterFlag_.end()) {
+        fl->second->store(false, std::memory_order_release);
+        paneOutputFilterFlag_.erase(fl);
+    }
+    if (auto fl = paneInputFilterFlag_.find(pane);
+        fl != paneInputFilterFlag_.end()) {
+        fl->second->store(false, std::memory_order_release);
+        paneInputFilterFlag_.erase(fl);
+    }
 
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
@@ -3986,14 +4011,36 @@ Engine::Instance* Engine::findInstanceByCtx(JSContext* ctx)
 
 void Engine::addPaneOutputFilter(PaneId pane, InstanceId instId) {
     paneOutputFilterCount_[pane]++;
+    // Lazily create the per-pane atomic so the parse worker can read
+    // it without taking any lock. outputFilterFlag() returns a
+    // shared_ptr the worker captures; subsequent flips here update
+    // that same atomic.
+    auto fl = outputFilterFlag(pane);
+    fl->store(true, std::memory_order_release);
     if (auto* inst = findInstance(instId))
         inst->paneOutputFilters.push_back(pane);
 }
 
 void Engine::addPaneInputFilter(PaneId pane, InstanceId instId) {
     paneInputFilterCount_[pane]++;
+    auto fl = inputFilterFlag(pane);
+    fl->store(true, std::memory_order_release);
     if (auto* inst = findInstance(instId))
         inst->paneInputFilters.push_back(pane);
+}
+
+std::shared_ptr<std::atomic<bool>> Engine::outputFilterFlag(PaneId pane)
+{
+    auto& slot = paneOutputFilterFlag_[pane];
+    if (!slot) slot = std::make_shared<std::atomic<bool>>(false);
+    return slot;
+}
+
+std::shared_ptr<std::atomic<bool>> Engine::inputFilterFlag(PaneId pane)
+{
+    auto& slot = paneInputFilterFlag_[pane];
+    if (!slot) slot = std::make_shared<std::atomic<bool>>(false);
+    return slot;
 }
 
 void Engine::addPaneMouseMoveListener(PaneId pane, InstanceId instId) {

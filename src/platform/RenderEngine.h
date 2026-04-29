@@ -56,6 +56,10 @@ public:
     dawn::native::Instance* nativeInstance() { return nativeInstance_.get(); }
     TexturePool& texturePool() { return texturePool_; }
     Renderer& renderer() { return renderer_; }
+    // Shared with PlatformDawn for off-thread PTY parsing. submit() is
+    // fire-and-forget; dispatch()'s wait is per-batch so concurrent
+    // parse submits don't block render-thread row shaping.
+    WorkerPool& workers() { return renderWorkers_; }
 
     std::atomic<bool>& needsRedrawFlag() { return needsRedraw_; }
     bool needsRedraw() const { return needsRedraw_.load(std::memory_order_acquire); }

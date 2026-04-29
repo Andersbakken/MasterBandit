@@ -307,8 +307,13 @@ void PlatformDawn::closeTab(Uuid subRoot)
         buildRenderFrameState();
         stamp = renderThread_->completedFrames();
     }
-    for (auto& t : extractedTerminals)
-        graveyard_.defer(std::move(t), stamp);
+    for (auto& t : extractedTerminals) {
+        Terminal* raw = t.get();
+        // Hold past parse-in-flight so a worker that's still inside
+        // injectData on this Terminal doesn't dereference freed memory.
+        graveyard_.defer(std::move(t), stamp,
+            [raw]() { return !raw->parseInFlight(); });
+    }
 
     updateTabBarVisibility();
     if (inputController_) inputController_->refreshPointerShape();
@@ -349,8 +354,11 @@ bool PlatformDawn::killTerminal(Uuid nodeId)
     std::unique_ptr<Terminal> extracted = scriptEngine_.extractTerminal(nodeId);
     buildRenderFrameState();
     uint64_t stamp = renderThread_->completedFrames();
-    if (extracted)
-        graveyard_.defer(std::move(extracted), stamp);
+    if (extracted) {
+        Terminal* raw = extracted.get();
+        graveyard_.defer(std::move(extracted), stamp,
+            [raw]() { return !raw->parseInFlight(); });
+    }
 
     scriptEngine_.notifyTerminalExited(nodeId, nodeId);
 
@@ -373,18 +381,30 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, Uuid subtreeRoot, const std
         renderThread_->enqueueTerminalExit(t);
     };
     pcbs.quit = [this]() { quit(); };
-    Script::Engine* scriptEngine = &scriptEngine_;
-    pcbs.shouldFilterOutput = [scriptEngine, nodeId]() {
-        return scriptEngine->hasPaneOutputFilters(nodeId);
+    // Filter callbacks are called from the parse worker thread (output)
+    // and from writeToOutput (also worker, when the parser writes
+    // responses to DA/DSR/OSC52/...). The script engine is main-thread
+    // only, so:
+    //   * shouldFilter* reads a stable atomic flag via shared_ptr
+    //     captured at build time (lifetime extends past pane teardown).
+    //   * filter* bounces through runOnMain to invoke QuickJS safely.
+    auto outFlag = scriptEngine_.outputFilterFlag(nodeId);
+    auto inFlag  = scriptEngine_.inputFilterFlag(nodeId);
+    pcbs.shouldFilterOutput = [outFlag]() {
+        return outFlag->load(std::memory_order_acquire);
     };
-    pcbs.filterOutput = [scriptEngine, nodeId](std::string& data) {
-        scriptEngine->filterPaneOutput(nodeId, data);
+    pcbs.filterOutput = [this, nodeId](std::string& data) {
+        runOnMain([this, nodeId, &data]() {
+            scriptEngine_.filterPaneOutput(nodeId, data);
+        });
     };
-    pcbs.shouldFilterInput = [scriptEngine, nodeId]() {
-        return scriptEngine->hasPaneInputFilters(nodeId);
+    pcbs.shouldFilterInput = [inFlag]() {
+        return inFlag->load(std::memory_order_acquire);
     };
-    pcbs.filterInput = [scriptEngine, nodeId](std::string& data) {
-        scriptEngine->filterPaneInput(nodeId, data);
+    pcbs.filterInput = [this, nodeId](std::string& data) {
+        runOnMain([this, nodeId, &data]() {
+            scriptEngine_.filterPaneInput(nodeId, data);
+        });
     };
     auto terminal = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
     // Fire the JS "resized" event on any embedded whose cols got updated
@@ -667,17 +687,23 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                 eventLoop_->post([this, paneId, recCopy = std::move(recCopy)] {
                     TerminalEmulator* te = scriptEngine_.terminal(paneId);
                     if (!te) return;
-                    const auto& doc = te->document();
-                    Script::CommandInfo info{
-                        recCopy.id, recCopy.cwd, recCopy.exitCode,
-                        recCopy.startMs, recCopy.endMs,
-                        recCopy.promptStartLineId, recCopy.commandStartLineId,
-                        recCopy.outputStartLineId, recCopy.outputEndLineId,
-                        doc.firstAbsOfLine(recCopy.promptStartLineId),  recCopy.promptStartCol,
-                        doc.firstAbsOfLine(recCopy.commandStartLineId), recCopy.commandStartCol,
-                        doc.firstAbsOfLine(recCopy.outputStartLineId),  recCopy.outputStartCol,
-                        doc.lastAbsOfLine(recCopy.outputEndLineId),     recCopy.outputEndCol
-                    };
+                    Script::CommandInfo info;
+                    {
+                        // Lock for the document line-id resolution; the
+                        // worker is concurrently mutating the document.
+                        std::lock_guard<std::recursive_mutex> _lk(te->mutex());
+                        const auto& doc = te->document();
+                        info = Script::CommandInfo{
+                            recCopy.id, recCopy.cwd, recCopy.exitCode,
+                            recCopy.startMs, recCopy.endMs,
+                            recCopy.promptStartLineId, recCopy.commandStartLineId,
+                            recCopy.outputStartLineId, recCopy.outputEndLineId,
+                            doc.firstAbsOfLine(recCopy.promptStartLineId),  recCopy.promptStartCol,
+                            doc.firstAbsOfLine(recCopy.commandStartLineId), recCopy.commandStartCol,
+                            doc.firstAbsOfLine(recCopy.outputStartLineId),  recCopy.outputStartCol,
+                            doc.lastAbsOfLine(recCopy.outputEndLineId),     recCopy.outputEndCol
+                        };
+                    }
                     scriptEngine_.notifyCommandComplete(paneId, info);
                 });
             }
@@ -698,8 +724,15 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                 if (window_) window_->setClipboard(text);
             });
         };
+        // pasteFromClipboard is invoked synchronously from inside
+        // injectData (OSC 52 c=? query) which now runs on a parse worker
+        // thread. window_->getClipboard() is main-thread-only (X11/Cocoa),
+        // so bounce through runOnMain. On the main thread we still call
+        // directly (tests, headless callers, future code paths).
         cbs.pasteFromClipboard = [this]() -> std::string {
-            return window_ ? window_->getClipboard() : std::string{};
+            return runOnMain([this]() -> std::string {
+                return window_ ? window_->getClipboard() : std::string{};
+            });
         };
     } else {
         cbs.copyToClipboard = [](const std::string&) {};
@@ -747,12 +780,19 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         });
     };
 
+    // charWidth_ / lineHeight_ are floats written from the main thread
+    // during font setup / config reload and read from the parse worker
+    // (KittyGraphics, OSC 14/4 reports). float reads are atomic-aligned
+    // on every platform we support and the values change rarely; reading
+    // a slightly stale value is harmless for the OSC reply path.
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    // Captures `this` so the callback always reflects the current config
-    // override (config.color_scheme = "auto" | "light" | "dark"); only
-    // "auto" defers to the system query.
-    cbs.isDarkMode = [this]() { return effectiveIsDarkMode(); };
+    // effectiveIsDarkMode() touches the DBus / Cocoa appearance state
+    // owned by the main thread. Bounce through runOnMain so the parse
+    // worker doesn't race with the platform-side observers.
+    cbs.isDarkMode = [this]() {
+        return runOnMain([this]() { return effectiveIsDarkMode(); });
+    };
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
         eventLoop_->post([this, paneId, dir] {
@@ -851,8 +891,12 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         });
     };
 
+    // DCS+q (XTGETTCAP) for caps not in the built-in table. scriptEngine_
+    // is main-thread-only, so bounce when called from a parse worker.
     cbs.customTcapLookup = [this](const std::string& name) -> std::optional<std::string> {
-        return scriptEngine_.lookupCustomTcap(name);
+        return runOnMain([this, &name]() -> std::optional<std::string> {
+            return scriptEngine_.lookupCustomTcap(name);
+        });
     };
 
     cbs.onMouseCursorShape = [this, paneId](const std::string& shape) {

@@ -17,10 +17,12 @@
 #  include <xcb/Window_xcb.h>
 #endif
 #include <sys/ioctl.h>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <thread>
 
 namespace fs = std::filesystem;
 
@@ -225,14 +227,20 @@ void PlatformDawn::buildRenderFrameState()
             // parent Document each frame. Skipped on alt-screen.
             rpi.focusedEmbeddedLineId = pane->focusedEmbeddedLineId();
             rpi.onAltScreen = pane->usingAltScreen();
-            for (const auto& [lineId, em] : pane->embeddeds()) {
+            // forEachEmbedded() locks mEmbeddedMu so the parse-worker
+            // eviction callback can't yank an entry mid-iteration.
+            // The raw `term` pointer captured into RenderPaneEmbeddedInfo
+            // is valid because the map entry stays put past this lock —
+            // mEmbeddedMu is also taken on extract/destroy.
+            uint64_t focusedLine = rpi.focusedEmbeddedLineId;
+            pane->forEachEmbedded([&rpi, focusedLine](uint64_t lineId, Terminal& em) {
                 RenderPaneEmbeddedInfo ei;
                 ei.lineId = lineId;
-                ei.rows = em->height();
-                ei.term = em.get();
-                ei.focused = (lineId == rpi.focusedEmbeddedLineId);
+                ei.rows = em.height();
+                ei.term = &em;
+                ei.focused = (lineId == focusedLine);
                 rpi.embeddeds.push_back(std::move(ei));
-            }
+            });
             renderThread_->renderState().panes.push_back(std::move(rpi));
         }
     }
@@ -476,7 +484,35 @@ PlatformDawn::~PlatformDawn()
     }
 
     // Render thread is joined; anything still deferred can now run its
-    // destructors on the main thread with no concurrent access.
+    // destructors on the main thread with no concurrent access — but
+    // first wait for any parse worker still inside injectData on a
+    // graveyard-bound Terminal to finish, otherwise drainAll would
+    // free a Terminal under the worker's feet. The event loop has
+    // returned, but a worker may currently be parked inside
+    // runOnMain() waiting for the main thread to drain a post (e.g. a
+    // pasteFromClipboard / customTcapLookup roundtrip). We can't just
+    // sleep — we must drain posts on each iteration so those workers
+    // can complete and release parseInFlight.
+    if (renderEngine_) {
+        for (int spin = 0; spin < 5000; ++spin) {
+            // Service any runOnMain posts so blocked workers unblock.
+            if (eventLoop_) eventLoop_->drainPosts();
+
+            bool anyInFlight = false;
+            for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
+                for (Terminal* t : scriptEngine_.panesInSubtree(sub)) {
+                    if (t->parseInFlight()) { anyInFlight = true; break; }
+                }
+                if (anyInFlight) break;
+            }
+            if (!anyInFlight) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        // Final post drain so any roundtrip that completed during the
+        // last iteration's check still gets serviced before
+        // graveyard_.drainAll().
+        if (eventLoop_) eventLoop_->drainPosts();
+    }
     graveyard_.drainAll();
 
     // Terminals live on Script::Engine now; its member-destruction order

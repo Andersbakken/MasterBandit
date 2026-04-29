@@ -21,6 +21,17 @@ std::unique_ptr<Terminal> makeParent(int cols = 80, int rows = 24,
     return t;
 }
 
+// Test helper: return any one lineId from the embedded map, or 0 if empty.
+// Used in tests where the parent has a single embedded.
+uint64_t firstEmbeddedLineId(Terminal& parent)
+{
+    uint64_t lineId = 0;
+    parent.forEachEmbedded([&lineId](uint64_t id, Terminal&) {
+        if (lineId == 0) lineId = id;
+    });
+    return lineId;
+}
+
 } // namespace
 
 TEST_CASE("createEmbedded: captures current cursor lineId as anchor, advances cursor")
@@ -93,18 +104,16 @@ TEST_CASE("extractEmbedded: removes from map, returns unique_ptr")
     REQUIRE(em != nullptr);
 
     uint64_t lineId = 0;
-    for (const auto& [id, _] : parent->embeddeds()) {
-        (void)_;
-        lineId = id;
-        break;
-    }
+    parent->forEachEmbedded([&lineId](uint64_t id, Terminal&) {
+        if (lineId == 0) lineId = id;
+    });
     REQUIRE(lineId != 0);
 
     auto extracted = parent->extractEmbedded(lineId);
     REQUIRE(extracted);
     CHECK(extracted.get() == em);
     CHECK(parent->findEmbedded(lineId) == nullptr);
-    CHECK(parent->embeddeds().size() == 0);
+    CHECK(parent->embeddedCount() == 0);
 }
 
 TEST_CASE("extractEmbedded: clears focused embedded if it matches")
@@ -114,7 +123,7 @@ TEST_CASE("extractEmbedded: clears focused embedded if it matches")
     Terminal* em = parent->createEmbedded(3, std::move(p));
     REQUIRE(em != nullptr);
 
-    uint64_t lineId = parent->embeddeds().begin()->first;
+    uint64_t lineId = firstEmbeddedLineId(*parent);
     parent->setFocusedEmbeddedLineId(lineId);
     CHECK(parent->focusedEmbeddedLineId() == lineId);
 
@@ -130,7 +139,7 @@ TEST_CASE("resizeEmbedded: changes row count, preserves cols from parent")
     REQUIRE(em != nullptr);
     CHECK(em->height() == 3);
 
-    uint64_t lineId = parent->embeddeds().begin()->first;
+    uint64_t lineId = firstEmbeddedLineId(*parent);
     CHECK(parent->resizeEmbedded(lineId, 10));
     CHECK(em->height() == 10);
     CHECK(em->width() == parent->width());
@@ -141,7 +150,7 @@ TEST_CASE("resizeEmbedded: non-positive rejected, unknown lineId rejected")
     auto parent = makeParent();
     PlatformCallbacks p;
     parent->createEmbedded(3, std::move(p));
-    uint64_t lineId = parent->embeddeds().begin()->first;
+    uint64_t lineId = firstEmbeddedLineId(*parent);
 
     CHECK_FALSE(parent->resizeEmbedded(lineId, 0));
     CHECK_FALSE(parent->resizeEmbedded(lineId, -5));
@@ -157,7 +166,7 @@ TEST_CASE("activeTerm: prefers focused embedded over parent")
 
     CHECK(parent->activeTerm() == parent.get());
 
-    uint64_t lineId = parent->embeddeds().begin()->first;
+    uint64_t lineId = firstEmbeddedLineId(*parent);
     parent->setFocusedEmbeddedLineId(lineId);
     CHECK(parent->activeTerm() == em);
 
@@ -184,7 +193,7 @@ TEST_CASE("eviction: when anchor row evicts past archive cap, embedded moves to 
     PlatformCallbacks p;
     Terminal* em = parent->createEmbedded(2, std::move(p));
     REQUIRE(em != nullptr);
-    CHECK(parent->embeddeds().size() == 1);
+    CHECK(parent->embeddedCount() == 1);
 
     // Draining with nothing evicted is a no-op.
     int drained = 0;
@@ -310,11 +319,11 @@ TEST_CASE("cycle focus ordering: lineIds are monotonic")
     // increasing so that sort-ascending on the lineId set yields creation
     // order.
     uint64_t firstA = 0, firstB = 0, firstC = 0;
-    for (const auto& [id, t] : parent->embeddeds()) {
-        if (t.get() == a) firstA = id;
-        else if (t.get() == b) firstB = id;
-        else if (t.get() == c) firstC = id;
-    }
+    parent->forEachEmbedded([&](uint64_t id, Terminal& t) {
+        if (&t == a) firstA = id;
+        else if (&t == b) firstB = id;
+        else if (&t == c) firstC = id;
+    });
     CHECK(firstA < firstB);
     CHECK(firstB < firstC);
 }

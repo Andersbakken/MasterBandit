@@ -91,6 +91,11 @@ int PlatformDawn::exec()
         };
         scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo {
             if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                    // Reads cursor / document / selection / title — all
+                    // mutated by the parse worker. Lock for a consistent
+                    // snapshot. One-off (driven by JS getter), brief
+                    // block on the worker's current batch is acceptable.
+                    std::lock_guard<std::recursive_mutex> _lk(p->mutex());
                     bool isFocused = scriptEngine_.focusedTerminalNodeId() == paneId;
                     // PaneInfo.title is a plain string for JS; collapse
                     // the optional here (nullopt → "").
@@ -156,6 +161,9 @@ int PlatformDawn::exec()
             std::vector<Script::CommandInfo> result;
             Terminal* te = scriptEngine_.terminal(paneId);
             if (!te) return result;
+            // ring (commands log) and document line-id index are
+            // parse-mutated — lock for the duration of the walk.
+            std::lock_guard<std::recursive_mutex> _lk(te->mutex());
             const auto& ring = te->commands();
             const auto& doc  = te->document();
             // Walk backwards collecting completed records — this avoids the
@@ -191,12 +199,15 @@ int PlatformDawn::exec()
         };
         scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startLineId, int startCol,
                                   uint64_t endLineId, int endCol) -> std::string {
-            if (Terminal* p = scriptEngine_.terminal(paneId))
+            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
                 return p->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
+            }
             return {};
         };
         scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
             if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
                 const auto& doc = p->document();
                 if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
                 int abs = doc.historySize() + screenRow;
@@ -331,10 +342,18 @@ int PlatformDawn::exec()
             // Queue popup render state creation
             renderThread_->pending().structuralOps.push_back(
                 PendingMutations::CreatePopupState{paneId, popupId, w, h});
-            // Dirty all popup render states for this pane on any content change.
+            // Dirty all popup render states for this pane on any content
+            // change. Fires from inside injectData (parse worker thread)
+            // when an OSC handler updates the popup, so the
+            // pending().dirtyPanes mutation must be deferred to the main
+            // thread — otherwise we'd race the main thread's read of
+            // pending() in applyPendingMutations. setNeedsRedraw() is
+            // atomic-only and safe here.
             p->onPopupEvent = [this, paneId]() {
-                renderThread_->pending().dirtyPanes.insert(paneId);
                 setNeedsRedraw();
+                eventLoop_->post([this, paneId] {
+                    renderThread_->pending().dirtyPanes.insert(paneId);
+                });
             };
             // Dirty parent pane so the popup composite entry is added
             renderThread_->pending().dirtyPanes.insert(paneId);
@@ -371,7 +390,11 @@ int PlatformDawn::exec()
                 }
                 stamp = renderThread_->completedFrames();
             }
-            graveyard_.defer(std::move(extracted), stamp);
+            {
+                Terminal* raw = extracted.get();
+                graveyard_.defer(std::move(extracted), stamp,
+                    [raw]() { return !raw->parseInFlight(); });
+            }
 
             if (wasPopupFocused && p->popups().empty())
                 p->focusEvent(true);
@@ -400,9 +423,9 @@ int PlatformDawn::exec()
             std::vector<Script::AppCallbacks::EmbeddedInfo> result;
             if (Terminal* p = scriptEngine_.terminal(paneId)) {
                 const uint64_t focused = p->focusedEmbeddedLineId();
-                for (const auto& [lineId, em] : p->embeddeds()) {
-                    result.push_back({lineId, em->height(), lineId == focused});
-                }
+                p->forEachEmbedded([&result, focused](uint64_t lineId, Terminal& em) {
+                    result.push_back({lineId, em.height(), lineId == focused});
+                });
             }
             return result;
         };
@@ -413,9 +436,14 @@ int PlatformDawn::exec()
             // call, because createEmbedded advances the cursor internally.
             // The document's lineIdForAbs on the cursor's absolute row is the
             // captured anchor — we need it now so the onInput delivery lambda
-            // can bake the regKey in at install time.
-            uint64_t anchorLineId = p->document().lineIdForAbs(
-                p->document().historySize() + p->cursorY());
+            // can bake the regKey in at install time. Document and cursor
+            // are parse-mutated; lock for the read.
+            uint64_t anchorLineId;
+            {
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
+                anchorLineId = p->document().lineIdForAbs(
+                    p->document().historySize() + p->cursorY());
+            }
             if (anchorLineId == 0) return 0;
 
             PlatformCallbacks pcbs;
@@ -464,7 +492,11 @@ int PlatformDawn::exec()
                 }
                 stamp = renderThread_->completedFrames();
             }
-            graveyard_.defer(std::move(extracted), stamp);
+            {
+                Terminal* raw = extracted.get();
+                graveyard_.defer(std::move(extracted), stamp,
+                    [raw]() { return !raw->parseInFlight(); });
+            }
 
             renderThread_->pending().structuralOps.push_back(
                 PendingMutations::DestroyEmbeddedState{paneId, lineId});
@@ -489,6 +521,8 @@ int PlatformDawn::exec()
         scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string {
             Terminal* te = scriptEngine_.terminal(paneId);
             if (!te) return {};
+            // Document + hyperlink registry are parse-mutated.
+            std::lock_guard<std::recursive_mutex> _lk(te->mutex());
             const auto& doc = te->document();
             int abs = doc.firstAbsOfLine(lineId);
             if (abs < 0) return {};
@@ -517,6 +551,7 @@ int PlatformDawn::exec()
             Terminal* te = scriptEngine_.terminal(paneId);
             if (te) {
                 {
+                    std::lock_guard<std::recursive_mutex> _lk(te->mutex());
                     const auto& doc = te->document();
                     int startAbs = doc.firstAbsOfLine(startLineId);
                     int endAbs   = doc.lastAbsOfLine(endLineId);
@@ -717,13 +752,34 @@ int PlatformDawn::exec()
                 }
             }
 
-            // Flush coalesced PTY reads — no renderThread_->mutex(), so the render
-            // thread can run concurrently. Terminal mutation is serialized by
-            // TerminalEmulator::mutex() inside injectData. Structural
-            // callbacks (terminalExited) defer their work; we drain them
-            // under renderThread_->mutex() right after.
-            for (auto& [fd, term] : ptyPolls())
-                term->flushReadBuffer();
+            // Dispatch coalesced PTY reads to the worker pool — no
+            // renderThread_->mutex() and no main-thread parse work, so a
+            // heavy producer no longer starves input or animation.
+            // Terminal mutation is serialized by TerminalEmulator::mutex()
+            // inside injectData. Structural callbacks (terminalExited)
+            // defer their work to pendingExits_; we drain them under
+            // renderThread_->mutex() in applyPendingMutations() right
+            // after the post drain below.
+            //
+            // Each Terminal is single-flight: queueParse() returns
+            // immediately if a worker is already parsing this Terminal,
+            // and that worker loops to pick up the freshly-arrived bytes
+            // before exiting. So spamming queueParse() every tick is
+            // cheap.
+            if (renderEngine_) {
+                WorkerPool& pool = renderEngine_->workers();
+                Terminal::ParseSubmitFn submit =
+                    [&pool](std::function<void()> fn) {
+                        pool.submit(std::move(fn));
+                    };
+                for (auto& [fd, term] : ptyPolls())
+                    term->queueParse(submit);
+            } else {
+                // No render engine (some early-tear-down paths) — fall
+                // back to synchronous flush so we never strand bytes.
+                for (auto& [fd, term] : ptyPolls())
+                    term->flushReadBuffer();
+            }
 
             // Drain embeddeds whose anchor line evicted during the PTY flush
             // above. The eviction callback stashed them on the parent
@@ -751,7 +807,11 @@ int PlatformDawn::exec()
                                 }
                                 stamp = renderThread_->completedFrames();
                             }
-                            graveyard_.defer(std::move(em), stamp);
+                            {
+                                Terminal* raw = em.get();
+                                graveyard_.defer(std::move(em), stamp,
+                                    [raw]() { return !raw->parseInFlight(); });
+                            }
                             renderThread_->pending().structuralOps.push_back(
                                 PendingMutations::DestroyEmbeddedState{paneId, lineId});
                             renderThread_->pending().releaseEmbeddedTextures.push_back(

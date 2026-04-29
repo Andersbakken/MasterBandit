@@ -40,10 +40,12 @@
 #include <cmath>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -211,9 +213,41 @@ public:
     // NSApp.effectiveAppearance on macOS).
     bool effectiveIsDarkMode() const;
 
+    // True iff called from the thread that constructed PlatformDawn (the
+    // main / event-loop thread). Used by sync TerminalCallbacks shims so
+    // they can call directly when invoked on the main thread and bounce
+    // through eventLoop_->post when invoked from a parse-worker thread.
+    bool isMainThread() const { return std::this_thread::get_id() == mainThreadId_; }
+
+    // Run fn on the main thread and return its result. If already on the
+    // main thread, runs synchronously. Otherwise posts to the event loop
+    // and blocks until the post is drained. Used to back the sync
+    // TerminalCallbacks (pasteFromClipboard, isDarkMode, customTcapLookup)
+    // when injectData runs on a parse worker.
+    template <typename Fn>
+    auto runOnMain(Fn&& fn) -> std::invoke_result_t<Fn>
+    {
+        using R = std::invoke_result_t<Fn>;
+        if (isMainThread()) return fn();
+        std::promise<R> p;
+        auto fut = p.get_future();
+        eventLoop_->post([&p, &fn]() mutable {
+            try {
+                if constexpr (std::is_void_v<R>) { fn(); p.set_value(); }
+                else { p.set_value(fn()); }
+            } catch (...) { p.set_exception(std::current_exception()); }
+        });
+        return fut.get();
+    }
+
 private:
     int exitStatus_ = 0;
     bool running_ = false;
+
+    // Captured in the constructor (which runs on the main / event-loop
+    // thread) so runOnMain() can detect re-entrant calls and avoid
+    // deadlocking by posting to itself.
+    std::thread::id mainThreadId_ { std::this_thread::get_id() };
 
     uint32_t flags_ = FlagNone;
     bool platformInitialized_ = false;

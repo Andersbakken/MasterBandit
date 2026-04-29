@@ -28,37 +28,43 @@ std::string PlatformDawn::gridToJson(Uuid id)
     if (!pane) return {};
     TerminalEmulator* term = pane;
 
-    const IGrid& g = term->grid();
-
     glz::generic::object_t resp;
     resp["type"] = "screenshot";
     resp["format"] = "grid";
     if (!id.isNil()) resp["id"] = id.toString();
-    resp["cols"] = static_cast<double>(term->width());
-    resp["rows"] = static_cast<double>(term->height());
-    resp["cursor"] = glz::generic::object_t{
-        {"x", static_cast<double>(term->cursorX())},
-        {"y", static_cast<double>(term->cursorY())}
-    };
 
     glz::generic::array_t lines;
-    for (int row = 0; row < g.rows(); ++row) {
-        std::string text;
-        for (int col = 0; col < g.cols(); ++col) {
-            const Cell& c = g.cell(col, row);
-            if (c.wc == 0) {
-                text += ' ';
-            } else {
-                appendUtf8(text, c.wc);
+    {
+        // Lock for the duration of the grid + cursor + dimension
+        // reads. The parse worker holds this same mutex during
+        // injectData; we'd otherwise see partially-mutated state.
+        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+        const IGrid& g = term->grid();
+        resp["cols"] = static_cast<double>(term->width());
+        resp["rows"] = static_cast<double>(term->height());
+        resp["cursor"] = glz::generic::object_t{
+            {"x", static_cast<double>(term->cursorX())},
+            {"y", static_cast<double>(term->cursorY())}
+        };
+
+        for (int row = 0; row < g.rows(); ++row) {
+            std::string text;
+            for (int col = 0; col < g.cols(); ++col) {
+                const Cell& c = g.cell(col, row);
+                if (c.wc == 0) {
+                    text += ' ';
+                } else {
+                    appendUtf8(text, c.wc);
+                }
             }
-        }
-        // Trim trailing spaces
-        while (!text.empty() && text.back() == ' ') text.pop_back();
-        if (!text.empty()) {
-            glz::generic::object_t line;
-            line["y"] = static_cast<double>(row);
-            line["text"] = sanitizeUtf8(text);
-            lines.emplace_back(std::move(line));
+            // Trim trailing spaces
+            while (!text.empty() && text.back() == ' ') text.pop_back();
+            if (!text.empty()) {
+                glz::generic::object_t line;
+                line["y"] = static_cast<double>(row);
+                line["text"] = sanitizeUtf8(text);
+                lines.emplace_back(std::move(line));
+            }
         }
     }
     resp["lines"] = std::move(lines);

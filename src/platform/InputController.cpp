@@ -467,7 +467,7 @@ void InputController::onMouseButton(int button, int action, int mods)
             // across its rect instead of stealing focus). Also skipped on
             // alt-screen where embeddeds are hidden anyway.
             if (!activeDrag_ && !clickPane->usingAltScreen() &&
-                !clickPane->embeddeds().empty()) {
+                clickPane->hasEmbeddeds()) {
                 uint64_t hitLineId = 0;
                 int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
                 bool clickedEmbedded = clickPane->liveSegmentHitTest(
@@ -603,6 +603,10 @@ void InputController::onMouseButton(int button, int action, int mods)
                     // generic dispatch would instead use the viewport-center
                     // heuristic, which is wrong for a click.
                     if (std::holds_alternative<Action::SelectCommandOutput>(act)) {
+                        // Document line-id resolution + command lookup are
+                        // parse-mutated. Lock for both. selectCommandOutputForRecord
+                        // takes mMutex internally (recursive, no problem).
+                        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
                         if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
                             int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
                             uint64_t lineId = term->document().lineIdForAbs(absRow);
@@ -629,6 +633,11 @@ void InputController::onMouseButton(int button, int action, int mods)
                     // StartSelection: dispatch based on selection type
                     if (auto* ss = std::get_if<MouseAction::StartSelection>(&mact)) {
                         int col = mouseCtx_.cellCol, row = mouseCtx_.cellRow;
+                        // Document line-id resolution + selection mutators
+                        // are all parse-mutated state. Take the lock once
+                        // for the whole switch (recursive — inner mutators
+                        // re-lock, which is fine).
+                        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
                         int absRow = term->document().historySize() - term->viewportOffset() + row;
 
                         // Wezterm-style boundary anchor: clicks past the cell
@@ -684,12 +693,19 @@ void InputController::onMouseButton(int button, int action, int mods)
                     if (std::holds_alternative<MouseAction::OpenHyperlink>(mact)) {
                         int col = cellCol, row = cellRow;
                         if (col >= 0 && col < term->width() && row >= 0 && row < term->height()) {
-                            const CellExtra* extra = term->grid().getExtra(col, row);
-                            if (extra && extra->hyperlinkId) {
-                                const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);
-                                if (uri && !uri->empty())
-                                    platformOpenURL(*uri);
+                            // Grid + hyperlink registry parse-mutated;
+                            // copy uri out under the lock so platformOpenURL
+                            // (potentially blocking) runs unlocked.
+                            std::string uri;
+                            {
+                                std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+                                const CellExtra* extra = term->grid().getExtra(col, row);
+                                if (extra && extra->hyperlinkId) {
+                                    const std::string* p = term->hyperlinkURI(extra->hyperlinkId);
+                                    if (p) uri = *p;
+                                }
                             }
+                            if (!uri.empty()) platformOpenURL(uri);
                         }
                         return;
                     }
@@ -697,6 +713,7 @@ void InputController::onMouseButton(int button, int action, int mods)
                     // SelectCommand: set OSC 133 highlight to the command containing
                     // this row (or clear if none). Skipped on alt screen.
                     if (std::holds_alternative<MouseAction::SelectCommand>(mact)) {
+                        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
                         if (!term->usingAltScreen() && cellRow >= 0 && cellRow < term->height()) {
                             int absRow = term->document().historySize() - term->viewportOffset() + cellRow;
                             uint64_t lineId = term->document().lineIdForAbs(absRow);
@@ -817,7 +834,7 @@ void InputController::onCursorPos(double x, double y)
             }
         }
         // Then embedded.
-        if (!routedToChild && !hp->usingAltScreen() && !hp->embeddeds().empty()) {
+        if (!routedToChild && !hp->usingAltScreen() && hp->hasEmbeddeds()) {
             uint64_t hitLineId = 0;
             int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
             if (hp->liveSegmentHitTest(hcx, hcy,
@@ -893,11 +910,19 @@ void InputController::onCursorPos(double x, double y)
             stopAutoScroll();
             return;
         }
-        // Auto-scroll when mouse is outside the pane's vertical bounds
+        // Auto-scroll when mouse is outside the pane's vertical bounds.
+        // Snapshot viewport vs history-size pair under the parse lock.
         double paneH = pr.h;
-        if (relY < 0 && term->viewportOffset() < term->document().historySize()) {
+        int vp;
+        int hist;
+        {
+            std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+            vp = term->viewportOffset();
+            hist = term->document().historySize();
+        }
+        if (relY < 0 && vp < hist) {
             startAutoScroll(+1, ev.x);
-        } else if (relY >= paneH && term->viewportOffset() > 0) {
+        } else if (relY >= paneH && vp > 0) {
             startAutoScroll(-1, ev.x);
         } else {
             stopAutoScroll();
@@ -1008,10 +1033,18 @@ void InputController::doAutoScroll()
     ev.modifiers = lastMods_;
     term->mouseMoveEvent(&ev);
 
-    // Stop if there's no more scrollback to consume
-    if (autoScrollDir_ > 0 && term->viewportOffset() >= term->document().historySize())
+    // Stop if there's no more scrollback to consume. Snapshot under
+    // lock so viewport vs. history-size read pair is consistent.
+    int vp;
+    int hist;
+    {
+        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+        vp = term->viewportOffset();
+        hist = term->document().historySize();
+    }
+    if (autoScrollDir_ > 0 && vp >= hist)
         stopAutoScroll();
-    else if (autoScrollDir_ < 0 && term->viewportOffset() == 0)
+    else if (autoScrollDir_ < 0 && vp == 0)
         stopAutoScroll();
 
     platform_->setNeedsRedraw();
@@ -1043,6 +1076,8 @@ bool InputController::wouldOpenHyperlinkAt(double sx, double sy)
     int row = static_cast<int>(relY / lineHeight);
     if (col < 0 || col >= term->width() || row < 0 || row >= term->height()) return false;
 
+    // Grid + hyperlink registry parse-mutated; lock for the lookup.
+    std::lock_guard<std::recursive_mutex> _lk(term->mutex());
     const CellExtra* extra = term->grid().getExtra(col, row);
     if (!extra || !extra->hyperlinkId) return false;
     const std::string* uri = term->hyperlinkURI(extra->hyperlinkId);

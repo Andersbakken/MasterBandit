@@ -268,24 +268,34 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::CopyLastCommand&) {
             Terminal* term = activeTerm();
             if (!term) return;
-            const auto* cmd = term->lastCommand();
-            if (!cmd || !cmd->complete) return;
-            // Extract from prompt start through output end (prompt + input + output).
-            std::string text = term->document().getTextFromLines(
-                cmd->promptStartLineId, cmd->outputEndLineId,
-                cmd->promptStartCol,    cmd->outputEndCol);
+            // Lock for command-record + document text extraction. The
+            // worker is concurrently writing both.
+            std::string text;
+            {
+                std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+                const auto* cmd = term->lastCommand();
+                if (!cmd || !cmd->complete) return;
+                // Extract from prompt start through output end.
+                text = term->document().getTextFromLines(
+                    cmd->promptStartLineId, cmd->outputEndLineId,
+                    cmd->promptStartCol,    cmd->outputEndCol);
+            }
             if (!text.empty() && window_) window_->setClipboard(text);
         },
         [&](const Action::CopySelectedCommandOutput&) {
             Terminal* term = activeTerm();
             if (!term) return;
-            auto id = term->selectedCommandId();
-            if (!id) return;
-            const auto* cmd = term->commandForId(*id);
-            if (!cmd) return;
-            std::string text = term->document().getTextFromLines(
-                cmd->outputStartLineId, cmd->outputEndLineId,
-                cmd->outputStartCol,    cmd->outputEndCol);
+            std::string text;
+            {
+                std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+                auto id = term->selectedCommandId();
+                if (!id) return;
+                const auto* cmd = term->commandForId(*id);
+                if (!cmd) return;
+                text = term->document().getTextFromLines(
+                    cmd->outputStartLineId, cmd->outputEndLineId,
+                    cmd->outputStartCol,    cmd->outputEndCol);
+            }
             if (!text.empty() && window_) window_->setClipboard(text);
         },
         [&](const Action::CopyDocument&) {
@@ -307,9 +317,12 @@ void PlatformDawn::executeAction(const Action::Any& action)
 
             // Embeddeds cycled in ascending lineId order (creation order).
             // unordered_map iteration is unstable so gather + sort.
+            // forEachEmbedded locks mEmbeddedMu so the parse-worker
+            // eviction callback can't mutate the map mid-iteration.
             std::vector<uint64_t> embeddedIds;
-            embeddedIds.reserve(fp->embeddeds().size());
-            for (const auto& [lineId, em] : fp->embeddeds()) embeddedIds.push_back(lineId);
+            fp->forEachEmbedded([&embeddedIds](uint64_t lineId, Terminal&) {
+                embeddedIds.push_back(lineId);
+            });
             std::sort(embeddedIds.begin(), embeddedIds.end());
 
             if (popups.empty() && embeddedIds.empty()) return;
@@ -428,18 +441,26 @@ void PlatformDawn::executeAction(const Action::Any& action)
                 if (renderThread_) renderThread_->enqueueTerminalExit(t);
             };
             pcbs.quit = [this]() { quit(); };
-            Script::Engine* scriptEngine = &scriptEngine_;
-            pcbs.shouldFilterOutput = [scriptEngine, pagerNode]() {
-                return scriptEngine->hasPaneOutputFilters(pagerNode);
+            // Same atomic-flag + runOnMain pattern as the main pane
+            // path in Platform_Tabs.cpp::spawnTerminalForPane — see
+            // the comment there for the rationale.
+            auto outFlag = scriptEngine_.outputFilterFlag(pagerNode);
+            auto inFlag  = scriptEngine_.inputFilterFlag(pagerNode);
+            pcbs.shouldFilterOutput = [outFlag]() {
+                return outFlag->load(std::memory_order_acquire);
             };
-            pcbs.filterOutput = [scriptEngine, pagerNode](std::string& data) {
-                scriptEngine->filterPaneOutput(pagerNode, data);
+            pcbs.filterOutput = [this, pagerNode](std::string& data) {
+                runOnMain([this, pagerNode, &data]() {
+                    scriptEngine_.filterPaneOutput(pagerNode, data);
+                });
             };
-            pcbs.shouldFilterInput = [scriptEngine, pagerNode]() {
-                return scriptEngine->hasPaneInputFilters(pagerNode);
+            pcbs.shouldFilterInput = [inFlag]() {
+                return inFlag->load(std::memory_order_acquire);
             };
-            pcbs.filterInput = [scriptEngine, pagerNode](std::string& data) {
-                scriptEngine->filterPaneInput(pagerNode, data);
+            pcbs.filterInput = [this, pagerNode](std::string& data) {
+                runOnMain([this, pagerNode, &data]() {
+                    scriptEngine_.filterPaneInput(pagerNode, data);
+                });
             };
 
             auto pager = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));

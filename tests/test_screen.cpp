@@ -295,3 +295,51 @@ TEST_CASE("ECH - erase characters at cursor (no shift)")
     // cursor does not move
     CHECK(t.term.cursorX() == 1);
 }
+
+// Regression: ECMA-48 specifies that an ESC byte (0x1B) appearing
+// inside an in-progress escape sequence cancels it and starts a fresh
+// one. less/vim/others rely on this — they emit \e\e[...m sequences in
+// some redraw paths. Without the cancel-and-restart behavior, the
+// second ESC gets dropped and its trailing bytes (e.g. "[00;47;30m")
+// render as literal text on screen.
+TEST_CASE("ESC inside escape cancels and restarts (ECMA-48)")
+{
+    SUBCASE("ESC ESC [ m  ->  treats second ESC as new sequence introducer")
+    {
+        TestTerminal t;
+        t.feed("\x1b\x1b[mhello");
+        // "hello" should be rendered, no literal "[m"
+        CHECK(t.cell(0, 0).wc == 'h');
+        CHECK(t.cell(1, 0).wc == 'e');
+        CHECK(t.cell(2, 0).wc == 'l');
+        CHECK(t.cell(3, 0).wc == 'l');
+        CHECK(t.cell(4, 0).wc == 'o');
+    }
+
+    SUBCASE("ESC [ ESC [ m  ->  truncated CSI cancelled by inner ESC")
+    {
+        TestTerminal t;
+        t.feed("\x1b[\x1b[00;47;30mhi");
+        // The aborted CSI should not leak; "hi" renders cleanly with
+        // the second sequence applied as SGR.
+        CHECK(t.cell(0, 0).wc == 'h');
+        CHECK(t.cell(1, 0).wc == 'i');
+        // Optionally check the SGR took effect (white bg, black fg).
+    }
+
+    SUBCASE("Real less standout SGR sequence renders without literal text")
+    {
+        TestTerminal t;
+        // Captured pattern from less(1) when LESS_TERMCAP_so highlights
+        // a status line: ESC [ K \r ESC [ K \a \r ESC [ K ESC [00;47;30m
+        t.feed("\x1b[K\r\x1b[K\a\r\x1b[K\x1b[00;47;30mtag\n");
+        CHECK(t.cell(0, 0).wc == 't');
+        CHECK(t.cell(1, 0).wc == 'a');
+        CHECK(t.cell(2, 0).wc == 'g');
+        // No literal '[' or ';' or 'm' anywhere on the line.
+        for (int col = 3; col < 10; ++col) {
+            CHECK(t.cell(col, 0).wc != '[');
+            CHECK(t.cell(col, 0).wc != ';');
+        }
+    }
+}

@@ -1020,6 +1020,24 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBud
             break;
         }
         case InEscape:
+            // ESC arriving inside an in-progress escape sequence
+            // cancels it and starts a fresh one. Per ECMA-48: a 7-bit
+            // ESC C1 (0x1B) acts as a control function that
+            // unconditionally aborts whatever sequence is being
+            // collected. Less and other tools rely on this — they
+            // emit \033\033... in some paths and expect terminals
+            // to reset and treat the second ESC as the start of a
+            // new sequence. Without this, the second ESC byte gets
+            // appended to mEscapeBuffer[0], the dispatch falls
+            // through to default ("Unknown escape sequence \033"),
+            // and the next byte (e.g. '[') is then processed in
+            // Normal state and rendered as literal text.
+            if (buf[i] == 0x1b) {
+                mEscapeIndex = 0;
+                // Stay in InEscape, ready to consume the next byte
+                // as the new escape's introducer.
+                break;
+            }
             if (mEscapeIndex >= static_cast<int>(sizeof(mEscapeBuffer))) {
                 sLog().error("Escape buffer overflow");
                 resetToNormal();

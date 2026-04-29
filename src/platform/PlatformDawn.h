@@ -232,6 +232,13 @@ private:
     // Config hot-reload: owns the file watcher debounce timer and the
     // reloadNow() entry point. Calls back into applyConfig() on success.
     std::unique_ptr<ConfigLoader> configLoader_;
+    // Optional ~/.config/MasterBandit/config.js — fully-trusted JS
+    // controller loaded after TOML, can override anything via
+    // mb.config.patch / addKeybinding / etc. 0 if no config.js exists or
+    // initial load failed (file-watch will retry on save).
+    Script::InstanceId             configJsInstanceId_ = 0;
+    EventLoop::TimerId             configJsDebounceTimer_ = 0;
+    bool                           configJsDebounceActive_ = false;
     // Owns Dawn device/queue/surface, Renderer, TexturePool, and all
     // render-thread-only state (pane/popup/overlay private state, frameState_,
     // tab-bar GPU texture). Created early in ctor so accessors work.

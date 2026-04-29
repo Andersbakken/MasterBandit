@@ -45,6 +45,12 @@ enum Perm : uint32_t {
     // reparent, change active children, bind TabBars). Read-only introspection
     // (mb.layout.node, computeRects) is currently ungated.
     LayoutModify      = 1 << 20,
+    // config group — runtime mutation of the in-memory Config struct via
+    // mb.config.patch / addKeybinding / removeKeybinding / addMousebinding /
+    // removeMousebinding. Read access to mb.config remains ungated. Last-write
+    // wins against TOML hot-reload (a subsequent disk edit's applyConfig
+    // overwrites JS patches; not persisted to disk).
+    ConfigModify      = 1 << 21,
 
     // Group masks
     GroupUi      = UiPopupCreate | UiPopupDestroy,
@@ -57,6 +63,7 @@ enum Perm : uint32_t {
     GroupNet     = NetListenLocal,
     GroupClipboard = ClipboardRead | ClipboardWrite,
     GroupLayout    = LayoutModify,
+    GroupConfig    = ConfigModify,
 
     All          = 0xFFFFFFFF,
 };
@@ -76,7 +83,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 7;
+inline constexpr int kAllowlistVersion = 8;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

@@ -49,7 +49,14 @@ public:
     virtual void    removeTimer(TimerId id) = 0;
     virtual void    restartTimer(TimerId id) = 0;
 
-    // File watching — single watch slot (config file only for now)
+    // File watching. Multiple files may be watched simultaneously, but
+    // only when they share a common parent directory — the underlying
+    // backend installs one inotify-on-dir / kqueue-on-fd watch per
+    // unique parent directory, so calling addFileWatch with paths from
+    // different parents is currently not supported (previous calls are
+    // dropped on the epoll/kqueue backends). Callers that need broad
+    // watching should track per-file state themselves and only register
+    // a single dir watch.
     virtual void addFileWatch(const std::string& path, WatchCb cb) = 0;
     virtual void removeFileWatch() = 0;
 

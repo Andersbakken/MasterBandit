@@ -73,6 +73,14 @@ struct AppCallbacks {
     // `JSON.parse`s the result; scripts re-read after the `configChanged`
     // event to pick up hot-reload changes.
     std::function<std::string()> configJson;
+    // Parse a complete Config JSON document and apply it via the same
+    // path as TOML hot-reload. Returns "" on success, or a non-empty
+    // human-readable error message on parse/validation failure (which
+    // the JS layer surfaces as a thrown Error). Last-write-wins against
+    // a concurrent TOML reload — both go through the same applyConfig
+    // entry under the render-thread mutex; whichever lands later
+    // overwrites the earlier one. Not persisted to disk.
+    std::function<std::string(const std::string& json)> applyConfigJson;
     // Write to PTY master fd (shell stdin) — raw bytes, no bracketing.
     std::function<void(PaneId, const std::string&)> writePaneToShell;
     // Paste to PTY master fd — wraps in \x1b[200~/\x1b[201~ when the terminal
@@ -247,6 +255,17 @@ public:
     // Load a built-in script (fully trusted, all permissions)
     InstanceId loadController(const std::string& path);
 
+    // Re-evaluate an existing instance's source from `path` on its
+    // existing JSContext. Used by config.js hot-reload: timers,
+    // registered listeners, and `mb.actions.register` handlers persist
+    // across the eval (the caller's script is expected to be idempotent
+    // at the top level — repeat `mb.config.patch(...)` calls reapply,
+    // duplicate `mb.actions.register` overwrites the handler, duplicate
+    // `mb.registerAction` from the same instance is a no-op).
+    // Returns true on successful eval; false if the file is unreadable
+    // or the script throws.
+    bool reevalInstance(InstanceId id, const std::string& path);
+
     struct LoadResult {
         enum class Status { Loaded, Pending, Denied, Error };
         Status status = Status::Error;
@@ -397,7 +416,11 @@ public:
     bool setNamespace(InstanceId id, const std::string& ns);
     bool registerAction(InstanceId id, const std::string& name);
     bool isActionRegistered(const std::string& fullName) const;
-    const std::set<std::string>& registeredActions() const { return registeredActions_; }
+    // Returns the registered action names ("namespace.action" form). The
+    // owning instance id is tracked internally for cleanup-on-unload but
+    // intentionally not exposed; callers that need it can use
+    // isActionRegistered() and per-instance reasoning.
+    std::vector<std::string> registeredActions() const;
 
     // Named-action handlers for JS-owned actions (NewTab, SplitPane, etc.).
     // Unlike addEventListener/notifyAction, which observe, a handler *owns* the
@@ -659,7 +682,11 @@ private:
     };
     std::unordered_map<std::string, PendingScript> pendingScripts_;
 
-    std::set<std::string> registeredActions_; // "namespace.action" strings
+    // "namespace.action" → owning InstanceId. Re-registering the same
+    // name from the same instance is idempotent (used by config.js
+    // hot-reload); from a different instance it fails so unload cleanup
+    // doesn't accidentally drop another instance's action.
+    std::unordered_map<std::string, InstanceId> registeredActions_;
     std::unordered_map<std::string, std::string> customTcaps_; // XTGETTCAP name → value
 
     struct ActionHandler {

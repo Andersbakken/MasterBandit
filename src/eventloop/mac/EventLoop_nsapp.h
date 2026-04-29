@@ -71,8 +71,14 @@ private:
     std::vector<Timer> timers_;
     TimerId nextTimerId_ = 1;
 
-    WatchCb fileWatchCb_;
-    void*   fsEventStream_ = nullptr;  // FSEventStreamRef
+    // FSEvents fires at the directory level; per-file dispatch happens
+    // by stat-and-mtime-check inside each registered callback. The
+    // FSEventStream is shared across all watches in the same parent
+    // directory.
+    struct WatchEntry { std::string path; WatchCb cb; };
+    std::vector<WatchEntry> fileWatches_;
+    std::string fileWatchDir_;
+    void*       fsEventStream_ = nullptr;  // FSEventStreamRef
 
     void* observer_ = nullptr;  // CFRunLoopObserverRef
     // wakeup() may be called from the render thread; observer callback reads

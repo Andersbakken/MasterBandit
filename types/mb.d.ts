@@ -2,7 +2,7 @@
 //
 // Covers:
 //   - `mb` global (tabs, actions, events, script management, createSecureToken,
-//     createUuid, quit, tabBarPosition, clipboard, tcap, lifecycle events)
+//     createUuid, quit, clipboard, tcap, config (read + mutators), lifecycle events)
 //   - `mb.layout` — LayoutTree primitives (containers, stacks, tab bars,
 //     tabs, terminal spawn, slot constraints, queries)
 //   - Terminal base + Pane / Popup / EmbeddedTerminal / Tab APIs
@@ -504,12 +504,11 @@ interface MbConfigColors {
 }
 
 interface MbConfigTabBarColors {
-    background?:        string;
-    active_text?:       string;
-    active_bg?:         string;
-    inactive_text?:     string;
-    inactive_bg?:       string;
-    separator?:         string;
+    background:  string;
+    active_bg:   string;
+    active_fg:   string;
+    inactive_bg: string;
+    inactive_fg: string;
 }
 
 interface MbConfigTabBar {
@@ -528,18 +527,63 @@ interface MbConfigTabBar {
 
 interface MbConfigNotifications { show_when_foreground: boolean; }
 
-interface MbConfig {
+/**
+ * One entry in `config.keybinding`. The TOML / glaze key is the singular
+ * `keybinding` (matches `[[keybinding]]` table-array syntax in TOML).
+ */
+interface MbKeybinding {
+    /** A single key like `"ctrl+shift+t"` or a sequence like
+     *  `["ctrl+x", "ctrl+c"]` for kitty-style multi-stroke bindings. */
+    keys: string[];
+    /** Snake-case action name, optionally namespaced (`"namespace.action"`)
+     *  for script-registered actions. */
+    action: string;
+    /** Action-specific positional arguments (e.g. `["right"]` for split_pane). */
+    args?: string[];
+}
+
+/**
+ * One entry in `config.mousebinding`. The TOML / glaze key is the singular
+ * `mousebinding`.
+ */
+interface MbMousebinding {
+    button: "left" | "middle" | "right";
+    event: "press" | "release" | "click" | "doublepress" | "triplepress" | "drag";
+    /** Defaults to `"ungrabbed"`. */
+    mode?: "ungrabbed" | "grabbed" | "any";
+    /** Defaults to `"any"`. */
+    region?: "any" | "tab_bar" | "pane" | "divider";
+    action: string;
+    args?: string[];
+}
+
+/**
+ * Live snapshot of the parsed TOML Config. Read via `mb.config`.
+ *
+ * The snapshot also carries mutation methods at runtime (see
+ * {@link MbConfigMutations}), gated on the `config.modify` permission.
+ * Methods are attached to the object returned by the `mb.config` getter
+ * each time it is read, so capturing into a local variable retains them:
+ * `const cfg = mb.config; cfg.patch({...});`.
+ */
+interface MbConfig extends MbConfigMutations {
     font: string;
     font_size: number;
     bold_strength: number;
+    /**
+     * Currently startup-only: changes to this field via TOML hot-reload
+     * or `mb.config.patch` update the snapshot but do NOT resize existing
+     * panes' scrollback rings (and new panes spawned post-reload still
+     * use the startup value). This is a known limitation.
+     */
     scrollback_lines: number;
     padding: MbConfigPadding;
     cursor: MbConfigCursor;
     colors: MbConfigColors;
     tab_bar: MbConfigTabBar;
     /** Glaze serialises the keybindings vector under the singular key. */
-    keybinding: unknown[];
-    mousebinding: unknown[];
+    keybinding: MbKeybinding[];
+    mousebinding: MbMousebinding[];
     divider_color: string;
     divider_width: number;
     inactive_pane_tint: string;
@@ -552,7 +596,65 @@ interface MbConfig {
     alt_sends_esc: boolean;
     command_navigation_wrap: boolean;
     key_sequence_timeout_ms: number;
+    /** Reported color preference for mode 2031 / DSR-997. `"auto"` (default)
+     *  defers to the system; `"light"` / `"dark"` overrides bypass DBus
+     *  entirely (useful when the freedesktop portal is missing). */
+    color_scheme: "auto" | "light" | "dark";
     notifications: MbConfigNotifications;
+}
+
+/**
+ * Runtime config mutators (gated on the `config.modify` permission).
+ * All mutations go through the same `applyConfig` path as TOML hot-reload
+ * and are ephemeral — last-write-wins against a concurrent disk edit, and
+ * nothing is persisted back to `config.toml`. Throws an `Error` on
+ * validation failure (bad shape / wrong types).
+ */
+interface MbConfigMutations {
+    /**
+     * Deep-merge a partial config into the live snapshot. Plain-object
+     * fields recurse; arrays (`keybinding`, `mousebinding`) and primitives
+     * are replaced wholesale, so to add a single keybinding via patch
+     * the caller must supply the full new array. {@link addKeybinding} is
+     * a more ergonomic shortcut for that case.
+     *
+     * @example
+     *   mb.config.patch({ font_size: 14, tab_bar: { position: "top" } });
+     */
+    patch(partial: Partial<MbConfig>): void;
+
+    /**
+     * Append a single keybinding to `config.keybinding[]` and apply.
+     * Convenience over `patch({keybinding: [...mb.config.keybinding, b]})`.
+     * Does not deduplicate — later entries win in the merge inside
+     * `applyConfig` (which always layers `config.keybinding[]` over the
+     * built-in `defaultBindings()`).
+     */
+    addKeybinding(b: MbKeybinding): void;
+
+    /**
+     * Remove all entries whose `keys` array exactly matches (element-wise,
+     * order-sensitive). Returns the count removed (0 if none).
+     * Cannot remove built-in default bindings — those are layered in by
+     * `defaultBindings()` and not part of `config.keybinding[]`.
+     */
+    removeKeybinding(match: { keys: string[] }): number;
+
+    /** Append a single mousebinding to `config.mousebinding[]` and apply. */
+    addMousebinding(b: MbMousebinding): void;
+
+    /**
+     * Remove mousebindings whose specified fields match. Omitted fields
+     * are wildcards — e.g. `removeMousebinding({button: "middle"})`
+     * removes every middle-button binding regardless of event/mode/region.
+     * Returns the count removed.
+     */
+    removeMousebinding(match: {
+        button?: string;
+        event?: string;
+        mode?: string;
+        region?: string;
+    }): number;
 }
 
 // ============================================================================
@@ -620,10 +722,17 @@ interface MbGlobal {
      */
     readonly layout: MbLayout;
     /**
-     * Frozen snapshot of the loaded TOML config (the same struct
+     * Live snapshot of the loaded TOML config (the same struct
      * `PlatformDawn::applyConfig` consumes). Re-read after the
-     * `configChanged` event to pick up hot-reload updates. Shape mirrors the
-     * C++ `Config` struct via glaze JSON serialization.
+     * `configChanged` event to pick up hot-reload updates. Shape mirrors
+     * the C++ `Config` struct via glaze JSON serialization.
+     *
+     * The returned object is freshly built on every getter access (it is
+     * NOT live-bound — mutating individual fields on the returned object
+     * has no effect). To change config from JS, use the mutation methods
+     * attached to the returned object (`patch` / `addKeybinding` / etc.,
+     * see {@link MbConfigMutations}); these go through the same
+     * `applyConfig` path as a TOML hot-reload.
      */
     readonly config: MbConfig;
 

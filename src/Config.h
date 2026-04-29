@@ -238,4 +238,13 @@ struct Config {
 };
 
 Config loadConfig();
+// Returns the path to the user's config.toml (e.g.
+// $XDG_CONFIG_HOME/MasterBandit/config.toml). Always valid; the file may
+// or may not actually exist on disk.
 std::string configFilePath();
+// Returns the path to the user's optional config.js. If present, this
+// file is loaded as a fully-trusted controller script after config.toml
+// has been applied, so it can mutate the config via mb.config.patch /
+// addKeybinding / etc. and override anything the TOML set. Always valid
+// path; the file may or may not actually exist on disk.
+std::string configJsFilePath();

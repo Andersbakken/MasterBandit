@@ -1716,7 +1716,8 @@ static JSValue jsMbRegisterAction(JSContext* ctx, JSValueConst, int argc, JSValu
     if (!inst) return JS_ThrowTypeError(ctx, "no script instance");
 
     if (!eng->registerAction(inst->id, nameStr))
-        return JS_ThrowTypeError(ctx, "registerAction failed: namespace not set or action already registered");
+        return JS_ThrowTypeError(ctx, "registerAction failed: namespace not set, "
+                                       "or action already registered by a different instance");
 
     return JS_UNDEFINED;
 }
@@ -2088,18 +2089,348 @@ JSContext* Engine::createContext()
 static JSValue jsMbRegisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 static JSValue jsMbUnregisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
 
-// mb.config — frozen JS snapshot of the loaded TOML Config (the same struct
-// PlatformDawn applies on hot-reload). Re-fetch after the `configChanged`
-// event to pick up live updates. Implemented as a JSON round-trip through
-// glz::write_json + JS_ParseJSON so the JS surface tracks the C++ struct
-// shape automatically.
-static JSValue jsMbConfig(JSContext* ctx, JSValueConst, int, JSValueConst*)
+// Internal: parse the live Config snapshot into a fresh JS object. Used by
+// the `mb.config` getter and by the patch/add/remove helpers (which read the
+// current snapshot, mutate it, and submit the result).
+static JSValue jsConfigParseSnapshot(JSContext* ctx)
 {
     auto& cb = engineFromCtx(ctx)->callbacks().configJson;
     if (!cb) return JS_NULL;
     std::string json = cb();
     if (json.empty()) return JS_NULL;
     return JS_ParseJSON(ctx, json.data(), json.size(), "<mb.config>");
+}
+
+// Internal: serialize a JS Config object via JSON.stringify and submit it
+// through the applyConfigJson callback. On parse/validation failure throws
+// a JS Error with the diagnostic from glaze (returns JS_EXCEPTION).
+static JSValue jsConfigApplyObject(JSContext* ctx, JSValueConst configObj)
+{
+    auto& cb = engineFromCtx(ctx)->callbacks().applyConfigJson;
+    if (!cb) return JS_ThrowTypeError(ctx, "mb.config: not wired");
+
+    JSValue jsonVal = JS_JSONStringify(ctx, configObj, JS_UNDEFINED, JS_UNDEFINED);
+    if (JS_IsException(jsonVal)) return JS_EXCEPTION;
+    size_t len = 0;
+    const char* s = JS_ToCStringLen(ctx, &len, jsonVal);
+    JS_FreeValue(ctx, jsonVal);
+    if (!s) return JS_EXCEPTION;
+    std::string json(s, len);
+    JS_FreeCString(ctx, s);
+
+    std::string err = cb(json);
+    if (!err.empty())
+        return JS_ThrowTypeError(ctx, "%s", err.c_str());
+    return JS_UNDEFINED;
+}
+
+// Recursively deep-merge `src` into `dst`, mutating `dst` in place.
+// Object-typed fields recurse; arrays and primitives replace wholesale.
+// `null` in `src` clears the field on `dst`. Returns false on JS exception.
+static bool jsDeepMergeInto(JSContext* ctx, JSValue dst, JSValueConst src)
+{
+    JSPropertyEnum* tab = nullptr;
+    uint32_t len = 0;
+    if (JS_GetOwnPropertyNames(ctx, &tab, &len, src,
+            JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0)
+        return false;
+    bool ok = true;
+    for (uint32_t i = 0; i < len && ok; ++i) {
+        JSValue srcVal = JS_GetProperty(ctx, src, tab[i].atom);
+        if (JS_IsException(srcVal)) { ok = false; break; }
+
+        // Recurse for plain objects (not arrays, not null).
+        if (JS_IsObject(srcVal) && !JS_IsArray(srcVal) && !JS_IsNull(srcVal)) {
+            JSValue dstVal = JS_GetProperty(ctx, dst, tab[i].atom);
+            if (JS_IsObject(dstVal) && !JS_IsArray(dstVal) && !JS_IsNull(dstVal)) {
+                ok = jsDeepMergeInto(ctx, dstVal, srcVal);
+                JS_FreeValue(ctx, dstVal);
+                JS_FreeValue(ctx, srcVal);
+                continue;
+            }
+            JS_FreeValue(ctx, dstVal);
+        }
+        // Replace wholesale (arrays, primitives, type mismatch).
+        if (JS_SetProperty(ctx, dst, tab[i].atom, srcVal) < 0)
+            ok = false; // srcVal consumed by JS_SetProperty even on failure
+    }
+    for (uint32_t i = 0; i < len; ++i)
+        JS_FreeAtom(ctx, tab[i].atom);
+    js_free(ctx, tab);
+    return ok;
+}
+
+// mb.config.patch(partial) — deep-merges `partial` into a copy of the live
+// Config and applies the result. Object fields recurse; arrays (keybinding,
+// mousebinding) and primitives are replaced wholesale. Throws on validation
+// failure.
+static JSValue jsMbConfigPatch(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ConfigModify);
+    if (argc < 1 || !JS_IsObject(argv[0]) || JS_IsArray(argv[0]))
+        return JS_ThrowTypeError(ctx, "mb.config.patch(partial): expected object");
+
+    JSValue snap = jsConfigParseSnapshot(ctx);
+    if (JS_IsNull(snap) || JS_IsException(snap))
+        return JS_ThrowTypeError(ctx, "mb.config.patch: cannot read current config");
+
+    if (!jsDeepMergeInto(ctx, snap, argv[0])) {
+        JS_FreeValue(ctx, snap);
+        return JS_EXCEPTION;
+    }
+    JSValue ret = jsConfigApplyObject(ctx, snap);
+    JS_FreeValue(ctx, snap);
+    return ret;
+}
+
+// Internal: snapshot helper for the array mutators below. Reads the current
+// snapshot, returns the array property by name (stealing a fresh reference),
+// or creates an empty array if the property is missing/wrong type.
+// `outSnap` is set to the snapshot object (caller frees on success).
+// Returns JS_EXCEPTION (with thrown error) on read failure.
+static JSValue jsConfigGetArrayField(JSContext* ctx, const char* fieldName,
+                                     JSValue* outSnap)
+{
+    JSValue snap = jsConfigParseSnapshot(ctx);
+    if (JS_IsNull(snap) || JS_IsException(snap)) {
+        return JS_ThrowTypeError(ctx, "mb.config: cannot read current config");
+    }
+    JSValue arr = JS_GetPropertyStr(ctx, snap, fieldName);
+    if (!JS_IsArray(arr)) {
+        JS_FreeValue(ctx, arr);
+        arr = JS_NewArray(ctx);
+        // The mutator path will assign this back via JS_SetPropertyStr,
+        // so the snapshot picks it up.
+    }
+    *outSnap = snap;
+    return arr;
+}
+
+// Validate that argv[0] is a plain object with a string `action` and (for
+// keybindings) a string-array `keys` / (for mousebindings) string `button`,
+// `event`. We delegate full schema validation to glaze on the apply path —
+// here we just reject obvious shape errors so callers get a clearer message.
+static bool jsValidatePlainObject(JSContext* ctx, JSValueConst v, const char* sig)
+{
+    if (!JS_IsObject(v) || JS_IsArray(v) || JS_IsNull(v)) {
+        JS_ThrowTypeError(ctx, "%s: expected object", sig);
+        return false;
+    }
+    return true;
+}
+
+// mb.config.addKeybinding({keys: string[], action: string, args?: string[]})
+// Appends the entry to config.keybinding[] and applies. Convenience over
+// `mb.config.patch({keybinding: [...mb.config.keybinding, b]})`. Does not
+// remove duplicates; later entries win in the merge inside applyConfig.
+static JSValue jsMbConfigAddKeybinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ConfigModify);
+    if (argc < 1) return JS_ThrowTypeError(ctx, "addKeybinding({keys, action, args?})");
+    if (!jsValidatePlainObject(ctx, argv[0], "addKeybinding")) return JS_EXCEPTION;
+
+    JSValue snap;
+    JSValue arr = jsConfigGetArrayField(ctx, "keybinding", &snap);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+
+    uint32_t len = 0;
+    JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
+    if (JS_ToUint32(ctx, &len, lenv) != 0) {
+        JS_FreeValue(ctx, lenv); JS_FreeValue(ctx, arr); JS_FreeValue(ctx, snap);
+        return JS_EXCEPTION;
+    }
+    JS_FreeValue(ctx, lenv);
+
+    // argv[0] is borrowed — dup before stuffing into the array (the array
+    // takes ownership of its elements; on snap free they all release).
+    JS_SetPropertyUint32(ctx, arr, len, JS_DupValue(ctx, argv[0]));
+    JS_SetPropertyStr(ctx, snap, "keybinding", arr); // arr ownership transferred
+
+    JSValue ret = jsConfigApplyObject(ctx, snap);
+    JS_FreeValue(ctx, snap);
+    return ret;
+}
+
+// mb.config.removeKeybinding({keys: string[]}) — removes all entries with a
+// matching `keys` array (exact element-wise match, order-sensitive). Returns
+// the count of removed entries (0 if none matched).
+static JSValue jsMbConfigRemoveKeybinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ConfigModify);
+    if (argc < 1) return JS_ThrowTypeError(ctx, "removeKeybinding({keys})");
+    if (!jsValidatePlainObject(ctx, argv[0], "removeKeybinding")) return JS_EXCEPTION;
+
+    JSValue matchKeys = JS_GetPropertyStr(ctx, argv[0], "keys");
+    if (!JS_IsArray(matchKeys)) {
+        JS_FreeValue(ctx, matchKeys);
+        return JS_ThrowTypeError(ctx, "removeKeybinding: `keys` must be a string array");
+    }
+
+    JSValue snap;
+    JSValue arr = jsConfigGetArrayField(ctx, "keybinding", &snap);
+    if (JS_IsException(arr)) { JS_FreeValue(ctx, matchKeys); return JS_EXCEPTION; }
+
+    auto strArrayEqual = [&](JSValue a, JSValue b) -> bool {
+        if (!JS_IsArray(a) || !JS_IsArray(b)) return false;
+        uint32_t la = 0, lb = 0;
+        JSValue lav = JS_GetPropertyStr(ctx, a, "length");
+        JSValue lbv = JS_GetPropertyStr(ctx, b, "length");
+        JS_ToUint32(ctx, &la, lav); JS_ToUint32(ctx, &lb, lbv);
+        JS_FreeValue(ctx, lav); JS_FreeValue(ctx, lbv);
+        if (la != lb) return false;
+        for (uint32_t i = 0; i < la; ++i) {
+            JSValue av = JS_GetPropertyUint32(ctx, a, i);
+            JSValue bv = JS_GetPropertyUint32(ctx, b, i);
+            const char* as = JS_ToCString(ctx, av);
+            const char* bs = JS_ToCString(ctx, bv);
+            bool eq = (as && bs && std::strcmp(as, bs) == 0);
+            if (as) JS_FreeCString(ctx, as);
+            if (bs) JS_FreeCString(ctx, bs);
+            JS_FreeValue(ctx, av); JS_FreeValue(ctx, bv);
+            if (!eq) return false;
+        }
+        return true;
+    };
+
+    uint32_t arrLen = 0;
+    JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
+    JS_ToUint32(ctx, &arrLen, lenv);
+    JS_FreeValue(ctx, lenv);
+
+    JSValue filtered = JS_NewArray(ctx);
+    uint32_t outIdx = 0;
+    int removed = 0;
+    for (uint32_t i = 0; i < arrLen; ++i) {
+        JSValue entry = JS_GetPropertyUint32(ctx, arr, i);
+        JSValue entryKeys = JS_GetPropertyStr(ctx, entry, "keys");
+        bool match = strArrayEqual(entryKeys, matchKeys);
+        JS_FreeValue(ctx, entryKeys);
+        if (match) { JS_FreeValue(ctx, entry); ++removed; continue; }
+        JS_SetPropertyUint32(ctx, filtered, outIdx++, entry); // ownership transferred
+    }
+    JS_FreeValue(ctx, arr);
+    JS_FreeValue(ctx, matchKeys);
+    JS_SetPropertyStr(ctx, snap, "keybinding", filtered);
+
+    JSValue applyRet = jsConfigApplyObject(ctx, snap);
+    JS_FreeValue(ctx, snap);
+    if (JS_IsException(applyRet)) return JS_EXCEPTION;
+    JS_FreeValue(ctx, applyRet);
+    return JS_NewInt32(ctx, removed);
+}
+
+// mb.config.addMousebinding({button, event, mode?, region?, action, args?})
+// Appends to config.mousebinding[] and applies.
+static JSValue jsMbConfigAddMousebinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ConfigModify);
+    if (argc < 1) return JS_ThrowTypeError(ctx,
+        "addMousebinding({button, event, mode?, region?, action, args?})");
+    if (!jsValidatePlainObject(ctx, argv[0], "addMousebinding")) return JS_EXCEPTION;
+
+    JSValue snap;
+    JSValue arr = jsConfigGetArrayField(ctx, "mousebinding", &snap);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+
+    uint32_t len = 0;
+    JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
+    JS_ToUint32(ctx, &len, lenv);
+    JS_FreeValue(ctx, lenv);
+
+    JS_SetPropertyUint32(ctx, arr, len, JS_DupValue(ctx, argv[0]));
+    JS_SetPropertyStr(ctx, snap, "mousebinding", arr);
+
+    JSValue ret = jsConfigApplyObject(ctx, snap);
+    JS_FreeValue(ctx, snap);
+    return ret;
+}
+
+// mb.config.removeMousebinding({button, event, mode?, region?})
+// Removes all entries whose specified fields match (omitted fields are
+// wildcards). Returns the count removed.
+static JSValue jsMbConfigRemoveMousebinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    REQUIRE_PERM(ctx, ConfigModify);
+    if (argc < 1) return JS_ThrowTypeError(ctx,
+        "removeMousebinding({button, event, mode?, region?})");
+    if (!jsValidatePlainObject(ctx, argv[0], "removeMousebinding")) return JS_EXCEPTION;
+
+    auto getStr = [&](JSValueConst obj, const char* key) -> std::string {
+        JSValue v = JS_GetPropertyStr(ctx, obj, key);
+        std::string out;
+        if (JS_IsString(v)) {
+            const char* s = JS_ToCString(ctx, v);
+            if (s) { out = s; JS_FreeCString(ctx, s); }
+        }
+        JS_FreeValue(ctx, v);
+        return out;
+    };
+    std::string mButton = getStr(argv[0], "button");
+    std::string mEvent  = getStr(argv[0], "event");
+    std::string mMode   = getStr(argv[0], "mode");
+    std::string mRegion = getStr(argv[0], "region");
+
+    JSValue snap;
+    JSValue arr = jsConfigGetArrayField(ctx, "mousebinding", &snap);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+
+    uint32_t arrLen = 0;
+    JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
+    JS_ToUint32(ctx, &arrLen, lenv);
+    JS_FreeValue(ctx, lenv);
+
+    JSValue filtered = JS_NewArray(ctx);
+    uint32_t outIdx = 0;
+    int removed = 0;
+    for (uint32_t i = 0; i < arrLen; ++i) {
+        JSValue entry = JS_GetPropertyUint32(ctx, arr, i);
+        bool match = true;
+        if (!mButton.empty() && getStr(entry, "button") != mButton) match = false;
+        if (match && !mEvent.empty()  && getStr(entry, "event")  != mEvent)  match = false;
+        if (match && !mMode.empty()   && getStr(entry, "mode")   != mMode)   match = false;
+        if (match && !mRegion.empty() && getStr(entry, "region") != mRegion) match = false;
+        if (match) { JS_FreeValue(ctx, entry); ++removed; continue; }
+        JS_SetPropertyUint32(ctx, filtered, outIdx++, entry);
+    }
+    JS_FreeValue(ctx, arr);
+    JS_SetPropertyStr(ctx, snap, "mousebinding", filtered);
+
+    JSValue applyRet = jsConfigApplyObject(ctx, snap);
+    JS_FreeValue(ctx, snap);
+    if (JS_IsException(applyRet)) return JS_EXCEPTION;
+    JS_FreeValue(ctx, applyRet);
+    return JS_NewInt32(ctx, removed);
+}
+
+// mb.config — JS snapshot of the loaded TOML Config (the same struct
+// PlatformDawn applies on hot-reload). Re-fetch after the `configChanged`
+// event to pick up live updates. Implemented as a JSON round-trip through
+// glz::write_json + JS_ParseJSON so the JS surface tracks the C++ struct
+// shape automatically.
+//
+// Mutation methods attached to the returned object (gated on `config.modify`):
+//   `patch(partial)` — deep-merge a partial Config in
+//   `addKeybinding({keys, action, args?})` / `removeKeybinding({keys})`
+//   `addMousebinding({...})` / `removeMousebinding({...})`
+//
+// All mutations go through the same applyConfig path as TOML hot-reload;
+// changes are ephemeral (not persisted to disk).
+static JSValue jsMbConfig(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    JSValue obj = jsConfigParseSnapshot(ctx);
+    if (JS_IsNull(obj) || JS_IsException(obj)) return obj;
+
+    JS_SetPropertyStr(ctx, obj, "patch",
+        JS_NewCFunction(ctx, jsMbConfigPatch, "patch", 1));
+    JS_SetPropertyStr(ctx, obj, "addKeybinding",
+        JS_NewCFunction(ctx, jsMbConfigAddKeybinding, "addKeybinding", 1));
+    JS_SetPropertyStr(ctx, obj, "removeKeybinding",
+        JS_NewCFunction(ctx, jsMbConfigRemoveKeybinding, "removeKeybinding", 1));
+    JS_SetPropertyStr(ctx, obj, "addMousebinding",
+        JS_NewCFunction(ctx, jsMbConfigAddMousebinding, "addMousebinding", 1));
+    JS_SetPropertyStr(ctx, obj, "removeMousebinding",
+        JS_NewCFunction(ctx, jsMbConfigRemoveMousebinding, "removeMousebinding", 1));
+    return obj;
 }
 
 // mb.pane(nodeId) -> Pane | null. Construct a Pane object wrapping the
@@ -2241,6 +2572,35 @@ InstanceId Engine::loadController(const std::string& path) {
     return id;
 }
 
+bool Engine::reevalInstance(InstanceId id, const std::string& path)
+{
+    Instance* inst = findInstance(id);
+    if (!inst || !inst->ctx) {
+        sLog().error("ScriptEngine: reevalInstance: id {} not found", id);
+        return false;
+    }
+    std::string src = io::readFile(path);
+    if (src.empty()) {
+        sLog().error("ScriptEngine: reevalInstance: failed to read '{}'", path);
+        return false;
+    }
+    JSValue result = JS_Eval(inst->ctx, src.c_str(), src.size(),
+                             path.c_str(), JS_EVAL_TYPE_MODULE);
+    if (JS_IsException(result)) {
+        JSValue exc = JS_GetException(inst->ctx);
+        const char* str = JS_ToCString(inst->ctx, exc);
+        sLog().error("ScriptEngine: reevalInstance '{}' error: {}",
+                     path, str ? str : "(null)");
+        if (str) JS_FreeCString(inst->ctx, str);
+        JS_FreeValue(inst->ctx, exc);
+        JS_FreeValue(inst->ctx, result);
+        return false;
+    }
+    JS_FreeValue(inst->ctx, result);
+    sLog().info("ScriptEngine: re-eval'd '{}' (id={})", path, id);
+    return true;
+}
+
 void Engine::unload(InstanceId id)
 {
     for (auto it = instances_.begin(); it != instances_.end(); ++it) {
@@ -2288,15 +2648,15 @@ void Engine::unload(InstanceId id)
                 paneMouseMoveCount_.erase(fc);
         }
 
-        // 5. Remove registered actions for this instance's namespace
-        if (!it->ns.empty()) {
-            std::string prefix = it->ns + ".";
-            for (auto ait = registeredActions_.begin(); ait != registeredActions_.end(); ) {
-                if (ait->substr(0, prefix.size()) == prefix)
-                    ait = registeredActions_.erase(ait);
-                else
-                    ++ait;
-            }
+        // 5. Remove registered actions owned by this instance. Owner is
+        // tracked in the map value; previously this matched by namespace
+        // prefix, but since two instances could share a namespace we now
+        // erase only what's actually ours.
+        for (auto ait = registeredActions_.begin(); ait != registeredActions_.end(); ) {
+            if (ait->second == id)
+                ait = registeredActions_.erase(ait);
+            else
+                ++ait;
         }
 
         // 6. Drop any action handlers registered by this instance.
@@ -3666,9 +4026,15 @@ bool Engine::registerAction(InstanceId id, const std::string& name)
     if (inst->ns.empty()) return false; // no namespace set
 
     std::string fullName = inst->ns + "." + name;
-    if (registeredActions_.count(fullName)) return false; // already registered
-
-    registeredActions_.insert(fullName);
+    auto it = registeredActions_.find(fullName);
+    if (it != registeredActions_.end()) {
+        // Already registered. Idempotent for the same instance (this is
+        // what enables config.js to be re-eval'd in the same context on
+        // hot-reload); fail for a different instance so we don't quietly
+        // hand off ownership.
+        return it->second == id;
+    }
+    registeredActions_.emplace(fullName, id);
     sLog().info("ScriptEngine: registered action '{}'", fullName);
     return true;
 }
@@ -3676,6 +4042,14 @@ bool Engine::registerAction(InstanceId id, const std::string& name)
 bool Engine::isActionRegistered(const std::string& fullName) const
 {
     return registeredActions_.count(fullName) > 0;
+}
+
+std::vector<std::string> Engine::registeredActions() const
+{
+    std::vector<std::string> names;
+    names.reserve(registeredActions_.size());
+    for (const auto& [name, id] : registeredActions_) names.push_back(name);
+    return names;
 }
 
 bool Engine::registerActionHandler(InstanceId id, const std::string& name, JSValue fn)

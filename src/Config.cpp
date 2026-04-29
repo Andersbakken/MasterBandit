@@ -6,8 +6,7 @@
 #include <fstream>
 #include <string>
 
-static std::filesystem::path configPath()  // internal
-
+static std::filesystem::path configDir()  // internal
 {
     // XDG_CONFIG_HOME on Linux; on macOS fall back to ~/.config (same XDG convention)
     const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");
@@ -19,12 +18,30 @@ static std::filesystem::path configPath()  // internal
         if (!home || !home[0]) return {};
         base = std::filesystem::path(home) / ".config";
     }
-    return base / "MasterBandit" / "config.toml";
+    return base / "MasterBandit";
+}
+
+static std::filesystem::path configPath()  // internal
+{
+    auto d = configDir();
+    return d.empty() ? std::filesystem::path{} : d / "config.toml";
+}
+
+static std::filesystem::path configJsPath()  // internal
+{
+    auto d = configDir();
+    return d.empty() ? std::filesystem::path{} : d / "config.js";
 }
 
 std::string configFilePath()
 {
     auto p = configPath();
+    return p.empty() ? std::string{} : p.string();
+}
+
+std::string configJsFilePath()
+{
+    auto p = configJsPath();
     return p.empty() ? std::string{} : p.string();
 }
 
@@ -38,15 +55,14 @@ Config loadConfig()
         return cfg;
     }
 
-    // Create the config file (and parent dirs) if it doesn't exist,
-    // so that file watchers can observe it from startup.
-    if (!std::filesystem::exists(path)) {
-        std::error_code ec;
-        std::filesystem::create_directories(path.parent_path(), ec);
-        if (!ec) {
-            std::ofstream touch(path);
-        }
-    }
+    // Ensure the parent dir exists so watchers can observe the file
+    // appearing later, but do NOT create an empty config.toml. The
+    // file-watch backends used in production (epoll on Linux, FSEvents
+    // on macOS) watch the parent directory and fire on IN_CREATE /
+    // FSEvents-create, so a missing file at startup is fine — saving
+    // it later triggers the watch and reloadNow picks it up.
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
 
     std::ifstream f(path);
     if (!f) {

@@ -5,6 +5,7 @@
 #include <glaze/glaze.hpp>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <filesystem>
 
 
 int PlatformDawn::exec()
@@ -52,6 +53,22 @@ int PlatformDawn::exec()
             std::string buf;
             (void)glz::write_json(lastConfig_, buf);
             return buf;
+        };
+        // JS-driven config mutation. Parse the complete Config JSON from
+        // JS (already merged with the current snapshot — JS does the
+        // patch) via the same glaze schema used for the TOML loader, then
+        // call applyConfig on success. Returns an error string for JS to
+        // throw if parsing fails. Uses default glaze opts to match the
+        // TOML loader: unknown keys are silently ignored, same as a typo
+        // in config.toml. Type errors (wrong shape) still surface here.
+        scbs.applyConfigJson = [this](const std::string& json) -> std::string {
+            Config draft;
+            auto err = glz::read_json(draft, json);
+            if (err) {
+                return std::string("config JSON parse error: ") + glz::format_error(err, json);
+            }
+            applyConfig(draft);
+            return {};
         };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
             if (Terminal* p = scriptEngine_.terminal(paneId)) p->writeText(data);
@@ -608,6 +625,60 @@ int PlatformDawn::exec()
         configLoader_->setPlatform(this);
         configLoader_->installFileWatch(configFilePath());
         configLoader_->reloadNow();
+
+        // Optional config.js: fully-trusted controller loaded after TOML.
+        // The script calls mb.config.patch / addKeybinding / etc. to
+        // override anything the TOML set. The watch is installed
+        // unconditionally — backend watchers (epoll inotify on parent
+        // dir, FSEvents on macOS) detect file creation, so saving
+        // config.js after launch loads it without restart. On file
+        // change, re-eval in the same JSContext (timers + listeners
+        // persist; idempotent top-level mb.config.patch /
+        // mb.actions.register calls reapply cleanly).
+        std::string jsPath = configJsFilePath();
+        if (!jsPath.empty()) {
+            if (std::filesystem::exists(jsPath)) {
+                configJsInstanceId_ = scriptEngine_.loadController(jsPath);
+                if (configJsInstanceId_ == 0) {
+                    spdlog::warn("Config: failed to load JS config '{}'", jsPath);
+                } else {
+                    spdlog::info("Config: loaded JS config '{}' (id={})",
+                                 jsPath, configJsInstanceId_);
+                }
+            }
+            eventLoop_->addFileWatch(jsPath, [this, jsPath]() {
+                if (configJsDebounceActive_)
+                    eventLoop_->removeTimer(configJsDebounceTimer_);
+                configJsDebounceTimer_ = eventLoop_->addTimer(300, false, [this, jsPath]() {
+                    configJsDebounceActive_ = false;
+                    if (!std::filesystem::exists(jsPath)) {
+                        // File was deleted between the watch event and
+                        // the debounce expiry; ignore. Existing patches
+                        // already applied to lastConfig_ remain in
+                        // effect until the user restarts or re-creates
+                        // the file. (Unloading the instance to roll
+                        // back the patches would surprise scripts with
+                        // registered listeners; we don't.)
+                        return;
+                    }
+                    if (configJsInstanceId_ == 0) {
+                        // Either the file didn't exist at startup, or
+                        // initial load failed (syntax error etc). Fresh
+                        // load now.
+                        configJsInstanceId_ = scriptEngine_.loadController(jsPath);
+                        if (configJsInstanceId_) {
+                            spdlog::info("Config: loaded JS config '{}' on file-watch (id={})",
+                                         jsPath, configJsInstanceId_);
+                        } else {
+                            spdlog::warn("Config: failed to load JS config '{}'", jsPath);
+                        }
+                    } else {
+                        scriptEngine_.reevalInstance(configJsInstanceId_, jsPath);
+                    }
+                });
+                configJsDebounceActive_ = true;
+            });
+        }
     }
 
     // Set up the per-iteration tick
@@ -763,6 +834,10 @@ int PlatformDawn::exec()
     for (int fd : fds) removePtyPoll(fd);
 
     if (configLoader_) configLoader_->stop();
+    if (configJsDebounceActive_) {
+        eventLoop_->removeTimer(configJsDebounceTimer_);
+        configJsDebounceActive_ = false;
+    }
     if (animScheduler_) animScheduler_->stopAllTimers();
     eventLoop_->removeFileWatch();
 

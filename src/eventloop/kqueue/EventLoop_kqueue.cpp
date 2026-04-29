@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <sys/event.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -46,7 +47,11 @@ KQueueEventLoop::KQueueEventLoop()
 
 KQueueEventLoop::~KQueueEventLoop()
 {
-    if (watchFd_ >= 0) { close(watchFd_); watchFd_ = -1; }
+    fileWatches_.clear();
+    for (auto& [_, dw] : dirWatches_) {
+        if (dw.fd >= 0) close(dw.fd);
+    }
+    dirWatches_.clear();
     if (wakeupRead_  >= 0) { close(wakeupRead_);  wakeupRead_  = -1; }
     if (wakeupWrite_ >= 0) { close(wakeupWrite_); wakeupWrite_ = -1; }
     if (kqFd_ >= 0) { close(kqFd_); kqFd_ = -1; }
@@ -93,8 +98,36 @@ void KQueueEventLoop::run()
                 char buf[64];
                 while (read(wakeupRead_, buf, sizeof(buf)) > 0) {}
             } else if (events[i].filter == EVFILT_VNODE) {
-                // File watch event
-                if (fileWatchCb_) fileWatchCb_();
+                // Directory-write event. Find which dir this fd belongs
+                // to, then re-stat every WatchEntry under that dir and
+                // fire callbacks whose file's mtime/size actually
+                // changed (or appeared/disappeared). Iterate by index
+                // because callbacks may mutate fileWatches_ via
+                // removeFileWatch (which clears everything).
+                std::string changedDir;
+                for (auto& [dir, dw] : dirWatches_) {
+                    if (dw.fd == fd) { changedDir = dir; break; }
+                }
+                if (!changedDir.empty()) {
+                    for (size_t j = 0; j < fileWatches_.size(); ) {
+                        size_t before = fileWatches_.size();
+                        if (fileWatches_[j].dir == changedDir) {
+                            recheckEntry(fileWatches_[j]);
+                        }
+                        // If the callback called removeFileWatch the
+                        // vector is empty and we should stop. If it
+                        // shrank but didn't fully empty (which the
+                        // current API doesn't allow, but be defensive)
+                        // re-anchor by clamping the index.
+                        if (fileWatches_.size() < before) {
+                            if (fileWatches_.empty()) break;
+                            // entries before j unchanged; entries at j
+                            // may have shifted, so don't advance.
+                            continue;
+                        }
+                        ++j;
+                    }
+                }
             } else if (events[i].filter == EVFILT_READ) {
                 auto it = fds_.find(fd);
                 if (it != fds_.end()) it->second.cb(FdEvents::Readable);
@@ -225,33 +258,99 @@ void KQueueEventLoop::restartTimer(TimerId id)
 
 // ---------- file watching ----------
 
+int KQueueEventLoop::retainDirWatch(const std::string& dir)
+{
+    auto it = dirWatches_.find(dir);
+    if (it != dirWatches_.end()) {
+        ++it->second.refCount;
+        return it->second.fd;
+    }
+    int fd = open(dir.c_str(), O_RDONLY | O_EVTONLY);
+    if (fd < 0) {
+        spdlog::warn("KQueueEventLoop: addFileWatch open dir '{}': {}",
+                     dir, strerror(errno));
+        return -1;
+    }
+    struct kevent ev{};
+    EV_SET(&ev, fd, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR,
+           NOTE_WRITE, 0, nullptr);
+    kevent(kqFd_, &ev, 1, nullptr, 0, nullptr);
+    dirWatches_.emplace(dir, DirWatch{fd, 1});
+    return fd;
+}
+
+void KQueueEventLoop::releaseDirWatch(const std::string& dir)
+{
+    auto it = dirWatches_.find(dir);
+    if (it == dirWatches_.end()) return;
+    if (--it->second.refCount > 0) return;
+    if (it->second.fd >= 0) {
+        struct kevent ev{};
+        EV_SET(&ev, it->second.fd, EVFILT_VNODE, EV_DELETE, 0, 0, nullptr);
+        kevent(kqFd_, &ev, 1, nullptr, 0, nullptr);
+        close(it->second.fd);
+    }
+    dirWatches_.erase(it);
+}
+
+void KQueueEventLoop::recheckEntry(WatchEntry& w)
+{
+    struct stat st{};
+    bool exists = (stat(w.path.c_str(), &st) == 0);
+    time_t newMtime = exists ? st.st_mtime : -1;
+    off_t  newSize  = exists ? st.st_size  : -1;
+
+    // Fire on any of: appearance (size/mtime go from -1 to real),
+    // disappearance (-> -1), content/size mtime change. Skip on
+    // unchanged state (typical for a sibling-file write that woke us up
+    // but didn't touch this file).
+    if (newMtime == w.lastMtime && newSize == w.lastSize) return;
+    w.lastMtime = newMtime;
+    w.lastSize  = newSize;
+    if (w.cb) w.cb();
+}
+
 void KQueueEventLoop::addFileWatch(const std::string& path, WatchCb cb)
 {
-    removeFileWatch();
-    fileWatchPath_ = path;
-    fileWatchCb_   = std::move(cb);
+    WatchEntry w;
+    w.path = path;
+    auto sep = w.path.rfind('/');
+    if (sep != std::string::npos) {
+        w.dir = w.path.substr(0, sep);
+    } else {
+        w.dir = ".";
+    }
+    if (w.dir.empty()) w.dir = ".";
+    w.cb = std::move(cb);
 
-    watchFd_ = open(path.c_str(), O_RDONLY | O_EVTONLY);
-    if (watchFd_ < 0) {
-        spdlog::warn("KQueueEventLoop: addFileWatch open '{}': {}", path, strerror(errno));
+    if (retainDirWatch(w.dir) < 0) {
+        // Parent dir unopenable — drop the watch entirely.
         return;
     }
 
-    struct kevent ev{};
-    EV_SET(&ev, watchFd_, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR,
-           NOTE_WRITE | NOTE_RENAME | NOTE_DELETE | NOTE_ATTRIB, 0, nullptr);
-    kevent(kqFd_, &ev, 1, nullptr, 0, nullptr);
+    // Seed lastMtime/lastSize from the current state so a no-op
+    // recheckEntry doesn't fire on the first dir event after registration.
+    struct stat st{};
+    if (stat(w.path.c_str(), &st) == 0) {
+        w.lastMtime = st.st_mtime;
+        w.lastSize  = st.st_size;
+    }
+    fileWatches_.push_back(std::move(w));
 }
 
 void KQueueEventLoop::removeFileWatch()
 {
-    if (watchFd_ >= 0) {
-        struct kevent ev{};
-        EV_SET(&ev, watchFd_, EVFILT_VNODE, EV_DELETE, 0, 0, nullptr);
-        kevent(kqFd_, &ev, 1, nullptr, 0, nullptr);
-        close(watchFd_);
-        watchFd_ = -1;
+    for (auto& w : fileWatches_) releaseDirWatch(w.dir);
+    fileWatches_.clear();
+    // Belt-and-braces: if anything went sideways and a DirWatch slipped
+    // through, close them. Should be a no-op after the loop above.
+    for (auto& [_, dw] : dirWatches_) {
+        if (dw.fd >= 0) {
+            struct kevent ev{};
+            EV_SET(&ev, dw.fd, EVFILT_VNODE, EV_DELETE, 0, 0, nullptr);
+            kevent(kqFd_, &ev, 1, nullptr, 0, nullptr);
+            close(dw.fd);
+        }
     }
-    fileWatchPath_.clear();
-    fileWatchCb_ = nullptr;
+    dirWatches_.clear();
 }

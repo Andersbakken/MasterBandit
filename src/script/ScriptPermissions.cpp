@@ -32,6 +32,7 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"net",         Perm::GroupNet},
     {"clipboard",   Perm::GroupClipboard},
     {"layout",      Perm::GroupLayout},
+    {"config",      Perm::GroupConfig},
     // Individual
     {"ui.popup.create",   Perm::UiPopupCreate},
     {"ui.popup.destroy",  Perm::UiPopupDestroy},
@@ -52,6 +53,7 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"clipboard.write",   Perm::ClipboardWrite},
     {"pane.selection",    Perm::PaneSelection},
     {"layout.modify",     Perm::LayoutModify},
+    {"config.modify",     Perm::ConfigModify},
 };
 
 uint32_t parsePermissions(const std::string& permStr)
@@ -102,6 +104,7 @@ std::string permissionsToString(uint32_t perms)
         {Perm::GroupNet,       "net"},
         {Perm::GroupClipboard, "clipboard"},
         {Perm::GroupLayout,    "layout"},
+        {Perm::GroupConfig,    "config"},
     };
 
     uint32_t remaining = perms;
@@ -134,6 +137,7 @@ std::string permissionsToString(uint32_t perms)
         {Perm::ClipboardWrite,  "clipboard.write"},
         {Perm::PaneSelection,   "pane.selection"},
         {Perm::LayoutModify,    "layout.modify"},
+        {Perm::ConfigModify,    "config.modify"},
     };
     for (const auto& b : bits) {
         if (remaining & b.bit) {

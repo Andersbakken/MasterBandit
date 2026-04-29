@@ -245,7 +245,14 @@ void NSAppEventLoop::drainKqueue()
 
 void NSAppEventLoop::fileChanged()
 {
-    if (fileWatchCb_) fileWatchCb_();
+    // FSEvents fires at the directory level. Every registered callback
+    // gets called; the callback re-stats its own file to decide if the
+    // change was relevant. Iterate by index for re-entrancy safety
+    // (a callback may call removeFileWatch).
+    for (size_t i = 0; i < fileWatches_.size(); ++i) {
+        WatchCb cb = fileWatches_[i].cb;
+        if (cb) cb();
+    }
 }
 
 // ---------- fd watching ----------
@@ -373,41 +380,49 @@ void NSAppEventLoop::restartTimer(TimerId id)
 
 void NSAppEventLoop::addFileWatch(const std::string& path, WatchCb cb)
 {
-    removeFileWatch();
-    fileWatchCb_ = std::move(cb);
-
-    // Watch parent directory (handles atomic renames from editors)
+    // Watch parent directory (handles atomic renames from editors).
     std::string dir = path;
     auto sep = dir.rfind('/');
     if (sep != std::string::npos) dir.resize(sep);
     if (dir.empty()) dir = ".";
 
-    CFStringRef cfDir = CFStringCreateWithCString(nullptr, dir.c_str(), kCFStringEncodingUTF8);
-    CFArrayRef  paths = CFArrayCreate(nullptr, reinterpret_cast<const void**>(&cfDir), 1,
-                                       &kCFTypeArrayCallBacks);
-    CFRelease(cfDir);
+    // If we already have a watch for a different parent dir, drop it.
+    if (!fileWatches_.empty() && dir != fileWatchDir_) {
+        removeFileWatch();
+    }
 
-    FSEventStreamContext ctx{};
-    ctx.info = this;
-    FSEventStreamRef stream = FSEventStreamCreate(
-        nullptr, fsEventsCallback, &ctx,
-        paths, kFSEventStreamEventIdSinceNow,
-        0.1,  // latency seconds
-        kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagFileEvents);
-    CFRelease(paths);
+    if (!fsEventStream_) {
+        CFStringRef cfDir = CFStringCreateWithCString(nullptr, dir.c_str(), kCFStringEncodingUTF8);
+        CFArrayRef  paths = CFArrayCreate(nullptr, reinterpret_cast<const void**>(&cfDir), 1,
+                                           &kCFTypeArrayCallBacks);
+        CFRelease(cfDir);
 
-    FSEventStreamSetDispatchQueue(stream, dispatch_get_main_queue());
-    FSEventStreamStart(stream);
-    fsEventStream_ = stream;
+        FSEventStreamContext ctx{};
+        ctx.info = this;
+        FSEventStreamRef stream = FSEventStreamCreate(
+            nullptr, fsEventsCallback, &ctx,
+            paths, kFSEventStreamEventIdSinceNow,
+            0.1,  // latency seconds
+            kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagFileEvents);
+        CFRelease(paths);
+
+        FSEventStreamSetDispatchQueue(stream, dispatch_get_main_queue());
+        FSEventStreamStart(stream);
+        fsEventStream_ = stream;
+        fileWatchDir_  = dir;
+    }
+    fileWatches_.push_back({path, std::move(cb)});
 }
 
 void NSAppEventLoop::removeFileWatch()
 {
-    if (!fsEventStream_) return;
-    FSEventStreamRef stream = static_cast<FSEventStreamRef>(fsEventStream_);
-    FSEventStreamStop(stream);
-    FSEventStreamInvalidate(stream);
-    FSEventStreamRelease(stream);
-    fsEventStream_ = nullptr;
-    fileWatchCb_   = nullptr;
+    if (fsEventStream_) {
+        FSEventStreamRef stream = static_cast<FSEventStreamRef>(fsEventStream_);
+        FSEventStreamStop(stream);
+        FSEventStreamInvalidate(stream);
+        FSEventStreamRelease(stream);
+        fsEventStream_ = nullptr;
+    }
+    fileWatchDir_.clear();
+    fileWatches_.clear();
 }

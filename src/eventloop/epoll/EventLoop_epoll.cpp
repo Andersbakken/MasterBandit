@@ -259,21 +259,36 @@ void EpollEventLoop::drainTimers()
 
 void EpollEventLoop::addFileWatch(const std::string& path, WatchCb cb)
 {
-    removeFileWatch();
-    // Watch the parent directory so renames (atomic saves) are detected
+    // Watch the parent directory so renames (atomic saves) are detected.
     std::string dir = path;
+    std::string name;
     auto sep = dir.rfind('/');
-    if (sep != std::string::npos) dir.resize(sep);
+    if (sep != std::string::npos) {
+        name = dir.substr(sep + 1);
+        dir.resize(sep);
+    } else {
+        name = dir;
+        dir = ".";
+    }
     if (dir.empty()) dir = ".";
 
-    inotifyWd_ = inotify_add_watch(inotifyFd_, dir.c_str(),
-                                    IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
-    if (inotifyWd_ < 0) {
-        spdlog::warn("EpollEventLoop: inotify_add_watch '{}': {}", dir, strerror(errno));
-        return;
+    // If a watch already exists for a different parent dir, drop it. New
+    // dir replaces old. Multi-dir support would need one inotify_add_watch
+    // per dir; not required by current callers.
+    if (!fileWatches_.empty() && dir != inotifyDir_) {
+        removeFileWatch();
     }
-    fileWatchPath_ = path;
-    fileWatchCb_   = std::move(cb);
+
+    if (inotifyWd_ < 0) {
+        inotifyWd_ = inotify_add_watch(inotifyFd_, dir.c_str(),
+                                        IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
+        if (inotifyWd_ < 0) {
+            spdlog::warn("EpollEventLoop: inotify_add_watch '{}': {}", dir, strerror(errno));
+            return;
+        }
+        inotifyDir_ = dir;
+    }
+    fileWatches_.push_back({std::move(name), std::move(cb)});
 }
 
 void EpollEventLoop::removeFileWatch()
@@ -282,8 +297,8 @@ void EpollEventLoop::removeFileWatch()
         inotify_rm_watch(inotifyFd_, inotifyWd_);
         inotifyWd_ = -1;
     }
-    fileWatchPath_.clear();
-    fileWatchCb_ = nullptr;
+    inotifyDir_.clear();
+    fileWatches_.clear();
 }
 
 void EpollEventLoop::drainInotify()
@@ -297,20 +312,23 @@ void EpollEventLoop::drainInotify()
             break;
         }
 
-        // Check if any event matches the watched file (by name)
-        std::string filename;
-        if (!fileWatchPath_.empty()) {
-            auto sep = fileWatchPath_.rfind('/');
-            filename = (sep != std::string::npos)
-                     ? fileWatchPath_.substr(sep + 1)
-                     : fileWatchPath_;
-        }
-
         const char* p = buf;
         while (p < buf + len) {
             const auto* event = reinterpret_cast<const inotify_event*>(p);
-            if (fileWatchCb_ && event->len > 0 && filename == event->name)
-                fileWatchCb_();
+            if (event->len > 0) {
+                // Fire any callbacks whose filename matches this event.
+                // Iterate by index so callbacks that mutate fileWatches_
+                // (e.g. via removeFileWatch) don't invalidate our iterator.
+                for (size_t i = 0; i < fileWatches_.size(); ++i) {
+                    if (fileWatches_[i].name == event->name) {
+                        WatchCb cb = fileWatches_[i].cb;
+                        if (cb) cb();
+                        // The vector may have been mutated; rescan from
+                        // the same index. Different name matches in the
+                        // remaining slots still get called below.
+                    }
+                }
+            }
             p += sizeof(inotify_event) + event->len;
         }
     }

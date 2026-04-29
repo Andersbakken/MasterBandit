@@ -39,7 +39,8 @@ private:
     int wakeupFd_ = -1;   // eventfd
     int timerFd_  = -1;   // timerfd_create(CLOCK_MONOTONIC)
     int inotifyFd_ = -1;
-    int inotifyWd_ = -1;  // watch descriptor for config file
+    int inotifyWd_ = -1;  // watch descriptor for config dir
+    std::string inotifyDir_; // dir we're currently watching, "" if none
 
     bool running_ = false;
 
@@ -62,8 +63,13 @@ private:
     std::priority_queue<Timer, std::vector<Timer>, std::greater<Timer>> timers_;
     TimerId nextTimerId_ = 1;
 
-    WatchCb fileWatchCb_;
-    std::string fileWatchPath_;
+    // (filename, cb) pairs sharing a single inotify-on-dir watch. The
+    // caller-facing addFileWatch API allows multiple files but only if
+    // they share a parent directory; addFileWatch on a file in a
+    // different parent than the existing watches drops the existing set
+    // (previous behavior was the same — see EventLoop.h).
+    struct WatchEntry { std::string name; WatchCb cb; };
+    std::vector<WatchEntry> fileWatches_;
 
     static uint64_t nowNs();
     static int epollEventsFor(FdEvents ev);

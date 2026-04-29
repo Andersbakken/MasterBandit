@@ -3,6 +3,7 @@
 #include "AnimationScheduler.h"
 #include "ConfigLoader.h"
 #include "InputController.h"
+#include "Observability.h"
 #include "Resources.h"
 #include "Utils.h"
 #include "FontResolver.h"
@@ -57,7 +58,13 @@ PlatformDawn::PlatformDawn(int argc, char** argv, uint32_t flags)
 
 bool PlatformDawn::snapshotUnderLock(RenderFrameState& out)
 {
+    // [TIMING] Lock-acquire wait on the render-thread mutex from
+    // the render thread. If main thread is in applyPendingMutations
+    // for a long time, this blocks → frames stop being presented.
+    const uint64_t lt0 = obs::now_us();
     std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
+    if (auto dt = obs::now_us() - lt0; dt > 1000)
+        spdlog::warn("[TIMING] snapshotUnderLock: lock wait {} us", dt);
     if (fbWidth_ == 0 || fbHeight_ == 0) return false;
     RenderFrameState& rs = renderThread_->renderState();
     out = rs;
@@ -227,13 +234,12 @@ void PlatformDawn::buildRenderFrameState()
             // parent Document each frame. Skipped on alt-screen.
             rpi.focusedEmbeddedLineId = pane->focusedEmbeddedLineId();
             rpi.onAltScreen = pane->usingAltScreen();
-            // forEachEmbedded() reads the lock-free atomic snapshot of
-            // mEmbedded that the parser/main-thread mutators republish
-            // on every change. The raw `term` pointers in the snapshot
-            // are kept alive by the platform graveyard, so they're
-            // safe to drop into RenderPaneEmbeddedInfo even if the
-            // entry is extracted before the next frame.
+            // forEachEmbedded() acquires the per-Terminal mMutex
+            // briefly. Under a flooded pane it can block waiting for
+            // the parser to finish a chunk (~1 ms with the current
+            // budget). [TIMING] surfaces that contention.
             uint64_t focusedLine = rpi.focusedEmbeddedLineId;
+            const uint64_t et0 = obs::now_us();
             pane->forEachEmbedded([&rpi, focusedLine](uint64_t lineId, Terminal& em) {
                 RenderPaneEmbeddedInfo ei;
                 ei.lineId = lineId;
@@ -242,6 +248,9 @@ void PlatformDawn::buildRenderFrameState()
                 ei.focused = (lineId == focusedLine);
                 rpi.embeddeds.push_back(std::move(ei));
             });
+            if (auto dt = obs::now_us() - et0; dt > 500)
+                spdlog::warn("[TIMING] forEachEmbedded(pane={}) {} us",
+                             pane->nodeId().toString(), dt);
             renderThread_->renderState().panes.push_back(std::move(rpi));
         }
     }

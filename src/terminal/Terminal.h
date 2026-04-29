@@ -167,33 +167,23 @@ public:
     bool resizeEmbedded(uint64_t lineId, int rows);
     Terminal* findEmbedded(uint64_t lineId);
 
-    // Lock-free snapshot of currently-attached embedded terminals.
-    // Each entry holds the lineId, current height, and a raw Terminal*.
-    // The raw pointer's lifetime is guaranteed by the platform's
-    // graveyard mechanism: an extracted Terminal is held until any
-    // render frame referencing it has completed and its parse worker
-    // has returned, so consumers (per-tick render-shadow build,
-    // mouse hit-test) can dereference safely.
-    //
-    // Snapshot is republished on every mEmbedded mutation
-    // (createEmbedded / extractEmbedded / eviction callback /
-    // onFullReset). Read with embeddedSnapshot(); the returned
-    // shared_ptr keeps the view alive past concurrent republishes.
-    struct EmbeddedView { uint64_t lineId; int height; Terminal* term; };
-    using EmbeddedSnapshotPtr = std::shared_ptr<const std::vector<EmbeddedView>>;
-    EmbeddedSnapshotPtr embeddedSnapshot() const {
-        return mEmbeddedSnapshot.load(std::memory_order_acquire);
-    }
+    // Embedded-map iteration helpers. All acquire mMutex (which the
+    // parse worker also holds, but only briefly between budgeted
+    // chunks — see Terminal::queueParse for the chunking model). Use
+    // these instead of exposing the map directly so callers can't
+    // forget the lock.
     template <typename Fn>
     void forEachEmbedded(Fn&& fn) const {
-        auto snap = embeddedSnapshot();
-        for (const auto& e : *snap) fn(e.lineId, *e.term);
+        std::lock_guard<std::recursive_mutex> _lk(mutex());
+        for (const auto& [lineId, em] : mEmbedded) fn(lineId, *em);
     }
     bool hasEmbeddeds() const {
-        return !embeddedSnapshot()->empty();
+        std::lock_guard<std::recursive_mutex> _lk(mutex());
+        return !mEmbedded.empty();
     }
     size_t embeddedCount() const {
-        return embeddedSnapshot()->size();
+        std::lock_guard<std::recursive_mutex> _lk(mutex());
+        return mEmbedded.size();
     }
 
     // Atomic: written by the parse-worker eviction callback (clears to 0
@@ -280,6 +270,25 @@ private:
     // the main thread can keep coalescing reads while the worker parses.
     std::vector<char> mReadCoalesceBuffer;
     std::mutex        mReadBufferMutex;
+    // PTY read backpressure. When mReadCoalesceBuffer's size hits
+    // kReadBufferHigh, readFromFD stops draining the kernel PTY
+    // buffer and disarms POLLIN on the master fd. The kernel PTY
+    // buffer then fills, and the child process blocks in write(2)
+    // until it drains — exactly the same backpressure pattern kitty
+    // and wezterm use to keep memory bounded under a flooding
+    // producer (see kitty's vt-parser.c BUF_SZ + POLLIN-toggle and
+    // wezterm's 1 MiB socketpair). Re-armed by the main-thread
+    // onTick when the buffer drops below kReadBufferLow.
+    bool              mReadPaused { false };
+    static constexpr size_t kReadBufferHigh = 1024 * 1024; // 1 MiB
+    static constexpr size_t kReadBufferLow  = 256 * 1024;  // 256 KiB
+public:
+    // Called by Platform on each main-thread tick. If the read
+    // backpressure paused PTY reads, check whether the coalesce
+    // buffer has drained below the low-water mark and re-arm POLLIN
+    // if so.
+    void maybeResumeRead();
+private:
     // Counts queued+running parse tasks for this Terminal. Always 0 or 1
     // in normal operation (queueParse is gated by this flag), but typed
     // as int so the graveyard can defer destruction while a worker still
@@ -310,25 +319,17 @@ private:
     // evicts past the archive cap (via Document::onRowEvicted callback wired
     // in the constructor). Keyed on lineId so each row holds at most one.
     //
-    // mEmbedded itself is protected by mMutex (same lock the parser
-    // already holds during injectData; eviction callback runs while
-    // the parser holds it; main-thread mutators take it briefly).
-    // Lock-free hot-path readers (per-tick render-shadow build,
-    // hit-test, blink tick) consume mEmbeddedSnapshot which is
-    // atomic-stored on every mutation.
+    // Protected by mMutex. The parse worker holds mMutex during
+    // injectData (in budgeted chunks — see Terminal::queueParse),
+    // and the eviction callback fires while the worker holds it.
+    // Main-thread mutators (createEmbedded, extractEmbedded,
+    // resizeEmbedded) and readers (forEachEmbedded etc.) take mMutex
+    // briefly between worker chunks.
     std::unordered_map<uint64_t, std::unique_ptr<Terminal>> mEmbedded;
-    // Initialised to an empty (non-null) snapshot so consumers can
-    // dereference unconditionally. Republished by
-    // publishEmbeddedSnapshot() on every mutation.
-    std::atomic<EmbeddedSnapshotPtr> mEmbeddedSnapshot {
-        std::make_shared<const std::vector<EmbeddedView>>()
-    };
+    // Read on the per-tick render path; written by main-thread focus
+    // mutators and the parse-worker eviction callback. Atomic to
+    // avoid a lock just for this single uint64_t read.
     std::atomic<uint64_t> mFocusedEmbeddedLineId { 0 }; // 0 = none focused
-
-    // Republish mEmbeddedSnapshot from current mEmbedded. Caller must
-    // hold mMutex (or be the only writer). One shared_ptr<vector>
-    // allocation per call.
-    void publishEmbeddedSnapshot();
 
     // Embeddeds that the eviction callback extracted from mEmbedded.
     // The callback fires while the parse worker holds mMutex (deep

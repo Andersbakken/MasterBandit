@@ -1,4 +1,5 @@
 #include "Terminal.h"
+#include "Observability.h"
 #include "Utils.h"
 #include <spdlog/spdlog.h>
 
@@ -15,6 +16,8 @@
 #include <string.h>
 #include <signal.h>
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #ifdef __APPLE__
 #include <libproc.h>
 #endif
@@ -28,15 +31,14 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
     // so the map mutation here is already under that lock. We move
     // the unique_ptr onto mEvictedEmbeddeds (also under mMutex) and
     // set mEvictedHasItems so the main-thread tick can detect items
-    // wait-free; main drains via drainEvictedEmbeddeds() (which
-    // briefly takes mMutex) once parsing finishes. The render-thread
-    // snapshot path also takes mMutex, so no cycle.
+    // wait-free; main drains via drainEvictedEmbeddeds() once parsing
+    // yields the lock between chunks. The render-thread snapshot path
+    // also takes mMutex, so no cycle.
     document().setOnLineIdEvicted([this](uint64_t lineId) {
         auto it = mEmbedded.find(lineId);
         if (it == mEmbedded.end()) return;
         auto evicted = std::move(it->second);
         mEmbedded.erase(it);
-        publishEmbeddedSnapshot();
         if (mFocusedEmbeddedLineId.load(std::memory_order_acquire) == lineId)
             mFocusedEmbeddedLineId.store(0, std::memory_order_release);
         mEvictedEmbeddeds.push_back({lineId, std::move(evicted)});
@@ -52,18 +54,6 @@ Terminal::~Terminal()
         mWritePollActive = false;
     }
     if (mMasterFD != -1) ::close(mMasterFD);
-}
-
-void Terminal::publishEmbeddedSnapshot()
-{
-    // Caller holds mMutex. Build a fresh immutable view of mEmbedded
-    // and atomic-store. Per-tick consumers (buildRenderFrameState,
-    // hit-test, etc.) atomic-load and read without locking.
-    auto vec = std::make_shared<std::vector<EmbeddedView>>();
-    vec->reserve(mEmbedded.size());
-    for (const auto& [lineId, em] : mEmbedded)
-        vec->push_back({lineId, em->height(), em.get()});
-    mEmbeddedSnapshot.store(std::move(vec), std::memory_order_release);
 }
 
 bool Terminal::init(const TerminalOptions &options)
@@ -234,12 +224,6 @@ void Terminal::resize(int width, int height)
             em->resize(newW, emRows);
             if (onEmbeddedResized) onEmbeddedResized(lineId, newW, emRows);
         }
-        // Heights may have changed; republish so the snapshot
-        // reflects the new heights.
-        {
-            std::lock_guard<std::recursive_mutex> _lk(mutex());
-            publishEmbeddedSnapshot();
-        }
     }
 }
 
@@ -279,6 +263,13 @@ void Terminal::readFromFD()
     // so take mReadBufferMutex while appending. We append in chunks
     // bounded by the local stack buf so the lock is held only briefly
     // even if the kernel has megabytes queued.
+    //
+    // Backpressure: when the coalesce buffer hits kReadBufferHigh we
+    // disarm POLLIN on the master fd and return. The kernel PTY
+    // buffer then fills and the child blocks on write(2). This caps
+    // our memory use under a flooding producer and gives the parser
+    // time to catch up. Resumed by the main-thread maybeResumeRead()
+    // when the worker has drained the buffer below kReadBufferLow.
     char buf[65536];
     for (;;) {
         int ret;
@@ -293,10 +284,40 @@ void Terminal::readFromFD()
             markExited();
             return;
         }
+        bool atHigh = false;
         {
             std::lock_guard<std::mutex> lk(mReadBufferMutex);
             mReadCoalesceBuffer.insert(mReadCoalesceBuffer.end(), buf, buf + ret);
+            if (mReadCoalesceBuffer.size() >= kReadBufferHigh)
+                atHigh = true;
         }
+        if (atHigh && !mReadPaused) {
+            mReadPaused = true;
+            if (mLoop && mMasterFD >= 0)
+                mLoop->updateFd(mMasterFD,
+                    mWritePollActive
+                        ? EventLoop::FdEvents::Writable
+                        : static_cast<EventLoop::FdEvents>(0));
+            return;
+        }
+    }
+}
+
+void Terminal::maybeResumeRead()
+{
+    if (!mReadPaused || mExited) return;
+    size_t sz;
+    {
+        std::lock_guard<std::mutex> lk(mReadBufferMutex);
+        sz = mReadCoalesceBuffer.size();
+    }
+    if (sz <= kReadBufferLow) {
+        mReadPaused = false;
+        if (mLoop && mMasterFD >= 0)
+            mLoop->updateFd(mMasterFD,
+                mWritePollActive
+                    ? EventLoop::FdEvents::ReadWrite
+                    : EventLoop::FdEvents::Readable);
     }
 }
 
@@ -348,11 +369,39 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
     }
 
     submit([this] {
-        // Worker thread. Loop until the coalesce buffer is empty so a
-        // burst of arrivals during a long parse doesn't require N
-        // separate task submissions. The mParseInFlight count keeps
-        // this worker as the only parser for this Terminal.
+        // Worker thread. Two nested loops:
+        //
+        //   outer: drain mReadCoalesceBuffer until it stays empty
+        //          across one coalesce window.
+        //   inner: parse the swapped buffer in budgeted chunks,
+        //          releasing mMutex between chunks so other threads
+        //          (renderer, main-thread one-off readers, the next
+        //          tick's onTick path) can acquire it.
+        //
+        // The coalesce wait at the top of the outer loop matches
+        // wezterm's mux_output_parser_coalesce_delay_ms (3 ms): we
+        // wait briefly for more bytes to accumulate before grabbing
+        // mMutex, so a flooded producer's lock-acquisition rate is
+        // bounded to ~1/3ms ≈ 330 Hz per Terminal regardless of the
+        // raw byte rate.
+        constexpr auto kCoalesceWindow = std::chrono::milliseconds(3);
+        // Per-chunk byte budget. Tuned for a parse-time budget of
+        // roughly 1 ms on plain text at the codebase's measured
+        // ~3.5 MB/s parser throughput, so a chunk holds the lock
+        // for approximately one millisecond before yielding.
+        constexpr size_t kParseChunkBudget = 4096;
+
+        bool firstIteration = true;
         for (;;) {
+            // Coalesce: nap briefly so newly-arrived bytes (from the
+            // main-thread readFromFD callback) can pile up before we
+            // grab the lock. First iteration skips the nap so initial
+            // latency stays low for small writes — only subsequent
+            // iterations (which only happen under sustained input)
+            // pay the coalesce delay.
+            if (!firstIteration) std::this_thread::sleep_for(kCoalesceWindow);
+            firstIteration = false;
+
             std::vector<char> buf;
             {
                 std::lock_guard<std::mutex> lk(mReadBufferMutex);
@@ -360,26 +409,44 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
                     // Clear in-flight under the buffer lock so any
                     // concurrent readFromFD that appends after this
                     // point will be picked up by the next queueParse()
-                    // on the main thread. Releasing the count *inside*
-                    // the lock prevents the race where (a) we observe
-                    // empty, (b) reader appends + main calls
-                    // queueParse, (c) the CAS fails because we still
-                    // hold the count, (d) we then release the count
-                    // and the appended bytes sit forever.
+                    // on the main thread.
                     mParseInFlight.store(0, std::memory_order_release);
                     return;
                 }
                 buf.swap(mReadCoalesceBuffer);
             }
 
+            // Filter pass (one-shot — runs on whatever filter result
+            // is current; runOnMain bounce inside makes it safe).
+            std::string filtered;
+            const char* data;
+            size_t size;
             if (mPlatformCbs.shouldFilterOutput && mPlatformCbs.shouldFilterOutput()) {
-                std::string s(buf.begin(), buf.end());
-                mPlatformCbs.filterOutput(s);
-                if (!s.empty())
-                    injectData(s.data(), s.size());
+                filtered.assign(buf.begin(), buf.end());
+                mPlatformCbs.filterOutput(filtered);
+                data = filtered.data();
+                size = filtered.size();
             } else {
-                injectData(buf.data(), buf.size());
+                data = buf.data();
+                size = buf.size();
             }
+
+            // Apply the whole batch in one injectData call. Holding
+            // mMutex for the full apply (rather than chunking with
+            // mid-apply releases) matches wezterm's pattern: the
+            // outer 3 ms coalesce is what bounds how often we
+            // acquire mMutex; once acquired, we run to completion.
+            // Mid-apply chunking caused observed waiter starvation
+            // because std::recursive_mutex on Linux has no fairness
+            // guarantee — the parser would re-acquire faster than a
+            // separate-CPU waiter could wake. With one-shot apply,
+            // a waiter sees mMutex free during the entire 3 ms
+            // outer coalesce window.
+            const uint64_t bt0 = obs::now_us();
+            (void)injectData(data, size); // budget=0 → drain entire buffer
+            if (auto dt = obs::now_us() - bt0; dt > 5000)
+                spdlog::warn("[TIMING] queueParse: {} bytes in {} us",
+                             size, dt);
 
             // Foreground process change check. tcgetpgrp + the
             // foregroundProcess() lookup touch the kernel and /proc; OK
@@ -661,7 +728,6 @@ Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
 
     Terminal* raw = embedded.get();
     mEmbedded[anchorLineId] = std::move(embedded);
-    publishEmbeddedSnapshot();
 
     // Advance the parent cursor to a fresh row so subsequent parent writes
     // don't target the (now-hidden) anchor row. CR+LF goes through the
@@ -682,7 +748,6 @@ std::unique_ptr<Terminal> Terminal::extractEmbedded(uint64_t lineId)
         if (it == mEmbedded.end()) return nullptr;
         t = std::move(it->second);
         mEmbedded.erase(it);
-        publishEmbeddedSnapshot();
     }
     if (mFocusedEmbeddedLineId.load(std::memory_order_acquire) == lineId)
         mFocusedEmbeddedLineId.store(0, std::memory_order_release);
@@ -695,14 +760,6 @@ bool Terminal::resizeEmbedded(uint64_t lineId, int rows)
     if (rows <= 0) return false;
     // Find the embedded under mMutex briefly, then resize outside
     // (resize() takes the embedded's own mutex, not this Terminal's).
-    // Map size doesn't change, so no snapshot republish is needed —
-    // height changes are reflected on the next mutation that does
-    // republish (or on the next snapshot read after the next
-    // publish trigger).
-    //
-    // Actually: the snapshot caches `height` per entry, so a height
-    // change *does* need a republish for hot-path readers. Do it
-    // under the same lock.
     Terminal* em = nullptr;
     {
         std::lock_guard<std::recursive_mutex> _lk(mutex());
@@ -711,10 +768,6 @@ bool Terminal::resizeEmbedded(uint64_t lineId, int rows)
         em = it->second.get();
     }
     em->resize(width() > 0 ? width() : 80, rows);
-    {
-        std::lock_guard<std::recursive_mutex> _lk(mutex());
-        publishEmbeddedSnapshot();
-    }
     return true;
 }
 
@@ -757,7 +810,6 @@ void Terminal::onFullReset()
         mEvictedEmbeddeds.push_back({lineId, std::move(term)});
     }
     mEmbedded.clear();
-    publishEmbeddedSnapshot();
     mFocusedEmbeddedLineId.store(0, std::memory_order_release);
     mEvictedHasItems.store(true, std::memory_order_release);
     if (onPopupEvent) onPopupEvent();

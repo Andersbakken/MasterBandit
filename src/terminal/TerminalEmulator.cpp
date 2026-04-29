@@ -104,13 +104,11 @@ TerminalEmulator::~TerminalEmulator()
 
 void TerminalEmulator::publishTitleAtomic()
 {
-    // Caller already holds mMutex (parser path) so the read of
-    // mTitleStack here is race-free against the worker.
+    // Caller holds mMutex (parser path).
     if (mTitleStack.empty()) {
         mTitleAtomic.store(nullptr, std::memory_order_release);
         return;
     }
-    // Skip the allocation if the published string already matches.
     if (auto cur = mTitleAtomic.load(std::memory_order_acquire);
         cur && *cur == mTitleStack.back())
         return;
@@ -174,7 +172,20 @@ void TerminalEmulator::applyCursorConfig(const CursorConfig& cc)
 
 void TerminalEmulator::resize(int width, int height)
 {
+    // Fast no-op: skip the mMutex acquire entirely when dimensions are
+    // unchanged. mWidth / mHeight are written only under mMutex by other
+    // resize callers; reading without the lock is racy in the strict
+    // sense but only for the no-op case where missing a concurrent
+    // resize is harmless (the caller will re-arrive next tick if a real
+    // change is pending). This matters because runLayoutIfDirty
+    // cascades a resize through every pane on every tab activation,
+    // and otherwise main blocks for the duration of a flooded pane's
+    // parse batch just to discover the dimensions didn't change.
+    if (mWidth == width && mHeight == height) return;
+
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    // Re-check inside the lock to avoid losing a real concurrent change.
+    if (mWidth == width && mHeight == height) return;
     int oldCols = mWidth;
     mWidth = width;
     mHeight = height;
@@ -721,13 +732,19 @@ void TerminalEmulator::lineFeed()
     }
 }
 
-void TerminalEmulator::injectData(const char* buf, size_t len_)
+size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBudget)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (sLog().should_log(spdlog::level::debug))
         sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
-    obs::notifyParse(len_);
     const int len = static_cast<int>(len_);
+    // Worker chunking: consume at least `byteBudget` bytes, then exit
+    // at the first safe split boundary so the caller can release
+    // mMutex and let other threads (renderer, main-thread one-off
+    // readers) acquire it. Disabled when budget == 0 (drain entire
+    // input in one call — used by tests, headless paths,
+    // createEmbedded's "\r\n" inject).
+    const bool budgeted = byteBudget > 0;
 
     auto resetToNormal = [this]() {
         assert(mParserState == InEscape || mParserState == InStringSequence);
@@ -738,7 +755,18 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
 #endif
     };
 
-    for (int i=0; i<len; ++i) {
+    int i = 0;
+    for (; i<len; ++i) {
+        // Safe-split check: when at a parser-state boundary and the
+        // budget is exhausted, stop and let the caller release the
+        // lock. Boundary = Normal state with no in-progress UTF-8
+        // sequence and no escape buffer accumulator. This is the same
+        // condition the parser is in between most consecutive bytes
+        // of plain text, so a flooded plain-text producer will hit a
+        // boundary on essentially every byte.
+        if (budgeted && i >= static_cast<int>(byteBudget) &&
+            mParserState == Normal && mUtf8Index == 0)
+            break;
         IGrid& g = grid();
         switch (mParserState) {
         case Normal:
@@ -1206,6 +1234,8 @@ void TerminalEmulator::injectData(const char* buf, size_t len_)
     if (!mKittyLoading.active) {
         if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
     }
+    obs::notifyParse(static_cast<size_t>(i));
+    return static_cast<size_t>(i);
 }
 
 void TerminalEmulator::processCSI()
@@ -1632,13 +1662,10 @@ void TerminalEmulator::processCSI()
         // Republish the lock-free title/icon atomics on each top change
         // so per-tick consumers see the new value without locking.
         if (op == 22) {
-            if (doTitle && !mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX) {
+            if (doTitle && !mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX)
                 mTitleStack.push_back(mTitleStack.back());
-                // Top didn't change — atomic mirror is still correct.
-            }
-            if (doIcon && !mIconStack.empty() && mIconStack.size() < ICON_STACK_MAX) {
+            if (doIcon && !mIconStack.empty() && mIconStack.size() < ICON_STACK_MAX)
                 mIconStack.push_back(mIconStack.back());
-            }
         } else if (op == 23) {
             if (doTitle) {
                 if (mTitleStack.size() > 1) {

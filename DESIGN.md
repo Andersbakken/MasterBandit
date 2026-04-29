@@ -699,7 +699,161 @@ xtgettcap mb-query-popup  # → 1+r6d622d71756572792d706f707570
 
 ---
 
-## 17. Project Structure
+## 17. Async PTY Parsing & Concurrency Model (implemented)
+
+### Threads
+
+| Thread | Owner | Lifetime |
+|---|---|---|
+| **Main / event-loop** | `PlatformDawn::exec()` | App lifetime |
+| **Render** | `RenderThread` | App lifetime |
+| **Worker pool** | `RenderEngine::renderWorkers_` (shared) | App lifetime |
+
+The worker pool is owned by `RenderEngine` (`RenderEngine::workers()` accessor)
+and used by both the render thread (parallel row resolution / shaping) and
+the main thread (async PTY parsing). It supports two submission modes:
+
+- `submit(fn)` — fire-and-forget async task; returns immediately.
+- `dispatch(items, fn)` — synchronous parallel batch; blocks the caller until
+  every item in *this batch* finishes. Concurrent dispatches and submits run
+  in parallel; one batch's wait does not block another.
+
+### PTY parsing pipeline
+
+PTY data flows from the kernel to the terminal grid in three stages, each
+running on a different thread:
+
+1. **fd-readable callback** (main thread). `Terminal::readFromFD()` drains
+   the kernel buffer in 64 KB chunks and appends to `mReadCoalesceBuffer`
+   under `mReadBufferMutex` (a small leaf-level lock). No parsing.
+2. **Per-tick dispatch** (main thread). On every event-loop iteration,
+   `onTick` calls `Terminal::queueParse(submit)` for each PTY. queueParse
+   does an atomic single-flight check (`mParseInFlight`) and submits a
+   parse closure to the worker pool. If a worker is already parsing this
+   Terminal, queueParse returns immediately — the in-flight worker will
+   loop and pick up newly-arrived bytes itself.
+3. **Parse worker** (worker thread). The closure swaps the coalesce
+   buffer out under `mReadBufferMutex`, calls `injectData` on the swapped
+   bytes (which acquires `mMutex` for the duration of the parse), and
+   loops to drain any bytes that arrived during the parse. Releases
+   `mParseInFlight` under `mReadBufferMutex` to avoid the
+   "parser-just-released-but-bytes-arrived-first" stranding race.
+
+This decouples the main thread from heavy parse work. Pre-async, a flooding
+producer would block the main event loop for the duration of an `injectData`
+batch (potentially seconds), starving input. Post-async, the main thread's
+per-tick cost is bounded to atomic flag checks and short worker-submission
+calls.
+
+### TerminalCallbacks safety on the worker
+
+Most `TerminalCallbacks` already used `eventLoop_->post(...)` to defer to
+main, so they're trivially worker-thread-safe. Three sync callbacks needed
+adapting:
+
+- `pasteFromClipboard` (OSC 52 c=? query) — bounces through
+  `PlatformDawn::runOnMain()`, which posts to the event loop and waits on a
+  `std::promise`. Adds latency only to the rare OSC52 paste-query response.
+- `isDarkMode` (mode 2031) — same `runOnMain` bounce.
+- `customTcapLookup` (DCS+q) — same bounce; script engine is main-only.
+
+Output and input filters (`shouldFilterOutput`, `filterOutput`,
+`shouldFilterInput`, `filterInput`) are different: the *check* must be
+fast (called once per parse batch / writeToOutput), but the *invocation*
+runs JS. Solved with per-pane `std::shared_ptr<std::atomic<bool>>` flags
+maintained by `Engine::outputFilterFlag(PaneId)` /
+`Engine::inputFilterFlag(PaneId)`. The filter closure captures the
+shared_ptr (lifetime-safe past pane teardown), atomic-loads it for
+`shouldFilter*`, and bounces through `runOnMain` only when the actual
+filter runs.
+
+### Locking model
+
+The terminal subsystem maintains exactly **two** mutexes per Terminal plus
+a small set of atomics:
+
+- **`TerminalEmulator::mMutex`** (recursive). Protects all parse-mutated
+  state: grid, document, cursor, `mState` fields, command ring, selection,
+  hyperlink registry, title/icon stacks, embeddeds map. Held by the parse
+  worker for the duration of `injectData`; by the render thread during
+  snapshot capture; by main-thread one-off readers (mouse handlers, JS
+  getters, action dispatch, OSC reply construction).
+- **`Terminal::mReadBufferMutex`**. Leaf-level. Covers
+  `mReadCoalesceBuffer` and the `mParseInFlight` release. Never held while
+  taking another lock.
+
+Hot main-thread paths (`buildRenderFrameState`, `onBlinkTick`, eviction
+polling) **never** take `mMutex`. They consume lock-free atomic snapshots:
+
+| Snapshot | Type | Updated when |
+|---|---|---|
+| `usingAltScreen()` | `atomic<bool>` (mirror of `mUsingAltScreen`) | mode 1049/47 toggle, RIS |
+| `currentTitle()` / `currentIcon()` | `atomic<shared_ptr<const string>>` | OSC 0/1/2 set, XTWINOPS push/pop |
+| `embeddedSnapshot()` | `atomic<shared_ptr<const vector<EmbeddedView>>>` | createEmbedded / extractEmbedded / eviction / onFullReset / parent resize cascade |
+| `focusedEmbeddedLineId()` | `atomic<uint64_t>` | focus mutator + eviction |
+| `hasEvictedEmbeddeds()` | `atomic<bool>` | eviction adds, drain clears |
+| `parseInFlight()` | `atomic<int>` | queueParse + worker exit |
+
+Mutators that change underlying state call `publishTitleAtomic()` /
+`publishIconAtomic()` / `publishEmbeddedSnapshot()` (or store directly to
+the simpler atomics) **under `mMutex`**, so consumers see consistent
+snapshots without locking.
+
+### Lifetime of snapshot pointers
+
+`EmbeddedView::term` is a raw `Terminal*`. Lifetime is guaranteed by the
+existing **graveyard** (`src/platform/Graveyard.h`):
+
+- An extracted Terminal is staged into the graveyard with a frame stamp
+  (taken under `renderThread_->mutex()`) and a `parseInFlight() == 0`
+  predicate.
+- `Graveyard::sweep()` only frees an entry when *both* `completedFrames >
+  stamp` AND the predicate returns true.
+- Render frames advance the stamp counter; main-thread consumers that
+  copy raw pointers into `RenderPaneEmbeddedInfo` are bounded by the same
+  frame.
+- Parse workers are bounded by `parseInFlight`.
+
+### Shutdown ordering
+
+`~PlatformDawn` follows a precise sequence to avoid use-after-free between
+the worker pool, the event loop, and graveyard'd Terminals:
+
+1. `platformShutdown()` joins platform-wide background workers (DBus etc.).
+2. `renderThread_->stop()` joins the render thread.
+3. **Spin-wait** with `eventLoop_->drainPosts()` on each iteration until
+   every Terminal's `parseInFlight()` reads 0. The drainPosts is required
+   because a parse worker may be parked inside `runOnMain()` waiting for
+   the main thread to service a post (pasteFromClipboard / customTcap);
+   without draining, the worker hangs and the count never reaches zero.
+4. Final `drainPosts` to catch any post that completed during the last
+   iteration's check.
+5. `graveyard_.drainAll()` is now safe — no concurrent reader.
+6. `renderEngine_->shutdown()` releases GPU resources.
+7. Window destruction.
+8. RenderEngine reset (joins the worker pool — guaranteed empty by step 3).
+
+### Per-tick consumer pattern
+
+`PlatformDawn::buildRenderFrameState()` runs on every tick and demonstrates
+the full pattern:
+
+```cpp
+rpi.focusedEmbeddedLineId = pane->focusedEmbeddedLineId();  // atomic load
+rpi.onAltScreen           = pane->usingAltScreen();         // atomic load
+pane->forEachEmbedded([&rpi, focusedLine = rpi.focusedEmbeddedLineId]
+                      (uint64_t lineId, Terminal& em) {     // atomic-snapshot iter
+    rpi.embeddeds.push_back({lineId, em.height(), &em,
+                             lineId == focusedLine});
+});
+```
+
+No `mMutex` acquired. Per-tick cost is bounded regardless of how busy any
+parse worker is.
+
+---
+
+## 18. Project Structure
 
 ```
 src/
@@ -785,7 +939,7 @@ tests/
 
 ---
 
-## 18. Testing (implemented)
+## 19. Testing (implemented)
 
 Unit test suite using doctest (`tests/`). `TestTerminal` wraps `TerminalEmulator`
 with no PTY or GPU — feeds escape sequences via `injectData`, asserts on cell grid
@@ -805,7 +959,7 @@ Run with: `./build/bin/mb-tests`
 
 ---
 
-## 19. Scripting Engine (implemented)
+## 20. Scripting Engine (implemented)
 
 QuickJS-ng embedded scripting with permission system.
 

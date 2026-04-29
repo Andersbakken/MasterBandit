@@ -368,10 +368,8 @@ void TerminalEmulator::processStringSequence()
     switch (oscNum) {
     case 0: processOSC_Title(payload, true); break;
     case 1:
-        // Caller (processStringSequence) is on the parse-worker thread
-        // inside injectData, which holds mMutex. Stack mutation +
-        // publishIconAtomic() runs under that same lock; no extra
-        // locking needed.
+        // Caller holds mMutex (parser path). Republish atomic so
+        // per-tick currentIcon() reads stay wait-free.
         if (mIconStack.empty())
             mIconStack.emplace_back(payload);
         else

@@ -785,13 +785,20 @@ int PlatformDawn::exec()
                     [&pool](std::function<void()> fn) {
                         pool.submit(std::move(fn));
                     };
-                for (auto& [fd, term] : ptyPolls())
+                for (auto& [fd, term] : ptyPolls()) {
                     term->queueParse(submit);
+                    // Backpressure: re-arm POLLIN if the worker has
+                    // drained the coalesce buffer below the
+                    // low-water mark since we last paused reads.
+                    term->maybeResumeRead();
+                }
             } else {
                 // No render engine (some early-tear-down paths) — fall
                 // back to synchronous flush so we never strand bytes.
-                for (auto& [fd, term] : ptyPolls())
+                for (auto& [fd, term] : ptyPolls()) {
                     term->flushReadBuffer();
+                    term->maybeResumeRead();
+                }
             }
 
             // Drain embeddeds whose anchor line evicted during the PTY flush

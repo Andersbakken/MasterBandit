@@ -127,8 +127,14 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     // OSC 133 highlight: Escape (no modifiers) clears the selected command
     // region and is swallowed. Only takes effect while a command is selected,
     // so normal Escape delivery to TUI apps is preserved at other times.
+    // selectedCommandId() reads parse-mutated state — lock briefly.
+    bool hasSelectedCmd;
+    {
+        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+        hasSelectedCmd = term->selectedCommandId().has_value();
+    }
     if (action != static_cast<int>(KeyAction_Release) &&
-        k == Key_Escape && mods == 0 && term->selectedCommandId()) {
+        k == Key_Escape && mods == 0 && hasSelectedCmd) {
         term->setSelectedCommand(std::nullopt);
         return;
     }
@@ -365,12 +371,15 @@ void InputController::onMouseButton(int button, int action, int mods)
             ev.modifiers = lastMods_;
             term2->mouseReleaseEvent(&ev);
 #if defined(__linux__)
-            // Publish the completed selection as the X11 primary selection
-            if (term2->hasSelection()) {
-                std::string sel = term2->selectedText();
-                if (!sel.empty())
-                    if (window) window->setPrimarySelection(sel);
+            // Publish the completed selection as the X11 primary selection.
+            // hasSelection / selectedText read parse-mutated state.
+            std::string sel;
+            {
+                std::lock_guard<std::recursive_mutex> _lk(term2->mutex());
+                if (term2->hasSelection())
+                    sel = term2->selectedText();
             }
+            if (!sel.empty() && window) window->setPrimarySelection(sel);
 #endif
         }
         return;

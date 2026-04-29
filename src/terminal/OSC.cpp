@@ -368,10 +368,15 @@ void TerminalEmulator::processStringSequence()
     switch (oscNum) {
     case 0: processOSC_Title(payload, true); break;
     case 1:
+        // Caller (processStringSequence) is on the parse-worker thread
+        // inside injectData, which holds mMutex. Stack mutation +
+        // publishIconAtomic() runs under that same lock; no extra
+        // locking needed.
         if (mIconStack.empty())
             mIconStack.emplace_back(payload);
         else
             mIconStack.back() = std::string(payload);
+        publishIconAtomic();
         if (mCallbacks.onIconChanged)
             mCallbacks.onIconChanged(std::optional<std::string>(std::string(payload)));
         break;
@@ -749,10 +754,12 @@ void TerminalEmulator::processStringSequence()
 void TerminalEmulator::processOSC_Title(std::string_view text, bool setTitle)
 {
     if (setTitle) {
+        // Caller holds mMutex (parser path).
         if (mTitleStack.empty())
             mTitleStack.emplace_back(text);
         else
             mTitleStack.back() = std::string(text);
+        publishTitleAtomic();
         if (mCallbacks.onTitleChanged)
             mCallbacks.onTitleChanged(std::optional<std::string>(std::string(text)));
     }

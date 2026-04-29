@@ -23,31 +23,24 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
     : TerminalEmulator(std::move(callbacks))
     , mPlatformCbs(std::move(platformCbs))
 {
-    // Embedded anchor evicted past the archive cap. We're deep inside
-    // Document::evictToArchive which runs under this Terminal's mMutex
-    // (held by the parse worker), and the render thread takes
-    // (renderMutex -> terminalMutex) during snapshot capture — so we
-    // can't take the render mutex here (cyclic). Stash the unique_ptr
-    // under mEvictedEmbeddedsMu (a *small* mutex distinct from mMutex)
-    // and set mEvictedHasItems so the main-thread tick can detect items
-    // wait-free without blocking on a long-running parse. mEmbeddedMu
-    // protects the actual map mutation against main-thread readers.
+    // Embedded anchor evicted past the archive cap. Fires from inside
+    // Document::evictToArchive while the parse worker holds mMutex,
+    // so the map mutation here is already under that lock. We move
+    // the unique_ptr onto mEvictedEmbeddeds (also under mMutex) and
+    // set mEvictedHasItems so the main-thread tick can detect items
+    // wait-free; main drains via drainEvictedEmbeddeds() (which
+    // briefly takes mMutex) once parsing finishes. The render-thread
+    // snapshot path also takes mMutex, so no cycle.
     document().setOnLineIdEvicted([this](uint64_t lineId) {
-        std::unique_ptr<Terminal> evicted;
-        {
-            std::lock_guard<std::mutex> _emlk(mEmbeddedMu);
-            auto it = mEmbedded.find(lineId);
-            if (it == mEmbedded.end()) return;
-            evicted = std::move(it->second);
-            mEmbedded.erase(it);
-        }
+        auto it = mEmbedded.find(lineId);
+        if (it == mEmbedded.end()) return;
+        auto evicted = std::move(it->second);
+        mEmbedded.erase(it);
+        publishEmbeddedSnapshot();
         if (mFocusedEmbeddedLineId.load(std::memory_order_acquire) == lineId)
             mFocusedEmbeddedLineId.store(0, std::memory_order_release);
-        {
-            std::lock_guard<std::mutex> _lk(mEvictedEmbeddedsMu);
-            mEvictedEmbeddeds.push_back({lineId, std::move(evicted)});
-            mEvictedHasItems.store(true, std::memory_order_release);
-        }
+        mEvictedEmbeddeds.push_back({lineId, std::move(evicted)});
+        mEvictedHasItems.store(true, std::memory_order_release);
         if (onPopupEvent) onPopupEvent();
     });
 }
@@ -59,6 +52,18 @@ Terminal::~Terminal()
         mWritePollActive = false;
     }
     if (mMasterFD != -1) ::close(mMasterFD);
+}
+
+void Terminal::publishEmbeddedSnapshot()
+{
+    // Caller holds mMutex. Build a fresh immutable view of mEmbedded
+    // and atomic-store. Per-tick consumers (buildRenderFrameState,
+    // hit-test, etc.) atomic-load and read without locking.
+    auto vec = std::make_shared<std::vector<EmbeddedView>>();
+    vec->reserve(mEmbedded.size());
+    for (const auto& [lineId, em] : mEmbedded)
+        vec->push_back({lineId, em->height(), em.get()});
+    mEmbeddedSnapshot.store(std::move(vec), std::memory_order_release);
 }
 
 bool Terminal::init(const TerminalOptions &options)
@@ -212,15 +217,14 @@ void Terminal::resize(int width, int height)
     // platform-wired notifier so JS "resized" listeners see parent-
     // cascade resizes the same way they see explicit em.resize(rows).
     if (newW != oldW) {
-        // Snapshot (lineId, raw-pointer) pairs under mEmbeddedMu so the
-        // map can't be mutated by the parse worker (eviction callback)
-        // while we iterate. Each em is owned by mEmbedded; the raw
-        // pointer stays valid for as long as the map entry exists, and
-        // we don't release it before resizing. Resize itself takes the
-        // embedded's own mMutex, not this Terminal's — no nested locks.
+        // Take mMutex briefly to snapshot (lineId, raw-pointer) pairs;
+        // the parse worker (eviction callback) also takes mMutex, so
+        // the map can't change under us. The embedded resize itself
+        // takes the embedded's own mMutex — no nested same-mutex
+        // acquire on this Terminal.
         std::vector<std::pair<uint64_t, Terminal*>> targets;
         {
-            std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+            std::lock_guard<std::recursive_mutex> _lk(mutex());
             targets.reserve(mEmbedded.size());
             for (auto& [lineId, em] : mEmbedded)
                 targets.emplace_back(lineId, em.get());
@@ -229,6 +233,12 @@ void Terminal::resize(int width, int height)
             int emRows = em->height();
             em->resize(newW, emRows);
             if (onEmbeddedResized) onEmbeddedResized(lineId, newW, emRows);
+        }
+        // Heights may have changed; republish so the snapshot
+        // reflects the new heights.
+        {
+            std::lock_guard<std::recursive_mutex> _lk(mutex());
+            publishEmbeddedSnapshot();
         }
     }
 }
@@ -314,8 +324,8 @@ void Terminal::flushReadBuffer()
     // Check for foreground process change
     if (callbacks().onForegroundProcessChanged) {
         pid_t pgid = tcgetpgrp(mMasterFD);
-        if (pgid > 0 && pgid != mLastFgPgid) {
-            mLastFgPgid = pgid;
+        if (pgid > 0 && pgid != mLastFgPgid.load(std::memory_order_relaxed)) {
+            mLastFgPgid.store(pgid, std::memory_order_relaxed);
             callbacks().onForegroundProcessChanged(foregroundProcess());
         }
     }
@@ -378,8 +388,8 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
             // for any onForegroundProcessChanged side-effects.
             if (callbacks().onForegroundProcessChanged && mMasterFD >= 0) {
                 pid_t pgid = tcgetpgrp(mMasterFD);
-                if (pgid > 0 && pgid != mLastFgPgid) {
-                    mLastFgPgid = pgid;
+                if (pgid > 0 && pgid != mLastFgPgid.load(std::memory_order_relaxed)) {
+                    mLastFgPgid.store(pgid, std::memory_order_relaxed);
                     callbacks().onForegroundProcessChanged(foregroundProcess());
                 }
             }
@@ -626,15 +636,17 @@ Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
     // embedded for the displaced cursor.
     scrollCursorUpToFitBelow(rows);
 
+    // mMutex covers the cursor read, the duplicate-check, the map
+    // mutation, and the trailing injectData. Recursive lock — the
+    // injectData re-acquires fine.
+    std::lock_guard<std::recursive_mutex> _lk(mutex());
+
     // Current cursor row → anchor lineId. historySize() + cursorY() is the
     // absolute row of the current cursor position on main screen.
     const int anchorAbsRow = document().historySize() + cursorY();
     const uint64_t anchorLineId = document().lineIdForAbs(anchorAbsRow);
     if (anchorLineId == 0) return nullptr;
-    {
-        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
-        if (mEmbedded.count(anchorLineId)) return nullptr;
-    }
+    if (mEmbedded.count(anchorLineId)) return nullptr;
 
     TerminalCallbacks cbs;
     cbs.event = [this](TerminalEmulator*, int, void*) {
@@ -648,10 +660,8 @@ Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
     embedded->resize(width() > 0 ? width() : 80, rows);
 
     Terminal* raw = embedded.get();
-    {
-        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
-        mEmbedded[anchorLineId] = std::move(embedded);
-    }
+    mEmbedded[anchorLineId] = std::move(embedded);
+    publishEmbeddedSnapshot();
 
     // Advance the parent cursor to a fresh row so subsequent parent writes
     // don't target the (now-hidden) anchor row. CR+LF goes through the
@@ -667,11 +677,12 @@ std::unique_ptr<Terminal> Terminal::extractEmbedded(uint64_t lineId)
 {
     std::unique_ptr<Terminal> t;
     {
-        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+        std::lock_guard<std::recursive_mutex> _lk(mutex());
         auto it = mEmbedded.find(lineId);
         if (it == mEmbedded.end()) return nullptr;
         t = std::move(it->second);
         mEmbedded.erase(it);
+        publishEmbeddedSnapshot();
     }
     if (mFocusedEmbeddedLineId.load(std::memory_order_acquire) == lineId)
         mFocusedEmbeddedLineId.store(0, std::memory_order_release);
@@ -682,26 +693,38 @@ std::unique_ptr<Terminal> Terminal::extractEmbedded(uint64_t lineId)
 bool Terminal::resizeEmbedded(uint64_t lineId, int rows)
 {
     if (rows <= 0) return false;
-    // resize() takes the embedded's own per-Terminal mMutex; we want
-    // mEmbeddedMu only long enough to find the entry and drop a raw
-    // pointer out, so the heavy resize work runs lock-free on this
-    // map. The embedded's lifetime is anchored in mEmbedded (which
-    // we don't erase here) so the raw pointer is valid past the
-    // unlock.
+    // Find the embedded under mMutex briefly, then resize outside
+    // (resize() takes the embedded's own mutex, not this Terminal's).
+    // Map size doesn't change, so no snapshot republish is needed —
+    // height changes are reflected on the next mutation that does
+    // republish (or on the next snapshot read after the next
+    // publish trigger).
+    //
+    // Actually: the snapshot caches `height` per entry, so a height
+    // change *does* need a republish for hot-path readers. Do it
+    // under the same lock.
     Terminal* em = nullptr;
     {
-        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+        std::lock_guard<std::recursive_mutex> _lk(mutex());
         auto it = mEmbedded.find(lineId);
         if (it == mEmbedded.end()) return false;
         em = it->second.get();
     }
     em->resize(width() > 0 ? width() : 80, rows);
+    {
+        std::lock_guard<std::recursive_mutex> _lk(mutex());
+        publishEmbeddedSnapshot();
+    }
     return true;
 }
 
 Terminal* Terminal::findEmbedded(uint64_t lineId)
 {
-    std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+    // One-off main-thread lookup — take mMutex briefly. The pointer
+    // is valid until the entry is extracted/evicted (both go through
+    // the graveyard, so even after caller releases the lock, the
+    // pointer remains valid for at least one render frame).
+    std::lock_guard<std::recursive_mutex> _lk(mutex());
     auto it = mEmbedded.find(lineId);
     return it == mEmbedded.end() ? nullptr : it->second.get();
 }
@@ -724,37 +747,27 @@ TerminalEmulator* Terminal::activeTerm()
 
 void Terminal::onFullReset()
 {
-    // RIS wipes scrollback / line ids, so anchored embeddeds become orphans.
-    // Move them onto the same queue the line-id eviction callback uses; the
-    // main-thread platform tick (drainEvictedEmbeddeds) does the render-
-    // shadow mirror + graveyard defer + JS "destroyed" delivery. Runs from
-    // inside injectData (parse worker), so take both small mutexes — never
-    // mMutex, because we already hold it.
-    std::vector<std::pair<uint64_t, std::unique_ptr<Terminal>>> drained;
-    {
-        std::lock_guard<std::mutex> _lk(mEmbeddedMu);
-        if (mEmbedded.empty()) return;
-        drained.reserve(mEmbedded.size());
-        for (auto& [lineId, term] : mEmbedded) {
-            drained.emplace_back(lineId, std::move(term));
-        }
-        mEmbedded.clear();
+    // Called from inside injectData (parse worker, mMutex held). RIS
+    // wipes scrollback / line ids, so anchored embeddeds become
+    // orphans. Move them onto the eviction queue; main-thread
+    // drainEvictedEmbeddeds() does the render-shadow mirror +
+    // graveyard defer + JS "destroyed" delivery.
+    if (mEmbedded.empty()) return;
+    for (auto& [lineId, term] : mEmbedded) {
+        mEvictedEmbeddeds.push_back({lineId, std::move(term)});
     }
+    mEmbedded.clear();
+    publishEmbeddedSnapshot();
     mFocusedEmbeddedLineId.store(0, std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> _lk(mEvictedEmbeddedsMu);
-        for (auto& [lineId, term] : drained) {
-            mEvictedEmbeddeds.push_back({lineId, std::move(term)});
-        }
-        mEvictedHasItems.store(true, std::memory_order_release);
-    }
+    mEvictedHasItems.store(true, std::memory_order_release);
     if (onPopupEvent) onPopupEvent();
 }
 
 void Terminal::collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const
 {
     if (usingAltScreen()) return; // hidden while in alt
-    std::lock_guard<std::mutex> _lk(mEmbeddedMu);
+    // Caller (TerminalSnapshot::update / liveSegmentHitTest) already
+    // holds mMutex, so direct map iteration is race-free.
     for (const auto& [lineId, em] : mEmbedded) {
         out.push_back({lineId, em->height()});
     }
@@ -774,7 +787,9 @@ bool Terminal::liveSegmentHitTest(double cellRelX, double cellRelY,
     // render-thread snapshot builds. Can't read snap.segments from main
     // thread without racing snap.update(), so we recompute from live
     // state — the helper shares the build logic so both paths agree on
-    // which anchors are visible and in what order.
+    // which anchors are visible and in what order. Lock mMutex for the
+    // viewport + document + embedded-map reads.
+    std::lock_guard<std::recursive_mutex> _lk(mutex());
     auto hits = collectVisibleAnchors(*this, viewportOffset(), height());
     if (hits.empty()) return false;
 

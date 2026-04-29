@@ -226,11 +226,13 @@ void PlatformDawn::executeAction(const Action::Any& action)
         },
         [&](const Action::Copy&) {
             Terminal* term = activeTerm();
-            if (term && term->hasSelection()) {
-                std::string text = term->selectedText();
-                if (!text.empty())
-                    if (window_) window_->setClipboard(text);
+            if (!term) return;
+            std::string text;
+            {
+                std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+                if (term->hasSelection()) text = term->selectedText();
             }
+            if (!text.empty() && window_) window_->setClipboard(text);
         },
         [&](const Action::Paste&) {
             Terminal* term = activeTerm();
@@ -317,8 +319,8 @@ void PlatformDawn::executeAction(const Action::Any& action)
 
             // Embeddeds cycled in ascending lineId order (creation order).
             // unordered_map iteration is unstable so gather + sort.
-            // forEachEmbedded locks mEmbeddedMu so the parse-worker
-            // eviction callback can't mutate the map mid-iteration.
+            // forEachEmbedded reads the lock-free embedded snapshot
+            // (atomically republished on every map mutation).
             std::vector<uint64_t> embeddedIds;
             fp->forEachEmbedded([&embeddedIds](uint64_t lineId, Terminal&) {
                 embeddedIds.push_back(lineId);

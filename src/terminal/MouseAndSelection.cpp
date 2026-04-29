@@ -371,6 +371,10 @@ void TerminalEmulator::clearSelection()
 std::optional<TerminalEmulator::ResolvedSelection>
 TerminalEmulator::resolveSelection() const
 {
+    // Selection state + document line-id index are parse-mutated.
+    // Recursive — outer mMutex holders (selectedText / mouse handlers
+    // etc.) re-enter without deadlock.
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (!mSelection.active && !mSelection.valid) return std::nullopt;
     int startFirst = mDocument.firstAbsOfLine(mSelection.startLineId);
     int endFirst   = mDocument.firstAbsOfLine(mSelection.endLineId);
@@ -455,6 +459,7 @@ TerminalEmulator::resolveSelection() const
 
 bool TerminalEmulator::hasSelection() const
 {
+    // resolveSelection() takes mMutex.
     return resolveSelection().has_value();
 }
 
@@ -488,6 +493,10 @@ bool TerminalEmulator::isCellSelected(int col, int absRow) const
 
 std::string TerminalEmulator::selectedText() const
 {
+    // resolveSelection() locks; we then read document/grid contents
+    // which are parse-mutated. Take the lock for the entire walk to
+    // get a consistent snapshot.
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     auto resOpt = resolveSelection();
     if (!resOpt) return {};
     const auto& res = *resOpt;

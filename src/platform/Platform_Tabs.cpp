@@ -712,7 +712,12 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             eventLoop_->post([this, paneId] {
                 Terminal* te = scriptEngine_.terminal(paneId);
                 if (!te) return;
-                scriptEngine_.notifyCommandSelectionChanged(paneId, te->selectedCommandId());
+                std::optional<uint64_t> id;
+                {
+                    std::lock_guard<std::recursive_mutex> _lk(te->mutex());
+                    id = te->selectedCommandId();
+                }
+                scriptEngine_.notifyCommandSelectionChanged(paneId, id);
             });
             break;
         }

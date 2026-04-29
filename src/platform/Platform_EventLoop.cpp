@@ -192,6 +192,11 @@ int PlatformDawn::exec()
         };
         scbs.paneSetSelectedCommand = [this](Script::PaneId paneId, std::optional<uint64_t> id) -> bool {
             if (Terminal* p = scriptEngine_.terminal(paneId)) {
+                // setSelectedCommand + the post-condition read need to
+                // be atomic against the parser (which may evict the
+                // selected command via alt-screen or RIS between the
+                // two calls). Single recursive lock covers both.
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
                 p->setSelectedCommand(id);
                 return !id.has_value() || p->selectedCommandId() == id;
             }
@@ -398,7 +403,12 @@ int PlatformDawn::exec()
 
             if (wasPopupFocused && p->popups().empty())
                 p->focusEvent(true);
-            p->grid().markAllDirty();
+            // grid() is parse-mutated; markAllDirty races with parser
+            // unless we hold mMutex.
+            {
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
+                p->grid().markAllDirty();
+            }
             std::string key = popupStateKey(paneId, popupId);
             renderThread_->pending().structuralOps.push_back(
                 PendingMutations::DestroyPopupState{paneId, popupId});
@@ -410,7 +420,10 @@ int PlatformDawn::exec()
                                    int x, int y, int w, int h) -> bool {
             Terminal* p = scriptEngine_.terminal(paneId);
             if (!p || !p->resizePopup(popupId, x, y, w, h)) return false;
-            p->grid().markAllDirty();
+            {
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
+                p->grid().markAllDirty();
+            }
             renderThread_->pending().structuralOps.push_back(
                 PendingMutations::ResizePopupState{paneId, popupId, w, h});
             std::string key = popupStateKey(paneId, popupId);

@@ -93,30 +93,36 @@ public:
     TerminalEmulator(TerminalCallbacks callbacks);
     virtual ~TerminalEmulator();
 
-    // Serializes mutation vs. render-thread snapshot capture. Recursive because
-    // script callbacks fired synchronously from inside injectData (OSC
-    // handlers, action dispatch) can re-enter mutation APIs on the same
-    // thread. Using std::recursive_mutex avoids deadlock in that path.
+    // The single mutex protecting all parse-mutated terminal state
+    // (grid, document, cursor, mState fields, command ring, selection,
+    // hyperlink registry, title/icon stacks, embeddeds, ...).
+    // Recursive because script callbacks fired synchronously from
+    // inside injectData (OSC handlers, action dispatch) can re-enter
+    // mutation APIs on the same thread.
     //
     // Held by:
     //   * The parse worker thread for the entirety of injectData
-    //     (TerminalEmulator.cpp:692). Worker batches are typically
-    //     microseconds but can run into the millisecond range under a
-    //     flooding producer.
+    //     (TerminalEmulator.cpp:injectData). Worker batches are
+    //     typically microseconds but can run into the millisecond
+    //     range under a flooding producer.
     //   * The render thread during snapshot capture
-    //     (TerminalSnapshot.cpp:53), briefly.
+    //     (TerminalSnapshot::update), briefly.
     //   * Main-thread one-off readers (mouse/scroll handlers, JS
-    //     getters, action dispatch, OSC reply construction). These
-    //     accept the brief block as the cost of consistent reads of
-    //     parse-mutated state (cursor, grid contents, document line
-    //     ids, etc.).
+    //     getters, action dispatch, OSC reply construction).
     //
-    // **Hot main-thread paths must not take this mutex.** In particular
-    // buildRenderFrameState, eviction polling, and per-tick onTick
-    // bookkeeping use atomic snapshots or dedicated small mutexes
-    // (mEmbeddedMu, mEvictedEmbeddedsMu, mUsingAltScreenAtomic,
-    // mFocusedEmbeddedLineId) so that they never serialize on a
-    // long-running parse batch.
+    // **Hot main-thread paths must not take this mutex.** Per-tick
+    // consumers (PlatformDawn::buildRenderFrameState, onBlinkTick)
+    // read lock-free atomic snapshots instead:
+    //   * usingAltScreen() — atomic<bool>
+    //   * currentTitle() / currentIcon() — atomic<shared_ptr<const string>>
+    //   * focusedEmbeddedLineId() — atomic<uint64_t>
+    //   * embeddedSnapshot() (Terminal) — atomic<shared_ptr<vector<...>>>
+    //   * hasEvictedEmbeddeds() — atomic<bool>
+    // Mutators publish a fresh snapshot via publishLiveView() at the
+    // end of each parse batch / mutation; consumers atomic-load.
+    //
+    // The only other lock in this subsystem is Terminal::mReadBufferMutex
+    // which is leaf-level (never held while taking another lock).
     std::recursive_mutex& mutex() const { return mMutex; }
 
     // DECSCUSR cursor shapes
@@ -385,11 +391,19 @@ public:
     // fully popped away). Push duplicates the current top and is a no-op on
     // an empty stack, so stack-non-empty is equivalent to "app has set a
     // title at some point and hasn't fully revoked it."
+    // Title/icon stacks are mutated by the parse worker (OSC 2/0/1,
+    // XTWINOPS push/pop) under mMutex; per-tick tab-bar title/icon
+    // resolution in buildRenderFrameState reads via these accessors,
+    // which atomic-load a shared_ptr to the current top — no mutex
+    // contention with the worker. nullopt = no title set; the
+    // shared_ptr is null when the stack is empty.
     std::optional<std::string> currentTitle() const {
-        return mTitleStack.empty() ? std::optional<std::string>{} : mTitleStack.back();
+        if (auto p = mTitleAtomic.load(std::memory_order_acquire)) return *p;
+        return std::nullopt;
     }
     std::optional<std::string> currentIcon() const {
-        return mIconStack.empty() ? std::optional<std::string>{} : mIconStack.back();
+        if (auto p = mIconAtomic.load(std::memory_order_acquire)) return *p;
+        return std::nullopt;
     }
     bool syncOutputActive() const { return mState->syncOutput; }
     uint8_t kittyFlags() const { return mKittyFlags; }
@@ -680,6 +694,14 @@ private:
     void processStringSequence();
     void processDCS();
     void processOSC_Title(std::string_view text, bool setTitle);
+
+    // Republish mTitleAtomic / mIconAtomic from the current top of
+    // mTitleStack / mIconStack. Caller must hold mMutex (or otherwise
+    // be the only writer to the stack — the parser path always does).
+    // Cheap: at most one shared_ptr<string> allocation per call;
+    // skipped entirely if the new value matches the published one.
+    void publishTitleAtomic();
+    void publishIconAtomic();
     void processOSC_Color(int oscNum, std::string_view payload);
     void processOSC_Palette(std::string_view payload);
     void processOSC_PaletteReset(std::string_view payload);
@@ -835,13 +857,23 @@ private:
 
     // Title stack (XTWINOPS CSI 22/23 t + OSC 0/2)
     // Stack top is always the current title. Empty = no title set.
+    // Protected by mMutex. Lock-free read access for hot main-thread
+    // paths goes through mTitleAtomic / mIconAtomic which are
+    // republished from publishTitleAtomic() / publishIconAtomic()
+    // whenever the stack mutates.
     std::vector<std::string> mTitleStack;
     static constexpr size_t TITLE_STACK_MAX = 10;
 
-    // Icon stack (XTWINOPS CSI 22/23 t + OSC 1)
-    // Stack top is always the current icon. Empty = no icon set.
+    // Icon stack (XTWINOPS CSI 22/23 t + OSC 1).
     std::vector<std::string> mIconStack;
     static constexpr size_t ICON_STACK_MAX = 10;
+
+    // Lock-free shadow of the current title-stack top (or nullptr if
+    // the stack is empty). Loaded via currentTitle() on the per-tick
+    // path. publishTitleAtomic() rebuilds and atomic-stores on every
+    // title mutation. Same shape for icon.
+    std::atomic<std::shared_ptr<const std::string>> mTitleAtomic;
+    std::atomic<std::shared_ptr<const std::string>> mIconAtomic;
 
     // Desktop notification accumulator (OSC 99)
     std::string mNotifyId;

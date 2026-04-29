@@ -227,11 +227,12 @@ void PlatformDawn::buildRenderFrameState()
             // parent Document each frame. Skipped on alt-screen.
             rpi.focusedEmbeddedLineId = pane->focusedEmbeddedLineId();
             rpi.onAltScreen = pane->usingAltScreen();
-            // forEachEmbedded() locks mEmbeddedMu so the parse-worker
-            // eviction callback can't yank an entry mid-iteration.
-            // The raw `term` pointer captured into RenderPaneEmbeddedInfo
-            // is valid because the map entry stays put past this lock —
-            // mEmbeddedMu is also taken on extract/destroy.
+            // forEachEmbedded() reads the lock-free atomic snapshot of
+            // mEmbedded that the parser/main-thread mutators republish
+            // on every change. The raw `term` pointers in the snapshot
+            // are kept alive by the platform graveyard, so they're
+            // safe to drop into RenderPaneEmbeddedInfo even if the
+            // entry is extracted before the next frame.
             uint64_t focusedLine = rpi.focusedEmbeddedLineId;
             pane->forEachEmbedded([&rpi, focusedLine](uint64_t lineId, Terminal& em) {
                 RenderPaneEmbeddedInfo ei;
@@ -1036,7 +1037,12 @@ void PlatformDawn::onBlinkTick()
     auto tab = activeTab();
     if (!tab) return;
     auto wantsRedraw = [](TerminalEmulator* term) {
-        return term && term->cursorBlinking() && term->cursorVisible();
+        if (!term) return false;
+        // Cursor visibility / blink mode are parse-mutated. Lock for
+        // a consistent pair-read; the blink tick fires at the cursor
+        // blink rate (typically 2 Hz) so the brief block is fine.
+        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+        return term->cursorBlinking() && term->cursorVisible();
     };
     for (Terminal* panePtr : scriptEngine_.panesInSubtree(*tab)) {
         if (wantsRedraw(panePtr)) {

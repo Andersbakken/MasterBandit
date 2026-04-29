@@ -102,6 +102,35 @@ TerminalEmulator::~TerminalEmulator()
 {
 }
 
+void TerminalEmulator::publishTitleAtomic()
+{
+    // Caller already holds mMutex (parser path) so the read of
+    // mTitleStack here is race-free against the worker.
+    if (mTitleStack.empty()) {
+        mTitleAtomic.store(nullptr, std::memory_order_release);
+        return;
+    }
+    // Skip the allocation if the published string already matches.
+    if (auto cur = mTitleAtomic.load(std::memory_order_acquire);
+        cur && *cur == mTitleStack.back())
+        return;
+    mTitleAtomic.store(std::make_shared<const std::string>(mTitleStack.back()),
+                       std::memory_order_release);
+}
+
+void TerminalEmulator::publishIconAtomic()
+{
+    if (mIconStack.empty()) {
+        mIconAtomic.store(nullptr, std::memory_order_release);
+        return;
+    }
+    if (auto cur = mIconAtomic.load(std::memory_order_acquire);
+        cur && *cur == mIconStack.back())
+        return;
+    mIconAtomic.store(std::make_shared<const std::string>(mIconStack.back()),
+                      std::memory_order_release);
+}
+
 void TerminalEmulator::resetScrollback(int scrollbackLines)
 {
     mDocument = Document(mDocument.cols(), mDocument.rows(), scrollbackLines);
@@ -595,6 +624,9 @@ void TerminalEmulator::finishCommand(int absRow, int col, std::optional<int> exi
 
 std::string TerminalEmulator::serializeScrollback() const
 {
+    // Lock for the duration of the walk: history rows / archive /
+    // viewport are all parse-mutated.
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     std::string result;
     int histSize = mDocument.historySize();
 
@@ -1596,19 +1628,27 @@ void TerminalEmulator::processCSI()
         if (*end == ';') ps = static_cast<int>(strtoul(end + 1, &end, 10));
         const bool doIcon  = (ps == 0 || ps == 1);
         const bool doTitle = (ps == 0 || ps == 2);
+        // Stack mutation runs under mMutex (held by injectData).
+        // Republish the lock-free title/icon atomics on each top change
+        // so per-tick consumers see the new value without locking.
         if (op == 22) {
-            if (doTitle && !mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX)
+            if (doTitle && !mTitleStack.empty() && mTitleStack.size() < TITLE_STACK_MAX) {
                 mTitleStack.push_back(mTitleStack.back());
-            if (doIcon && !mIconStack.empty() && mIconStack.size() < ICON_STACK_MAX)
+                // Top didn't change — atomic mirror is still correct.
+            }
+            if (doIcon && !mIconStack.empty() && mIconStack.size() < ICON_STACK_MAX) {
                 mIconStack.push_back(mIconStack.back());
+            }
         } else if (op == 23) {
             if (doTitle) {
                 if (mTitleStack.size() > 1) {
                     mTitleStack.pop_back();
+                    publishTitleAtomic();
                     if (mCallbacks.onTitleChanged)
                         mCallbacks.onTitleChanged(std::optional<std::string>(mTitleStack.back()));
                 } else if (!mTitleStack.empty()) {
                     mTitleStack.clear();
+                    publishTitleAtomic();
                     // nullopt: no title left on the stack — distinct from
                     // OSC 2 "" (which fires Some("")).
                     if (mCallbacks.onTitleChanged)
@@ -1618,10 +1658,12 @@ void TerminalEmulator::processCSI()
             if (doIcon) {
                 if (mIconStack.size() > 1) {
                     mIconStack.pop_back();
+                    publishIconAtomic();
                     if (mCallbacks.onIconChanged)
                         mCallbacks.onIconChanged(std::optional<std::string>(mIconStack.back()));
                 } else if (!mIconStack.empty()) {
                     mIconStack.clear();
+                    publishIconAtomic();
                     if (mCallbacks.onIconChanged)
                         mCallbacks.onIconChanged(std::nullopt);
                 }

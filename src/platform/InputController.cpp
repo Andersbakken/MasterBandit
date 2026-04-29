@@ -142,16 +142,21 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     // OSC 133 highlight: Escape (no modifiers) clears the selected command
     // region and is swallowed. Only takes effect while a command is selected,
     // so normal Escape delivery to TUI apps is preserved at other times.
-    // selectedCommandId() reads parse-mutated state — lock briefly.
-    bool hasSelectedCmd;
-    {
-        std::lock_guard<std::recursive_mutex> _lk(term->mutex());
-        hasSelectedCmd = term->selectedCommandId().has_value();
-    }
+    // selectedCommandId() reads parse-mutated state — only acquire the
+    // per-Terminal lock when the cheap key/mods test already matches.
+    // Otherwise every keystroke pays the lock-wait of the parser, which
+    // can be hundreds of ms during a flood.
     if (action != static_cast<int>(KeyAction_Release) &&
-        k == Key_Escape && mods == 0 && hasSelectedCmd) {
-        term->setSelectedCommand(std::nullopt);
-        return;
+        k == Key_Escape && mods == 0) {
+        bool hasSelectedCmd;
+        {
+            std::lock_guard<std::recursive_mutex> _lk(term->mutex());
+            hasSelectedCmd = term->selectedCommandId().has_value();
+        }
+        if (hasSelectedCmd) {
+            term->setSelectedCommand(std::nullopt);
+            return;
+        }
     }
 
     // Esc defocus for embedded terminals. Applets use `q` / Ctrl-C for their

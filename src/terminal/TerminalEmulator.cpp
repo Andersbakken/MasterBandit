@@ -342,6 +342,14 @@ void TerminalEmulator::scrollViewport(int delta)
 
 void TerminalEmulator::resetViewport()
 {
+    // Fast no-op: every keypress calls this; on the typical case
+    // (viewport already at live, offset == 0) avoid acquiring mMutex
+    // entirely. Reading mViewportOffset without the lock is racy in
+    // the strict sense but the no-op miss is harmless — the next
+    // mutator path that actually needs the reset will fall through
+    // to the locked branch. Without this, every keystroke pays the
+    // parser's lock-hold duration (hundreds of ms during a flood).
+    if (mViewportOffset == 0) return;
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (mViewportOffset != 0) {
         mViewportOffset = 0;

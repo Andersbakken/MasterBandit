@@ -280,8 +280,15 @@ private:
     // wezterm's 1 MiB socketpair). Re-armed by the main-thread
     // onTick when the buffer drops below kReadBufferLow.
     bool              mReadPaused { false };
-    static constexpr size_t kReadBufferHigh = 1024 * 1024; // 1 MiB
-    static constexpr size_t kReadBufferLow  = 256 * 1024;  // 256 KiB
+    // High/low watermarks tuned so a single parser apply holds
+    // mMutex for at most ~50 ms even at the worst observed parser
+    // throughput (~1 MB/s under sustained scrollback growth). Other
+    // threads wanting mMutex (input handlers, render snapshot,
+    // resize) will see at most that wait. Smaller values reduce
+    // worst-case latency further but pay more PTY-poll round-trips
+    // and slightly hurt throughput on bursty workloads.
+    static constexpr size_t kReadBufferHigh = 64 * 1024;   // 64 KiB
+    static constexpr size_t kReadBufferLow  = 16 * 1024;   // 16 KiB
 public:
     // Called by Platform on each main-thread tick. If the read
     // backpressure paused PTY reads, check whether the coalesce

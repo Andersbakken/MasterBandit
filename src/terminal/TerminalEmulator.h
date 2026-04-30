@@ -15,6 +15,7 @@
 #include <CellGrid.h>
 #include <Document.h>
 #include <InputTypes.h>
+#include <ParserAction.h>
 
 std::string toPrintable(const char *chars, int len);
 inline std::string toPrintable(const std::string &string)
@@ -710,6 +711,14 @@ private:
     bool mWasInStringSequence { false };
     static constexpr size_t MAX_STRING_SEQUENCE = 16 * 1024 * 1024; // 16 MB
 
+    // DEC mode 2026 (synchronized output) hold flag, owned by
+    // parseToActions. While set, the parser keeps appending actions to
+    // the caller's vector across reads; the caller defers applying
+    // them until the matching reset / RIS / SoftReset clears the flag.
+    // Gives tear-free TUI rendering — render thread never sees a
+    // partial sync block.
+    bool mHold { false };
+
     // Refactored to take parser-state as args so the eventual
     // parseToActions / applyActions split can call them without the
     // helpers reading mStringSequence / mStringSequenceType /
@@ -717,6 +726,16 @@ private:
     void processStringSequence(uint8_t kind, std::string_view body);
     void processDCS(std::string_view payload);
     void processOSC_Title(std::string_view text, bool setTitle);
+
+    // Decode `len` bytes of pty output into a sequence of Actions. No
+    // grid / mState / mDocument access — purely operates on parser-state
+    // member fields (mParserState, mUtf8Buffer, mEscapeBuffer,
+    // mStringSequence, mHold) plus the output vector. Designed to run
+    // without holding mMutex; under the threading model only the worker
+    // thread enters this. Returns the number of bytes consumed (== len
+    // unless mHold caused early return — currently always == len).
+    size_t parseToActions(const char* buf, size_t len,
+                          std::vector<ParserAction::Action>& out);
 
     // Republish mTitleAtomic / mIconAtomic from the current top of
     // mTitleStack / mIconStack. Caller must hold mMutex (parser

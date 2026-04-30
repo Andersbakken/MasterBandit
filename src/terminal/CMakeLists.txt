@@ -1,6 +1,7 @@
 add_library(terminal OBJECT
     Terminal.cpp
     TerminalEmulator.cpp
+    ParseToActions.cpp
     Keyboard.cpp
     MouseAndSelection.cpp
     SGR.cpp

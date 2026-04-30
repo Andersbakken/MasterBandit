@@ -741,7 +741,7 @@ void TerminalEmulator::lineFeed()
     }
 }
 
-size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t /*byteBudget*/)
+size_t TerminalEmulator::injectData(const char* buf, size_t len_)
 {
     if (sLog().should_log(spdlog::level::debug))
         sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));

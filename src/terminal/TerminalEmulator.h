@@ -581,7 +581,7 @@ public:
     // byteBudget if a long escape sequence (DCS image data, OSC
     // payload) straddles the boundary — that's acceptable since the
     // boundary is just an advisory yield point.
-    size_t injectData(const char* data, size_t len, size_t byteBudget = 0);
+    size_t injectData(const char* data, size_t len);
 
     void setOSCCallback(std::function<void(int, std::string_view)> cb)
     {

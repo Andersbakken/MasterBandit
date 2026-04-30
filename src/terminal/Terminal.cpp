@@ -443,7 +443,7 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
             // a waiter sees mMutex free during the entire 3 ms
             // outer coalesce window.
             const uint64_t bt0 = obs::now_us();
-            (void)injectData(data, size); // budget=0 → drain entire buffer
+            (void)injectData(data, size);
             if (auto dt = obs::now_us() - bt0; dt > 5000)
                 spdlog::warn("[TIMING] queueParse: {} bytes in {} us",
                              size, dt);

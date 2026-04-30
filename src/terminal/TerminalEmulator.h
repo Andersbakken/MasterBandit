@@ -737,6 +737,23 @@ private:
     size_t parseToActions(const char* buf, size_t len,
                           std::vector<ParserAction::Action>& out);
 
+    // Apply the actions in `actions` to grid / mDocument / mState.
+    // Caller must hold mMutex. Drains the vector by std::visit on each
+    // action; helpers below do the per-variant work.
+    void applyActions(std::vector<ParserAction::Action>& actions);
+
+    // Per-variant apply helpers — port of the inline mutation logic
+    // that lived inside injectData. writePrintable handles charset
+    // translation, grapheme cluster combining, wide-char placement,
+    // cursor advance and wrap. applyControl handles C0 (CR/LF/BS/HT/
+    // VT/FF/BEL/SO/SI). applyEsc handles ESC X (RIS, DECSC, DECRC, IND,
+    // NEL, HTS, RI, VB, DECKPAM, DECKPNM). applyDesignateCharset
+    // mutates mState->charsetG0 or charsetG1.
+    void writePrintable(char32_t cp);
+    void applyControl(ParserAction::ControlCode code);
+    void applyEsc(char finalByte);
+    void applyDesignateCharset(char slot, char charset);
+
     // Republish mTitleAtomic / mIconAtomic from the current top of
     // mTitleStack / mIconStack. Caller must hold mMutex (parser
     // path always does). Skipped when the new value matches the

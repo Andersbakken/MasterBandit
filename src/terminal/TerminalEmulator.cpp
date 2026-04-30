@@ -1265,6 +1265,345 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBud
     return static_cast<size_t>(i);
 }
 
+// ===== Apply phase =====
+//
+// applyActions walks the action list (produced by parseToActions) and
+// drives grid / mDocument / mState mutations through per-variant
+// helpers. Every helper here is a direct port of the inline mutation
+// logic that lived inside injectData. Until phase 5 wires it in, this
+// is dead code.
+
+void TerminalEmulator::writePrintable(char32_t cp)
+{
+    IGrid& g = grid();
+
+    if (cp < 0x80) {
+        // Fast ASCII path. Charset translation only applies to ASCII —
+        // DEC graphics maps 0x5F..0x7E and the UK charset maps '#'.
+        // ASCII codepoints always start a new grapheme cluster and are
+        // always single-width, so we can skip wcwidth + grapheme break.
+        Charset active = mState->shiftOut ? mState->charsetG1 : mState->charsetG0;
+        if (active == CharsetDECGraphics && cp >= 0x5F && cp <= 0x7E) {
+            cp = kDecGraphics[cp - 0x5F];
+        } else if (active == CharsetUK && cp == '#') {
+            cp = 0x00A3; // £
+        }
+        mLastPrintedChar = cp;
+        mGraphemeState = 0;
+        if (mState->wrapPending) {
+            advanceCursorToNewLine();
+            mState->wrapPending = false;
+        }
+        if (mState->cursorX >= 0 && mState->cursorX < mWidth &&
+            mState->cursorY >= 0 && mState->cursorY < mHeight) {
+            if (mState->insertMode)
+                g.insertChars(mState->cursorY, mState->cursorX, 1);
+            mLastPrintedX = mState->cursorX;
+            mLastPrintedY = mState->cursorY;
+            g.cell(mState->cursorX, mState->cursorY) = Cell{cp, mState->currentAttrs};
+            g.clearExtra(mState->cursorX, mState->cursorY);
+            if (mActiveHyperlinkId || mState->currentUnderlineColor) {
+                CellExtra& ex = g.ensureExtra(mState->cursorX, mState->cursorY);
+                ex.hyperlinkId = mActiveHyperlinkId;
+                ex.underlineColor = mState->currentUnderlineColor;
+            }
+            g.markRowDirty(mState->cursorY);
+        }
+        mState->cursorX++;
+        if (mState->cursorX >= mWidth) {
+            mState->cursorX = mWidth - 1;
+            if (mState->autoWrap) mState->wrapPending = true;
+        }
+        return;
+    }
+
+    // Full path for non-ASCII codepoints. Direct port of the InUtf8
+    // print branch in injectData.
+    int w = wcwidth(cp);
+    if (w < 0) w = 0;
+
+    if (mLastPrintedChar != 0 && mLastPrintedX >= 0 && mLastPrintedY >= 0 &&
+        mLastPrintedY < mHeight && mLastPrintedX < mWidth &&
+        !grapheme_is_character_break(mLastPrintedChar, cp, &mGraphemeState)) {
+        // Continuation of an existing grapheme cluster — append to the
+        // base cell's combining-codepoints list.
+        CellExtra& ex = g.ensureExtra(mLastPrintedX, mLastPrintedY);
+        ex.combiningCps.push_back(cp);
+
+        Cell& prevCell = g.cell(mLastPrintedX, mLastPrintedY);
+        bool shouldBeWide = isWidenedEmoji(prevCell.wc) || cp == 0xFE0F;
+        if (shouldBeWide && !prevCell.attrs.wide() &&
+            mLastPrintedY == mState->cursorY && !mState->wrapPending &&
+            mState->cursorX < mWidth) {
+            prevCell.attrs.setWide(true);
+            CellAttrs spacerAttrs = mState->currentAttrs;
+            spacerAttrs.setWideSpacer(true);
+            g.cell(mState->cursorX, mState->cursorY) = Cell{0, spacerAttrs};
+            g.clearExtra(mState->cursorX, mState->cursorY);
+            mState->cursorX++;
+            if (mState->cursorX >= mWidth) {
+                mState->cursorX = mWidth - 1;
+                if (mState->autoWrap) mState->wrapPending = true;
+            }
+        }
+
+        mLastPrintedChar = cp;
+        g.markRowDirty(mLastPrintedY);
+    } else if (w == 0) {
+        // Standalone combining mark — nothing to display.
+        mGraphemeState = 0;
+    } else if (w == 2) {
+        mLastPrintedChar = cp;
+        mGraphemeState = 0;
+        if (mState->wrapPending) {
+            advanceCursorToNewLine();
+            mState->wrapPending = false;
+        }
+        if (mState->cursorX + 1 >= mWidth) {
+            if (mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                g.cell(mState->cursorX, mState->cursorY) = Cell{' ', mState->currentAttrs};
+                g.markRowDirty(mState->cursorY);
+            }
+            advanceCursorToNewLine();
+        }
+        if (mState->cursorX >= 0 && mState->cursorX + 1 < mWidth &&
+            mState->cursorY >= 0 && mState->cursorY < mHeight) {
+            if (mState->insertMode) g.insertChars(mState->cursorY, mState->cursorX, 2);
+            mLastPrintedX = mState->cursorX;
+            mLastPrintedY = mState->cursorY;
+            CellAttrs wideAttrs = mState->currentAttrs;
+            wideAttrs.setWide(true);
+            g.cell(mState->cursorX, mState->cursorY) = Cell{cp, wideAttrs};
+            g.clearExtra(mState->cursorX, mState->cursorY);
+            if (mActiveHyperlinkId || mState->currentUnderlineColor) {
+                CellExtra& ex = g.ensureExtra(mState->cursorX, mState->cursorY);
+                ex.hyperlinkId = mActiveHyperlinkId;
+                ex.underlineColor = mState->currentUnderlineColor;
+            }
+            CellAttrs spacerAttrs = mState->currentAttrs;
+            spacerAttrs.setWideSpacer(true);
+            g.cell(mState->cursorX + 1, mState->cursorY) = Cell{0, spacerAttrs};
+            g.clearExtra(mState->cursorX + 1, mState->cursorY);
+            g.markRowDirty(mState->cursorY);
+        }
+        mState->cursorX += 2;
+        if (mState->cursorX >= mWidth) {
+            mState->cursorX = mWidth - 1;
+            if (mState->autoWrap) mState->wrapPending = true;
+        }
+    } else {
+        mLastPrintedChar = cp;
+        mGraphemeState = 0;
+        if (mState->wrapPending) {
+            advanceCursorToNewLine();
+            mState->wrapPending = false;
+        }
+        if (mState->cursorX >= 0 && mState->cursorX < mWidth &&
+            mState->cursorY >= 0 && mState->cursorY < mHeight) {
+            if (mState->insertMode) g.insertChars(mState->cursorY, mState->cursorX, 1);
+            mLastPrintedX = mState->cursorX;
+            mLastPrintedY = mState->cursorY;
+            g.cell(mState->cursorX, mState->cursorY) = Cell{cp, mState->currentAttrs};
+            g.clearExtra(mState->cursorX, mState->cursorY);
+            if (mActiveHyperlinkId || mState->currentUnderlineColor) {
+                CellExtra& ex = g.ensureExtra(mState->cursorX, mState->cursorY);
+                ex.hyperlinkId = mActiveHyperlinkId;
+                ex.underlineColor = mState->currentUnderlineColor;
+            }
+            g.markRowDirty(mState->cursorY);
+        }
+        mState->cursorX++;
+        if (mState->cursorX >= mWidth) {
+            mState->cursorX = mWidth - 1;
+            if (mState->autoWrap) mState->wrapPending = true;
+        }
+    }
+}
+
+void TerminalEmulator::applyControl(ParserAction::ControlCode code)
+{
+    using CC = ParserAction::ControlCode;
+    switch (code) {
+    case CC::LF:
+    case CC::VT:
+    case CC::FF:
+        mState->wrapPending = false;
+        lineFeed();
+        break;
+    case CC::CR:
+        mState->cursorX = 0;
+        mState->wrapPending = false;
+        if (!mUsingAltScreen)
+            mDocument.setRowContinued(mState->cursorY, false);
+        break;
+    case CC::BS:
+        if (mState->cursorX > 0)
+            --mState->cursorX;
+        mState->wrapPending = false;
+        break;
+    case CC::HT: {
+        int nextTab = mWidth - 1;
+        for (int x = mState->cursorX + 1; x < mWidth; ++x) {
+            if (mTabStops[x]) { nextTab = x; break; }
+        }
+        mState->cursorX = nextTab;
+        break;
+    }
+    case CC::BEL:
+        // No visible effect; visible bell is dispatched via VB EscSimple.
+        break;
+    case CC::SO:
+        mState->shiftOut = true;
+        break;
+    case CC::SI:
+        mState->shiftOut = false;
+        break;
+    }
+}
+
+void TerminalEmulator::applyEsc(char finalByte)
+{
+    IGrid& g = grid();
+    switch (finalByte) {
+    case RIS:
+        // Full reset to initial state. Direct port of the inline RIS
+        // handler in injectData.
+        onFullReset();
+        resetToDefault(mMainState);
+        resetToDefault(mAltState);
+        mState = &mMainState;
+        if (mUsingAltScreen) {
+            mUsingAltScreen = false;
+            mUsingAltScreenAtomic.store(false, std::memory_order_release);
+            mDocument.markAllDirty();
+        }
+        mImageRegistry.clear();
+        mNextImageId = 1;
+        mLastKittyImageId = 0;
+        mDocument.clearHistory();
+        mPointerShapeStackMain.clear();
+        mPointerShapeStackAlt.clear();
+        notifyPointerShapeChanged();
+        mDocument.markAllDirty();
+        mAltGrid.markAllDirty();
+        for (int r = 0; r < mDocument.rows(); ++r) mDocument.clearRow(r);
+        for (int r = 0; r < mAltGrid.rows(); ++r) mAltGrid.clearRow(r);
+        clearSelection();
+        mKittyFlags = 0;
+        mKittyStackDepthMain = 0;
+        mKittyStackDepthAlt = 0;
+        memset(mKittyStackMain, 0, sizeof(mKittyStackMain));
+        memset(mKittyStackAlt, 0, sizeof(mKittyStackAlt));
+        mLastPrintedChar = 0;
+        mLastPrintedX = -1;
+        mLastPrintedY = -1;
+        mGraphemeState = 0;
+        mViewportOffset = 0;
+        std::fill(mTabStops.begin(), mTabStops.end(), 0);
+        for (int x = 0; x < mWidth; x += 8) mTabStops[x] = 1;
+        break;
+    case VB:
+        if (mCallbacks.event)
+            mCallbacks.event(this, static_cast<int>(VisibleBell), nullptr);
+        break;
+    case DECKPAM:
+        mState->keypadMode = true;
+        break;
+    case DECKPNM:
+        mState->keypadMode = false;
+        break;
+    case DECSC:
+        mState->savedCursorX = mState->cursorX;
+        mState->savedCursorY = mState->cursorY;
+        mState->savedAttrs = mState->currentAttrs;
+        mState->savedWrapPending = mState->wrapPending;
+        mState->savedCharsetG0 = mState->charsetG0;
+        mState->savedCharsetG1 = mState->charsetG1;
+        mState->savedShiftOut = mState->shiftOut;
+        mState->savedOriginMode = mState->originMode;
+        break;
+    case DECRC:
+        mState->cursorX = mState->savedCursorX;
+        mState->cursorY = mState->savedCursorY;
+        mState->currentAttrs = mState->savedAttrs;
+        mState->wrapPending = mState->savedWrapPending;
+        mState->charsetG0 = mState->savedCharsetG0;
+        mState->charsetG1 = mState->savedCharsetG1;
+        mState->shiftOut = mState->savedShiftOut;
+        mState->originMode = mState->savedOriginMode;
+        break;
+    case IND:
+        mState->wrapPending = false;
+        lineFeed();
+        break;
+    case HTS:
+        if (mState->cursorX >= 0 && mState->cursorX < static_cast<int>(mTabStops.size()))
+            mTabStops[mState->cursorX] = 1;
+        break;
+    case NEL:
+        mState->wrapPending = false;
+        mState->cursorX = 0;
+        if (mState->cursorY == mState->scrollBottom - 1) {
+            scrollUpInRegion(1);
+        } else if (mState->cursorY < mHeight - 1) {
+            mState->cursorY++;
+        }
+        if (!mUsingAltScreen) {
+            if (mState->cursorY > 0)
+                mDocument.setRowContinued(mState->cursorY - 1, false);
+            mDocument.setRowContinued(mState->cursorY, false);
+        }
+        break;
+    case RI:
+        mState->wrapPending = false;
+        if (mState->cursorY == mState->scrollTop) {
+            g.scrollDown(mState->scrollTop, mState->scrollBottom, 1);
+        } else if (mState->cursorY > 0) {
+            mState->cursorY--;
+        }
+        break;
+    default:
+        sLog().error("applyEsc: unknown final byte {:#04x}",
+                     static_cast<unsigned char>(finalByte));
+        break;
+    }
+}
+
+void TerminalEmulator::applyDesignateCharset(char slot, char charset)
+{
+    Charset& target = (slot == '(') ? mState->charsetG0 : mState->charsetG1;
+    switch (charset) {
+    case '0': target = CharsetDECGraphics; break;
+    case 'A': target = CharsetUK; break;
+    case 'B': target = CharsetASCII; break;
+    default:  target = CharsetASCII; break;
+    }
+}
+
+void TerminalEmulator::applyActions(std::vector<ParserAction::Action>& actions)
+{
+    for (auto& a : actions) {
+        std::visit([this](auto&& x) {
+            using T = std::decay_t<decltype(x)>;
+            if constexpr (std::is_same_v<T, ParserAction::Print>) {
+                writePrintable(x.cp);
+            } else if constexpr (std::is_same_v<T, ParserAction::PrintString>) {
+                for (char32_t cp : x.cps) writePrintable(cp);
+            } else if constexpr (std::is_same_v<T, ParserAction::Control>) {
+                applyControl(x.code);
+            } else if constexpr (std::is_same_v<T, ParserAction::EscSimple>) {
+                applyEsc(x.finalByte);
+            } else if constexpr (std::is_same_v<T, ParserAction::DesignateCharset>) {
+                applyDesignateCharset(x.slot, x.charset);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ParserAction::CSI>>) {
+                processCSI(x->buf.data(), x->len);
+            } else if constexpr (std::is_same_v<T, ParserAction::StringSequence>) {
+                processStringSequence(x.kind, x.payload);
+            }
+        }, a);
+    }
+}
+
 void TerminalEmulator::processCSI(const char* buf, int len)
 {
     assert(mParserState == InEscape);

@@ -573,8 +573,12 @@ public:
     // ParserAction::Action under mParseStateMutex (no grid/mState/
     // mDocument access), then applyActions drains the vector under
     // mMutex. Lock ordering is mParseStateMutex first, then mMutex —
-    // callers that already hold mMutex must use applyControl/
-    // applyEsc/applyDesignateCharset directly instead of injectData.
+    // callers that already hold mMutex must NOT call injectData,
+    // because the inner mParseStateMutex acquisition would establish
+    // the reverse order and risk deadlock against a concurrent
+    // injectData on another thread. Such callers should reach for the
+    // protected applyControl helper instead (see Terminal::
+    // createEmbedded).
     size_t injectData(const char* data, size_t len);
 
     void setOSCCallback(std::function<void(int, std::string_view)> cb)

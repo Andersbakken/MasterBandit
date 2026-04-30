@@ -369,27 +369,18 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
     }
 
     submit([this] {
-        // Worker thread. Two nested loops:
+        // Worker thread. Loops draining mReadCoalesceBuffer until it
+        // stays empty across one coalesce window. Each iteration calls
+        // injectData on the swapped buffer; injectData internally runs
+        // parseToActions under mParseStateMutex (lock-free wrt mMutex)
+        // and applyActions under mMutex.
         //
-        //   outer: drain mReadCoalesceBuffer until it stays empty
-        //          across one coalesce window.
-        //   inner: parse the swapped buffer in budgeted chunks,
-        //          releasing mMutex between chunks so other threads
-        //          (renderer, main-thread one-off readers, the next
-        //          tick's onTick path) can acquire it.
-        //
-        // The coalesce wait at the top of the outer loop matches
-        // wezterm's mux_output_parser_coalesce_delay_ms (3 ms): we
+        // The coalesce wait at the top matches the 3 ms window: we
         // wait briefly for more bytes to accumulate before grabbing
-        // mMutex, so a flooded producer's lock-acquisition rate is
-        // bounded to ~1/3ms ≈ 330 Hz per Terminal regardless of the
-        // raw byte rate.
+        // the buffer, so a flooded producer's parse-acquisition rate
+        // is bounded to ~1/3ms ≈ 330 Hz per Terminal regardless of
+        // the raw byte rate.
         constexpr auto kCoalesceWindow = std::chrono::milliseconds(3);
-        // Per-chunk byte budget. Tuned for a parse-time budget of
-        // roughly 1 ms on plain text at the codebase's measured
-        // ~3.5 MB/s parser throughput, so a chunk holds the lock
-        // for approximately one millisecond before yielding.
-        constexpr size_t kParseChunkBudget = 4096;
 
         bool firstIteration = true;
         for (;;) {
@@ -431,17 +422,11 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
                 size = buf.size();
             }
 
-            // Apply the whole batch in one injectData call. Holding
-            // mMutex for the full apply (rather than chunking with
-            // mid-apply releases) matches wezterm's pattern: the
-            // outer 3 ms coalesce is what bounds how often we
-            // acquire mMutex; once acquired, we run to completion.
-            // Mid-apply chunking caused observed waiter starvation
-            // because std::recursive_mutex on Linux has no fairness
-            // guarantee — the parser would re-acquire faster than a
-            // separate-CPU waiter could wake. With one-shot apply,
-            // a waiter sees mMutex free during the entire 3 ms
-            // outer coalesce window.
+            // Apply the whole batch in one injectData call. The 3 ms
+            // outer coalesce bounds how often we acquire mMutex;
+            // once acquired (inside injectData::applyActions), we run
+            // to completion. parseToActions runs without mMutex —
+            // render thread can read concurrently with decode.
             const uint64_t bt0 = obs::now_us();
             (void)injectData(data, size);
             if (auto dt = obs::now_us() - bt0; dt > 5000)
@@ -704,8 +689,7 @@ Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
     scrollCursorUpToFitBelow(rows);
 
     // mMutex covers the cursor read, the duplicate-check, the map
-    // mutation, and the trailing injectData. Recursive lock — the
-    // injectData re-acquires fine.
+    // mutation, and the trailing applyControl calls (which require it).
     std::lock_guard<std::recursive_mutex> _lk(mutex());
 
     // Current cursor row → anchor lineId. historySize() + cursorY() is the
@@ -731,10 +715,11 @@ Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
 
     // Advance the parent cursor to a fresh row so subsequent parent writes
     // don't target the (now-hidden) anchor row. Apply CR + LF directly
-    // via applyControl rather than re-entering the parser via injectData
-    // — under the threading model only the worker thread enters the
-    // parser, and createEmbedded runs on the main thread. mMutex is
-    // already held above, which is what applyControl requires.
+    // via applyControl rather than via injectData. Lock ordering for
+    // injectData is mParseStateMutex first, then mMutex; we already
+    // hold mMutex above, so calling injectData would acquire in the
+    // wrong order and deadlock against any concurrent parse-worker
+    // path.
     applyControl(ParserAction::ControlCode::CR);
     applyControl(ParserAction::ControlCode::LF);
 

@@ -168,10 +168,9 @@ public:
     Terminal* findEmbedded(uint64_t lineId);
 
     // Embedded-map iteration helpers. All acquire mMutex (which the
-    // parse worker also holds, but only briefly between budgeted
-    // chunks — see Terminal::queueParse for the chunking model). Use
-    // these instead of exposing the map directly so callers can't
-    // forget the lock.
+    // parse worker also holds during its apply phase). Use these
+    // instead of exposing the map directly so callers can't forget
+    // the lock.
     template <typename Fn>
     void forEachEmbedded(Fn&& fn) const {
         std::lock_guard<std::recursive_mutex> _lk(mutex());
@@ -326,12 +325,12 @@ private:
     // evicts past the archive cap (via Document::onRowEvicted callback wired
     // in the constructor). Keyed on lineId so each row holds at most one.
     //
-    // Protected by mMutex. The parse worker holds mMutex during
-    // injectData (in budgeted chunks — see Terminal::queueParse),
-    // and the eviction callback fires while the worker holds it.
-    // Main-thread mutators (createEmbedded, extractEmbedded,
-    // resizeEmbedded) and readers (forEachEmbedded etc.) take mMutex
-    // briefly between worker chunks.
+    // Protected by mMutex. The parse worker holds mMutex during the
+    // apply phase of injectData (parse runs lock-free under
+    // mParseStateMutex), and the eviction callback fires while the
+    // worker holds mMutex. Main-thread mutators (createEmbedded,
+    // extractEmbedded, resizeEmbedded) and readers (forEachEmbedded
+    // etc.) take mMutex between apply phases.
     std::unordered_map<uint64_t, std::unique_ptr<Terminal>> mEmbedded;
     // Read on the per-tick render path; written by main-thread focus
     // mutators and the parse-worker eviction callback. Atomic to

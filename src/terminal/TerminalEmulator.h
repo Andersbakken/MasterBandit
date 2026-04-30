@@ -566,21 +566,15 @@ public:
     // renderer uses this to decide whether the pane needs re-rendering.
     bool tickAnimations();
 
-    // Feed bytes into the VT parser. Returns number of bytes actually
-    // consumed.
+    // Feed bytes into the VT parser. Returns the number of bytes
+    // consumed (always == len in the current implementation).
     //
-    // `byteBudget`: if > 0, the parser will exit early once it has
-    // consumed at least this many bytes AND it's at a safe split
-    // boundary (mParserState == Normal, no in-progress UTF-8 sequence).
-    // 0 means "consume everything." Used by the async parse worker to
-    // bound how long mMutex is held under a flood; the worker calls
-    // injectData in a loop, releasing the lock between calls so other
-    // threads can acquire it.
-    //
-    // The safe-split rule means the worker may consume MORE than
-    // byteBudget if a long escape sequence (DCS image data, OSC
-    // payload) straddles the boundary — that's acceptable since the
-    // boundary is just an advisory yield point.
+    // Two-phase: parseToActions decodes bytes into a vector of
+    // ParserAction::Action under mParseStateMutex (no grid/mState/
+    // mDocument access), then applyActions drains the vector under
+    // mMutex. Lock ordering is mParseStateMutex first, then mMutex —
+    // callers that already hold mMutex must use applyControl/
+    // applyEsc/applyDesignateCharset directly instead of injectData.
     size_t injectData(const char* data, size_t len);
 
     void setOSCCallback(std::function<void(int, std::string_view)> cb)

@@ -13,7 +13,6 @@ the grid / document / mState fields.
 - [Action types](#action-types)
 - [What stays the same](#what-stays-the-same)
 - [Resolved decisions](#resolved-decisions)
-- [Open questions](#open-questions)
 - [What's tricky](#whats-tricky)
 - [Step-by-step plan](#step-by-step-plan)
 - [Validation](#validation)
@@ -82,10 +81,12 @@ size_t parseToActions(const char* buf, size_t len, std::vector<Action>& out);
 // touch grid/document/mState.
 void applyActions(std::vector<Action>& actions);
 
-size_t injectData(const char* buf, size_t len, size_t byteBudget = 0)
+size_t injectData(const char* buf, size_t len)
 {
     std::vector<Action> actions;
-    actions.reserve(len);          // upper bound; coalescing makes it less
+    // No reserve() — eager Print→PrintString coalescing means a 64 KiB
+    // ASCII flood produces ~1 action, not 64 K. Reserving len would
+    // burn 2 MiB per call for nothing.
     parseToActions(buf, len, actions);   // lock-free
 
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
@@ -100,13 +101,18 @@ comes from the existing 64 KiB read-buffer cap (see
 `Terminal::kReadBufferHigh`); the rewrite makes that cap directly bound
 the apply duration, since parse no longer holds the lock.
 
+**Verify before relying on this**: grep all callers of `queueParse` /
+`injectData` to confirm none enqueue more than 64 KiB in a single call.
+If any caller bypasses the cap, the apply phase loses its bound and the
+rewrite needs to reintroduce chunking inside `injectData` itself.
+
 ## Code map
 
 Relevant source files, with what each contains and what the rewrite touches:
 
 | File | Function(s) | Touches in rewrite? |
 |---|---|---|
-| `src/terminal/TerminalEmulator.h` | All parser-state field declarations, `injectData` signature | Add `parseToActions` / `applyActions` decls; possibly add `mParseStateMutex` (see Open Questions) |
+| `src/terminal/TerminalEmulator.h` | All parser-state field declarations, `injectData` signature | Add `parseToActions` / `applyActions` decls. Drop `byteBudget` from `injectData`. No new mutex — parser-state is owned by the worker thread (see Resolved decisions). |
 | `src/terminal/TerminalEmulator.cpp:743` | `injectData` (the for-loop state machine) | Split into `parseToActions` + `applyActions` |
 | `src/terminal/TerminalEmulator.cpp:1267` | `processCSI` (reads `mEscapeBuffer` + `mEscapeIndex`) | Refactor to take `(buf, len, finalByte)` arguments |
 | `src/terminal/TerminalEmulator.cpp:1907` | `onAction` (interprets parsed CSI Actions, mutates state) | Stays as-is, called from apply |
@@ -165,7 +171,9 @@ struct DesignateCharset { char slot; uint8_t charset; };
 
 // CSI sequence. `buf` holds the parameter+intermediate bytes (excluding
 // the leading \e[ and the final byte). bounded to 128 bytes by the
-// existing escape-buffer limit.
+// existing escape-buffer limit. Boxed via std::unique_ptr inside the
+// variant so sizeof(Action) stays at variant-overhead+ptr (~24B) rather
+// than ~140B inline.
 struct CSI {
     std::array<char, 128> buf;
     uint8_t len;
@@ -195,13 +203,15 @@ using Action = std::variant<
     ParserAction::Control,
     ParserAction::EscSimple,
     ParserAction::DesignateCharset,
-    ParserAction::CSI,
+    std::unique_ptr<ParserAction::CSI>,    // boxed: see Resolved decisions
     ParserAction::StringSequence>;
 ```
 
-If `sizeof(CSI) == 132` is too big to keep inline, box it:
-`std::unique_ptr<CSI>` and the `std::variant` fits in 24 bytes (matching
-wezterm's `Box<CSI>`-style approach for heavy variants).
+`CSI` is boxed via `std::unique_ptr` inside the variant. Inline at 132
+bytes blows up the variant 4× and breaks the 32-byte size assertion.
+The cost is one heap alloc per CSI; in plain-text workloads CSIs are a
+small fraction of actions, and for SGR-heavy workloads the alloc is
+overshadowed by the actual SGR processing in apply.
 
 Print + Control + EscSimple cover ~99% of bytes in a typical workload.
 The state machine emits one of these per ASCII byte. PrintString emerges
@@ -232,8 +242,9 @@ via the append-helper (see Resolved Decisions).
   `mFocusedEmbeddedLineId`, `mEvictedHasItems`, `mParseInFlight`)
   remain. They're maintained from inside the apply phase — same writers
   as today.
-- The graveyard pattern for Terminal lifetime — see Open Questions for
-  one subtlety.
+- The graveyard pattern for Terminal lifetime — `mParseInFlight` already
+  wraps the entire worker submit lambda, covering both parse and apply.
+  No change.
 - The 3 ms outer coalesce in `Terminal::queueParse` and the 64 KiB
   read-buffer cap. These bound the apply duration and remain the
   primary backpressure / coalescing knobs.
@@ -283,10 +294,11 @@ variants (long OSC payloads, CSI bigger than ~24 bytes) hold a
 `Print(char32_t)`, `Control`, `EscSimple`, `DesignateCharset` stay
 inline.
 
-Add a static-assert similar to wezterm's test:
+Add a static-assert similar to wezterm's test (target ≤32 bytes; with
+boxed CSI the variant is ~24 bytes on 64-bit):
 
 ```cpp
-static_assert(sizeof(Action) == 32, "Action variant should fit in 32 bytes");
+static_assert(sizeof(Action) <= 32, "Action variant should fit in 32 bytes");
 ```
 
 ### Print run coalescing: do it eagerly via append helper
@@ -343,76 +355,96 @@ base64 payload accumulation moves out of `mMutex`. This is the largest
 single workload-specific win the rewrite delivers; for non-graphics
 workloads the win is incremental.
 
+### CSI representation: boxed via std::unique_ptr
+
+The raw CSI buffer is 128 bytes, and inlining it inside the variant
+breaks the 32-byte size target by ~4×. Box via `std::unique_ptr<CSI>`
+inside the variant; `sizeof(Action)` stays at variant-overhead + pointer
+(~24 bytes on 64-bit). The cost is one heap alloc per CSI sequence,
+which is dominated by the SGR processing in apply for any realistic
+workload.
+
+The alternative — parsing CSI into a structured semantic enum at
+decode time (matching wezterm's `CSI::Cursor(…)` / `CSI::Sgr(…)` /
+`CSI::Mode(…)`) — would let CSI fit in 32 bytes inline but requires
+shredding `processCSI` into per-variant handlers. That's ~2× the work of
+this rewrite and is explicitly out of scope here.
+
+### createEmbedded: inline the \r\n effects, don't route through injectData
+
+`createEmbedded` (main thread, holds `mMutex`) currently calls
+`injectData("\r\n", 2)` to advance the parent cursor. Under the rewrite
+this would force a main-thread synchronous entry into the parser while
+a worker may be mid-`parseToActions` on the same Terminal — a
+re-entrancy hazard.
+
+Resolution: replace the call with the explicit mutations the `\r\n` was
+producing — `mState->wrapPending = false`, `mState->cursorX = 0`,
+`lineFeed()`, plus whatever `mDocument` continued-flag bookkeeping the
+old path was doing. With this change, `parseToActions` is **only ever
+called from the worker thread**, which is what makes the `mParseInFlight`
+gating model sufficient (see next item).
+
+Verify during implementation that the inlined mutations match the
+current `\r\n` effects exactly; the doctest suite covers this via the
+existing createEmbedded tests.
+
+### DEC mode 2026 (synchronized output): parse-phase hold
+
+Match wezterm's behavior. `parseToActions` keeps a local `hold` flag:
+
+- On `CSI ?2026h`: flush prior actions to the apply phase, set
+  `hold = true`. Don't return — keep accumulating into the same call's
+  action vector across reads if needed.
+- On `CSI ?2026l` or RIS or `CSI !p` (SoftReset): clear `hold`, flush
+  the accumulated batch as one apply call.
+- While `hold` is set: keep appending without flushing. Render thread
+  sees one atomic frame.
+
+This is real new behavior, not just a refactor — today the rewrite-naive
+path applies actions per-byte and the render thread can see partial
+frames. Adding the parse-phase hold gives tear-free TUI rendering.
+
+The hold state lives in `parseToActions` and is reset on RIS like the
+other parser-state fields.
+
+### Parser-state concurrency: mParseInFlight gating only (no extra mutex)
+
+Parser-state fields (`mParserState`, `mEscapeBuffer`, `mEscapeIndex`,
+`mStringSequence`, `mUtf8Buffer`, `mUtf8Index`, `mGraphemeState`,
+`mLastPrintedChar`, `mWasInStringSequence`, `mStringSequenceType`, plus
+the new `hold` flag) are owned by whoever is currently inside
+`parseToActions`. `mParseInFlight` ensures at most one entrant at a
+time.
+
+Combined with the createEmbedded inlining decision above, the worker
+thread is the **only** thread that ever enters `parseToActions`. No
+extra mutex is needed for parser-state fields — there's no concurrent
+reader.
+
+**TSAN gates the model**: a stress test that hammers `createEmbedded` +
+key dispatch + tab switch from the main thread while a worker parse
+runs on the same Terminal must report clean under TSAN. If TSAN reports
+a race, fall back to the two-mutex design (mParseStateMutex around
+parse, mMutex around apply, strict lock ordering).
+
+This test runs **immediately after phase 5** wires up `injectData`,
+before the regression-fix phase. Single-threaded doctests can't surface
+parser-state races, so running 50 escape-sequence fixes before
+validating the threading model means any race gets misattributed.
+
+### Graveyard predicate: unchanged
+
+Today's `parseInFlight()` predicate keeps a `Terminal` alive while a
+worker is inside `injectData`. Since `mParseInFlight` wraps the entire
+worker submit lambda — covering both parse and apply — the predicate
+already covers the new model. No change.
+
 ## Open questions
 
-These remain genuinely open and should be resolved during implementation,
-not now. Each requires either a real stress test or a design decision
-that's hard to make in advance.
-
-### 1. Who can call `parseToActions`?
-
-Only the worker thread, or anyone holding `mMutex`? Three candidate
-designs:
-
-- **Strawman**: take `mMutex` for the entire `injectData`. Win is zero
-  — same as today.
-- **Two locks**: take a lighter `mParseStateMutex` for parse, then
-  `mMutex` for apply. Lock ordering rule: `mParseStateMutex` first,
-  then `mMutex`. Never reverse.
-- **Wezterm-style**: parser-state fields are conceptually owned by
-  whoever is currently inside `parseToActions`. `mParseInFlight` ensures
-  at most one thread enters at a time. Main-thread synchronous paths
-  go through the same gating. No lock needed for parser-state fields.
-
-The wezterm-style answer is the cleanest and matches what wezterm does
-(parser is owned by the per-pane thread that calls
-`parser.parse(...)`). It relies on `mParseInFlight` plus `mMutex`
-together giving us the same guarantee wezterm gets from
-`Mutex<Terminal>` being held during the entire `Terminal::perform_actions`
-call.
-
-**The implementer should prove this rigorously**: write a stress test
-that hammers `createEmbedded` from the main thread while a worker parse
-runs on the same Terminal, run under TSAN. If TSAN reports clean, the
-gating is sufficient. If it reports a race, fall back to the two-locks
-design.
-
-The test paths and `createEmbedded` paths are where correctness lives
-or dies; they need explicit attention before declaring this resolved.
-
-### 2. createEmbedded synchronous parse
-
-`createEmbedded` (main thread, holds `mMutex` for the whole operation)
-calls `injectData("\r\n", 2)` to advance the parent cursor. Under the
-rewrite, this is a synchronous main-thread parse — by definition not
-async. Two options:
-
-- (a) Keep it synchronous but route through the same `injectData` entry
-  point (parse + apply in sequence on the calling thread, gated by
-  whatever the answer to OQ #1 is).
-- (b) Eliminate the `injectData("\r\n", 2)` call entirely and replace
-  it with a direct mutation: `mDocument.setRowContinued(...)` + cursor
-  advance + grid update + scroll if needed. The `\r\n` was a
-  convenience to reuse parser logic; if the parser is async-first,
-  the convenience may cost more than just inlining the mutation.
-
-Option (b) is appealing but requires understanding exactly what `\r\n`
-does in `injectData` for the createEmbedded context (CR + LF have side
-effects on `mState->wrapPending`, `mDocument` continued flags,
-scrolling). Get those right or use option (a).
-
-The implementer should pick one based on what falls out naturally during
-phase 5.
-
-### 3. Graveyard predicate
-
-Today, the graveyard's `parseInFlight()` predicate keeps a
-`Terminal` alive while a parse worker is inside `injectData`. Under the
-rewrite, "in injectData" means "in parse OR apply." The current predicate
-covers both because `mParseInFlight` wraps the entire worker submit
-lambda. **Verify** that this still holds under whatever decision OQ #1
-lands on. If parse-state has its own mutex, the predicate may need
-extending to cover that too.
+None remain that need resolution before implementation. All prior
+open questions (concurrency model, createEmbedded sync parse, graveyard
+predicate) have been resolved above.
 
 ## What's tricky
 
@@ -429,7 +461,7 @@ by `parseToActions` exclusively (not touched in apply).
 Tests use `injectData` directly via `TestTerminal::feed`. Since tests
 are single-threaded, ownership is whoever-holds-the-test-thread (no
 concurrency). Production goes through the worker; ownership is the
-worker thread. See OQ #1 for synchronization.
+worker thread (see "Resolved decisions: parser-state concurrency").
 
 ### 2. Synchronous query callbacks fired from inside parse handlers
 
@@ -486,6 +518,14 @@ Same logic as today, just moved to a visit branch.
 This means for plain ASCII flood, the win is purely "no lock during
 UTF-8 decoding and run-scanning" — small. The bigger wins are OSC/DCS
 where bytes accumulate without per-byte mState reads.
+
+**PrintString fast-path**: the naive apply branch
+`for (char32_t cp : ps.cps) writePrintable(cp)` re-runs the per-cell
+autoWrap / wrapPending / insertMode guards once per codepoint. For a
+64 K ASCII run inside one PrintString, that's 64 K redundant guard
+checks. Add a `writePrintableRun(std::u32string_view)` that reads
+`mState->autoWrap` once, advances cursorX in bulk, and handles the wrap
+boundary at the end. Measure before micro-optimizing further.
 
 ### 6. CSI parameter accumulation refactor
 
@@ -597,20 +637,40 @@ void applyActions(std::vector<Action>& actions) {
 - Pull the line-feed / carriage-return / tab logic into helper
   functions (`applyControl`).
 
-### Phase 5: Wire `injectData` to call parse then apply (half day)
+### Phase 5: Wire `injectData` to call parse then apply, inline createEmbedded (half day)
 
-- New `injectData(buf, len, byteBudget = 0)`:
-  - Allocate `std::vector<Action> actions`.
+- New `injectData(buf, len)`:
+  - Allocate `std::vector<Action> actions` (no `reserve` — coalescing
+    makes it pointless).
   - Call `parseToActions(buf, len, actions)` — lock-free.
-  - Acquire `mMutex` (or recursive_mutex per OQ #1).
+  - Acquire `mMutex`.
   - Call `applyActions(actions)`.
   - Release `mMutex`.
   - Return `len`.
-- The byteBudget param: deprecate. The current chunking code in the
-  worker is replaced by the natural batch boundary at `injectData`'s
-  call (one apply per worker iteration).
+- The byteBudget param: delete. The current chunking code in the worker
+  is replaced by the natural batch boundary at `injectData`'s call (one
+  apply per worker iteration).
+- **Inline createEmbedded's `\r\n` effects** (see Resolved decisions).
+  Replace the `injectData("\r\n", 2)` call with the explicit mutations
+  it was producing. After this, `parseToActions` is only ever entered
+  from the worker thread.
 
-### Phase 6: Run the existing test suite, fix regressions (1-2 days)
+### Phase 5.5: TSAN stress test (1 day)
+
+Before fixing escape-sequence regressions, validate the threading model.
+Single-threaded doctests can't expose parser-state races; running
+phase 6 first means any race gets misattributed to whichever escape
+sequence happened to surface it.
+
+- Build with TSAN (`-fsanitize=thread`).
+- Stress test: 4 panes each fed by a `yes`-flood, plus main-thread
+  hammers — `createEmbedded`, key dispatch, tab switching, mouse
+  hit-test, scrollback queries — for at least 5 minutes.
+- TSAN must report clean. If it reports a parser-state race, fall back
+  to the two-mutex design (mParseStateMutex around parse, mMutex around
+  apply) and re-run.
+
+### Phase 6: Run the existing test suite, fix regressions (2-3 days)
 
 - 797 tests. Each escape sequence is a regression risk.
 - Specific risk areas:
@@ -626,12 +686,7 @@ void applyActions(std::vector<Action>& actions) {
 - Strategy: run tests, fix one failure at a time. Don't merge a branch
   with any failing tests.
 
-### Phase 7: Resolve the parser-state concurrency question (variable)
-
-See Open Questions #1, #2, #3. Write the TSAN stress test from OQ #1
-and let it dictate the locking discipline.
-
-### Phase 8: Re-benchmark and update docs (half day)
+### Phase 7: Re-benchmark and update docs (half day)
 
 - Re-run feed benchmarks with the same fixtures (`benches/fixtures/`).
 - Compare `mb_per_sec` before and after.
@@ -644,8 +699,10 @@ and let it dictate the locking discipline.
 
 ### Total
 
-~7-9 days of focused work. Add 2-3 days of buffer for unexpected
-regressions and the OQ #1 stress-test work = **about 2 weeks**.
+Phase 1 (1d) + Phase 2 (1d) + Phase 3 (2d) + Phase 4 (1d) +
+Phase 5 (0.5d) + Phase 5.5 TSAN (1d) + Phase 6 regressions (2-3d) +
+Phase 7 benchmarks (0.5d) ≈ **9-11 days** of focused work. Plus 2-3
+days of buffer for unexpected regressions = **about 2 weeks**.
 
 ## Validation
 

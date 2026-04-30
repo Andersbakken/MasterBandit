@@ -215,20 +215,20 @@ size_t TerminalEmulator::parseToActions(
             case CSI:
                 if (mEscapeIndex > 1) {
                     if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
-                        // Complete CSI. Buffer holds "[" + params + final.
-                        // Apply gets buf+1 and len-1 to skip the leading '['.
+                        // Complete CSI. mEscapeBuffer layout matches
+                        // what processCSI expects: buf[0]='[', then
+                        // params/intermediates, buf[len-1]=final byte.
                         auto csi = std::make_unique<ParserAction::CSI>();
-                        const char* csiBuf = mEscapeBuffer + 1;
-                        int csiLen = mEscapeIndex - 1;
-                        // Detect 2026 set/reset BEFORE emitting. If reset
-                        // arrives, emit the action then clear hold below
-                        // so the caller flushes.
-                        int sync = detectSyncOutputCsi(csiBuf, csiLen);
-                        std::memcpy(csi->buf.data(), csiBuf,
-                                    static_cast<size_t>(csiLen));
-                        csi->len = static_cast<uint8_t>(csiLen);
+                        // Detect 2026 set/reset on the params past the
+                        // leading '['.
+                        int sync = detectSyncOutputCsi(
+                            mEscapeBuffer + 1, mEscapeIndex - 1);
+                        std::memcpy(csi->buf.data(), mEscapeBuffer,
+                                    static_cast<size_t>(mEscapeIndex));
+                        csi->len = static_cast<uint8_t>(mEscapeIndex);
                         csi->finalByte = buf[i];
-                        csi->isPrivate = (csiLen > 0 && csiBuf[0] == '?');
+                        csi->isPrivate = (mEscapeIndex > 1 &&
+                                          mEscapeBuffer[1] == '?');
                         emit(out, std::move(csi));
                         if (sync > 0)      mHold = true;
                         else if (sync < 0) mHold = false;

@@ -741,29 +741,46 @@ void TerminalEmulator::lineFeed()
     }
 }
 
-size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBudget)
+size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t /*byteBudget*/)
 {
-    std::lock_guard<std::recursive_mutex> _lk(mMutex);
     if (sLog().should_log(spdlog::level::debug))
         sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
-    const int len = static_cast<int>(len_);
-    // Worker chunking: consume at least `byteBudget` bytes, then exit
-    // at the first safe split boundary so the caller can release
-    // mMutex and let other threads (renderer, main-thread one-off
-    // readers) acquire it. Disabled when budget == 0 (drain entire
-    // input in one call — used by tests, headless paths,
-    // createEmbedded's "\r\n" inject).
-    const bool budgeted = byteBudget > 0;
 
-    auto resetToNormal = [this]() {
-        assert(mParserState == InEscape || mParserState == InStringSequence);
-        mParserState = Normal;
-        mEscapeIndex = 0;
-#ifndef NDEBUG
-        memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
-    };
+    // Decode phase — lock-free. Operates on parser-state fields
+    // (mParserState, mEscapeBuffer, mUtf8Buffer, mStringSequence,
+    // mHold) plus the local action vector. Owns no grid / mState /
+    // mDocument access.
+    std::vector<ParserAction::Action> actions;
+    parseToActions(buf, len_, actions);
 
+    // Apply phase — under mMutex.
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    applyActions(actions);
+
+    pruneCommandRing();
+
+    // Suppress render updates during chunked image transfer to avoid
+    // vsync-blocking the event loop while the PTY still has data to
+    // deliver. Also suppress while a DEC mode 2026 sync-output block
+    // is in flight (mHold) — render shouldn't see a partial frame.
+    // Note: this only defers the Update notification; actions still
+    // apply immediately under mMutex. A future improvement would have
+    // parseToActions buffer actions across calls until the matching
+    // reset arrives, so the render thread can't observe mid-sync state
+    // even if it acquires mMutex on its own. Sufficient for the
+    // 2026-emitting TUIs we've tested (vim, htop) which fence
+    // their sync blocks within a single PTY read.
+    if (!mKittyLoading.active && !mHold) {
+        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    }
+    obs::notifyParse(len_);
+    return len_;
+}
+
+#if 0
+// Legacy body — kept under #if 0 so the diff stays reviewable. Will be
+// deleted in a follow-up commit once the rewrite has soaked.
+{
     int i = 0;
     for (; i<len; ++i) {
         // Safe-split check: when at a parser-state boundary and the
@@ -1264,14 +1281,14 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBud
     obs::notifyParse(static_cast<size_t>(i));
     return static_cast<size_t>(i);
 }
+#endif  // legacy injectData body
 
 // ===== Apply phase =====
 //
 // applyActions walks the action list (produced by parseToActions) and
 // drives grid / mDocument / mState mutations through per-variant
 // helpers. Every helper here is a direct port of the inline mutation
-// logic that lived inside injectData. Until phase 5 wires it in, this
-// is dead code.
+// logic that lived inside injectData.
 
 void TerminalEmulator::writePrintable(char32_t cp)
 {
@@ -1606,7 +1623,6 @@ void TerminalEmulator::applyActions(std::vector<ParserAction::Action>& actions)
 
 void TerminalEmulator::processCSI(const char* buf, int len)
 {
-    assert(mParserState == InEscape);
     assert(len >= 1);
 
     if (sLog().should_log(spdlog::level::debug))
@@ -1743,7 +1759,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         }
         break; }
     case SGR:
-        processSGR();
+        processSGR(buf, len);
         break;
     case REP: {
         // Repeat preceding graphic character N times
@@ -2176,14 +2192,6 @@ void TerminalEmulator::processCSI(const char* buf, int len)
 
     if (action.type != Action::Invalid)
         onAction(&action);
-
-    // Parser-state cleanup. processCSI still owns this for now; phase 3
-    // will hoist it into the caller when the parse/apply split lands.
-    mEscapeIndex = 0;
-#ifndef NDEBUG
-    memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
-#endif
-    mParserState = Normal;
 }
 
 void TerminalEmulator::savePrivateModes(const std::vector<int>& modes)

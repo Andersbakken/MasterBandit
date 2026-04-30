@@ -4,12 +4,13 @@
 #include <vector>
 #include <cstdlib>
 
-void TerminalEmulator::processSGR()
+void TerminalEmulator::processSGR(const char* buf, int len)
 {
-    assert(mEscapeBuffer[0] == CSI);
-    assert(mEscapeBuffer[mEscapeIndex - 1] == 'm');
+    assert(len >= 1);
+    assert(buf[0] == CSI);
+    assert(buf[len - 1] == 'm');
 
-    // Parse semicolon-delimited parameters from mEscapeBuffer[1..mEscapeIndex-2]
+    // Parse semicolon-delimited parameters from buf[1..len-2]
     // e.g. "[0;31m" -> params = {0, 31}
     // Colon sub-params (e.g. "4:3" or "58:2::255:100:100") are stored in the
     // subs[] array.  subCount == 0 means no colon subparams were present.
@@ -21,8 +22,8 @@ void TerminalEmulator::processSGR()
     };
     std::vector<SGRParam> params;
     {
-        const char* start = mEscapeBuffer + 1;
-        const char* end = mEscapeBuffer + mEscapeIndex - 1;
+        const char* start = buf + 1;
+        const char* end = buf + len - 1;
         if (start == end) {
             params.push_back({0, {}, 0});
         } else {

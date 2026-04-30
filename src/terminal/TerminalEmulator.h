@@ -750,7 +750,12 @@ private:
     // NEL, HTS, RI, VB, DECKPAM, DECKPNM). applyDesignateCharset
     // mutates mState->charsetG0 or charsetG1.
     void writePrintable(char32_t cp);
+protected:
+    // applyControl is exposed to subclasses (Terminal::createEmbedded)
+    // so they can synthesize CR/LF directly without re-entering the
+    // parser from the main thread. The other helpers stay private.
     void applyControl(ParserAction::ControlCode code);
+private:
     void applyEsc(char finalByte);
     void applyDesignateCharset(char slot, char charset);
 
@@ -820,7 +825,7 @@ private:
     };
 
     void processCSI(const char* buf, int len);
-    void processSGR();
+    void processSGR(const char* buf, int len);
 
     static const char *escapeSequenceName(EscapeSequence seq);
 

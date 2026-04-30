@@ -730,10 +730,13 @@ Terminal* Terminal::createEmbedded(int rows, PlatformCallbacks pcbs)
     mEmbedded[anchorLineId] = std::move(embedded);
 
     // Advance the parent cursor to a fresh row so subsequent parent writes
-    // don't target the (now-hidden) anchor row. CR+LF goes through the
-    // emulator's standard path, creating a new tier-1 row below and
-    // scrolling if we were at the last viewport row.
-    injectData("\r\n", 2);
+    // don't target the (now-hidden) anchor row. Apply CR + LF directly
+    // via applyControl rather than re-entering the parser via injectData
+    // — under the threading model only the worker thread enters the
+    // parser, and createEmbedded runs on the main thread. mMutex is
+    // already held above, which is what applyControl requires.
+    applyControl(ParserAction::ControlCode::CR);
+    applyControl(ParserAction::ControlCode::LF);
 
     spdlog::info("Terminal: created embedded at lineId={} rows={}", anchorLineId, rows);
     return raw;

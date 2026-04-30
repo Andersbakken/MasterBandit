@@ -712,12 +712,19 @@ private:
     static constexpr size_t MAX_STRING_SEQUENCE = 16 * 1024 * 1024; // 16 MB
 
     // DEC mode 2026 (synchronized output) hold flag, owned by
-    // parseToActions. While set, the parser keeps appending actions to
-    // the caller's vector across reads; the caller defers applying
-    // them until the matching reset / RIS / SoftReset clears the flag.
-    // Gives tear-free TUI rendering — render thread never sees a
-    // partial sync block.
+    // parseToActions. Set on "CSI ?2026 h", cleared on "CSI ?2026 l"
+    // or RIS. injectData currently uses it only to suppress the
+    // Update render-poke during a sync block; full hold (defer apply
+    // across reads) was tried and reverted because it breaks tests /
+    // callers that set a mode and immediately query DECRQM (the
+    // response gets buffered).
     bool mHold { false };
+
+    // Reused action buffer. Worker-thread-owned (only thread inside
+    // injectData under the threading model). parseToActions appends,
+    // injectData drains under mMutex on every call. Kept as a member
+    // to avoid per-call vector allocation.
+    std::vector<ParserAction::Action> mPendingActions;
 
     // Refactored to take parser-state as args so the eventual
     // parseToActions / applyActions split can call them without the
@@ -727,15 +734,15 @@ private:
     void processDCS(std::string_view payload);
     void processOSC_Title(std::string_view text, bool setTitle);
 
-    // Decode `len` bytes of pty output into a sequence of Actions. No
-    // grid / mState / mDocument access — purely operates on parser-state
-    // member fields (mParserState, mUtf8Buffer, mEscapeBuffer,
-    // mStringSequence, mHold) plus the output vector. Designed to run
-    // without holding mMutex; under the threading model only the worker
-    // thread enters this. Returns the number of bytes consumed (== len
-    // unless mHold caused early return — currently always == len).
-    size_t parseToActions(const char* buf, size_t len,
-                          std::vector<ParserAction::Action>& out);
+    // Decode `len` bytes of pty output, appending Actions to
+    // mPendingActions. No grid / mState / mDocument access — purely
+    // operates on parser-state member fields (mParserState,
+    // mUtf8Buffer, mEscapeBuffer, mStringSequence, mHold,
+    // mPendingActions). Designed to run without holding mMutex; under
+    // the threading model only the worker thread enters this. Returns
+    // the number of bytes consumed (always == len in the current
+    // implementation).
+    size_t parseToActions(const char* buf, size_t len);
 
     // Apply the actions in `actions` to grid / mDocument / mState.
     // Caller must hold mMutex. Drains the vector by std::visit on each

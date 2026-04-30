@@ -67,13 +67,12 @@ bool isRis(char finalByte) { return finalByte == 'c'; }
 
 }  // namespace
 
-size_t TerminalEmulator::parseToActions(
-    const char* buf, size_t len_,
-    std::vector<ParserAction::Action>& out)
+size_t TerminalEmulator::parseToActions(const char* buf, size_t len_)
 {
     using namespace ParserAction;
 
     const int len = static_cast<int>(len_);
+    auto& out = mPendingActions;  // append to the caller's buffer
 
     auto resetEscape = [this]() {
         assert(mParserState == InEscape || mParserState == InStringSequence);

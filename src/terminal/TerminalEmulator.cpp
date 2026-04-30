@@ -746,30 +746,29 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t /*byteB
     if (sLog().should_log(spdlog::level::debug))
         sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
 
-    // Decode phase — lock-free. Operates on parser-state fields
-    // (mParserState, mEscapeBuffer, mUtf8Buffer, mStringSequence,
-    // mHold) plus the local action vector. Owns no grid / mState /
-    // mDocument access.
-    std::vector<ParserAction::Action> actions;
-    parseToActions(buf, len_, actions);
+    // Decode phase — lock-free. Appends to mPendingActions. Operates
+    // on parser-state fields only (no grid / mState / mDocument
+    // access).
+    parseToActions(buf, len_);
 
-    // Apply phase — under mMutex.
+    // Apply phase — under mMutex. Always apply: deferring across calls
+    // for DEC mode 2026 sync output breaks any test or caller that
+    // sets a private mode and immediately queries state (the DECRQM
+    // response gets buffered). Real applications fence 2026 within a
+    // single frame anyway, so partial hold (gating only the Update
+    // callback below) gives most of the tear-free benefit without
+    // breaking the synchronous-query pattern.
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    applyActions(actions);
+    applyActions(mPendingActions);
+    mPendingActions.clear();
 
     pruneCommandRing();
 
     // Suppress render updates during chunked image transfer to avoid
     // vsync-blocking the event loop while the PTY still has data to
-    // deliver. Also suppress while a DEC mode 2026 sync-output block
-    // is in flight (mHold) — render shouldn't see a partial frame.
-    // Note: this only defers the Update notification; actions still
-    // apply immediately under mMutex. A future improvement would have
-    // parseToActions buffer actions across calls until the matching
-    // reset arrives, so the render thread can't observe mid-sync state
-    // even if it acquires mMutex on its own. Sufficient for the
-    // 2026-emitting TUIs we've tested (vim, htop) which fence
-    // their sync blocks within a single PTY read.
+    // deliver. Also suppress while a 2026 sync block is in flight —
+    // render thread might still acquire mMutex on its own and see
+    // mid-sync state, but at least we don't actively wake it.
     if (!mKittyLoading.active && !mHold) {
         if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
     }

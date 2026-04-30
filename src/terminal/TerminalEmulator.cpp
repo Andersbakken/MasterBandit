@@ -1,5 +1,6 @@
 #include "TerminalEmulator.h"
 #include "Config.h"
+#include "ParserAction.h"
 #include "Utils.h"
 #include "Utf8.h"
 #include "Wcwidth.h"

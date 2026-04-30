@@ -112,6 +112,12 @@ struct TestTerminal {
     void feed(const std::string& s)
     {
         term.injectData(s.data(), s.size());
+        // Drain anything that injectData buffered for a DEC mode 2026
+        // sync block. Production parses across multiple PTY reads and
+        // flushes when 2026l arrives; tests usually call feed() once
+        // and then inspect state, so we flush eagerly to keep the
+        // test mental model 1:1 with what callers expect.
+        term.flushPendingActions();
     }
 
     void esc(const std::string& s) { feed("\x1b" + s); }

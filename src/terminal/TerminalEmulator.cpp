@@ -757,13 +757,22 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_)
     // correctness.
     parseToActions(buf, len_);
 
-    // Apply phase — under mMutex. Deferring across calls for DEC mode
-    // 2026 sync output breaks any test or caller that sets a private
-    // mode and immediately queries state (the DECRQM response gets
-    // buffered). Real applications fence 2026 within a single frame
-    // anyway, so partial hold (gating only the Update callback below)
-    // gives most of the tear-free benefit without breaking the
-    // synchronous-query pattern.
+    obs::notifyParse(len_);
+
+    // DEC mode 2026 sync output: while mHold is set, leave the
+    // accumulated actions in mPendingActions and skip the apply
+    // phase. The matching 2026l (or RIS) inside parseToActions clears
+    // mHold; that call's apply phase then drains the whole sync
+    // block atomically. Render thread can no longer observe mid-sync
+    // grid state.
+    //
+    // Test paths that set 2026 and then query state without sending
+    // 2026l drain the buffer via flushPendingActions (called from
+    // TestTerminal::feed), so single-threaded test code observes
+    // immediate apply.
+    if (mHold) return len_;
+
+    // Apply phase — under mMutex.
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     applyActions(mPendingActions);
     mPendingActions.clear();
@@ -772,14 +781,24 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_)
 
     // Suppress render updates during chunked image transfer to avoid
     // vsync-blocking the event loop while the PTY still has data to
-    // deliver. Also suppress while a 2026 sync block is in flight —
-    // render thread might still acquire mMutex on its own and see
-    // mid-sync state, but at least we don't actively wake it.
-    if (!mKittyLoading.active && !mHold) {
+    // deliver.
+    if (!mKittyLoading.active) {
         if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
     }
-    obs::notifyParse(len_);
     return len_;
+}
+
+void TerminalEmulator::flushPendingActions()
+{
+    std::lock_guard<std::mutex> _ps(mParseStateMutex);
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    mHold = false;
+    if (mPendingActions.empty()) return;
+    applyActions(mPendingActions);
+    mPendingActions.clear();
+    pruneCommandRing();
+    if (!mKittyLoading.active && mCallbacks.event)
+        mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
 

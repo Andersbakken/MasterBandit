@@ -581,6 +581,18 @@ public:
     // createEmbedded).
     size_t injectData(const char* data, size_t len);
 
+    // Drain any actions buffered by parseToActions (typically while a
+    // DEC mode 2026 sync block was in flight) and clear mHold so
+    // subsequent injectData calls apply normally. Lock ordering is
+    // mParseStateMutex first, then mMutex — same as injectData.
+    //
+    // Intended primarily for the test harness (TestTerminal::feed
+    // calls this after every injectData so single-threaded tests don't
+    // observe partial sync-block state). Production callers don't need
+    // it: real applications fence 2026 within a frame, and injectData
+    // flushes naturally when the matching reset arrives.
+    void flushPendingActions();
+
     void setOSCCallback(std::function<void(int, std::string_view)> cb)
     {
         mCallbacks.onOSC = std::move(cb);

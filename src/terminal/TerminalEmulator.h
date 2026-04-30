@@ -720,11 +720,19 @@ private:
     // response gets buffered).
     bool mHold { false };
 
-    // Reused action buffer. Worker-thread-owned (only thread inside
-    // injectData under the threading model). parseToActions appends,
-    // injectData drains under mMutex on every call. Kept as a member
-    // to avoid per-call vector allocation.
+    // Reused action buffer. parseToActions appends, injectData drains
+    // under mMutex on every call. Kept as a member to avoid per-call
+    // vector allocation.
     std::vector<ParserAction::Action> mPendingActions;
+
+    // Serializes the decode phase. Normally only the worker thread
+    // enters parseToActions, so this is uncontended. DebugIPC's inject /
+    // feed commands run on the libwebsockets thread and would otherwise
+    // race the worker on parser-state fields (mParserState,
+    // mEscapeBuffer, mUtf8Buffer, mStringSequence, mPendingActions).
+    // Lock ordering: mParseStateMutex first, then mMutex. Never
+    // reverse — anyone holding mMutex must not call injectData.
+    std::mutex mParseStateMutex;
 
     // Refactored to take parser-state as args so the eventual
     // parseToActions / applyActions split can call them without the
@@ -738,10 +746,9 @@ private:
     // mPendingActions. No grid / mState / mDocument access — purely
     // operates on parser-state member fields (mParserState,
     // mUtf8Buffer, mEscapeBuffer, mStringSequence, mHold,
-    // mPendingActions). Designed to run without holding mMutex; under
-    // the threading model only the worker thread enters this. Returns
-    // the number of bytes consumed (always == len in the current
-    // implementation).
+    // mPendingActions). Caller must hold mParseStateMutex; injectData
+    // does this. Returns the number of bytes consumed (always == len
+    // in the current implementation).
     size_t parseToActions(const char* buf, size_t len);
 
     // Apply the actions in `actions` to grid / mDocument / mState.

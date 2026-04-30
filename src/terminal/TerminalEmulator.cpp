@@ -746,18 +746,24 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_)
     if (sLog().should_log(spdlog::level::debug))
         sLog().debug("injectData: \"{}\"", toPrintable(buf, static_cast<int>(len_)));
 
-    // Decode phase — lock-free. Appends to mPendingActions. Operates
-    // on parser-state fields only (no grid / mState / mDocument
-    // access).
+    // Lock ordering: mParseStateMutex first, then mMutex. Never reverse.
+    std::lock_guard<std::mutex> _ps(mParseStateMutex);
+
+    // Decode phase — held under mParseStateMutex (not mMutex). Render
+    // thread reads under mMutex and is unaffected; the only contender
+    // for mParseStateMutex is another injectData call (e.g. DebugIPC
+    // running on the libwebsockets thread while the parse worker is
+    // active), which is rare in practice but must serialize for
+    // correctness.
     parseToActions(buf, len_);
 
-    // Apply phase — under mMutex. Always apply: deferring across calls
-    // for DEC mode 2026 sync output breaks any test or caller that
-    // sets a private mode and immediately queries state (the DECRQM
-    // response gets buffered). Real applications fence 2026 within a
-    // single frame anyway, so partial hold (gating only the Update
-    // callback below) gives most of the tear-free benefit without
-    // breaking the synchronous-query pattern.
+    // Apply phase — under mMutex. Deferring across calls for DEC mode
+    // 2026 sync output breaks any test or caller that sets a private
+    // mode and immediately queries state (the DECRQM response gets
+    // buffered). Real applications fence 2026 within a single frame
+    // anyway, so partial hold (gating only the Update callback below)
+    // gives most of the tear-free benefit without breaking the
+    // synchronous-query pattern.
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     applyActions(mPendingActions);
     mPendingActions.clear();

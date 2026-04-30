@@ -710,8 +710,12 @@ private:
     bool mWasInStringSequence { false };
     static constexpr size_t MAX_STRING_SEQUENCE = 16 * 1024 * 1024; // 16 MB
 
-    void processStringSequence();
-    void processDCS();
+    // Refactored to take parser-state as args so the eventual
+    // parseToActions / applyActions split can call them without the
+    // helpers reading mStringSequence / mStringSequenceType /
+    // mEscapeBuffer / mEscapeIndex member fields directly.
+    void processStringSequence(uint8_t kind, std::string_view body);
+    void processDCS(std::string_view payload);
     void processOSC_Title(std::string_view text, bool setTitle);
 
     // Republish mTitleAtomic / mIconAtomic from the current top of
@@ -727,7 +731,7 @@ private:
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
     void processOSC_PointerShape(std::string_view payload);
-    void processAPC();
+    void processAPC(std::string_view body);
     void placeImageInGrid(uint32_t imageId, uint32_t placementId, int cellCols, int cellRows, bool moveCursor = true);
     std::string buildCurrentSGR() const;
 
@@ -779,7 +783,7 @@ private:
         RI = 'M'
     };
 
-    void processCSI();
+    void processCSI(const char* buf, int len);
     void processSGR();
 
     static const char *escapeSequenceName(EscapeSequence seq);

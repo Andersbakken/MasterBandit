@@ -249,16 +249,16 @@ bool TerminalEmulator::setImageFrameShownAtForTest(uint32_t id, uint64_t t)
     return true;
 }
 
-void TerminalEmulator::processAPC()
+void TerminalEmulator::processAPC(std::string_view body)
 {
     // APC format: G<control>;<payload>  or  G<control>
-    // mStringSequence contains everything between ESC_ and ST
-    if (mStringSequence.empty() || mStringSequence[0] != 'G') {
+    // body contains everything between ESC_ and ST
+    if (body.empty() || body[0] != 'G') {
         // Not a graphics command — silently ignore (other APC protocols may exist)
         return;
     }
 
-    std::string_view seq(mStringSequence);
+    std::string_view seq = body;
     seq.remove_prefix(1); // skip 'G'
 
     // Split control data and payload at ';'

@@ -9,6 +9,10 @@
 
 // Action types emitted by parseToActions (lock-free decode phase) and
 // consumed by applyActions (locked apply phase).
+//
+// All types live in `ParserAction::` to avoid colliding with the
+// existing TerminalEmulator::Action nested struct (which represents a
+// parsed CSI command for onAction).
 
 namespace ParserAction {
 
@@ -77,16 +81,14 @@ struct StringSequence {
     std::string payload;
 };
 
-}  // namespace ParserAction
-
 using Action = std::variant<
-    ParserAction::Print,
-    ParserAction::PrintString,
-    ParserAction::Control,
-    ParserAction::EscSimple,
-    ParserAction::DesignateCharset,
-    std::unique_ptr<ParserAction::CSI>,
-    ParserAction::StringSequence>;
+    Print,
+    PrintString,
+    Control,
+    EscSimple,
+    DesignateCharset,
+    std::unique_ptr<CSI>,
+    StringSequence>;
 
 // Target: <=48 bytes. The largest alternative is StringSequence
 // (uint8_t kind + std::string payload = 40 bytes on libstdc++ x86_64
@@ -101,22 +103,24 @@ static_assert(sizeof(Action) <= 48, "Action variant should fit in 48 bytes");
 // from N actions to 1.
 inline void emit(std::vector<Action>& dest, Action action)
 {
-    if (auto* p = std::get_if<ParserAction::Print>(&action)) {
+    if (auto* p = std::get_if<Print>(&action)) {
         char32_t cp = p->cp;
         if (!dest.empty()) {
-            if (auto* last = std::get_if<ParserAction::PrintString>(&dest.back())) {
+            if (auto* last = std::get_if<PrintString>(&dest.back())) {
                 last->cps.push_back(cp);
                 return;
             }
-            if (auto* prior = std::get_if<ParserAction::Print>(&dest.back())) {
+            if (auto* prior = std::get_if<Print>(&dest.back())) {
                 std::u32string s;
                 s.reserve(2);
                 s.push_back(prior->cp);
                 s.push_back(cp);
-                dest.back() = ParserAction::PrintString{std::move(s)};
+                dest.back() = PrintString{std::move(s)};
                 return;
             }
         }
     }
     dest.push_back(std::move(action));
 }
+
+}  // namespace ParserAction

@@ -185,10 +185,8 @@ static std::string hexEncode(std::string_view in)
     return out;
 }
 
-void TerminalEmulator::processDCS()
+void TerminalEmulator::processDCS(std::string_view seq)
 {
-    std::string_view seq(mStringSequence);
-
     // XTGETTCAP: DCS + q <hex-names> ST  (names separated by ';')
     if (seq.size() >= 2 && seq[0] == '+' && seq[1] == 'q') {
         std::string_view queries = seq.substr(2);

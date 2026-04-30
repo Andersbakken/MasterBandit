@@ -1054,7 +1054,7 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBud
             case SS3:
             case ST:
                 if (mWasInStringSequence) {
-                    processStringSequence();
+                    processStringSequence(mStringSequenceType, mStringSequence);
                     mStringSequence.clear();
                     mWasInStringSequence = false;
                 }
@@ -1073,7 +1073,7 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBud
             case CSI:
                 if (mEscapeIndex > 1) {
                     if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
-                        processCSI();
+                        processCSI(mEscapeBuffer, mEscapeIndex);
                         assert(mParserState == Normal);
                     } else if (mEscapeIndex >= static_cast<int>(sizeof(mEscapeBuffer))) {
                         sLog().error("CSI sequence is too long {}", sizeof(mEscapeBuffer));
@@ -1229,7 +1229,7 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBud
             break;
         case InStringSequence:
             if (buf[i] == '\x07') {
-                processStringSequence();
+                processStringSequence(mStringSequenceType, mStringSequence);
                 mStringSequence.clear();
                 resetToNormal();
             } else if (buf[i] == 0x1b) {
@@ -1265,33 +1265,33 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_, size_t byteBud
     return static_cast<size_t>(i);
 }
 
-void TerminalEmulator::processCSI()
+void TerminalEmulator::processCSI(const char* buf, int len)
 {
     assert(mParserState == InEscape);
-    assert(mEscapeIndex >= 1);
+    assert(len >= 1);
 
     if (sLog().should_log(spdlog::level::debug))
-        sLog().debug("Processing CSI \"{}\"", toPrintable(mEscapeBuffer, mEscapeIndex));
+        sLog().debug("Processing CSI \"{}\"", toPrintable(buf, len));
 
-    auto readCount = [this](int def) {
-        if (mEscapeIndex == 2) // no digits
+    auto readCount = [buf, len](int def) {
+        if (len == 2) // no digits
             return def;
         char *end;
-        unsigned long l = strtoul(mEscapeBuffer + 1, &end, 10);
-        if (end != mEscapeBuffer + mEscapeIndex - 1 || l > static_cast<unsigned long>(std::numeric_limits<int>::max())) {
+        unsigned long l = strtoul(buf + 1, &end, 10);
+        if (end != buf + len - 1 || l > static_cast<unsigned long>(std::numeric_limits<int>::max())) {
             return -1;
         }
         return static_cast<int>(l);
     };
 
     // Check for prefix characters '?', '>', '=', '<'
-    bool isPrivate = (mEscapeIndex > 1 && mEscapeBuffer[1] == '?');
-    bool isSecondary = (mEscapeIndex > 1 && mEscapeBuffer[1] == '>');
-    bool isEquals = (mEscapeIndex > 1 && mEscapeBuffer[1] == '=');
-    bool isLess = (mEscapeIndex > 1 && mEscapeBuffer[1] == '<');
+    bool isPrivate = (len > 1 && buf[1] == '?');
+    bool isSecondary = (len > 1 && buf[1] == '>');
+    bool isEquals = (len > 1 && buf[1] == '=');
+    bool isLess = (len > 1 && buf[1] == '<');
 
     Action action;
-    char finalByte = mEscapeBuffer[mEscapeIndex - 1];
+    char finalByte = buf[len - 1];
 
     switch (finalByte) {
     case CUU:
@@ -1334,9 +1334,9 @@ void TerminalEmulator::processCSI()
         char *end;
         action.x = action.y = 1;
         action.type = Action::CursorPosition;
-        const unsigned long x = strtoul(mEscapeBuffer + 1, &end, 10);
-        if (end == mEscapeBuffer + mEscapeIndex - 1) {
-            if (mEscapeIndex != 2) {
+        const unsigned long x = strtoul(buf + 1, &end, 10);
+        if (end == buf + len - 1) {
+            if (len != 2) {
                 if (!x) {
                     sLog().error("Invalid CSI CUP error 1");
                     action.type = Action::Invalid;
@@ -1345,7 +1345,7 @@ void TerminalEmulator::processCSI()
                 }
             }
         } else if (*end == ';') {
-            if (mEscapeBuffer[1] != ';') {
+            if (buf[1] != ';') {
                 if (x == 0) {
                     sLog().error("Invalid CSI CUP error 2");
                     action.type = Action::Invalid;
@@ -1353,9 +1353,9 @@ void TerminalEmulator::processCSI()
                 }
                 action.x = x;
             }
-            if (end + 1 < mEscapeBuffer + mEscapeIndex - 1) {
+            if (end + 1 < buf + len - 1) {
                 const unsigned long y = strtoul(end + 1, &end, 10);
-                if (end != mEscapeBuffer + mEscapeIndex - 1 || !y) {
+                if (end != buf + len - 1 || !y) {
                     sLog().error("Invalid CSI CUP error 3");
                     action.type = Action::Invalid;
                     break;
@@ -1454,21 +1454,21 @@ void TerminalEmulator::processCSI()
         }
         break; }
     case AUX:
-        if (mEscapeIndex != 3) {
-            sLog().error("Invalid AUX CSI command ({})", mEscapeIndex);
-        } else if (mEscapeBuffer[1] == '4') {
+        if (len != 3) {
+            sLog().error("Invalid AUX CSI command ({})", len);
+        } else if (buf[1] == '4') {
             action.type = Action::AUXPortOff;
-        } else if (mEscapeBuffer[1] == '5') {
+        } else if (buf[1] == '5') {
             action.type = Action::AUXPortOn;
         } else {
-            sLog().error("Invalid AUX CSI command ({:#04x})", static_cast<unsigned char>(mEscapeBuffer[1]));
+            sLog().error("Invalid AUX CSI command ({:#04x})", static_cast<unsigned char>(buf[1]));
         }
         break;
     case DSR:
-        if (isPrivate && mEscapeIndex >= 4) {
+        if (isPrivate && len >= 4) {
             // CSI ? Ps n — private DSR queries
             char* end;
-            int ps = static_cast<int>(strtoul(mEscapeBuffer + 2, &end, 10));
+            int ps = static_cast<int>(strtoul(buf + 2, &end, 10));
             if (ps == 996) {
                 // Color preference query: 1=dark, 2=light
                 bool isDark = true;
@@ -1479,10 +1479,10 @@ void TerminalEmulator::processCSI()
             } else {
                 sLog().warn("Unhandled private DSR {}", ps);
             }
-        } else if (mEscapeIndex == 3 && mEscapeBuffer[1] == '5') {
+        } else if (len == 3 && buf[1] == '5') {
             // Device status report: respond "OK"
             writeToOutput("\x1b[0n", 4);
-        } else if (mEscapeIndex == 3 && mEscapeBuffer[1] == '6') {
+        } else if (len == 3 && buf[1] == '6') {
             // Report cursor position: ESC [ row ; col R.
             // DECOM: report row relative to scrollTop.
             int reportY = mState->cursorY - (mState->originMode ? mState->scrollTop : 0);
@@ -1491,15 +1491,15 @@ void TerminalEmulator::processCSI()
                                 reportY + 1, mState->cursorX + 1);
             writeToOutput(response, rlen);
         } else {
-            sLog().warn("Unhandled DSR: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            sLog().warn("Unhandled DSR: {}", toPrintable(buf, len));
         }
         break;
     case SCP:
         if (isPrivate) {
             // CSI ? Pm s — XTSAVE: save DEC private mode values
             std::vector<int> modes;
-            const char* p = mEscapeBuffer + 2;
-            const char* end = mEscapeBuffer + mEscapeIndex - 1;
+            const char* p = buf + 2;
+            const char* end = buf + len - 1;
             while (p < end) {
                 char* next;
                 unsigned long v = strtoul(p, &next, 10);
@@ -1509,10 +1509,10 @@ void TerminalEmulator::processCSI()
                 if (p < end && *p == ';') ++p;
             }
             savePrivateModes(modes);
-        } else if (mEscapeIndex == 2) {
+        } else if (len == 2) {
             action.type = Action::SaveCursorPosition;
         } else {
-            sLog().warn("Ignoring CSI s variant: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            sLog().warn("Ignoring CSI s variant: {}", toPrintable(buf, len));
         }
         break;
     case RCP:
@@ -1522,13 +1522,13 @@ void TerminalEmulator::processCSI()
         } else if (isSecondary) {
             // CSI > flags u — push flags onto stack
             char *end;
-            uint8_t flags = static_cast<uint8_t>(strtoul(mEscapeBuffer + 2, &end, 10));
+            uint8_t flags = static_cast<uint8_t>(strtoul(buf + 2, &end, 10));
             kittyPushFlags(flags & 0x1F);
         } else if (isEquals) {
             // CSI = flags u — set flags
             // CSI = flags ; mode u — set flags with mode (1=replace, 2=OR, 3=AND NOT)
             char *end;
-            uint8_t flags = static_cast<uint8_t>(strtoul(mEscapeBuffer + 2, &end, 10));
+            uint8_t flags = static_cast<uint8_t>(strtoul(buf + 2, &end, 10));
             int mode = 1;
             if (*end == ';') {
                 mode = static_cast<int>(strtoul(end + 1, &end, 10));
@@ -1538,15 +1538,15 @@ void TerminalEmulator::processCSI()
             // CSI < number u — pop N entries from stack
             char *end;
             int count = 1;
-            if (mEscapeIndex > 3) {
-                count = static_cast<int>(strtoul(mEscapeBuffer + 2, &end, 10));
+            if (len > 3) {
+                count = static_cast<int>(strtoul(buf + 2, &end, 10));
                 if (count < 1) count = 1;
             }
             kittyPopFlags(count);
-        } else if (mEscapeIndex == 2) {
+        } else if (len == 2) {
             action.type = Action::RestoreCursorPosition;
         } else {
-            sLog().warn("Ignoring CSI u variant: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            sLog().warn("Ignoring CSI u variant: {}", toPrintable(buf, len));
         }
         break;
     case SM: // Set Mode
@@ -1554,14 +1554,14 @@ void TerminalEmulator::processCSI()
             action.type = Action::SetMode;
             // Parse the mode number
             char *end;
-            action.count = strtoul(mEscapeBuffer + 2, &end, 10); // skip "[?"
+            action.count = strtoul(buf + 2, &end, 10); // skip "[?"
         } else {
             char *end;
-            unsigned long mode = strtoul(mEscapeBuffer + 1, &end, 10); // skip "["
+            unsigned long mode = strtoul(buf + 1, &end, 10); // skip "["
             if (mode == 4) {
                 mState->insertMode = true;
             } else {
-                sLog().warn("Ignoring non-private SM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+                sLog().warn("Ignoring non-private SM: {}", toPrintable(buf, len));
             }
         }
         break;
@@ -1569,14 +1569,14 @@ void TerminalEmulator::processCSI()
         if (isPrivate) {
             action.type = Action::ResetMode;
             char *end;
-            action.count = strtoul(mEscapeBuffer + 2, &end, 10);
+            action.count = strtoul(buf + 2, &end, 10);
         } else {
             char *end;
-            unsigned long mode = strtoul(mEscapeBuffer + 1, &end, 10); // skip "["
+            unsigned long mode = strtoul(buf + 1, &end, 10); // skip "["
             if (mode == 4) {
                 mState->insertMode = false;
             } else {
-                sLog().warn("Ignoring non-private RM: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+                sLog().warn("Ignoring non-private RM: {}", toPrintable(buf, len));
             }
         }
         break;
@@ -1584,8 +1584,8 @@ void TerminalEmulator::processCSI()
         if (isPrivate) {
             // CSI ? Pm r — XTRESTORE: restore DEC private mode values
             std::vector<int> modes;
-            const char* p = mEscapeBuffer + 2;
-            const char* end = mEscapeBuffer + mEscapeIndex - 1;
+            const char* p = buf + 2;
+            const char* end = buf + len - 1;
             while (p < end) {
                 char* next;
                 unsigned long v = strtoul(p, &next, 10);
@@ -1600,8 +1600,8 @@ void TerminalEmulator::processCSI()
         // CSI Pt ; Pb r
         int top = 1, bottom = mHeight;
         char *end;
-        unsigned long t = strtoul(mEscapeBuffer + 1, &end, 10);
-        if (end != mEscapeBuffer + 1 && t > 0) top = static_cast<int>(t);
+        unsigned long t = strtoul(buf + 1, &end, 10);
+        if (end != buf + 1 && t > 0) top = static_cast<int>(t);
         if (*end == ';') {
             unsigned long b = strtoul(end + 1, &end, 10);
             if (b > 0) bottom = static_cast<int>(b);
@@ -1619,11 +1619,11 @@ void TerminalEmulator::processCSI()
         if (isSecondary) {
             // CSI > c — Secondary DA: VT500-class, xterm version 2500
             writeToOutput("\x1b[>64;2500;0c", 13);
-        } else if (mEscapeIndex == 2 || (mEscapeIndex == 3 && mEscapeBuffer[1] == '0')) {
+        } else if (len == 2 || (len == 3 && buf[1] == '0')) {
             // CSI c or CSI 0 c — Primary DA: VT420 with common features
             writeToOutput("\x1b[?64;1;2;6;22c", 16);
         } else {
-            sLog().warn("Ignoring DA variant: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            sLog().warn("Ignoring DA variant: {}", toPrintable(buf, len));
         }
         break;
     case 'q':
@@ -1635,10 +1635,10 @@ void TerminalEmulator::processCSI()
             // CSI Ps SP q — DECSCUSR (Set Cursor Style)
             {
                 int ps = 0;
-                if (mEscapeIndex > 3) {
+                if (len > 3) {
                     // Parse parameter between '[' and ' q'
                     char* end;
-                    ps = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
+                    ps = static_cast<int>(strtoul(buf + 1, &end, 10));
                 }
                 switch (ps) {
                 case 0: mState->cursorShape = mDefaults.cursorShape; break;
@@ -1656,15 +1656,15 @@ void TerminalEmulator::processCSI()
     case 'x': {
         // CSI Ps x with no intermediate is DECREQTPARM (Request Terminal Parameters).
         // With an intermediate ($, *, ' ...) it is a different command (DECFRA/DECSACE/etc).
-        char prev = mEscapeIndex >= 2 ? mEscapeBuffer[mEscapeIndex - 2] : 0;
+        char prev = len >= 2 ? buf[len - 2] : 0;
         if (prev >= 0x20 && prev <= 0x2f) {
-            sLog().warn("Ignoring CSI x with intermediate: {}", toPrintable(mEscapeBuffer, mEscapeIndex));
+            sLog().warn("Ignoring CSI x with intermediate: {}", toPrintable(buf, len));
             break;
         }
         int ps = 0;
-        if (mEscapeIndex > 2) {
+        if (len > 2) {
             char* end;
-            ps = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
+            ps = static_cast<int>(strtoul(buf + 1, &end, 10));
         }
         if (ps == 0 || ps == 1) {
             // Reply: CSI Psol;1;1;128;128;1;0 x
@@ -1680,7 +1680,7 @@ void TerminalEmulator::processCSI()
     case 't': {
         // XTWINOPS — handle push/pop title/icon (22/23 with Ps: 0=both, 1=icon, 2=title)
         char* end;
-        int op = static_cast<int>(strtoul(mEscapeBuffer + 1, &end, 10));
+        int op = static_cast<int>(strtoul(buf + 1, &end, 10));
         int ps = 0; // default: both
         if (*end == ';') ps = static_cast<int>(strtoul(end + 1, &end, 10));
         const bool doIcon  = (ps == 0 || ps == 1);
@@ -1729,10 +1729,10 @@ void TerminalEmulator::processCSI()
         // CSI ? Ps $ p — DECRQM (Request Mode, private)
         // Response: CSI ? Ps ; Pm $ y
         //   Pm: 0=not recognized, 1=set, 2=reset
-        if (isPrivate && mEscapeIndex >= 5 &&
-            mEscapeBuffer[mEscapeIndex - 2] == '$') {
+        if (isPrivate && len >= 5 &&
+            buf[len - 2] == '$') {
             char* end;
-            int ps = static_cast<int>(strtoul(mEscapeBuffer + 2, &end, 10));
+            int ps = static_cast<int>(strtoul(buf + 2, &end, 10));
             int pm = 0; // not recognized
             switch (ps) {
             case 1:    pm = mState->cursorKeyMode ? 1 : 2; break;
@@ -1761,8 +1761,8 @@ void TerminalEmulator::processCSI()
                 "\x1b[?%d;%d$y", ps, pm);
             writeToOutput(response, rlen);
         } else if (!isPrivate && !isSecondary && !isEquals && !isLess &&
-                   mEscapeIndex >= 3 &&
-                   mEscapeBuffer[mEscapeIndex - 2] == '!') {
+                   len >= 3 &&
+                   buf[len - 2] == '!') {
             // CSI ! p — DECSTR (Soft Terminal Reset). Start from defaults,
             // then restore the fields VT510/xterm say DECSTR must not touch:
             // cursor position & visible style, plus xterm extensions (mouse,
@@ -1787,7 +1787,7 @@ void TerminalEmulator::processCSI()
             std::fill(mTabStops.begin(), mTabStops.end(), 0);
             for (int x = 0; x < mWidth; x += 8) mTabStops[x] = 1;
         } else {
-            sLog().warn("Ignoring CSI p variant: \"{}\"", toPrintable(mEscapeBuffer, mEscapeIndex));
+            sLog().warn("Ignoring CSI p variant: \"{}\"", toPrintable(buf, len));
         }
         break;
     }
@@ -1831,13 +1831,15 @@ void TerminalEmulator::processCSI()
         break;
     }
     default:
-        sLog().error("Unknown CSI final byte {:#x}: \"{}\"", static_cast<unsigned char>(finalByte), toPrintable(mEscapeBuffer, mEscapeIndex));
+        sLog().error("Unknown CSI final byte {:#x}: \"{}\"", static_cast<unsigned char>(finalByte), toPrintable(buf, len));
         break;
     }
 
     if (action.type != Action::Invalid)
         onAction(&action);
 
+    // Parser-state cleanup. processCSI still owns this for now; phase 3
+    // will hoist it into the caller when the parse/apply split lands.
     mEscapeIndex = 0;
 #ifndef NDEBUG
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));

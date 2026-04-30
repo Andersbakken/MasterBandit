@@ -331,38 +331,38 @@ void TerminalEmulator::placeImageInGrid(uint32_t imageId, uint32_t placementId,
 }
 
 // --- OSC processing ---
-void TerminalEmulator::processStringSequence()
+void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body)
 {
-    if (mStringSequenceType == DCS) {
-        processDCS();
+    if (kind == DCS) {
+        processDCS(body);
         return;
     }
-    if (mStringSequenceType == APC) {
-        processAPC();
+    if (kind == APC) {
+        processAPC(body);
         return;
     }
-    if (mStringSequenceType != OSX) {
-        spdlog::warn("Ignoring non-OSC string sequence type {:#x} (len={})", mStringSequenceType, mStringSequence.size());
+    if (kind != OSX) {
+        spdlog::warn("Ignoring non-OSC string sequence type {:#x} (len={})", kind, body.size());
         return;
     }
 
-    // mStringSequence format: "<number>;<payload>" or just "<number>" (no-payload form)
-    size_t semi = mStringSequence.find(';');
+    // body format: "<number>;<payload>" or just "<number>" (no-payload form)
+    size_t semi = body.find(';');
     int oscNum = 0;
     std::string_view payload;
-    if (semi == std::string::npos) {
+    if (semi == std::string_view::npos) {
         // No semicolon: number-only form (e.g. OSC 104 ST for palette reset-all)
-        for (char c : mStringSequence) {
+        for (char c : body) {
             if (c < '0' || c > '9') return;
             oscNum = oscNum * 10 + (c - '0');
         }
     } else {
         for (size_t i = 0; i < semi; ++i) {
-            char c = mStringSequence[i];
+            char c = body[i];
             if (c < '0' || c > '9') return;
             oscNum = oscNum * 10 + (c - '0');
         }
-        payload = std::string_view(mStringSequence.data() + semi + 1, mStringSequence.size() - semi - 1);
+        payload = body.substr(semi + 1);
     }
 
     switch (oscNum) {

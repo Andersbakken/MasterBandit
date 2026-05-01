@@ -237,6 +237,63 @@ TEST_CASE("backward drag from right half of cell includes that cell")
     CHECK(sel.find("BBBB") != std::string::npos);
 }
 
+TEST_CASE("autowrapped line copies as one logical line (no embedded newline)")
+{
+    // Autowrap at 10 cols produces three soft-wrapped rows; selecting all of
+    // them must copy a single string with no '\n', because the wrap is a
+    // visual artifact, not part of the source text.
+    TestTerminal t(10, 5);
+    t.feed("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");  // 30 chars → rows 0..2
+
+    auto press = makeMouseEvent(0, 0);
+    auto move  = makeMouseEvent(9, 2, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(9, 2, LeftButton, /*xRightHalf=*/true);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+
+    const std::string sel = t.term.selectedText();
+    CHECK(sel == "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
+    CHECK(sel.find('\n') == std::string::npos);
+}
+
+TEST_CASE("explicit CR/LF separated lines preserve newlines on copy")
+{
+    // Counterpart to the autowrap case: when the source emits real line
+    // breaks (\r\n), continued_ stays false on each row and copy must
+    // preserve them as '\n'.
+    TestTerminal t(20, 5);
+    t.feed("First\r\nSecond\r\nThird");
+
+    auto press = makeMouseEvent(0, 0);
+    auto move  = makeMouseEvent(4, 2, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(4, 2, LeftButton, /*xRightHalf=*/true);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "First\nSecond\nThird");
+}
+
+TEST_CASE("autowrap row that exactly fills the line still joins on copy")
+{
+    // Edge case: line of length == cols does NOT autowrap on its own (cursor
+    // sits at the right edge with wrapPending), but if more content follows
+    // the next char triggers the wrap. The first row's continued_ should
+    // still be set so a select-all returns one joined string.
+    TestTerminal t(5, 5);
+    t.feed("HELLOWORLD");  // exactly fills row 0, wraps to row 1
+
+    auto press = makeMouseEvent(0, 0);
+    auto move  = makeMouseEvent(4, 1, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(4, 1, LeftButton, /*xRightHalf=*/true);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "HELLOWORLD");
+}
+
 // (Eviction-past-archive-cap drop is exercised by hasSelection() /
 // resolveSelection() returning empty, but a unit test for it requires
 // flooding past `maxArchiveRows` (100 000 by default), which is too slow.

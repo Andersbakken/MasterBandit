@@ -803,26 +803,50 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             return {rowPtr(phys), cols_, continued_[phys], ex.empty() ? nullptr : &ex};
         };
 
-        // Step 2 & 3: Join logical lines and re-wrap at new width, tracking cursor
-        std::vector<Cell> dstCells;
-        std::vector<bool> dstContinued;
-        std::vector<std::unordered_map<int, CellExtra>> dstExtras;
+        // Step 2 & 3: Join logical lines and re-wrap at new width, tracking cursor.
+        //
+        // Direct-write reflow: rather than build an intermediate vector<Cell>
+        // and memcpy it into a freshly-allocated ring at the end, allocate
+        // segments up-front (lazily growing as we go) and write straight into
+        // them. Saves one full pass over the cell data — see PERF note below.
+        std::vector<Cell*> newSegments;
+        std::vector<bool> newContinued;
+        std::vector<std::unordered_map<int, CellExtra>> newRingExtras;
         std::vector<int> dstSrcIdx;  // source row index that contributed each dst row (first cell wins)
 
         int dstRow = 0;
         int dstCol = 0;
         int currentSrcIdx = 0;
 
+        // Grow newSegments / newContinued / newRingExtras to cover `row`.
+        auto growToFit = [&](int row) {
+            int needSegs = (row >> SEG_SHIFT) + 1;
+            int needRows = needSegs << SEG_SHIFT;
+            while (static_cast<int>(newSegments.size()) < needSegs) {
+                Cell* seg = static_cast<Cell*>(
+                    ::operator new(static_cast<size_t>(SEG_SIZE) * newCols * sizeof(Cell)));
+                std::memset(seg, 0, static_cast<size_t>(SEG_SIZE) * newCols * sizeof(Cell));
+                newSegments.push_back(seg);
+            }
+            if (static_cast<int>(newContinued.size()) < needRows) {
+                newContinued.resize(needRows, false);
+                newRingExtras.resize(needRows);
+            }
+        };
+
+        // Cell pointer for write — caller must have already called growToFit(idx).
+        auto newRowPtr = [&](int idx) -> Cell* {
+            return newSegments[idx >> SEG_SHIFT] + (idx & SEG_MASK) * newCols;
+        };
+
         auto startNewDstRow = [&]() {
-            dstCells.resize(static_cast<size_t>(dstRow + 1) * newCols);
-            dstExtras.resize(dstRow + 1);
-            dstContinued.resize(dstRow + 1, false);
+            growToFit(dstRow);
             if (static_cast<int>(dstSrcIdx.size()) <= dstRow)
                 dstSrcIdx.resize(dstRow + 1, -1);
         };
 
         auto finishDstRow = [&](bool cont) {
-            dstContinued[dstRow] = cont;
+            newContinued[dstRow] = cont;
             dstRow++;
             dstCol = 0;
         };
@@ -868,7 +892,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                     const Cell& cell = sr.cells[sc];
 
                     if (cell.attrs.wide() && dstCol == newCols - 1) {
-                        dstCells[static_cast<size_t>(dstRow) * newCols + dstCol] = Cell{' ', CellAttrs{}};
+                        newRowPtr(dstRow)[dstCol] = Cell{' ', CellAttrs{}};
                         finishDstRow(true);
                         startNewDstRow();
                     }
@@ -880,12 +904,12 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                         cursor->dstX = dstCol;
                     }
 
-                    dstCells[static_cast<size_t>(dstRow) * newCols + dstCol] = cell;
+                    newRowPtr(dstRow)[dstCol] = cell;
 
                     if (sr.extras) {
                         auto eit = sr.extras->find(sc);
                         if (eit != sr.extras->end()) {
-                            dstExtras[dstRow][dstCol] = eit->second;
+                            newRingExtras[dstRow][dstCol] = eit->second;
                         }
                     }
 
@@ -894,7 +918,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
                     if (cell.attrs.wide() && dstCol < newCols) {
                         CellAttrs spacerAttrs{};
                         spacerAttrs.setWideSpacer(true);
-                        dstCells[static_cast<size_t>(dstRow) * newCols + dstCol] = Cell{0, spacerAttrs};
+                        newRowPtr(dstRow)[dstCol] = Cell{0, spacerAttrs};
                         dstCol++;
                     }
 
@@ -918,7 +942,7 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             if (dstCol > 0 || dstRow == 0) {
                 finishDstRow(false);
                 startNewDstRow();
-            } else if (dstCol == 0 && dstRow > 0 && !dstContinued[dstRow - 1]) {
+            } else if (dstCol == 0 && dstRow > 0 && !newContinued[dstRow - 1]) {
                 finishDstRow(false);
                 startNewDstRow();
             } else if (dstCol >= newCols) {
@@ -939,22 +963,29 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
         }
 
         // Pre-existing archive content has been fully consumed as source and
-        // re-serialized into dstCells. Clear it so subsequent push_back
-        // installs the new-width versions without duplicating the old ones.
-        // (Originally this clear was missing, producing stale old-width
-        // entries at the head of archive_ after reflow.)
+        // re-serialized into newSegments. Clear so subsequent push_back installs
+        // the new-width versions without duplicating the old ones. (Originally
+        // this clear was missing, producing stale old-width entries at the head
+        // of archive_ after reflow.)
         archive_.clear();
         preArchiveSize = 0;
 
-        // Step 4: Install into ring
+        // Step 4: Eviction (in place) + commit.
+        //
+        // PERF: rows already live at their final ring slots in newSegments —
+        // no row-shifting, no second memcpy out of an intermediate vector.
+        // Slots [0, archiveEvict) become "dead" after eviction (their cells
+        // are still in storage but historyTier1ToPhysical's offset skips them).
+        // We don't waste much: those segments would be needed anyway if
+        // ringCapacity is rounded to a power of two larger than totalDstRows,
+        // and they get reused on subsequent ring growth.
         int newScreenRows = newRows;
         int newHistoryCount = std::max(0, totalDstRows - newScreenRows);
 
         int archiveEvict = newHistoryCount - tier1Capacity_;
         if (archiveEvict > 0) {
             for (int i = 0; i < archiveEvict && i < newHistoryCount; ++i) {
-                Cell* rowCells = &dstCells[static_cast<size_t>(i) * newCols];
-                archive_.push_back({serializeRow(rowCells, newCols), dstContinued[i]});
+                archive_.push_back({serializeRow(newRowPtr(i), newCols), newContinued[i]});
                 if (static_cast<int>(archive_.size()) > maxArchiveRows_) {
                     archive_.pop_front();
                     ++archivePopsInReflow;
@@ -962,45 +993,45 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             }
             if (cursor) cursor->dstY -= archiveEvict;
             newHistoryCount -= archiveEvict;
-            int keepStart = archiveEvict;
-            int keepCount = totalDstRows - archiveEvict;
-            std::vector<Cell> trimmedCells(static_cast<size_t>(keepCount) * newCols);
-            std::memcpy(trimmedCells.data(), &dstCells[static_cast<size_t>(keepStart) * newCols],
-                        static_cast<size_t>(keepCount) * newCols * sizeof(Cell));
-            dstCells = std::move(trimmedCells);
-            std::vector<bool> trimmedCont(dstContinued.begin() + keepStart, dstContinued.end());
-            dstContinued = std::move(trimmedCont);
-            std::vector<std::unordered_map<int, CellExtra>> trimmedExtras(
-                std::make_move_iterator(dstExtras.begin() + keepStart),
-                std::make_move_iterator(dstExtras.end()));
-            dstExtras = std::move(trimmedExtras);
-            totalDstRows = keepCount;
         }
 
         int ringTotal = newHistoryCount + newScreenRows;
-        int newCap = (tier1Capacity_ < std::numeric_limits<int>::max() / 2)
-            ? roundUpPow2(std::max(ringTotal, tier1Capacity_ + newRows) + SEG_SIZE)
-            : roundUpPow2(ringTotal + SEG_SIZE);
 
-        // Reallocate segments for new column width. Zero-init all segments so
-        // screen rows not populated from dstCells below contain valid blank cells.
+        // Final ringCapacity_: power-of-two, multiple of SEG_SIZE, large enough
+        // to hold totalDstRows (so ringHead_ = totalDstRows fits without
+        // wrapping over live data). Match growRing's slack policy of +SEG_SIZE.
+        int rowsAlreadyAllocated = static_cast<int>(newSegments.size()) << SEG_SHIFT;
+        int rowsNeeded = (tier1Capacity_ < std::numeric_limits<int>::max() / 2)
+            ? std::max(totalDstRows + SEG_SIZE, tier1Capacity_ + newRows + SEG_SIZE)
+            : (totalDstRows + SEG_SIZE);
+        int newCap = roundUpPow2(std::max(rowsAlreadyAllocated, rowsNeeded));
+
+        int newNumSegs = newCap >> SEG_SHIFT;
+        while (static_cast<int>(newSegments.size()) < newNumSegs) {
+            Cell* seg = static_cast<Cell*>(
+                ::operator new(static_cast<size_t>(SEG_SIZE) * newCols * sizeof(Cell)));
+            std::memset(seg, 0, static_cast<size_t>(SEG_SIZE) * newCols * sizeof(Cell));
+            newSegments.push_back(seg);
+        }
+        newRingExtras.resize(newCap);
+        newContinued.resize(newCap, false);
+
+        // Commit: free old ring (still at old cols), then take ownership of new.
         freeSegments();
         cols_ = newCols;
-        allocSegments(0, newCap >> SEG_SHIFT);
-        for (Cell* seg : segments_) {
-            std::memset(seg, 0, static_cast<size_t>(SEG_SIZE) * cols_ * sizeof(Cell));
-        }
-        ringExtras_.assign(newCap, {});
-        continued_.assign(newCap, false);
-
-        for (int i = 0; i < ringTotal && i < totalDstRows; ++i) {
-            std::memcpy(rowPtr(i), &dstCells[static_cast<size_t>(i) * newCols], newCols * sizeof(Cell));
-            ringExtras_[i] = std::move(dstExtras[i]);
-            continued_[i] = dstContinued[i];
-        }
-
+        segments_   = std::move(newSegments);
+        ringExtras_ = std::move(newRingExtras);
+        continued_  = std::move(newContinued);
         ringCapacity_ = newCap;
-        ringHead_ = ringTotal;
+        // ringHead_ is "one past the last screen row." Two regimes:
+        //  - dst content fills ≥ screen: dst rows live at slots [evict,
+        //    totalDstRows); screen rows are the trailing newScreenRows of
+        //    them; ringHead_ = totalDstRows.
+        //  - dst content < screen (trivial reflow of a near-empty buffer):
+        //    dst at slots [0, totalDstRows), the rest of the screen is the
+        //    blank pad already memset into newSegments; ringHead_ = ringTotal
+        //    so screenRowToPhysical(0) == 0 and lines up with the dst.
+        ringHead_     = std::max(totalDstRows, ringTotal) & ringMask();
         historyCount_ = newHistoryCount;
         screenHeight_ = newRows;
 
@@ -1034,8 +1065,11 @@ void Document::resize(int newCols, int newRows, CursorTrack* cursor) {
             int dstBase = std::max(0, archiveEvict);
             // Only ring slots that received actual dst content inherit their
             // src's line id; excess slots at the tail are freshly-blanked
-            // screen rows and get new ids.
-            int ringContentRows = std::min(ringTotalNow, std::max(0, totalDstRows - dstBase));
+            // screen rows and get new ids. trimmedTotal mimics the previous
+            // implementation's post-eviction-trim totalDstRows (origTotal -
+            // archiveEvict); we no longer trim physically, so compute it here.
+            int trimmedTotal = totalDstRows - std::max(0, archiveEvict);
+            int ringContentRows = std::min(ringTotalNow, std::max(0, trimmedTotal - dstBase));
             for (int i = 0; i < ringContentRows; ++i) {
                 newLineIds.push_back(idForDst(dstBase + i));
             }

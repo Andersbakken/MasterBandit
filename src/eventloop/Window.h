@@ -3,6 +3,7 @@
 #include <dawn/webgpu_cpp.h>
 
 #include <functional>
+#include <optional>
 #include <string>
 
 class Window {
@@ -27,6 +28,20 @@ public:
     // X11 primary selection (middle-click paste) — no-op on non-X11
     virtual void        setPrimarySelection(const std::string& text) { (void)text; }
     virtual std::string getPrimarySelection() const { return {}; }
+
+    // Async selection read. The callback fires exactly once on the main thread
+    // with the resolved text or std::nullopt (refused/timed-out/no-owner).
+    // Default implementation calls the synchronous getter inline — backends
+    // without an async path keep working without changes.
+    enum class SelectionSource { Clipboard, Primary };
+    using SelectionCallback = std::function<void(std::optional<std::string>)>;
+    virtual void requestSelection(SelectionSource src, SelectionCallback cb)
+    {
+        std::string text = (src == SelectionSource::Primary) ? getPrimarySelection()
+                                                              : getClipboard();
+        if (text.empty()) cb(std::nullopt);
+        else              cb(std::move(text));
+    }
 
     // Key name for a given platform key code (for Kitty keyboard protocol)
     virtual std::string keyName(int keycode) const { (void)keycode; return {}; }

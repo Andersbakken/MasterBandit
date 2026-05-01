@@ -33,6 +33,7 @@ public:
     std::string getClipboard() const override;
     void        setPrimarySelection(const std::string& text) override;
     std::string getPrimarySelection() const override;
+    void        requestSelection(SelectionSource src, SelectionCallback cb) override;
 
     std::string keyName(int keycode) const override;
     uint32_t shiftedKeyCodepoint(int keycode) const override;
@@ -77,7 +78,7 @@ private:
 
     // Selection helpers
     std::string readSelectionProperty(xcb_atom_t property) const;
-    void        requestSelection(xcb_atom_t selection) const;
+    void        sweepStaleSelectionRequests();
 
     EventLoop& loop_;
 
@@ -146,6 +147,18 @@ private:
     // Pending GetClipboard request (synchronous via xcb_poll_for_special_event)
     mutable std::string pendingClipboard_;
     mutable bool        clipboardPending_ = false;
+
+    // Async selection requests dispatched via requestSelection(). Each entry
+    // is matched to an arriving SELECTION_NOTIFY by `selection`; the callback
+    // is invoked once with text or std::nullopt (timeout/refusal). Capacity
+    // is small in practice — at most one per selection in-flight.
+    struct PendingSelectionRequest {
+        xcb_atom_t selection;
+        SelectionCallback cb;
+        uint64_t deadlineMs;  // monotonic ms (steady_clock) when this expires
+    };
+    std::vector<PendingSelectionRequest> pendingSelections_;
+    EventLoop::TimerId selectionSweepTimer_ = 0;
 
     // Key repeat detection: track last key press event sequence + keycode
     xcb_keycode_t lastPressKeycode_ = 0;

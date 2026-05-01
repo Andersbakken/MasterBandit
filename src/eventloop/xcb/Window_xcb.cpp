@@ -24,6 +24,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 
@@ -492,6 +494,12 @@ bool XCBWindow::create(int width, int height, const std::string& title)
 
 void XCBWindow::destroy()
 {
+    if (selectionSweepTimer_ != 0) {
+        loop_.removeTimer(selectionSweepTimer_);
+        selectionSweepTimer_ = 0;
+    }
+    pendingSelections_.clear();  // drop callbacks; nothing to deliver to during shutdown
+
     if (conn_) {
         int fd = xcb_get_file_descriptor(conn_);
         loop_.removeFd(fd);
@@ -1122,10 +1130,90 @@ void XCBWindow::handleSelectionRequest(xcb_selection_request_event_t* ev)
     xcb_flush(conn_);
 }
 
+// Async selection: see Window.h::requestSelection. Callers fire-and-forget;
+// completion lands here when the SELECTION_NOTIFY event arrives, or via
+// sweepStaleSelectionRequests() when the deadline passes.
+//
+// Coexistence note: the synchronous getPrimarySelection() / getClipboard()
+// paths still poll the connection directly and may consume a SELECTION_NOTIFY
+// meant for a pending async request. In practice the sync paths are only
+// hit by the JS clipboard API and OSC 52 — neither typically races with a
+// user-driven middle-click paste. Routing those through the async API too
+// is the obvious next step.
+static uint64_t monotonicMs()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void XCBWindow::requestSelection(SelectionSource src, SelectionCallback cb)
+{
+    if (!conn_) { cb(std::nullopt); return; }
+    xcb_atom_t selection = (src == SelectionSource::Primary) ? atomPrimary_ : atomClipboard_;
+
+    // If we own the selection, satisfy from in-memory content immediately.
+    xcb_get_selection_owner_cookie_t c = xcb_get_selection_owner(conn_, selection);
+    xcb_get_selection_owner_reply_t* r = xcb_get_selection_owner_reply(conn_, c, nullptr);
+    if (r && r->owner == window_) {
+        const std::string& s = (selection == atomPrimary_) ? primaryContent_ : clipboardContent_;
+        free(r);
+        if (s.empty()) cb(std::nullopt);
+        else           cb(s);
+        return;
+    }
+    if (r) free(r);
+
+    xcb_convert_selection(conn_, window_, selection,
+                          atomUtf8String_, atomMbSelection_, XCB_CURRENT_TIME);
+    xcb_flush(conn_);
+
+    constexpr uint64_t kTimeoutMs = 5000;
+    pendingSelections_.push_back({selection, std::move(cb), monotonicMs() + kTimeoutMs});
+
+    if (selectionSweepTimer_ == 0) {
+        selectionSweepTimer_ = loop_.addTimer(250, true,
+            [this]() { sweepStaleSelectionRequests(); });
+    }
+}
+
+void XCBWindow::sweepStaleSelectionRequests()
+{
+    if (pendingSelections_.empty()) return;
+    const uint64_t now = monotonicMs();
+    std::vector<SelectionCallback> toFire;
+    pendingSelections_.erase(
+        std::remove_if(pendingSelections_.begin(), pendingSelections_.end(),
+            [&](PendingSelectionRequest& p) {
+                if (p.deadlineMs <= now) {
+                    toFire.push_back(std::move(p.cb));
+                    return true;
+                }
+                return false;
+            }),
+        pendingSelections_.end());
+    if (pendingSelections_.empty() && selectionSweepTimer_ != 0) {
+        loop_.removeTimer(selectionSweepTimer_);
+        selectionSweepTimer_ = 0;
+    }
+    for (auto& cb : toFire) cb(std::nullopt);
+}
+
 void XCBWindow::handleSelectionNotify(xcb_selection_notify_event_t* ev)
 {
-    // Handled inline in getClipboard/getPrimarySelection blocking loop
-    (void)ev;
+    auto it = std::find_if(pendingSelections_.begin(), pendingSelections_.end(),
+        [&](const PendingSelectionRequest& p) { return p.selection == ev->selection; });
+    if (it == pendingSelections_.end()) return;  // unsolicited or already swept
+    SelectionCallback cb = std::move(it->cb);
+    pendingSelections_.erase(it);
+    if (pendingSelections_.empty() && selectionSweepTimer_ != 0) {
+        loop_.removeTimer(selectionSweepTimer_);
+        selectionSweepTimer_ = 0;
+    }
+
+    if (ev->property == XCB_ATOM_NONE) { cb(std::nullopt); return; }
+    std::string text = readSelectionProperty(atomMbSelection_);
+    if (text.empty()) cb(std::nullopt);
+    else              cb(std::move(text));
 }
 
 // ---------- key name ----------

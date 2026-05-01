@@ -505,9 +505,18 @@ void PlatformDawn::executeAction(const Action::Any& action)
         [&](const Action::PasteSelection&) {
             Terminal* term = activeTerm();
             if (!term || !window_) return;
-            std::string text = window_->getPrimarySelection();
-            if (text.empty()) text = window_->getClipboard();
-            if (!text.empty()) term->pasteText(text);
+            const Uuid nodeId = term->nodeId();
+            auto pasteIfStillAlive = [this, nodeId](std::optional<std::string> text) {
+                if (!text || text->empty()) return;
+                if (auto* tt = scriptEngine_.terminal(nodeId)) tt->pasteText(*text);
+            };
+            window_->requestSelection(Window::SelectionSource::Primary,
+                [this, paste = pasteIfStillAlive]
+                (std::optional<std::string> text) {
+                    if (text && !text->empty()) { paste(std::move(text)); return; }
+                    if (window_)
+                        window_->requestSelection(Window::SelectionSource::Clipboard, paste);
+                });
         },
         [&](const Action::ScriptAction& a) {
             if (!scriptEngine_.isActionRegistered(a.name)) {

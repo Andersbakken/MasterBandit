@@ -645,14 +645,28 @@ void InputController::onMouseButton(int button, int action, int mods)
                         return;
                     }
 
-                    // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere
+                    // PasteSelection: X11 primary selection on Linux, clipboard fallback elsewhere.
+                    // Async — fire convert_selection, return immediately. The callback
+                    // lands when SELECTION_NOTIFY arrives (handleSelectionNotify) or when
+                    // the deadline expires (sweepStaleSelectionRequests). Re-resolves the
+                    // terminal by nodeId at completion in case the pane was closed mid-flight.
                     if (std::holds_alternative<Action::PasteSelection>(act)) {
                         auto* t = dynamic_cast<Terminal*>(term);
-                        if (t && window) {
-                            std::string text = window->getPrimarySelection();
-                            if (text.empty()) text = window->getClipboard();
-                            if (!text.empty()) t->pasteText(text);
-                        }
+                        if (!t || !window) return;
+                        const Uuid nodeId = t->nodeId();
+                        auto pasteIfStillAlive = [this, nodeId](std::optional<std::string> text) {
+                            if (!text || text->empty()) return;
+                            if (auto* tt = platform_->scriptEngine_.terminal(nodeId))
+                                tt->pasteText(*text);
+                        };
+                        window->requestSelection(Window::SelectionSource::Primary,
+                            [this, nodeId, paste = pasteIfStillAlive]
+                            (std::optional<std::string> text) {
+                                if (text && !text->empty()) { paste(std::move(text)); return; }
+                                // Primary empty/refused/timed-out → fall back to clipboard.
+                                if (Window* w = platform_->window_.get())
+                                    w->requestSelection(Window::SelectionSource::Clipboard, paste);
+                            });
                         return;
                     }
 

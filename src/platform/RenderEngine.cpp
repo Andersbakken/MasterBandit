@@ -24,6 +24,36 @@
 
 static void appendUtf8(std::string& s, uint32_t cp) { utf8::append(s, cp); }
 
+// Resolve `glyphId` in `font`, falling back to a font-specific replacement
+// glyph (typically U+FFFD shaped against the same font) when the lookup
+// misses for a renderable codepoint. Returns false when the cell should not
+// be drawn: gid==0, missing entry for a substitution / null / whitespace
+// codepoint, or no replacement available.
+template <typename ReplacementFn>
+static bool resolveCellGlyph(FontData& font,
+                             uint64_t glyphId,
+                             char32_t codepoint,
+                             bool isSubstitution,
+                             ReplacementFn&& getReplacement,
+                             GlyphInfo& out)
+{
+    if ((glyphId & 0xFFFFFFFFu) == 0u) return false;
+    {
+        std::shared_lock lock(font.mutex);
+        auto it = font.glyphs.find(glyphId);
+        if (it != font.glyphs.end() && !it->second.is_empty) {
+            out = it->second;
+            return true;
+        }
+    }
+    if (isSubstitution || codepoint == 0 || unicode::isSpace(codepoint)) return false;
+    if (const GlyphInfo* rep = getReplacement()) {
+        out = *rep;
+        return true;
+    }
+    return false;
+}
+
 RenderEngine::RenderEngine() = default;
 
 RenderEngine::~RenderEngine()
@@ -412,31 +442,12 @@ void RenderEngine::resolveRow(PaneRenderPrivate& rs, int row, FontData* font, fl
             }
 
             uint64_t glyphId = sg.glyphId;
-            if ((glyphId & 0xFFFFFFFF) == 0) {
+            char32_t wc = (cellCol >= 0 && cellCol < cols) ? rowData[cellCol].wc : 0;
+            GlyphInfo gi;
+            if (!resolveCellGlyph(*font, glyphId, wc, sg.isSubstitution,
+                                  getReplacementGlyph, gi)) {
                 penX += sg.xAdvance;
                 continue;
-            }
-            GlyphInfo gi;
-            {
-                std::shared_lock lock(font->mutex);
-                auto git = font->glyphs.find(glyphId);
-                if (git == font->glyphs.end() || git->second.is_empty) {
-                    lock.unlock();
-                    char32_t wc = (cellCol >= 0 && cellCol < cols) ? rowData[cellCol].wc : 0;
-                    bool replaced = false;
-                    if (!sg.isSubstitution && wc != 0 && !unicode::isSpace(wc)) {
-                        if (const GlyphInfo* rep = getReplacementGlyph()) {
-                            gi = *rep;
-                            replaced = true;
-                        }
-                    }
-                    if (!replaced) {
-                        penX += sg.xAdvance;
-                        continue;
-                    }
-                } else {
-                    gi = git->second;
-                }
             }
 
             if (gi.is_colr) {
@@ -549,13 +560,20 @@ void RenderEngine::renderTabBar()
     if (!font) return;
     float scale = frameState_.tabBarFontSize / font->baseSize;
 
-    auto resolveTabBarGlyph = [&](const ShapedText& shaped) -> const GlyphInfo* {
-        if (shaped.glyphs.empty()) return nullptr;
-        uint64_t glyphId = shaped.glyphs[0].glyphId;
-        if ((glyphId & 0xFFFFFFFF) == 0) return nullptr;
-        auto it = font->glyphs.find(glyphId);
+    GlyphInfo tabBarReplacementGlyph{};
+    bool tabBarReplacementGlyphReady = false;
+    auto getTabBarReplacementGlyph = [&]() -> const GlyphInfo* {
+        if (tabBarReplacementGlyphReady)
+            return tabBarReplacementGlyph.is_empty ? nullptr : &tabBarReplacementGlyph;
+        tabBarReplacementGlyphReady = true;
+        const ShapedText& rep = platform_->textSystem_.shapeText(
+            frameState_.tabBarFontName, "\xEF\xBF\xBD", frameState_.tabBarFontSize);
+        if (rep.glyphs.empty()) return nullptr;
+        std::shared_lock lock(font->mutex);
+        auto it = font->glyphs.find(rep.glyphs[0].glyphId);
         if (it == font->glyphs.end() || it->second.is_empty) return nullptr;
-        return &it->second;
+        tabBarReplacementGlyph = it->second;
+        return &tabBarReplacementGlyph;
     };
 
     for (int col = 0; col < cols; ++col) {
@@ -587,17 +605,19 @@ void RenderEngine::renderTabBar()
 
         const ShapedText& shaped = platform_->textSystem_.shapeText(
             frameState_.tabBarFontName, tbc.ch, frameState_.tabBarFontSize);
-        const GlyphInfo* gi = resolveTabBarGlyph(shaped);
-        if (gi) {
-            GlyphEntry entry;
-            entry.atlas_offset = gi->atlas_offset;
-            entry.ext_min_x = gi->ext_min_x; entry.ext_min_y = gi->ext_min_y;
-            entry.ext_max_x = gi->ext_max_x; entry.ext_max_y = gi->ext_max_y;
-            entry.upem = gi->upem; entry.x_offset = 0.0f; entry.y_offset = 0.0f;
-            rc.glyph_offset = static_cast<uint32_t>(tabBarGlyphs.size());
-            rc.glyph_count = 1;
-            tabBarGlyphs.push_back(entry);
-        }
+        if (shaped.glyphs.empty()) continue;
+        GlyphInfo gi;
+        if (!resolveCellGlyph(*font, shaped.glyphs[0].glyphId,
+                              static_cast<char32_t>(cp), false,
+                              getTabBarReplacementGlyph, gi)) continue;
+        GlyphEntry entry;
+        entry.atlas_offset = gi.atlas_offset;
+        entry.ext_min_x = gi.ext_min_x; entry.ext_min_y = gi.ext_min_y;
+        entry.ext_max_x = gi.ext_max_x; entry.ext_max_y = gi.ext_max_y;
+        entry.upem = gi.upem; entry.x_offset = 0.0f; entry.y_offset = 0.0f;
+        rc.glyph_offset = static_cast<uint32_t>(tabBarGlyphs.size());
+        rc.glyph_count = 1;
+        tabBarGlyphs.push_back(entry);
     }
 
     renderer_.updateFontAtlas(queue_, frameState_.tabBarFontName, *font);

@@ -313,8 +313,20 @@ void PlatformDawn::buildRenderFrameState()
         int cp = 0;
         const char* p = s.c_str();
         while (*p && cp < maxCp) { p += utf8::seqLen(static_cast<uint8_t>(*p)); cp++; }
-        if (*p) return std::string(s.c_str(), p) + "\xe2\x80\xa6";
-        return s;
+        if (!*p) return s;
+        auto isWS = [](char c) { return c == ' ' || c == '\t'; };
+        size_t cutBytes = static_cast<size_t>(p - s.c_str());
+        const size_t origCut = cutBytes;
+        // If the cut splits a word, walk back to the last whitespace in the prefix.
+        // (UTF-8 multibyte sequences never contain ASCII bytes, so byte scan is safe.)
+        if (!isWS(s[cutBytes])) {
+            while (cutBytes > 0 && !isWS(s[cutBytes - 1])) --cutBytes;
+            if (cutBytes == 0) cutBytes = origCut; // no whitespace in prefix
+        }
+        // Trim trailing whitespace from the new cut point.
+        while (cutBytes > 0 && isWS(s[cutBytes - 1])) --cutBytes;
+        if (cutBytes == 0) cutBytes = origCut; // prefix was all whitespace
+        return std::string(s.c_str(), cutBytes) + "\xe2\x80\xa6";
     };
 
     // Indeterminate animation glyphs

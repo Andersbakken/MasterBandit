@@ -115,9 +115,8 @@ public:
     // consumers (PlatformDawn::buildRenderFrameState, onBlinkTick)
     // read lock-free atomic snapshots instead:
     //   * usingAltScreen() — atomic<bool>
-    //   * currentTitle() / currentIcon() — atomic<shared_ptr<const string>>
+    //   * currentTitle() / currentIcon() — guarded by mTitleIconMutex
     //   * focusedEmbeddedLineId() — atomic<uint64_t>
-    //   * embeddedSnapshot() (Terminal) — atomic<shared_ptr<vector<...>>>
     //   * hasEvictedEmbeddeds() — atomic<bool>
     // Mutators publish a fresh snapshot via publishLiveView() at the
     // end of each parse batch / mutation; consumers atomic-load.
@@ -395,20 +394,20 @@ public:
     // Title/icon stacks are mutated by the parse worker (OSC 2/0/1,
     // XTWINOPS push/pop) under mMutex. Per-tick tab-bar resolution
     // in buildRenderFrameState reads them on every frame, so we
-    // expose a wait-free shadow via mTitleAtomic / mIconAtomic
-    // (atomic shared_ptr<const string>; null when the underlying
-    // stack is empty) republished by the parser whenever the top
-    // changes. Reading under mMutex would block buildRenderFrameState
-    // for the entire parse-apply duration of a flooding pane (the
-    // apply runs in one shot — see Terminal::queueParse — so it can
-    // be hundreds of ms for ~1 MiB of input).
+    // expose a shadow of the stack top via mTitleShadow / mIconShadow
+    // guarded by mTitleIconMutex (nullopt when the underlying stack
+    // is empty), republished by the parser whenever the top changes.
+    // Reading under mMutex would block buildRenderFrameState for the
+    // entire parse-apply duration of a flooding pane (the apply runs
+    // in one shot — see Terminal::queueParse — so it can be hundreds
+    // of ms for ~1 MiB of input).
     std::optional<std::string> currentTitle() const {
-        if (auto p = mTitleAtomic.load(std::memory_order_acquire)) return *p;
-        return std::nullopt;
+        std::lock_guard<std::mutex> lock(mTitleIconMutex);
+        return mTitleShadow;
     }
     std::optional<std::string> currentIcon() const {
-        if (auto p = mIconAtomic.load(std::memory_order_acquire)) return *p;
-        return std::nullopt;
+        std::lock_guard<std::mutex> lock(mTitleIconMutex);
+        return mIconShadow;
     }
     bool syncOutputActive() const { return mState->syncOutput; }
     uint8_t kittyFlags() const { return mKittyFlags; }
@@ -783,13 +782,14 @@ private:
     void applyEsc(char finalByte);
     void applyDesignateCharset(char slot, char charset);
 
-    // Republish mTitleAtomic / mIconAtomic from the current top of
+    // Republish mTitleShadow / mIconShadow from the current top of
     // mTitleStack / mIconStack. Caller must hold mMutex (parser
-    // path always does). Skipped when the new value matches the
-    // currently-published one, so the cost is one shared_ptr<string>
-    // allocation per *change*, not per write.
-    void publishTitleAtomic();
-    void publishIconAtomic();
+    // path always does); these acquire mTitleIconMutex internally.
+    // Skipped when the new value matches the currently-published
+    // one, so the cost is one short critical section per *change*,
+    // not per write.
+    void publishTitle();
+    void publishIcon();
     void processOSC_Color(int oscNum, std::string_view payload);
     void processOSC_Palette(std::string_view payload);
     void processOSC_PaletteReset(std::string_view payload);
@@ -945,7 +945,7 @@ private:
 
     // Title stack (XTWINOPS CSI 22/23 t + OSC 0/2)
     // Stack top is always the current title. Empty = no title set.
-    // Protected by mMutex; lock-free reads via mTitleAtomic.
+    // Protected by mMutex; reads via currentTitle() use mTitleIconMutex.
     std::vector<std::string> mTitleStack;
     static constexpr size_t TITLE_STACK_MAX = 10;
 
@@ -953,14 +953,15 @@ private:
     std::vector<std::string> mIconStack;
     static constexpr size_t ICON_STACK_MAX = 10;
 
-    // Lock-free shadow of the current title/icon-stack top (or
-    // null shared_ptr if the stack is empty). Read on the per-tick
-    // tab-bar resolution path; republished by the parser via
-    // publishTitleAtomic() / publishIconAtomic() whenever the top
-    // changes. shared_ptr makes the read returnable as a stable
-    // optional<string> even if a new title is published mid-read.
-    std::atomic<std::shared_ptr<const std::string>> mTitleAtomic;
-    std::atomic<std::shared_ptr<const std::string>> mIconAtomic;
+    // Shadow of the current title/icon-stack top (nullopt when the
+    // stack is empty). Read on the per-tick tab-bar resolution path
+    // through currentTitle() / currentIcon(); republished by the
+    // parser via publishTitle() / publishIcon() whenever the top
+    // changes. Guarded by mTitleIconMutex (separate from mMutex so
+    // reads don't block on a long parse-apply).
+    mutable std::mutex mTitleIconMutex;
+    std::optional<std::string> mTitleShadow;
+    std::optional<std::string> mIconShadow;
 
     // Desktop notification accumulator (OSC 99)
     std::string mNotifyId;

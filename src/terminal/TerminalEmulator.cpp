@@ -103,31 +103,29 @@ TerminalEmulator::~TerminalEmulator()
 {
 }
 
-void TerminalEmulator::publishTitleAtomic()
+void TerminalEmulator::publishTitle()
 {
     // Caller holds mMutex (parser path).
+    std::lock_guard<std::mutex> lock(mTitleIconMutex);
     if (mTitleStack.empty()) {
-        mTitleAtomic.store(nullptr, std::memory_order_release);
+        mTitleShadow.reset();
         return;
     }
-    if (auto cur = mTitleAtomic.load(std::memory_order_acquire);
-        cur && *cur == mTitleStack.back())
+    if (mTitleShadow && *mTitleShadow == mTitleStack.back())
         return;
-    mTitleAtomic.store(std::make_shared<const std::string>(mTitleStack.back()),
-                       std::memory_order_release);
+    mTitleShadow = mTitleStack.back();
 }
 
-void TerminalEmulator::publishIconAtomic()
+void TerminalEmulator::publishIcon()
 {
+    std::lock_guard<std::mutex> lock(mTitleIconMutex);
     if (mIconStack.empty()) {
-        mIconAtomic.store(nullptr, std::memory_order_release);
+        mIconShadow.reset();
         return;
     }
-    if (auto cur = mIconAtomic.load(std::memory_order_acquire);
-        cur && *cur == mIconStack.back())
+    if (mIconShadow && *mIconShadow == mIconStack.back())
         return;
-    mIconAtomic.store(std::make_shared<const std::string>(mIconStack.back()),
-                      std::memory_order_release);
+    mIconShadow = mIconStack.back();
 }
 
 void TerminalEmulator::resetScrollback(int scrollbackLines)
@@ -1571,12 +1569,12 @@ void TerminalEmulator::processCSI(const char* buf, int len)
             if (doTitle) {
                 if (mTitleStack.size() > 1) {
                     mTitleStack.pop_back();
-                    publishTitleAtomic();
+                    publishTitle();
                     if (mCallbacks.onTitleChanged)
                         mCallbacks.onTitleChanged(std::optional<std::string>(mTitleStack.back()));
                 } else if (!mTitleStack.empty()) {
                     mTitleStack.clear();
-                    publishTitleAtomic();
+                    publishTitle();
                     // nullopt: no title left on the stack — distinct from
                     // OSC 2 "" (which fires Some("")).
                     if (mCallbacks.onTitleChanged)
@@ -1586,12 +1584,12 @@ void TerminalEmulator::processCSI(const char* buf, int len)
             if (doIcon) {
                 if (mIconStack.size() > 1) {
                     mIconStack.pop_back();
-                    publishIconAtomic();
+                    publishIcon();
                     if (mCallbacks.onIconChanged)
                         mCallbacks.onIconChanged(std::optional<std::string>(mIconStack.back()));
                 } else if (!mIconStack.empty()) {
                     mIconStack.clear();
-                    publishIconAtomic();
+                    publishIcon();
                     if (mCallbacks.onIconChanged)
                         mCallbacks.onIconChanged(std::nullopt);
                 }

@@ -368,13 +368,13 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
     switch (oscNum) {
     case 0: processOSC_Title(payload, true); break;
     case 1:
-        // Caller holds mMutex (parser path). Republish atomic so
-        // per-tick currentIcon() reads stay wait-free.
+        // Caller holds mMutex (parser path). Republish shadow so
+        // per-tick currentIcon() reads stay off mMutex.
         if (mIconStack.empty())
             mIconStack.emplace_back(payload);
         else
             mIconStack.back() = std::string(payload);
-        publishIconAtomic();
+        publishIcon();
         if (mCallbacks.onIconChanged)
             mCallbacks.onIconChanged(std::optional<std::string>(std::string(payload)));
         break;
@@ -757,7 +757,7 @@ void TerminalEmulator::processOSC_Title(std::string_view text, bool setTitle)
             mTitleStack.emplace_back(text);
         else
             mTitleStack.back() = std::string(text);
-        publishTitleAtomic();
+        publishTitle();
         if (mCallbacks.onTitleChanged)
             mCallbacks.onTitleChanged(std::optional<std::string>(std::string(text)));
     }

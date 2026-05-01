@@ -317,13 +317,30 @@ void PlatformDawn::buildRenderFrameState()
         auto isWS = [](char c) { return c == ' ' || c == '\t'; };
         size_t cutBytes = static_cast<size_t>(p - s.c_str());
         const size_t origCut = cutBytes;
-        // If the cut splits a word, walk back to the last whitespace in the prefix.
+        // If the cut splits a word, walk back to the last whitespace in the
+        // prefix — but only adopt the word-aware cut if it still keeps a
+        // reasonable share of the budget. Otherwise titles that start with
+        // an icon + space (e.g. "✱ Cooking…") collapse to just the icon
+        // when we'd rather show as much of the content as fits.
         // (UTF-8 multibyte sequences never contain ASCII bytes, so byte scan is safe.)
         if (!isWS(s[cutBytes])) {
-            while (cutBytes > 0 && !isWS(s[cutBytes - 1])) --cutBytes;
-            if (cutBytes == 0) cutBytes = origCut; // no whitespace in prefix
+            size_t scanCut = cutBytes;
+            while (scanCut > 0 && !isWS(s[scanCut - 1])) --scanCut;
+            // Trim trailing whitespace from the candidate cut.
+            while (scanCut > 0 && isWS(s[scanCut - 1])) --scanCut;
+            // Count codepoints in [0, scanCut). If the word-aware cut leaves
+            // fewer than minKeep cp, fall back to the mid-word cut at origCut.
+            int prefixCp = 0;
+            const char* q = s.c_str();
+            const char* limit = s.c_str() + scanCut;
+            while (q < limit) {
+                q += utf8::seqLen(static_cast<uint8_t>(*q));
+                ++prefixCp;
+            }
+            const int minKeep = std::max(2, maxCp / 2);
+            if (prefixCp >= minKeep) cutBytes = scanCut;
         }
-        // Trim trailing whitespace from the new cut point.
+        // Trim trailing whitespace from the chosen cut point.
         while (cutBytes > 0 && isWS(s[cutBytes - 1])) --cutBytes;
         if (cutBytes == 0) cutBytes = origCut; // prefix was all whitespace
         return std::string(s.c_str(), cutBytes) + "\xe2\x80\xa6";

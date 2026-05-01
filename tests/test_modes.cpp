@@ -392,6 +392,84 @@ TEST_CASE("synchronized output mode set/reset")
     CHECK_FALSE(t.term.syncOutputActive());
 }
 
+// The tests below bypass TestTerminal::feed (which calls
+// flushPendingActions after every inject) and call term.injectData
+// directly, so they observe the production hold semantics: actions
+// emitted between 2026h and the matching reset stay in mPendingActions
+// and don't mutate the grid until the reset arrives.
+
+TEST_CASE("synchronized output: actions buffered across calls while held")
+{
+    TestTerminal t;
+    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+
+    inject("Pre");
+    t.term.flushPendingActions();
+    REQUIRE(t.rowText(0) == "Pre");
+
+    inject("\x1b[?2026h");        // sets mHold
+    inject("Hidden");             // buffered, not applied
+    inject("Stuff");              // also buffered
+    CHECK(t.rowText(0) == "Pre"); // grid unchanged during hold
+
+    inject("\x1b[?2026l");        // clears mHold; injectData drains
+    CHECK(t.rowText(0) == "PreHiddenStuff");
+}
+
+TEST_CASE("synchronized output: ordering preserved across hold")
+{
+    TestTerminal t;
+    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+
+    inject("\x1b[?2026h");
+    inject("A");
+    inject("B");
+    inject("C");
+    CHECK(t.rowText(0) == "");
+    inject("\x1b[?2026l");
+    CHECK(t.rowText(0) == "ABC");
+}
+
+TEST_CASE("synchronized output: RIS clears hold and resets")
+{
+    TestTerminal t;
+    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+
+    inject("X");
+    t.term.flushPendingActions();
+    inject("\x1b[?2026h");
+    inject("Y");
+    CHECK(t.rowText(0) == "X");           // Y still held
+
+    inject("\033c");                       // RIS — clears hold, full reset
+    // RIS applied via the buffered action sequence: the prior 2026h, the
+    // Y print, and the RIS itself flush together. RIS wipes the grid
+    // last, so the net visible state is empty.
+    CHECK(t.rowText(0) == "");
+    CHECK(t.term.cursorX() == 0);
+    CHECK(t.term.cursorY() == 0);
+    // mHold must have been cleared by the RIS path inside parseToActions.
+    inject("Z");
+    CHECK(t.rowText(0) == "Z");
+}
+
+TEST_CASE("synchronized output: flushPendingActions drains held actions")
+{
+    TestTerminal t;
+    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+
+    inject("\x1b[?2026h");
+    inject("Buffered");
+    CHECK(t.rowText(0) == "");
+    t.term.flushPendingActions();
+    CHECK(t.rowText(0) == "Buffered");
+    // Subsequent injects after a flush apply normally — flushPendingActions
+    // also clears mHold.
+    inject("Tail");
+    t.term.flushPendingActions();
+    CHECK(t.rowText(0) == "BufferedTail");
+}
+
 // ── Device Attributes ─────────────────────────────────────────────────────────
 
 TEST_CASE("primary DA responds to CSI c")

@@ -121,7 +121,7 @@ int PlatformDawn::exec()
                         info.cursorLineId = doc.lineIdForAbs(absRow);
                         info.cursorCol    = p->cursorX();
                         info.oldestLineId = doc.lineIdForAbs(0);
-                        int total = static_cast<int>(doc.archiveSize()) + doc.historySize() + p->height();
+                        int total = doc.historySize() + p->height();
                         info.newestLineId = doc.lineIdForAbs(total - 1);
                         if (auto resOpt = p->resolveSelection(); resOpt && resOpt->valid && !resOpt->active) {
                             const auto& res = *resOpt;
@@ -569,7 +569,7 @@ int PlatformDawn::exec()
                     int startAbs = doc.firstAbsOfLine(startLineId);
                     int endAbs   = doc.lastAbsOfLine(endLineId);
                     if (startAbs < 0) return result;
-                    if (endAbs < 0) endAbs = doc.archiveSize() + doc.historySize() + te->height() - 1;
+                    if (endAbs < 0) endAbs = doc.historySize() + te->height() - 1;
 
                     int histSize = doc.historySize();
                     int cols = te->width();
@@ -580,7 +580,7 @@ int PlatformDawn::exec()
                         int screenRow = abs - histSize;
                         if (screenRow >= 0 && screenRow < te->height())
                             extras = doc.viewportExtras(screenRow, 0);
-                        else if (abs < doc.archiveSize() + histSize)
+                        else if (abs < histSize)
                             extras = doc.historyExtras(abs);
                         if (!extras) { prevLinkId = 0; continue; }
 

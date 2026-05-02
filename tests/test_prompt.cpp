@@ -164,7 +164,7 @@ TEST_CASE("serializeScrollback: tier-2 archive lines preserved")
 {
     // tier1Capacity=2 forces eviction to tier-2 archive after 2 history rows.
     TestTerminal t(20, 2);
-    t.term.resetScrollback(2);
+    t.term.resetScrollback(100);
 
     // Feed enough lines that the earliest ones must live in the tier-2 archive.
     for (int i = 0; i < 12; ++i) {
@@ -174,7 +174,7 @@ TEST_CASE("serializeScrollback: tier-2 archive lines preserved")
     }
 
     // Sanity: archive must actually be populated (otherwise we're only testing tier-1).
-    REQUIRE(t.term.document().archiveSize() > 0);
+    REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
     std::string content = t.term.serializeScrollback();
 
@@ -197,7 +197,7 @@ TEST_CASE("serializeScrollback: tier-2 archive lines preserved")
 TEST_CASE("serializeScrollback: tier-2 ordering is monotonic across all lines")
 {
     TestTerminal t(20, 2);
-    t.term.resetScrollback(2);
+    t.term.resetScrollback(100);
 
     constexpr int N = 30;
     for (int i = 0; i < N; ++i) {
@@ -206,7 +206,7 @@ TEST_CASE("serializeScrollback: tier-2 ordering is monotonic across all lines")
         t.feed(buf);
     }
 
-    REQUIRE(t.term.document().archiveSize() > 0);
+    REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
     std::string content = t.term.serializeScrollback();
 
@@ -227,14 +227,14 @@ TEST_CASE("serializeScrollback: tier-2 ordering is monotonic across all lines")
 TEST_CASE("serializeScrollback: wide chars survive tier-2 roundtrip")
 {
     TestTerminal t(10, 2);
-    t.term.resetScrollback(2);
+    t.term.resetScrollback(100);
 
     // First row: a wide char (中) followed by ASCII, then newline.
     t.feed("\xe4\xb8\xad" "ab\r\n");
     // Push the wide-char row into the tier-2 archive.
     for (int i = 0; i < 8; ++i) t.feed("pad\r\n");
 
-    REQUIRE(t.term.document().archiveSize() > 0);
+    REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
     std::string content = t.term.serializeScrollback();
     // Wide char encoded as UTF-8, with no spacer artifact between it and "ab".
@@ -245,7 +245,7 @@ TEST_CASE("serializeScrollback: wrapped line is searchable as one string")
 {
     // Feed a 20-char string into a 10-wide terminal — it wraps once.
     TestTerminal t(10, 2);
-    t.term.resetScrollback(4);
+    t.term.resetScrollback(100);
 
     t.feed("abcdefghij1234567890\r\n");
     // Push the wrapped pair into history / tier-2.
@@ -261,12 +261,12 @@ TEST_CASE("serializeScrollback: combining marks preserved through tier-2")
 {
     // Warning sign (U+26A0) + VS16 (U+FE0F) — VS16 lives in cell extras.
     TestTerminal t(10, 2);
-    t.term.resetScrollback(2);
+    t.term.resetScrollback(100);
 
     t.feed("\xe2\x9a\xa0\xef\xb8\x8f\r\n"); // ⚠️
     for (int i = 0; i < 8; ++i) t.feed("z\r\n");
 
-    REQUIRE(t.term.document().archiveSize() > 0);
+    REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
     std::string content = t.term.serializeScrollback();
     // The base codepoint must be present.
@@ -280,13 +280,13 @@ TEST_CASE("serializeScrollback: full-width row (no trailing blanks) preserved")
     // Row that exactly fills cols — exercises the effectiveWidth path with
     // no trailing-blank trim.
     TestTerminal t(10, 2);
-    t.term.resetScrollback(2);
+    t.term.resetScrollback(100);
 
     t.feed("0123456789"); // exactly 10 chars; cursor sits at the right edge
     t.feed("\r\n");
     for (int i = 0; i < 8; ++i) t.feed("z\r\n");
 
-    REQUIRE(t.term.document().archiveSize() > 0);
+    REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
     std::string content = t.term.serializeScrollback();
     CHECK(content.find("0123456789") != std::string::npos);
@@ -297,7 +297,7 @@ TEST_CASE("serializeScrollback: SGR colors are stripped from output (documented 
     // Pager output is plain text — colors are dropped intentionally so that
     // `less -R` sees no escapes and search doesn't match against ANSI bytes.
     TestTerminal t(20, 2);
-    t.term.resetScrollback(2);
+    t.term.resetScrollback(100);
 
     t.feed("\x1b[31mred\x1b[0m text\r\n");
     for (int i = 0; i < 8; ++i) t.feed("z\r\n");
@@ -516,7 +516,7 @@ TEST_CASE("OSC 133: semantic type round-trips through tier-2 archive")
     // Force rapid archive eviction: tier1Capacity=2 means after 2 rows in history,
     // the next gets pushed to tier-2 (parsed back on demand via parseArchivedRow).
     TestTerminal t(20, 2);
-    t.term.resetScrollback(2); // tight history
+    t.term.resetScrollback(100); // tight history
 
     osc133(t, "A");
     t.feed("$ prompt\r\n");    // this row becomes tier-1 after scroll

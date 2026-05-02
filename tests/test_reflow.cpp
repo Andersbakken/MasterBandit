@@ -309,7 +309,7 @@ TEST_CASE("line ids: vector is monotonic non-decreasing after complex edits")
     t.feed("last\n");
 
     const auto& doc = t.term.document();
-    int total = doc.archiveSize() + doc.historySize() + 4;
+    int total = doc.historySize() + 4;
     uint64_t prev = 0;
     for (int abs = 0; abs < total; ++abs) {
         uint64_t id = doc.lineIdForAbs(abs);

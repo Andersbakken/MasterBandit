@@ -27,6 +27,7 @@ set(TEST_SOURCES
     test_prompt.cpp
     test_archive.cpp
     test_linebuffer.cpp
+    test_scroll_region.cpp
     test_render.cpp
     test_cwd.cpp
     test_osc_palette.cpp

@@ -140,6 +140,22 @@ struct TestTerminal {
         return term.grid().cell(col, row).attrs;
     }
 
+    // Render row `viewRow` at an arbitrary display width by transiently
+    // resizing the terminal, capturing the row text, and resizing back.
+    // Useful for tests that need to verify content survives a width change
+    // without committing to it. Note: this DOES resize internally — the
+    // wrap cache and line-id projections will be touched. Cleaner than
+    // duplicating the wrap calculator in test code.
+    std::string renderAtWidth(int viewRow, int w)
+    {
+        int origW = term.width(), origH = term.height();
+        if (w == origW) return rowText(viewRow);
+        term.resize(w, origH);
+        std::string s = rowText(viewRow);
+        term.resize(origW, origH);
+        return s;
+    }
+
     // Returns visible text of a row, trimmed of trailing spaces/nulls.
     std::string rowText(int row) const
     {

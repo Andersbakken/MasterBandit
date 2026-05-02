@@ -185,6 +185,17 @@ void TerminalEmulator::resize(int width, int height)
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     // Re-check inside the lock to avoid losing a real concurrent change.
     if (mWidth == width && mHeight == height) return;
+
+    // End an in-progress drag selection — matches iTerm2's
+    // endLiveSelection on resize. The selection's anchor + extent stay
+    // pinned to their line IDs and re-project at the new width; what we
+    // drop is the "still being dragged" state so a subsequent mouseMove
+    // doesn't extend a now-stale anchor.
+    mPendingSelection = false;
+    if (mSelection.active) {
+        finalizeSelection();
+    }
+
     int oldCols = mWidth;
     mWidth = width;
     mHeight = height;
@@ -874,6 +885,7 @@ void TerminalEmulator::writePrintable(char32_t cp)
             spacerAttrs.setWideSpacer(true);
             g.cell(mState->cursorX, mState->cursorY) = Cell{0, spacerAttrs};
             g.clearExtra(mState->cursorX, mState->cursorY);
+            g.markRowHasWide(mState->cursorY);
             mState->cursorX++;
             if (mState->cursorX >= mWidth) {
                 mState->cursorX = mWidth - 1;
@@ -918,6 +930,7 @@ void TerminalEmulator::writePrintable(char32_t cp)
             spacerAttrs.setWideSpacer(true);
             g.cell(mState->cursorX + 1, mState->cursorY) = Cell{0, spacerAttrs};
             g.clearExtra(mState->cursorX + 1, mState->cursorY);
+            g.markRowHasWide(mState->cursorY);
             g.markRowDirty(mState->cursorY);
         }
         mState->cursorX += 2;
@@ -1307,6 +1320,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
                         spacerAttrs.setWideSpacer(true);
                         g.cell(mState->cursorX + 1, mState->cursorY) = Cell{0, spacerAttrs};
                         g.clearExtra(mState->cursorX + 1, mState->cursorY);
+                        g.markRowHasWide(mState->cursorY);
                         g.markRowDirty(mState->cursorY);
                     }
                     mState->cursorX += 2;

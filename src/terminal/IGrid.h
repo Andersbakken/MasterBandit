@@ -32,4 +32,11 @@ public:
     virtual CellExtra& ensureExtra(int col, int row) = 0;
     virtual void clearExtra(int col, int row) = 0;
     virtual void clearRowExtras(int row) = 0;
+
+    // Mark that the row contains at least one wide cell or wide-spacer.
+    // The reflow path uses this in O(1) instead of scanning each cell to
+    // decide whether the row qualifies for the memcpy fast path. Default
+    // is a no-op so grid implementations that don't track this metadata
+    // (e.g. CellGrid) don't need to opt in.
+    virtual void markRowHasWide(int row) { (void)row; }
 };

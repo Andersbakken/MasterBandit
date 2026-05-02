@@ -1,6 +1,7 @@
 #include "Terminal.h"
 #include "Observability.h"
 #include "Utils.h"
+#include <chrono>
 #include <spdlog/spdlog.h>
 
 #include <assert.h>
@@ -342,13 +343,11 @@ void Terminal::flushReadBuffer()
         injectData(buf.data(), buf.size());
     }
 
-    // Check for foreground process change
-    if (callbacks().onForegroundProcessChanged) {
-        pid_t pgid = tcgetpgrp(mMasterFD);
-        if (pgid > 0 && pgid != mLastFgPgid.load(std::memory_order_relaxed)) {
-            mLastFgPgid.store(pgid, std::memory_order_relaxed);
-            callbacks().onForegroundProcessChanged(foregroundProcess());
-        }
+    // Check for foreground process change. Both tcgetpgrp and proc_pidpath
+    // are syscalls; tryRefreshForegroundProcess rate-limits and updates the
+    // cached value that all readers (render thread, tab title, JS) consume.
+    if (callbacks().onForegroundProcessChanged && tryRefreshForegroundProcess()) {
+        callbacks().onForegroundProcessChanged(foregroundProcess());
     }
 }
 
@@ -433,17 +432,13 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
                 spdlog::warn("[TIMING] queueParse: {} bytes in {} us",
                              size, dt);
 
-            // Foreground process change check. tcgetpgrp + the
-            // foregroundProcess() lookup touch the kernel and /proc; OK
-            // off the main thread. The deferred callback in
-            // buildTerminalCallbacks already posts to the event loop
-            // for any onForegroundProcessChanged side-effects.
-            if (callbacks().onForegroundProcessChanged && mMasterFD >= 0) {
-                pid_t pgid = tcgetpgrp(mMasterFD);
-                if (pgid > 0 && pgid != mLastFgPgid.load(std::memory_order_relaxed)) {
-                    mLastFgPgid.store(pgid, std::memory_order_relaxed);
-                    callbacks().onForegroundProcessChanged(foregroundProcess());
-                }
+            // Foreground process change check. Rate-limited at the source
+            // by tryRefreshForegroundProcess (200 ms); updates the cached
+            // value all readers consume (render frame builder, tab title,
+            // JS API) so they don't each issue their own ioctl per use.
+            if (callbacks().onForegroundProcessChanged && mMasterFD >= 0
+                && tryRefreshForegroundProcess()) {
+                callbacks().onForegroundProcessChanged(foregroundProcess());
             }
         }
     });
@@ -537,36 +532,78 @@ void Terminal::pasteText(const std::string& text)
     }
 }
 
-std::string Terminal::foregroundProcess() const
+bool Terminal::fgPollDue() const noexcept
 {
-    if (mMasterFD < 0) return {};
+    using clock = std::chrono::steady_clock;
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        clock::now().time_since_epoch()).count();
+    int64_t prev = mLastFgPollNs.load(std::memory_order_relaxed);
+    if (prev != 0 && (now - prev) < kFgPollMinNs) return false;
+    // Try to claim the slot. If another caller wins, skip — they'll do the
+    // ioctl. We don't loop because the cost of "two pollers raced and both
+    // skipped this tick" is at most one extra ~200ms of stale fg name; not
+    // worth the CAS retry.
+    return mLastFgPollNs.compare_exchange_strong(prev, now,
+        std::memory_order_relaxed, std::memory_order_relaxed);
+}
 
-    pid_t pgid = tcgetpgrp(mMasterFD);
+namespace {
+std::string lookupFgProcessName(int masterFD)
+{
+    if (masterFD < 0) return {};
+    pid_t pgid = tcgetpgrp(masterFD);
     if (pgid < 0) return {};
 
 #ifdef __APPLE__
     char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
     if (proc_pidpath(pgid, pathbuf, sizeof(pathbuf)) > 0) {
-        // Extract basename
         const char* slash = strrchr(pathbuf, '/');
         return slash ? slash + 1 : pathbuf;
     }
     return {};
 #else
-    // Linux: read /proc/<pid>/comm
     char comm[256];
     snprintf(comm, sizeof(comm), "/proc/%d/comm", static_cast<int>(pgid));
     FILE* f = fopen(comm, "r");
     if (!f) return {};
     char name[256] = {};
     if (fgets(name, sizeof(name), f)) {
-        // Strip trailing newline
         size_t len = strlen(name);
         if (len > 0 && name[len - 1] == '\n') name[len - 1] = '\0';
     }
     fclose(f);
     return name;
 #endif
+}
+} // namespace
+
+bool Terminal::tryRefreshForegroundProcess()
+{
+    if (!fgPollDue()) return false;
+    if (mMasterFD < 0) return false;
+
+    pid_t pgid = tcgetpgrp(mMasterFD);
+    if (pgid < 0) return false;
+
+    pid_t prevPgid = mLastFgPgid.exchange(pgid, std::memory_order_relaxed);
+    bool changed = (prevPgid != pgid);
+    if (!changed) return false;
+
+    std::string name = lookupFgProcessName(mMasterFD);
+    {
+        std::unique_lock lk(mFgCacheMutex);
+        mFgCache = std::move(name);
+    }
+    return true;
+}
+
+std::string Terminal::foregroundProcess() const
+{
+    // Pure cache read. The actual ioctl + proc_pidpath lookup is gated
+    // behind tryRefreshForegroundProcess, called from the parser worker
+    // path at ~5 Hz. Render thread / tab title computation reads only.
+    std::shared_lock lk(mFgCacheMutex);
+    return mFgCache;
 }
 
 // ---------------------------------------------------------------------------

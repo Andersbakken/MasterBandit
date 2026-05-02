@@ -43,9 +43,11 @@ int Document::screenRowToPhysical(int screenRow) const {
 }
 
 void Document::clearPhysicalRow(int physical) {
-    Cell* r = rowPtr(physical);
-    for (int c = 0; c < cols_; ++c) r[c] = Cell{};
-    ringExtras_[physical].clear();
+    // Cell is trivially copyable; memset is well-defined to value-initialize
+    // the contiguous bytes and avoids per-cell branch overhead in the
+    // scrolling hot path (one full-region scrollUp per LF).
+    std::memset(rowPtr(physical), 0, static_cast<size_t>(cols_) * sizeof(Cell));
+    if (!ringExtras_[physical].empty()) ringExtras_[physical].clear();
     rowFlags_[physical] = 0;
 }
 
@@ -151,6 +153,15 @@ void Document::pushVisibleRowToScrollback(int screenRow, int physical) {
     const bool soft = (flags & Continued) != 0;
     int len = cols_;
     if (!soft) {
+        // Trim trailing zero cells. Stride 8 first so the compiler can
+        // batch the wc reads; finish with a 1-stride tail.
+        while (len >= 8 &&
+               r[len - 1].wc == 0 && r[len - 2].wc == 0 &&
+               r[len - 3].wc == 0 && r[len - 4].wc == 0 &&
+               r[len - 5].wc == 0 && r[len - 6].wc == 0 &&
+               r[len - 7].wc == 0 && r[len - 8].wc == 0) {
+            len -= 8;
+        }
         while (len > 0 && r[len - 1].wc == 0) --len;
     }
 
@@ -196,6 +207,10 @@ void Document::markRowDirty(int screenRow) {
 }
 
 void Document::markAllDirty() {
+    // Hot during scrolling: every full-region scrollUp marks the whole
+    // grid dirty. allDirty_ short-circuits isRowDirty/anyDirty, so the
+    // per-row fill is redundant when allDirty_ is already set.
+    if (allDirty_) return;
     allDirty_ = true;
     std::fill(dirty_.begin(), dirty_.end(), true);
 }
@@ -616,10 +631,7 @@ uint64_t Document::newestLineId() const {
     return screenLineId_.back();
 }
 
-void Document::inheritLineIdFromAbove(int abs) {
-    int histSize = historySize();
-    if (abs < histSize + 1) return;  // No "above" in screen
-    int screenRow = abs - histSize;
+void Document::inheritLineIdFromAboveScreen(int screenRow) {
     if (screenRow <= 0 || screenRow >= screenHeight_) return;
     screenLineId_[screenRow] = screenLineId_[screenRow - 1];
 }

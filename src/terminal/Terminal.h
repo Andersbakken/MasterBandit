@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -251,6 +252,22 @@ private:
     // formal happens-before is no longer UB and so future readers
     // (e.g. for stats) can sample without locks.
     std::atomic<pid_t> mLastFgPgid { -1 };
+    // tcgetpgrp + proc_pidpath are kernel/ioctl traps. The foreground
+    // process changes on the order of seconds (run a new command), but
+    // without rate limiting the check fires per readFromFD wakeup AND
+    // per parse-worker loop iteration — during a 1 MiB vtebench scroll
+    // that's hundreds of ioctl(2)s for no reason. Sample at most once
+    // every kFgPollMinNs nanoseconds. Atomic so the parser worker and
+    // the main thread don't race on the timestamp.
+    static constexpr int64_t kFgPollMinNs = 200'000'000;  // 200 ms
+    mutable std::atomic<int64_t> mLastFgPollNs { 0 };
+    mutable std::shared_mutex mFgCacheMutex;
+    mutable std::string mFgCache;
+    bool fgPollDue() const noexcept;
+    // Refresh the cached foreground process name + pgid if the rate
+    // limiter allows. Returns true if pgid changed (callers may want to
+    // fire onForegroundProcessChanged). Safe to call from any thread.
+    bool tryRefreshForegroundProcess();
     EventLoop* mLoop { nullptr };
     EventLoop::TimerId mWritePollId { 0 };
     bool mWritePollActive { false };

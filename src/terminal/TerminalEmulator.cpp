@@ -735,8 +735,9 @@ void TerminalEmulator::advanceCursorToNewLine()
     // un-wraps the content back into one physical row would lose the
     // trailing physical rows' ids.
     if (!mUsingAltScreen) {
-        int curAbs = absoluteRowFromScreen(mState->cursorY);
-        mDocument.inheritLineIdFromAbove(curAbs);
+        // Direct screen-row API; avoids historySize() (full scrollback
+        // wrap-cache walk) for what is just an array index.
+        mDocument.inheritLineIdFromAboveScreen(mState->cursorY);
     }
 }
 

@@ -108,7 +108,11 @@ public:
     int firstAbsOfLine(uint64_t id) const;
     int lastAbsOfLine(uint64_t id) const;
     uint64_t newestLineId() const;
-    void inheritLineIdFromAbove(int abs);
+    // Copy the line ID of (screenRow-1) onto screenRow, marking the new
+    // row as a soft-wrap continuation of the row above. Takes screen row
+    // directly so callers don't need to compute historySize() + screenRow
+    // (which iterates the entire scrollback wrap cache).
+    void inheritLineIdFromAboveScreen(int screenRow);
 
     // Plain-text extraction across an abs-row span specified by line IDs.
     // Inclusive endpoints. startCol/endCol clip the first/last line.

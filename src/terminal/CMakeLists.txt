@@ -10,6 +10,7 @@ add_library(terminal OBJECT
     DCS.cpp
     CellGrid.cpp
     Document.cpp
+    LineBuffer.cpp
     TerminalSnapshot.cpp
 )
 

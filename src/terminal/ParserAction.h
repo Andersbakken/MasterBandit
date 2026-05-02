@@ -62,9 +62,11 @@ struct DesignateCharset {
 
 // CSI sequence. `buf` holds the parameter+intermediate bytes (the
 // existing escape buffer minus the leading '['). Bounded to 128 bytes
-// by the existing limit. Boxed via std::unique_ptr inside the variant
-// so sizeof(Action) stays small (an inline 128-byte buffer would 4×
-// the variant size).
+// by the existing limit. Stored inline in the variant: with vtebench-
+// scale workloads (vim_session has thousands of CSIs per replay) the
+// per-CSI heap alloc this used to require dominated `_xzm_xzone_malloc_tiny`
+// in profiles. Inlining bumps sizeof(Action) from 48 to ~136 but
+// eliminates the malloc/free pair per CSI.
 struct CSI {
     std::array<char, 128> buf;
     uint8_t len;
@@ -87,16 +89,15 @@ using Action = std::variant<
     Control,
     EscSimple,
     DesignateCharset,
-    std::unique_ptr<CSI>,
+    CSI,
     StringSequence>;
 
-// Target: <=48 bytes. The largest alternative is StringSequence
-// (uint8_t kind + std::string payload = 40 bytes on libstdc++ x86_64
-// with SSO), which pushes the variant to 48 once you add the
-// discriminator and align. Boxing StringSequence to recover 16 bytes
-// would add a heap alloc per OSC/DCS — not worth it. The soft cap
-// exists to flag any future variant addition that pushes us past 48.
-static_assert(sizeof(Action) <= 48, "Action variant should fit in 48 bytes");
+// CSI is the largest alternative at ~132 bytes (128-byte buffer +
+// length/finalByte/isPrivate). After alignment + discriminator the
+// variant lands around 136 bytes. The historical 48-byte target was
+// from when CSI lived behind a unique_ptr; the heap-alloc cost
+// dominated profiles, so the alloc was traded for inline storage.
+static_assert(sizeof(Action) <= 144, "Action variant should fit in 144 bytes");
 
 // Append `action` to `dest`, coalescing consecutive Print into a
 // single PrintString. Eager coalescing reduces a plain-ASCII flood

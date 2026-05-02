@@ -54,6 +54,10 @@ struct TestTerminal {
     int         capturedProgressState = -1;
     int         capturedProgressPct   = -1;
     int         progressCallCount     = 0;
+    // Counts TerminalEmulator::Event::Update callbacks (fired at the end of
+    // each non-suppressed injectData call). Tests use this to verify that
+    // a 2026 sync block coalesces to a single Update event at sync close.
+    int         updateEventCount      = 0;
 
     InnerTerminal term;
 
@@ -102,6 +106,10 @@ struct TestTerminal {
                 capturedProgressPct = pct;
                 ++progressCallCount;
             };
+            cb.event = [this](TerminalEmulator*, int evt, void*) {
+                if (evt == static_cast<int>(TerminalEmulator::Event::Update))
+                    ++updateEventCount;
+            };
             return cb;
           }())
     {
@@ -112,12 +120,6 @@ struct TestTerminal {
     void feed(const std::string& s)
     {
         term.injectData(s.data(), s.size());
-        // Drain anything that injectData buffered for a DEC mode 2026
-        // sync block. Production parses across multiple PTY reads and
-        // flushes when 2026l arrives; tests usually call feed() once
-        // and then inspect state, so we flush eagerly to keep the
-        // test mental model 1:1 with what callers expect.
-        term.flushPendingActions();
     }
 
     void esc(const std::string& s) { feed("\x1b" + s); }

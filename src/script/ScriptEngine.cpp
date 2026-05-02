@@ -2861,6 +2861,8 @@ Engine::LoadResult Engine::approveScript(const std::string& path, char response)
 
 std::optional<std::string> Engine::lookupCustomTcap(const std::string& name) const
 {
+    // Called from any thread (parser workers most often). Shared lock for reads.
+    std::shared_lock<std::shared_mutex> lock(customTcapsMutex_);
     auto it = customTcaps_.find(name);
     if (it != customTcaps_.end())
         return it->second;
@@ -2869,11 +2871,13 @@ std::optional<std::string> Engine::lookupCustomTcap(const std::string& name) con
 
 void Engine::registerTcap(const std::string& name, const std::string& value)
 {
+    std::unique_lock<std::shared_mutex> lock(customTcapsMutex_);
     customTcaps_[name] = value;
 }
 
 void Engine::unregisterTcap(const std::string& name)
 {
+    std::unique_lock<std::shared_mutex> lock(customTcapsMutex_);
     customTcaps_.erase(name);
 }
 

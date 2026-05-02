@@ -392,28 +392,49 @@ TEST_CASE("synchronized output mode set/reset")
     CHECK_FALSE(t.term.syncOutputActive());
 }
 
-// The tests below bypass TestTerminal::feed (which calls
-// flushPendingActions after every inject) and call term.injectData
-// directly, so they observe the production hold semantics: actions
-// emitted between 2026h and the matching reset stay in mPendingActions
-// and don't mutate the grid until the reset arrives.
+// The tests below assert the live-grid + suppressed-Update model:
+// actions between 2026h and 2026l mutate the grid as they arrive, but
+// the Update event (which signals the renderer to paint) is suppressed
+// during the sync block and fires once at sync close. The renderer
+// uses syncOutputActive() / mState->syncOutput to re-present the prior
+// frame while the grid is mid-update.
 
-TEST_CASE("synchronized output: actions buffered across calls while held")
+TEST_CASE("synchronized output: grid mutates live during hold")
 {
     TestTerminal t;
     auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
 
     inject("Pre");
-    t.term.flushPendingActions();
     REQUIRE(t.rowText(0) == "Pre");
 
-    inject("\x1b[?2026h");        // sets mHold
-    inject("Hidden");             // buffered, not applied
-    inject("Stuff");              // also buffered
-    CHECK(t.rowText(0) == "Pre"); // grid unchanged during hold
-
-    inject("\x1b[?2026l");        // clears mHold; injectData drains
+    inject("\x1b[?2026h");                    // begin sync
+    inject("Hidden");
+    CHECK(t.rowText(0) == "PreHidden");       // grid sees the writes immediately
+    inject("Stuff");
     CHECK(t.rowText(0) == "PreHiddenStuff");
+
+    inject("\x1b[?2026l");                    // end sync
+    CHECK(t.rowText(0) == "PreHiddenStuff");
+}
+
+TEST_CASE("synchronized output: Update event suppressed during hold, fires at close")
+{
+    TestTerminal t;
+    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+
+    inject("Pre");                            // 1 Update
+    int baseline = t.updateEventCount;
+    REQUIRE(baseline >= 1);
+
+    inject("\x1b[?2026h");                    // begin sync — no Update (mHold true at end of call)
+    inject("A");
+    inject("B");
+    inject("C");
+    // No Update events while mHold is held.
+    CHECK(t.updateEventCount == baseline);
+
+    inject("\x1b[?2026l");                    // end sync — exactly one Update
+    CHECK(t.updateEventCount == baseline + 1);
 }
 
 TEST_CASE("synchronized output: ordering preserved across hold")
@@ -425,7 +446,6 @@ TEST_CASE("synchronized output: ordering preserved across hold")
     inject("A");
     inject("B");
     inject("C");
-    CHECK(t.rowText(0) == "");
     inject("\x1b[?2026l");
     CHECK(t.rowText(0) == "ABC");
 }
@@ -436,38 +456,30 @@ TEST_CASE("synchronized output: RIS clears hold and resets")
     auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
 
     inject("X");
-    t.term.flushPendingActions();
     inject("\x1b[?2026h");
     inject("Y");
-    CHECK(t.rowText(0) == "X");           // Y still held
+    CHECK(t.rowText(0) == "XY");          // grid mutates live
 
-    inject("\033c");                       // RIS — clears hold, full reset
-    // RIS applied via the buffered action sequence: the prior 2026h, the
-    // Y print, and the RIS itself flush together. RIS wipes the grid
-    // last, so the net visible state is empty.
+    inject("\033c");                       // RIS — clears hold + full reset
     CHECK(t.rowText(0) == "");
     CHECK(t.term.cursorX() == 0);
     CHECK(t.term.cursorY() == 0);
-    // mHold must have been cleared by the RIS path inside parseToActions.
+    // mHold must have been cleared by the RIS path inside parseToActions —
+    // the next inject must trigger an Update event.
+    int before = t.updateEventCount;
     inject("Z");
     CHECK(t.rowText(0) == "Z");
+    CHECK(t.updateEventCount == before + 1);
 }
 
-TEST_CASE("synchronized output: flushPendingActions drains held actions")
+TEST_CASE("synchronized output: closing 2026l fires a single Update")
 {
     TestTerminal t;
-    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
-
-    inject("\x1b[?2026h");
-    inject("Buffered");
-    CHECK(t.rowText(0) == "");
-    t.term.flushPendingActions();
-    CHECK(t.rowText(0) == "Buffered");
-    // Subsequent injects after a flush apply normally — flushPendingActions
-    // also clears mHold.
-    inject("Tail");
-    t.term.flushPendingActions();
-    CHECK(t.rowText(0) == "BufferedTail");
+    // A whole sync block in one call: still exactly one Update event.
+    int before = t.updateEventCount;
+    t.feed("\x1b[?2026hABCDEF\x1b[?2026l");
+    CHECK(t.rowText(0) == "ABCDEF");
+    CHECK(t.updateEventCount == before + 1);
 }
 
 // ── Device Attributes ─────────────────────────────────────────────────────────

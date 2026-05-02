@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -703,7 +704,16 @@ private:
     // hot-reload); from a different instance it fails so unload cleanup
     // doesn't accidentally drop another instance's action.
     std::unordered_map<std::string, InstanceId> registeredActions_;
-    std::unordered_map<std::string, std::string> customTcaps_; // XTGETTCAP name → value
+    // XTGETTCAP name → value. Read by parser worker threads (via the
+    // customTcapLookup callback bound in PlatformDawn::buildTerminalCallbacks);
+    // written only by main-thread JS callbacks (mb.registerTcap /
+    // mb.unregisterTcap). Guarded by customTcapsMutex_ so the parser can
+    // query it directly without bouncing through runOnMain — that bounce
+    // had a deadlock against the render thread (parser holds Terminal::mMutex
+    // → runOnMain → main thread tries to take Terminal::mMutex via
+    // forEachEmbedded). Lookups are pure data; QuickJS isn't involved.
+    std::unordered_map<std::string, std::string> customTcaps_;
+    mutable std::shared_mutex customTcapsMutex_;
 
     struct ActionHandler {
         InstanceId id;

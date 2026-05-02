@@ -726,6 +726,10 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             // points are wired.
             platformInit(*eventLoop_);
 
+            // Seed the dark-mode cache before any pane is constructed; pane
+            // callbacks (mode 2031 / DSR-997) read it via cachedIsDarkMode().
+            refreshCachedIsDarkMode();
+
             // Observe system appearance changes for mode 2031.
             // Suppress when an explicit config override is in effect; the
             // user's choice should not be flipped by the OS theme changing
@@ -733,6 +737,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             platformObserveAppearanceChanges([this](bool isDark) {
                 const std::string& cs = lastConfig_.color_scheme;
                 if (cs == "light" || cs == "dark") return;
+                refreshCachedIsDarkMode();
                 notifyAllTerminals([isDark](TerminalEmulator* term) {
                     term->notifyColorPreference(isDark);
                 });
@@ -1133,7 +1138,8 @@ void PlatformDawn::applyConfig(const Config& config)
     // waiting for the next system appearance change. Cheap: just an
     // emulator-side state push.
     if (oldColorScheme != config.color_scheme) {
-        bool isDark = effectiveIsDarkMode();
+        refreshCachedIsDarkMode();
+        bool isDark = cachedIsDarkMode();
         notifyAllTerminals([isDark](TerminalEmulator* term) {
             term->notifyColorPreference(isDark);
         });

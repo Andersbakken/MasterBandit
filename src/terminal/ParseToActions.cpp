@@ -217,17 +217,17 @@ size_t TerminalEmulator::parseToActions(const char* buf, size_t len_)
                         // Complete CSI. mEscapeBuffer layout matches
                         // what processCSI expects: buf[0]='[', then
                         // params/intermediates, buf[len-1]=final byte.
-                        auto csi = std::make_unique<ParserAction::CSI>();
+                        ParserAction::CSI csi;
                         // Detect 2026 set/reset on the params past the
                         // leading '['.
                         int sync = detectSyncOutputCsi(
                             mEscapeBuffer + 1, mEscapeIndex - 1);
-                        std::memcpy(csi->buf.data(), mEscapeBuffer,
+                        std::memcpy(csi.buf.data(), mEscapeBuffer,
                                     static_cast<size_t>(mEscapeIndex));
-                        csi->len = static_cast<uint8_t>(mEscapeIndex);
-                        csi->finalByte = buf[i];
-                        csi->isPrivate = (mEscapeIndex > 1 &&
-                                          mEscapeBuffer[1] == '?');
+                        csi.len = static_cast<uint8_t>(mEscapeIndex);
+                        csi.finalByte = buf[i];
+                        csi.isPrivate = (mEscapeIndex > 1 &&
+                                         mEscapeBuffer[1] == '?');
                         emit(out, std::move(csi));
                         if (sync > 0)      mHold = true;
                         else if (sync < 0) mHold = false;

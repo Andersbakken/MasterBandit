@@ -211,7 +211,16 @@ public:
     // Honors the `color_scheme` config override ("light" / "dark") when
     // set; otherwise queries the system (DBus portal on Linux,
     // NSApp.effectiveAppearance on macOS).
+    //
+    // Recomputed only when state changes (config reload, OS appearance
+    // notification) and cached in `cachedIsDarkMode_` so the parser worker
+    // can read it via an atomic load without bouncing through runOnMain.
+    // Bouncing while the parser holds Terminal::mutex() deadlocked against
+    // the render thread (which also takes Terminal::mutex() via
+    // forEachEmbedded in buildRenderFrameState).
     bool effectiveIsDarkMode() const;
+    bool cachedIsDarkMode() const { return cachedIsDarkMode_.load(std::memory_order_acquire); }
+    void refreshCachedIsDarkMode() { cachedIsDarkMode_.store(effectiveIsDarkMode(), std::memory_order_release); }
 
     // True iff called from the thread that constructed PlatformDawn (the
     // main / event-loop thread). Used by sync TerminalCallbacks shims so
@@ -248,6 +257,11 @@ private:
     // thread) so runOnMain() can detect re-entrant calls and avoid
     // deadlocking by posting to itself.
     std::thread::id mainThreadId_ { std::this_thread::get_id() };
+
+    // Cached effectiveIsDarkMode() result, refreshed by main on config
+    // reload and OS appearance changes; read by parser workers via
+    // cachedIsDarkMode() to avoid a runOnMain bounce inside injectData.
+    std::atomic<bool> cachedIsDarkMode_ { false };
 
     uint32_t flags_ = FlagNone;
     bool platformInitialized_ = false;

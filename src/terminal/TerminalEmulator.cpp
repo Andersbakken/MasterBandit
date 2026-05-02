@@ -768,46 +768,28 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_)
 
     obs::notifyParse(len_);
 
-    // DEC mode 2026 sync output: while mHold is set, leave the
-    // accumulated actions in mPendingActions and skip the apply
-    // phase. The matching 2026l (or RIS) inside parseToActions clears
-    // mHold; that call's apply phase then drains the whole sync
-    // block atomically. Render thread can no longer observe mid-sync
-    // grid state.
-    //
-    // Test paths that set 2026 and then query state without sending
-    // 2026l drain the buffer via flushPendingActions (called from
-    // TestTerminal::feed), so single-threaded test code observes
-    // immediate apply.
-    if (mHold) return len_;
-
-    // Apply phase — under mMutex.
+    // Apply phase — under mMutex. Runs unconditionally even while a
+    // DEC mode 2026 sync block is in progress (mHold). Sync only gates
+    // the Update event below: the grid mutates live, but the render
+    // thread is told not to paint a partial frame. mState->syncOutput
+    // (set by processCSI(2026)) drives renderer-side frame suppression
+    // — the snapshot returns early and the prior frame is re-presented.
+    // This matches kitty/iTerm2's "double-buffered render, live grid"
+    // model and avoids the giant deferred-apply stall.
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     applyActions(mPendingActions);
     mPendingActions.clear();
 
     pruneCommandRing();
 
-    // Suppress render updates during chunked image transfer to avoid
-    // vsync-blocking the event loop while the PTY still has data to
-    // deliver.
-    if (!mKittyLoading.active) {
+    // Suppress render updates during chunked image transfer (avoid
+    // vsync-blocking the event loop while the PTY still has data) and
+    // during a 2026 sync block (one Update fires when the closing
+    // 2026l clears mHold).
+    if (!mKittyLoading.active && !mHold) {
         if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
     }
     return len_;
-}
-
-void TerminalEmulator::flushPendingActions()
-{
-    std::lock_guard<std::mutex> _ps(mParseStateMutex);
-    std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    mHold = false;
-    if (mPendingActions.empty()) return;
-    applyActions(mPendingActions);
-    mPendingActions.clear();
-    pruneCommandRing();
-    if (!mKittyLoading.active && mCallbacks.event)
-        mCallbacks.event(this, static_cast<int>(Update), nullptr);
 }
 
 
@@ -1127,6 +1109,38 @@ void TerminalEmulator::applyDesignateCharset(char slot, char charset)
     }
 }
 
+namespace {
+// CSI parameters are pure decimal digits, terminated by ';' or the final
+// byte. strtoul/strtol go through libc locale plumbing — non-trivial in a
+// loop running thousands of times per frame. These minimal hand-rolled
+// parsers stop at the first non-digit and write the end pointer, matching
+// the strtoul/strtol contract used at the call sites here.
+inline unsigned long parseUL(const char* p, char** end_out)
+{
+    unsigned long v = 0;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + static_cast<unsigned long>(*p - '0');
+        ++p;
+    }
+    *end_out = const_cast<char*>(p);
+    return v;
+}
+
+inline long parseL(const char* p, char** end_out)
+{
+    bool neg = false;
+    if (*p == '-') { neg = true; ++p; }
+    else if (*p == '+') { ++p; }
+    long v = 0;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + static_cast<long>(*p - '0');
+        ++p;
+    }
+    *end_out = const_cast<char*>(p);
+    return neg ? -v : v;
+}
+} // namespace
+
 void TerminalEmulator::applyActions(std::vector<ParserAction::Action>& actions)
 {
     for (auto& a : actions) {
@@ -1142,8 +1156,8 @@ void TerminalEmulator::applyActions(std::vector<ParserAction::Action>& actions)
                 applyEsc(x.finalByte);
             } else if constexpr (std::is_same_v<T, ParserAction::DesignateCharset>) {
                 applyDesignateCharset(x.slot, x.charset);
-            } else if constexpr (std::is_same_v<T, std::unique_ptr<ParserAction::CSI>>) {
-                processCSI(x->buf.data(), x->len);
+            } else if constexpr (std::is_same_v<T, ParserAction::CSI>) {
+                processCSI(x.buf.data(), x.len);
             } else if constexpr (std::is_same_v<T, ParserAction::StringSequence>) {
                 processStringSequence(x.kind, x.payload);
             }
@@ -1162,7 +1176,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         if (len == 2) // no digits
             return def;
         char *end;
-        unsigned long l = strtoul(buf + 1, &end, 10);
+        unsigned long l = parseUL(buf + 1, &end);
         if (end != buf + len - 1 || l > static_cast<unsigned long>(std::numeric_limits<int>::max())) {
             return -1;
         }
@@ -1219,7 +1233,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         char *end;
         action.x = action.y = 1;
         action.type = Action::CursorPosition;
-        const unsigned long x = strtoul(buf + 1, &end, 10);
+        const unsigned long x = parseUL(buf + 1, &end);
         if (end == buf + len - 1) {
             if (len != 2) {
                 if (!x) {
@@ -1239,7 +1253,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
                 action.x = x;
             }
             if (end + 1 < buf + len - 1) {
-                const unsigned long y = strtoul(end + 1, &end, 10);
+                const unsigned long y = parseUL(end + 1, &end);
                 if (end != buf + len - 1 || !y) {
                     sLog().error("Invalid CSI CUP error 3");
                     action.type = Action::Invalid;
@@ -1354,7 +1368,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         if (isPrivate && len >= 4) {
             // CSI ? Ps n — private DSR queries
             char* end;
-            int ps = static_cast<int>(strtoul(buf + 2, &end, 10));
+            int ps = static_cast<int>(parseUL(buf + 2, &end));
             if (ps == 996) {
                 // Color preference query: 1=dark, 2=light
                 bool isDark = true;
@@ -1388,7 +1402,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
             const char* end = buf + len - 1;
             while (p < end) {
                 char* next;
-                unsigned long v = strtoul(p, &next, 10);
+                unsigned long v = parseUL(p, &next);
                 if (next == p) break;
                 modes.push_back(static_cast<int>(v));
                 p = next;
@@ -1408,16 +1422,16 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         } else if (isSecondary) {
             // CSI > flags u — push flags onto stack
             char *end;
-            uint8_t flags = static_cast<uint8_t>(strtoul(buf + 2, &end, 10));
+            uint8_t flags = static_cast<uint8_t>(parseUL(buf + 2, &end));
             kittyPushFlags(flags & 0x1F);
         } else if (isEquals) {
             // CSI = flags u — set flags
             // CSI = flags ; mode u — set flags with mode (1=replace, 2=OR, 3=AND NOT)
             char *end;
-            uint8_t flags = static_cast<uint8_t>(strtoul(buf + 2, &end, 10));
+            uint8_t flags = static_cast<uint8_t>(parseUL(buf + 2, &end));
             int mode = 1;
             if (*end == ';') {
-                mode = static_cast<int>(strtoul(end + 1, &end, 10));
+                mode = static_cast<int>(parseUL(end + 1, &end));
             }
             kittySetFlags(flags & 0x1F, mode);
         } else if (isLess) {
@@ -1425,7 +1439,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
             char *end;
             int count = 1;
             if (len > 3) {
-                count = static_cast<int>(strtoul(buf + 2, &end, 10));
+                count = static_cast<int>(parseUL(buf + 2, &end));
                 if (count < 1) count = 1;
             }
             kittyPopFlags(count);
@@ -1440,10 +1454,10 @@ void TerminalEmulator::processCSI(const char* buf, int len)
             action.type = Action::SetMode;
             // Parse the mode number
             char *end;
-            action.count = strtoul(buf + 2, &end, 10); // skip "[?"
+            action.count = parseUL(buf + 2, &end); // skip "[?"
         } else {
             char *end;
-            unsigned long mode = strtoul(buf + 1, &end, 10); // skip "["
+            unsigned long mode = parseUL(buf + 1, &end); // skip "["
             if (mode == 4) {
                 mState->insertMode = true;
             } else {
@@ -1455,10 +1469,10 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         if (isPrivate) {
             action.type = Action::ResetMode;
             char *end;
-            action.count = strtoul(buf + 2, &end, 10);
+            action.count = parseUL(buf + 2, &end);
         } else {
             char *end;
-            unsigned long mode = strtoul(buf + 1, &end, 10); // skip "["
+            unsigned long mode = parseUL(buf + 1, &end); // skip "["
             if (mode == 4) {
                 mState->insertMode = false;
             } else {
@@ -1474,7 +1488,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
             const char* end = buf + len - 1;
             while (p < end) {
                 char* next;
-                unsigned long v = strtoul(p, &next, 10);
+                unsigned long v = parseUL(p, &next);
                 if (next == p) break;
                 modes.push_back(static_cast<int>(v));
                 p = next;
@@ -1486,10 +1500,10 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         // CSI Pt ; Pb r
         int top = 1, bottom = mHeight;
         char *end;
-        unsigned long t = strtoul(buf + 1, &end, 10);
+        unsigned long t = parseUL(buf + 1, &end);
         if (end != buf + 1 && t > 0) top = static_cast<int>(t);
         if (*end == ';') {
-            unsigned long b = strtoul(end + 1, &end, 10);
+            unsigned long b = parseUL(end + 1, &end);
             if (b > 0) bottom = static_cast<int>(b);
         }
         mState->scrollTop = std::max(0, top - 1);
@@ -1524,7 +1538,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
                 if (len > 3) {
                     // Parse parameter between '[' and ' q'
                     char* end;
-                    ps = static_cast<int>(strtoul(buf + 1, &end, 10));
+                    ps = static_cast<int>(parseUL(buf + 1, &end));
                 }
                 switch (ps) {
                 case 0: mState->cursorShape = mDefaults.cursorShape; break;
@@ -1550,7 +1564,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         int ps = 0;
         if (len > 2) {
             char* end;
-            ps = static_cast<int>(strtoul(buf + 1, &end, 10));
+            ps = static_cast<int>(parseUL(buf + 1, &end));
         }
         if (ps == 0 || ps == 1) {
             // Reply: CSI Psol;1;1;128;128;1;0 x
@@ -1566,9 +1580,9 @@ void TerminalEmulator::processCSI(const char* buf, int len)
     case 't': {
         // XTWINOPS — handle push/pop title/icon (22/23 with Ps: 0=both, 1=icon, 2=title)
         char* end;
-        int op = static_cast<int>(strtoul(buf + 1, &end, 10));
+        int op = static_cast<int>(parseUL(buf + 1, &end));
         int ps = 0; // default: both
-        if (*end == ';') ps = static_cast<int>(strtoul(end + 1, &end, 10));
+        if (*end == ';') ps = static_cast<int>(parseUL(end + 1, &end));
         const bool doIcon  = (ps == 0 || ps == 1);
         const bool doTitle = (ps == 0 || ps == 2);
         // Stack mutation runs under mMutex (held by injectData).
@@ -1618,7 +1632,7 @@ void TerminalEmulator::processCSI(const char* buf, int len)
         if (isPrivate && len >= 5 &&
             buf[len - 2] == '$') {
             char* end;
-            int ps = static_cast<int>(strtoul(buf + 2, &end, 10));
+            int ps = static_cast<int>(parseUL(buf + 2, &end));
             int pm = 0; // not recognized
             switch (ps) {
             case 1:    pm = mState->cursorKeyMode ? 1 : 2; break;

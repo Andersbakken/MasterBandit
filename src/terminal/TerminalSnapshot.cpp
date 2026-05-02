@@ -52,11 +52,21 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
 {
     std::lock_guard<std::recursive_mutex> _lk(term.mutex());
 
-    if (term.syncOutputActive()) {
-        syncOutputActive = true;
-        return false;
-    }
-    syncOutputActive = false;
+    // Always capture under the mutex — even while a 2026 sync block is in
+    // progress. The renderer-side gate (snap.syncOutputActive && heldTexture)
+    // keeps the visible frame frozen; we just keep the snapshot fresh so
+    // that whenever the renderer is allowed to paint again, it has the
+    // latest grid state ready. The previous behaviour (early-return on
+    // syncOutputActive) interacted badly with the live-apply parser model:
+    // back-to-back sync blocks could starve the render thread of any
+    // window in which to capture, and the held texture would lag the
+    // grid by entire screens. See TerminalEmulator::injectData.
+    const bool wasSyncActive = syncOutputActive;
+    syncOutputActive = term.syncOutputActive();
+    // Sync just ended: force a full re-copy this tick so the renderer
+    // repaints with the post-sync state even though the per-row dirty
+    // bits may have been consumed during the prior in-sync ticks.
+    const bool syncJustEnded = wasSyncActive && !syncOutputActive;
 
     const int newRows = term.height();
     const int newCols = term.width();
@@ -64,6 +74,7 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     const int newHistory = term.document().historySize();
 
     const bool structuralChange =
+        syncJustEnded ||
         newRows != lastRows_ || newCols != lastCols_ ||
         newOffset != lastViewportOffset_ || newHistory != lastHistorySize_;
 

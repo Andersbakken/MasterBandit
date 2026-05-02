@@ -792,12 +792,13 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     // a slightly stale value is harmless for the OSC reply path.
     cbs.cellPixelWidth  = [this]() -> float { return charWidth_; };
     cbs.cellPixelHeight = [this]() -> float { return lineHeight_; };
-    // effectiveIsDarkMode() touches the DBus / Cocoa appearance state
-    // owned by the main thread. Bounce through runOnMain so the parse
-    // worker doesn't race with the platform-side observers.
-    cbs.isDarkMode = [this]() {
-        return runOnMain([this]() { return effectiveIsDarkMode(); });
-    };
+    // Mode 2031 / DSR-997 dark-mode query. The parser worker calls this
+    // synchronously from inside injectData while holding Terminal::mutex().
+    // The previous runOnMain bounce deadlocked against the render thread
+    // (which also takes Terminal::mutex() via forEachEmbedded). The actual
+    // OS state is queried only by main (config reload / appearance observer)
+    // and stashed in cachedIsDarkMode_; the parser reads the atomic directly.
+    cbs.isDarkMode = [this]() { return cachedIsDarkMode(); };
 
     cbs.onCWDChanged = [this, paneId](const std::string& dir) {
         eventLoop_->post([this, paneId, dir] {
@@ -896,12 +897,15 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         });
     };
 
-    // DCS+q (XTGETTCAP) for caps not in the built-in table. scriptEngine_
-    // is main-thread-only, so bounce when called from a parse worker.
+    // DCS+q (XTGETTCAP) for caps not in the built-in table. The parser worker
+    // calls this synchronously from inside applyActions while holding
+    // Terminal::mutex(). Bouncing through runOnMain here used to deadlock
+    // against the render thread (which also takes Terminal::mutex() via
+    // forEachEmbedded in buildRenderFrameState). The custom-tcap registry is
+    // pure data; lookupCustomTcap is now thread-safe (shared_mutex inside
+    // ScriptEngine), so we call it directly from the parser thread.
     cbs.customTcapLookup = [this](const std::string& name) -> std::optional<std::string> {
-        return runOnMain([this, &name]() -> std::optional<std::string> {
-            return scriptEngine_.lookupCustomTcap(name);
-        });
+        return scriptEngine_.lookupCustomTcap(name);
     };
 
     cbs.onMouseCursorShape = [this, paneId](const std::string& shape) {

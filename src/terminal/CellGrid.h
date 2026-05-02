@@ -1,6 +1,8 @@
 #pragma once
 
 #include "IGrid.h"
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 class CellGrid : public IGrid {
@@ -13,10 +15,10 @@ public:
     int cols() const override { return cols_; }
     int rows() const override { return rows_; }
 
-    Cell& cell(int col, int row) override { return cells_[row * cols_ + col]; }
-    const Cell& cell(int col, int row) const override { return cells_[row * cols_ + col]; }
-    Cell* row(int row) override { return &cells_[row * cols_]; }
-    const Cell* row(int row) const override { return &cells_[row * cols_]; }
+    Cell& cell(int col, int row) override { return rowVec_[row]->cells[col]; }
+    const Cell& cell(int col, int row) const override { return rowVec_[row]->cells[col]; }
+    Cell* row(int row) override { return rowVec_[row]->cells.data(); }
+    const Cell* row(int row) const override { return rowVec_[row]->cells.data(); }
 
     void markRowDirty(int row) override;
     void markAllDirty() override;
@@ -38,9 +40,20 @@ public:
     void clearRowExtras(int row) override;
 
 private:
+    struct Row {
+        std::vector<Cell> cells;
+        // Lazy: nullptr means "no extras on this row", which is the common
+        // case. Allocated only when ensureExtra fires. Move/destroy of an
+        // empty row is then a single pointer copy instead of allocating
+        // and freeing libc++ unordered_map bucket arrays on every scroll.
+        std::unique_ptr<std::unordered_map<int, CellExtra>> extras;
+        bool dirty = true;
+    };
+
+    static std::unique_ptr<Row> makeRow(int cols);
+    void clearRowInternal(Row& r, int startCol, int endCol);
+
     int cols_ = 0, rows_ = 0;
-    std::vector<Cell> cells_;
-    std::vector<bool> dirty_;
+    std::vector<std::unique_ptr<Row>> rowVec_;
     bool allDirty_ = true;
-    std::vector<std::unordered_map<int, CellExtra>> extras_;
 };

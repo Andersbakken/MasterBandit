@@ -13,11 +13,23 @@ uint32_t ColrAtlas::bucketForSize(float font_size) {
 
 uint32_t ColrAtlas::bucketAtlasDim(uint32_t bucket) const {
     if (bucket >= NUM_BUCKETS) return INITIAL_ATLAS_DIM;
+    std::lock_guard<std::mutex> lock(mutex_);
     return buckets_[bucket].atlasDim;
+}
+
+void ColrAtlas::advanceGeneration() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    currentGen_++;
+}
+
+uint32_t ColrAtlas::generation() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return currentGen_;
 }
 
 ColrAtlas::TileLocation* ColrAtlas::findTile(uint64_t glyph_key, float font_size) {
     uint32_t bucket = bucketForSize(font_size);
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = cache_.find({glyph_key, bucket});
     if (it != cache_.end()) {
         it->second.generation = currentGen_;
@@ -28,6 +40,7 @@ ColrAtlas::TileLocation* ColrAtlas::findTile(uint64_t glyph_key, float font_size
 
 ColrAtlas::AcquireResult ColrAtlas::acquireTile(uint64_t glyph_key, float font_size) {
     uint32_t bucket = bucketForSize(font_size);
+    std::lock_guard<std::mutex> lock(mutex_);
 
     // Already cached?
     CacheKey key{glyph_key, bucket};
@@ -150,6 +163,7 @@ void ColrAtlas::updateBucketSlots(uint32_t bucket) {
 }
 
 void ColrAtlas::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
     cache_.clear();
     for (auto& bs : buckets_) {
         bs.nextSlot = 0;

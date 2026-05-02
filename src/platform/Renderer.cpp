@@ -232,20 +232,29 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     std::shared_lock<std::shared_mutex> lock(font.mutex);
     uint64_t version = font.atlasVersion.load(std::memory_order_acquire);
 
-    // Storage buffer for glyph atlas (pre-allocate 4MB = 256K vec4<i32>)
+    // Storage buffer for glyph atlas (pre-allocate 4MB virtual = 256K virtual texels).
+    // The atlas packs two int16 per i32 component (8 i16 per vec4<i32> texel),
+    // so storage size is ceil(capacity / 2) vec4<i32> texels. See text.cpp encoder
+    // and src/shaders/hb-gpu-fragment.wgsl for the packing layout.
     uint32_t capacity = std::max(font.atlasUsed, 256u * 1024u);
+    uint64_t storageBytes = (static_cast<uint64_t>(capacity) + 1) / 2 * 4 * sizeof(int32_t);
+    std::string atlasLabel = "FontAtlas:" + fontName;
     {
         wgpu::BufferDescriptor desc = {};
-        desc.size = static_cast<uint64_t>(capacity) * 4 * sizeof(int32_t);
+        desc.size = storageBytes;
         desc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+        desc.label = atlasLabel.c_str();
         gpu.storageBuffer = device_.CreateBuffer(&desc);
         gpu.storageCapacity = capacity;
+        spdlog::info("FontAtlas '{}' GPU buffer (re)allocated: {} virtual texels = {:.1f} MB (atlasUsed={}, glyphs={})",
+                     fontName, capacity, desc.size / (1024.0 * 1024.0),
+                     font.atlasUsed, font.glyphs.size());
     }
 
     // Upload current atlas data
     if (font.atlasUsed > 0) {
-        queue.WriteBuffer(gpu.storageBuffer, 0, font.atlasData.data(),
-                          static_cast<uint64_t>(font.atlasUsed) * 4 * sizeof(int32_t));
+        uint64_t usedStorageBytes = (static_cast<uint64_t>(font.atlasUsed) + 1) / 2 * 4 * sizeof(int32_t);
+        queue.WriteBuffer(gpu.storageBuffer, 0, font.atlasData.data(), usedStorageBytes);
     }
     gpu.uploadedSize = font.atlasUsed;
     gpu.uploadedVersion = version;
@@ -283,7 +292,7 @@ void Renderer::uploadFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     bindings[0].size = 112;
     bindings[1].binding = 1;
     bindings[1].buffer = gpu.storageBuffer;
-    bindings[1].size = static_cast<uint64_t>(capacity) * 4 * sizeof(int32_t);
+    bindings[1].size = storageBytes;
 
     wgpu::BindGroupDescriptor bgDesc = {};
     bgDesc.layout = textBindGroupLayout_;
@@ -325,10 +334,16 @@ void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
         return;
     }
 
-    uint64_t offset = static_cast<uint64_t>(gpu.uploadedSize) * 4 * sizeof(int32_t);
-    uint64_t size = static_cast<uint64_t>(font.atlasUsed - gpu.uploadedSize) * 4 * sizeof(int32_t);
+    // Packed-int16 layout: storage texel index = virtual texel >> 1. Re-upload from
+    // floor(uploadedSize/2) so that an odd uploadedSize boundary (where the prior
+    // upload's last storage texel had its high half empty and the new data fills it)
+    // is correctly refreshed.
+    uint32_t startStorageTexel = gpu.uploadedSize / 2;
+    uint32_t endStorageTexel = (font.atlasUsed + 1) / 2;
+    uint64_t offset = static_cast<uint64_t>(startStorageTexel) * 4 * sizeof(int32_t);
+    uint64_t size = static_cast<uint64_t>(endStorageTexel - startStorageTexel) * 4 * sizeof(int32_t);
     queue.WriteBuffer(gpu.storageBuffer, offset,
-                      font.atlasData.data() + gpu.uploadedSize * 4, size);
+                      font.atlasData.data() + startStorageTexel * 4, size);
     gpu.uploadedSize = font.atlasUsed;
     gpu.uploadedVersion = version;
 }
@@ -1450,9 +1465,10 @@ void Renderer::rasterizeColrGlyphs(wgpu::CommandEncoder& encoder, wgpu::Queue& q
         bgEntries[2].size = allColorStops.size() * sizeof(ColrColorStop);
         bgEntries[3].binding = 3;
         bgEntries[3].buffer = fontIt->second.storageBuffer;
+        // Packed-int16 layout: storage texels = (virtual texels + 1) / 2.
         bgEntries[3].size = fontIt->second.uploadedSize > 0 ?
-            static_cast<uint64_t>(fontIt->second.uploadedSize) * 4 * sizeof(int32_t) :
-            fontIt->second.storageCapacity * sizeof(int32_t);
+            (static_cast<uint64_t>(fontIt->second.uploadedSize) + 1) / 2 * 4 * sizeof(int32_t) :
+            (static_cast<uint64_t>(fontIt->second.storageCapacity) + 1) / 2 * 4 * sizeof(int32_t);
         bgEntries[4].binding = 4;
         bgEntries[4].textureView = bg.view;
 

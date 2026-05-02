@@ -229,19 +229,82 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
                 return;
             }
 
-            info.atlas_offset = font.atlasUsed;
-            uint32_t needed = (font.atlasUsed + numTexels) * 4;
-            if (font.atlasData.size() < needed)
-                font.atlasData.resize(needed * 2, 0);
+            // Atlas layout: storage holds two int16 per i32 component (8 i16 per
+            // vec4<i32> texel), halving the GPU buffer size. atlasUsed is the
+            // count of "virtual" 4-int16 texels the shader sees; storage size
+            // is (atlasUsed + 1) / 2 vec4<i32> texels. Each glyph must start
+            // on a storage-texel boundary (even virtual offset) so the shader's
+            // hb_gpu_fetch can round offset/2 cleanly.
+            if (font.atlasUsed & 1u)
+                font.atlasUsed++;
 
-            for (uint32_t i = 0; i < numInt16; i++)
-                font.atlasData[font.atlasUsed * 4 + i] = static_cast<int32_t>(src[i]);
-            for (uint32_t i = numInt16; i < numTexels * 4; i++)
-                font.atlasData[font.atlasUsed * 4 + i] = 0;
+            info.atlas_offset = font.atlasUsed;
+            uint32_t glyphStorageBase = font.atlasUsed / 2;
+            uint32_t glyphStorageTexels = (numTexels + 1) / 2;
+            uint32_t neededI32 = (glyphStorageBase + glyphStorageTexels) * 4;
+            if (font.atlasData.size() < neededI32)
+                font.atlasData.resize(neededI32 * 2, 0);
+
+            for (uint32_t s = 0; s < glyphStorageTexels; s++) {
+                for (uint32_t c = 0; c < 4; c++) {
+                    uint32_t lowIdx  = s * 8 + c;
+                    uint32_t highIdx = s * 8 + 4 + c;
+                    uint32_t lo = (lowIdx  < numInt16) ? static_cast<uint16_t>(src[lowIdx])  : 0u;
+                    uint32_t hi = (highIdx < numInt16) ? static_cast<uint16_t>(src[highIdx]) : 0u;
+                    font.atlasData[(glyphStorageBase + s) * 4 + c] =
+                        static_cast<int32_t>(lo | (hi << 16));
+                }
+            }
+            uint32_t prevUsed = font.atlasUsed;
             font.atlasUsed += numTexels;
 
             font.glyphs[key] = info;
             font.atlasVersion.fetch_add(1, std::memory_order_release);
+
+            // Log on every 1M-virtual-texel growth boundary to track atlas inflation.
+            // Storage is (atlasUsed + 1) / 2 vec4<i32> texels = packed-int16 layout.
+            constexpr uint32_t logStep = 1u << 20;
+            if (prevUsed / logStep != font.atlasUsed / logStep) {
+                uint64_t storageBytes = (static_cast<uint64_t>(font.atlasUsed) + 1) / 2 * 16;
+                sLog().warn("FontAtlas '{}' atlasUsed crossed {} virtual texels ({} MB GPU storage), glyphs={}, hbFonts={}, last glyph=(fi={}, gid={}, blobLen={})",
+                            font.name, font.atlasUsed,
+                            storageBytes / (1024 * 1024),
+                            font.glyphs.size(), font.hbFonts.size(),
+                            fontIndex, glyphId, blobLen);
+
+                // Break down atlas occupancy by fontIndex/style.
+                // Glyph blobs are appended sequentially, so per-glyph size = next_offset - this_offset.
+                std::vector<std::pair<uint32_t, uint32_t>> entries; // (atlas_offset, fontIndex)
+                entries.reserve(font.glyphs.size());
+                for (const auto& [k, gi] : font.glyphs) {
+                    if (gi.is_empty || gi.is_colr) continue;
+                    entries.push_back({gi.atlas_offset, static_cast<uint32_t>(k >> 32)});
+                }
+                std::sort(entries.begin(), entries.end());
+
+                struct Bucket { uint64_t texels = 0; uint32_t glyphs = 0; };
+                Bucket primary, primaryStyled, fallback, fallbackStyled;
+                for (size_t i = 0; i < entries.size(); i++) {
+                    uint32_t off = entries[i].first;
+                    uint32_t fi = entries[i].second;
+                    uint32_t nextOff = (i + 1 < entries.size()) ? entries[i + 1].first : font.atlasUsed;
+                    uint32_t sz = (nextOff > off) ? (nextOff - off) : 0;
+                    if (fi >= font.hbFonts.size()) continue;
+                    bool styled = font.hbFonts[fi].style != FontStyle{};
+                    bool isPrimary = (font.hbFonts[fi].baseFontIndex == 0 && (fi == 0 || styled));
+                    Bucket& b = isPrimary ? (styled ? primaryStyled : primary)
+                                          : (styled ? fallbackStyled : fallback);
+                    b.texels += sz;
+                    b.glyphs++;
+                }
+                // Storage MB per virtual-texel count: (texels+1)/2 storage texels * 16 bytes.
+                auto mb = [](uint64_t t) { return ((t + 1) / 2 * 16) / (1024 * 1024); };
+                sLog().warn("  breakdown: primary={} MB ({} glyphs), primary-styled={} MB ({} glyphs), fallback={} MB ({} glyphs), fallback-styled={} MB ({} glyphs)",
+                            mb(primary.texels), primary.glyphs,
+                            mb(primaryStyled.texels), primaryStyled.glyphs,
+                            mb(fallback.texels), fallback.glyphs,
+                            mb(fallbackStyled.texels), fallbackStyled.glyphs);
+            }
         }
         hb_gpu_draw_recycle_blob(g, blob);
 
@@ -384,14 +447,31 @@ bool TextSystem::registerFont(const std::string& name,
     return true;
 }
 
-bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData)
+int32_t TextSystem::addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData)
 {
     auto it = fonts_.find(name);
-    if (it == fonts_.end()) return false;
+    if (it == fonts_.end()) return -1;
 
     FontData& font = it->second;
 
-    // Create HarfBuzz objects without holding lock
+    // Content-hash the blob to dedup concurrent or repeated calls for the same font.
+    uint64_t blobHash = std::hash<std::string_view>{}(
+        std::string_view(reinterpret_cast<const char*>(ttfData.data()), ttfData.size()));
+    if (blobHash == 0) blobHash = 1; // 0 reserved for "no hash"
+
+    // Take the write lock for the whole operation: lookup, dedup check, and append
+    // must be atomic w.r.t. concurrent shaping workers that may call this simultaneously.
+    std::unique_lock lock(font.mutex);
+
+    // Dedup: if a base (non-styled) fallback with the same content was already added,
+    // return its index instead of creating a duplicate.
+    for (size_t i = 0; i < font.hbFonts.size(); i++) {
+        if (font.hbFonts[i].blobHash == blobHash &&
+            font.hbFonts[i].style == FontStyle{}) {
+            return static_cast<int32_t>(i);
+        }
+    }
+
     FontData::HBEntry entry;
     entry.hbBlob = hb_blob_create(reinterpret_cast<const char*>(ttfData.data()),
                                    static_cast<uint32_t>(ttfData.size()),
@@ -404,10 +484,10 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
         hb_font_destroy(entry.hbFont);
         hb_face_destroy(entry.hbFace);
         hb_blob_destroy(entry.hbBlob);
-        return false;
+        return -1;
     }
+    entry.blobHash = blobHash;
 
-    // Check for COLRv1 paint data on the new fallback
     bool hasPaint = hb_ot_color_has_paint(entry.hbFace);
     sLog().info("COLR: fallback font check for '{}': hb_ot_color_has_paint={} face={} fi={}",
                  name, hasPaint, (void*)entry.hbFace, font.hbFonts.size());
@@ -416,11 +496,11 @@ bool TextSystem::addFallbackFont(const std::string& name, const std::vector<uint
         sLog().info("COLR: fallback font for '{}' has COLRv1 paint support", name);
     }
 
-    std::unique_lock lock(font.mutex);
+    int32_t newFi = static_cast<int32_t>(font.hbFonts.size());
     font.hbFonts.push_back(entry);
 
-    sLog().info("Added fallback font #{} to '{}'", font.hbFonts.size() - 1, name);
-    return true;
+    sLog().info("Added fallback font #{} to '{}'", newFi, name);
+    return newFi;
 }
 
 void TextSystem::setSystemFallback(SystemFallbackFn fn)
@@ -664,9 +744,10 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
     if (emojiPresentation && emojiFallback_) {
         auto fallbackData = emojiFallback_(cp);
         if (!fallbackData.empty()) {
-            if (addFallbackFont(fontName, fallbackData)) {
+            int32_t addedFi = addFallbackFont(fontName, fallbackData);
+            if (addedFi >= 0) {
                 std::shared_lock lock(font.mutex);
-                uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
+                uint32_t newFi = static_cast<uint32_t>(addedFi);
                 uint32_t gid;
                 if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
                     bool isColr = hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
@@ -692,23 +773,25 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
         std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
         auto fallbackData = systemFallback_(primaryPath, cp);
         if (!fallbackData.empty()) {
-            addFallbackFont(fontName, fallbackData);
-            std::shared_lock lock(font.mutex);
-            uint32_t newFi = static_cast<uint32_t>(font.hbFonts.size() - 1);
-            uint32_t gid;
-            if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
-                bool isColr = hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
-                              hb_ot_color_glyph_has_paint(font.hbFonts[newFi].hbFace, gid);
-                if (preferNonColr && isColr) {
-                    if (colrFallback.glyphId == 0) colrFallback = {newFi, gid};
-                } else {
-                    lock.unlock();
-                    uint32_t styledFi = getStyledVariant(font, newFi, style);
-                    lock.lock();
-                    uint32_t styledGid;
-                    if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
-                        styledGid = gid;
-                    return {styledFi, styledGid};
+            int32_t addedFi = addFallbackFont(fontName, fallbackData);
+            if (addedFi >= 0) {
+                std::shared_lock lock(font.mutex);
+                uint32_t newFi = static_cast<uint32_t>(addedFi);
+                uint32_t gid;
+                if (hb_font_get_nominal_glyph(font.hbFonts[newFi].hbFont, cp, &gid)) {
+                    bool isColr = hb_ot_color_has_paint(font.hbFonts[newFi].hbFace) &&
+                                  hb_ot_color_glyph_has_paint(font.hbFonts[newFi].hbFace, gid);
+                    if (preferNonColr && isColr) {
+                        if (colrFallback.glyphId == 0) colrFallback = {newFi, gid};
+                    } else {
+                        lock.unlock();
+                        uint32_t styledFi = getStyledVariant(font, newFi, style);
+                        lock.lock();
+                        uint32_t styledGid;
+                        if (!hb_font_get_nominal_glyph(font.hbFonts[styledFi].hbFont, cp, &styledGid))
+                            styledGid = gid;
+                        return {styledFi, styledGid};
+                    }
                 }
             }
         }

@@ -59,8 +59,16 @@ struct ColrColorStop {
 // Slug coverage evaluation (ported from hb-gpu-fragment.wgsl)
 // =====================================================================
 
+// MasterBandit packed atlas: two int16 per i32 component. See hb-gpu-fragment.wgsl.
 fn slug_fetch(offset: i32) -> vec4<i32> {
-    return slug_atlas[offset];
+    let raw = slug_atlas[offset >> 1];
+    if ((offset & 1) == 0) {
+        return vec4<i32>((raw.r << 16u) >> 16u,
+                         (raw.g << 16u) >> 16u,
+                         (raw.b << 16u) >> 16u,
+                         (raw.a << 16u) >> 16u);
+    }
+    return vec4<i32>(raw.r >> 16u, raw.g >> 16u, raw.b >> 16u, raw.a >> 16u);
 }
 
 fn slug_calc_root_code(y1: f32, y2: f32, y3: f32) -> u32 {

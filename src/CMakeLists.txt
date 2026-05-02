@@ -134,11 +134,11 @@ foreach(MOD ${MODULE_FILES})
     mb_copy_asset(${MOD} "${MB_RESOURCES_ROOT}/scripts/modules/${MOD_NAME}")
 endforeach()
 
-# hb-gpu WGSL helper shaders from harfbuzz source
+# hb-gpu vertex helper from harfbuzz source (vertex shader is unmodified upstream).
+# hb-gpu-fragment.wgsl is a project-local fork in src/shaders/ (see comment in
+# that file): it implements packed-int16 atlas reads to halve storage size.
 mb_copy_asset("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
               "${MB_RESOURCES_ROOT}/shaders/hb-gpu-vertex.wgsl")
-mb_copy_asset("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-fragment.wgsl"
-              "${MB_RESOURCES_ROOT}/shaders/hb-gpu-fragment.wgsl")
 
 add_custom_target(mb_assets ALL DEPENDS ${COPIED_ASSETS})
 add_dependencies(mb mb_assets)

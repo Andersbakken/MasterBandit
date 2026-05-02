@@ -59,6 +59,7 @@ struct FontData {
         hb_gpu_draw_t* gpuDraw = nullptr;
         uint32_t baseFontIndex = 0;      // which base font this derives from (self for base fonts)
         FontStyle style;                 // what style this entry represents
+        uint64_t blobHash = 0;           // content hash of ttfData (0 = none/synthetic variant)
     };
     std::vector<HBEntry> hbFonts;
 
@@ -120,7 +121,9 @@ public:
                        float fontSize, FontStyle style = {},
                        std::span<const std::pair<uint32_t, int>> byteToCell = {});
     const FontData* getFont(const std::string& name) const;
-    bool addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
+    // Returns the fontIndex of the added (or already-present, deduped) fallback,
+    // or -1 on failure.
+    int32_t addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
     bool addSyntheticBoldVariant(const std::string& name, float xStrength = 0.02f, float yStrength = 0.02f);
     bool addSyntheticItalicVariant(const std::string& name, float slant = 0.2f);
 

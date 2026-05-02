@@ -2,6 +2,7 @@
 
 #include "ColrTypes.h"
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -30,8 +31,8 @@ public:
     };
 
     // Advance the generation counter. Call once per frame before resolving glyphs.
-    void advanceGeneration() { currentGen_++; }
-    uint32_t generation() const { return currentGen_; }
+    void advanceGeneration();
+    uint32_t generation() const;
 
     // Look up or allocate a tile for a glyph at a given font size.
     // Returns tile=nullptr if already cached (no rasterization needed).
@@ -84,6 +85,8 @@ private:
     std::unordered_map<CacheKey, TileEntry, CacheKeyHash> cache_;
 
     uint32_t currentGen_ = 0;
+
+    mutable std::mutex mutex_;
 
     // Grow a bucket's atlas dimension. Returns false if already at max.
     bool growBucket(uint32_t bucket);

@@ -82,6 +82,10 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
         std::shared_lock lock(font.mutex);
         auto it = font.glyphs.find(key);
         if (it != font.glyphs.end()) {
+            // LRU touch: racy plain-uint32_t write under shared_lock is fine
+            // since map structure is not changing and lost updates only
+            // mis-age a glyph slightly.
+            it->second.lastUsedGen = font.currentGen;
             // If glyph is cached but COLR status unknown, check now
             if (font.hasColrPaint && !it->second.is_colr) {
                 hb_face_t* face = font.hbFonts[fontIndex].hbFace;
@@ -205,8 +209,11 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
         }
         {
             std::unique_lock lock(font.mutex);
-            if (!font.glyphs.count(key))
+            if (!font.glyphs.count(key)) {
+                info.numTexels = 0; // empty/COLR placeholder occupies no atlas storage
+                info.lastUsedGen = font.currentGen;
                 font.glyphs[key] = info;
+            }
         }
         hb_gpu_draw_recycle_blob(g, blob);
         if (!isColr) return;
@@ -258,6 +265,8 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
             uint32_t prevUsed = font.atlasUsed;
             font.atlasUsed += numTexels;
 
+            info.numTexels = numTexels;
+            info.lastUsedGen = font.currentGen;
             font.glyphs[key] = info;
             font.atlasVersion.fetch_add(1, std::memory_order_release);
 
@@ -501,6 +510,121 @@ int32_t TextSystem::addFallbackFont(const std::string& name, const std::vector<u
 
     sLog().info("Added fallback font #{} to '{}'", newFi, name);
     return newFi;
+}
+
+void TextSystem::beginFontFrame(const std::string& name)
+{
+    auto it = fonts_.find(name);
+    if (it == fonts_.end()) return;
+    // Single-writer (render thread); shaping workers only read currentGen.
+    // Plain increment is fine.
+    it->second.currentGen++;
+}
+
+bool TextSystem::compactFontAtlasLRU(const std::string& name,
+                                     uint32_t budgetTexels,
+                                     uint32_t targetTexels)
+{
+    auto it = fonts_.find(name);
+    if (it == fonts_.end()) return false;
+    FontData& font = it->second;
+
+    {
+        std::shared_lock lock(font.mutex);
+        if (font.atlasUsed <= budgetTexels) return false;
+    }
+
+    std::unique_lock lock(font.mutex);
+    // Re-check under write lock (another thread may have compacted).
+    if (font.atlasUsed <= budgetTexels) return false;
+
+    uint32_t prevAtlasUsed = font.atlasUsed;
+    size_t prevGlyphs = font.glyphs.size();
+    size_t prevColr = font.colrGlyphs.size();
+
+    // Build a list of (lastUsedGen, key) for non-empty / non-COLR glyphs that
+    // actually consume atlas storage. Empty + COLR placeholder glyphs stay —
+    // they cost nothing and dropping them just churns later re-encodes.
+    std::vector<std::pair<uint32_t, uint64_t>> entries;
+    entries.reserve(font.glyphs.size());
+    for (const auto& [k, gi] : font.glyphs) {
+        if (gi.is_empty || gi.is_colr || gi.numTexels == 0) continue;
+        entries.push_back({gi.lastUsedGen, k});
+    }
+    // Sort by lastUsedGen DESCENDING — newest first, oldest at the back.
+    std::sort(entries.begin(), entries.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    // Walk from newest, accumulating size. Keep glyphs while accumulated
+    // texels stay under targetTexels. Past that, mark for eviction.
+    std::unordered_set<uint64_t> keep;
+    keep.reserve(entries.size());
+    uint64_t kept_texels = 1; // sentinel slot 0
+    for (const auto& [gen, key] : entries) {
+        const auto& gi = font.glyphs.at(key);
+        if (kept_texels + gi.numTexels > targetTexels) break;
+        kept_texels += gi.numTexels;
+        keep.insert(key);
+    }
+
+    // Defragment atlasData: pack kept glyph blobs back-to-back starting at
+    // virtual offset 1. Storage is two virtual texels per vec4<i32>. Each
+    // glyph still requires even-virtual alignment.
+    // Use a temporary destination vector to avoid in-place overlap pitfalls
+    // (a kept glyph's source range could be below its new dest range).
+    std::vector<int32_t> newData((font.atlasData.size()), 0);
+    uint32_t newAtlasUsed = 1;
+
+    // Iterate in newest-first order (entries) so hot glyphs land near the
+    // front of the new atlas (better cache locality for next-frame access).
+    for (const auto& [gen, key] : entries) {
+        if (!keep.count(key)) continue;
+        auto mit = font.glyphs.find(key);
+        if (mit == font.glyphs.end()) continue;
+        GlyphInfo& gi = mit->second;
+
+        // Align new offset to even virtual texel.
+        if (newAtlasUsed & 1u) newAtlasUsed++;
+
+        uint32_t srcStorageBase = gi.atlas_offset / 2;
+        uint32_t dstStorageBase = newAtlasUsed / 2;
+        uint32_t storageTexels = (gi.numTexels + 1) / 2;
+
+        std::copy_n(font.atlasData.data() + srcStorageBase * 4,
+                    storageTexels * 4,
+                    newData.data() + dstStorageBase * 4);
+
+        gi.atlas_offset = newAtlasUsed;
+        newAtlasUsed += gi.numTexels;
+    }
+
+    // Erase evicted glyphs. We preserved kept glyphs above; everything else
+    // with non-zero numTexels that wasn't kept goes.
+    for (auto it2 = font.glyphs.begin(); it2 != font.glyphs.end(); ) {
+        const GlyphInfo& gi = it2->second;
+        if (!gi.is_empty && !gi.is_colr && gi.numTexels > 0 && !keep.count(it2->first)) {
+            it2 = font.glyphs.erase(it2);
+        } else {
+            ++it2;
+        }
+    }
+
+    // COLR paint graphs encode atlas offsets of clip glyphs; defrag invalidates
+    // those offsets. Drop the cache entirely — they re-encode lazily.
+    font.colrGlyphs.clear();
+
+    font.atlasData = std::move(newData);
+    font.atlasUsed = newAtlasUsed;
+    // Drives the renderer to detect the wrap-back (atlasUsed < uploadedSize)
+    // and force a full reupload.
+    font.atlasVersion.fetch_add(1, std::memory_order_release);
+
+    sLog().info("FontAtlas '{}' compacted: kept {}/{} glyphs, dropped {} COLR entries, {} -> {} virtual texels ({} MB -> {} MB storage)",
+                name, keep.size(), prevGlyphs, prevColr,
+                prevAtlasUsed, newAtlasUsed,
+                (static_cast<uint64_t>(prevAtlasUsed)   + 1) / 2 * 16 / (1024 * 1024),
+                (static_cast<uint64_t>(newAtlasUsed)    + 1) / 2 * 16 / (1024 * 1024));
+    return true;
 }
 
 void TextSystem::setSystemFallback(SystemFallbackFn fn)

@@ -24,6 +24,11 @@ struct GlyphInfo {
     float advance;                       // horizontal advance (pixels at baseSize)
     bool is_empty;                       // true for whitespace/no-contour glyphs
     bool is_colr;                        // true if this is a COLRv1 color glyph
+    uint32_t numTexels;                  // virtual atlas texels occupied (0 for is_empty/is_colr)
+    // LRU bookkeeping: bumped to FontData::currentGen on every cache hit.
+    // Plain uint32_t, written under shared_lock — racy but fine for LRU
+    // (a lost update at most makes a glyph appear slightly colder).
+    uint32_t lastUsedGen;
 };
 
 struct FontStyle {
@@ -47,6 +52,10 @@ struct FontData {
     // Glyph atlas: storage buffer contents (4 ints per texel)
     std::vector<int32_t> atlasData;
     uint32_t atlasUsed = 1;              // number of vec4<i32> texels used (starts at 1; 0 is reserved as "no glyph" sentinel)
+
+    // LRU eviction: bumped once per render frame; ensureGlyphEncoded and
+    // resolveRow set GlyphInfo::lastUsedGen = currentGen on access.
+    uint32_t currentGen = 0;
 
     // Glyph ID key = (fontIndex << 32) | glyphId
     std::unordered_map<uint64_t, GlyphInfo> glyphs;
@@ -147,6 +156,21 @@ public:
 
     // Ensure a glyph is encoded in the atlas; called during shaping
     void ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t glyphId);
+
+    // Bump the per-font LRU generation. Call once per render frame before
+    // any glyph cache lookups so subsequent accesses register against the
+    // new generation.
+    void beginFontFrame(const std::string& name);
+
+    // If atlasUsed (in virtual 4-int16 texels) exceeds budgetTexels, evict
+    // the least-recently-used glyphs until usage is at or below targetTexels.
+    // Defragments atlasData in place. Drops all colrGlyphs (their embedded
+    // atlas offsets become stale post-defrag; they re-encode lazily). The
+    // caller must guarantee no concurrent shaping worker is touching this
+    // font (call between frames). Returns true if a compaction ran.
+    bool compactFontAtlasLRU(const std::string& name,
+                             uint32_t budgetTexels,
+                             uint32_t targetTexels);
 
     // --- Font registry: resolve fonts with style ---
 

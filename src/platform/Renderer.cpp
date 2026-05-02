@@ -323,6 +323,13 @@ void Renderer::updateFontAtlas(wgpu::Queue& queue, const std::string& fontName,
     // mutate atlasData/atlasUsed while we copy from them.
     std::shared_lock<std::shared_mutex> lock(font.mutex);
 
+    // Detect atlas reset (clearFontAtlas was called): atlasUsed wraps backward
+    // to a small value while uploadedSize is large. Force a full reupload from
+    // offset 0 in that case.
+    if (font.atlasUsed < gpu.uploadedSize) {
+        gpu.uploadedSize = 0;
+    }
+
     if (font.atlasUsed <= gpu.uploadedSize) {
         gpu.uploadedVersion = version;
         return;

@@ -42,6 +42,8 @@ static bool resolveCellGlyph(FontData& font,
         std::shared_lock lock(font.mutex);
         auto it = font.glyphs.find(glyphId);
         if (it != font.glyphs.end() && !it->second.is_empty) {
+            // LRU touch (racy plain write under shared_lock — acceptable, see GlyphInfo).
+            it->second.lastUsedGen = font.currentGen;
             out = it->second;
             return true;
         }
@@ -898,6 +900,17 @@ void RenderEngine::renderFrame()
 
     FontData* font = const_cast<FontData*>(platform_->textSystem_.getFont(frameState_.fontName));
     if (!font) { spdlog::error("renderFrame: font '{}' not found", frameState_.fontName); return; }
+
+    // Bound the per-font glyph atlas via LRU compaction. Storage = ((virtual+1)/2)*16 bytes.
+    // Budget 6M virtual texels => 48 MB storage trigger; compact down to 4M => 32 MB,
+    // leaving ample headroom under the 128 MB binding limit for one frame's worth of
+    // re-encoding. The cold tail is dropped; hot glyphs survive at new offsets.
+    constexpr uint32_t kAtlasBudgetVirtualTexels = 6u * 1024u * 1024u;
+    constexpr uint32_t kAtlasTargetVirtualTexels = 4u * 1024u * 1024u;
+    platform_->textSystem_.beginFontFrame(frameState_.fontName);
+    platform_->textSystem_.compactFontAtlasLRU(frameState_.fontName,
+                                               kAtlasBudgetVirtualTexels,
+                                               kAtlasTargetVirtualTexels);
 
     float scale = frameState_.fontSize / font->baseSize;
 

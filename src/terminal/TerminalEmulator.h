@@ -24,6 +24,7 @@ inline std::string toPrintable(const std::string &string)
 }
 
 class TerminalEmulator;
+struct TerminalSnapshot;
 
 struct TerminalCallbacks {
     std::function<void(TerminalEmulator*, int /*Event*/, void*)> event;
@@ -273,7 +274,15 @@ public:
         ScrollbackChanged,
         VisibleBell,
         CommandComplete,         // payload: const CommandRecord*
-        CommandSelectionChanged  // payload: nullptr; read selectedCommandId() for new value
+        CommandSelectionChanged, // payload: nullptr; read selectedCommandId() for new value
+        // Fired from injectData when an Update is suppressed (sync block,
+        // kitty image transfer). Carries no render intent — the only purpose
+        // is to wake the main run loop so onTick can call maybeResumeRead
+        // and re-arm POLLIN on the PTY fd. Without this, during a long DEC
+        // 2026 sync stream the main loop never wakes between batches and
+        // PTY backpressure stalls the writer (vtebench sync_medium_cells
+        // 1050ms vs medium_cells 70ms). Handler must NOT setNeedsRedraw.
+        WakeMainLoop
     };
 
     // Semantic mode transitioned by OSC 133 A/B/C/D; tracks "what is the terminal
@@ -646,10 +655,51 @@ protected:
     void resetScrollback(int scrollbackLines);  // reinitializes document with given scrollback capacity
     TerminalCallbacks& callbacks() { return mCallbacks; }
 
+public:
+    // Snapshot publish/subscribe channel.
+    //
+    // The parser builds a fresh TerminalSnapshot at the end of injectData
+    // (rate-limited to ~120 Hz so high-throughput input streams don't drown
+    // the parser thread in snapshot work) and publishes it via the channel.
+    // The render thread / debug IPC / anyone needing a read-only view
+    // calls loadSnapshot() to atomically pick up the latest published copy
+    // — no mMutex contention with the parser's apply phase.
+    //
+    // Returns nullptr until the first publish (caller falls back to
+    // building one synchronously, or skips the frame).
+    std::shared_ptr<const TerminalSnapshot> loadSnapshot() const;
+
+    // Force a synchronous build + publish ignoring the rate limiter.
+    // Tests use this to deterministically produce a snapshot reflecting
+    // the latest feed() bytes; production should use the per-injectData
+    // path instead.
+    void publishSnapshotForTest();
+
 private:
+    // Build a fresh snapshot from current state and publish it via the
+    // channel — skipped only while a 2026 sync block is in progress (mHold).
+    // Called from injectData under mMutex. Returns true iff a publish
+    // actually happened.
+    bool publishSnapshotIfDue();
+    // The actual builder: constructs a shared_ptr<TerminalSnapshot>,
+    // populates it from `*this`, swaps it into the channel. Caller must
+    // hold mMutex.
+    void buildAndPublishSnapshotLocked();
+protected:
+    // Publish a fresh snapshot and then fire the given event. Use at any
+    // state-change site whose cadence is ~human-paced (resize, viewport
+    // scroll, selection mutation, command navigation). Caller must hold
+    // mMutex. Centralizes the "publish before notify" invariant so
+    // loadSnapshot() returns post-mutation state.
+    void publishAndFireEvent(int ev);
+private:
+
     TerminalCallbacks mCallbacks;
 
     mutable std::recursive_mutex mMutex;
+
+    mutable std::mutex mSnapshotChanMutex;
+    std::shared_ptr<const TerminalSnapshot> mSnapshotLatest;
 
     int mWidth { 0 }, mHeight { 0 };
 

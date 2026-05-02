@@ -21,6 +21,14 @@ inline std::atomic<uint64_t> last_parse_time_us{0};
 // considers the terminal idle when frames_presented has advanced past this.
 inline std::atomic<uint64_t> frames_at_last_parse{0};
 
+// Phase 1 + sync-output diagnostics. Counts incremented per occurrence,
+// no allocation, no lock. Read via `mb --ctl stats`.
+inline std::atomic<uint64_t> injects{0};                 // injectData() calls
+inline std::atomic<uint64_t> snapshot_publishes{0};      // buildAndPublishSnapshotLocked() runs
+inline std::atomic<uint64_t> snapshot_skipped_hold{0};   // publishSnapshotIfDue() skipped (mHold=true)
+inline std::atomic<uint64_t> update_events{0};           // Update events fired from injectData
+inline std::atomic<uint64_t> publish_and_fire_events{0}; // publishAndFireEvent calls (resize/scroll/etc.)
+
 inline uint64_t now_us() noexcept
 {
     using namespace std::chrono;

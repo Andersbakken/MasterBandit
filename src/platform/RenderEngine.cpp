@@ -1066,7 +1066,16 @@ void RenderEngine::renderFrame()
 
         bool animationAdvanced = term->tickAnimations();
 
-        rs.snapshot.update(*term);
+        // Phase 1: read the latest published snapshot from the parser-owned
+        // channel. Falls back to a synchronous build only on the first
+        // frame before any injectData has fired (or before a synchronous
+        // resize-initiated publish has happened). The fallback path takes
+        // mMutex; the steady-state path does not.
+        if (auto pub = term->loadSnapshot()) {
+            rs.snapshot = *pub;
+        } else {
+            rs.snapshot.update(*term);
+        }
         const TerminalSnapshot& snap = rs.snapshot;
 
         for (const auto& [id, view] : snap.images) {

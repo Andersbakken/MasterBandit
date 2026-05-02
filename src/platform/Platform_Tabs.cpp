@@ -678,6 +678,14 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                 renderThread_->pending().dirtyPanes.insert(paneId);
             });
             break;
+        case TerminalEmulator::WakeMainLoop:
+            // Fired when the parser suppressed an Update (sync block, kitty
+            // image transfer). Wake the run loop so onTick fires and
+            // maybeResumeRead can re-arm POLLIN on the PTY fd — otherwise
+            // backpressure stalls indefinitely between syncs. No render
+            // trigger, no dirtyPanes insert.
+            eventLoop_->wakeup();
+            break;
         case TerminalEmulator::VisibleBell:
             break;
         case TerminalEmulator::CommandComplete:

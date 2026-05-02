@@ -104,11 +104,16 @@ std::string PlatformDawn::statsJson(int id)
     };
 
     resp["obs"] = glz::generic::object_t{
-        {"bytes_parsed",         static_cast<double>(obs::bytes_parsed.load(std::memory_order_relaxed))},
-        {"frames_presented",     static_cast<double>(obs::frames_presented.load(std::memory_order_relaxed))},
-        {"last_parse_time_us",   static_cast<double>(obs::last_parse_time_us.load(std::memory_order_relaxed))},
-        {"frames_at_last_parse", static_cast<double>(obs::frames_at_last_parse.load(std::memory_order_relaxed))},
-        {"now_us",               static_cast<double>(obs::now_us())},
+        {"bytes_parsed",            static_cast<double>(obs::bytes_parsed.load(std::memory_order_relaxed))},
+        {"frames_presented",        static_cast<double>(obs::frames_presented.load(std::memory_order_relaxed))},
+        {"last_parse_time_us",      static_cast<double>(obs::last_parse_time_us.load(std::memory_order_relaxed))},
+        {"frames_at_last_parse",    static_cast<double>(obs::frames_at_last_parse.load(std::memory_order_relaxed))},
+        {"now_us",                  static_cast<double>(obs::now_us())},
+        {"injects",                 static_cast<double>(obs::injects.load(std::memory_order_relaxed))},
+        {"snapshot_publishes",      static_cast<double>(obs::snapshot_publishes.load(std::memory_order_relaxed))},
+        {"snapshot_skipped_hold",   static_cast<double>(obs::snapshot_skipped_hold.load(std::memory_order_relaxed))},
+        {"update_events",           static_cast<double>(obs::update_events.load(std::memory_order_relaxed))},
+        {"publish_and_fire_events", static_cast<double>(obs::publish_and_fire_events.load(std::memory_order_relaxed))},
     };
 
     glz::generic::array_t tabsArr;

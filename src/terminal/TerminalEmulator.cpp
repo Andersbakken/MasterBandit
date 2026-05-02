@@ -1,6 +1,7 @@
 #include "TerminalEmulator.h"
 #include "Config.h"
 #include "ParserAction.h"
+#include "TerminalSnapshot.h"
 #include "Utils.h"
 #include "Utf8.h"
 #include "Wcwidth.h"
@@ -257,7 +258,7 @@ void TerminalEmulator::resize(int width, int height)
     // width reflow — Document::firstAbsOfLine/lastAbsOfLine resolve back to
     // the post-reflow rows. No clearSelection() needed here.
     pruneCommandRing();
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    publishAndFireEvent(static_cast<int>(Update));
 }
 
 void TerminalEmulator::scrollCursorUpToFitBelow(int rowsBelow)
@@ -346,7 +347,7 @@ void TerminalEmulator::scrollViewport(int delta)
     mViewportOffset = std::clamp(mViewportOffset + delta, 0, mDocument.historySize());
     if (mViewportOffset != oldOffset) {
         grid().markAllDirty();
-        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
+        publishAndFireEvent(static_cast<int>(ScrollbackChanged));
     }
 }
 
@@ -364,7 +365,7 @@ void TerminalEmulator::resetViewport()
     if (mViewportOffset != 0) {
         mViewportOffset = 0;
         grid().markAllDirty();
-        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
+        publishAndFireEvent(static_cast<int>(ScrollbackChanged));
     }
 }
 
@@ -400,7 +401,7 @@ void TerminalEmulator::scrollToPrompt(int direction, bool wrap)
         } else {
             mViewportOffset = std::clamp(newOffset, 0, histSize);
             grid().markAllDirty();
-            if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(ScrollbackChanged), nullptr);
+            publishAndFireEvent(static_cast<int>(ScrollbackChanged));
         }
     };
 
@@ -578,7 +579,7 @@ void TerminalEmulator::selectCommandOutputForRecord(const CommandRecord* rec)
     if (!text.empty() && mCallbacks.copyToClipboard) {
         mCallbacks.copyToClipboard(text);
     }
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    publishAndFireEvent(static_cast<int>(Update));
 }
 
 void TerminalEmulator::pruneCommandRing()
@@ -612,10 +613,8 @@ void TerminalEmulator::setSelectedCommand(std::optional<uint64_t> commandId)
     }
     if (mSelectedCommandId == commandId) return;
     mSelectedCommandId = commandId;
-    if (mCallbacks.event) {
-        mCallbacks.event(this, static_cast<int>(CommandSelectionChanged), nullptr);
-        mCallbacks.event(this, static_cast<int>(Update), nullptr);
-    }
+    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(CommandSelectionChanged), nullptr);
+    publishAndFireEvent(static_cast<int>(Update));
 }
 
 void TerminalEmulator::markCommandInput(int absRow, int col)
@@ -783,14 +782,85 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_)
 
     pruneCommandRing();
 
+    // Build + publish a fresh snapshot for render-side consumers. Skips
+    // during sync hold (mHold) so renderer keeps presenting the prior
+    // frame; rate-limited so high-input-rate workloads don't drown the
+    // parser thread in snapshot copies.
+    publishSnapshotIfDue();
+
     // Suppress render updates during chunked image transfer (avoid
     // vsync-blocking the event loop while the PTY still has data) and
     // during a 2026 sync block (one Update fires when the closing
-    // 2026l clears mHold).
-    if (!mKittyLoading.active && !mHold) {
-        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    // 2026l clears mHold). When suppressed, still fire WakeMainLoop so
+    // the run loop ticks and onTick can re-arm POLLIN — otherwise PTY
+    // backpressure stalls writers indefinitely.
+    obs::injects.fetch_add(1, std::memory_order_relaxed);
+    if (mCallbacks.event) {
+        if (!mKittyLoading.active && !mHold) {
+            mCallbacks.event(this, static_cast<int>(Update), nullptr);
+            obs::update_events.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            mCallbacks.event(this, static_cast<int>(WakeMainLoop), nullptr);
+        }
     }
     return len_;
+}
+
+std::shared_ptr<const TerminalSnapshot> TerminalEmulator::loadSnapshot() const
+{
+    std::lock_guard<std::mutex> lk(mSnapshotChanMutex);
+    return mSnapshotLatest;
+}
+
+void TerminalEmulator::publishSnapshotForTest()
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    buildAndPublishSnapshotLocked();
+}
+
+bool TerminalEmulator::publishSnapshotIfDue()
+{
+    // Skip publishing during a 2026 sync block — render keeps presenting the
+    // prior frame, so the channel must not advance until 2026l clears mHold.
+    // Otherwise we always publish at end of injectData. Rate-limiting on a
+    // wall-clock interval would drop the last publish in a back-to-back
+    // sequence (no further trigger fires once the parser goes idle), leaving
+    // the renderer with a stale snapshot indefinitely. Correctness over the
+    // marginal saving from coalescing publishes within a frame; if profiling
+    // later shows publish is hot, the fix is per-row COW, not rate-limiting.
+    if (mHold) {
+        obs::snapshot_skipped_hold.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    buildAndPublishSnapshotLocked();
+    return true;
+}
+
+void TerminalEmulator::buildAndPublishSnapshotLocked()
+{
+    // Caller holds mMutex (recursive). TerminalSnapshot::update reacquires
+    // via the recursive mutex; same critical section. The snapshot becomes
+    // immutable once published (consumers hold shared_ptr<const>).
+    auto snap = std::make_shared<TerminalSnapshot>();
+    snap->update(*this);
+    {
+        std::lock_guard<std::mutex> lk(mSnapshotChanMutex);
+        mSnapshotLatest = std::move(snap);
+    }
+    obs::snapshot_publishes.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TerminalEmulator::publishAndFireEvent(int ev)
+{
+    // Caller holds mMutex. Publish a fresh snapshot before firing the event
+    // so any subscriber-driven loadSnapshot() reads post-mutation state.
+    // Centralises the "publish before notify" invariant for non-injectData
+    // mutation paths (resize, scroll, selection, command nav).
+    buildAndPublishSnapshotLocked();
+    if (mCallbacks.event) {
+        mCallbacks.event(this, ev, nullptr);
+        obs::publish_and_fire_events.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 

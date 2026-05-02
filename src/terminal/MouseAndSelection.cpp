@@ -112,7 +112,7 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
         if (!text.empty()) {
             if (mCallbacks.copyToClipboard) mCallbacks.copyToClipboard(text);
         }
-        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+        publishAndFireEvent(static_cast<int>(Update));
         return;
     }
 
@@ -147,7 +147,7 @@ void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
         int row = std::max(0, std::min(ev->y, mHeight - 1));
         int absRow = mDocument.historySize() - viewportOffset() + row;
         updateSelection(col, absRow, ev->xRightHalf);
-        if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+        publishAndFireEvent(static_cast<int>(Update));
         return;
     }
 
@@ -267,7 +267,7 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
         mCallbacks.copyToClipboard(text);
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    publishAndFireEvent(static_cast<int>(Update));
 }
 
 void TerminalEmulator::startLineSelection(int absRow)
@@ -292,7 +292,7 @@ void TerminalEmulator::startLineSelection(int absRow)
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
         mCallbacks.copyToClipboard(text);
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    publishAndFireEvent(static_cast<int>(Update));
 }
 
 void TerminalEmulator::extendSelection(int col, int absRow, bool xRightHalf)
@@ -328,7 +328,7 @@ void TerminalEmulator::extendSelection(int col, int absRow, bool xRightHalf)
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
         mCallbacks.copyToClipboard(text);
-    if (mCallbacks.event) mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    publishAndFireEvent(static_cast<int>(Update));
 }
 
 void TerminalEmulator::startRectangleSelection(int col, int absRow, bool xRightHalf)
@@ -364,8 +364,7 @@ void TerminalEmulator::clearSelection()
     bool had = mSelection.active || mSelection.valid;
     mSelection.active = false;
     mSelection.valid = false;
-    if (had && mCallbacks.event)
-        mCallbacks.event(this, static_cast<int>(Update), nullptr);
+    if (had) publishAndFireEvent(static_cast<int>(Update));
 }
 
 std::optional<TerminalEmulator::ResolvedSelection>

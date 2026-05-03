@@ -43,6 +43,7 @@ set(TEST_SOURCES
     test_tabs_uuid.cpp
     test_tabs_multibar.cpp
     test_uuid.cpp
+    test_pty_mux.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp
@@ -69,6 +70,7 @@ target_include_directories(mb-tests PRIVATE
 
 target_link_libraries(mb-tests PRIVATE
     terminal
+    eventloop
     doctest::doctest
     spdlog::spdlog
     harfbuzz

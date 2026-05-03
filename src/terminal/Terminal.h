@@ -4,6 +4,7 @@
 #include "TerminalOptions.h"
 #include "Uuid.h"
 #include <eventloop/EventLoop.h>
+#include "PtyMux.h"
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -53,7 +54,8 @@ public:
     bool init(const TerminalOptions& options);
     // Initialize without a PTY or child process. For script-driven applets.
     bool initHeadless(const TerminalOptions& options);
-    void setLoop(EventLoop* loop) { mLoop = loop; }
+    void setEventLoop(EventLoop* loop) { mEventLoop = loop; }
+    void setPtyMux(PtyMux* mux) { mPtyMux = mux; }
     int masterFD() const { return mMasterFD; }
     bool isHeadless() const { return mHeadless; }
     void readFromFD();
@@ -268,22 +270,34 @@ private:
     // limiter allows. Returns true if pgid changed (callers may want to
     // fire onForegroundProcessChanged). Safe to call from any thread.
     bool tryRefreshForegroundProcess();
-    EventLoop* mLoop { nullptr };
+    // Main-thread event loop — used for PTY *writes* only (lazy
+    // POLLOUT registration in writeToPTY, removed in flushWriteQueue
+    // when the queue drains) and for post()-ing main-thread work from
+    // worker / mux threads.
+    EventLoop* mEventLoop { nullptr };
+    // Dedicated PTY-read multiplexer. Owns its own thread; readFromFD
+    // runs on that thread (NOT main). Headless terminals leave this
+    // null and use flushReadBuffer directly.
+    PtyMux*    mPtyMux    { nullptr };
     EventLoop::TimerId mWritePollId { 0 };
+    // Toggled only on the main thread (writeToPTY / flushWriteQueue
+    // and posted lambdas from markExited). Tracks whether the master
+    // fd is currently registered with mEventLoop for POLLOUT.
     bool mWritePollActive { false };
-    // Set once the PTY has delivered EOF or an unrecoverable I/O error.
-    // Further read/write attempts short-circuit, and the fd is disarmed
-    // from the event loop so kqueue/epoll don't re-fire on the persistent
-    // EV_EOF and busy-spin the main thread before onTick can drain the
-    // deferred terminalExited callback.
-    bool mExited { false };
+    // Set once the PTY has delivered EOF or an unrecoverable I/O
+    // error. CAS-then-act in markExited; read in writeToPTY /
+    // flushWriteQueue / readFromFD / maybeResumeRead to short-circuit.
+    // Atomic because markExited may run on the PtyMux thread (HUP
+    // path) while writes happen on main.
+    std::atomic<bool> mExited { false };
     std::vector<char> mWriteQueue;
-    // Bytes read from the PTY and not yet handed to a parse task. Written
-    // from the main-thread fd callback (readFromFD); drained from main in
-    // queueParse() under mReadBufferMutex which is also taken by the
-    // worker when it loops to pick up newly-arrived data. Distinct from
-    // TerminalEmulator::mMutex (which serializes parse vs. snapshot) so
-    // the main thread can keep coalescing reads while the worker parses.
+    // Bytes read from the PTY and not yet handed to a parse task.
+    // Written from the PtyMux thread's read callback (readFromFD);
+    // drained by the parse worker in queueParse() under
+    // mReadBufferMutex which serializes both ends. Distinct from
+    // TerminalEmulator::mMutex (which serializes parse vs. snapshot)
+    // so the mux thread can keep coalescing reads while the worker
+    // parses.
     std::vector<char> mReadCoalesceBuffer;
     std::mutex        mReadBufferMutex;
     // PTY read backpressure. When mReadCoalesceBuffer's size hits
@@ -293,9 +307,11 @@ private:
     // until it drains — exactly the same backpressure pattern kitty
     // and wezterm use to keep memory bounded under a flooding
     // producer (see kitty's vt-parser.c BUF_SZ + POLLIN-toggle and
-    // wezterm's 1 MiB socketpair). Re-armed by the main-thread
-    // onTick when the buffer drops below kReadBufferLow.
-    bool              mReadPaused { false };
+    // wezterm's 1 MiB socketpair). Re-armed by the worker thread
+    // (Terminal::queueParse loop) once the buffer drops below
+    // kReadBufferLow. Atomic: set by the PtyMux thread (in
+    // readFromFD) and CAS-cleared by the worker (in maybeResumeRead).
+    std::atomic<bool> mReadPaused { false };
     // High/low watermarks tuned so a single parser apply holds
     // mMutex for at most ~50 ms even at the worst observed parser
     // throughput (~1 MB/s under sustained scrollback growth). Other
@@ -306,10 +322,10 @@ private:
     static constexpr size_t kReadBufferHigh = 64 * 1024;   // 64 KiB
     static constexpr size_t kReadBufferLow  = 16 * 1024;   // 16 KiB
 public:
-    // Called by Platform on each main-thread tick. If the read
-    // backpressure paused PTY reads, check whether the coalesce
-    // buffer has drained below the low-water mark and re-arm POLLIN
-    // if so.
+    // Called by the parse worker after each batch of injectData
+    // completes. If the read backpressure paused PTY reads, check
+    // whether the coalesce buffer has drained below the low-water
+    // mark and re-arm POLLIN on the PtyMux poller if so.
     void maybeResumeRead();
 private:
     // Counts queued+running parse tasks for this Terminal. Always 0 or 1

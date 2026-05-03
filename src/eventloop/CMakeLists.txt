@@ -7,10 +7,12 @@ if(APPLE)
         mac/EventLoop_nsapp.mm
         mac/Window_cocoa.mm
         kqueue/EventLoop_kqueue.cpp
+        kqueue/FdPoller_kqueue.cpp
     )
 else()
     list(APPEND EVENTLOOP_SOURCES
         epoll/EventLoop_epoll.cpp
+        epoll/FdPoller_epoll.cpp
         xcb/Window_xcb.cpp
     )
 endif()

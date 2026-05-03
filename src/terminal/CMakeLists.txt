@@ -12,6 +12,7 @@ add_library(terminal OBJECT
     Document.cpp
     LineBuffer.cpp
     TerminalSnapshot.cpp
+    PtyMux.cpp
 )
 
 target_include_directories(terminal PUBLIC
@@ -27,6 +28,10 @@ target_link_libraries(terminal PUBLIC
     spdlog::spdlog
     ZLIB::ZLIB
     grapheme
+    # PtyMux pulls in FdPoller_kqueue / FdPoller_epoll from the
+    # eventloop OBJECT lib. Marking PUBLIC so consumers (mb-tests,
+    # scroll-bench, mb itself) inherit the eventloop objects.
+    eventloop
 )
 
 target_include_directories(terminal PRIVATE ${Stb_INCLUDE_DIR})

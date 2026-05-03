@@ -791,17 +791,13 @@ size_t TerminalEmulator::injectData(const char* buf, size_t len_)
     // Suppress render updates during chunked image transfer (avoid
     // vsync-blocking the event loop while the PTY still has data) and
     // during a 2026 sync block (one Update fires when the closing
-    // 2026l clears mHold). When suppressed, still fire WakeMainLoop so
-    // the run loop ticks and onTick can re-arm POLLIN — otherwise PTY
-    // backpressure stalls writers indefinitely.
+    // 2026l clears mHold). PTY backpressure rearm no longer requires a
+    // main-loop wake — the worker calls Terminal::maybeResumeRead
+    // directly from the parse loop (see PtyMux refactor).
     obs::injects.fetch_add(1, std::memory_order_relaxed);
-    if (mCallbacks.event) {
-        if (!mKittyLoading.active && !mHold) {
-            mCallbacks.event(this, static_cast<int>(Update), nullptr);
-            obs::update_events.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            mCallbacks.event(this, static_cast<int>(WakeMainLoop), nullptr);
-        }
+    if (mCallbacks.event && !mKittyLoading.active && !mHold) {
+        mCallbacks.event(this, static_cast<int>(Update), nullptr);
+        obs::update_events.fetch_add(1, std::memory_order_relaxed);
     }
     return len_;
 }

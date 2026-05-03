@@ -779,6 +779,12 @@ int PlatformDawn::exec()
             // and that worker loops to pick up the freshly-arrived bytes
             // before exiting. So spamming queueParse() every tick is
             // cheap.
+            // Backpressure rearm now lives inside the worker
+            // (Terminal::queueParse calls maybeResumeRead after each
+            // injectData batch) — don't call it here. Reads have
+            // also moved off the main thread to the PtyMux thread,
+            // so this loop only kicks the worker into draining
+            // whatever the mux has coalesced.
             if (renderEngine_) {
                 WorkerPool& pool = renderEngine_->workers();
                 Terminal::ParseSubmitFn submit =
@@ -787,17 +793,12 @@ int PlatformDawn::exec()
                     };
                 for (auto& [fd, term] : ptyPolls()) {
                     term->queueParse(submit);
-                    // Backpressure: re-arm POLLIN if the worker has
-                    // drained the coalesce buffer below the
-                    // low-water mark since we last paused reads.
-                    term->maybeResumeRead();
                 }
             } else {
                 // No render engine (some early-tear-down paths) — fall
                 // back to synchronous flush so we never strand bytes.
                 for (auto& [fd, term] : ptyPolls()) {
                     term->flushReadBuffer();
-                    term->maybeResumeRead();
                 }
             }
 

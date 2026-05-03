@@ -274,15 +274,7 @@ public:
         ScrollbackChanged,
         VisibleBell,
         CommandComplete,         // payload: const CommandRecord*
-        CommandSelectionChanged, // payload: nullptr; read selectedCommandId() for new value
-        // Fired from injectData when an Update is suppressed (sync block,
-        // kitty image transfer). Carries no render intent — the only purpose
-        // is to wake the main run loop so onTick can call maybeResumeRead
-        // and re-arm POLLIN on the PTY fd. Without this, during a long DEC
-        // 2026 sync stream the main loop never wakes between batches and
-        // PTY backpressure stalls the writer (vtebench sync_medium_cells
-        // 1050ms vs medium_cells 70ms). Handler must NOT setNeedsRedraw.
-        WakeMainLoop
+        CommandSelectionChanged // payload: nullptr; read selectedCommandId() for new value
     };
 
     // Semantic mode transitioned by OSC 133 A/B/C/D; tracks "what is the terminal

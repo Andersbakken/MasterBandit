@@ -554,6 +554,16 @@ PlatformDawn::~PlatformDawn()
     }
     graveyard_.drainAll();
 
+    // Stop the PTY-read thread now. Any subsequent Terminal
+    // destructors (from scriptEngine_'s implicit destruction) will
+    // see the mux in stopped state and skip the remove/close
+    // handshake — fine, since the mux's poller is about to be
+    // destroyed too. Stopping here (rather than relying on
+    // ptyMux_'s implicit destructor much later) bounds the join
+    // before any Vulkan/window teardown that would deadlock if a
+    // mux callback somehow reached back into platform state.
+    if (ptyMux_) ptyMux_->stop();
+
     // Terminals live on Script::Engine now; its member-destruction order
     // (tab overlays → tab layouts → Terminals → layoutTree) runs when
     // scriptEngine_ goes out of scope below, after GPU resources.
@@ -757,6 +767,14 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             fontSize_ = testFontSize_;
             baseFontSize_ = fontSize_;
         }
+
+        // PTY-read multiplexer: dedicated thread that drains master
+        // fds independent of the main run loop. Constructed AFTER
+        // eventLoop_ so the platform-init order is well-defined; both
+        // headless and windowed paths get one because tests / IPC
+        // panes still spawn real PTYs.
+        ptyMux_ = std::make_unique<PtyMux>();
+        ptyMux_->start();
 
         animScheduler_ = std::make_unique<AnimationScheduler>(this);
 

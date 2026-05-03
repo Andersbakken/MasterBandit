@@ -50,8 +50,18 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
 
 Terminal::~Terminal()
 {
-    if (mWritePollActive && mLoop && mMasterFD >= 0) {
-        mLoop->updateFd(mMasterFD, EventLoop::FdEvents::Readable);
+    // Order matters: drop the mux's read subscription FIRST so its
+    // callback's captured `this` pointer can't fire after we've
+    // started destructing. removeSync blocks until any in-flight
+    // callback returns.
+    //
+    // Normal pane-close path goes through PlatformDawn::removePtyPoll
+    // before reaching the destructor, so these are usually no-ops.
+    // Defensive for tests / headless / mEvictedEmbeddeds graveyard
+    // paths that might bypass removePtyPoll.
+    if (mPtyMux && mMasterFD >= 0) mPtyMux->remove(mMasterFD);
+    if (mWritePollActive && mEventLoop && mMasterFD >= 0) {
+        mEventLoop->removeFd(mMasterFD);
         mWritePollActive = false;
     }
     if (mMasterFD != -1) ::close(mMasterFD);
@@ -245,32 +255,59 @@ void Terminal::flushPendingResize()
 
 void Terminal::markExited()
 {
-    if (mExited) return;
-    mExited = true;
-    // Stop further fd notifications. EV_EOF on a closed PTY stays set,
-    // so kqueue/epoll would re-fire readFromFD on every run-loop pass
-    // until onTick drains pendingExits and removePtyPoll runs — but
-    // while kqueue is spinning, the run loop never reaches the
-    // BeforeWaiting observer that triggers onTick, causing the hang.
-    if (mLoop && mMasterFD >= 0) mLoop->removeFd(mMasterFD);
+    // Single-shot. CAS so concurrent callers (PtyMux thread on EOF
+    // vs main on write failure) can't both proceed.
+    bool already = mExited.exchange(true, std::memory_order_acq_rel);
+    if (already) return;
+
+    // Drop the mux's read subscription. From the mux thread (HUP
+    // path) we MUST use removeAsync — removeSync would deadlock
+    // because we ARE the polling thread. From main (write fail)
+    // either would work, but removeAsync is uniform and correct in
+    // both cases; the destructor's removeSync is the synchronous
+    // fence we need before close(fd).
+    if (mPtyMux && mMasterFD >= 0) mPtyMux->removeAsync(mMasterFD);
+
+    // Drop the lazy POLLOUT registration if any. EventLoop is main-
+    // thread-only — bounce through post() so this is safe to call
+    // from the mux thread. mWritePollActive is main-thread-owned,
+    // so flip it inside the posted lambda too.
+    if (mEventLoop && mMasterFD >= 0) {
+        int fd = mMasterFD;
+        EventLoop* loop = mEventLoop;
+        loop->post([this, loop, fd]() {
+            if (mWritePollActive) {
+                loop->removeFd(fd);
+                mWritePollActive = false;
+            }
+        });
+    }
+
+    // onTerminalExited's body (Platform_Tabs.cpp) is
+    // renderThread_->enqueueTerminalExit(t), which is itself thread-
+    // safe (RenderThread::enqueueTerminalExit takes a mutex + wakes
+    // the loop). So invoke directly from whichever thread we're on.
     if (mPlatformCbs.onTerminalExited) mPlatformCbs.onTerminalExited(this);
 }
 
 void Terminal::readFromFD()
 {
-    if (mExited) return;
-    // Accumulate data into coalesce buffer without injecting. The
-    // coalesce buffer is shared with the parse worker (via queueParse),
-    // so take mReadBufferMutex while appending. We append in chunks
-    // bounded by the local stack buf so the lock is held only briefly
-    // even if the kernel has megabytes queued.
+    // Runs on the PtyMux thread. After markExited the mux callback
+    // is being torn down asynchronously; if a stale fire still hits
+    // us, just drop it.
+    if (mExited.load(std::memory_order_acquire)) return;
+    // Accumulate data into the coalesce buffer without injecting.
+    // The coalesce buffer is shared with the parse worker (via
+    // queueParse), so take mReadBufferMutex while appending. We
+    // append in chunks bounded by the local stack buf so the lock
+    // is held only briefly even if the kernel has megabytes queued.
     //
-    // Backpressure: when the coalesce buffer hits kReadBufferHigh we
-    // disarm POLLIN on the master fd and return. The kernel PTY
-    // buffer then fills and the child blocks on write(2). This caps
-    // our memory use under a flooding producer and gives the parser
-    // time to catch up. Resumed by the main-thread maybeResumeRead()
-    // when the worker has drained the buffer below kReadBufferLow.
+    // Backpressure: when the coalesce buffer hits kReadBufferHigh
+    // we disarm POLLIN on the PtyMux poller and return. The kernel
+    // PTY buffer then fills and the child blocks on write(2). This
+    // caps our memory use under a flooding producer and gives the
+    // parser time to catch up. Resumed by the worker thread's
+    // maybeResumeRead() once the buffer drops below kReadBufferLow.
     char buf[65536];
     for (;;) {
         int ret;
@@ -292,13 +329,13 @@ void Terminal::readFromFD()
             if (mReadCoalesceBuffer.size() >= kReadBufferHigh)
                 atHigh = true;
         }
-        if (atHigh && !mReadPaused) {
-            mReadPaused = true;
-            if (mLoop && mMasterFD >= 0)
-                mLoop->updateFd(mMasterFD,
-                    mWritePollActive
-                        ? EventLoop::FdEvents::Writable
-                        : static_cast<EventLoop::FdEvents>(0));
+        if (atHigh && !mReadPaused.load(std::memory_order_acquire)) {
+            mReadPaused.store(true, std::memory_order_release);
+            // disable() called from the mux thread itself is in-
+            // thread (no wakeup roundtrip); the change applies to
+            // kqueue/epoll on this same iteration before we sleep
+            // again.
+            if (mPtyMux && mMasterFD >= 0) mPtyMux->disable(mMasterFD);
             return;
         }
     }
@@ -306,19 +343,26 @@ void Terminal::readFromFD()
 
 void Terminal::maybeResumeRead()
 {
-    if (!mReadPaused || mExited) return;
+    // Runs on the parse worker thread (called from inside the
+    // queueParse loop after each injectData batch).
+    if (!mReadPaused.load(std::memory_order_acquire)) return;
+    if (mExited.load(std::memory_order_acquire)) return;
     size_t sz;
     {
         std::lock_guard<std::mutex> lk(mReadBufferMutex);
         sz = mReadCoalesceBuffer.size();
     }
     if (sz <= kReadBufferLow) {
-        mReadPaused = false;
-        if (mLoop && mMasterFD >= 0)
-            mLoop->updateFd(mMasterFD,
-                mWritePollActive
-                    ? EventLoop::FdEvents::ReadWrite
-                    : EventLoop::FdEvents::Readable);
+        // Clear the pause flag with CAS so we don't double-enable if
+        // the mux thread happens to flip it back to true between our
+        // load and store (it can't right now — mux only sets true
+        // and only the worker clears — but CAS is cheap and makes
+        // the invariant explicit).
+        bool expected = true;
+        if (mReadPaused.compare_exchange_strong(expected, false,
+                                                std::memory_order_acq_rel)) {
+            if (mPtyMux && mMasterFD >= 0) mPtyMux->enable(mMasterFD);
+        }
     }
 }
 
@@ -432,6 +476,14 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
                 spdlog::warn("[TIMING] queueParse: {} bytes in {} us",
                              size, dt);
 
+            // Read backpressure rearm: now that we've drained a
+            // batch, check whether we should re-enable POLLIN on
+            // the PtyMux poller. This used to live in the main
+            // thread's onTick but moved here so backpressure is
+            // independent of main-loop tick rate (DEC 2026 sync
+            // blocks otherwise stalled the writer indefinitely).
+            maybeResumeRead();
+
             // Foreground process change check. Rate-limited at the source
             // by tryRefreshForegroundProcess (200 ms); updates the cached
             // value all readers consume (render frame builder, tab title,
@@ -447,6 +499,10 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
 
 void Terminal::writeToPTY(const char* data, size_t len)
 {
+    // Main thread only. After markExited the fd is on its way out;
+    // bail before issuing a syscall that would hit EIO on a
+    // half-torn-down PTY.
+    if (mExited.load(std::memory_order_acquire)) return;
     // Try to write directly first
     while (len > 0 && mWriteQueue.empty()) {
         int ret;
@@ -471,12 +527,17 @@ void Terminal::writeToPTY(const char* data, size_t len)
         len -= ret;
     }
 
-    // Queue remaining data and start write poll
+    // Queue remaining data and lazily register the fd with the
+    // EventLoop for POLLOUT. Reads no longer go through EventLoop
+    // (PtyMux owns them), so this watchFd subscribes to write only.
     if (len > 0) {
         mWriteQueue.insert(mWriteQueue.end(), data, data + len);
-        if (!mWritePollActive && mLoop) {
-            mLoop->updateFd(mMasterFD,
-                EventLoop::FdEvents::Readable | EventLoop::FdEvents::Writable);
+        if (!mWritePollActive && mEventLoop && mMasterFD >= 0) {
+            Terminal* self = this;
+            mEventLoop->watchFd(mMasterFD, EventLoop::FdEvents::Writable,
+                [self](EventLoop::FdEvents ev) {
+                    if (ev & EventLoop::FdEvents::Writable) self->flushWriteQueue();
+                });
             mWritePollActive = true;
         }
     }
@@ -484,6 +545,7 @@ void Terminal::writeToPTY(const char* data, size_t len)
 
 void Terminal::flushWriteQueue()
 {
+    if (mExited.load(std::memory_order_acquire)) return;
     while (!mWriteQueue.empty()) {
         int ret;
         EINTRWRAP(ret, ::write(mMasterFD, mWriteQueue.data(), mWriteQueue.size()));
@@ -496,9 +558,9 @@ void Terminal::flushWriteQueue()
         }
         mWriteQueue.erase(mWriteQueue.begin(), mWriteQueue.begin() + ret);
     }
-    // Queue drained — drop writable watch
-    if (mWritePollActive && mLoop) {
-        mLoop->updateFd(mMasterFD, EventLoop::FdEvents::Readable);
+    // Queue drained — drop the lazy POLLOUT registration entirely.
+    if (mWritePollActive && mEventLoop && mMasterFD >= 0) {
+        mEventLoop->removeFd(mMasterFD);
         mWritePollActive = false;
     }
 }

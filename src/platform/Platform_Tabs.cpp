@@ -136,14 +136,15 @@ void PlatformDawn::updateWindowTitle()
 
 void PlatformDawn::addPtyPoll(int fd, Terminal* term)
 {
-    EventLoop* loop = eventLoop_.get();
-    term->setLoop(loop);
-    if (loop) {
-        loop->watchFd(fd, EventLoop::FdEvents::Readable,
-            [term](EventLoop::FdEvents ev) {
-                if (ev & EventLoop::FdEvents::Readable) term->readFromFD();
-                if (ev & EventLoop::FdEvents::Writable) term->flushWriteQueue();
-            });
+    // Reads: dedicated PtyMux thread. The cb runs there.
+    // Writes: lazily registered with eventLoop_ inside Terminal::writeToPTY
+    // when bytes first need to block on POLLOUT, and removed by
+    // flushWriteQueue when the queue drains. Most panes never have
+    // a write registration in steady state.
+    term->setEventLoop(eventLoop_.get());
+    term->setPtyMux(ptyMux_.get());
+    if (ptyMux_) {
+        ptyMux_->add(fd, [term]() { term->readFromFD(); });
     }
     ptyPolls_[fd] = term;
 }
@@ -152,8 +153,13 @@ void PlatformDawn::removePtyPoll(int fd)
 {
     auto it = ptyPolls_.find(fd);
     if (it == ptyPolls_.end()) return;
+    // Synchronous remove: blocks until the mux thread has
+    // applied the removal and any in-flight callback has
+    // returned. Required so the captured `Terminal*` in the
+    // callback can't be used after we erase it from the map.
+    if (ptyMux_) ptyMux_->remove(fd);
     if (EventLoop* loop = eventLoop_.get())
-        loop->removeFd(fd);
+        loop->removeFd(fd);  // no-op if write-poll never registered
     ptyPolls_.erase(it);
 }
 
@@ -677,14 +683,6 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             eventLoop_->post([this, paneId] {
                 renderThread_->pending().dirtyPanes.insert(paneId);
             });
-            break;
-        case TerminalEmulator::WakeMainLoop:
-            // Fired when the parser suppressed an Update (sync block, kitty
-            // image transfer). Wake the run loop so onTick fires and
-            // maybeResumeRead can re-arm POLLIN on the PTY fd — otherwise
-            // backpressure stalls indefinitely between syncs. No render
-            // trigger, no dirtyPanes insert.
-            eventLoop_->wakeup();
             break;
         case TerminalEmulator::VisibleBell:
             break;

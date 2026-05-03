@@ -12,6 +12,7 @@
 #include "InputTypes.h"
 #include "ClickDetector.h"
 #include "Terminal.h"
+#include "PtyMux.h"
 #include "TerminalOptions.h"
 #include "TerminalSnapshot.h"
 #include "Renderer.h"
@@ -273,6 +274,11 @@ private:
     std::string testFallbackFontPath_;
     std::unique_ptr<EventLoop> eventLoop_;
     std::unique_ptr<Window>    window_;
+    // Owns the PTY-read polling thread + FdPoller. PTY reads happen
+    // here, not on eventLoop_'s thread — see PTY_READER_REFACTOR.md.
+    // Constructed in Platform_EventLoop.cpp::exec() after eventLoop_;
+    // stopped + reset before eventLoop_ tears down.
+    std::unique_ptr<PtyMux>    ptyMux_;
 
     // Blink / animation wakeup / resize debounce timers live in
     // AnimationScheduler. Opacity is snapshotted into RenderFrameState.

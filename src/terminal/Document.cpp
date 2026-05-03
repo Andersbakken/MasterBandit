@@ -163,6 +163,18 @@ void Document::pushVisibleRowToScrollback(int screenRow, int physical) {
             len -= 8;
         }
         while (len > 0 && r[len - 1].wc == 0) --len;
+
+        // Kitty graphics, OSC 8 hyperlinks, and inline embedded-terminal
+        // anchors stamp a CellExtra without writing wc, so the cells they
+        // occupy look "empty" to the trim loop above. After resize, the
+        // re-emit step slices extras by [0, rowLen) — anything past the
+        // trimmed length silently drops. Extend len out to the rightmost
+        // column with an extra so reflow preserves the image / link / anchor.
+        const auto& exMap = ringExtras_[physical];
+        for (const auto& [col, ex] : exMap) {
+            if (col >= len) len = col + 1;
+        }
+        if (len > cols_) len = cols_;
     }
 
     LineMeta::Eol eol = soft ? LineMeta::EolSoft : LineMeta::EolHard;

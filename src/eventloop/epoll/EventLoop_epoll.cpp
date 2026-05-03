@@ -25,14 +25,6 @@ uint64_t EpollEventLoop::nowNs()
          + static_cast<uint64_t>(ts.tv_nsec);
 }
 
-int EpollEventLoop::epollEventsFor(FdEvents ev)
-{
-    int flags = 0;
-    if (ev & FdEvents::Readable) flags |= EPOLLIN | EPOLLHUP;
-    if (ev & FdEvents::Writable) flags |= EPOLLOUT;
-    return flags;
-}
-
 // ---------- lifecycle ----------
 
 EpollEventLoop::EpollEventLoop()
@@ -70,14 +62,41 @@ EpollEventLoop::EpollEventLoop()
     ev.events = EPOLLIN;
     ev.data.fd = inotifyFd_;
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, inotifyFd_, &ev);
+
+    // Per-fd watching delegates to FdPoller. Add its epoll fd to
+    // our outer epoll so any managed fd's readiness wakes us; we
+    // then drain the poller via poll(0).
+    fdPoller_ = std::make_unique<FdPollerEpoll>();
+    innerPollerFd_ = fdPoller_->nativeHandle();
+    if (innerPollerFd_ >= 0) {
+        ev = {};
+        ev.events = EPOLLIN;
+        ev.data.fd = innerPollerFd_;
+        epoll_ctl(epollFd_, EPOLL_CTL_ADD, innerPollerFd_, &ev);
+    }
 }
 
 EpollEventLoop::~EpollEventLoop()
 {
+    if (innerPollerFd_ >= 0) {
+        epoll_ctl(epollFd_, EPOLL_CTL_DEL, innerPollerFd_, nullptr);
+        innerPollerFd_ = -1;
+    }
+    fdPoller_.reset();
     if (inotifyFd_ >= 0) close(inotifyFd_);
     if (timerFd_  >= 0) close(timerFd_);
     if (wakeupFd_ >= 0) close(wakeupFd_);
     if (epollFd_  >= 0) close(epollFd_);
+}
+
+FdPoller::Events EpollEventLoop::toPoller(FdEvents ev)
+{
+    return static_cast<FdPoller::Events>(static_cast<uint8_t>(ev));
+}
+
+EventLoop::FdEvents EpollEventLoop::fromPoller(FdPoller::Events ev)
+{
+    return static_cast<FdEvents>(static_cast<uint8_t>(ev));
 }
 
 // ---------- run / stop / wakeup ----------
@@ -95,6 +114,8 @@ void EpollEventLoop::run()
             break;
         }
 
+        bool drainPoller = false;
+
         for (int i = 0; i < n; ++i) {
             int fd = events[i].data.fd;
 
@@ -107,16 +128,15 @@ void EpollEventLoop::run()
                 drainTimers();
             } else if (fd == inotifyFd_) {
                 drainInotify();
-            } else {
-                auto it = fds_.find(fd);
-                if (it != fds_.end()) {
-                    FdEvents fired = static_cast<FdEvents>(0);
-                    if (events[i].events & (EPOLLIN | EPOLLHUP))  fired = fired | FdEvents::Readable;
-                    if (events[i].events & EPOLLOUT) fired = fired | FdEvents::Writable;
-                    if (static_cast<uint8_t>(fired))
-                        it->second.cb(fired);
-                }
+            } else if (fd == innerPollerFd_) {
+                drainPoller = true;
             }
+            // Per-fd events live on the inner FdPoller now; nothing
+            // else should reach this branch.
+        }
+
+        if (drainPoller && fdPoller_) {
+            fdPoller_->poll(0);
         }
 
         if (onTick) onTick();
@@ -141,42 +161,28 @@ void EpollEventLoop::drainWakeup()
     [[maybe_unused]] auto n = read(wakeupFd_, &val, sizeof(val));
 }
 
-// ---------- fd watching ----------
+// ---------- fd watching (delegated to FdPoller) ----------
 
 void EpollEventLoop::watchFd(int fd, FdEvents events, FdCb cb)
 {
-    epoll_event ev{};
-    ev.events = epollEventsFor(events);
-    ev.data.fd = fd;
-    if (epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
-        spdlog::error("EpollEventLoop: watchFd EPOLL_CTL_ADD fd={}: {}", fd, strerror(errno));
-        return;
-    }
-    fds_[fd] = { events, std::move(cb) };
+    if (!fdPoller_) return;
+    auto inner = std::move(cb);
+    fdPoller_->add(fd, toPoller(events),
+        [inner = std::move(inner)](FdPoller::Events ev) {
+            if (inner) inner(fromPoller(ev));
+        });
 }
 
 void EpollEventLoop::updateFd(int fd, FdEvents events)
 {
-    auto it = fds_.find(fd);
-    if (it == fds_.end()) return;
-
-    epoll_event ev{};
-    ev.events = epollEventsFor(events);
-    ev.data.fd = fd;
-    if (epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
-        spdlog::error("EpollEventLoop: updateFd EPOLL_CTL_MOD fd={}: {}", fd, strerror(errno));
-        return;
-    }
-    it->second.events = events;
+    if (!fdPoller_) return;
+    fdPoller_->update(fd, toPoller(events));
 }
 
 void EpollEventLoop::removeFd(int fd)
 {
-    auto it = fds_.find(fd);
-    if (it == fds_.end()) return;
-
-    epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
-    fds_.erase(it);
+    if (!fdPoller_) return;
+    fdPoller_->remove(fd);
 }
 
 // ---------- timers ----------

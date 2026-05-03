@@ -22,6 +22,7 @@ public:
     void removeSync(int fd) override;
     int  poll(int timeoutMs) override;
     void wake() override;
+    int  nativeHandle() const override { return kqFd_; }
 
 private:
     enum class OpKind { Add, Update, Remove, RemoveAck };

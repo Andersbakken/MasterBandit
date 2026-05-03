@@ -1,10 +1,12 @@
 #pragma once
 
 #include <EventLoop.h>
+#include "../kqueue/FdPoller_kqueue.h"
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,7 +43,8 @@ public:
 
     // Called by the run loop observer / tick selector
     void tick();
-    // Called when the kqueue fd becomes readable — drains all pending events
+    // Called when the FdPoller's kqueue fd becomes readable —
+    // drains all pending fd events via fdPoller_->poll(0).
     void drainKqueue();
     // Called by an NSTimer
     void timerFired(TimerId id);
@@ -49,15 +52,14 @@ public:
     void fileChanged();
 
 private:
-    struct FdEntry {
-        FdEvents events;
-        FdCb     cb;
-    };
-    std::unordered_map<int, FdEntry> fds_;
+    static FdPoller::Events toPoller(FdEvents ev);
+    static FdEvents fromPoller(FdPoller::Events ev);
 
-    // kqueue fd — all watched fds are registered here
-    int kqFd_ = -1;
-    // Single CFFileDescriptor wrapping kqFd_
+    // Per-fd watching delegates to FdPoller. Its kqueue fd is
+    // wrapped in a CFFileDescriptor below so the CFRunLoop wakes
+    // when any managed fd has events.
+    std::unique_ptr<FdPollerKQueue> fdPoller_;
+    // CFFileDescriptor wrapping fdPoller_->nativeHandle().
     void* kqCfFdRef_  = nullptr;  // CFFileDescriptorRef
     void* kqCfSource_ = nullptr;  // CFRunLoopSourceRef
 

@@ -43,6 +43,17 @@ KQueueEventLoop::KQueueEventLoop()
     struct kevent ev{};
     EV_SET(&ev, wakeupRead_, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
     kevent(kqFd_, &ev, 1, nullptr, 0, nullptr);
+
+    // Per-fd watching delegates to FdPoller. Add its kqueue fd to
+    // our outer kqueue so any managed fd's readiness wakes our
+    // run loop, at which point we drain the poller via poll(0).
+    fdPoller_ = std::make_unique<FdPollerKQueue>();
+    int innerFd = fdPoller_->nativeHandle();
+    if (innerFd >= 0) {
+        struct kevent kev{};
+        EV_SET(&kev, innerFd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+        kevent(kqFd_, &kev, 1, nullptr, 0, nullptr);
+    }
 }
 
 KQueueEventLoop::~KQueueEventLoop()
@@ -52,9 +63,20 @@ KQueueEventLoop::~KQueueEventLoop()
         if (dw.fd >= 0) close(dw.fd);
     }
     dirWatches_.clear();
+    fdPoller_.reset();  // close inner kqueue before outer
     if (wakeupRead_  >= 0) { close(wakeupRead_);  wakeupRead_  = -1; }
     if (wakeupWrite_ >= 0) { close(wakeupWrite_); wakeupWrite_ = -1; }
     if (kqFd_ >= 0) { close(kqFd_); kqFd_ = -1; }
+}
+
+FdPoller::Events KQueueEventLoop::toPoller(FdEvents ev)
+{
+    return static_cast<FdPoller::Events>(static_cast<uint8_t>(ev));
+}
+
+EventLoop::FdEvents KQueueEventLoop::fromPoller(FdPoller::Events ev)
+{
+    return static_cast<FdEvents>(static_cast<uint8_t>(ev));
 }
 
 // ---------- run / stop / wakeup ----------
@@ -90,6 +112,14 @@ void KQueueEventLoop::run()
             break;
         }
 
+        // FdPoller integration: if its kqueue fd became readable
+        // it means at least one managed fd has events pending.
+        // Drain it once per wake; keep the call outside the
+        // per-event loop so multiple readiness events for the
+        // poller fd in a single batch are coalesced.
+        bool drainPoller = false;
+        const int innerFd = fdPoller_ ? fdPoller_->nativeHandle() : -1;
+
         for (int i = 0; i < n; ++i) {
             int fd = static_cast<int>(events[i].ident);
 
@@ -97,6 +127,8 @@ void KQueueEventLoop::run()
                 // Drain the wakeup pipe
                 char buf[64];
                 while (read(wakeupRead_, buf, sizeof(buf)) > 0) {}
+            } else if (events[i].filter == EVFILT_READ && fd == innerFd) {
+                drainPoller = true;
             } else if (events[i].filter == EVFILT_VNODE) {
                 // Directory-write event. Find which dir this fd belongs
                 // to, then re-stat every WatchEntry under that dir and
@@ -128,13 +160,15 @@ void KQueueEventLoop::run()
                         ++j;
                     }
                 }
-            } else if (events[i].filter == EVFILT_READ) {
-                auto it = fds_.find(fd);
-                if (it != fds_.end()) it->second.cb(FdEvents::Readable);
-            } else if (events[i].filter == EVFILT_WRITE) {
-                auto it = fds_.find(fd);
-                if (it != fds_.end()) it->second.cb(FdEvents::Writable);
             }
+            // Per-fd EVFILT_READ / EVFILT_WRITE events live on the
+            // inner FdPoller's kqueue, not this one. Anything that
+            // reaches here for a non-wakeup, non-VNODE fd indicates
+            // a leaked subscription; ignore it.
+        }
+
+        if (drainPoller && fdPoller_) {
+            fdPoller_->poll(0);  // non-blocking, dispatches callbacks
         }
 
         processTimers();
@@ -155,57 +189,28 @@ void KQueueEventLoop::wakeup()
     write(wakeupWrite_, &b, 1);
 }
 
-// ---------- fd watching ----------
+// ---------- fd watching (delegated to FdPoller) ----------
 
 void KQueueEventLoop::watchFd(int fd, FdEvents events, FdCb cb)
 {
-    struct kevent evs[2];
-    int n = 0;
-    if (events & FdEvents::Readable)
-        EV_SET(&evs[n++], fd, EVFILT_READ,  EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    if (events & FdEvents::Writable)
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    if (n) kevent(kqFd_, evs, n, nullptr, 0, nullptr);
-    fds_[fd] = { events, std::move(cb) };
+    if (!fdPoller_) return;
+    auto inner = std::move(cb);
+    fdPoller_->add(fd, toPoller(events),
+        [inner = std::move(inner)](FdPoller::Events ev) {
+            if (inner) inner(fromPoller(ev));
+        });
 }
 
 void KQueueEventLoop::updateFd(int fd, FdEvents events)
 {
-    auto it = fds_.find(fd);
-    if (it == fds_.end()) return;
-
-    FdEvents old = it->second.events;
-    struct kevent evs[4];
-    int n = 0;
-
-    // Enable newly added filters, disable removed ones
-    if ((events & FdEvents::Readable) && !(old & FdEvents::Readable))
-        EV_SET(&evs[n++], fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    else if (!(events & FdEvents::Readable) && (old & FdEvents::Readable))
-        EV_SET(&evs[n++], fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
-
-    if ((events & FdEvents::Writable) && !(old & FdEvents::Writable))
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    else if (!(events & FdEvents::Writable) && (old & FdEvents::Writable))
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
-
-    if (n) kevent(kqFd_, evs, n, nullptr, 0, nullptr);
-    it->second.events = events;
+    if (!fdPoller_) return;
+    fdPoller_->update(fd, toPoller(events));
 }
 
 void KQueueEventLoop::removeFd(int fd)
 {
-    auto it = fds_.find(fd);
-    if (it == fds_.end()) return;
-
-    struct kevent evs[2];
-    int n = 0;
-    if (it->second.events & FdEvents::Readable)
-        EV_SET(&evs[n++], fd, EVFILT_READ,  EV_DELETE, 0, 0, nullptr);
-    if (it->second.events & FdEvents::Writable)
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
-    if (n) kevent(kqFd_, evs, n, nullptr, 0, nullptr);
-    fds_.erase(it);
+    if (!fdPoller_) return;
+    fdPoller_->remove(fd);
 }
 
 // ---------- timers ----------

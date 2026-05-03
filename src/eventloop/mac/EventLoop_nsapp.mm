@@ -114,16 +114,18 @@ NSAppEventLoop::NSAppEventLoop()
     [NSApp setDelegate:delegate];
     installMainMenu(delegate);
 
-    // Create kqueue
-    kqFd_ = kqueue();
-    if (kqFd_ < 0)
-        throw std::runtime_error(std::string("kqueue: ") + strerror(errno));
+    // Per-fd watching: delegate to FdPoller. Wrap its kqueue fd in
+    // a CFFileDescriptor so the CFRunLoop wakes when any managed
+    // fd has events; drainKqueue() then calls poll(0) to dispatch.
+    fdPoller_ = std::make_unique<FdPollerKQueue>();
+    int innerFd = fdPoller_->nativeHandle();
+    if (innerFd < 0)
+        throw std::runtime_error("FdPollerKQueue has no native handle");
 
-    // Wrap the kqueue fd in a single CFFileDescriptor
     CFFileDescriptorContext ctx{};
     ctx.info = this;
     CFFileDescriptorRef cfFd = CFFileDescriptorCreate(
-        kCFAllocatorDefault, kqFd_, false, kqueueCfCallback, &ctx);
+        kCFAllocatorDefault, innerFd, false, kqueueCfCallback, &ctx);
     CFFileDescriptorEnableCallBacks(cfFd, kCFFileDescriptorReadCallBack);
 
     CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(
@@ -159,17 +161,20 @@ NSAppEventLoop::~NSAppEventLoop()
 {
     removeFileWatch();
 
-    // Remove kqueue CFFileDescriptor
+    // Remove kqueue CFFileDescriptor (which wraps the FdPoller's
+    // kqueue fd) before freeing the poller — the wrapper holds a
+    // raw fd which must remain valid until invalidate.
     if (kqCfSource_) {
         CFRunLoopRemoveSource(CFRunLoopGetMain(),
                                static_cast<CFRunLoopSourceRef>(kqCfSource_),
                                kCFRunLoopCommonModes);
         CFRelease(static_cast<CFRunLoopSourceRef>(kqCfSource_));
     }
-    if (kqCfFdRef_)
+    if (kqCfFdRef_) {
+        CFFileDescriptorInvalidate(static_cast<CFFileDescriptorRef>(kqCfFdRef_));
         CFRelease(static_cast<CFFileDescriptorRef>(kqCfFdRef_));
-
-    if (kqFd_ >= 0) close(kqFd_);
+    }
+    fdPoller_.reset();
 
     // Cancel all timers
     for (auto& t : timers_) {
@@ -214,33 +219,7 @@ void NSAppEventLoop::tick()
 
 void NSAppEventLoop::drainKqueue()
 {
-    struct kevent events[MaxKqEvents];
-    struct timespec zero = { 0, 0 };
-
-    for (;;) {
-        int n = kevent(kqFd_, nullptr, 0, events, MaxKqEvents, &zero);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            spdlog::error("NSAppEventLoop: kevent drain: {}", strerror(errno));
-            break;
-        }
-        if (n == 0) break;
-
-        for (int i = 0; i < n; ++i) {
-            int fd = static_cast<int>(events[i].ident);
-            auto it = fds_.find(fd);
-            if (it == fds_.end()) continue;
-
-            FdEvents fired = static_cast<FdEvents>(0);
-            if (events[i].filter == EVFILT_READ)  fired = fired | FdEvents::Readable;
-            if (events[i].filter == EVFILT_WRITE) fired = fired | FdEvents::Writable;
-            if (static_cast<uint8_t>(fired))
-                it->second.cb(fired);
-        }
-
-        // If we got a full batch, there may be more
-        if (n < MaxKqEvents) break;
-    }
+    if (fdPoller_) fdPoller_->poll(0);
 }
 
 void NSAppEventLoop::fileChanged()
@@ -255,62 +234,38 @@ void NSAppEventLoop::fileChanged()
     }
 }
 
-// ---------- fd watching ----------
+// ---------- fd watching (delegated to FdPoller) ----------
+
+FdPoller::Events NSAppEventLoop::toPoller(FdEvents ev)
+{
+    return static_cast<FdPoller::Events>(static_cast<uint8_t>(ev));
+}
+
+EventLoop::FdEvents NSAppEventLoop::fromPoller(FdPoller::Events ev)
+{
+    return static_cast<FdEvents>(static_cast<uint8_t>(ev));
+}
 
 void NSAppEventLoop::watchFd(int fd, FdEvents events, FdCb cb)
 {
-    struct kevent evs[2];
-    int n = 0;
-    if (events & FdEvents::Readable)
-        EV_SET(&evs[n++], fd, EVFILT_READ,  EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    if (events & FdEvents::Writable)
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    if (n) {
-        if (kevent(kqFd_, evs, n, nullptr, 0, nullptr) < 0)
-            spdlog::error("NSAppEventLoop: watchFd kevent fd={}: {}", fd, strerror(errno));
-    }
-    fds_[fd] = { events, std::move(cb) };
+    if (!fdPoller_) return;
+    auto inner = std::move(cb);
+    fdPoller_->add(fd, toPoller(events),
+        [inner = std::move(inner)](FdPoller::Events ev) {
+            if (inner) inner(fromPoller(ev));
+        });
 }
 
 void NSAppEventLoop::updateFd(int fd, FdEvents events)
 {
-    auto it = fds_.find(fd);
-    if (it == fds_.end()) return;
-
-    FdEvents old = it->second.events;
-    struct kevent evs[4];
-    int n = 0;
-
-    if ((events & FdEvents::Readable) && !(old & FdEvents::Readable))
-        EV_SET(&evs[n++], fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    else if (!(events & FdEvents::Readable) && (old & FdEvents::Readable))
-        EV_SET(&evs[n++], fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
-
-    if ((events & FdEvents::Writable) && !(old & FdEvents::Writable))
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    else if (!(events & FdEvents::Writable) && (old & FdEvents::Writable))
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
-
-    if (n) {
-        if (kevent(kqFd_, evs, n, nullptr, 0, nullptr) < 0)
-            spdlog::error("NSAppEventLoop: updateFd kevent fd={}: {}", fd, strerror(errno));
-    }
-    it->second.events = events;
+    if (!fdPoller_) return;
+    fdPoller_->update(fd, toPoller(events));
 }
 
 void NSAppEventLoop::removeFd(int fd)
 {
-    auto it = fds_.find(fd);
-    if (it == fds_.end()) return;
-
-    struct kevent evs[2];
-    int n = 0;
-    if (it->second.events & FdEvents::Readable)
-        EV_SET(&evs[n++], fd, EVFILT_READ,  EV_DELETE, 0, 0, nullptr);
-    if (it->second.events & FdEvents::Writable)
-        EV_SET(&evs[n++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
-    if (n) kevent(kqFd_, evs, n, nullptr, 0, nullptr);
-    fds_.erase(it);
+    if (!fdPoller_) return;
+    fdPoller_->remove(fd);
 }
 
 // ---------- timers ----------

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <EventLoop.h>
+#include "FdPoller_kqueue.h"
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -31,18 +33,22 @@ public:
 
 private:
     void processTimers();
+    static FdPoller::Events toPoller(FdEvents ev);
+    static FdEvents fromPoller(FdPoller::Events ev);
 
+    // Outer kqueue: holds the wakeup self-pipe, EVFILT_VNODE
+    // file watches, and the FdPoller's kqueue fd as a sub-source.
     int kqFd_       = -1;
     int wakeupRead_  = -1;  // read end of self-pipe
     int wakeupWrite_ = -1;  // write end
 
-    bool running_ = false;
+    // Per-fd readability/writability watching. The FdPoller's own
+    // kqueue fd is registered with kqFd_ above, so when any
+    // managed fd becomes ready the outer run loop wakes and we
+    // call fdPoller_->poll(0) to drain.
+    std::unique_ptr<FdPollerKQueue> fdPoller_;
 
-    struct FdEntry {
-        FdEvents events;
-        FdCb     cb;
-    };
-    std::unordered_map<int, FdEntry> fds_;
+    bool running_ = false;
 
     struct Timer {
         TimerId  id;

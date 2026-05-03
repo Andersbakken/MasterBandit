@@ -73,6 +73,13 @@ public:
     // internally by mutators; also exposed so external code (e.g.
     // shutdown) can interrupt the poll without registering an op.
     virtual void wake() = 0;
+
+    // Underlying OS fd (kqueue / epoll). Used by EventLoop
+    // implementations that integrate FdPoller as a sub-poller of
+    // their outer event loop: they add this fd to their own
+    // kqueue/epoll/CFRunLoop and call poll(0) to drain when it
+    // fires. Returns -1 on backends without an integratable fd.
+    virtual int nativeHandle() const = 0;
 };
 
 inline FdPoller::Events operator|(FdPoller::Events a, FdPoller::Events b)

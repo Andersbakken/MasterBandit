@@ -1,9 +1,11 @@
 #pragma once
 
 #include <EventLoop.h>
+#include "FdPoller_epoll.h"
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -34,7 +36,12 @@ private:
     void drainTimers();
     void drainInotify();
     void drainWakeup();
+    static FdPoller::Events toPoller(FdEvents ev);
+    static FdEvents fromPoller(FdPoller::Events ev);
 
+    // Outer epoll: holds the wakeup eventfd, the timerfd, the
+    // inotify fd, and the FdPoller's epoll fd as a sub-source.
+    // Per-fd watches go through fdPoller_.
     int epollFd_ = -1;
     int wakeupFd_ = -1;   // eventfd
     int timerFd_  = -1;   // timerfd_create(CLOCK_MONOTONIC)
@@ -42,13 +49,10 @@ private:
     int inotifyWd_ = -1;  // watch descriptor for config dir
     std::string inotifyDir_; // dir we're currently watching, "" if none
 
-    bool running_ = false;
+    std::unique_ptr<FdPollerEpoll> fdPoller_;
+    int innerPollerFd_ = -1;  // cached fdPoller_->nativeHandle()
 
-    struct FdEntry {
-        FdEvents events;
-        FdCb cb;
-    };
-    std::unordered_map<int, FdEntry> fds_;
+    bool running_ = false;
 
     struct Timer {
         TimerId id;
@@ -72,5 +76,4 @@ private:
     std::vector<WatchEntry> fileWatches_;
 
     static uint64_t nowNs();
-    static int epollEventsFor(FdEvents ev);
 };

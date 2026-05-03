@@ -1,5 +1,4 @@
 #include "Terminal.h"
-#include "Observability.h"
 #include "Utils.h"
 #include <chrono>
 #include <spdlog/spdlog.h>
@@ -482,11 +481,7 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
             // once acquired (inside injectData::applyActions), we run
             // to completion. parseToActions runs without mMutex —
             // render thread can read concurrently with decode.
-            const uint64_t bt0 = obs::now_us();
             (void)injectData(data, size);
-            if (auto dt = obs::now_us() - bt0; dt > 5000)
-                spdlog::warn("[TIMING] queueParse: {} bytes in {} us",
-                             size, dt);
 
             // Read backpressure rearm: now that we've drained a
             // batch, check whether we should re-enable POLLIN on

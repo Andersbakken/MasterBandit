@@ -1,7 +1,6 @@
 #include "InputController.h"
 
 #include "AnimationScheduler.h"
-#include "Observability.h"
 #include "PlatformDawn.h"
 #include "RenderThread.h"
 #include "ScriptEngine.h"
@@ -75,20 +74,7 @@ Window::CursorStyle InputController::pointerShapeNameToCursorStyle(const std::st
 // — the Window backend (XCBWindow/CocoaWindow) does all conversion before calling here.
 void InputController::onKey(int key, int scancode, int action, int mods)
 {
-    // [TIMING] Total onKey duration + lock-acquire wait. The wait
-    // time is the user-visible input-latency proxy: how long after
-    // the key arrives before the handler can start running.
-    const uint64_t mt0 = obs::now_us();
-    const uint64_t lt0 = obs::now_us();
     std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
-    if (auto dt = obs::now_us() - lt0; dt > 1000)
-        spdlog::warn("[TIMING] onKey: lock wait {} us", dt);
-
-    // Log total onKey duration on the way out via RAII guard.
-    struct Tot { uint64_t t0; ~Tot() {
-        if (auto dt = obs::now_us() - t0; dt > 1000)
-            spdlog::warn("[TIMING] onKey: total {} us", dt);
-    } } _tot{mt0};
 
     TerminalEmulator* term = static_cast<TerminalEmulator*>(platform_->activeTerm());
     if (!term) return;

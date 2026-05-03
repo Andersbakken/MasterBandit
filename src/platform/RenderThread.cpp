@@ -1,6 +1,5 @@
 #include "RenderThread.h"
 
-#include "Observability.h"
 #include "PlatformDawn.h"
 #include "Utils.h"  // overloaded<> helper for std::visit
 
@@ -61,17 +60,9 @@ void RenderThread::drainPendingExits()
 
 void RenderThread::applyPendingMutations()
 {
-    // [TIMING] Total duration of applyPendingMutations.
-    const uint64_t mt0 = obs::now_us();
-    // [TIMING] Wait time to acquire the render-thread mutex (queued
-    // behind onKey, snapshotUnderLock, or applyPendingMutations from
-    // any other path).
-    const uint64_t lt0 = obs::now_us();
     // Called on the main thread at end of tick. Acquires mutex_,
     // transfers pending_ into renderState_, clears pending_.
     std::lock_guard<std::recursive_mutex> plk(mutex_);
-    if (auto dt = obs::now_us() - lt0; dt > 1000)
-        spdlog::warn("[TIMING] applyPendingMutations: lock wait {} us", dt);
 
     // Drain terminal exits under the lock so that terminal destruction
     // can't race the render thread's use of frameState_ term pointers.
@@ -135,10 +126,7 @@ void RenderThread::applyPendingMutations()
     }
 
     // Rebuild the full shadow copy from live state.
-    const uint64_t bt0 = obs::now_us();
     platform_->buildRenderFrameState();
-    if (auto dt = obs::now_us() - bt0; dt > 1000)
-        spdlog::warn("[TIMING] buildRenderFrameState: {} us", dt);
 
     // Transfer per-pane dirty pane entries so the render thread picks
     // them up at snapshot time.
@@ -161,9 +149,6 @@ void RenderThread::applyPendingMutations()
     }
 
     pending_.clear();
-
-    if (auto dt = obs::now_us() - mt0; dt > 1000)
-        spdlog::warn("[TIMING] applyPendingMutations: total {} us", dt);
 }
 
 void RenderThread::threadMain()

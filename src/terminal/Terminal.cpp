@@ -400,10 +400,19 @@ void Terminal::flushReadBuffer()
 
 bool Terminal::queueParse(const ParseSubmitFn& submit)
 {
-    // Cheap empty-check without taking the buffer lock. False negatives
-    // here are fine — readFromFD will trigger the next queueParse().
-    if (mReadCoalesceBuffer.empty() && mParseInFlight.load(std::memory_order_acquire) == 0)
-        return false;
+    // Buffer empty + no parse in flight = nothing to schedule. The
+    // empty() read MUST hold mReadBufferMutex because the PtyMux
+    // thread mutates mReadCoalesceBuffer (vector::insert) under
+    // that lock; an unsynchronized read here is a TSan violation
+    // even if the eventual answer would be a benign "false negative
+    // → next readFromFD wakes us." Lock is microseconds-uncontended
+    // (mux thread only holds it during a single insert).
+    {
+        std::lock_guard<std::mutex> lk(mReadBufferMutex);
+        if (mReadCoalesceBuffer.empty()
+            && mParseInFlight.load(std::memory_order_acquire) == 0)
+            return false;
+    }
 
     // Single-flight guard: if a parse is already queued/running, the
     // worker will loop back and pick up whatever's in the coalesce

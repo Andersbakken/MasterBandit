@@ -25,10 +25,40 @@ struct GlyphInfo {
     bool is_empty;                       // true for whitespace/no-contour glyphs
     bool is_colr;                        // true if this is a COLRv1 color glyph
     uint32_t numTexels;                  // virtual atlas texels occupied (0 for is_empty/is_colr)
-    // LRU bookkeeping: bumped to FontData::currentGen on every cache hit.
-    // Plain uint32_t, written under shared_lock — racy but fine for LRU
-    // (a lost update at most makes a glyph appear slightly colder).
-    uint32_t lastUsedGen;
+    // LRU bookkeeping: bumped to FontData::currentGen on every cache
+    // hit. Multiple WorkerPool threads concurrently shape rows and
+    // each calls ensureGlyphEncoded → fast-path LRU touch under
+    // shared_lock; the writes don't synchronize with each other. A
+    // lost update at most makes a glyph appear slightly colder
+    // (acceptable for LRU). Accessed via std::atomic_ref<uint32_t>
+    // with relaxed ordering at every read/write site, AND via the
+    // custom copy ctor / operator= below so the implicit struct copy
+    // performed by `out = it->second;` (resolveCellGlyph) and
+    // `glyphs[key] = info;` (ensureGlyphEncoded) doesn't race with
+    // concurrent LRU touches from other workers.
+    uint32_t lastUsedGen { 0 };
+
+    GlyphInfo() = default;
+    GlyphInfo(const GlyphInfo& o) { *this = o; }
+    GlyphInfo& operator=(const GlyphInfo& o) {
+        atlas_offset = o.atlas_offset;
+        ext_min_x = o.ext_min_x; ext_min_y = o.ext_min_y;
+        ext_max_x = o.ext_max_x; ext_max_y = o.ext_max_y;
+        upem = o.upem;
+        advance = o.advance;
+        is_empty = o.is_empty;
+        is_colr = o.is_colr;
+        numTexels = o.numTexels;
+        // atomic_ref-load source (concurrent LRU touchers may be
+        // writing it) and atomic_ref-store dest (other workers may
+        // be touching dest's slot too, e.g. when copying out of /
+        // into the live map).
+        std::atomic_ref<uint32_t>(lastUsedGen).store(
+            std::atomic_ref<uint32_t>(const_cast<uint32_t&>(o.lastUsedGen))
+                .load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        return *this;
+    }
 };
 
 struct FontStyle {

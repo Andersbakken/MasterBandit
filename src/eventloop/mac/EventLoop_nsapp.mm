@@ -108,6 +108,11 @@ NSAppEventLoop::NSAppEventLoop()
 {
     // Ensure NSApp exists
     [NSApplication sharedApplication];
+    // Disable Press-and-Hold so interpretKeyEvents: delivers key repeats for
+    // every key. With the default ON, the OS suppresses repeats for keys
+    // without accent alternates (f, g, j, k…) and tries to show the accent
+    // picker for the rest — neither is what a terminal wants.
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{@"ApplePressAndHoldEnabled": @NO}];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     MBAppDelegate* delegate = [[MBAppDelegate alloc] init];
     delegate->loop = this;

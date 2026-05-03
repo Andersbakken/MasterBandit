@@ -42,8 +42,12 @@ static bool resolveCellGlyph(FontData& font,
         std::shared_lock lock(font.mutex);
         auto it = font.glyphs.find(glyphId);
         if (it != font.glyphs.end() && !it->second.is_empty) {
-            // LRU touch (racy plain write under shared_lock — acceptable, see GlyphInfo).
-            it->second.lastUsedGen = font.currentGen;
+            // LRU touch under shared_lock — atomic_ref + relaxed (see
+            // GlyphInfo::lastUsedGen). `out = it->second;` is a plain
+            // copy of all the other fields which the unique-locked
+            // insert path established before publishing the entry.
+            std::atomic_ref<uint32_t>(it->second.lastUsedGen)
+                .store(font.currentGen, std::memory_order_relaxed);
             out = it->second;
             return true;
         }

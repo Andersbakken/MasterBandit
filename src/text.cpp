@@ -82,10 +82,12 @@ void TextSystem::ensureGlyphEncoded(FontData& font, uint32_t fontIndex, uint32_t
         std::shared_lock lock(font.mutex);
         auto it = font.glyphs.find(key);
         if (it != font.glyphs.end()) {
-            // LRU touch: racy plain-uint32_t write under shared_lock is fine
-            // since map structure is not changing and lost updates only
-            // mis-age a glyph slightly.
-            it->second.lastUsedGen = font.currentGen;
+            // LRU touch under shared_lock — multiple workers may write
+            // concurrently. atomic_ref + relaxed makes it formally
+            // race-free; lost updates still only mis-age a glyph slightly
+            // (which is the explicit acceptable outcome for LRU).
+            std::atomic_ref<uint32_t>(it->second.lastUsedGen)
+                .store(font.currentGen, std::memory_order_relaxed);
             // If glyph is cached but COLR status unknown, check now
             if (font.hasColrPaint && !it->second.is_colr) {
                 hb_face_t* face = font.hbFonts[fontIndex].hbFace;

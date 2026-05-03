@@ -270,12 +270,15 @@ void Terminal::markExited()
 
     // Drop the lazy POLLOUT registration if any. EventLoop is main-
     // thread-only — bounce through post() so this is safe to call
-    // from the mux thread. mWritePollActive is main-thread-owned,
-    // so flip it inside the posted lambda too.
+    // from the mux thread. The lambda runs on main and takes
+    // mWriteQueueMutex to read/write mWritePollActive consistently
+    // with writeToPTY / flushWriteQueue, which can be running on
+    // worker for OSC replies right up until mExited propagates.
     if (mEventLoop && mMasterFD >= 0) {
         int fd = mMasterFD;
         EventLoop* loop = mEventLoop;
         loop->post([this, loop, fd]() {
+            std::lock_guard<std::mutex> _lk(mWriteQueueMutex);
             if (mWritePollActive) {
                 loop->removeFd(fd);
                 mWritePollActive = false;
@@ -499,70 +502,90 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
 
 void Terminal::writeToPTY(const char* data, size_t len)
 {
-    // Main thread only. After markExited the fd is on its way out;
-    // bail before issuing a syscall that would hit EIO on a
-    // half-torn-down PTY.
+    // Callable from main (keystrokes / paste / writeText) AND from
+    // the parse worker (OSC/DA replies through writeToOutput).
+    // mWriteQueueMutex serializes both. After markExited the fd is
+    // on its way out; bail before issuing a syscall that would hit
+    // EIO on a half-torn-down PTY.
     if (mExited.load(std::memory_order_acquire)) return;
-    // Try to write directly first
-    while (len > 0 && mWriteQueue.empty()) {
-        int ret;
-        EINTRWRAP(ret, ::write(mMasterFD, data, len));
-        if (ret == -1) {
-            // Kernel PTY buffer full: fall through to queue the rest so
-            // we pick up where we left off on the next Writable poll. A
-            // `return` here (prior bug) silently dropped bytes mid-paste
-            // — which manifested as partial pastes (bracketed-paste end
-            // marker arriving early to apps like Claude Code).
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-            // EIO = slave end closed (child process exited). Treat any
-            // unrecoverable write error as terminal exit, matching the
-            // readFromFD path. Drop remaining bytes; markExited unwatches
-            // the fd and fires onTerminalExited once.
-            if (errno != EIO)
-                spdlog::error("Failed to write to master {} {}", errno, strerror(errno));
-            markExited();
-            return;
+
+    bool exitOnError = false;
+    {
+        std::lock_guard<std::mutex> _lk(mWriteQueueMutex);
+
+        // Try to write directly first
+        while (len > 0 && mWriteQueue.empty()) {
+            int ret;
+            EINTRWRAP(ret, ::write(mMasterFD, data, len));
+            if (ret == -1) {
+                // Kernel PTY buffer full: fall through to queue the rest
+                // so we pick up where we left off on the next Writable
+                // poll. A `return` here (prior bug) silently dropped bytes
+                // mid-paste — which manifested as partial pastes
+                // (bracketed-paste end marker arriving early to apps
+                // like Claude Code).
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                // EIO = slave end closed (child process exited). Treat
+                // any unrecoverable write error as terminal exit. Drop
+                // remaining bytes; markExited unwatches the fd and
+                // fires onTerminalExited once. Defer the markExited
+                // call until after we drop the lock to avoid taking
+                // the EventLoop's post() lock under ours.
+                if (errno != EIO)
+                    spdlog::error("Failed to write to master {} {}", errno, strerror(errno));
+                exitOnError = true;
+                break;
+            }
+            data += ret;
+            len -= ret;
         }
-        data += ret;
-        len -= ret;
+
+        // Queue remaining data and lazily register the fd with the
+        // EventLoop for POLLOUT. Reads no longer go through EventLoop
+        // (PtyMux owns them), so this watchFd subscribes to write only.
+        if (!exitOnError && len > 0) {
+            mWriteQueue.insert(mWriteQueue.end(), data, data + len);
+            if (!mWritePollActive && mEventLoop && mMasterFD >= 0) {
+                Terminal* self = this;
+                mEventLoop->watchFd(mMasterFD, EventLoop::FdEvents::Writable,
+                    [self](EventLoop::FdEvents ev) {
+                        if (ev & EventLoop::FdEvents::Writable) self->flushWriteQueue();
+                    });
+                mWritePollActive = true;
+            }
+        }
     }
 
-    // Queue remaining data and lazily register the fd with the
-    // EventLoop for POLLOUT. Reads no longer go through EventLoop
-    // (PtyMux owns them), so this watchFd subscribes to write only.
-    if (len > 0) {
-        mWriteQueue.insert(mWriteQueue.end(), data, data + len);
-        if (!mWritePollActive && mEventLoop && mMasterFD >= 0) {
-            Terminal* self = this;
-            mEventLoop->watchFd(mMasterFD, EventLoop::FdEvents::Writable,
-                [self](EventLoop::FdEvents ev) {
-                    if (ev & EventLoop::FdEvents::Writable) self->flushWriteQueue();
-                });
-            mWritePollActive = true;
-        }
-    }
+    if (exitOnError) markExited();
 }
 
 void Terminal::flushWriteQueue()
 {
     if (mExited.load(std::memory_order_acquire)) return;
-    while (!mWriteQueue.empty()) {
-        int ret;
-        EINTRWRAP(ret, ::write(mMasterFD, mWriteQueue.data(), mWriteQueue.size()));
-        if (ret == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return; // try again next poll
-            if (errno != EIO)
-                spdlog::error("Failed to write to master {} {}", errno, strerror(errno));
-            markExited();
-            return;
+
+    bool exitOnError = false;
+    {
+        std::lock_guard<std::mutex> _lk(mWriteQueueMutex);
+        while (!mWriteQueue.empty()) {
+            int ret;
+            EINTRWRAP(ret, ::write(mMasterFD, mWriteQueue.data(), mWriteQueue.size()));
+            if (ret == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) return; // try again next poll
+                if (errno != EIO)
+                    spdlog::error("Failed to write to master {} {}", errno, strerror(errno));
+                exitOnError = true;
+                break;
+            }
+            mWriteQueue.erase(mWriteQueue.begin(), mWriteQueue.begin() + ret);
         }
-        mWriteQueue.erase(mWriteQueue.begin(), mWriteQueue.begin() + ret);
+        // Queue drained — drop the lazy POLLOUT registration entirely.
+        if (!exitOnError && mWritePollActive && mEventLoop && mMasterFD >= 0) {
+            mEventLoop->removeFd(mMasterFD);
+            mWritePollActive = false;
+        }
     }
-    // Queue drained — drop the lazy POLLOUT registration entirely.
-    if (mWritePollActive && mEventLoop && mMasterFD >= 0) {
-        mEventLoop->removeFd(mMasterFD);
-        mWritePollActive = false;
-    }
+
+    if (exitOnError) markExited();
 }
 
 void Terminal::writeToOutput(const char* data, size_t len)

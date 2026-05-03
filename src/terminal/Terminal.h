@@ -280,16 +280,26 @@ private:
     // null and use flushReadBuffer directly.
     PtyMux*    mPtyMux    { nullptr };
     EventLoop::TimerId mWritePollId { 0 };
-    // Toggled only on the main thread (writeToPTY / flushWriteQueue
-    // and posted lambdas from markExited). Tracks whether the master
-    // fd is currently registered with mEventLoop for POLLOUT.
+    // Tracks whether the master fd is currently registered with
+    // mEventLoop for POLLOUT. Mutated under mWriteQueueMutex from
+    // writeToPTY / flushWriteQueue (main, or worker via the
+    // writeToOutput → writeToPTY path used by the parser for
+    // OSC/DA replies) and from a posted lambda fired by markExited.
     bool mWritePollActive { false };
     // Set once the PTY has delivered EOF or an unrecoverable I/O
     // error. CAS-then-act in markExited; read in writeToPTY /
     // flushWriteQueue / readFromFD / maybeResumeRead to short-circuit.
     // Atomic because markExited may run on the PtyMux thread (HUP
-    // path) while writes happen on main.
+    // path) while writes happen on main / worker.
     std::atomic<bool> mExited { false };
+    // Bytes queued for write but not yet accepted by the kernel
+    // PTY input buffer. Serialized by mWriteQueueMutex because
+    // writeToPTY can be invoked from main (keystrokes / paste /
+    // writeText) and from the parse worker (OSC/DA responses via
+    // TerminalEmulator::writeToOutput → Terminal::writeToPTY) —
+    // pre-PtyMux these were also racing without synchronization
+    // but it never showed because OSC writes are tiny + rare.
+    std::mutex        mWriteQueueMutex;
     std::vector<char> mWriteQueue;
     // Bytes read from the PTY and not yet handed to a parse task.
     // Written from the PtyMux thread's read callback (readFromFD);

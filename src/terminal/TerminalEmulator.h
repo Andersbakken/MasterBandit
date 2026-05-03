@@ -385,7 +385,12 @@ public:
     void mousePressEvent(const MouseEvent *event);
     void mouseReleaseEvent(const MouseEvent *event);
     void mouseMoveEvent(const MouseEvent *event);
-    bool mouseReportingActive() const { return mState->mouseMode1000 || mState->mouseMode1002 || mState->mouseMode1003; }
+    // Reads the shadow atomic so main-thread callers (InputController,
+    // PlatformDawn::onScroll) don't race with the parse worker
+    // mutating the underlying mode bools under mMutex. Worker-side
+    // reads (DECRQM, DECSC, etc.) go through the struct fields
+    // directly under mMutex.
+    bool mouseReportingActive() const { return mMouseReportingActiveAtomic.load(std::memory_order_acquire); }
 
     // Pull-model title/icon: returns the top of the XTWINOPS stack, or
     // nullopt when the stack is empty (no OSC 0/2 has set one, or it's been
@@ -643,7 +648,11 @@ public:
 
 protected:
     virtual void writeToOutput(const char* data, size_t len) {}
-    bool bracketedPaste() const { return mState->bracketedPaste; }
+    // Reads the shadow atomic so main-thread callers (Terminal::pasteText)
+    // don't race with the parse worker mutating mState->bracketedPaste
+    // under mMutex. Worker-side reads (DECRQM, DECSC) go through
+    // mState->bracketedPaste directly under mMutex.
+    bool bracketedPaste() const { return mBracketedPasteAtomic.load(std::memory_order_acquire); }
     void resetScrollback(int scrollbackLines);  // reinitializes document with given scrollback capacity
     TerminalCallbacks& callbacks() { return mCallbacks; }
 
@@ -718,6 +727,28 @@ private:
     // (TerminalEmulator.cpp:1013, 2020, 2081). Read by main-thread
     // callers via the usingAltScreen() accessor with acquire ordering.
     std::atomic<bool> mUsingAltScreenAtomic { false };
+
+    // Mirror of mState->bracketedPaste. The struct field is mutated
+    // by the parse worker under mMutex (mode 2004 set/reset/save/
+    // restore), but Terminal::pasteText reads it from the main thread
+    // without holding mMutex. Plain bool reads are atomic on x86/ARM
+    // but lack happens-before vs. the worker's write — so main could
+    // see a stale value for one tick. Shadow atomic kept in sync at
+    // every write site, read by the bracketedPaste() accessor.
+    std::atomic<bool> mBracketedPasteAtomic { false };
+
+    // Mirror of (mouseMode1000 || mouseMode1002 || mouseMode1003).
+    // Same race shape as mBracketedPasteAtomic — the worker writes
+    // the three bools under mMutex from DEC mode handling; main
+    // reads via mouseReportingActive() from InputController and
+    // PlatformDawn::onScroll without holding mMutex. Single computed
+    // mirror (rather than three separate shadows) makes the read
+    // path one atomic load — input is the hot path here.
+    std::atomic<bool> mMouseReportingActiveAtomic { false };
+    void syncMouseReportingAtomic() {
+        const bool v = mState->mouseMode1000 || mState->mouseMode1002 || mState->mouseMode1003;
+        mMouseReportingActiveAtomic.store(v, std::memory_order_release);
+    }
 
     // Integer row-count viewport anchor. `scrollUpInRegion` compensates by
     // += n when the user is scrolled back (non-zero offset) so they stay

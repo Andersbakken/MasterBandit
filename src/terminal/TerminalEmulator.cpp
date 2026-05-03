@@ -1068,6 +1068,8 @@ void TerminalEmulator::applyEsc(char finalByte)
         resetToDefault(mMainState);
         resetToDefault(mAltState);
         mState = &mMainState;
+        mBracketedPasteAtomic.store(mState->bracketedPaste, std::memory_order_release);
+        syncMouseReportingAtomic();
         if (mUsingAltScreen) {
             mUsingAltScreen = false;
             mUsingAltScreenAtomic.store(false, std::memory_order_release);
@@ -1748,6 +1750,8 @@ void TerminalEmulator::processCSI(const char* buf, int len)
             mState->mouseMode1016 = preserved.mouseMode1016;
             mState->focusReporting = preserved.focusReporting;
             mState->bracketedPaste = preserved.bracketedPaste;
+            mBracketedPasteAtomic.store(preserved.bracketedPaste, std::memory_order_release);
+            syncMouseReportingAtomic();
             mState->syncOutput = preserved.syncOutput;
             mState->colorPreferenceReporting = preserved.colorPreferenceReporting;
             // Tab stops: reset to defaults (every 8 columns).
@@ -1853,11 +1857,15 @@ void TerminalEmulator::restorePrivateModes(const std::vector<int>& modes)
         case 1004: mState->focusReporting            = v; break;
         case 1006: mState->mouseMode1006             = v; break;
         case 1016: mState->mouseMode1016             = v; break;
-        case 2004: mState->bracketedPaste            = v; break;
+        case 2004:
+            mState->bracketedPaste = v;
+            mBracketedPasteAtomic.store(v, std::memory_order_release);
+            break;
         case 2026: mState->syncOutput                = v; break;
         case 2031: mState->colorPreferenceReporting  = v; break;
         default: break;
         }
+        syncMouseReportingAtomic();
     };
     if (modes.empty()) {
         for (auto& kv : mSavedPrivateModes) restoreOne(kv.first);
@@ -2075,6 +2083,8 @@ void TerminalEmulator::onAction(const Action *action)
             // just flip mState back, no field-by-field restore needed.
             resetToDefault(mAltState);
             mState = &mAltState;
+            mBracketedPasteAtomic.store(mState->bracketedPaste, std::memory_order_release);
+            syncMouseReportingAtomic();
             mUsingAltScreen = true;
             mUsingAltScreenAtomic.store(true, std::memory_order_release);
             // Kitty: switch to alt screen's stack
@@ -2088,7 +2098,10 @@ void TerminalEmulator::onAction(const Action *action)
             mSelectedCommandId.reset();
             break;
         case 1004: mState->focusReporting = true; break;
-        case 2004: mState->bracketedPaste = true; break;
+        case 2004:
+            mState->bracketedPaste = true;
+            mBracketedPasteAtomic.store(true, std::memory_order_release);
+            break;
         case 2026: mState->syncOutput = true; break;
         case 2027: break; // grapheme cluster mode — always on, ignore
         case 2031: mState->colorPreferenceReporting = true; break;
@@ -2096,6 +2109,7 @@ void TerminalEmulator::onAction(const Action *action)
             sLog().warn("Ignoring private mode set {}", action->count);
             break;
         }
+        syncMouseReportingAtomic();
         break;
     case Action::ResetMode:
         switch (action->count) {
@@ -2139,6 +2153,8 @@ void TerminalEmulator::onAction(const Action *action)
             mState = &mMainState;
             mUsingAltScreen = false;
             mUsingAltScreenAtomic.store(false, std::memory_order_release);
+            mBracketedPasteAtomic.store(mState->bracketedPaste, std::memory_order_release);
+            syncMouseReportingAtomic();
             // Kitty: switch back to main screen's stack
             mKittyFlags = (mKittyStackDepthMain > 0) ? mKittyStackMain[mKittyStackDepthMain - 1] : 0;
             notifyPointerShapeChanged();  // main stack is active again
@@ -2146,7 +2162,10 @@ void TerminalEmulator::onAction(const Action *action)
             clearSelection();
             break;
         case 1004: mState->focusReporting = false; break;
-        case 2004: mState->bracketedPaste = false; break;
+        case 2004:
+            mState->bracketedPaste = false;
+            mBracketedPasteAtomic.store(false, std::memory_order_release);
+            break;
         case 2026: mState->syncOutput = false; break;
         case 2027: break; // grapheme cluster mode — always on, ignore
         case 2031: mState->colorPreferenceReporting = false; break;
@@ -2154,6 +2173,7 @@ void TerminalEmulator::onAction(const Action *action)
             sLog().warn("Ignoring private mode reset {}", action->count);
             break;
         }
+        syncMouseReportingAtomic();
         break;
     default:
         break;

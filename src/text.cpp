@@ -998,6 +998,11 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
     SBParagraphRef bidiPara = SBAlgorithmCreateParagraph(
         bidiAlgo, 0, static_cast<SBUInteger>(text.size()), SBLevelDefaultLTR);
     const SBLevel* levels = SBParagraphGetLevelsPtr(bidiPara);
+    // SheenBidi truncates the paragraph to the last well-formed UTF-8
+    // boundary; the level array length equals paraLen, which can be
+    // shorter than text.size() (or even 0) when the input contains
+    // malformed bytes. Iterate against paraLen, not text.size().
+    const SBUInteger paraLen = SBParagraphGetLength(bidiPara);
 
     // 1c. Script runs
     SBScriptLocatorRef scriptLoc = SBScriptLocatorCreate();
@@ -1015,13 +1020,13 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
 
     struct BidiRun { SBUInteger offset, length; SBLevel level; };
     std::vector<BidiRun> bidiRuns;
-    {
+    if (paraLen > 0) {
         SBUInteger start = 0;
         SBLevel cur = levels[0];
-        for (SBUInteger i = 1; i <= static_cast<SBUInteger>(text.size()); i++) {
-            if (i == static_cast<SBUInteger>(text.size()) || levels[i] != cur) {
+        for (SBUInteger i = 1; i <= paraLen; i++) {
+            if (i == paraLen || levels[i] != cur) {
                 bidiRuns.push_back({start, i - start, cur});
-                if (i < static_cast<SBUInteger>(text.size())) {
+                if (i < paraLen) {
                     start = i;
                     cur = levels[i];
                 }
@@ -1314,6 +1319,12 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
     SBParagraphRef bidiPara = SBAlgorithmCreateParagraph(
         bidiAlgo, 0, static_cast<SBUInteger>(text.size()), SBLevelDefaultLTR);
     const SBLevel* levels = SBParagraphGetLevelsPtr(bidiPara);
+    // SheenBidi truncates the paragraph at the last well-formed UTF-8
+    // boundary, so the level array can be shorter than text.size() when
+    // the input contains malformed bytes (e.g. cat-ing a binary file).
+    // The script locator iterates the full codepoint sequence and may
+    // emit runs past the paragraph's end — clamp before indexing.
+    const SBUInteger paraLen = SBParagraphGetLength(bidiPara);
 
     // Script run detection
     SBScriptLocatorRef scriptLoc = SBScriptLocatorCreate();
@@ -1344,7 +1355,7 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
         uint32_t fontUpem = hb_face_get_upem(hbFace);
         float fontPixelScale = static_cast<float>(font.baseSize) / static_cast<float>(fontUpem);
 
-        bool segmentRtl = (levels[sr.offset] & 1) != 0;
+        bool segmentRtl = sr.offset < paraLen && (levels[sr.offset] & 1) != 0;
 
         hb_buffer_t* buf = hb_buffer_create();
         hb_buffer_add_utf8(buf, text.c_str(), static_cast<int>(text.size()),

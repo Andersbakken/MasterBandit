@@ -900,7 +900,7 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
             }
         }
 
-        const FontData* font = textSystem_.getFont(fontName_);
+        auto font = textSystem_.getFont(fontName_);
         if (!font) {
             spdlog::error("Failed to register font");
             return;
@@ -1077,7 +1077,7 @@ void PlatformDawn::applyFontChange(const Config& config)
     terminalOptions().font = config.font;
 
     // Recalculate metrics
-    const FontData* font = textSystem_.getFont(fontName_);
+    auto font = textSystem_.getFont(fontName_);
     if (!font) { spdlog::error("Config reload: font re-registration failed"); return; }
 
     float scale = fontSize_ / font->baseSize;
@@ -1137,11 +1137,12 @@ void PlatformDawn::applyConfig(const Config& config)
 {
     spdlog::info("Config: hot-reload triggered");
 
-    // Hold renderThread_->mutex() for the duration of the reload so that font
-    // registration/unregistration in textSystem_ can't overlap with the
-    // render thread's shapeRun/shapeText/getFont calls.
-    // Internal helpers (applyFramebufferResize, refreshDividers, etc.)
-    // expect the lock to be held already.
+    // Hold renderThread_->mutex() for the duration of the reload so the
+    // shadow render state mutations sequenced by the helpers below
+    // (applyFramebufferResize, refreshDividers, etc.) don't race the
+    // render thread's snapshotUnderLock. Font registration/unregistration
+    // is protected separately by TextSystem::registryMutex_ — the render
+    // mutex does NOT cover textSystem_'s fonts_ map.
     std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
 
     // Stash the snapshot before any sub-section copies. `mb.config` reads
@@ -1273,7 +1274,7 @@ void PlatformDawn::applyConfig(const Config& config)
         fontSize_ = newFontSize;
         baseFontSize_ = fontSize_;
         opts.fontSize = config.font_size;
-        const FontData* font = textSystem_.getFont(fontName_);
+        auto font = textSystem_.getFont(fontName_);
         if (font) {
             float scale = fontSize_ / font->baseSize;
             lineHeight_ = font->lineHeight * scale;
@@ -1316,7 +1317,7 @@ void PlatformDawn::adjustFontSize(float delta)
     fontSize_ = newSize;
 
     // Recalculate metrics
-    const FontData* font = textSystem_.getFont(fontName_);
+    auto font = textSystem_.getFont(fontName_);
     if (!font) return;
     float scale = fontSize_ / font->baseSize;
     lineHeight_ = font->lineHeight * scale;
@@ -1449,7 +1450,7 @@ void PlatformDawn::initTabBar(const TabBarConfig& cfg)
         textSystem_.setPrimaryFontPath(tabBarFontName_, fontPath);
     }
 
-    const FontData* font = textSystem_.getFont(tabBarFontName_);
+    auto font = textSystem_.getFont(tabBarFontName_);
     if (font) {
         // GPU upload deferred to render thread via renderThread_->pending().tabBarFontAtlasChanged
         renderThread_->pending().tabBarFontAtlasChanged = true;

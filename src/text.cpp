@@ -43,32 +43,31 @@ static inline uint64_t glyphKey(uint32_t fontIndex, uint32_t glyphId)
 
 // --- TextSystem implementation ---
 
+FontData::~FontData()
+{
+    // Runs only when the last shared_ptr drops, so by definition no other
+    // thread can be using these resources — no lock needed.
+    for (auto& entry : hbFonts) {
+        if (entry.gpuDraw) hb_gpu_draw_destroy(entry.gpuDraw);
+        if (entry.hbFont)  hb_font_destroy(entry.hbFont);
+        if (entry.hbFace)  hb_face_destroy(entry.hbFace);
+        if (entry.hbBlob)  hb_blob_destroy(entry.hbBlob);
+    }
+}
+
 TextSystem::~TextSystem()
 {
-    for (auto& [name, font] : fonts_) {
-        for (auto& entry : font.hbFonts) {
-            if (entry.gpuDraw) hb_gpu_draw_destroy(entry.gpuDraw);
-            if (entry.hbFont) hb_font_destroy(entry.hbFont);
-            if (entry.hbFace) hb_face_destroy(entry.hbFace);
-            if (entry.hbBlob) hb_blob_destroy(entry.hbBlob);
-        }
-    }
+    // FontData destructors clean up HB resources via shared_ptr drops.
 }
 
 void TextSystem::unregisterFont(const std::string& name)
 {
+    std::unique_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
     if (it == fonts_.end()) return;
-    FontData& font = it->second;
-    {
-        std::unique_lock lock(font.mutex);
-        for (auto& entry : font.hbFonts) {
-            if (entry.gpuDraw) hb_gpu_draw_destroy(entry.gpuDraw);
-            if (entry.hbFont)  hb_font_destroy(entry.hbFont);
-            if (entry.hbFace)  hb_face_destroy(entry.hbFace);
-            if (entry.hbBlob)  hb_blob_destroy(entry.hbBlob);
-        }
-    }
+    // The shared_ptr in the map drops here; FontData lives until every
+    // worker that captured a copy via getFont/etc releases. HB destruction
+    // is in ~FontData, so it can't fire while anyone is mid-shape.
     fonts_.erase(it);
     fontPrimaryPaths_.erase(name);
 }
@@ -377,7 +376,14 @@ bool TextSystem::registerFont(const std::string& name,
         return false;
     }
 
-    FontData& font = fonts_[name];
+    std::unique_lock rlock(registryMutex_);
+    // Build the FontData in a fresh shared_ptr; only insert into fonts_
+    // on success so a partial-build error doesn't replace an existing
+    // entry with a half-populated one. If a font with this name already
+    // exists, the prior shared_ptr drops out of fonts_ at the end and
+    // any in-flight workers keep their own copies until done.
+    auto sptr = std::make_shared<FontData>();
+    FontData& font = *sptr;
     font.name = name;
     font.baseSize = baseSize;
 
@@ -395,7 +401,8 @@ bool TextSystem::registerFont(const std::string& name,
             hb_font_destroy(entry.hbFont);
             hb_face_destroy(entry.hbFace);
             hb_blob_destroy(entry.hbBlob);
-            fonts_.erase(name);
+            // Already-pushed entries in font.hbFonts are cleaned up by
+            // ~FontData when sptr drops here.
             return false;
         }
         font.hbFonts.push_back(entry);
@@ -455,16 +462,23 @@ bool TextSystem::registerFont(const std::string& name,
                 name, static_cast<uint32_t>(font.glyphs.size()),
                 font.atlasUsed, baseSize, font.hbFonts.size());
 
+    // Publish the populated FontData. Any prior shared_ptr at this slot
+    // drops out of the map; existing workers keep their copy alive.
+    fonts_[name] = std::move(sptr);
     return true;
 }
 
 int32_t TextSystem::addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData)
 {
+    std::shared_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
     if (it == fonts_.end()) return -1;
+    return addFallbackFontLocked(*it->second, name, ttfData);
+}
 
-    FontData& font = it->second;
-
+int32_t TextSystem::addFallbackFontLocked(FontData& font, const std::string& name,
+                                           const std::vector<uint8_t>& ttfData)
+{
     // Content-hash the blob to dedup concurrent or repeated calls for the same font.
     uint64_t blobHash = std::hash<std::string_view>{}(
         std::string_view(reinterpret_cast<const char*>(ttfData.data()), ttfData.size()));
@@ -516,20 +530,22 @@ int32_t TextSystem::addFallbackFont(const std::string& name, const std::vector<u
 
 void TextSystem::beginFontFrame(const std::string& name)
 {
+    std::shared_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
     if (it == fonts_.end()) return;
     // Single-writer (render thread); shaping workers only read currentGen.
     // Plain increment is fine.
-    it->second.currentGen++;
+    it->second->currentGen++;
 }
 
 bool TextSystem::compactFontAtlasLRU(const std::string& name,
                                      uint32_t budgetTexels,
                                      uint32_t targetTexels)
 {
+    std::shared_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
     if (it == fonts_.end()) return false;
-    FontData& font = it->second;
+    FontData& font = *it->second;
 
     {
         std::shared_lock lock(font.mutex);
@@ -631,25 +647,29 @@ bool TextSystem::compactFontAtlasLRU(const std::string& name,
 
 void TextSystem::setSystemFallback(SystemFallbackFn fn)
 {
+    std::unique_lock rlock(registryMutex_);
     systemFallback_ = std::move(fn);
 }
 
 void TextSystem::setEmojiFallback(EmojiFallbackFn fn)
 {
+    std::unique_lock rlock(registryMutex_);
     emojiFallback_ = std::move(fn);
 }
 
 void TextSystem::setPrimaryFontPath(const std::string& name, const std::string& path)
 {
+    std::unique_lock rlock(registryMutex_);
     fontPrimaryPaths_[name] = path;
 }
 
 bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrength, float yStrength)
 {
+    std::shared_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
     if (it == fonts_.end()) return false;
 
-    FontData& font = it->second;
+    FontData& font = *it->second;
     if (font.hbFonts.empty()) return false;
 
     const auto& primary = font.hbFonts[0];
@@ -684,10 +704,11 @@ bool TextSystem::addSyntheticBoldVariant(const std::string& name, float xStrengt
 
 bool TextSystem::addSyntheticItalicVariant(const std::string& name, float slant)
 {
+    std::shared_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
     if (it == fonts_.end()) return false;
 
-    FontData& font = it->second;
+    FontData& font = *it->second;
     if (font.hbFonts.empty()) return false;
 
     const auto& primary = font.hbFonts[0];
@@ -721,10 +742,11 @@ bool TextSystem::addSyntheticItalicVariant(const std::string& name, float slant)
 
 void TextSystem::tagFontStyle(const std::string& name, uint32_t fontIndex, FontStyle style)
 {
+    std::shared_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
     if (it == fonts_.end()) return;
 
-    FontData& font = it->second;
+    FontData& font = *it->second;
     if (fontIndex >= font.hbFonts.size()) return;
 
     font.hbFonts[fontIndex].style = style;
@@ -866,11 +888,14 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
         }
     }
 
-    // For emoji with no COLRv1 found yet: try emoji-specific font lookup
+    // For emoji with no COLRv1 found yet: try emoji-specific font lookup.
+    // Caller (shapeRun/shapeText) holds registryMutex_ shared, so reading
+    // emojiFallback_ here is safe and addFallbackFontLocked is reentrant-safe
+    // (std::shared_mutex is NOT — never call public addFallbackFont here).
     if (emojiPresentation && emojiFallback_) {
         auto fallbackData = emojiFallback_(cp);
         if (!fallbackData.empty()) {
-            int32_t addedFi = addFallbackFont(fontName, fallbackData);
+            int32_t addedFi = addFallbackFontLocked(font, fontName, fallbackData);
             if (addedFi >= 0) {
                 std::shared_lock lock(font.mutex);
                 uint32_t newFi = static_cast<uint32_t>(addedFi);
@@ -899,7 +924,7 @@ TextSystem::ResolvedGlyph TextSystem::resolveGlyph(FontData& font, const std::st
         std::string primaryPath = (pathIt != fontPrimaryPaths_.end()) ? pathIt->second : "";
         auto fallbackData = systemFallback_(primaryPath, cp);
         if (!fallbackData.empty()) {
-            int32_t addedFi = addFallbackFont(fontName, fallbackData);
+            int32_t addedFi = addFallbackFontLocked(font, fontName, fallbackData);
             if (addedFi >= 0) {
                 std::shared_lock lock(font.mutex);
                 uint32_t newFi = static_cast<uint32_t>(addedFi);
@@ -945,9 +970,13 @@ ShapedText TextSystem::shapeText(const std::string& fontName, const std::string&
                                   float fontSize, float wrapWidth, int align,
                                   FontStyle style)
 {
+    // Held for the duration: resolveGlyph reads emojiFallback_/systemFallback_/
+    // fontPrimaryPaths_ unlocked, and addFallbackFontLocked is called from
+    // resolveGlyph assuming this critical section is live.
+    std::shared_lock rlock(registryMutex_);
     auto fontIt = fonts_.find(fontName);
     if (fontIt == fonts_.end()) return {};
-    FontData& font = fontIt->second;
+    FontData& font = *fontIt->second;
 
     if (text.empty())
         return ShapedText{{}, 0, font.lineHeight * (fontSize / font.baseSize)};
@@ -1266,9 +1295,13 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
                                 float fontSize, FontStyle style,
                                 std::span<const std::pair<uint32_t, int>> byteToCell)
 {
+    // Held for the duration: resolveGlyph reads emojiFallback_/systemFallback_/
+    // fontPrimaryPaths_ unlocked, and addFallbackFontLocked is called from
+    // resolveGlyph assuming this critical section is live.
+    std::shared_lock rlock(registryMutex_);
     auto fontIt = fonts_.find(fontName);
     if (fontIt == fonts_.end()) return {};
-    FontData& font = fontIt->second;
+    FontData& font = *fontIt->second;
 
     if (text.empty()) return {};
 
@@ -1498,8 +1531,9 @@ ShapedRun TextSystem::shapeRun(const std::string& fontName, const std::string& t
     return result;
 }
 
-const FontData* TextSystem::getFont(const std::string& name) const
+std::shared_ptr<FontData> TextSystem::getFont(const std::string& name) const
 {
+    std::shared_lock rlock(registryMutex_);
     auto it = fonts_.find(name);
-    return it != fonts_.end() ? &it->second : nullptr;
+    return it != fonts_.end() ? it->second : nullptr;
 }

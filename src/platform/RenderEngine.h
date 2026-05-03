@@ -13,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -66,10 +67,17 @@ public:
     void setNeedsRedraw() { needsRedraw_ = true; }
     int pendingGpuCallbacks() const { return pendingGpuCallbacks_.load(std::memory_order_acquire); }
 
-    // Per-pane render state queries used by Platform_Debug.cpp.
-    const PaneRenderPrivate* paneRenderPrivate(Uuid paneId) const {
+    // Per-pane render-state query used by Platform_Debug.cpp (DebugIPC,
+    // services on main). Holds panesMutex_ shared while `fn` runs so the
+    // returned reference can't be invalidated by a concurrent insert/erase
+    // on the render thread. fn is invoked with nullptr if the pane isn't
+    // tracked yet.
+    template <typename Fn>
+    void withPaneRenderPrivate(Uuid paneId, Fn&& fn) const {
+        std::shared_lock lk(panesMutex_);
         auto it = paneRenderPrivate_.find(paneId);
-        return it == paneRenderPrivate_.end() ? nullptr : &it->second;
+        const PaneRenderPrivate* rs = (it == paneRenderPrivate_.end()) ? nullptr : &it->second;
+        fn(rs);
     }
 
     // Destroy all render-thread-owned resources. Must be called after the
@@ -102,7 +110,13 @@ private:
     Renderer renderer_;
     wgpu::Texture headlessComposite_;
 
-    // Render-thread-only state
+    // Per-pane / popup / embedded render state. Render thread mutates these
+    // (insert/erase via renderFrame); main reads via withPaneRenderPrivate
+    // from DebugIPC. panesMutex_ is exclusive on render-thread structural
+    // mutations (insert / erase / rehash) and shared during DebugIPC reads.
+    // In-place field writes from the render thread don't take the lock —
+    // they have only one writer.
+    mutable std::shared_mutex panesMutex_;
     std::unordered_map<Uuid, PaneRenderPrivate, UuidHash> paneRenderPrivate_;
     std::unordered_map<std::string, PaneRenderPrivate> popupRenderPrivate_;
     // Embedded terminals — headless children anchored to a Document line id.

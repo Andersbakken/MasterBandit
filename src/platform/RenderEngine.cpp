@@ -562,8 +562,11 @@ void RenderEngine::renderTabBar()
     std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
     std::vector<GlyphEntry> tabBarGlyphs;
 
-    FontData* font = const_cast<FontData*>(platform_->textSystem_.getFont(frameState_.tabBarFontName));
-    if (!font) return;
+    // shared_ptr keeps FontData alive across this function even if main
+    // unregisters the font mid-execution (HB destruction deferred to dtor).
+    auto fontHandle = platform_->textSystem_.getFont(frameState_.tabBarFontName);
+    if (!fontHandle) return;
+    FontData* font = fontHandle.get();
     float scale = frameState_.tabBarFontSize / font->baseSize;
 
     GlyphInfo tabBarReplacementGlyph{};
@@ -720,6 +723,15 @@ void RenderEngine::renderFrame()
     // Snapshot the render state under the platform lock.
     if (!platform_->snapshotUnderLock(frameState_)) return;
 
+    // Hold panesMutex_ exclusive across all structural mutations of
+    // paneRenderPrivate_ / popupRenderPrivate_ / embeddedRenderPrivate_
+    // below (inserts at 754, 975, 988, 1019; erases at 836, 846, 854,
+    // 861, 868). DebugIPC's withPaneRenderPrivate on main takes shared
+    // and waits for this frame to finish — acceptable since DebugIPC is
+    // only active in dev/CI debug runs. Without this, a rehash on insert
+    // can invalidate a `find` iterator main is currently dereferencing.
+    std::unique_lock<std::shared_mutex> panesLock(panesMutex_);
+
     auto [fbWidth, fbHeight] = platform_->currentFbSize();
     if (fbWidth == 0 || fbHeight == 0) return;
 
@@ -735,14 +747,14 @@ void RenderEngine::renderFrame()
         renderer_.removeFontAtlas(frameState_.fontName);
     }
     if (frameState_.mainFontAtlasChanged) {
-        const FontData* font2 = platform_->textSystem_.getFont(frameState_.fontName);
+        auto font2 = platform_->textSystem_.getFont(frameState_.fontName);
         if (font2) renderer_.uploadFontAtlas(queue_, frameState_.fontName, *font2);
     }
     if (frameState_.tabBarFontRemoved) {
         renderer_.removeFontAtlas(frameState_.tabBarFontName);
     }
     if (frameState_.tabBarFontAtlasChanged) {
-        const FontData* tbFont = platform_->textSystem_.getFont(frameState_.tabBarFontName);
+        auto tbFont = platform_->textSystem_.getFont(frameState_.tabBarFontName);
         if (tbFont) renderer_.uploadFontAtlas(queue_, frameState_.tabBarFontName, *tbFont);
     }
     if (frameState_.viewportSizeChanged) {
@@ -902,8 +914,12 @@ void RenderEngine::renderFrame()
         compositeTarget = headlessComposite_;
     }
 
-    FontData* font = const_cast<FontData*>(platform_->textSystem_.getFont(frameState_.fontName));
-    if (!font) { spdlog::error("renderFrame: font '{}' not found", frameState_.fontName); return; }
+    // Hold the shared_ptr for the rest of renderFrame — workers shape rows
+    // from this FontData; if main unregisters mid-frame, the FontData stays
+    // alive (HB destruction in ~FontData) until fontHandle drops on return.
+    auto fontHandle = platform_->textSystem_.getFont(frameState_.fontName);
+    if (!fontHandle) { spdlog::error("renderFrame: font '{}' not found", frameState_.fontName); return; }
+    FontData* font = fontHandle.get();
 
     // Bound the per-font glyph atlas via LRU compaction. Storage = ((virtual+1)/2)*16 bytes.
     // Budget 6M virtual texels => 48 MB storage trigger; compact down to 4M => 32 MB,

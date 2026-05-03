@@ -117,6 +117,12 @@ struct FontData {
     // Not movable — FontData must be constructed in-place in the fonts_ map.
     mutable std::shared_mutex mutex;
 
+    // Destructor frees HarfBuzz resources held by hbFonts. With shared_ptr
+    // ownership in fonts_, this runs only when the last shared_ptr drops —
+    // i.e. after every in-flight shaping worker has released its handle.
+    // No lock needed: by definition no other thread holds this FontData.
+    ~FontData();
+
     // Monotonic counter bumped every time the atlas storage buffer
     // (atlasData / atlasUsed) changes. The renderer caches the last-seen
     // value per font; an unchanged counter means the GPU copy is still
@@ -159,7 +165,12 @@ public:
     ShapedRun shapeRun(const std::string& fontName, const std::string& text,
                        float fontSize, FontStyle style = {},
                        std::span<const std::pair<uint32_t, int>> byteToCell = {});
-    const FontData* getFont(const std::string& name) const;
+    // Returns a shared_ptr that keeps the FontData alive across the caller's
+    // entire use, even if registerFont/unregisterFont mutates the registry
+    // concurrently. The map's shared_ptr is the registry-side handle; this
+    // copy is the user-side handle. HarfBuzz resources stay valid until the
+    // last handle drops.
+    std::shared_ptr<FontData> getFont(const std::string& name) const;
     // Returns the fontIndex of the added (or already-present, deduped) fallback,
     // or -1 on failure.
     int32_t addFallbackFont(const std::string& name, const std::vector<uint8_t>& ttfData);
@@ -223,7 +234,26 @@ public:
     uint32_t getStyledVariant(FontData& font, uint32_t baseFi, FontStyle style);
 
 private:
-    std::unordered_map<std::string, FontData> fonts_;
+    // Locked variant of addFallbackFont — caller must hold registryMutex_
+    // shared (or stronger). Used by resolveGlyph() from worker threads
+    // already inside the shared critical section of shapeRun/shapeText,
+    // since std::shared_mutex is not reentrant.
+    int32_t addFallbackFontLocked(FontData& font, const std::string& name,
+                                  const std::vector<uint8_t>& ttfData);
+
+    // Guards the font registry (fonts_, fontPrimaryPaths_) and the fallback
+    // function pointers below. Main (config hot-reload via registerFont,
+    // unregisterFont, setSystemFallback, setEmojiFallback, setPrimaryFontPath)
+    // takes exclusive. Render-thread workers (shapeRun, shapeText, getFont)
+    // take shared for the duration of the call. Map values are shared_ptr —
+    // a concurrent unregisterFont erases the map slot but the FontData lives
+    // until every handed-out shared_ptr drops, so HB resources can't be
+    // freed while a worker is mid-shape. Per-FontData state has its own
+    // FontData::mutex; nests cleanly inside this one. std::shared_mutex is
+    // NOT reentrant — internal helpers called from inside a held critical
+    // section must use *_Locked variants (see addFallbackFontLocked).
+    mutable std::shared_mutex registryMutex_;
+    std::unordered_map<std::string, std::shared_ptr<FontData>> fonts_;
     std::unordered_map<std::string, std::string> fontPrimaryPaths_; // font name → primary font file path
     SystemFallbackFn systemFallback_;
     EmojiFallbackFn  emojiFallback_;

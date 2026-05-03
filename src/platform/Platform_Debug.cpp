@@ -124,19 +124,21 @@ std::string PlatformDawn::statsJson(int id)
         glz::generic::array_t panesArr;
         for (Terminal* panePtr : scriptEngine_.panesInSubtree(sub)) {
             Uuid pid = panePtr->nodeId();
-            const PaneRenderPrivate* rs = renderEngine_->paneRenderPrivate(pid);
             Terminal* term = panePtr;
             glz::generic::object_t paneObj;
             paneObj["id"]   = pid.toString();
             paneObj["cols"] = static_cast<double>(term ? term->width()  : 0);
             paneObj["rows"] = static_cast<double>(term ? term->height() : 0);
             paneObj["cwd"]  = panePtr->cwd();
-            if (rs) {
+            // Hold panesMutex_ shared while reading rs fields — render
+            // thread may be mid-renderFrame structurally mutating the map.
+            renderEngine_->withPaneRenderPrivate(pid, [&](const PaneRenderPrivate* rs) {
+                if (!rs) return;
                 paneObj["held_texture"] = rs->heldTexture != nullptr;
                 paneObj["texture_kb"]   = rs->heldTexture
                     ? toKB(rs->heldTexture->sizeBytes) : 0.0;
                 paneObj["has_divider"]  = rs->dividerVB != nullptr;
-            }
+            });
             panesArr.emplace_back(std::move(paneObj));
         }
         glz::generic::object_t tabObj;

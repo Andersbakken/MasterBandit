@@ -765,38 +765,15 @@ int PlatformDawn::exec()
                 }
             }
 
-            // Dispatch coalesced PTY reads to the worker pool — no
-            // renderThread_->mutex() and no main-thread parse work, so a
-            // heavy producer no longer starves input or animation.
-            // Terminal mutation is serialized by TerminalEmulator::mutex()
-            // inside injectData. Structural callbacks (terminalExited)
-            // defer their work to pendingExits_; we drain them under
-            // renderThread_->mutex() in applyPendingMutations() right
-            // after the post drain below.
-            //
-            // Each Terminal is single-flight: queueParse() returns
-            // immediately if a worker is already parsing this Terminal,
-            // and that worker loops to pick up the freshly-arrived bytes
-            // before exiting. So spamming queueParse() every tick is
-            // cheap.
-            // Backpressure rearm now lives inside the worker
-            // (Terminal::queueParse calls maybeResumeRead after each
-            // injectData batch) — don't call it here. Reads have
-            // also moved off the main thread to the PtyMux thread,
-            // so this loop only kicks the worker into draining
-            // whatever the mux has coalesced.
-            if (renderEngine_) {
-                WorkerPool& pool = renderEngine_->workers();
-                Terminal::ParseSubmitFn submit =
-                    [&pool](std::function<void()> fn) {
-                        pool.submit(std::move(fn));
-                    };
-                for (auto& [fd, term] : ptyPolls()) {
-                    term->queueParse(submit);
-                }
-            } else {
-                // No render engine (some early-tear-down paths) — fall
-                // back to synchronous flush so we never strand bytes.
+            // PTY parse-trigger lives on the PtyMux callback (see
+            // PlatformDawn::addPtyPoll): readFromFD appends bytes and
+            // immediately calls term->queueParse() on the mux thread,
+            // submitting one worker job per arrival without waiting for
+            // a main-loop tick. Backpressure rearm and parse loop are
+            // entirely off main. We only fall back to a synchronous
+            // flush in early-tear-down paths where the render engine
+            // (and its worker pool) isn't up.
+            if (!renderEngine_) {
                 for (auto& [fd, term] : ptyPolls()) {
                     term->flushReadBuffer();
                 }

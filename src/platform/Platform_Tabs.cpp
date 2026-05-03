@@ -136,15 +136,27 @@ void PlatformDawn::updateWindowTitle()
 
 void PlatformDawn::addPtyPoll(int fd, Terminal* term)
 {
-    // Reads: dedicated PtyMux thread. The cb runs there.
+    // Reads: dedicated PtyMux thread. The cb runs there. After appending
+    // bytes, the cb submits a parse job directly to the worker pool —
+    // no main-thread hop. Main only re-enters when the worker fires the
+    // Update event, which post()s setNeedsRedraw + dirtyPanes.
     // Writes: lazily registered with eventLoop_ inside Terminal::writeToPTY
     // when bytes first need to block on POLLOUT, and removed by
     // flushWriteQueue when the queue drains. Most panes never have
     // a write registration in steady state.
     term->setEventLoop(eventLoop_.get());
     term->setPtyMux(ptyMux_.get());
+    if (renderEngine_) {
+        WorkerPool& pool = renderEngine_->workers();
+        term->setParseSubmit([&pool](std::function<void()> fn) {
+            pool.submit(std::move(fn));
+        });
+    }
     if (ptyMux_) {
-        ptyMux_->add(fd, [term]() { term->readFromFD(); });
+        ptyMux_->add(fd, [term]() {
+            term->readFromFD();
+            term->queueParse();
+        });
     }
     ptyPolls_[fd] = term;
 }

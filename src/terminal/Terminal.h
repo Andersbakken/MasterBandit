@@ -76,6 +76,14 @@ public:
     using ParseSubmitFn = std::function<void(std::function<void()>)>;
     bool queueParse(const ParseSubmitFn& submit);
 
+    // Stored variant of queueParse: PtyMux thread invokes this directly
+    // after readFromFD appends bytes, so parse-trigger doesn't go through
+    // main. Caller (PlatformDawn::addPtyPoll) wires the submit fn to the
+    // worker pool. Headless terminals leave mParseSubmit empty and call
+    // flushReadBuffer instead.
+    void setParseSubmit(ParseSubmitFn fn) { mParseSubmit = std::move(fn); }
+    bool queueParse() { return mParseSubmit ? queueParse(mParseSubmit) : false; }
+
     // True iff a parse task is queued or currently running on a worker.
     // Used by the graveyard to defer destruction until parsing finishes.
     bool parseInFlight() const {
@@ -279,6 +287,10 @@ private:
     // runs on that thread (NOT main). Headless terminals leave this
     // null and use flushReadBuffer directly.
     PtyMux*    mPtyMux    { nullptr };
+    // Submission function bound to PlatformDawn's worker pool. Invoked
+    // by the PtyMux callback after readFromFD appends bytes — moves the
+    // parse-trigger off main entirely.
+    ParseSubmitFn mParseSubmit;
     EventLoop::TimerId mWritePollId { 0 };
     // Tracks whether the master fd is currently registered with
     // mEventLoop for POLLOUT. Mutated under mWriteQueueMutex from

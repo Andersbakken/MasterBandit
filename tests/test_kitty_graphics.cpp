@@ -882,6 +882,39 @@ TEST_CASE("kitty graphics: image persists through column resize")
     CHECK(t.term.imageRegistry().count(1));
 }
 
+TEST_CASE("kitty graphics: image cell extras survive column resize")
+{
+    // Regression: pushVisibleRowToScrollback used to trim rows down to the
+    // last non-zero `wc` cell, but kitty image cells stamp a CellExtra
+    // without setting wc — so the trim chopped them off and the re-emit
+    // step's per-row extras slice (col < rowLen) silently dropped them.
+    // Symptom: resizing the window made the image vanish entirely.
+    GraphicsTerminal t(80, 24);
+    auto px = GraphicsTerminal::solidRGBA(10, 20, 0, 0, 255);
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);  // 1x1 cells at 10x20 px
+
+    // Image extras land at column 0 of the cursor row (and successive rows
+    // for multi-row images). With cellPixelHeight=20, this image is 1 row.
+    REQUIRE(t.extra(0, 0));
+    CHECK(t.extra(0, 0)->imageId == 1);
+
+    // Force a column reflow — pushes the visible row through scrollback and
+    // pops it back. Pre-fix, the image-bearing cell with wc=0 was trimmed
+    // away and the extra dropped on re-emit.
+    t.term.resize(40, 24);
+
+    // Locate the image extra anywhere on screen. After reflow it should
+    // still be attached to a cell — the precise (col,row) doesn't matter.
+    bool found = false;
+    for (int r = 0; r < t.term.height() && !found; ++r) {
+        for (int c = 0; c < t.term.width(); ++c) {
+            const CellExtra* e = t.extra(c, r);
+            if (e && e->imageId == 1) { found = true; break; }
+        }
+    }
+    CHECK(found);
+}
+
 // ── Multiple placements ────────────────────────────────────────────────────
 
 TEST_CASE("kitty graphics: put with placement ID creates separate placement")

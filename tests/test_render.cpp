@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "MBConnection.h"
 #include "Utils.h"
+#include <glaze/glaze.hpp>
 #include <vector>
 #include <string>
 
@@ -551,6 +552,144 @@ TEST_CASE("render: italic text" * doctest::test_suite("render"))
     auto png = rt.screenshotPaneRect(0, 0, 0, 13, 1);
     REQUIRE(!png.empty());
     CHECK(rt.matchesReference(png, "italic_text"));
+}
+
+// Pull obs.frames_presented out of the queryStats JSON; returns 0 on parse failure.
+static uint64_t framesPresented(const std::string& statsJson)
+{
+    glz::generic j;
+    if (glz::read_json(j, statsJson) != 0) return 0;
+    auto* root = std::get_if<glz::generic::object_t>(&j.data);
+    if (!root) return 0;
+    auto it = root->find("obs");
+    if (it == root->end()) return 0;
+    auto* obs = std::get_if<glz::generic::object_t>(&it->second.data);
+    if (!obs) return 0;
+    auto fpIt = obs->find("frames_presented");
+    if (fpIt == obs->end()) return 0;
+    auto* d = std::get_if<double>(&fpIt->second.data);
+    if (!d) return 0;
+    return static_cast<uint64_t>(*d);
+}
+
+TEST_CASE("render: kitty animated image advances frames over time" * doctest::test_suite("render"))
+{
+    // Regression: tickAnimations() advances the live image's currentFrameIndex
+    // and frameShownAt but used not to republish the snapshot, so the renderer
+    // kept reading the prior frame's RGBA pointer/index. Visually, GIFs froze
+    // until something else (typing, scroll, resize) republished the snapshot.
+    //
+    // This test plants a 2-frame animation with a small inter-frame gap, then
+    // waits long enough that several frames must have advanced. We assert
+    // both that frames_presented advanced AND that the rendered pixel data
+    // changed at least once during the wait — the latter is the strong check
+    // (frames_presented advancing alone could be busy-loop fallout from the
+    // scheduler reacting to the stale dueAt; only a real frame swap shows up
+    // in pixels).
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
+    rt.wait(300);
+
+    rt.injectData("\x1b[?25l"); // hide cursor — its blink would also tick frames_presented
+
+    // Root frame: solid red 4x4, displayed at 4x2 cells.
+    auto red = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=4,r=2,q=2", red));
+    rt.wait(150);
+
+    // Frame 2: solid blue, 80ms gap.
+    auto blue = solidRGBA(4, 4, 0, 0, 255);
+    rt.injectData(kittyGfxEscape("a=f,i=1,f=32,s=4,v=4,z=80,q=2", blue));
+    rt.wait(50);
+
+    // Start animation (s=3 → Running with loop).
+    rt.injectData(kittyGfxEscape("a=a,i=1,s=3", {}));
+    // Don't wait long here — we want to capture the state right after start
+    // so the screenshot diff has the full animation window to evolve.
+    rt.wait(20);
+
+    auto pngStart = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    REQUIRE(!pngStart.empty());
+    uint64_t framesBefore = framesPresented(rt.queryStats());
+
+    // Sample three captures spaced through the animation cycle. With an 80ms
+    // gap, the cycle is 160ms — sampling at 80ms / 200ms / 400ms catches the
+    // image at distinct phases regardless of timing jitter.
+    rt.wait(80);
+    auto pngMid1 = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    rt.wait(120);
+    auto pngMid2 = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    rt.wait(200);
+    auto pngEnd  = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    uint64_t framesAfter = framesPresented(rt.queryStats());
+
+    // frames_presented must have advanced — the animation timer should have
+    // fired ~5 times in 400ms with an 80ms gap, plus screenshot-driven renders.
+    CHECK(framesAfter > framesBefore + 2);
+
+    // Strong check: pixel data must have flipped at some point during the
+    // wait. Red vs blue → channel diff well above the JPEG/AA tolerance.
+    int d1 = MBConnection::comparePng(pngStart, pngMid1);
+    int d2 = MBConnection::comparePng(pngStart, pngMid2);
+    int d3 = MBConnection::comparePng(pngStart, pngEnd);
+    int maxDiff = std::max(d1, std::max(d2, d3));
+    CHECK(maxDiff > 50);
+}
+
+TEST_CASE("render: kitty image survives column resize" * doctest::test_suite("render"))
+{
+    // Regression: pushVisibleRowToScrollback trimmed image-bearing rows down
+    // to their last non-zero wc cell. Image cells stamp a CellExtra without
+    // writing wc, so the row was trimmed to length 0, the per-row extras
+    // slice (col < rowLen) dropped them, and the image vanished from screen
+    // after any reflow. Reproduces by injecting a column-shrink resize
+    // through the active terminal's resizeToRect path via a font-size action.
+    //
+    // Unit-test coverage in test_kitty_graphics.cpp asserts the CellExtra
+    // survives at the Document level. This end-to-end check makes sure the
+    // pixel actually still gets drawn after the resize lands on the renderer.
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols = 40;
+    opts.rows = 10;
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
+    rt.wait(300);
+
+    rt.injectData("\x1b[?25l");
+
+    auto red = solidRGBA(4, 4, 255, 0, 0);
+    rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,c=4,r=2,q=2", red));
+    rt.wait(300);
+
+    // Capture the image rendered at the original column count.
+    auto pngBefore = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    REQUIRE(!pngBefore.empty());
+
+    // Bumping the font size triggers a pixel-rect reflow on every pane
+    // (cellPixelWidth grows → cols shrink). That exercises the same
+    // pushVisibleRowToScrollback path that the real window-resize takes.
+    rt.sendAction("increase_font_size");
+    rt.wait(400);
+    rt.sendAction("decrease_font_size");
+    rt.wait(400);
+
+    // After the reflow round-trip the image must still be visible. Without
+    // the trim fix in Document::pushVisibleRowToScrollback, the cell extras
+    // would be dropped on the way through scrollback and the image area
+    // would render as the default (black) background.
+    auto pngAfter = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    REQUIRE(!pngAfter.empty());
+
+    // Sanity: pre-reflow we had a clearly red image (>>50 diff against a
+    // blank black rect). Post-reflow it should still be red (pre/post
+    // diff small). Compare to pngBefore which we know is "image present".
+    int diff = MBConnection::comparePng(pngBefore, pngAfter);
+    CHECK(diff < 30);
 }
 
 TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite("render"))

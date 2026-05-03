@@ -1310,6 +1310,16 @@ bool TerminalEmulator::tickAnimations()
         // cycle, defeating the cache.
     }
 
+    // The live image's currentFrameIndex / frameShownAt / currentFrameRGBA
+    // pointer just changed, but the published snapshot still holds the
+    // previous values (it copies them at build time). Republish so the
+    // next loadSnapshot() call sees the new frame — otherwise timer-driven
+    // animation ticks advance the live state but the renderer keeps
+    // pointing at the prior frame's RGBA and visually nothing happens
+    // until injectData republishes the snapshot for some other reason.
+    if (anyAdvanced)
+        buildAndPublishSnapshotLocked();
+
     return anyAdvanced;
 }
 

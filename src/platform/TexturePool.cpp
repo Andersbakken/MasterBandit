@@ -20,10 +20,13 @@ void TexturePool::init(wgpu::Device& device, wgpu::TextureFormat format, size_t 
 
 PooledTexture* TexturePool::acquire(uint32_t w, uint32_t h)
 {
-    // Best fit: smallest free texture that fits
+    // Best fit: smallest free texture that fits, capped at 2x the requested
+    // byte size to prevent reusing oversized textures indefinitely after a
+    // shrink.
+    const size_t maxBytes = static_cast<size_t>(w) * h * bytesPerPixel_ * 2;
     PooledTexture* best = nullptr;
     for (PooledTexture* t : free_) {
-        if (t->width >= w && t->height >= h) {
+        if (t->width >= w && t->height >= h && t->sizeBytes <= maxBytes) {
             if (!best || t->sizeBytes < best->sizeBytes)
                 best = t;
         }

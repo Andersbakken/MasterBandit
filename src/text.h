@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <shared_mutex>
 #include <span>
 #include <string>

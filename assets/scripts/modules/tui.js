@@ -421,12 +421,12 @@ function layout(node, x, y, availW, availH) {
 
 function renderNode(node, buf, focused, hovered, theme) {
     switch (node.type) {
-    case 'box':   _renderBox(node, buf, focused, hovered, theme);          break;
+    case 'box':   _renderBox(node, buf, focused, hovered, theme);           break;
     case 'col':
     case 'row':
         for (const c of node.children) renderNode(c, buf, focused, hovered, theme);
         break;
-    case 'text':  _renderText(node, buf, hovered, theme);                  break;
+    case 'text':  _renderText(node, buf, focused, hovered, theme);          break;
     case 'input': _renderInput(node, buf, node === focused, theme);         break;
     case 'list':  _renderList(node, buf, node === focused, theme);          break;
     }
@@ -461,15 +461,17 @@ function _renderBox(node, buf, focused, hovered, theme) {
     for (const child of node.children) renderNode(child, buf, focused, hovered, theme);
 }
 
-function _renderText(node, buf, hovered, theme) {
+function _renderText(node, buf, focused, hovered, theme) {
     const p       = node.props;
     const x       = node._x, y = node._y, w = node._w;
     const raw     = String(getValue(p.value) ?? '');
     // Merge: theme provides defaults, node props override per-field
     const col     = node._parsed ? { ...theme.text,  ...node._parsed } : theme.text;
-    const isHover = hovered === node && p.onClick;
-    const fg      = isHover ? (theme.text.hoverFgCode ?? col.fgCode ?? null) : (col.fgCode ?? null);
-    const bg      = isHover ? (theme.text.hoverBgCode ?? col.bgCode ?? theme.bg) : (col.bgCode ?? theme.bg);
+    // Hover and focus both light up the same way for clickable text (buttons).
+    // Decorative text (no onClick) ignores both — it's never focusable.
+    const isHi    = (hovered === node || focused === node) && p.onClick;
+    const fg      = isHi ? (theme.text.hoverFgCode ?? col.fgCode ?? null) : (col.fgCode ?? null);
+    const bg      = isHi ? (theme.text.hoverBgCode ?? col.bgCode ?? theme.bg) : (col.bgCode ?? theme.bg);
     const align   = p.align || 'left';
 
     buf.fill(x, y, w, 1, ' ', null, bg, false, false, false);
@@ -606,6 +608,8 @@ function buildDiff(oldBuf, newBuf) {
 
 function collectFocusables(node, out) {
     if (node.type === 'input' || node.type === 'list') out.push(node);
+    // Buttons (text with onClick) participate in focus cycling.
+    else if (node.type === 'text' && node.props && node.props.onClick) out.push(node);
     for (const c of node.children) collectFocusables(c, out);
 }
 
@@ -661,6 +665,20 @@ class RenderInstance {
 
         this._mouseMoveCb = (ev) => this._handleMouseMove(ev);
         target.addEventListener('mousemove', this._mouseMoveCb);
+
+        // Grab keyboard focus on the popup/embedded so Tab/Enter/Esc work
+        // immediately without an explicit FocusPopup gesture from the user.
+        // Gated on the script having `ui.focus` permission — a script
+        // without it (e.g. an OSC-loaded applet that didn't request focus)
+        // gets a non-focused tui surface that operates in mouse-only mode
+        // until the user explicitly cycles to it. The hasPermission query
+        // is non-destructive; calling target.focus() without permission
+        // would terminate the script via REQUIRE_PERM.
+        if (typeof target.focus === 'function'
+            && typeof mb !== 'undefined'
+            && mb.hasPermission && mb.hasPermission('ui.focus')) {
+            target.focus();
+        }
     }
 
     _layout() {
@@ -705,16 +723,32 @@ class RenderInstance {
 
         if (data === '\x1b') { this.destroy(); return; }
 
-        if (data === '\t') {
-            if (this._focusables.length > 1) {
-                this._focusIdx = (this._focusIdx + 1) % this._focusables.length;
-                this._schedule();
-            }
-            return;
-        }
+        const cycleFocus = (delta) => {
+            if (this._focusables.length <= 1) return;
+            const n = this._focusables.length;
+            this._focusIdx = ((this._focusIdx + delta) % n + n) % n;
+            this._schedule();
+        };
+
+        if (data === '\t')      { cycleFocus(+1); return; }   // Tab → next
+        if (data === '\x1b[Z')  { cycleFocus(-1); return; }   // Shift+Tab → prev
 
         const focused = this._focusables[this._focusIdx];
         if (!focused) return;
+
+        // Buttons (text-with-onClick): Enter and Space activate; arrow keys
+        // cycle focus to neighboring focusables (left/up = prev, right/down
+        // = next). Input and list keep their existing arrow-key semantics
+        // below — typing into an input or moving the list selection.
+        if (focused.type === 'text') {
+            if (data === '\r' || data === '\n' || data === ' ') {
+                focused.props.onClick?.(null);
+                return;
+            }
+            if (data === '\x1b[D' || data === '\x1b[A') { cycleFocus(-1); return; }
+            if (data === '\x1b[C' || data === '\x1b[B') { cycleFocus(+1); return; }
+            return;
+        }
 
         if (focused.type === 'input') {
             const isPrintable = data.length === 1 && data.charCodeAt(0) >= 32;
@@ -825,6 +859,16 @@ class RenderInstance {
         }
 
         if (changed) this._schedule();
+    }
+
+    // Move keyboard focus to a specific node (must be in the focusables set —
+    // input, list, or text-with-onClick). No-op if the node isn't focusable.
+    focus(node) {
+        if (this._destroyed) return;
+        const idx = this._focusables.indexOf(node);
+        if (idx < 0 || idx === this._focusIdx) return;
+        this._focusIdx = idx;
+        this._schedule();
     }
 
     // Call after resizing the target popup/overlay to update layout and re-render.

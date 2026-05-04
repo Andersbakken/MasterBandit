@@ -204,6 +204,9 @@ struct Config {
     // entirely — useful when the portal is broken/missing or when the
     // user wants to override the system preference.
     std::string color_scheme = "auto"; // "auto" | "light" | "dark"
+    // Confirm before close-pane / close-tab / quit. JS (default-ui.js) reads
+    // this value and decides; unrecognized values are treated as "if_busy".
+    std::string confirm_close = "if_busy"; // "never" | "if_busy" | "always"
     NotificationsConfig notifications;
 
     struct glaze {
@@ -232,6 +235,7 @@ struct Config {
             "command_navigation_wrap", &T::command_navigation_wrap,
             "key_sequence_timeout_ms", &T::key_sequence_timeout_ms,
             "color_scheme", &T::color_scheme,
+            "confirm_close", &T::confirm_close,
             "notifications", &T::notifications
         );
     };

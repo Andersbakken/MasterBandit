@@ -36,6 +36,7 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     // Individual
     {"ui.popup.create",   Perm::UiPopupCreate},
     {"ui.popup.destroy",  Perm::UiPopupDestroy},
+    {"ui.focus",          Perm::UiFocus},
     {"io.filter.input",   Perm::IoFilterInput},
     {"io.filter.output",  Perm::IoFilterOutput},
     {"io.inject",         Perm::IoInject},
@@ -120,6 +121,7 @@ std::string permissionsToString(uint32_t perms)
     static const BitDef bits[] = {
         {Perm::UiPopupCreate,   "ui.popup.create"},
         {Perm::UiPopupDestroy,  "ui.popup.destroy"},
+        {Perm::UiFocus,         "ui.focus"},
         {Perm::IoFilterInput,   "io.filter.input"},
         {Perm::IoFilterOutput,  "io.filter.output"},
         {Perm::IoInject,        "io.inject"},

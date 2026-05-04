@@ -22,9 +22,11 @@
 //     updates via onMouseEnter; moving away restores it via onMouseLeave.
 //   • Move the cursor outside the popup — hover state clears.
 //
-//   Keyboard parity:
-//   • Cmd+Shift+I / Ctrl+Shift+I focuses the popup; Tab cycles focus; arrows
-//     move list selection; Esc dismisses.
+//   Keyboard parity (auto-focused on open since this script holds
+//   `ui.focus`; loaded via OSC inject without that permission would
+//   require manual Cmd+Shift+I / Ctrl+Shift+I to focus):
+//   • Tab cycles focus through buttons and list; arrows move list
+//     selection; Enter/Space activates the focused button; Esc dismisses.
 
 import {
     signal, render, createTheme,

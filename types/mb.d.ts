@@ -600,6 +600,13 @@ interface MbConfig extends MbConfigMutations {
      *  defers to the system; `"light"` / `"dark"` overrides bypass DBus
      *  entirely (useful when the freedesktop portal is missing). */
     color_scheme: "auto" | "light" | "dark";
+    /** Whether `closePane` / `closeTab` / OS window-close prompts before
+     *  killing the focused unit. `"never"` always closes immediately;
+     *  `"if_busy"` (default) prompts when any non-shell foreground process
+     *  is running; `"always"` prompts unconditionally. The "shell" list is
+     *  JS-side state in default-ui.js; mutate it via the
+     *  `default-ui.add-shell` / `default-ui.remove-shell` actions. */
+    confirm_close: "never" | "if_busy" | "always";
     notifications: MbConfigNotifications;
 }
 
@@ -826,6 +833,15 @@ interface MbGlobal {
     addEventListener(event: "terminalExited", fn: (ev: MbTerminalExitedEvent) => void): void;
     /** Fires when the persisted config has been reloaded from disk. */
     addEventListener(event: "configChanged", fn: () => void): void;
+    /**
+     * OS-level window close (X button / NSApp termination / Cmd+Q where
+     * applicable). When at least one listener is registered, C++ defers the
+     * quit and fans out the event; the listener owns the quit decision and
+     * must call `mb.quit()` to commit. With no listener registered the
+     * fallback path quits immediately, so a broken JS engine can't trap the
+     * user. default-ui.js listens by default to drive close-confirm.
+     */
+    addEventListener(event: "quit-requested", fn: () => void): void;
     /** Fires when any action is invoked, with the action's full name. */
     addEventListener(event: "action", fn: (actionName: string) => void): void;
     /**

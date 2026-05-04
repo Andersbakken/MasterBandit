@@ -119,8 +119,8 @@ mb.addEventListener("action", "palette.open", () => {
             ui = null;
         },
     });
-
-    mb.invokeAction("focus_popup");
+    // tui auto-focuses on render (built-ins hold ui.focus), so no explicit
+    // FocusPopup invocation is needed here.
 });
 
 console.log("command-palette: initialized");

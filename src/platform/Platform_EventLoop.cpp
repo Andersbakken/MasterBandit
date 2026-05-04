@@ -403,6 +403,15 @@ int PlatformDawn::exec()
 
             if (wasPopupFocused && p->popups().empty())
                 p->focusEvent(true);
+            // Fire JS-level notify so listeners (e.g. default-ui's per-pane
+            // focus stack) can react to destruction-driven focus clears.
+            // Reuses the existing focusedPopupChanged("") signal — which
+            // also fires for explicit user unfocus and for embedded-focus
+            // transitions, so listeners must inspect pane.popups to tell
+            // destruction from manual unfocus. TODO: consider a dedicated
+            // popupDestroyed event for precise semantics.
+            if (wasPopupFocused)
+                scriptEngine_.notifyFocusedPopupChanged(paneId, "");
             // grid() is parse-mutated; markAllDirty races with parser
             // unless we hold mMutex.
             {
@@ -429,6 +438,52 @@ int PlatformDawn::exec()
             std::string key = popupStateKey(paneId, popupId);
             renderThread_->pending().releasePopupTextures.push_back(key);
             scriptEngine_.deliverPopupResized(paneId, popupId, w, h);
+            setNeedsRedraw();
+            return true;
+        };
+        // Mirror the focus-cycle protocol from Action::FocusPopup
+        // (Platform_Actions.cpp): popup ↔ embedded are mutex; switching to
+        // a popup clears the embedded slot, switching to an embedded clears
+        // the popup slot. focusEvent(false) tells the parent's terminal it
+        // is no longer the focused recipient.
+        scbs.setFocusedPopup = [this](Script::PaneId paneId, const std::string& popupId) -> bool {
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p) return false;
+            if (popupId.empty()) {
+                p->clearFocusedPopup();
+                p->focusEvent(true);
+                scriptEngine_.notifyFocusedPopupChanged(paneId, "");
+            } else {
+                if (!p->findPopup(popupId)) return false;
+                p->clearFocusedEmbedded();
+                p->setFocusedPopup(popupId);
+                p->focusEvent(false);
+                scriptEngine_.notifyFocusedPopupChanged(paneId, popupId);
+            }
+            renderThread_->pending().dirtyPanes.insert(paneId);
+            setNeedsRedraw();
+            return true;
+        };
+        scbs.setFocusedEmbedded = [this](Script::PaneId paneId, uint64_t lineId) -> bool {
+            Terminal* p = scriptEngine_.terminal(paneId);
+            if (!p) return false;
+            if (lineId == 0) {
+                p->clearFocusedEmbedded();
+                p->focusEvent(true);
+                scriptEngine_.notifyFocusedPopupChanged(paneId, "");
+            } else {
+                // Validate the lineId is an actual embedded anchor.
+                bool found = false;
+                p->forEachEmbedded([&](uint64_t id, Terminal&) {
+                    if (id == lineId) found = true;
+                });
+                if (!found) return false;
+                p->clearFocusedPopup();
+                p->setFocusedEmbeddedLineId(lineId);
+                p->focusEvent(false);
+                scriptEngine_.notifyFocusedPopupChanged(paneId, "");
+            }
+            renderThread_->pending().dirtyPanes.insert(paneId);
             setNeedsRedraw();
             return true;
         };
@@ -731,7 +786,17 @@ int PlatformDawn::exec()
 
     // Set up the per-iteration tick
     if (eventLoop_) {
-        eventLoop_->onQuitRequested = [this]() { quit(); };
+        // OS-level quit (X button / NSApp termination). If JS has registered
+        // a "quit-requested" listener (e.g. default-ui.js for close-confirm),
+        // hand off to it — the handler is responsible for calling mb.quit()
+        // when the user confirms. With no listener, quit immediately so a
+        // broken JS engine can't trap the user.
+        eventLoop_->onQuitRequested = [this]() {
+            if (scriptEngine_.hasQuitListeners())
+                scriptEngine_.fireQuitRequested();
+            else
+                quit();
+        };
         eventLoop_->onTick = [this]() {
             if (shouldClose()) {
                 eventLoop_->stop();

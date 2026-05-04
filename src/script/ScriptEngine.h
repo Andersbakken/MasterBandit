@@ -204,6 +204,12 @@ struct AppCallbacks {
     std::function<void(PaneId, const std::string& id)> destroyPopup;
     // Resize/move a popup on a pane.
     std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h)> resizePopup;
+    // Set the pane's focused popup (and clear focused embedded). Empty id
+    // clears popup focus. Returns false on unknown popup or pane.
+    std::function<bool(PaneId, const std::string& id)> setFocusedPopup;
+    // Set the pane's focused embedded by anchor lineId. 0 clears embedded
+    // focus. Returns false on unknown lineId or pane.
+    std::function<bool(PaneId, uint64_t lineId)> setFocusedEmbedded;
 
     // --- Embedded terminals (document-anchored inline surfaces) ---
     // Query embeddeds on a pane.
@@ -334,6 +340,13 @@ public:
     // Tab destruction notification. The tab's subtreeRoot Uuid IS its
     // identity; listeners receive the UUID string in the JS event payload.
     void notifyTabDestroyed(TabId tab);
+    // OS-driven quit (X button, NSApp termination) hook. C++ fires the JS
+    // event "quit-requested" when at least one listener is registered; the
+    // JS handler is responsible for calling mb.quit() to commit. With no
+    // listener registered, the caller (Platform_EventLoop) skips the fire
+    // and quits directly — keeps the window closeable if JS is broken.
+    bool hasQuitListeners() const;
+    void fireQuitRequested();
     // Fired before the native cleanup cascade so listeners see the live
     // pane/tab state. Exit code / signal are not plumbed yet — the v1
     // payload is {paneId, paneNodeId}.

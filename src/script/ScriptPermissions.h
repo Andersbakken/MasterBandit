@@ -16,6 +16,12 @@ enum Perm : uint32_t {
     // anyway but this is belt-and-braces.
     UiPopupCreate     = 1 << 2,
     UiPopupDestroy    = 1 << 3,
+    // Grab keyboard focus on a UI element (popup, embedded terminal, future
+    // focusable widgets). Intentionally NOT in GroupUi so that creating /
+    // managing popups (common) does not implicitly include focus hijacking
+    // (rare and disruptive). User scripts must request "ui.focus" explicitly;
+    // built-ins (Perm::All) get it for free.
+    UiFocus           = 1 << 22,
     // io group
     IoFilterInput     = 1 << 4,
     IoFilterOutput    = 1 << 5,
@@ -83,7 +89,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 8;
+inline constexpr int kAllowlistVersion = 9;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

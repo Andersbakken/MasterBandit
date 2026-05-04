@@ -1,6 +1,73 @@
 // Default UI controller. Owns the JS-policy actions (tab/pane lifecycle,
 // structural mutations) AND the startup tree-shape construction. Mandatory
 // — mb refuses to start without it.
+
+import { confirm } from "mb:dialog";
+
+// JS-only state: the set of foreground process names that count as "the
+// shell at a prompt" — i.e. not busy. config.js can mutate via the
+// default-ui.add-shell / default-ui.remove-shell actions below.
+const SHELLS = new Set(["zsh", "bash", "fish", "dash", "sh", "ksh", "mksh", "ash"]);
+
+function _isShell(name)  { return !!name && SHELLS.has(name); }
+function _isPaneBusy(p)  { return !!(p && p.foregroundProcess && !_isShell(p.foregroundProcess)); }
+function _confirmMode()  {
+    const m = mb.config?.confirm_close;
+    return (m === "never" || m === "always") ? m : "if_busy";
+}
+
+// Collect non-shell foreground process names across a set of pane nodeIds.
+// Order preserved; duplicates kept (they show up as "vim, vim, ssh" in the
+// aggregated dialog message — informative without dedup gymnastics).
+function _busyProcessesIn(termNodeIds) {
+    const out = [];
+    for (const id of termNodeIds) {
+        const p = mb.pane(id);
+        if (p && p.foregroundProcess && !_isShell(p.foregroundProcess))
+            out.push(p.foregroundProcess);
+    }
+    return out;
+}
+
+// Per-pane focus history stack — top = most recently focused popup. Updated
+// from `focusedPopupChanged`. When a popup is destroyed (visible as a
+// transition to "" with the prior popup gone from `pane.popups`), default-ui
+// pops the stack and refocuses the next surviving entry. This keeps modal
+// dialog dismissal feeling natural (close confirm → palette regains focus)
+// without any per-popup glue from the script that opened the popup.
+//
+// Registered as the FIRST thing default-ui does so the IIFE's
+// `createTerminal` below triggers `paneCreated` after the listener exists.
+const _focusStacks = new Map(); // PaneId(string) → string[] (popup ids)
+function _stackFor(paneId) {
+    let s = _focusStacks.get(paneId);
+    if (!s) { s = []; _focusStacks.set(paneId, s); }
+    return s;
+}
+mb.addEventListener('paneCreated', (pane) => {
+    const stack = _stackFor(pane.id);
+    pane.addEventListener('focusedPopupChanged', (newId) => {
+        if (newId) {
+            const i = stack.indexOf(newId);
+            if (i >= 0) stack.splice(i, 1);
+            stack.push(newId);
+            return;
+        }
+        // Focus cleared. Drop any dead entries from the top, then refocus
+        // the most-recent surviving popup if there is one.
+        const liveIds = new Set(pane.popups.map(p => p.id));
+        while (stack.length > 0 && !liveIds.has(stack[stack.length - 1])) {
+            stack.pop();
+        }
+        if (stack.length > 0) {
+            const next = pane.popups.find(p => p.id === stack[stack.length - 1]);
+            if (next) next.focus();   // built-ins have ui.focus
+        }
+    });
+    pane.addEventListener('destroyed', () => {
+        _focusStacks.delete(pane.id);
+    });
+});
 //
 // At load time, the tree is empty except for Engine::layoutRootStack_, the
 // Stack that holds each tab as a direct child. We build:
@@ -139,14 +206,37 @@ mb.actions.register('newTab', () => {
     mb.layout.activateTab(tabUuid);
 });
 
-mb.actions.register('closeTab', ({index}) => {
+mb.actions.register('closeTab', async ({index}) => {
     let target = null;
     if (typeof index === 'number' && index >= 0) {
         target = _tabUuidByIndex(index);
     } else {
         target = _activeTabUuid();
     }
-    if (target) mb.layout.closeTab(target);
+    if (!target) return;
+
+    const mode = _confirmMode();
+    if (mode !== "never") {
+        const termIds = mb.layout.queryNodes('terminal', target);
+        const busy    = _busyProcessesIn(termIds);
+        const need    = mode === "always" || busy.length > 0;
+        if (need) {
+            const fp   = mb.layout.focusedPane();
+            const pane = fp ? mb.pane(fp.nodeId) : mb.activePane;
+            const msg  = busy.length
+                ? `${busy.length} process${busy.length === 1 ? '' : 'es'} running: ${busy.slice(0, 5).join(', ')}${busy.length > 5 ? '…' : ''}.\nClose tab anyway?`
+                : `Close tab?`;
+            const choice = await confirm({
+                pane,
+                title: "Close tab?",
+                message: msg,
+                buttons: [{ label: "Cancel" }, { label: "Close", primary: true }],
+                defaultIndex: 0,
+            });
+            if (choice !== 1) return;
+        }
+    }
+    mb.layout.closeTab(target);
 });
 
 mb.actions.register('activateTab', ({index}) => {
@@ -181,9 +271,25 @@ mb.actions.register('splitPane', ({dir}) => {
     if (newNodeId) mb.layout.focusPane(newNodeId);
 });
 
-mb.actions.register('closePane', () => {
+mb.actions.register('closePane', async () => {
     const fp = mb.layout.focusedPane();
     if (!fp) return;
+
+    const pane = mb.pane(fp.nodeId);
+    const mode = _confirmMode();
+    const need = mode === "always" || (mode === "if_busy" && _isPaneBusy(pane));
+    if (need) {
+        const fg     = pane?.foregroundProcess || "process";
+        const choice = await confirm({
+            pane,
+            title:        "Close pane?",
+            message:      `'${fg}' is running. Close anyway?`,
+            buttons:      [{ label: "Cancel" }, { label: "Close", primary: true }],
+            defaultIndex: 0,
+        });
+        if (choice !== 1) return;
+    }
+
     // Kill the Terminal; the `terminalExited` listener below drives the
     // tree removal and any tab/quit cascade. Keeping the user-keybind and
     // shell-exit paths on the same flow means there's only one place where
@@ -247,6 +353,42 @@ mb.addEventListener('terminalExited', ({paneId, paneNodeId}) => {
     } else {
         mb.layout.closeTab(emptyTab);
     }
+});
+
+// JS-only mutator actions for the SHELLS set. config.js calls
+// `mb.invokeAction('default-ui.add-shell', {name: 'xonsh'})` to extend the
+// list without rewriting closePane/closeTab. Idempotent so config.js
+// hot-reload reapplies cleanly.
+mb.actions.register('default-ui.add-shell',    ({name}) => { if (name) SHELLS.add(name); });
+mb.actions.register('default-ui.remove-shell', ({name}) => { if (name) SHELLS.delete(name); });
+mb.actions.register('default-ui.list-shells',  ()       => [...SHELLS]);
+
+// OS window-close (X button / NSApp termination) — C++ fires this only when
+// at least one listener is registered. With no listener, the C++ fallback
+// quits immediately. So registering this here unconditionally is safe;
+// `mode=never` short-circuits the dialog and quits in a single tick.
+mb.addEventListener('quit-requested', async () => {
+    const mode = _confirmMode();
+    if (mode === "never") { mb.quit(); return; }
+
+    // Aggregate busy processes across every Terminal in the tabs Stack.
+    const allTerms = _tabsStackNode ? mb.layout.queryNodes('terminal', _tabsStackNode) : [];
+    const busy     = _busyProcessesIn(allTerms);
+    if (mode === "if_busy" && busy.length === 0) { mb.quit(); return; }
+
+    const pane = mb.activePane;
+    if (!pane) { mb.quit(); return; }   // no place to host the dialog — just quit
+    const msg  = busy.length
+        ? `${busy.length} process${busy.length === 1 ? '' : 'es'} running: ${busy.slice(0, 5).join(', ')}${busy.length > 5 ? '…' : ''}.\nQuit anyway?`
+        : `Quit?`;
+    const choice = await confirm({
+        pane,
+        title:        "Quit?",
+        message:      msg,
+        buttons:      [{ label: "Cancel" }, { label: "Quit", primary: true }],
+        defaultIndex: 0,
+    });
+    if (choice === 1) mb.quit();
 });
 
 console.log('default-ui: loaded');

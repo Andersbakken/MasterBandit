@@ -894,11 +894,28 @@ static JSValue jsPopupResize(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+// popup.focus() — make this popup the focused popup on its pane (and clear
+// the pane's focused embedded). Gated on UiFocus so OSC-loaded scripts
+// without explicit focus permission cannot hijack the keyboard. Returns
+// true on success, false if the popup is already gone.
+static JSValue jsPopupFocus(JSContext* ctx, JSValueConst this_val,
+                             int, JSValueConst*)
+{
+    REQUIRE_PERM(ctx, UiFocus);
+    auto* popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) return JS_NewBool(ctx, false);
+    Engine* eng = engineFromCtx(ctx);
+    bool ok = eng->callbacks().setFocusedPopup
+            && eng->callbacks().setFocusedPopup(popup->paneId, popup->popupId);
+    return JS_NewBool(ctx, ok);
+}
+
 static const JSCFunctionListEntry jsPopupProto[] = {
     // `inject`, `cols`, `rows`, `cursor`, `kind` inherited from Terminal base.
     JS_CFUNC_DEF("addEventListener", 2, jsPopupAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsPopupRemoveEventListener),
     JS_CFUNC_DEF("resize", 1, jsPopupResize),
+    JS_CFUNC_DEF("focus", 0, jsPopupFocus),
     JS_CFUNC_DEF("close", 0, jsPopupClose),
     JS_CGETSET_MAGIC_DEF("paneId", jsPopupGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("id", jsPopupGetProp, nullptr, 1),
@@ -1125,10 +1142,26 @@ static JSValue jsEmbeddedGetProp(JSContext* ctx, JSValueConst this_val, int magi
     return JS_UNDEFINED;
 }
 
+// embedded.focus() — make this embedded the focused embedded on its pane
+// (and clear the pane's focused popup). Gated on UiFocus, mirroring
+// popup.focus(). Returns true on success, false if already gone.
+static JSValue jsEmbeddedFocus(JSContext* ctx, JSValueConst this_val,
+                                int, JSValueConst*)
+{
+    REQUIRE_PERM(ctx, UiFocus);
+    auto* em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) return JS_NewBool(ctx, false);
+    Engine* eng = engineFromCtx(ctx);
+    bool ok = eng->callbacks().setFocusedEmbedded
+            && eng->callbacks().setFocusedEmbedded(em->paneId, em->lineId);
+    return JS_NewBool(ctx, ok);
+}
+
 static const JSCFunctionListEntry jsEmbeddedProto[] = {
     JS_CFUNC_DEF("addEventListener", 2, jsEmbeddedAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsEmbeddedRemoveEventListener),
     JS_CFUNC_DEF("resize", 1, jsEmbeddedResize),
+    JS_CFUNC_DEF("focus", 0, jsEmbeddedFocus),
     JS_CFUNC_DEF("close", 0, jsEmbeddedClose),
     JS_CGETSET_MAGIC_DEF("paneId", jsEmbeddedGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("id",     jsEmbeddedGetProp, nullptr, 1),
@@ -1673,6 +1706,24 @@ static JSValue jsMbQuit(JSContext* ctx, JSValueConst, int, JSValueConst*)
     Engine* eng = engineFromCtx(ctx);
     if (eng && eng->callbacks().quit) eng->callbacks().quit();
     return JS_UNDEFINED;
+}
+
+// mb.hasPermission(name) → bool. Non-destructive query (no termination on
+// false, unlike REQUIRE_PERM). Accepts individual permission names
+// ("ui.focus", "config.modify") and group names ("ui", "io"). Group names
+// return true only when ALL bits in the group are granted, matching the
+// "this script has the full group" semantic. Unknown names return false.
+static JSValue jsMbHasPermission(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0])) return JS_NewBool(ctx, false);
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_NewBool(ctx, false);
+    uint32_t bits = Script::parsePermissions(name);
+    JS_FreeCString(ctx, name);
+    if (bits == 0) return JS_NewBool(ctx, false);  // unknown name
+    auto* inst = instanceFromCtx(ctx);
+    if (!inst) return JS_NewBool(ctx, false);
+    return JS_NewBool(ctx, (inst->permissions & bits) == bits);
 }
 
 // mb.setNamespace(name) — claim a namespace for this script instance
@@ -2526,6 +2577,8 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
         JS_NewCFunction(ctx, jsMbExit, "exit", 0));
     JS_SetPropertyStr(ctx, mb, "quit",
         JS_NewCFunction(ctx, jsMbQuit, "quit", 0));
+    JS_SetPropertyStr(ctx, mb, "hasPermission",
+        JS_NewCFunction(ctx, jsMbHasPermission, "hasPermission", 1));
     JS_SetPropertyStr(ctx, mb, "registerTcap",
         JS_NewCFunction(ctx, jsMbRegisterTcap, "registerTcap", 2));
     JS_SetPropertyStr(ctx, mb, "unregisterTcap",
@@ -3147,6 +3200,45 @@ void Engine::notifyTabCreated(TabId tab)
         JSValue tabIdStr = JS_NewStringLen(inst.ctx, s.data(), s.size());
         enqueueListeners(inst.ctx, arr, 1, &tabIdStr);
         JS_FreeValue(inst.ctx, tabIdStr);
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global);
+    }
+}
+
+bool Engine::hasQuitListeners() const
+{
+    // Const-iterate without IterGuard (no listener fan-out, no mutation).
+    for (const auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_quit-requested");
+        bool any = false;
+        if (JS_IsArray(arr)) {
+            JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
+            int32_t arrLen = 0;
+            JS_ToInt32(inst.ctx, &arrLen, lenVal);
+            JS_FreeValue(inst.ctx, lenVal);
+            any = arrLen > 0;
+        }
+        JS_FreeValue(inst.ctx, arr);
+        JS_FreeValue(inst.ctx, mb);
+        JS_FreeValue(inst.ctx, global);
+        if (any) return true;
+    }
+    return false;
+}
+
+void Engine::fireQuitRequested()
+{
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_quit-requested");
+        enqueueListeners(inst.ctx, arr, 0, nullptr);
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);

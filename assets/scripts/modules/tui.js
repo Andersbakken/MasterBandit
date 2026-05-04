@@ -196,13 +196,19 @@ const _borders = {
 // ============================================================================
 
 // Default theme — all colors are optional; null means use terminal default.
+// `text.hoverFg` / `text.hoverBg` apply to text/button widgets that have an
+// `onClick`. `list.hoverStyle` applies to a hovered list row that is not the
+// currently selected row. `prefixFg` / `prefixBg` on selectedStyle/hoverStyle
+// override the row colors for the prefix glyph only — useful for an accent
+// color distinct from the row text.
 export const defaultTheme = {
     bg:     null,                  // popup background; null = terminal default
     border: { color: 'gray' },
-    text:   { color: null, bg: null },
+    text:   { color: null, bg: null, hoverFg: null, hoverBg: null },
     input:  { color: 'white.bold', bg: null },
     list: {
-        selectedStyle: { bg: 'cyan', fg: 'black', prefix: '▌' },
+        selectedStyle: { bg: 'cyan', fg: 'black', prefix: '▌', prefixFg: null, prefixBg: null },
+        hoverStyle:    { bg: null,   fg: null,    prefix: null, prefixFg: null, prefixBg: null },
         itemColor: null,
         bg: null,   // non-selected row background; null = inherit popup bg
     },
@@ -221,6 +227,7 @@ export function createTheme(overrides) {
             ...defaultTheme.list,
             ...ol,
             selectedStyle: { ...defaultTheme.list.selectedStyle, ...(ol.selectedStyle || {}) },
+            hoverStyle:    { ...defaultTheme.list.hoverStyle,    ...(ol.hoverStyle    || {}) },
         },
     };
 }
@@ -229,17 +236,30 @@ export function createTheme(overrides) {
 function _parseTheme(raw) {
     const t  = createTheme(raw);
     const ss = t.list.selectedStyle;
+    const hs = t.list.hoverStyle;
     return {
         bg:     t.bg ? _colorCode(t.bg, true) : null,
         border: { fg: _colorCode(t.border.color, false) },
-        text:   { ...parseColor(t.text.color),  bgCode: t.text.bg  ? _colorCode(t.text.bg,  true) : null },
+        text:   {
+            ...parseColor(t.text.color),
+            bgCode:      t.text.bg      ? _colorCode(t.text.bg,      true)  : null,
+            hoverFgCode: t.text.hoverFg ? _colorCode(t.text.hoverFg, false) : null,
+            hoverBgCode: t.text.hoverBg ? _colorCode(t.text.hoverBg, true)  : null,
+        },
         input:  { ...parseColor(t.input.color), bgCode: t.input.bg ? _colorCode(t.input.bg, true) : null },
         list: {
-            selFg:  ss.fg            ? _colorCode(ss.fg,            false) : null,
-            selBg:  ss.bg            ? _colorCode(ss.bg,            true)  : null,
-            prefix: ss.prefix        || '▌',
-            itemFg: t.list.itemColor ? _colorCode(t.list.itemColor, false) : null,
-            itemBg: t.list.bg        ? _colorCode(t.list.bg,        true)  : null,
+            selFg:        ss.fg            ? _colorCode(ss.fg,            false) : null,
+            selBg:        ss.bg            ? _colorCode(ss.bg,            true)  : null,
+            prefix:       ss.prefix        || '▌',
+            selPrefixFg:  ss.prefixFg      ? _colorCode(ss.prefixFg,      false) : null,
+            selPrefixBg:  ss.prefixBg      ? _colorCode(ss.prefixBg,      true)  : null,
+            hovFg:        hs.fg            ? _colorCode(hs.fg,            false) : null,
+            hovBg:        hs.bg            ? _colorCode(hs.bg,            true)  : null,
+            hovPrefix:    hs.prefix        ?? null,
+            hovPrefixFg:  hs.prefixFg      ? _colorCode(hs.prefixFg,      false) : null,
+            hovPrefixBg:  hs.prefixBg      ? _colorCode(hs.prefixBg,      true)  : null,
+            itemFg:       t.list.itemColor ? _colorCode(t.list.itemColor, false) : null,
+            itemBg:       t.list.bg        ? _colorCode(t.list.bg,        true)  : null,
         },
     };
 }
@@ -289,16 +309,42 @@ export function input(props) {
 export function list(props) {
     const p  = props || {};
     const ss = p.selectedStyle || {};
+    const hs = p.hoverStyle    || {};
     return {
-        type: 'list', props: p, children: [], _scroll: 0,
+        type: 'list', props: p, children: [], _scroll: 0, _hoverIdx: -1,
         _parsed: {
-            selFg:  ss.fg     ? _colorCode(ss.fg,  false) : null,
-            selBg:  ss.bg     ? _colorCode(ss.bg,  true)  : null,
-            prefix: ss.prefix || null,
-            itemFg: p.itemColor ? _colorCode(p.itemColor, false) : null,
-            itemBg: p.itemBg    ? _colorCode(p.itemBg,    true)  : null,
+            selFg:        ss.fg       ? _colorCode(ss.fg,       false) : null,
+            selBg:        ss.bg       ? _colorCode(ss.bg,       true)  : null,
+            prefix:       ss.prefix   || null,
+            selPrefixFg:  ss.prefixFg ? _colorCode(ss.prefixFg, false) : null,
+            selPrefixBg:  ss.prefixBg ? _colorCode(ss.prefixBg, true)  : null,
+            hovFg:        hs.fg       ? _colorCode(hs.fg,       false) : null,
+            hovBg:        hs.bg       ? _colorCode(hs.bg,       true)  : null,
+            hovPrefix:    hs.prefix   ?? null,
+            hovPrefixFg:  hs.prefixFg ? _colorCode(hs.prefixFg, false) : null,
+            hovPrefixBg:  hs.prefixBg ? _colorCode(hs.prefixBg, true)  : null,
+            itemFg:       p.itemColor ? _colorCode(p.itemColor, false) : null,
+            itemBg:       p.itemBg    ? _colorCode(p.itemBg,    true)  : null,
         },
     };
+}
+
+// button({label, onClick, onMouseEnter, onMouseLeave, color, primary}) —
+// convenience constructor for a clickable single-line button. Activates on
+// mouse release when the press landed on the same node. Keyboard activation
+// (Enter/Space) is not yet distinguished from text input — see the deferred
+// press/release split.
+export function button(props) {
+    const p = props || {};
+    const colorStr = p.color || (p.primary ? 'white.bold' : null);
+    return text({
+        value:        p.label || '',
+        align:        'center',
+        color:        colorStr,
+        onClick:      p.onClick,
+        onMouseEnter: p.onMouseEnter,
+        onMouseLeave: p.onMouseLeave,
+    });
 }
 
 // ============================================================================
@@ -373,20 +419,20 @@ function layout(node, x, y, availW, availH) {
 // Rendering — write node tree into a CellBuffer
 // ============================================================================
 
-function renderNode(node, buf, focused, theme) {
+function renderNode(node, buf, focused, hovered, theme) {
     switch (node.type) {
-    case 'box':   _renderBox(node, buf, focused, theme);           break;
+    case 'box':   _renderBox(node, buf, focused, hovered, theme);          break;
     case 'col':
     case 'row':
-        for (const c of node.children) renderNode(c, buf, focused, theme);
+        for (const c of node.children) renderNode(c, buf, focused, hovered, theme);
         break;
-    case 'text':  _renderText(node, buf, theme);                   break;
-    case 'input': _renderInput(node, buf, node === focused, theme); break;
-    case 'list':  _renderList(node, buf, node === focused, theme);  break;
+    case 'text':  _renderText(node, buf, hovered, theme);                  break;
+    case 'input': _renderInput(node, buf, node === focused, theme);         break;
+    case 'list':  _renderList(node, buf, node === focused, theme);          break;
     }
 }
 
-function _renderBox(node, buf, focused, theme) {
+function _renderBox(node, buf, focused, hovered, theme) {
     const p  = node.props;
     const x  = node._x, y = node._y, w = node._w, h = node._h;
     // Pre-parsed border color from props; fall back to theme
@@ -412,18 +458,19 @@ function _renderBox(node, buf, focused, theme) {
     if (lS) for (let r = y + (tS?1:0); r < y + h - (bS?1:0); r++) buf.set(x,         r, lS.v, fg, bbg, false, false, false);
     if (rS) for (let r = y + (tS?1:0); r < y + h - (bS?1:0); r++) buf.set(x + w - 1, r, rS.v, fg, bbg, false, false, false);
 
-    for (const child of node.children) renderNode(child, buf, focused, theme);
+    for (const child of node.children) renderNode(child, buf, focused, hovered, theme);
 }
 
-function _renderText(node, buf, theme) {
-    const p     = node.props;
-    const x     = node._x, y = node._y, w = node._w;
-    const raw   = String(getValue(p.value) ?? '');
+function _renderText(node, buf, hovered, theme) {
+    const p       = node.props;
+    const x       = node._x, y = node._y, w = node._w;
+    const raw     = String(getValue(p.value) ?? '');
     // Merge: theme provides defaults, node props override per-field
-    const col   = node._parsed ? { ...theme.text,  ...node._parsed } : theme.text;
-    const fg    = col.fgCode ?? null;
-    const bg    = col.bgCode ?? theme.bg;
-    const align = p.align || 'left';
+    const col     = node._parsed ? { ...theme.text,  ...node._parsed } : theme.text;
+    const isHover = hovered === node && p.onClick;
+    const fg      = isHover ? (theme.text.hoverFgCode ?? col.fgCode ?? null) : (col.fgCode ?? null);
+    const bg      = isHover ? (theme.text.hoverBgCode ?? col.bgCode ?? theme.bg) : (col.bgCode ?? theme.bg);
+    const align   = p.align || 'left';
 
     buf.fill(x, y, w, 1, ' ', null, bg, false, false, false);
 
@@ -458,17 +505,25 @@ function _renderInput(node, buf, focused, theme) {
 }
 
 function _renderList(node, buf, focused, theme) {
-    const p      = node.props;
-    const x      = node._x, y = node._y, w = node._w, h = node._h;
-    const items  = getValue(p.items) ?? [];
-    const sel    = getValue(p.selected) ?? 0;
+    const p             = node.props;
+    const x             = node._x, y = node._y, w = node._w, h = node._h;
+    const items         = getValue(p.items) ?? [];
+    const sel           = getValue(p.selected) ?? 0;
+    const hovIdx        = node._hoverIdx ?? -1;
     // Pre-parsed from props; fall back to theme
-    const np     = node._parsed;
-    const selFg  = (np && np.selFg  !== null ? np.selFg  : null) ?? theme.list.selFg;
-    const selBg  = (np && np.selBg  !== null ? np.selBg  : null) ?? theme.list.selBg;
-    const prefix = (np && np.prefix !== null ? np.prefix : null) ?? theme.list.prefix;
-    const itemFg = (np && np.itemFg !== null ? np.itemFg : null) ?? theme.list.itemFg;
-    const itemBg = (np && np.itemBg !== null ? np.itemBg : null) ?? theme.list.itemBg ?? theme.bg;
+    const np            = node._parsed;
+    const selFg         = (np && np.selFg        !== null ? np.selFg        : null) ?? theme.list.selFg;
+    const selBg         = (np && np.selBg        !== null ? np.selBg        : null) ?? theme.list.selBg;
+    const prefix        = (np && np.prefix       !== null ? np.prefix       : null) ?? theme.list.prefix;
+    const selPrefixFg   = (np && np.selPrefixFg  !== null ? np.selPrefixFg  : null) ?? theme.list.selPrefixFg;
+    const selPrefixBg   = (np && np.selPrefixBg  !== null ? np.selPrefixBg  : null) ?? theme.list.selPrefixBg;
+    const hovFg         = (np && np.hovFg        !== null ? np.hovFg        : null) ?? theme.list.hovFg;
+    const hovBg         = (np && np.hovBg        !== null ? np.hovBg        : null) ?? theme.list.hovBg;
+    const hovPrefix     = (np && np.hovPrefix    !== null ? np.hovPrefix    : null) ?? theme.list.hovPrefix;
+    const hovPrefixFg   = (np && np.hovPrefixFg  !== null ? np.hovPrefixFg  : null) ?? theme.list.hovPrefixFg;
+    const hovPrefixBg   = (np && np.hovPrefixBg  !== null ? np.hovPrefixBg  : null) ?? theme.list.hovPrefixBg;
+    const itemFg        = (np && np.itemFg       !== null ? np.itemFg       : null) ?? theme.list.itemFg;
+    const itemBg        = (np && np.itemBg       !== null ? np.itemBg       : null) ?? theme.list.itemBg ?? theme.bg;
 
     if (sel < node._scroll) node._scroll = sel;
     if (sel >= node._scroll + h) node._scroll = sel - h + 1;
@@ -477,11 +532,16 @@ function _renderList(node, buf, focused, theme) {
         const idx   = node._scroll + row;
         const item  = idx < items.length ? String(items[idx]) : '';
         const isSel = idx === sel;
-        const fg    = isSel ? selFg : itemFg;
-        const bg    = isSel ? selBg : itemBg;
+        const isHov = !isSel && idx === hovIdx;
+        const fg    = isSel ? selFg : isHov ? (hovFg ?? itemFg) : itemFg;
+        const bg    = isSel ? selBg : isHov ? (hovBg ?? itemBg) : itemBg;
+        const px    = isSel ? prefix : isHov ? (hovPrefix ?? ' ') : ' ';
+        // Prefix-specific colors override row colors when set
+        const pxFg  = isSel ? (selPrefixFg ?? selFg) : isHov ? (hovPrefixFg ?? hovFg ?? itemFg) : itemFg;
+        const pxBg  = isSel ? (selPrefixBg ?? selBg) : isHov ? (hovPrefixBg ?? hovBg ?? itemBg) : itemBg;
 
         buf.fill(x, y + row, w, 1, ' ', null, bg, false, false, false);
-        buf.set(x, y + row, isSel ? prefix : ' ', fg, bg, false, false, false);
+        buf.set(x, y + row, px, pxFg, pxBg, false, false, false);
         const str = item.length > w - 1 ? item.slice(0, w - 1) : item;
         for (let ci = 0; ci < str.length; ci++)
             buf.set(x + 1 + ci, y + row, str[ci], fg, bg, false, false, false);
@@ -550,6 +610,20 @@ function collectFocusables(node, out) {
 }
 
 // ============================================================================
+// Hit testing — cell coords → deepest containing node, or null if outside
+// ============================================================================
+
+function hitTest(node, x, y) {
+    if (x < node._x || x >= node._x + node._w ||
+        y < node._y || y >= node._y + node._h) return null;
+    for (const c of node.children) {
+        const hit = hitTest(c, x, y);
+        if (hit) return hit;
+    }
+    return node;
+}
+
+// ============================================================================
 // RenderInstance
 // ============================================================================
 
@@ -566,6 +640,8 @@ class RenderInstance {
         this._destroyed = false;
         this._focusables = [];
         this._focusIdx   = 0;
+        this._pressedNode = null;
+        this._hoverNode  = null;
 
         const self = this;
         this._effect = {
@@ -579,6 +655,12 @@ class RenderInstance {
 
         this._inputCb = (data) => this._handleInput(data);
         target.addEventListener('input', this._inputCb);
+
+        this._mouseCb = (ev) => this._handleMouse(ev);
+        target.addEventListener('mouse', this._mouseCb);
+
+        this._mouseMoveCb = (ev) => this._handleMouseMove(ev);
+        target.addEventListener('mousemove', this._mouseMoveCb);
     }
 
     _layout() {
@@ -599,7 +681,10 @@ class RenderInstance {
     _doRender() {
         const buf = new CellBuffer(this._w, this._h);
         buf.fill(0, 0, this._w, this._h, ' ', null, this._theme.bg, false, false, false);
-        renderNode(this._root, buf, this._focusables[this._focusIdx] ?? null, this._theme);
+        renderNode(this._root, buf,
+            this._focusables[this._focusIdx] ?? null,
+            this._hoverNode,
+            this._theme);
         const out = buildDiff(this._oldBuf, buf);
         if (out) this._target.inject(out);
         this._oldBuf = buf;
@@ -675,6 +760,73 @@ class RenderInstance {
         }
     }
 
+    _handleMouse(ev) {
+        if (this._destroyed) return;
+        const hit = hitTest(this._root, ev.cellX, ev.cellY);
+
+        if (ev.type === 'press') {
+            this._pressedNode = hit;
+            if (hit) {
+                const idx = this._focusables.indexOf(hit);
+                if (idx >= 0 && idx !== this._focusIdx) {
+                    this._focusIdx = idx;
+                    this._schedule();
+                }
+            }
+            return;
+        }
+
+        if (ev.type === 'release') {
+            const pressed = this._pressedNode;
+            this._pressedNode = null;
+            if (!hit || hit !== pressed) return;
+
+            if (hit.props && hit.props.onClick) hit.props.onClick(ev);
+
+            if (hit.type === 'list') {
+                const localY = ev.cellY - hit._y;
+                const idx    = hit._scroll + localY;
+                const items  = getValue(hit.props.items) ?? [];
+                if (idx >= 0 && idx < items.length) {
+                    const sel = hit.props.selected;
+                    if (sel) sel.value = idx;
+                    hit.props.onSelect?.(idx);
+                }
+            }
+        }
+    }
+
+    _handleMouseMove(ev) {
+        if (this._destroyed) return;
+        const hit = hitTest(this._root, ev.cellX, ev.cellY);
+
+        let changed = false;
+
+        if (hit !== this._hoverNode) {
+            const prev = this._hoverNode;
+            this._hoverNode = hit;
+            if (prev) {
+                if (prev.type === 'list') prev._hoverIdx = -1;
+                prev.props?.onMouseLeave?.(ev);
+            }
+            if (hit) hit.props?.onMouseEnter?.(ev);
+            changed = true;
+        }
+
+        if (hit && hit.type === 'list') {
+            const localY = ev.cellY - hit._y;
+            const idx    = hit._scroll + localY;
+            const items  = getValue(hit.props.items) ?? [];
+            const newIdx = (idx >= 0 && idx < items.length) ? idx : -1;
+            if (hit._hoverIdx !== newIdx) {
+                hit._hoverIdx = newIdx;
+                changed = true;
+            }
+        }
+
+        if (changed) this._schedule();
+    }
+
     // Call after resizing the target popup/overlay to update layout and re-render.
     // Pass a new root if widget structure needs to change (e.g. list height changed).
     resize(w, h, newRoot) {
@@ -691,6 +843,9 @@ class RenderInstance {
         if (this._destroyed) return;
         this._destroyed = true;
         cleanupSub(this._effect);
+        this._target.removeEventListener('input',     this._inputCb);
+        this._target.removeEventListener('mouse',     this._mouseCb);
+        this._target.removeEventListener('mousemove', this._mouseMoveCb);
         this._target.inject('\x1b[?25h'); // restore cursor before closing
         this._target.close();
         if (this._onDestroy) this._onDestroy();

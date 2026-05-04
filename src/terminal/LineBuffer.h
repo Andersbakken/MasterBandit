@@ -242,6 +242,17 @@ private:
 
     std::function<void(uint64_t)> onLineIdEvicted_;
 
+    // Width-keyed cumulative wrap-row cache. cachedBlockEndCum_[i] = sum of
+    // wrapped rows in blocks_[0..i] at cachedSumWidth_. Lets numWrappedRows()
+    // be O(1) and wrappedRowAt() be O(log blocks + lines_per_block). Any
+    // structural mutation invalidates by setting cachedSumWidth_ = -1.
+    mutable int cachedSumWidth_ = -1;
+    mutable int cachedTotalWrappedRows_ = 0;
+    mutable std::vector<int> cachedBlockEndCum_;
+
+    void ensureSumCache(int width) const;
+    void invalidateSumCache() { cachedSumWidth_ = -1; }
+
     void enforceLimits();
     void recomputeTotals();
 };

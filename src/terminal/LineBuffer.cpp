@@ -210,12 +210,14 @@ void LineBuffer::setMaxLogicalLines(int n)
 {
     maxLogicalLines_ = n;
     enforceLimits();
+    invalidateSumCache();
 }
 
 void LineBuffer::setMaxTotalCells(int n)
 {
     maxTotalCells_ = n;
     enforceLimits();
+    invalidateSumCache();
 }
 
 void LineBuffer::appendLine(const Cell* cells, int len,
@@ -265,6 +267,7 @@ void LineBuffer::appendLine(const Cell* cells, int len,
 
     totalCells_ += len;
     enforceLimits();
+    invalidateSumCache();
 }
 
 void LineBuffer::appendHardLine(const Cell* cells, int len,
@@ -300,46 +303,64 @@ LineBuffer::PoppedLine LineBuffer::popLastLine()
     totalCells_ -= len;
     --totalLines_;
     if (last.empty()) blocks_.pop_back();
+    invalidateSumCache();
     return result;
+}
+
+void LineBuffer::ensureSumCache(int width) const
+{
+    if (cachedSumWidth_ == width &&
+        cachedBlockEndCum_.size() == blocks_.size()) {
+        return;
+    }
+    cachedBlockEndCum_.resize(blocks_.size());
+    int total = 0;
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        total += blocks_[i].numWrappedRows(width);
+        cachedBlockEndCum_[i] = total;
+    }
+    cachedTotalWrappedRows_ = total;
+    cachedSumWidth_ = width;
 }
 
 int LineBuffer::numWrappedRows(int width) const
 {
-    int total = 0;
-    for (const auto& b : blocks_) total += b.numWrappedRows(width);
-    return total;
+    if (width <= 0) return 0;
+    ensureSumCache(width);
+    return cachedTotalWrappedRows_;
 }
 
 bool LineBuffer::wrappedRowAt(int wrappedRow, int width, WrappedLineRef* out) const
 {
     if (wrappedRow < 0 || width <= 0) return false;
-    int remaining = wrappedRow;
-    for (int bi = 0; bi < static_cast<int>(blocks_.size()); ++bi) {
-        const auto& b = blocks_[bi];
-        const int n = b.numWrappedRows(width);
-        if (remaining < n) {
-            // Find which line within this block.
-            int localRem = remaining;
-            for (int li = 0; li < b.numLines(); ++li) {
-                const int rows = b.numWrappedRowsForLine(li, width);
-                if (localRem < rows) {
-                    const int len = b.lineLength(li);
-                    const int rowOffset = localRem * width;
-                    int rowLen = std::min(width, len - rowOffset);
-                    if (rowLen < 0) rowLen = 0;
-                    out->blockIdx = bi;
-                    out->lineInBlock = li;
-                    out->rowOffset = rowOffset;
-                    out->rowLength = rowLen;
-                    out->isFirstRowOfLine = (localRem == 0);
-                    out->isLastRowOfLine  = (localRem == rows - 1);
-                    out->eol = out->isLastRowOfLine ? b.meta(li).eol : LineMeta::EolSoft;
-                    return true;
-                }
-                localRem -= rows;
-            }
+    ensureSumCache(width);
+    if (wrappedRow >= cachedTotalWrappedRows_) return false;
+
+    // Binary search: first block whose cumulative end > wrappedRow.
+    auto it = std::upper_bound(cachedBlockEndCum_.begin(),
+                               cachedBlockEndCum_.end(), wrappedRow);
+    const int bi = static_cast<int>(it - cachedBlockEndCum_.begin());
+    const int prevCum = (bi == 0) ? 0 : cachedBlockEndCum_[bi - 1];
+    int localRem = wrappedRow - prevCum;
+
+    const auto& b = blocks_[bi];
+    for (int li = 0; li < b.numLines(); ++li) {
+        const int rows = b.numWrappedRowsForLine(li, width);
+        if (localRem < rows) {
+            const int len = b.lineLength(li);
+            const int rowOffset = localRem * width;
+            int rowLen = std::min(width, len - rowOffset);
+            if (rowLen < 0) rowLen = 0;
+            out->blockIdx = bi;
+            out->lineInBlock = li;
+            out->rowOffset = rowOffset;
+            out->rowLength = rowLen;
+            out->isFirstRowOfLine = (localRem == 0);
+            out->isLastRowOfLine  = (localRem == rows - 1);
+            out->eol = out->isLastRowOfLine ? b.meta(li).eol : LineMeta::EolSoft;
+            return true;
         }
-        remaining -= n;
+        localRem -= rows;
     }
     return false;
 }
@@ -471,11 +492,13 @@ void LineBuffer::clear()
     blocks_.clear();
     totalLines_ = 0;
     totalCells_ = 0;
+    invalidateSumCache();
 }
 
 void LineBuffer::invalidateWrapCaches()
 {
     for (auto& b : blocks_) b.invalidateWrapCache();
+    invalidateSumCache();
 }
 
 void LineBuffer::enforceLimits()

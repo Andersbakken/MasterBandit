@@ -97,9 +97,16 @@ target_link_libraries(mb PRIVATE terminal platform eventloop glaze::glaze cxxopt
 set(COPIED_ASSETS)
 
 macro(mb_copy_asset SRC DST)
+    # `copy_if_different` skips the actual copy when contents match, which
+    # leaves the destination's mtime stale. CMake/Ninja then see SRC newer
+    # than DST on the next build and re-run the command — forever. The
+    # follow-up `touch` bumps DST's mtime past SRC's so the rule reaches
+    # steady state. Only fires when the rule actually runs (so a clean
+    # build with no dirty assets stays a no-op).
     add_custom_command(
         OUTPUT ${DST}
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SRC} ${DST}
+        COMMAND ${CMAKE_COMMAND} -E touch ${DST}
         DEPENDS ${SRC}
         VERBATIM
     )

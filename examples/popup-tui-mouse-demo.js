@@ -14,7 +14,9 @@
 //
 //   Hover behavior:
 //   • Move the cursor over [ Yes ] / [ No ] / [ Close ] — each highlights via
-//     theme.text.hoverFg/hoverBg while the cursor is over it.
+//     theme.text.hoverFg/hoverBg while the cursor is over it. The currently
+//     focused button uses theme.text.selectedFg/selectedBg instead (selection
+//     wins over hover).
 //   • Move the cursor over list rows — non-selected rows get a subtler
 //     highlight via theme.list.hoverStyle; the selected row stays fully
 //     highlighted (selection wins over hover).
@@ -47,9 +49,9 @@ const theme = createTheme({
     bg:     '#1a1b26',
     border: { color: '#7aa2f7' },
     text:   {
-        color:   'white',
-        hoverFg: '#1a1b26',
-        hoverBg: '#7aa2f7',
+        color:      'white',
+        selectedFg: '#1a1b26', selectedBg: '#7aa2f7',
+        hoverFg:    '#c0caf5', hoverBg:    '#414868',
     },
     list: {
         selectedStyle: { bg: '#7aa2f7', fg: '#1a1b26', prefix: '▌', prefixFg: '#f7768e' },

@@ -13,6 +13,8 @@
 // ack arrives only after the user responds. Shells should use a generous
 // timeout (approval can take 30s+).
 
+import { confirm } from "mb:dialog";
+
 function parsePayload(payload) {
     const parts = payload.split(";");
     if (parts.length < 1) return null;
@@ -85,107 +87,77 @@ function registerPane(pane) {
 }
 
 // ============================================================================
-// Permission prompt popup
+// Permission prompt popup — built on mb:dialog.confirm()
 // ============================================================================
 
-const W = 50, H = 8;
-let permPopupCounter = 0;
-const activePermPopups = {}; // path → popup
+// path → opaque token of the latest dialog for that path. If a duplicate
+// scriptPermissionRequired arrives, we dismiss the prior dialog and install
+// a new token; the prior dialog's resolution checks the token and skips its
+// ack if it's been superseded.
+const activePermTokens = new Map();
+// path → dismiss fn for the active dialog, so a duplicate request can tear
+// the prior popup down.
+const activePermDismiss = new Map();
 
 function showPermissionPrompt(path, permissions, hash) {
-    // Close any existing prompt for this path
-    if (activePermPopups[path]) {
-        activePermPopups[path].close();
-        delete activePermPopups[path];
-    }
+    const prevDismiss = activePermDismiss.get(path);
+    if (prevDismiss) prevDismiss();
+
     const pane = mb.activePane;
     if (!pane) {
         console.error("applet-loader: no active pane for permission prompt");
         return;
     }
 
-    const x = Math.max(0, Math.floor((pane.cols - W) / 2));
-    const y = Math.max(0, Math.floor((pane.rows - H) / 2));
-    const popupId = "__perm_" + (++permPopupCounter);
-    const popup = pane.createPopup({ id: popupId, x, y, w: W, h: H });
-    if (!popup) {
-        console.error("applet-loader: failed to create permission popup");
-        return;
-    }
-
-    // Extract filename from path
     let filename = path;
     const slash = path.lastIndexOf("/");
     if (slash >= 0) filename = path.substring(slash + 1);
 
-    const inner = W - 2;
-    const pad = (s, w) => s.length >= w ? s.substring(0, w) : s + " ".repeat(w - s.length);
-    const border = "\x1b[90m";
-    const reset = "\x1b[0m";
-    const hline = border + "+" + "-".repeat(inner) + "+" + reset;
-    const line = (color, text) =>
-        border + "|" + reset + color + pad(text, inner) + reset + border + "|" + reset;
+    const myToken = {};
+    activePermTokens.set(path, myToken);
 
-    // Button positions (0-indexed columns within popup):
-    //  col 2-8: [allow]   col 11-16: [deny]   col 19-26: [always]   col 29-35: [never]
-    const btnAllow  = { x1: 2, x2: 8 };
-    const btnDeny   = { x1: 11, x2: 16 };
-    const btnAlways = { x1: 19, x2: 26 };
-    const btnNever  = { x1: 29, x2: 35 };
-    const btnRow = 6; // 0-indexed
-
-    function render() {
-        let out = "\x1b[H";
-        out += "\x1b[1;1H" + hline;
-        out += "\x1b[2;1H" + line("\x1b[1;33m", " Script Permission Request");
-        out += "\x1b[3;1H" + line("\x1b[1m", " Path: " + filename);
-        out += "\x1b[4;1H" + line("\x1b[36m", " Perms: " + permissions);
-        out += "\x1b[5;1H" + line("\x1b[90m", " Hash: " + hash.substring(0, 16) + "...");
-        out += "\x1b[6;1H" + line("", "");
-        // Button line — use cursor positioning to place each button precisely
-        const r = 7;
-        out += "\x1b[" + r + ";1H" + border + "|" + reset;
-        out += "\x1b[" + r + ";" + (btnAllow.x1 + 1) + "H\x1b[1;32m[allow]\x1b[0m";
-        out += "\x1b[" + r + ";" + (btnDeny.x1 + 1) + "H\x1b[1;31m[deny]\x1b[0m";
-        out += "\x1b[" + r + ";" + (btnAlways.x1 + 1) + "H\x1b[1;36m[always]\x1b[0m";
-        out += "\x1b[" + r + ";" + (btnNever.x1 + 1) + "H\x1b[1;35m[never]\x1b[0m";
-        out += "\x1b[" + r + ";" + W + "H" + border + "|" + reset;
-        out += "\x1b[8;1H" + hline;
-        popup.inject(out);
-    }
-
-    activePermPopups[path] = popup;
-
-    function respond(response) {
-        delete activePermPopups[path];
-        popup.close();
+    const dialog = confirm({
+        pane,
+        title: 'Script Permission Request',
+        message:
+            'Path: '  + filename + '\n' +
+            'Perms: ' + permissions + '\n' +
+            'Hash: '  + hash.substring(0, 16) + '...',
+        buttons: [
+            { label: 'allow',  key: 'y',
+              color: 'bright-green.bold',
+              selectedFg: 'black', selectedBg: 'green',
+              hoverFg:    'black', hoverBg:    'bright-green' },
+            { label: 'deny',   key: 'n',
+              color: 'bright-red.bold',
+              selectedFg: 'black', selectedBg: 'red',
+              hoverFg:    'black', hoverBg:    'bright-red' },
+            { label: 'always', key: 'a',
+              color: 'bright-cyan.bold',
+              selectedFg: 'black', selectedBg: 'cyan',
+              hoverFg:    'black', hoverBg:    'bright-cyan' },
+            { label: 'never',  key: 'd',
+              color: 'bright-magenta.bold',
+              selectedFg: 'black', selectedBg: 'magenta',
+              hoverFg:    'black', hoverBg:    'bright-magenta' },
+        ],
+        defaultIndex: 1, // deny — Enter denies by default
+    });
+    activePermDismiss.set(path, dialog.dismiss);
+    dialog.then((idx) => {
+        // Superseded: a newer dialog took over; that one will write the ack.
+        if (activePermTokens.get(path) !== myToken) return;
+        activePermTokens.delete(path);
+        activePermDismiss.delete(path);
+        // Esc / pane-destroyed / onDestroy → -1: treat as "deny once" so the
+        // shell receives an ack instead of hanging on the original request.
+        const response = idx >= 0 ? ['y', 'n', 'a', 'd'][idx] : 'n';
         const res = mb.approveScript(path, response);
         const originPane = pendingPanes.get(path);
         pendingPanes.delete(path);
         if (originPane) writeAck(originPane, path, res);
-    }
-
-    // Keyboard input (focus popup first with Cmd+Shift+I)
-    popup.addEventListener("input", (data) => {
-        if (data === "y" || data === "Y") respond("y");
-        else if (data === "n" || data === "N") respond("n");
-        else if (data === "a" || data === "A") respond("a");
-        else if (data === "d" || data === "D") respond("d");
     });
 
-    // Mouse clicks on buttons
-    popup.addEventListener("mouse", (ev) => {
-        if (ev.type !== "press" || ev.button !== 0) return;
-        if (ev.cellY !== btnRow) return;
-
-        const cx = ev.cellX;
-        if (cx >= btnAllow.x1 && cx <= btnAllow.x2)   respond("y");
-        else if (cx >= btnDeny.x1 && cx <= btnDeny.x2) respond("n");
-        else if (cx >= btnAlways.x1 && cx <= btnAlways.x2) respond("a");
-        else if (cx >= btnNever.x1 && cx <= btnNever.x2)   respond("d");
-    });
-
-    render();
     console.log("applet-loader: showing permission prompt for", path);
 }
 

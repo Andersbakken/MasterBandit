@@ -1,31 +1,49 @@
 // mb:dialog — reusable popup dialogs built on mb:tui.
 //
-// Today: confirm({pane, title, message, buttons, defaultIndex, theme}) → Promise<number>.
-// Future home for prompt(), alert(), permission-prompt port.
+// Today: confirm({pane, title, message, buttons, defaultIndex, theme})
+//        → Promise<number> with a `.dismiss()` method. Buttons support keyboard
+//        shortcuts (`key`) and per-button color overrides. Used by
+//        applet-loader for the script permission prompt; future home for
+//        prompt(), alert().
 
 import { render, createTheme, box, text, row, button } from "mb:tui";
 
 const _defaultTheme = createTheme({
     bg:     '#1a1b26',
     border: { color: '#7aa2f7' },
-    text:   { color: 'white', hoverFg: '#1a1b26', hoverBg: '#7aa2f7' },
+    text:   {
+        color:      'white',
+        selectedFg: '#1a1b26', selectedBg: '#7aa2f7',
+        hoverFg:    '#c0caf5', hoverBg:    '#414868',
+    },
 });
 
 // confirm(opts) — show a modal popup with title/message and N buttons. Returns
 // a Promise that resolves to the index of the clicked button, or -1 if the
-// dialog was dismissed (Esc, host pane destroyed, or onDestroy fired).
+// dialog was dismissed (Esc, host pane destroyed, onDestroy fired, or the
+// caller called .dismiss() on the returned promise).
+//
+// The returned Promise has a `.dismiss()` method attached. Calling it resolves
+// the promise with -1 and tears down the popup. Useful when a newer dialog
+// supersedes an older one for the same logical request.
 //
 // opts:
 //   pane           Pane object that owns the popup. Required.
 //   title          Optional header line.
 //   message        Body text. Multi-line via "\n".
-//   buttons        [{label, primary?}, ...]. Default: [{label: 'OK'}].
+//   buttons        [{label, primary?, key?, color?, selectedFg?, selectedBg?,
+//                    hoverFg?, hoverBg?}, ...]. Default: [{label: 'OK'}].
+//                    `key` — single-character keyboard shortcut (case-insensitive)
+//                            that resolves the dialog with this button's index.
+//                    color/selectedFg/selectedBg/hoverFg/hoverBg — per-button
+//                            color overrides; see mb:tui button().
 //   defaultIndex   Which button is initially focused. Default 0.
 //                  For destructive flows this should point at the safe option
 //                  (e.g. Cancel) so Enter cancels by default.
 //   theme          Optional createTheme override.
 export function confirm(opts) {
-    return new Promise((resolve) => {
+    let dismiss = () => {};
+    const promise = new Promise((resolve) => {
         const {
             pane,
             title = '',
@@ -72,13 +90,40 @@ export function confirm(opts) {
             resolve(idx);
             if (ui) ui.destroy();
         };
+        dismiss = () => finish(-1);
 
         // Build the button widgets first so we can reference them for focus.
+        // Pin each button's width to its label length so the row layout doesn't
+        // floor() the flex split and clip wider labels (e.g. "[ always ]" gets
+        // 9 cells when 10 are needed).
         const buttonNodes = buttons.map((b, i) => button({
-            label:   labels[i],
-            primary: !!b.primary,
-            onClick: () => finish(i),
+            label:      labels[i],
+            primary:    !!b.primary,
+            color:      b.color,
+            width:      labels[i].length,
+            selectedFg: b.selectedFg,
+            selectedBg: b.selectedBg,
+            hoverFg:    b.hoverFg,
+            hoverBg:    b.hoverBg,
+            onClick:    () => finish(i),
         }));
+
+        // Keyboard shortcuts: each button may declare `key` (single char,
+        // case-insensitive). Listen on the popup directly — tui's own input
+        // handler ignores letter keys on a focused button so both fire safely.
+        const keyMap = {};
+        for (let i = 0; i < buttons.length; i++) {
+            const k = buttons[i].key;
+            if (typeof k === 'string' && k.length === 1) keyMap[k.toLowerCase()] = i;
+        }
+        if (Object.keys(keyMap).length > 0) {
+            popup.addEventListener('input', (data) => {
+                if (resolved) return;
+                if (typeof data !== 'string' || data.length !== 1) return;
+                const idx = keyMap[data.toLowerCase()];
+                if (idx !== undefined) finish(idx);
+            });
+        }
 
         const children = [];
         if (title) {
@@ -108,4 +153,6 @@ export function confirm(opts) {
         // call finish(-1) too. Listening here is belt-and-braces.
         pane.addEventListener('destroyed', () => finish(-1));
     });
+    promise.dismiss = () => dismiss();
+    return promise;
 }

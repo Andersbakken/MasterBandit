@@ -196,15 +196,17 @@ const _borders = {
 // ============================================================================
 
 // Default theme — all colors are optional; null means use terminal default.
-// `text.hoverFg` / `text.hoverBg` apply to text/button widgets that have an
-// `onClick`. `list.hoverStyle` applies to a hovered list row that is not the
-// currently selected row. `prefixFg` / `prefixBg` on selectedStyle/hoverStyle
-// override the row colors for the prefix glyph only — useful for an accent
-// color distinct from the row text.
+// For text/button widgets with `onClick`: `text.selectedFg` / `text.selectedBg`
+// apply when focused (keyboard-selected), `text.hoverFg` / `text.hoverBg` apply
+// when the mouse is over a non-focused button. Selection wins over hover.
+// `list.hoverStyle` applies to a hovered list row that is not the currently
+// selected row. `prefixFg` / `prefixBg` on selectedStyle/hoverStyle override
+// the row colors for the prefix glyph only — useful for an accent color
+// distinct from the row text.
 export const defaultTheme = {
     bg:     null,                  // popup background; null = terminal default
     border: { color: 'gray' },
-    text:   { color: null, bg: null, hoverFg: null, hoverBg: null },
+    text:   { color: null, bg: null, selectedFg: null, selectedBg: null, hoverFg: null, hoverBg: null },
     input:  { color: 'white.bold', bg: null },
     list: {
         selectedStyle: { bg: 'cyan', fg: 'black', prefix: '▌', prefixFg: null, prefixBg: null },
@@ -242,9 +244,11 @@ function _parseTheme(raw) {
         border: { fg: _colorCode(t.border.color, false) },
         text:   {
             ...parseColor(t.text.color),
-            bgCode:      t.text.bg      ? _colorCode(t.text.bg,      true)  : null,
-            hoverFgCode: t.text.hoverFg ? _colorCode(t.text.hoverFg, false) : null,
-            hoverBgCode: t.text.hoverBg ? _colorCode(t.text.hoverBg, true)  : null,
+            bgCode:         t.text.bg         ? _colorCode(t.text.bg,         true)  : null,
+            selectedFgCode: t.text.selectedFg ? _colorCode(t.text.selectedFg, false) : null,
+            selectedBgCode: t.text.selectedBg ? _colorCode(t.text.selectedBg, true)  : null,
+            hoverFgCode:    t.text.hoverFg    ? _colorCode(t.text.hoverFg,    false) : null,
+            hoverBgCode:    t.text.hoverBg    ? _colorCode(t.text.hoverBg,    true)  : null,
         },
         input:  { ...parseColor(t.input.color), bgCode: t.input.bg ? _colorCode(t.input.bg, true) : null },
         list: {
@@ -298,7 +302,16 @@ export function row(props, children) {
 
 export function text(props) {
     const p = props || {};
-    return { type: 'text', props: p, children: [], _parsed: p.color ? parseColor(p.color) : null };
+    const hasOverride = p.color || p.selectedFg || p.selectedBg || p.hoverFg || p.hoverBg;
+    let parsed = null;
+    if (hasOverride) {
+        parsed = p.color ? parseColor(p.color) : {};
+        if (p.selectedFg) parsed.selectedFgCode = _colorCode(p.selectedFg, false);
+        if (p.selectedBg) parsed.selectedBgCode = _colorCode(p.selectedBg, true);
+        if (p.hoverFg)    parsed.hoverFgCode    = _colorCode(p.hoverFg,    false);
+        if (p.hoverBg)    parsed.hoverBgCode    = _colorCode(p.hoverBg,    true);
+    }
+    return { type: 'text', props: p, children: [], _parsed: parsed };
 }
 
 export function input(props) {
@@ -329,11 +342,15 @@ export function list(props) {
     };
 }
 
-// button({label, onClick, onMouseEnter, onMouseLeave, color, primary}) —
-// convenience constructor for a clickable single-line button. Activates on
-// mouse release when the press landed on the same node. Keyboard activation
-// (Enter/Space) is not yet distinguished from text input — see the deferred
-// press/release split.
+// button({label, onClick, onMouseEnter, onMouseLeave, color, primary, width,
+//         selectedFg, selectedBg, hoverFg, hoverBg}) — convenience constructor
+// for a clickable single-line button. Activates on mouse release when the
+// press landed on the same node. Keyboard activation (Enter/Space) is not yet
+// distinguished from text input — see the deferred press/release split.
+// selectedFg/Bg/hoverFg/Bg override the theme's text.selectedFg/Bg/hoverFg/Bg
+// for this button only — useful for action-coded buttons (e.g. green allow,
+// red deny). `width` pins the button to a specific cell width inside a row
+// (otherwise the row's flex split may truncate variable-width labels).
 export function button(props) {
     const p = props || {};
     const colorStr = p.color || (p.primary ? 'white.bold' : null);
@@ -341,6 +358,11 @@ export function button(props) {
         value:        p.label || '',
         align:        'center',
         color:        colorStr,
+        width:        p.width,
+        selectedFg:   p.selectedFg,
+        selectedBg:   p.selectedBg,
+        hoverFg:      p.hoverFg,
+        hoverBg:      p.hoverBg,
         onClick:      p.onClick,
         onMouseEnter: p.onMouseEnter,
         onMouseLeave: p.onMouseLeave,
@@ -467,11 +489,18 @@ function _renderText(node, buf, focused, hovered, theme) {
     const raw     = String(getValue(p.value) ?? '');
     // Merge: theme provides defaults, node props override per-field
     const col     = node._parsed ? { ...theme.text,  ...node._parsed } : theme.text;
-    // Hover and focus both light up the same way for clickable text (buttons).
-    // Decorative text (no onClick) ignores both — it's never focusable.
-    const isHi    = (hovered === node || focused === node) && p.onClick;
-    const fg      = isHi ? (theme.text.hoverFgCode ?? col.fgCode ?? null) : (col.fgCode ?? null);
-    const bg      = isHi ? (theme.text.hoverBgCode ?? col.bgCode ?? theme.bg) : (col.bgCode ?? theme.bg);
+    // Clickable text (buttons) has two highlight states: focused (selection)
+    // wins over hovered. Per-node selectedFg/Bg/hoverFg/Bg in `col` override
+    // the theme. Decorative text (no onClick) ignores both — it's never
+    // focusable.
+    const isFocus = focused === node && p.onClick;
+    const isHover = !isFocus && hovered === node && p.onClick;
+    const fg      = isFocus ? (col.selectedFgCode ?? col.fgCode ?? null)
+                  : isHover ? (col.hoverFgCode    ?? col.fgCode ?? null)
+                  :           (col.fgCode ?? null);
+    const bg      = isFocus ? (col.selectedBgCode ?? col.bgCode ?? theme.bg)
+                  : isHover ? (col.hoverBgCode    ?? col.bgCode ?? theme.bg)
+                  :           (col.bgCode ?? theme.bg);
     const align   = p.align || 'left';
 
     buf.fill(x, y, w, 1, ' ', null, bg, false, false, false);

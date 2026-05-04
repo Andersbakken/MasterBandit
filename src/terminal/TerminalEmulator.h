@@ -26,10 +26,15 @@ inline std::string toPrintable(const std::string &string)
 class TerminalEmulator;
 struct TerminalSnapshot;
 
+// X11 distinguishes CLIPBOARD (Ctrl+C/V style) from PRIMARY (drag-select +
+// middle-click). Cocoa has only one pasteboard, so Primary downgrades to
+// Clipboard there (Window::setPrimarySelection is a no-op by default).
+enum class ClipboardTarget { Clipboard, Primary };
+
 struct TerminalCallbacks {
     std::function<void(TerminalEmulator*, int /*Event*/, void*)> event;
-    std::function<void(const std::string&)>      copyToClipboard;
-    std::function<std::string()>                 pasteFromClipboard;
+    std::function<void(const std::string&, ClipboardTarget)> copyToClipboard;
+    std::function<std::string(ClipboardTarget)>              pasteFromClipboard;
     // OSC 0/2 sets the title; XTWINOPS 22/23 push/pop the stack.
     // Fires with Some(str) when OSC writes the top (even an empty string)
     // or a pop exposes a previously-saved string; fires with nullopt when

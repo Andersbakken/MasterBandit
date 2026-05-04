@@ -577,7 +577,7 @@ void TerminalEmulator::selectCommandOutputForRecord(const CommandRecord* rec)
 
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard) {
-        mCallbacks.copyToClipboard(text);
+        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
     }
     publishAndFireEvent(static_cast<int>(Update));
 }

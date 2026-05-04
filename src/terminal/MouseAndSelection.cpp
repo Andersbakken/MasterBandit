@@ -110,7 +110,7 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
         finalizeSelection();
         std::string text = selectedText();
         if (!text.empty()) {
-            if (mCallbacks.copyToClipboard) mCallbacks.copyToClipboard(text);
+            if (mCallbacks.copyToClipboard) mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
         }
         publishAndFireEvent(static_cast<int>(Update));
         return;
@@ -266,7 +266,7 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
     finalizeSelection();
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
-        mCallbacks.copyToClipboard(text);
+        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
     publishAndFireEvent(static_cast<int>(Update));
 }
 
@@ -291,7 +291,7 @@ void TerminalEmulator::startLineSelection(int absRow)
     finalizeSelection();
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
-        mCallbacks.copyToClipboard(text);
+        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
     publishAndFireEvent(static_cast<int>(Update));
 }
 
@@ -327,7 +327,7 @@ void TerminalEmulator::extendSelection(int col, int absRow, bool xRightHalf)
     finalizeSelection();
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
-        mCallbacks.copyToClipboard(text);
+        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
     publishAndFireEvent(static_cast<int>(Update));
 }
 

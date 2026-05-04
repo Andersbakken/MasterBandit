@@ -1083,6 +1083,65 @@ TEST_CASE("OSC 52 round-trip: write then query returns same content")
     CHECK(t.output() == "\x1b]52;c;dGVzdGluZw==\x1b\\");
 }
 
+TEST_CASE("OSC 52 p;<base64> routes to primary, leaves clipboard alone")
+{
+    TestTerminal t;
+    t.osc("52;p;aGVsbG8=");          // base64("hello")
+    CHECK(t.capturedPrimary   == "hello");
+    CHECK(t.capturedClipboard == "");
+}
+
+TEST_CASE("OSC 52 s;<base64> aliases primary (X11 selection convention)")
+{
+    TestTerminal t;
+    t.osc("52;s;aGVsbG8=");
+    CHECK(t.capturedPrimary   == "hello");
+    CHECK(t.capturedClipboard == "");
+}
+
+TEST_CASE("OSC 52 pc;<base64> sets both primary and clipboard")
+{
+    TestTerminal t;
+    t.osc("52;pc;aGVsbG8=");
+    CHECK(t.capturedClipboard == "hello");
+    CHECK(t.capturedPrimary   == "hello");
+}
+
+TEST_CASE("OSC 52 with no recognized destination defaults to clipboard")
+{
+    TestTerminal t;
+    t.osc("52;q;aGVsbG8=");          // q = secondary, ignored → fall back
+    CHECK(t.capturedClipboard == "hello");
+    CHECK(t.capturedPrimary   == "");
+
+    TestTerminal t2;
+    t2.osc("52;;aGVsbG8=");          // empty prefix
+    CHECK(t2.capturedClipboard == "hello");
+    CHECK(t2.capturedPrimary   == "");
+}
+
+TEST_CASE("OSC 52 p;? queries primary and echoes destination in response")
+{
+    TestTerminal t;
+    t.primaryContent = "from-primary";
+    t.clearOutput();
+    t.osc("52;p;?");
+    // Response prefix matches the requested destination.
+    CHECK(t.output() == "\x1b]52;p;ZnJvbS1wcmltYXJ5\x1b\\");
+}
+
+TEST_CASE("OSC 52 pc;? prefers clipboard for read, echoes both in response")
+{
+    TestTerminal t;
+    t.clipboardContent = "clip";
+    t.primaryContent   = "prim";
+    t.clearOutput();
+    t.osc("52;pc;?");
+    // Response carries clipboard content; prefix echoes both destinations
+    // (clipboard first per parser order: c then p).
+    CHECK(t.output() == "\x1b]52;cp;Y2xpcA==\x1b\\");
+}
+
 // ── OSC 9;4 kitty progress ────────────────────────────────────────────────────
 
 TEST_CASE("OSC 9;4 reports progress state and percent")

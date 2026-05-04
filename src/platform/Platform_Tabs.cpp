@@ -742,9 +742,11 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
     };
 
     if (!isHeadless()) {
-        cbs.copyToClipboard = [this](const std::string& text) {
-            eventLoop_->post([this, text] {
-                if (window_) window_->setClipboard(text);
+        cbs.copyToClipboard = [this](const std::string& text, ClipboardTarget target) {
+            eventLoop_->post([this, text, target] {
+                if (!window_) return;
+                if (target == ClipboardTarget::Primary) window_->setPrimarySelection(text);
+                else                                   window_->setClipboard(text);
             });
         };
         // pasteFromClipboard is invoked synchronously from inside
@@ -752,14 +754,16 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         // thread. window_->getClipboard() is main-thread-only (X11/Cocoa),
         // so bounce through runOnMain. On the main thread we still call
         // directly (tests, headless callers, future code paths).
-        cbs.pasteFromClipboard = [this]() -> std::string {
-            return runOnMain([this]() -> std::string {
-                return window_ ? window_->getClipboard() : std::string{};
+        cbs.pasteFromClipboard = [this](ClipboardTarget target) -> std::string {
+            return runOnMain([this, target]() -> std::string {
+                if (!window_) return {};
+                return target == ClipboardTarget::Primary ? window_->getPrimarySelection()
+                                                          : window_->getClipboard();
             });
         };
     } else {
-        cbs.copyToClipboard = [](const std::string&) {};
-        cbs.pasteFromClipboard = []() -> std::string { return {}; };
+        cbs.copyToClipboard = [](const std::string&, ClipboardTarget) {};
+        cbs.pasteFromClipboard = [](ClipboardTarget) -> std::string { return {}; };
     }
 
     // Pull-model: title/icon live on the emulator's XTWINOPS stack. These

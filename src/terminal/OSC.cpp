@@ -765,23 +765,49 @@ void TerminalEmulator::processOSC_Title(std::string_view text, bool setTitle)
 
 void TerminalEmulator::processOSC_Clipboard(std::string_view payload)
 {
-    // Format: "c;base64data" or "c;?"
+    // Format: "<dest>;<base64data>" or "<dest>;?"
+    // <dest> chars: c=clipboard, p=primary, s=selection (→ primary on X11),
+    // q=secondary (ignored), 0..7=cut buffers (ignored). Multiple chars
+    // set/query each named selection. Empty / unrecognized falls back to
+    // clipboard, matching xterm.
     size_t semi = payload.find(';');
     if (semi == std::string_view::npos) return;
 
+    std::string_view dest = payload.substr(0, semi);
     std::string_view data = payload.substr(semi + 1);
+
+    bool wantClipboard = false, wantPrimary = false;
+    for (char c : dest) {
+        switch (c) {
+        case 'c': wantClipboard = true; break;
+        case 'p':
+        case 's': wantPrimary = true;   break;
+        default: break;
+        }
+    }
+    if (!wantClipboard && !wantPrimary) wantClipboard = true;
+
     if (data == "?") {
-        // Query clipboard
-        std::string clip = mCallbacks.pasteFromClipboard ? mCallbacks.pasteFromClipboard() : std::string{};
+        if (!mCallbacks.pasteFromClipboard) return;
+        // Prefer clipboard when both were requested; readers rarely ask
+        // for both at once and the response can only carry one payload.
+        ClipboardTarget readFrom = wantClipboard ? ClipboardTarget::Clipboard
+                                                 : ClipboardTarget::Primary;
+        std::string clip = mCallbacks.pasteFromClipboard(readFrom);
         std::string encoded = base64::encode(
             reinterpret_cast<const uint8_t*>(clip.data()), clip.size());
-        std::string response = "\x1b]52;c;" + encoded + "\x1b\\";
+        std::string destEcho;
+        if (wantClipboard) destEcho += 'c';
+        if (wantPrimary)   destEcho += 'p';
+        std::string response = "\x1b]52;" + destEcho + ";" + encoded + "\x1b\\";
         writeToOutput(response.data(), response.size());
     } else {
-        // Set clipboard
         std::vector<uint8_t> decoded = base64::decode(data);
         std::string text(decoded.begin(), decoded.end());
-        if (mCallbacks.copyToClipboard) mCallbacks.copyToClipboard(text);
+        if (mCallbacks.copyToClipboard) {
+            if (wantClipboard) mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+            if (wantPrimary)   mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
+        }
     }
 }
 

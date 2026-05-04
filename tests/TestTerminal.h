@@ -46,10 +46,13 @@ struct TestTerminal {
     int         queryAliveCalls { 0 };
     std::string capturedPointerShape;
     int         pointerShapeCallCount = 0;
-    // OSC 52: text sent to copyToClipboard; clipboardContent is what
-    // pasteFromClipboard returns when queried.
+    // OSC 52: text sent to copyToClipboard; *Content is what
+    // pasteFromClipboard returns when queried. Captured/returned per
+    // selection target (clipboard vs X11 primary).
     std::string capturedClipboard;
+    std::string capturedPrimary;
     std::string clipboardContent;
+    std::string primaryContent;
     // OSC 9;4 progress: last (state, pct) delivered; callCount tracks invocations.
     int         capturedProgressState = -1;
     int         capturedProgressPct   = -1;
@@ -95,11 +98,12 @@ struct TestTerminal {
                 capturedPointerShape = s;
                 ++pointerShapeCallCount;
             };
-            cb.copyToClipboard = [this](const std::string& text) {
-                capturedClipboard = text;
+            cb.copyToClipboard = [this](const std::string& text, ClipboardTarget target) {
+                if (target == ClipboardTarget::Primary) capturedPrimary   = text;
+                else                                    capturedClipboard = text;
             };
-            cb.pasteFromClipboard = [this]() {
-                return clipboardContent;
+            cb.pasteFromClipboard = [this](ClipboardTarget target) {
+                return target == ClipboardTarget::Primary ? primaryContent : clipboardContent;
             };
             cb.onProgressChanged = [this](int state, int pct) {
                 capturedProgressState = state;

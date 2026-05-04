@@ -26,7 +26,7 @@ type MbPermission =
     // Groups
     | "ui" | "io" | "shell" | "actions" | "tabs" | "scripts" | "fs" | "net" | "clipboard" | "layout"
     // Individual bits
-    | "ui.popup.create"   | "ui.popup.destroy"
+    | "ui.popup.create"   | "ui.popup.destroy" | "ui.focus"
     | "io.filter.input"   | "io.filter.output" | "io.inject"
     | "shell.write"       | "shell.commands"
     | "actions.invoke"
@@ -375,6 +375,8 @@ interface MbPopup extends MbTerminal {
 
     /** Resize/move the popup. Requires `ui.popup.create`. */
     resize(opts: { x: number; y: number; w: number; h: number }): void;
+    /** Focus this popup (clears the pane's focused embedded). Requires `ui.focus`. */
+    focus(): boolean;
     /** Close and destroy the popup. Requires `ui.popup.destroy`. */
     close(): void;
 
@@ -422,6 +424,8 @@ interface MbEmbeddedTerminal extends MbTerminal {
 
     /** Change the embedded's row count. Returns true on success. Requires `ui.popup.create`. */
     resize(rows: number): boolean;
+    /** Focus this embedded (clears the pane's focused popup). Requires `ui.focus`. */
+    focus(): boolean;
     /**
      * Destroy this embedded. Fires the `"destroyed"` event. Requires
      * `ui.popup.destroy`.
@@ -775,6 +779,8 @@ interface MbGlobal {
     exit(): void;
     /** Quit the application. */
     quit(): void;
+    /** Non-destructive permission query (unknown name → false). Group names require all bits. */
+    hasPermission(name: MbPermission): boolean;
 
     // --- Tokens / crypto ---
     /**

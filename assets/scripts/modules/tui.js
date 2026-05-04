@@ -404,6 +404,7 @@ function layout(node, x, y, availW, availH) {
     }
     case 'row': {
         const gap      = node.props.gap || 0;
+        const justify  = node.props.justify || 'start'; // 'start' | 'center' | 'end'
         const kids     = node.children;
         let fixedW     = 0, totalFlex = 0;
         for (const c of kids) {
@@ -412,7 +413,15 @@ function layout(node, x, y, availW, availH) {
         }
         const gaps  = gap * Math.max(0, kids.length - 1);
         const flexW = Math.max(0, availW - fixedW - gaps);
-        let cx = x, maxH = 0;
+        // When every child has a pinned width, no flex consumes the leftover —
+        // justify decides where it goes (default: leading space, i.e. start).
+        let leading = 0;
+        if (totalFlex === 0) {
+            const leftover = flexW;
+            if (justify === 'center') leading = Math.floor(leftover / 2);
+            else if (justify === 'end') leading = leftover;
+        }
+        let cx = x + leading, maxH = 0;
         for (const c of kids) {
             const cw = (c.props && c.props.width)
                 ? c.props.width

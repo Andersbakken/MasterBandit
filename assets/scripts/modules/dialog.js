@@ -132,7 +132,7 @@ export function confirm(opts) {
         }
         for (const line of lines) children.push(text({ value: line, align: 'center' }));
         children.push(text({ value: '' }));
-        children.push(row({ gap: 2 }, buttonNodes));
+        children.push(row({ gap: 2, justify: 'center' }, buttonNodes));
 
         const root = box({ border: 'round', padding: 1 }, children);
 

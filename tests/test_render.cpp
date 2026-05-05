@@ -82,6 +82,81 @@ TEST_CASE("render: VS16 warning emoji renders as color" * doctest::test_suite("r
     CHECK(rt.matchesReference(png, "vs16_warning_emoji"));
 }
 
+TEST_CASE("render: VS16 emoji draws exactly one glyph at base cell" * doctest::test_suite("render"))
+{
+    // Regression for the FFFD-overlap bug — RenderEngine::resolveCellGlyph used
+    // to fall through to the U+FFFD replacement when the cached glyph had
+    // is_empty=true. NotoColorEmoji's GSUB consumes VS16 by leaving an empty
+    // gid=1 (".null"/space) glyph behind, which tripped that fallback and
+    // drew an FFFD on top of the COLR emoji.
+    //
+    // The bundled NotoColorEmoji-subset.ttf is too minimal to expose this:
+    // it has 0 GSUB lookups and so HarfBuzz never emits the trailing empty
+    // glyph. We use a hand-crafted ~800 B test font (built from
+    // tests/scripts/make_buggy_vs16_font.py) that DOES emit it — gid=1 is an
+    // empty `space`, and a `ccmp` chain-context lookup substitutes
+    // warn + VS16 → warn + space, mirroring the real font's pattern.
+    //
+    // Pixel comparison is the wrong shape for this assertion (the test font
+    // draws a black square, not a colored emoji). What we actually want is
+    // "exactly one drawable glyph maps to the warn cell" — count, not pixels.
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.emojiFontPath = MB_TEST_BUGGY_VS16_FONT;
+    auto& rt = MBConnection::shared(opts);
+    rt.reset();
+    rt.wait(300);
+
+    // Inject ⚠️ at cell (0, 0).
+    rt.injectData("\xe2\x9a\xa0\xef\xb8\x8f");
+    rt.wait(300);
+
+    // Force a render cycle so rowShapingCache is populated for the row we
+    // care about; screenshotPng triggers a frame readback as a side effect.
+    auto png = rt.screenshotPaneRect(0, 0, 0, 2, 1);
+    REQUIRE(!png.empty());
+
+    std::string gridJson = rt.screenshotGridJson();
+    REQUIRE(!gridJson.empty());
+
+    // The test only needs counts[0] for row 0. Parse minimally.
+    glz::generic doc;
+    REQUIRE(glz::read_json(doc, gridJson) == glz::error_code::none);
+    auto* obj = std::get_if<glz::generic::object_t>(&doc.data);
+    REQUIRE(obj != nullptr);
+    auto cgcIt = obj->find("cell_glyph_counts");
+    REQUIRE(cgcIt != obj->end());
+    auto* rows = std::get_if<glz::generic::array_t>(&cgcIt->second.data);
+    REQUIRE(rows != nullptr);
+    REQUIRE(!rows->empty());
+
+    // Find row 0's count array.
+    bool found = false;
+    int row0Count0 = -1;
+    for (const auto& r : *rows) {
+        auto* ro = std::get_if<glz::generic::object_t>(&r.data);
+        if (!ro) continue;
+        auto yIt = ro->find("y");
+        auto cIt = ro->find("counts");
+        if (yIt == ro->end() || cIt == ro->end()) continue;
+        auto* yn = std::get_if<double>(&yIt->second.data);
+        auto* cn = std::get_if<glz::generic::array_t>(&cIt->second.data);
+        if (!yn || !cn) continue;
+        if (static_cast<int>(*yn) != 0) continue;
+        REQUIRE(!cn->empty());
+        if (auto* d = std::get_if<double>(&(*cn)[0].data))
+            row0Count0 = static_cast<int>(*d);
+        found = true;
+        break;
+    }
+    REQUIRE(found);
+
+    // The base cell of ⚠️ must have EXACTLY one drawable glyph mapped to
+    // it. With the regression in place, the .null phantom would resolve to
+    // the FFFD replacement and the count would be 2.
+    CHECK(row0Count0 == 1);
+}
+
 TEST_CASE("render: DEC line drawing (ESC ( 0) produces box characters" * doctest::test_suite("render"))
 {
     // Use /bin/cat so the shell doesn't emit a prompt before our inject.

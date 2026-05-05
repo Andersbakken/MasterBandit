@@ -87,6 +87,12 @@ target_compile_definitions(mb-tests PRIVATE
     MB_TEST_TEXT_FONT="${MB_RESOURCES_ROOT}/fonts/inconsolata/Inconsolata-Regular.ttf"
     MB_TEST_FALLBACK_FONT="${MB_RESOURCES_ROOT}/fonts/test-fallback/DejaVuSansMono-subset.ttf"
     MB_TEST_EMOJI_FONT="${MB_RESOURCES_ROOT}/fonts/emoji/NotoColorEmoji-subset.ttf"
+    # Hand-crafted ~800 B emoji font that REPRODUCES the NotoColorEmoji
+    # VS16 .null-phantom GSUB pattern (warn + VS16 → warn + space). Built
+    # by tests/scripts/make_buggy_vs16_font.py. Used by the VS16 glyph-count
+    # regression test — the standard subset above is too minimal to
+    # exercise that path.
+    MB_TEST_BUGGY_VS16_FONT="${MB_RESOURCES_ROOT}/fonts/test-buggy-vs16/buggy-vs16.ttf"
     MB_REF_DIR="${CMAKE_SOURCE_DIR}/tests/reference"
 )
 

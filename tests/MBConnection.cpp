@@ -486,6 +486,17 @@ std::vector<uint8_t> MBConnection::screenshotPaneRect(int paneId, int x, int y, 
     return doScreenshot("pane:" + std::to_string(paneId), x, y, w, h, true, timeoutMs);
 }
 
+std::string MBConnection::screenshotGridJson(int timeoutMs)
+{
+    glz::generic::object_t req;
+    req["cmd"] = "screenshot";
+    req["format"] = "grid";
+    req["id"] = static_cast<double>(nextId_++);
+    std::string json;
+    (void)glz::write_json(req, json);
+    return sendRequest(json, timeoutMs);
+}
+
 // ============================================================================
 // PNG comparison
 // ============================================================================

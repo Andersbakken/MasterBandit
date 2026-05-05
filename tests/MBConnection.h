@@ -50,6 +50,10 @@ public:
     // Take a cropped PNG screenshot of a specific pane (cell coordinates)
     std::vector<uint8_t> screenshotPaneRect(int paneId, int x, int y, int w, int h, int timeoutMs = 5000);
 
+    // Grid (text + per-cell glyph count) JSON of the focused pane. Returns
+    // the raw JSON string from the IPC; tests parse it with glaze.
+    std::string screenshotGridJson(int timeoutMs = 5000);
+
     // Compare two PNG byte buffers. Returns max absolute channel difference.
     static int comparePng(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
 

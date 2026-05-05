@@ -60,39 +60,46 @@ public:
     // Run fn(item) for each item in parallel. Blocks until every item
     // in *this batch* has finished. Other batches and submit() tasks
     // continue concurrently.
+    //
+    // Note on the decrement-under-mutex pattern: previous version stored
+    // `remaining` as `atomic<int>` and used the per-batch mutex only to
+    // bracket the final `notify_one()`. That lost a race against spurious
+    // wakeups: the waiter could observe `remaining == 0` (atomic store
+    // visible) before the notifying worker had returned from
+    // `notify_one()`, exit the wait, and let the dispatch caller unwind —
+    // destroying `batch.cv` / `batch.m` while the worker was still inside
+    // libc's pthread_cond_signal. Holding the mutex across decrement +
+    // notify makes the waiter's predicate check fully ordered with the
+    // worker's release of the mutex, so the waiter cannot see 0 until the
+    // worker is past the notify call.
     void dispatch(const std::vector<uint32_t>& items, const std::function<void(uint32_t)>& fn)
     {
         if (items.empty()) return;
 
-        // Per-batch state, captured by the wrapper task below.
         struct Batch {
-            std::mutex          m;
+            std::mutex              m;
             std::condition_variable cv;
-            std::atomic<int>    remaining;
+            int                     remaining;        // protected by m
             const std::function<void(uint32_t)>* fn;
         };
         Batch batch;
-        batch.remaining.store(static_cast<int>(items.size()), std::memory_order_relaxed);
-        batch.fn = &fn;
+        batch.remaining = static_cast<int>(items.size());
+        batch.fn        = &fn;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for (uint32_t item : items) {
                 queue_.emplace_back([&batch, item] {
                     (*batch.fn)(item);
-                    if (batch.remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                        std::lock_guard<std::mutex> lk(batch.m);
-                        batch.cv.notify_one();
-                    }
+                    std::lock_guard<std::mutex> lk(batch.m);
+                    if (--batch.remaining == 0) batch.cv.notify_one();
                 });
             }
         }
         cv_.notify_all();
 
         std::unique_lock<std::mutex> lk(batch.m);
-        batch.cv.wait(lk, [&]{
-            return batch.remaining.load(std::memory_order_acquire) == 0;
-        });
+        batch.cv.wait(lk, [&]{ return batch.remaining == 0; });
     }
 
     uint32_t threadCount() const { return static_cast<uint32_t>(threads_.size()); }

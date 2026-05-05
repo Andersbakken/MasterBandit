@@ -41,13 +41,20 @@ static bool resolveCellGlyph(FontData& font,
     {
         std::shared_lock lock(font.mutex);
         auto it = font.glyphs.find(glyphId);
-        if (it != font.glyphs.end() && !it->second.is_empty) {
+        if (it != font.glyphs.end()) {
             // LRU touch under shared_lock — atomic_ref + relaxed (see
             // GlyphInfo::lastUsedGen). `out = it->second;` is a plain
             // copy of all the other fields which the unique-locked
             // insert path established before publishing the entry.
             std::atomic_ref<uint32_t>(it->second.lastUsedGen)
                 .store(font.currentGen, std::memory_order_relaxed);
+            // is_empty means the font intentionally provides this glyph as
+            // invisible (e.g. NotoColorEmoji's gid=1 .null that GSUB leaves
+            // behind after consuming a VS16). Return false — do NOT fall
+            // through to the FFFD replacement; the font's answer is "draw
+            // nothing here," and FFFD-ing it produces a stray rectangle next
+            // to the emoji.
+            if (it->second.is_empty) return false;
             out = it->second;
             return true;
         }

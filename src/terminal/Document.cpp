@@ -153,16 +153,24 @@ void Document::pushVisibleRowToScrollback(int screenRow, int physical) {
     const bool soft = (flags & Continued) != 0;
     int len = cols_;
     if (!soft) {
-        // Trim trailing zero cells. Stride 8 first so the compiler can
-        // batch the wc reads; finish with a 1-stride tail.
+        // Trim trailing zero cells. The spacer half of a wide character
+        // ALSO has wc==0 (with wideSpacer=true) — leaving it in must take
+        // priority over trimming, otherwise the rendered scrollback row
+        // loses the spacer flag and the renderer falls back to cellSpan=1
+        // (i.e. an emoji that was wide on-screen reflows as narrow when
+        // scrolled into history). Stride 8 first so the compiler can
+        // batch the wc/spacer reads; finish with a 1-stride tail.
+        auto trimmable = [](const Cell& c) {
+            return c.wc == 0 && !c.attrs.wideSpacer();
+        };
         while (len >= 8 &&
-               r[len - 1].wc == 0 && r[len - 2].wc == 0 &&
-               r[len - 3].wc == 0 && r[len - 4].wc == 0 &&
-               r[len - 5].wc == 0 && r[len - 6].wc == 0 &&
-               r[len - 7].wc == 0 && r[len - 8].wc == 0) {
+               trimmable(r[len - 1]) && trimmable(r[len - 2]) &&
+               trimmable(r[len - 3]) && trimmable(r[len - 4]) &&
+               trimmable(r[len - 5]) && trimmable(r[len - 6]) &&
+               trimmable(r[len - 7]) && trimmable(r[len - 8])) {
             len -= 8;
         }
-        while (len > 0 && r[len - 1].wc == 0) --len;
+        while (len > 0 && trimmable(r[len - 1])) --len;
 
         // Kitty graphics, OSC 8 hyperlinks, and inline embedded-terminal
         // anchors stamp a CellExtra without writing wc, so the cells they

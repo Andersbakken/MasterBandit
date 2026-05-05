@@ -67,6 +67,13 @@ std::optional<ClickDetector::Result> ClickDetector::onMove(int pixelX, int pixel
     if (!buttonDown_[idx(activeButton_)]) return std::nullopt;
     if (dragStarted_) return std::nullopt; // already reported Drag
 
+    // Middle-button drag isn't a meaningful gesture (no binding consumes it
+    // and selection drags are left-only). Hand tremor or low-DPI surfaces
+    // routinely emit a few pixels of motion between press and release;
+    // promoting that to Drag suppresses the Click and silently breaks
+    // middle-click paste. Keep middle as Click-or-nothing.
+    if (activeButton_ == MouseButton::Middle) return std::nullopt;
+
     int dx = pixelX - pressX_, dy = pixelY - pressY_;
     if (dx * dx + dy * dy > dragThreshold_ * dragThreshold_) {
         dragStarted_ = true;

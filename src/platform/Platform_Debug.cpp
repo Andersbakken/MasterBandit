@@ -1,4 +1,6 @@
 #include "PlatformDawn.h"
+#include "RenderEngine.h"
+#include "RenderSync.h"
 #include "Utf8.h"
 #include "Utils.h"
 #include "Observability.h"
@@ -68,6 +70,29 @@ std::string PlatformDawn::gridToJson(Uuid id)
         }
     }
     resp["lines"] = std::move(lines);
+
+    // Per-cell drawable-glyph counts from the latest shaped frame. Used by
+    // tests that need to assert "exactly N glyphs map to this cell" without
+    // pixel-comparing against a reference image. Only emitted for rows that
+    // have a valid (post-render) shaping cache.
+    if (renderEngine_) {
+        glz::generic::array_t glyphCountRows;
+        renderEngine_->withPaneRenderPrivate(id, [&](const PaneRenderPrivate* prs) {
+            if (!prs) return;
+            for (int row = 0; row < static_cast<int>(prs->rowShapingCache.size()); ++row) {
+                const auto& rc = prs->rowShapingCache[row];
+                if (!rc.valid) continue;
+                glz::generic::array_t counts;
+                for (const auto& range : rc.cellGlyphRanges)
+                    counts.emplace_back(static_cast<double>(range.second));
+                glz::generic::object_t r;
+                r["y"] = static_cast<double>(row);
+                r["counts"] = std::move(counts);
+                glyphCountRows.emplace_back(std::move(r));
+            }
+        });
+        resp["cell_glyph_counts"] = std::move(glyphCountRows);
+    }
 
     std::string buf;
     (void)glz::write_json(resp, buf);

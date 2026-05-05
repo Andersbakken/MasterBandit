@@ -227,7 +227,12 @@ struct AppCallbacks {
     std::function<bool(PaneId, uint64_t lineId, int rows)> resizeEmbedded;
 
     // Clipboard access. source is "clipboard" or "primary".
-    std::function<std::string(const std::string& source)> getClipboard;
+    // getClipboard is async — invoked on the main thread; the supplied
+    // callback fires on the main thread once the selection request resolves
+    // (or with empty text on timeout / no owner). Setters are sync void
+    // because writing is unilateral and never blocks meaningfully.
+    std::function<void(const std::string& source,
+                        std::function<void(std::string)> done)> getClipboard;
     std::function<void(const std::string& source, const std::string& text)> setClipboard;
     // URL at a cell position (returns empty string if none).
     std::function<std::string(PaneId, uint64_t lineId, int col)> paneUrlAt;

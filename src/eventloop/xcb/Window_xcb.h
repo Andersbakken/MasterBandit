@@ -29,11 +29,9 @@ public:
     void getContentScale(float& x, float& y) const override;
     void getScreenSize(int& w, int& h) const override;
 
-    void        setClipboard(const std::string& text) override;
-    std::string getClipboard() const override;
-    void        setPrimarySelection(const std::string& text) override;
-    std::string getPrimarySelection() const override;
-    void        requestSelection(SelectionSource src, SelectionCallback cb) override;
+    void setClipboard(const std::string& text) override;
+    void setPrimarySelection(const std::string& text) override;
+    void requestSelection(SelectionSource src, SelectionCallback cb) override;
 
     std::string keyName(int keycode) const override;
     uint32_t shiftedKeyCodepoint(int keycode) const override;

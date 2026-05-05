@@ -627,11 +627,16 @@ void CocoaWindow::setClipboard(const std::string& text)
           forType:NSPasteboardTypeString];
 }
 
-std::string CocoaWindow::getClipboard() const
+void CocoaWindow::requestSelection(SelectionSource src, SelectionCallback cb)
 {
+    // Cocoa has only one pasteboard; Primary requests downgrade to Clipboard.
+    // NSPasteboard reads are synchronous and fast — fire the callback inline
+    // rather than hopping through the event loop.
+    (void)src;
     NSPasteboard* pb = [NSPasteboard generalPasteboard];
     NSString* s = [pb stringForType:NSPasteboardTypeString];
-    return s ? std::string([s UTF8String]) : std::string{};
+    if (s) cb(std::string([s UTF8String]));
+    else   cb(std::nullopt);
 }
 
 std::string CocoaWindow::keyName(int keycode) const

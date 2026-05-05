@@ -110,7 +110,13 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
         finalizeSelection();
         std::string text = selectedText();
         if (!text.empty()) {
-            if (mCallbacks.copyToClipboard) mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+            if (mCallbacks.copyToClipboard) {
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+            // X11 convention: drag-selection also populates PRIMARY so
+            // middle-click paste in this app or another picks it up
+            // without an explicit copy. No-op on Cocoa (single pasteboard).
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
+        }
         }
         publishAndFireEvent(static_cast<int>(Update));
         return;
@@ -266,7 +272,13 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
     finalizeSelection();
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
-        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+        {
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+            // X11 convention: drag-selection also populates PRIMARY so
+            // middle-click paste in this app or another picks it up
+            // without an explicit copy. No-op on Cocoa (single pasteboard).
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
+        }
     publishAndFireEvent(static_cast<int>(Update));
 }
 
@@ -291,7 +303,13 @@ void TerminalEmulator::startLineSelection(int absRow)
     finalizeSelection();
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
-        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+        {
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+            // X11 convention: drag-selection also populates PRIMARY so
+            // middle-click paste in this app or another picks it up
+            // without an explicit copy. No-op on Cocoa (single pasteboard).
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
+        }
     publishAndFireEvent(static_cast<int>(Update));
 }
 
@@ -327,7 +345,13 @@ void TerminalEmulator::extendSelection(int col, int absRow, bool xRightHalf)
     finalizeSelection();
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard)
-        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+        {
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+            // X11 convention: drag-selection also populates PRIMARY so
+            // middle-click paste in this app or another picks it up
+            // without an explicit copy. No-op on Cocoa (single pasteboard).
+            mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
+        }
     publishAndFireEvent(static_cast<int>(Update));
 }
 

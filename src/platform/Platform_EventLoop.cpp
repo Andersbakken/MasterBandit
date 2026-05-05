@@ -665,10 +665,15 @@ int PlatformDawn::exec()
             }
             return result;
         };
-        scbs.getClipboard = [this](const std::string& source) -> std::string {
-            if (!window_) return {};
-            if (source == "primary") return window_->getPrimarySelection();
-            return window_->getClipboard();
+        scbs.getClipboard = [this](const std::string& source,
+                                    std::function<void(std::string)> done) {
+            if (!window_) { done({}); return; }
+            auto src = (source == "primary") ? Window::SelectionSource::Primary
+                                              : Window::SelectionSource::Clipboard;
+            window_->requestSelection(src,
+                [done = std::move(done)](std::optional<std::string> text) {
+                    done(text.value_or(std::string{}));
+                });
         };
         scbs.setClipboard = [this](const std::string& source, const std::string& text) {
             if (!window_) return;

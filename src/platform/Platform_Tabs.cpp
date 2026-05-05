@@ -749,17 +749,27 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                 else                                   window_->setClipboard(text);
             });
         };
-        // pasteFromClipboard is invoked synchronously from inside
-        // injectData (OSC 52 c=? query) which now runs on a parse worker
-        // thread. window_->getClipboard() is main-thread-only (X11/Cocoa),
-        // so bounce through runOnMain. On the main thread we still call
-        // directly (tests, headless callers, future code paths).
+        // OSC 52 c=? query runs on a parse worker. We post the actual
+        // selection request to the main thread, fulfilling a promise on
+        // completion — main thread keeps running its event loop normally
+        // and never busy-polls. Worker blocks on the future. requestSelection
+        // is async (registers a callback that fires when SELECTION_NOTIFY
+        // arrives or the 5 s sweep deadline expires), so this never
+        // contends with a concurrent middle-click paste.
         cbs.pasteFromClipboard = [this](ClipboardTarget target) -> std::string {
-            return runOnMain([this, target]() -> std::string {
-                if (!window_) return {};
-                return target == ClipboardTarget::Primary ? window_->getPrimarySelection()
-                                                          : window_->getClipboard();
+            auto src = (target == ClipboardTarget::Primary)
+                        ? Window::SelectionSource::Primary
+                        : Window::SelectionSource::Clipboard;
+            auto p = std::make_shared<std::promise<std::string>>();
+            auto fut = p->get_future();
+            eventLoop_->post([this, src, p]() mutable {
+                if (!window_) { p->set_value({}); return; }
+                window_->requestSelection(src,
+                    [p](std::optional<std::string> text) mutable {
+                        p->set_value(text.value_or(std::string{}));
+                    });
             });
+            return fut.get();
         };
     } else {
         cbs.copyToClipboard = [](const std::string&, ClipboardTarget) {};

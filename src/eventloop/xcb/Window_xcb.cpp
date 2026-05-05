@@ -1010,43 +1010,11 @@ void XCBWindow::setClipboard(const std::string& text)
     xcb_flush(conn_);
 }
 
-std::string XCBWindow::getClipboard() const
-{
-    // Check if we own it
-    xcb_get_selection_owner_cookie_t c = xcb_get_selection_owner(conn_, atomClipboard_);
-    xcb_get_selection_owner_reply_t* r = xcb_get_selection_owner_reply(conn_, c, nullptr);
-    if (r && r->owner == window_) { free(r); return clipboardContent_; }
-    if (r) free(r);
-
-    // Request conversion from current owner
-    xcb_convert_selection(conn_, window_, atomClipboard_,
-                           atomUtf8String_, atomMbSelection_, XCB_CURRENT_TIME);
-    xcb_flush(conn_);
-
-    // Poll for SelectionNotify (with timeout)
-    // Note: this is called from the main thread event processing path,
-    // so we do a short busy-wait for the response.
-    for (int i = 0; i < 200; ++i) {
-        xcb_generic_event_t* event = xcb_poll_for_event(conn_);
-        if (!event) {
-            struct timespec ts { 0, 5'000'000 }; // 5ms
-            nanosleep(&ts, nullptr);
-            continue;
-        }
-        if ((event->response_type & ~0x80) == XCB_SELECTION_NOTIFY) {
-            auto* sn = reinterpret_cast<xcb_selection_notify_event_t*>(event);
-            if (sn->property != XCB_ATOM_NONE) {
-                std::string result = readSelectionProperty(atomMbSelection_);
-                free(event);
-                return result;
-            }
-            free(event);
-            return {};
-        }
-        free(event);
-    }
-    return {};
-}
+// All clipboard reads on XCB go through requestSelection() (defined below),
+// which registers a pending entry and resolves on SELECTION_NOTIFY without
+// blocking the main thread. There used to be sync getClipboard /
+// getPrimarySelection here; they were busy-polls that raced with the async
+// path and have been removed.
 
 void XCBWindow::setPrimarySelection(const std::string& text)
 {
@@ -1055,38 +1023,6 @@ void XCBWindow::setPrimarySelection(const std::string& text)
     xcb_flush(conn_);
 }
 
-std::string XCBWindow::getPrimarySelection() const
-{
-    xcb_get_selection_owner_cookie_t c = xcb_get_selection_owner(conn_, atomPrimary_);
-    xcb_get_selection_owner_reply_t* r = xcb_get_selection_owner_reply(conn_, c, nullptr);
-    if (r && r->owner == window_) { free(r); return primaryContent_; }
-    if (r) free(r);
-
-    xcb_convert_selection(conn_, window_, atomPrimary_,
-                           atomUtf8String_, atomMbSelection_, XCB_CURRENT_TIME);
-    xcb_flush(conn_);
-
-    for (int i = 0; i < 200; ++i) {
-        xcb_generic_event_t* event = xcb_poll_for_event(conn_);
-        if (!event) {
-            struct timespec ts { 0, 5'000'000 };
-            nanosleep(&ts, nullptr);
-            continue;
-        }
-        if ((event->response_type & ~0x80) == XCB_SELECTION_NOTIFY) {
-            auto* sn = reinterpret_cast<xcb_selection_notify_event_t*>(event);
-            if (sn->property != XCB_ATOM_NONE) {
-                std::string result = readSelectionProperty(atomMbSelection_);
-                free(event);
-                return result;
-            }
-            free(event);
-            return {};
-        }
-        free(event);
-    }
-    return {};
-}
 
 std::string XCBWindow::readSelectionProperty(xcb_atom_t property) const
 {
@@ -1132,14 +1068,10 @@ void XCBWindow::handleSelectionRequest(xcb_selection_request_event_t* ev)
 
 // Async selection: see Window.h::requestSelection. Callers fire-and-forget;
 // completion lands here when the SELECTION_NOTIFY event arrives, or via
-// sweepStaleSelectionRequests() when the deadline passes.
-//
-// Coexistence note: the synchronous getPrimarySelection() / getClipboard()
-// paths still poll the connection directly and may consume a SELECTION_NOTIFY
-// meant for a pending async request. In practice the sync paths are only
-// hit by the JS clipboard API and OSC 52 — neither typically races with a
-// user-driven middle-click paste. Routing those through the async API too
-// is the obvious next step.
+// sweepStaleSelectionRequests() when the deadline passes. This is the only
+// clipboard read path now — sync getClipboard / getPrimarySelection were
+// removed because their busy-polls could steal SELECTION_NOTIFY events
+// meant for a pending async request.
 static uint64_t monotonicMs()
 {
     using namespace std::chrono;

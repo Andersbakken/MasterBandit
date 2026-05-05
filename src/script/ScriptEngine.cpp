@@ -2501,19 +2501,52 @@ static JSValue jsMbPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
     return jsPaneNew(ctx, u);
 }
 
-// mb.getClipboard(source?) -> string.  source = "clipboard" | "primary" (default "clipboard")
+// mb.getClipboard(source?) -> Promise<string>.
+// source = "clipboard" | "primary" (default "clipboard"). Async because the
+// X11 backend has to round-trip a SELECTION_NOTIFY through the event loop;
+// resolving directly was a busy-poll source on the main thread that raced
+// with middle-click pastes (see the OSC 52 / requestSelection discussion).
 static JSValue jsMbGetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     REQUIRE_PERM(ctx, ClipboardRead);
     Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().getClipboard) return JS_NewString(ctx, "");
+
+    JSValue resolveFn = JS_UNDEFINED, rejectFn = JS_UNDEFINED;
+    JSValue resolvers[2];
+    JSValue promise = JS_NewPromiseCapability(ctx, resolvers);
+    if (JS_IsException(promise)) return JS_EXCEPTION;
+    resolveFn = resolvers[0];
+    rejectFn  = resolvers[1];
+
+    if (!eng->callbacks().getClipboard) {
+        JSValue empty = JS_NewString(ctx, "");
+        JS_Call(ctx, resolveFn, JS_UNDEFINED, 1, &empty);
+        JS_FreeValue(ctx, empty);
+        JS_FreeValue(ctx, resolveFn);
+        JS_FreeValue(ctx, rejectFn);
+        return promise;
+    }
+
     std::string source = "clipboard";
     if (argc >= 1 && JS_IsString(argv[0])) {
         const char* s = JS_ToCString(ctx, argv[0]);
         if (s) { source = s; JS_FreeCString(ctx, s); }
     }
-    auto text = eng->callbacks().getClipboard(source);
-    return JS_NewStringLen(ctx, text.data(), text.size());
+
+    // Hold a reference to the resolve fn for the callback. Reject is unused
+    // here (we never reject — empty string represents "no clipboard").
+    JS_FreeValue(ctx, rejectFn);
+    auto resolveHolder = std::make_shared<JSValue>(resolveFn);
+    JSContext* ctxCapture = ctx;
+
+    eng->callbacks().getClipboard(source,
+        [ctxCapture, resolveHolder](std::string text) {
+            JSValue str = JS_NewStringLen(ctxCapture, text.data(), text.size());
+            JS_Call(ctxCapture, *resolveHolder, JS_UNDEFINED, 1, &str);
+            JS_FreeValue(ctxCapture, str);
+            JS_FreeValue(ctxCapture, *resolveHolder);
+        });
+    return promise;
 }
 
 // mb.setClipboard(text, source?).  source = "clipboard" | "primary" (default "clipboard")

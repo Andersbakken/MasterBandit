@@ -236,9 +236,17 @@ void PlatformDawn::executeAction(const Action::Any& action)
         },
         [&](const Action::Paste&) {
             Terminal* term = activeTerm();
-            std::string clip = window_ ? window_->getClipboard() : std::string{};
-            if (term && !clip.empty())
-                term->pasteText(clip);
+            if (!term || !window_) return;
+            // Fire-and-forget: same async pattern as middle-click PasteSelection.
+            // Re-resolves the terminal by nodeId at completion in case the
+            // pane was closed mid-flight.
+            const Uuid nodeId = term->nodeId();
+            window_->requestSelection(Window::SelectionSource::Clipboard,
+                [this, nodeId](std::optional<std::string> text) {
+                    if (!text || text->empty()) return;
+                    if (auto* tt = scriptEngine_.terminal(nodeId))
+                        tt->pasteText(*text);
+                });
         },
         [&](const Action::ScrollUp& a) {
             Terminal* term = activeTerm();

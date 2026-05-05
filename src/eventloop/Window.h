@@ -21,27 +21,22 @@ public:
     virtual void getContentScale(float& x, float& y) const = 0;
     virtual void getScreenSize(int& w, int& h) const { w = h = 0; }
 
-    // Clipboard
-    virtual void        setClipboard(const std::string& text) = 0;
-    virtual std::string getClipboard() const = 0;
-
-    // X11 primary selection (middle-click paste) — no-op on non-X11
-    virtual void        setPrimarySelection(const std::string& text) { (void)text; }
-    virtual std::string getPrimarySelection() const { return {}; }
+    // Clipboard. Writes are sync `void` because they don't block the caller
+    // (XCB sets a selection owner; Cocoa writes NSPasteboard immediately).
+    // Reads are exclusively through requestSelection — see below.
+    virtual void setClipboard(const std::string& text) = 0;
+    // X11 primary selection (drag-select / middle-click). No-op on non-X11.
+    virtual void setPrimarySelection(const std::string& text) { (void)text; }
 
     // Async selection read. The callback fires exactly once on the main thread
     // with the resolved text or std::nullopt (refused/timed-out/no-owner).
-    // Default implementation calls the synchronous getter inline — backends
-    // without an async path keep working without changes.
+    // The XCB backend round-trips through SELECTION_NOTIFY without blocking
+    // the main thread; the Cocoa backend reads NSPasteboard inline and
+    // invokes the callback synchronously since pasteboard reads are fast
+    // and don't need an event-loop hop.
     enum class SelectionSource { Clipboard, Primary };
     using SelectionCallback = std::function<void(std::optional<std::string>)>;
-    virtual void requestSelection(SelectionSource src, SelectionCallback cb)
-    {
-        std::string text = (src == SelectionSource::Primary) ? getPrimarySelection()
-                                                              : getClipboard();
-        if (text.empty()) cb(std::nullopt);
-        else              cb(std::move(text));
-    }
+    virtual void requestSelection(SelectionSource src, SelectionCallback cb) = 0;
 
     // Key name for a given platform key code (for Kitty keyboard protocol)
     virtual std::string keyName(int keycode) const { (void)keycode; return {}; }

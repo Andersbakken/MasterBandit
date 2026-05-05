@@ -578,6 +578,9 @@ void TerminalEmulator::selectCommandOutputForRecord(const CommandRecord* rec)
     std::string text = selectedText();
     if (!text.empty() && mCallbacks.copyToClipboard) {
         mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
+        // Mirror to X11 PRIMARY so middle-click paste works without an
+        // explicit copy. No-op on Cocoa (single pasteboard).
+        mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
     }
     publishAndFireEvent(static_cast<int>(Update));
 }

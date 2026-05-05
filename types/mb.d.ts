@@ -805,10 +805,11 @@ interface MbGlobal {
 
     // --- Clipboard ---
     /**
-     * Read from the system clipboard. Requires `clipboard.read`.
+     * Read from the system clipboard. Async to avoid blocking the main
+     * thread on X11's SELECTION_NOTIFY round-trip. Requires `clipboard.read`.
      * @param source `"clipboard"` (default) or `"primary"` (X11 primary selection).
      */
-    getClipboard(source?: "clipboard" | "primary"): string;
+    getClipboard(source?: "clipboard" | "primary"): Promise<string>;
     /**
      * Write to the system clipboard. Requires `clipboard.write`.
      * @param source `"clipboard"` (default) or `"primary"` (X11 primary selection).

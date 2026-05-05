@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -68,6 +69,11 @@ public:
     // Number of currently visible (not dropped-from-head) logical lines.
     int numLines() const { return static_cast<int>(meta_.size()) - firstValidLine_; }
     bool empty() const { return numLines() == 0; }
+    // Internal head pointer into meta_/cumulativeLengths_. Exposed so
+    // LineBuffer's lineId index can store stable internal indices that
+    // survive dropFront() (which advances firstValidLine_ rather than
+    // shifting meta_ entries).
+    int firstValidLine() const { return firstValidLine_; }
 
     // Whether more cells can fit. ~90% threshold so partial-line overflows
     // can usually still extend at least somewhat before sealing.
@@ -207,6 +213,20 @@ public:
     // the buffer (evicted or never existed).
     int logicalIndexOfLineId(uint64_t id) const;
 
+    // O(1) lineId → position lookup via the index. Replaces the prior
+    // linear scan in logicalIndexOfLineId / firstAbsOfLine. Returns nullopt
+    // when the line was evicted, has never been added, or its block has
+    // been popped from the front.
+    struct FoundLine {
+        int blockIdx;          // current deque index of the block
+        int externalLineIdx;   // 0-based, post-dropFront external index
+    };
+    std::optional<FoundLine> findLine(uint64_t id) const;
+
+    // Wrapped-row offset to the start of `blockIdx`. Cached via
+    // ensureSumCache(width); O(1) on warm cache.
+    int numWrappedRowsBeforeBlock(int blockIdx, int width) const;
+
     // Iteration helpers: resolve logical-index → (block, lineInBlock).
     bool resolveLogicalIndex(int idx, int* blockIdx, int* lineInBlock) const;
 
@@ -249,6 +269,23 @@ private:
     mutable int cachedSumWidth_ = -1;
     mutable int cachedTotalWrappedRows_ = 0;
     mutable std::vector<int> cachedBlockEndCum_;
+
+    // O(1) lineId → location index. Each entry stores the block's *stable*
+    // seq plus the line's *internal* meta_-array index, so the entry survives
+    // dropFront() (which advances firstValidLine_ but doesn't shift meta_)
+    // and pop_front() (handled by adjusting firstBlockSeq_, see below).
+    // Updated on every appendLine that creates a new line, on popLastLine,
+    // and on enforceLimits eviction; cleared on clear().
+    struct LineLocation {
+        uint64_t blockSeq;
+        int      internalLineIdx;
+    };
+    std::unordered_map<uint64_t, LineLocation> lineIdIndex_;
+    // Stable, monotonic seq for blocks_.front(). Increments by 1 every time
+    // a head block is popped. blocks_[i] has seq == firstBlockSeq_ + i, so
+    // we can convert an index entry's stored seq back to the current deque
+    // index in O(1) without touching the entries on eviction.
+    uint64_t firstBlockSeq_ = 0;
 
     void ensureSumCache(int width) const;
     void invalidateSumCache() { cachedSumWidth_ = -1; }

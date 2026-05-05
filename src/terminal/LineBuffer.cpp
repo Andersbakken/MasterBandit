@@ -265,6 +265,22 @@ void LineBuffer::appendLine(const Cell* cells, int len,
         ++totalLines_;
     }
 
+    // Index the line. extendsLast on a successful append doesn't add a new
+    // line — same lineId, same internal slot — so the existing index entry
+    // remains correct; skip in that case. All other paths (new line in the
+    // existing block, sealed-then-restart on overflow, fresh new block)
+    // produce a new meta_ entry at internal index meta_.size()-1, which is
+    // firstValidLine() + numLines() - 1 for the back block.
+    if (!(appended && extendsLast)) {
+        const int blockIdx = static_cast<int>(blocks_.size()) - 1;
+        const auto& back = blocks_.back();
+        const int internalIdx = back.firstValidLine() + back.numLines() - 1;
+        lineIdIndex_[lineId] = LineLocation{
+            firstBlockSeq_ + static_cast<uint64_t>(blockIdx),
+            internalIdx
+        };
+    }
+
     totalCells_ += len;
     enforceLimits();
     invalidateSumCache();
@@ -302,7 +318,13 @@ LineBuffer::PoppedLine LineBuffer::popLastLine()
     last.dropLast();
     totalCells_ -= len;
     --totalLines_;
-    if (last.empty()) blocks_.pop_back();
+    lineIdIndex_.erase(result.lineId);
+    if (last.empty()) {
+        // Pop the now-empty trailing block. Its seq is firstBlockSeq_+blocks_.size()-1
+        // and is never reused — that's fine, no remaining index entries
+        // reference it (we just erased the only one).
+        blocks_.pop_back();
+    }
     invalidateSumCache();
     return result;
 }
@@ -393,27 +415,37 @@ uint64_t LineBuffer::lineIdAtLogicalIndex(int idx) const
 
 int LineBuffer::logicalIndexOfLineId(uint64_t id) const
 {
-    if (id == 0) return -1;
-    // Lines are appended in monotonic-id order, so we can binary search by
-    // first ID in each block. But blocks may overlap in id space if... no,
-    // they don't — we never append out of order. Linear over blocks is fine.
+    auto loc = findLine(id);
+    if (!loc) return -1;
+    // Sum numLines() over preceding blocks. blockCount is small (typically
+    // O(scrollback / 64)); per-block size is O(1) (vector::size). For real
+    // performance-sensitive callers, prefer findLine + numWrappedRowsBeforeBlock.
     int base = 0;
-    for (const auto& b : blocks_) {
-        if (b.empty()) continue;
-        const uint64_t firstId = b.lineId(0);
-        const uint64_t lastId  = b.lineId(b.numLines() - 1);
-        if (id < firstId) return -1;  // evicted
-        if (id <= lastId) {
-            // Linear inside block; numLines is small (~10s).
-            for (int i = 0; i < b.numLines(); ++i) {
-                if (b.lineId(i) == id) return base + i;
-                if (b.lineId(i) > id) return -1;
-            }
-            return -1;
-        }
-        base += b.numLines();
-    }
-    return -1;
+    for (int bi = 0; bi < loc->blockIdx; ++bi) base += blocks_[bi].numLines();
+    return base + loc->externalLineIdx;
+}
+
+std::optional<LineBuffer::FoundLine> LineBuffer::findLine(uint64_t id) const
+{
+    if (id == 0) return std::nullopt;
+    auto it = lineIdIndex_.find(id);
+    if (it == lineIdIndex_.end()) return std::nullopt;
+    const int blockIdx = static_cast<int>(it->second.blockSeq - firstBlockSeq_);
+    if (blockIdx < 0 || blockIdx >= static_cast<int>(blocks_.size()))
+        return std::nullopt;
+    const auto& b = blocks_[blockIdx];
+    const int ext = it->second.internalLineIdx - b.firstValidLine();
+    if (ext < 0 || ext >= b.numLines()) return std::nullopt;
+    return FoundLine{blockIdx, ext};
+}
+
+int LineBuffer::numWrappedRowsBeforeBlock(int blockIdx, int width) const
+{
+    if (width <= 0 || blockIdx <= 0) return 0;
+    ensureSumCache(width);
+    const int last = std::min(blockIdx - 1,
+                              static_cast<int>(cachedBlockEndCum_.size()) - 1);
+    return last >= 0 ? cachedBlockEndCum_[last] : 0;
 }
 
 bool LineBuffer::resolveLogicalIndex(int idx, int* blockIdx, int* lineInBlock) const
@@ -493,6 +525,10 @@ void LineBuffer::clear()
     totalLines_ = 0;
     totalCells_ = 0;
     invalidateSumCache();
+    lineIdIndex_.clear();
+    // firstBlockSeq_ left as-is. Blocks_ is empty, so no index entries can
+    // reference any prior seq; reusing seqs (or not) makes no observable
+    // difference. Resetting to 0 would also be fine.
 }
 
 void LineBuffer::invalidateWrapCaches()
@@ -510,6 +546,7 @@ void LineBuffer::enforceLimits()
         LogicalLineBlock& head = blocks_.front();
         if (head.empty()) {
             blocks_.pop_front();
+            ++firstBlockSeq_;
             continue;
         }
         const uint64_t evictedId = head.lineId(0);
@@ -517,8 +554,16 @@ void LineBuffer::enforceLimits()
         const bool blockEmpty = head.dropFront(1);
         totalLines_ -= 1;
         totalCells_ -= len;
+        lineIdIndex_.erase(evictedId);
         if (onLineIdEvicted_) onLineIdEvicted_(evictedId);
-        if (blockEmpty) blocks_.pop_front();
+        if (blockEmpty) {
+            blocks_.pop_front();
+            // firstBlockSeq_ tracks blocks_.front()'s seq. Bump it so that
+            // surviving entries (which still hold their original blockSeq)
+            // continue to map to the correct deque index via blockSeq -
+            // firstBlockSeq_.
+            ++firstBlockSeq_;
+        }
     }
 }
 

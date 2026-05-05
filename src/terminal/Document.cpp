@@ -589,22 +589,14 @@ int Document::firstAbsOfLine(uint64_t id) const {
     // Check scrollback first: a soft-wrap chain that straddles scrollback
     // and visible grid (partial last line in scrollback shares its id with
     // its continuation in the visible grid) has its FIRST physical row in
-    // scrollback.
-    int logicalIdx = scrollback_.logicalIndexOfLineId(id);
-    if (logicalIdx >= 0) {
-        int wrappedRow = 0;
-        int rem = logicalIdx;
-        for (int bi = 0; bi < scrollback_.blockCount(); ++bi) {
-            const auto& b = scrollback_.block(bi);
-            if (rem < b.numLines()) {
-                for (int li = 0; li < rem; ++li) {
-                    wrappedRow += b.numWrappedRowsForLine(li, cols_);
-                }
-                return wrappedRow;
-            }
-            wrappedRow += b.numWrappedRows(cols_);
-            rem -= b.numLines();
+    // scrollback. O(1) hash lookup + O(64) sum within the target block.
+    if (auto loc = scrollback_.findLine(id)) {
+        int wrappedRow = scrollback_.numWrappedRowsBeforeBlock(loc->blockIdx, cols_);
+        const auto& b = scrollback_.block(loc->blockIdx);
+        for (int li = 0; li < loc->externalLineIdx; ++li) {
+            wrappedRow += b.numWrappedRowsForLine(li, cols_);
         }
+        return wrappedRow;
     }
     // Fallback: visible grid.
     for (int i = 0; i < screenHeight_; ++i) {
@@ -622,22 +614,14 @@ int Document::lastAbsOfLine(uint64_t id) const {
         if (screenLineId_[i] == id) lastScreen = i;
     }
     if (lastScreen >= 0) return historySize() + lastScreen;
-    // Scrollback.
-    int logicalIdx = scrollback_.logicalIndexOfLineId(id);
-    if (logicalIdx < 0) return -1;
-    int wrappedRow = 0;
-    int rem = logicalIdx;
-    for (int bi = 0; bi < scrollback_.blockCount(); ++bi) {
-        const auto& b = scrollback_.block(bi);
-        if (rem < b.numLines()) {
-            for (int li = 0; li < rem; ++li) {
-                wrappedRow += b.numWrappedRowsForLine(li, cols_);
-            }
-            // last wrapped row of THIS line
-            return wrappedRow + b.numWrappedRowsForLine(rem, cols_) - 1;
+    // Scrollback. Same O(1) findLine; "last" is firstAbs + (line's wrap rows) - 1.
+    if (auto loc = scrollback_.findLine(id)) {
+        int wrappedRow = scrollback_.numWrappedRowsBeforeBlock(loc->blockIdx, cols_);
+        const auto& b = scrollback_.block(loc->blockIdx);
+        for (int li = 0; li < loc->externalLineIdx; ++li) {
+            wrappedRow += b.numWrappedRowsForLine(li, cols_);
         }
-        wrappedRow += b.numWrappedRows(cols_);
-        rem -= b.numLines();
+        return wrappedRow + b.numWrappedRowsForLine(loc->externalLineIdx, cols_) - 1;
     }
     return -1;
 }

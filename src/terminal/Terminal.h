@@ -273,11 +273,30 @@ private:
     mutable std::atomic<int64_t> mLastFgPollNs { 0 };
     mutable std::shared_mutex mFgCacheMutex;
     mutable std::string mFgCache;
+    // Rate-limited rejections strand pgid changes when no further bytes
+    // arrive — e.g. a child process forks, prints once, then idles. The
+    // worker can't catch up on the next iteration because there isn't
+    // one. A blocked call instead arms a one-shot timer for ~kFgPollMinNs
+    // later that retries the check. Any subsequent call (data-driven
+    // refresh OR the timer firing) cancels the pending timer; if it was
+    // also blocked, it re-arms a fresh one. Atomic flag is the
+    // single-flight gate so a flood doesn't spam the event loop with
+    // schedule/cancel posts. Timer id touched only on main.
+    std::atomic<bool> mDeferredFgScheduled { false };
+    EventLoop::TimerId mDeferredFgTimerId { 0 };
+    enum class FgRefreshResult { Changed, Unchanged, RateLimited };
     bool fgPollDue() const noexcept;
     // Refresh the cached foreground process name + pgid if the rate
-    // limiter allows. Returns true if pgid changed (callers may want to
-    // fire onForegroundProcessChanged). Safe to call from any thread.
-    bool tryRefreshForegroundProcess();
+    // limiter allows. Returns Changed when callers should fire
+    // onForegroundProcessChanged. Safe to call from any thread.
+    FgRefreshResult tryRefreshForegroundProcess();
+    // Run tryRefreshForegroundProcess, fire the callback on Changed,
+    // arm the deferred-retry timer on RateLimited, cancel any pending
+    // timer otherwise. Centralizes the policy so the worker iteration
+    // and the timer callback share it.
+    void pollAndNotifyForegroundProcess();
+    void scheduleDeferredFgCheck();
+    void cancelDeferredFgCheck();
     // Main-thread event loop — used for PTY *writes* only (lazy
     // POLLOUT registration in writeToPTY, removed in flushWriteQueue
     // when the queue drains) and for post()-ing main-thread work from

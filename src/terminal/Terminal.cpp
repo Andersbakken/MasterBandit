@@ -63,6 +63,14 @@ Terminal::~Terminal()
         mEventLoop->removeFd(mMasterFD);
         mWritePollActive = false;
     }
+    // The deferred fg-check timer captures `this`; pull it out of the
+    // event loop synchronously so it can't fire after destruction.
+    // Destructor runs on the main thread (graveyard delivery), so direct
+    // removeTimer is safe — no need to bounce through post.
+    if (mDeferredFgTimerId != 0 && mEventLoop) {
+        mEventLoop->removeTimer(mDeferredFgTimerId);
+        mDeferredFgTimerId = 0;
+    }
     if (mMasterFD != -1) ::close(mMasterFD);
 }
 
@@ -392,9 +400,7 @@ void Terminal::flushReadBuffer()
     // Check for foreground process change. Both tcgetpgrp and proc_pidpath
     // are syscalls; tryRefreshForegroundProcess rate-limits and updates the
     // cached value that all readers (render thread, tab title, JS) consume.
-    if (callbacks().onForegroundProcessChanged && tryRefreshForegroundProcess()) {
-        callbacks().onForegroundProcessChanged(foregroundProcess());
-    }
+    pollAndNotifyForegroundProcess();
 }
 
 bool Terminal::queueParse(const ParseSubmitFn& submit)
@@ -495,10 +501,10 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
             // by tryRefreshForegroundProcess (200 ms); updates the cached
             // value all readers consume (render frame builder, tab title,
             // JS API) so they don't each issue their own ioctl per use.
-            if (callbacks().onForegroundProcessChanged && mMasterFD >= 0
-                && tryRefreshForegroundProcess()) {
-                callbacks().onForegroundProcessChanged(foregroundProcess());
-            }
+            // A blocked check arms a deferred-retry timer so a child that
+            // forks-prints-idles still has its title updated after the
+            // rate-limit window expires.
+            pollAndNotifyForegroundProcess();
         }
     });
     return true;
@@ -637,10 +643,8 @@ bool Terminal::fgPollDue() const noexcept
 }
 
 namespace {
-std::string lookupFgProcessName(int masterFD)
+std::string lookupFgProcessName(pid_t pgid)
 {
-    if (masterFD < 0) return {};
-    pid_t pgid = tcgetpgrp(masterFD);
     if (pgid < 0) return {};
 
 #ifdef __APPLE__
@@ -666,24 +670,81 @@ std::string lookupFgProcessName(int masterFD)
 }
 } // namespace
 
-bool Terminal::tryRefreshForegroundProcess()
+Terminal::FgRefreshResult Terminal::tryRefreshForegroundProcess()
 {
-    if (!fgPollDue()) return false;
-    if (mMasterFD < 0) return false;
+    if (!fgPollDue()) return FgRefreshResult::RateLimited;
+    if (mMasterFD < 0) return FgRefreshResult::Unchanged;
 
     pid_t pgid = tcgetpgrp(mMasterFD);
-    if (pgid < 0) return false;
+    if (pgid < 0) return FgRefreshResult::Unchanged;
 
     pid_t prevPgid = mLastFgPgid.exchange(pgid, std::memory_order_relaxed);
-    bool changed = (prevPgid != pgid);
-    if (!changed) return false;
+    if (prevPgid == pgid) return FgRefreshResult::Unchanged;
 
-    std::string name = lookupFgProcessName(mMasterFD);
+    // Pass the already-fetched pgid; the previous helper did its own
+    // tcgetpgrp which raced with the one above and could return a name
+    // belonging to a different pgid than the one we just stored.
+    std::string name = lookupFgProcessName(pgid);
     {
         std::unique_lock lk(mFgCacheMutex);
         mFgCache = std::move(name);
     }
-    return true;
+    return FgRefreshResult::Changed;
+}
+
+void Terminal::pollAndNotifyForegroundProcess()
+{
+    if (!callbacks().onForegroundProcessChanged || mMasterFD < 0) return;
+    auto res = tryRefreshForegroundProcess();
+    if (res == FgRefreshResult::RateLimited) {
+        scheduleDeferredFgCheck();
+        return;
+    }
+    cancelDeferredFgCheck();
+    if (res == FgRefreshResult::Changed)
+        callbacks().onForegroundProcessChanged(foregroundProcess());
+}
+
+void Terminal::scheduleDeferredFgCheck()
+{
+    bool expected = false;
+    if (!mDeferredFgScheduled.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel))
+        return;  // already armed
+    if (!mEventLoop) {
+        mDeferredFgScheduled.store(false, std::memory_order_release);
+        return;
+    }
+    mEventLoop->post([this]() {
+        // A cancel may have raced ahead of this post; if so, the flag is
+        // already false and we have nothing to schedule.
+        if (!mDeferredFgScheduled.load(std::memory_order_acquire)) return;
+        // A small slack past the rate-limit window so fgPollDue is
+        // guaranteed to pass when the timer fires.
+        const uint64_t ms =
+            static_cast<uint64_t>(kFgPollMinNs / 1'000'000) + 5;
+        mDeferredFgTimerId = mEventLoop->addTimer(ms, /*repeat=*/false,
+            [this]() {
+                mDeferredFgTimerId = 0;
+                mDeferredFgScheduled.store(false, std::memory_order_release);
+                pollAndNotifyForegroundProcess();
+            });
+    });
+}
+
+void Terminal::cancelDeferredFgCheck()
+{
+    bool expected = true;
+    if (!mDeferredFgScheduled.compare_exchange_strong(
+            expected, false, std::memory_order_acq_rel))
+        return;  // not armed
+    if (!mEventLoop) return;
+    mEventLoop->post([this]() {
+        if (mDeferredFgTimerId != 0) {
+            mEventLoop->removeTimer(mDeferredFgTimerId);
+            mDeferredFgTimerId = 0;
+        }
+    });
 }
 
 std::string Terminal::foregroundProcess() const

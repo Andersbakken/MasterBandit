@@ -310,6 +310,15 @@ public:
     //  - Pending → user prompt raised; a matching `approveScript` call will follow.
     //  - Denied  → permanently denied per allowlist.
     //  - Error   → file unreadable or JS eval failed; `error` holds a message.
+    //
+    // PRIVILEGE ELEVATION: if `requestedPerms` includes Perm::BuiltIn,
+    // the loaded instance is created with `builtIn = true` and
+    // `permissions = Perm::All`, bypassing the allowlist prompt and
+    // every sandbox restriction. The BuiltIn marker bit is consumed
+    // here (not stored on the Instance). This path is gated at the
+    // JS boundary by jsMbLoadScript — only built-in callers may
+    // request it; user-script attempts terminate the calling context
+    // before reaching this method.
     LoadResult loadScript(const std::string& path, uint32_t requestedPerms);
 
     void unload(InstanceId id);

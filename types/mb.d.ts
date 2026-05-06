@@ -52,7 +52,44 @@ type MbPermission =
      * with the user's environment. Held separate so popup-only or
      * shell-only scripts don't pick it up implicitly.
      */
-    | "process.spawn";
+    | "process.spawn"
+    /**
+     * Shorthand for every regular permission bit. Equivalent to
+     * listing all the groups + the standalone bits (currently
+     * `ui.focus`, `pane.read`). Symmetric with how mb's allowlist
+     * file represents a fully-permissive grant.
+     *
+     * Does NOT include the `"builtin"` elevation marker — `"all"`
+     * grants every privilege a *user script* can hold, but the
+     * loaded instance still runs sandboxed (file paths confined,
+     * allowlist prompt fires, etc.). For the trust elevation, use
+     * `"builtin"` instead (and see its documentation for the
+     * caller-restriction).
+     */
+    | "all"
+    /**
+     * Privilege-elevation request: load the target script as a
+     * built-in. A built-in instance has every permission bit AND
+     * runs without sandbox restrictions — unrestricted file paths,
+     * no allowlist prompt, full trust. Same level as the shipped
+     * controller scripts and `~/.config/MasterBandit/config.js`.
+     *
+     * **Caller restriction**: only built-in scripts may name this
+     * permission in their `mb.loadScript` call. A user script that
+     * tries it triggers a permission violation and the calling
+     * instance is terminated — same kill-on-attempt semantics as
+     * accessing `shell.commands` without the grant. The rationale:
+     * a built-in can already get the same effect by `import`-ing
+     * arbitrary files from its directory (which run with the
+     * importer's permissions in the same JS context), so explicitly
+     * letting them spawn separate built-in instances doesn't grant
+     * new authority — just lifecycle control. User scripts must
+     * never escape their sandbox, so the attempt is a hard error.
+     *
+     * Implies `"all"`; listing them together is redundant but
+     * harmless.
+     */
+    | "builtin";
 
 /** Comma-separated permission string, e.g. `"shell,net.listen.local"`. */
 type MbPermissionList = string;

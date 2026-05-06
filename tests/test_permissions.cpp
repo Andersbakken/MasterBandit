@@ -174,6 +174,87 @@ TEST_CASE("Round-trip: parse → format → parse yields the same bits")
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Special tokens: "all" and "builtin"
+// ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("parsePermissions(\"all\") yields every real permission bit but not BuiltIn")
+{
+    uint32_t got = parsePermissions("all");
+    CHECK(got == Perm::All);
+    // Every individual bit in the kPermNames table (except the BuiltIn
+    // marker) must be set.
+    CHECK((got & Perm::UiPopupCreate)    == Perm::UiPopupCreate);
+    CHECK((got & Perm::UiPopupDestroy)   == Perm::UiPopupDestroy);
+    CHECK((got & Perm::UiFocus)          == Perm::UiFocus);
+    CHECK((got & Perm::IoFilterInput)    == Perm::IoFilterInput);
+    CHECK((got & Perm::IoFilterOutput)   == Perm::IoFilterOutput);
+    CHECK((got & Perm::IoInject)         == Perm::IoInject);
+    CHECK((got & Perm::ShellWrite)       == Perm::ShellWrite);
+    CHECK((got & Perm::ShellReadCommands)== Perm::ShellReadCommands);
+    CHECK((got & Perm::ActionsInvoke)    == Perm::ActionsInvoke);
+    CHECK((got & Perm::TabsCreate)       == Perm::TabsCreate);
+    CHECK((got & Perm::TabsClose)        == Perm::TabsClose);
+    CHECK((got & Perm::ScriptsLoad)      == Perm::ScriptsLoad);
+    CHECK((got & Perm::ScriptsUnload)    == Perm::ScriptsUnload);
+    CHECK((got & Perm::FsRead)           == Perm::FsRead);
+    CHECK((got & Perm::FsWrite)          == Perm::FsWrite);
+    CHECK((got & Perm::NetListenLocal)   == Perm::NetListenLocal);
+    CHECK((got & Perm::ClipboardRead)    == Perm::ClipboardRead);
+    CHECK((got & Perm::ClipboardWrite)   == Perm::ClipboardWrite);
+    CHECK((got & Perm::PaneRead)         == Perm::PaneRead);
+    CHECK((got & Perm::LayoutModify)     == Perm::LayoutModify);
+    CHECK((got & Perm::ConfigModify)     == Perm::ConfigModify);
+    CHECK((got & Perm::ProcessSpawn)     == Perm::ProcessSpawn);
+    // Crucially, the BuiltIn marker MUST NOT be set — that would let
+    // a user script trip the elevation gate just by passing "all".
+    CHECK((got & Perm::BuiltIn) == 0u);
+}
+
+TEST_CASE("parsePermissions(\"builtin\") yields All | BuiltIn")
+{
+    uint32_t got = parsePermissions("builtin");
+    CHECK((got & Perm::BuiltIn) == Perm::BuiltIn);
+    CHECK((got & Perm::All)     == Perm::All);
+    // "builtin" is exactly the union of those two — nothing else.
+    CHECK(got == (Perm::All | Perm::BuiltIn));
+}
+
+TEST_CASE("parsePermissions(\"all,builtin\") composes to the same as \"builtin\"")
+{
+    // Order shouldn't matter — both tokens contribute to the OR. The
+    // result is the same as "builtin" alone since "all" is a subset
+    // of what "builtin" implies.
+    CHECK(parsePermissions("all,builtin") == (Perm::All | Perm::BuiltIn));
+    CHECK(parsePermissions("builtin,all") == (Perm::All | Perm::BuiltIn));
+}
+
+TEST_CASE("permissionsToString(All) round-trips through \"all\"")
+{
+    // permissionsToString emits "all" as a display shorthand for the
+    // full bitmask; parsePermissions must return the same value when
+    // fed "all" back. Without the parse-table entry this would yield
+    // 0 + a warn, breaking allowlist round-trips.
+    std::string s = permissionsToString(Perm::All);
+    CHECK(s == "all");
+    CHECK(parsePermissions(s) == Perm::All);
+}
+
+TEST_CASE("Perm::BuiltIn is bit 31 (high bit, visually distinct from real permissions)")
+{
+    CHECK(static_cast<uint32_t>(Perm::BuiltIn) == (1u << 31));
+}
+
+TEST_CASE("Perm::All does NOT include the BuiltIn marker bit")
+{
+    // Documented invariant: BuiltIn is an elevation request flag,
+    // not a permission. Including it in All would let "all" be a
+    // privilege-escalation vector (both the parse-table entry above
+    // would compose to BuiltIn-set, and any future construction
+    // like `Perm::All | foo` would inadvertently set the marker).
+    CHECK((static_cast<uint32_t>(Perm::All) & Perm::BuiltIn) == 0u);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // New bits introduced in this round of work
 // ─────────────────────────────────────────────────────────────────────
 
@@ -210,7 +291,8 @@ TEST_CASE("New bits don't collide with any prior bit")
                                    | Perm::ProcessSpawn
                                    | Perm::UiFocus
                                    | Perm::LayoutModify
-                                   | Perm::ConfigModify;
+                                   | Perm::ConfigModify
+                                   | Perm::BuiltIn;
     constexpr uint32_t kPreExisting =
         Perm::UiPopupCreate    | Perm::UiPopupDestroy   |
         Perm::IoFilterInput    | Perm::IoFilterOutput   |

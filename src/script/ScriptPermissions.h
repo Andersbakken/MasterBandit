@@ -68,6 +68,32 @@ enum Perm : uint32_t {
     // don't get it implicitly. Built-ins receive it via Perm::All.
     ProcessSpawn      = 1 << 23,
 
+    // Elevation marker. NOT a permission in the usual sense — it's a
+    // request flag carried through parsePermissions so a built-in
+    // caller can ask `mb.loadScript(...)` to spawn the loaded script
+    // as a built-in (full trust, unrestricted file paths, no allowlist
+    // prompt — same as the C++ Engine::loadController path).
+    //
+    // Consumed at the loadScript boundary: jsMbLoadScript checks for
+    // this bit on the requested set, validates the *caller* is a
+    // built-in (kills the context if not), and converts the request
+    // to a builtIn=true instance creation. The bit is stripped from
+    // the final stored Instance::permissions value, which always
+    // ends up as Perm::All for built-ins regardless.
+    //
+    // A user script that names "builtin" in its loadScript permission
+    // string is treated as a permission violation and terminated —
+    // same kill-on-attempt semantics as accessing shell.commands
+    // without the grant. Built-ins parse "builtin" as
+    // (All | BuiltIn) and the loader does the right thing.
+    //
+    // Pinned at bit 31 so it sits visually outside the real-permission
+    // range (currently up through bit 23) and stays clear of any new
+    // permission bits we might land mid-range. The "all" parse token
+    // explicitly excludes this bit (see kPermNames) so a user
+    // requesting "all" doesn't accidentally trip the elevation gate.
+    BuiltIn           = 1u << 31,
+
     // Group masks
     GroupUi      = UiPopupCreate | UiPopupDestroy,
     GroupIo      = IoFilterInput | IoFilterOutput | IoInject,
@@ -82,7 +108,25 @@ enum Perm : uint32_t {
     GroupConfig    = ConfigModify,
     GroupProcess   = ProcessSpawn,
 
-    All          = 0xFFFFFFFF,
+    // Every real permission. Explicitly OR'd from the group masks
+    // (plus the standalone bits not in any group) so it stays in
+    // sync as new bits are added — anything new must be added here
+    // too. Deliberately EXCLUDES Perm::BuiltIn: that's an elevation
+    // marker, not a permission, and parsing "all" must not trip the
+    // builtin-elevation kill-on-attempt path.
+    All          = GroupUi | UiFocus
+                 | GroupIo
+                 | GroupShell
+                 | GroupActions
+                 | GroupTabs
+                 | GroupScripts
+                 | GroupFs
+                 | GroupNet
+                 | GroupClipboard
+                 | GroupLayout
+                 | GroupConfig
+                 | GroupProcess
+                 | PaneRead,
 };
 
 // Parse "ui,io,shell" or "ui,io.filter.input,shell" into a bitmask
@@ -100,7 +144,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 11;
+inline constexpr int kAllowlistVersion = 12;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

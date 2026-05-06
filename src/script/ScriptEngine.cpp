@@ -2053,6 +2053,18 @@ static JSValue loadResultToJs(JSContext* ctx, const Engine::LoadResult& res)
 }
 
 // mb.loadScript(path, permissionsStr) -> { status, id?, error? }
+//
+// Privilege-elevation gate: if `permissionsStr` includes "builtin"
+// (which parses to Perm::All | Perm::BuiltIn), we require the calling
+// instance to itself be built-in. A user script that names "builtin"
+// is treated as a permission violation — same kill-the-context
+// semantics as accessing shell.commands without the grant. The
+// rationale: built-ins can already get the same effect by importing
+// arbitrary files from their directory (which run with the importer's
+// permissions in the same context), so explicitly allowing them to
+// spawn separate built-in instances doesn't grant new authority — it
+// just gives them lifecycle control. User scripts must NEVER be able
+// to escape their sandbox, so the attempt is a hard error.
 static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
     if (argc < 1) {
@@ -2072,6 +2084,27 @@ static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueCon
     }
 
     uint32_t perms = parsePermissions(permsStr);
+
+    // Built-in elevation gate. The Perm::BuiltIn bit only enters the
+    // bitmask via the "builtin" token (and possibly via a hand-edited
+    // allowlist file, but the load path here doesn't consult that
+    // before this check). Callers that request elevation but aren't
+    // themselves built-in get the same treatment as any other
+    // permission violation: the calling instance is scheduled for
+    // termination and we throw rather than returning a misleading
+    // success / pending result.
+    if (perms & Perm::BuiltIn) {
+        auto* inst = instanceFromCtx(ctx);
+        if (!inst || !inst->builtIn) {
+            JS_FreeCString(ctx, path);
+            sLog().error("ScriptEngine: user script attempted to load '{}' as built-in",
+                         inst ? inst->path : std::string("(unknown)"));
+            scheduleTermination(ctx);
+            return JS_ThrowTypeError(ctx,
+                "loadScript: 'builtin' permission may only be requested by built-in scripts");
+        }
+    }
+
     Engine::LoadResult res = eng->loadScript(std::string(path), perms);
     JS_FreeCString(ctx, path);
     return loadResultToJs(ctx, res);
@@ -3446,11 +3479,28 @@ static bool verifyModuleHashes(const Allowlist::AllowEntry& entry)
     return current == entry.modules;
 }
 
-Engine::LoadResult Engine::loadScript(const std::string& path, uint32_t requestedPerms) {
+Engine::LoadResult Engine::loadScript(const std::string& path,
+                                       uint32_t requestedPerms) {
     std::string content = io::readFile(path);
     if (content.empty()) {
         sLog().error("ScriptEngine: failed to read '{}'", path);
         return { LoadResult::Status::Error, 0, "failed to read '" + path + "'" };
+    }
+
+    // Built-in elevation: caller asked for the BuiltIn marker bit.
+    // Skip the allowlist and SHA-256 check entirely — the trust
+    // comes from the *caller* being a built-in (verified at the JS
+    // layer in jsMbLoadScript before we get here; user scripts that
+    // request the bit are terminated before reaching this method).
+    // Force permissions to Perm::All since built-ins are unrestricted
+    // by definition; the BuiltIn marker bit itself is consumed by
+    // loadScriptInternal and not stored on the Instance.
+    if (requestedPerms & Perm::BuiltIn) {
+        InstanceId id = loadScriptInternal(path, content,
+                                            Perm::All | Perm::BuiltIn);
+        if (id == 0)
+            return { LoadResult::Status::Error, 0, "script evaluation failed" };
+        return { LoadResult::Status::Loaded, id, {} };
     }
 
     std::string hash = sha256Hex(content);
@@ -3487,24 +3537,38 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
                                        uint32_t permissions) {
     std::string hash = sha256Hex(content);
 
+    // Built-in elevation: the marker bit lives in `permissions` itself.
+    // Strip it from the value we store on the Instance (it's not a
+    // permission, it's a request flag) but use its presence to set
+    // the builtIn flag on the instance.
+    const bool asBuiltIn = (permissions & Perm::BuiltIn) != 0;
+    const uint32_t storedPerms = permissions & ~Perm::BuiltIn;
+
     // Idempotent reload: if an existing instance has identical path, content hash,
-    // and permissions, return its id without unloading/reloading. Avoids pointless
-    // churn (owned resources, registered handlers, WS servers, etc.) when the same
-    // script is loaded repeatedly — e.g. applet-loader handling repeated OSC 58237
-    // triggers from multiple shells.
+    // permissions, AND built-in status, return its id without unloading/reloading.
+    // Avoids pointless churn (owned resources, registered handlers, WS servers,
+    // etc.) when the same script is loaded repeatedly — e.g. applet-loader handling
+    // repeated OSC 58237 triggers from multiple shells.
+    //
+    // Built-in matching: a script previously loaded as built-in and now
+    // re-requested as user (or vice versa) is NOT idempotent — they're
+    // different trust levels and need a full reload through the unload
+    // path below.
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
-        if (!inst.builtIn && inst.path == path
-            && inst.contentHash == hash && inst.permissions == permissions) {
+        if (inst.builtIn == asBuiltIn && inst.path == path
+            && inst.contentHash == hash && inst.permissions == storedPerms) {
             sLog().info("ScriptEngine: identical reload of '{}' (id={}), no-op", path, inst.id);
             return inst.id;
         }
     }
 
-    // Unload any existing instance with the same path (content or perms differ)
+    // Unload any existing instance with the same path (content or perms differ).
+    // We unload regardless of the previous instance's built-in status — a
+    // re-load with different trust intent should replace, not coexist.
     for (auto& inst : instances_) {
         if (!inst.ctx) continue;
-        if (inst.path == path && !inst.builtIn) {
+        if (inst.path == path) {
             sLog().info("ScriptEngine: replacing existing instance of '{}'", path);
             unload(inst.id);
             break;
@@ -3515,7 +3579,7 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     InstanceId id = nextId_++;
     setupGlobals(ctx, id);
 
-    instances_.push_back({id, ctx, path, hash, permissions, false});
+    instances_.push_back({id, ctx, path, hash, storedPerms, asBuiltIn});
     JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
 
     JSValue result = JS_Eval(ctx, content.c_str(), content.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
@@ -3531,7 +3595,9 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
         return 0;
     }
     JS_FreeValue(ctx, result);
-    sLog().info("ScriptEngine: loaded script '{}' (id={}, perms={})", path, id, permissionsToString(permissions));
+    sLog().info("ScriptEngine: loaded {} '{}' (id={}, perms={})",
+                asBuiltIn ? "built-in" : "script",
+                path, id, permissionsToString(storedPerms));
     return id;
 }
 

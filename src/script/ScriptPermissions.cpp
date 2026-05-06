@@ -57,6 +57,23 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"process.spawn",     Perm::ProcessSpawn},
     {"layout.modify",     Perm::LayoutModify},
     {"config.modify",     Perm::ConfigModify},
+    // Special tokens
+    //
+    // "all": every regular permission bit. Symmetric with
+    // permissionsToString(Perm::All) which already emits "all" as a
+    // display shorthand. Without this entry, parsing "all" silently
+    // yielded 0 + a "unknown permission" warn — surprising for any
+    // user editing the allowlist TOML by hand. Perm::All is defined
+    // to exclude the BuiltIn elevation marker, so "all" can never
+    // accidentally trigger the built-in-elevation kill path.
+    //
+    // "builtin": elevation request, consumed by jsMbLoadScript.
+    // Encodes (All | BuiltIn) so a built-in caller's `mb.loadScript`
+    // request lands with both the "all permissions" intent and the
+    // "load as built-in" flag in one token. See Perm::BuiltIn for
+    // the user-script kill-on-attempt path.
+    {"all",               Perm::All},
+    {"builtin",           Perm::All | Perm::BuiltIn},
 };
 
 uint32_t parsePermissions(const std::string& permStr)

@@ -3,34 +3,28 @@
 #include <spdlog/spdlog.h>
 #include <cstdio>
 
-static bool isModifierKey(Key k)
-{
-    switch (k) {
-    case Key_Shift: case Key_Shift_L: case Key_Shift_R:
-    case Key_Control: case Key_Control_L: case Key_Control_R:
-    case Key_Alt: case Key_Alt_L: case Key_Alt_R:
-    case Key_Meta: case Key_Super_L: case Key_Super_R:
-    case Key_Hyper_L: case Key_Hyper_R:
-    case Key_CapsLock: case Key_NumLock:
-        return true;
-    default:
-        return false;
-    }
-}
+// `isModifierKey` lives in InputTypes.h so InputController.cpp can
+// share it (the platform-side resetViewport/resetBlink calls have
+// the same modifier-skip requirement as the emulator-side selection
+// clear and viewport reset below).
 
 void TerminalEmulator::keyPressEvent(const KeyEvent *event)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    resetViewport();
-    // Typing anywhere clears any existing text selection (matches iTerm /
-    // WezTerm / most GUI editors — a selection is stale the moment you
-    // start typing). But modifier-only presses (Shift, Cmd, Ctrl, Alt
-    // alone) should not clear — otherwise tapping Cmd before Cmd+T would
-    // wipe the selection before the binding even fires. Bindings that
-    // match short-circuit earlier in InputController::onKey and never
-    // reach here, so any event we see is either PTY-bound typing or a
-    // bare modifier press we should ignore.
-    if (hasSelection() && !isModifierKey(event->key)) clearSelection();
+    // Modifier-only presses (Shift, Ctrl, Cmd, Alt alone) must NOT
+    // jump the viewport back to live or wipe the selection — the
+    // user is mid-gesture (e.g. Ctrl-click on a URL up in the
+    // scrollback). Real keystrokes (with or without modifiers) reset
+    // the viewport so typing always brings you back to the prompt;
+    // bare modifier taps stay where they are.
+    //
+    // Bindings that match short-circuit earlier in InputController::onKey
+    // and never reach here, so any event we see is either PTY-bound
+    // typing or a bare modifier press we want to ignore.
+    if (!isModifierKey(event->key)) {
+        resetViewport();
+        if (hasSelection()) clearSelection();
+    }
 
     spdlog::debug("keyPressEvent: key=0x{:x} text='{}' ({} bytes) count={} mods=0x{:x} action={}",
                   static_cast<int>(event->key),

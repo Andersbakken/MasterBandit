@@ -164,8 +164,17 @@ void InputController::onKey(int key, int scancode, int action, int mods)
         }
     }
 
-    // Reset viewport to live when typing (not on release, not for bindings)
-    if (action != static_cast<int>(KeyAction_Release)) {
+    // Reset viewport to live + restart the cursor blink when typing.
+    // Skipped on:
+    //   - releases — only press/repeat counts as "typing".
+    //   - bindings that matched — they returned earlier, never reach here.
+    //   - bare modifier presses (Ctrl alone, Shift alone, ...) — the
+    //     user is mid-gesture (Ctrl-click on a URL in the scrollback,
+    //     about to start a Cmd+T binding, etc.) and jumping the
+    //     viewport / restarting the blink mid-gesture is jarring.
+    //     The same isModifierKey predicate gates the emulator-side
+    //     selection clear and viewport reset in keyPressEvent.
+    if (action != static_cast<int>(KeyAction_Release) && !isModifierKey(k)) {
         term->resetViewport();
         if (platform_->animScheduler_) platform_->animScheduler_->resetBlink();
     }

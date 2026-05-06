@@ -636,4 +636,31 @@ struct KeyEvent
     KeyAction action { KeyAction_Press };
 };
 
+// True iff `k` is a bare modifier key (Shift, Control, Alt, Meta/Super,
+// CapsLock, etc. — left/right variants included). Modifier-only presses
+// must NOT trigger viewport-reset, blink-reset, or selection-clear:
+// pressing Ctrl before a Ctrl-click on a URL up in the scrollback would
+// otherwise jump the user back to the bottom and the click would land
+// on the wrong line. The same logic applies to tapping a modifier in
+// preparation for a binding (e.g. Cmd before Cmd+T) — we don't want
+// "typing-anywhere" side effects to fire from a modifier tap that
+// hasn't yet combined with a real key.
+//
+// `inline` because this is a small predicate used on the hot input
+// path; `constexpr` would be nice but the switch isn't constexpr-
+// friendly across the GCC/Clang versions we target.
+inline bool isModifierKey(Key k)
+{
+    switch (k) {
+    case Key_Shift:   case Key_Shift_L:   case Key_Shift_R:
+    case Key_Control: case Key_Control_L: case Key_Control_R:
+    case Key_Alt:     case Key_Alt_L:     case Key_Alt_R:
+    case Key_Meta:    case Key_Super_L:   case Key_Super_R:
+    case Key_Hyper_L: case Key_Hyper_R:
+    case Key_CapsLock: case Key_NumLock:
+        return true;
+    default:
+        return false;
+    }
+}
 

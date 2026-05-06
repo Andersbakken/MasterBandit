@@ -36,6 +36,7 @@ set(TEST_SOURCES
     test_osc_1337.cpp
     test_popup.cpp
     test_embedded_terminals.cpp
+    test_output_capture.cpp
     test_tabs.cpp
     test_charset.cpp
     test_layout_tree.cpp
@@ -50,6 +51,16 @@ set(TEST_SOURCES
     ../src/LayoutTree.cpp
     ../src/Uuid.cpp
     ../src/script/ScriptEngine_Terminals.cpp
+    # Permission parsing / formatting + sha256 helper. Pulled in so the
+    # permission-name unit tests can run without standing up a full
+    # ScriptEngine. The TU has zero deps on QuickJS.
+    ../src/script/ScriptPermissions.cpp
+    test_permissions.cpp
+    # Cross-platform detached spawn. Self-contained (libc + spdlog),
+    # so we link it directly here rather than dragging in the rest of
+    # the platform OBJECT library (Dawn / Cocoa / DBus / etc.).
+    ../src/platform/PlatformSpawn.cpp
+    test_platform_spawn.cpp
 )
 
 if(APPLE)
@@ -65,6 +76,7 @@ target_include_directories(mb-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/terminal
     ${CMAKE_SOURCE_DIR}/src/platform
+    ${CMAKE_SOURCE_DIR}/src/script
     ${Stb_INCLUDE_DIR}
 )
 
@@ -98,9 +110,17 @@ target_compile_definitions(mb-tests PRIVATE
 
 if(APPLE)
     target_link_libraries(mb-tests PRIVATE "-framework CoreText" "-framework Cocoa")
+    # CommonCrypto is part of libSystem on macOS, no extra link needed.
 else()
     find_package(Fontconfig REQUIRED)
-    target_link_libraries(mb-tests PRIVATE Fontconfig::Fontconfig)
+    # OpenSSL is the SHA-256 backend on non-Apple — same dep ScriptPermissions
+    # picks up in the main target via implicit linkage. Made explicit here
+    # because mb-tests doesn't transitively pull in the platform link block.
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(mb-tests PRIVATE
+        Fontconfig::Fontconfig
+        OpenSSL::Crypto
+    )
 endif()
 
 include(doctest)

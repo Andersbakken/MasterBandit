@@ -53,16 +53,66 @@ static fs::path scriptConfigDir(const Engine* eng, const Engine::Instance* inst)
     return fs::path(eng->configDir()) / stem;
 }
 
-// Ensure the config dir exists, return false on failure.
-static bool ensureConfigDir(const fs::path& dir)
+// Shared scratch directory for ephemeral script-produced files (output
+// captures, dumps the user wants to hand to an external tool, etc.).
+// All scripts \u2014 user and built-in \u2014 may write here without falling
+// inside their config sandbox.
+//
+// Resolution:
+//   - Honour TMPDIR when set (macOS sets it to a per-user dir; Linux
+//     usually doesn't).
+//   - Default to /tmp on POSIX. Don't try to support Windows here \u2014
+//     mb is POSIX-only.
+//
+// Layout: $TMPDIR/masterbandit/. Auto-created with mode 0700 on first
+// successful write check so a script that never writes never leaves
+// an empty dir behind. Lifetime is whatever /tmp's lifetime is on the
+// host \u2014 typically until reboot. NOT cleaned on script exit; an LLM
+// tool reading the capture file mid-session would otherwise lose it.
+static fs::path scriptTmpDir()
+{
+    const char* envTmp = std::getenv("TMPDIR");
+    fs::path base = (envTmp && *envTmp) ? fs::path(envTmp) : fs::path("/tmp");
+    return base / "masterbandit";
+}
+
+// Ensure a directory exists, return false on failure. Creates parents
+// recursively. The optional `tightenPerms` flag chmods the leaf dir to
+// 0700 \u2014 only used for the shared tmp dir, where we want to ensure no
+// other user on a multi-tenant box can drop replacement files for us
+// to overwrite. The per-script config dir intentionally inherits the
+// user's umask so a manually-set 0750 (e.g. for shared dotfile repos)
+// is preserved.
+static bool ensureDirExists(const fs::path& dir,
+                            const char* label,
+                            bool tightenPerms = false)
 {
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) {
-        spdlog::error("mb:fs: failed to create config dir '{}': {}", dir.string(), ec.message());
+        spdlog::error("mb:fs: failed to create {} '{}': {}",
+                      label, dir.string(), ec.message());
         return false;
     }
+    if (tightenPerms) {
+        // Best-effort 0700 on the leaf. Don't error out if the chmod
+        // fails \u2014 a pre-existing dir with looser perms is common
+        // (first script created it; others inherit). Filesystems
+        // without POSIX perm support (rare on /tmp) silently ignore.
+        fs::permissions(dir, fs::perms::owner_all,
+                        fs::perm_options::replace, ec);
+    }
     return true;
+}
+
+// Public helper: ensure the parent directory of `filePath` exists.
+// Lets non-fs callers (e.g. pane writers) auto-create the destination
+// directory through the same logging path the fs.* JS functions use.
+bool scriptEnsureParentDir(const std::string& filePath)
+{
+    fs::path parent = fs::path(filePath).parent_path();
+    if (parent.empty()) return true; // bare filename in cwd; nothing to create
+    return ensureDirExists(parent, "directory");
 }
 
 // Check that `path` is readable by `inst`. Returns canonical path, or empty on failure.
@@ -94,8 +144,17 @@ static std::string checkReadPath(JSContext* ctx, Engine* eng,
     fs::path p(raw);
     fs::path scriptDir = fs::path(inst->path).parent_path();
     fs::path cfgDir    = scriptConfigDir(eng, inst);
+    fs::path tmpDir    = scriptTmpDir();
 
-    if (!isUnderDir(p, scriptDir) && !isUnderDir(p, cfgDir)) {
+    // The tmp dir is shared scratch space (see scriptTmpDir doc).
+    // Ensure it exists before isUnderDir tries to canonicalise it,
+    // otherwise a read targeting an existing file under /tmp/masterbandit
+    // would be rejected just because no script has written there yet.
+    // tightenPerms=true: best-effort 0700 on first creation.
+    ensureDirExists(tmpDir, "tmp dir", /*tightenPerms*/ true);
+
+    if (!isUnderDir(p, scriptDir) && !isUnderDir(p, cfgDir)
+        && !isUnderDir(p, tmpDir)) {
         JS_ThrowTypeError(ctx, "mb:fs: '%s' is outside allowed read directories", raw.c_str());
         return {};
     }
@@ -113,9 +172,60 @@ static std::string checkReadPath(JSContext* ctx, Engine* eng,
     return canon.string();
 }
 
-// Check that `path` is writable by `inst`. Returns the validated path string.
-// For built-ins: any path allowed.
-// For user scripts: must be under config dir only.
+// Check that `path` is writable by `inst` under the sandbox rules.
+// Returns the validated path string, or empty on failure (with a
+// TypeError already thrown into `ctx`).
+//
+// SANDBOX:
+//   - Built-ins (inst->builtIn): any path allowed.
+//   - User scripts: must be under <configDir>/<scriptStem>/.
+//
+// PERMISSION:
+//   This helper does NOT check the FsWrite bit. Callers from `mb:fs`
+//   pre-check FsWrite (see checkWriteWithPerm below); non-fs callers
+//   like pane.writeRangeToFile do their own gating (PaneRead+FsWrite)
+//   and want the sandbox check decoupled from the bit name shown in
+//   error messages.
+//
+// TOCTOU NOTE: returns the raw (non-canonical) path. A symlink swap
+// between this check and the actual open could route the write
+// outside the sandbox. Acceptable under the current trust model
+// (scripts are user-installed); if tightened, should resolve via
+// O_NOFOLLOW or canonicalise the parent dir.
+std::string scriptCheckWritePath(JSContext* ctx, Engine* eng,
+                                  Engine::Instance* inst, const std::string& raw)
+{
+    if (!inst) {
+        JS_ThrowTypeError(ctx, "mb:fs: no script context");
+        return {};
+    }
+    if (inst->builtIn)
+        return raw; // unrestricted
+
+    fs::path p(raw);
+    fs::path cfgDir = scriptConfigDir(eng, inst);
+    fs::path tmpDir = scriptTmpDir();
+
+    // Lazily create the shared tmp dir before isUnderDir canonicalises
+    // it. Same reasoning as in checkReadPath; without this an early
+    // write would be rejected for "outside allowed dirs" purely
+    // because no prior call had ensured the dir exists.
+    ensureDirExists(tmpDir, "tmp dir", /*tightenPerms*/ true);
+
+    if (!isUnderDir(p, cfgDir) && !isUnderDir(p, tmpDir)) {
+        JS_ThrowTypeError(ctx, "mb:fs: '%s' is outside allowed write directories", raw.c_str());
+        return {};
+    }
+
+    return raw;
+}
+
+// Internal wrapper used by the mb:fs JS functions: enforces FsWrite
+// before delegating to the public sandbox check. Kept as a separate
+// function so the public helper doesn't tie its error message to a
+// specific permission bit (callers that gate on a different bit —
+// e.g. pane writers needing both PaneRead and FsWrite — produce
+// clearer errors via their own pre-check).
 static std::string checkWritePath(JSContext* ctx, Engine* eng,
                                    Engine::Instance* inst, const std::string& raw)
 {
@@ -123,19 +233,7 @@ static std::string checkWritePath(JSContext* ctx, Engine* eng,
         JS_ThrowTypeError(ctx, "mb:fs: fs.write permission required");
         return {};
     }
-
-    if (inst->builtIn)
-        return raw; // unrestricted
-
-    fs::path p(raw);
-    fs::path cfgDir = scriptConfigDir(eng, inst);
-
-    if (!isUnderDir(p, cfgDir)) {
-        JS_ThrowTypeError(ctx, "mb:fs: '%s' is outside allowed write directory", raw.c_str());
-        return {};
-    }
-
-    return raw;
+    return scriptCheckWritePath(ctx, eng, inst, raw);
 }
 
 // ============================================================================
@@ -188,9 +286,11 @@ static JSValue js_fs_writeFileSync(JSContext* ctx, JSValueConst, int argc, JSVal
     std::string validatedPath = checkWritePath(ctx, eng, inst, pathStr);
     if (validatedPath.empty()) return JS_EXCEPTION;
 
-    // Auto-create config dir (or parent for built-ins)
+    // Auto-create the destination directory (sandbox dir for user
+    // scripts, arbitrary parent for built-ins).
     fs::path parent = fs::path(validatedPath).parent_path();
-    if (!ensureConfigDir(parent)) return JS_ThrowTypeError(ctx, "mb:fs: cannot create directory for '%s'", validatedPath.c_str());
+    if (!ensureDirExists(parent, "directory"))
+        return JS_ThrowTypeError(ctx, "mb:fs: cannot create directory for '%s'", validatedPath.c_str());
 
     std::ofstream f(validatedPath, std::ios::binary | std::ios::trunc);
     if (!f) return JS_ThrowTypeError(ctx, "mb:fs: cannot write '%s'", validatedPath.c_str());
@@ -312,7 +412,7 @@ static JSValue js_fs_mkdirSync(JSContext* ctx, JSValueConst, int argc, JSValueCo
     std::string validatedPath = checkWritePath(ctx, eng, inst, rawPath);
     if (validatedPath.empty()) return JS_EXCEPTION;
 
-    if (!ensureConfigDir(fs::path(validatedPath)))
+    if (!ensureDirExists(fs::path(validatedPath), "directory"))
         return JS_ThrowTypeError(ctx, "mb:fs: mkdirSync failed for '%s'", validatedPath.c_str());
 
     return JS_UNDEFINED;

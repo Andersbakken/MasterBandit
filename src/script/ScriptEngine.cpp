@@ -346,6 +346,20 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
         }
         prop = std::string("__evt_") + event;
         registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
+    } else if (strcmp(event, "rowEvicted") == 0) {
+        // Eviction notification reveals scrollback churn rate even
+        // without text access, but more importantly is only useful
+        // alongside getTextFromRows / linkAt — gating both under the
+        // same bit keeps the permission story coherent. Prefer the
+        // soft-fail style (return false) over scheduleTermination here:
+        // unlike shell.commands, an unprivileged script subscribing to
+        // rowEvicted is a misconfiguration, not necessarily an attack.
+        if (!checkPerm(ctx, Perm::PaneRead)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: pane.read not granted");
+        }
+        prop = std::string("__evt_") + event;
+        registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else {
         prop = std::string("__evt_") + event;
         // Register for lifecycle events too (so destroyed can be found)
@@ -474,6 +488,9 @@ static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
                                       int argc, JSValueConst* argv)
 {
     if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
+    // Reading arbitrary scrollback ranges exposes credentials, history,
+    // and command output. Gate under pane.read (formerly pane.selection).
+    REQUIRE_PERM(ctx, PaneRead);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -488,10 +505,264 @@ static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
     return JS_NewStringLen(ctx, text.data(), text.size());
 }
 
+// pane.writeRangeToFile(path, startRowId, startCol, endRowId, endCol) -> number
+//
+// Stream the same text getTextFromRows would return directly to a
+// file. Atomic on success: writes to <path>.tmp under the same
+// fs-sandbox rules as fs.writeFileSync, then renames into place.
+//
+// PERMISSIONS: PaneRead (the text we're reading) AND FsWrite (the
+// destination we're writing). Failing either short-circuits before
+// any I/O — `path` is not even resolved until both bits are checked.
+//
+// SANDBOX: identical to fs.writeFileSync — built-ins may write
+// anywhere, user scripts may write only under <configDir>/<scriptStem>/.
+//
+// THROWS on missing args, permission denial, sandbox violation,
+// path-resolution failure, or write failure. Returns the number of
+// bytes written on success (== text.size()).
+//
+// Forward declarations for the MbOutputCapture class infrastructure
+// defined further down (between the embedded-class block and the
+// Terminal-base proto). jsPaneCaptureOutputToFile (immediately
+// below) needs to construct a handle, and Engine::notifyCaptureStopped
+// (much further down) needs to read its opaque data.
+struct JsOutputCaptureData;
+static JSValue jsOutputCaptureNew(JSContext* ctx,
+                                   PaneId paneId,
+                                   const std::string& path,
+                                   const std::string& format,
+                                   InstanceId instId);
+static JsOutputCaptureData* jsOutputCaptureGet(JSContext* ctx, JSValueConst val);
+
+// NOT STREAMING: the entire range is materialised in memory first.
+// For unbounded ranges this is the same memory profile as
+// getTextFromRows. A future enhancement could iterate logical lines
+// from Document and write per-row, capping resident memory; not
+// worth the complexity until a concrete use case shows up.
+static JSValue jsPaneWriteRangeToFile(JSContext* ctx, JSValueConst this_val,
+                                       int argc, JSValueConst* argv)
+{
+    if (argc < 5) return JS_ThrowTypeError(ctx,
+        "writeRangeToFile requires (path, startRowId, startCol, endRowId, endCol)");
+
+    // Gate before extracting *any* arguments to avoid leaking even
+    // path strings via thrown error formatting.
+    REQUIRE_PERM(ctx, PaneRead);
+    REQUIRE_PERM(ctx, FsWrite);
+
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+    auto* inst = eng->findInstanceByCtx(ctx);
+    if (!inst) return JS_ThrowTypeError(ctx, "writeRangeToFile: no script context");
+
+    // Path
+    const char* rawPath = JS_ToCString(ctx, argv[0]);
+    if (!rawPath) return JS_EXCEPTION;
+    std::string pathStr(rawPath);
+    JS_FreeCString(ctx, rawPath);
+
+    // Range
+    uint64_t startId = 0, endId = 0;
+    int32_t startCol = 0, endCol = 0;
+    if (JS_ToIndex(ctx, &startId, argv[1]) < 0) return JS_EXCEPTION;
+    if (JS_ToInt32(ctx, &startCol, argv[2]) < 0) return JS_EXCEPTION;
+    if (JS_ToIndex(ctx, &endId,   argv[3]) < 0) return JS_EXCEPTION;
+    if (JS_ToInt32(ctx, &endCol,  argv[4]) < 0) return JS_EXCEPTION;
+
+    // Sandbox-validate. scriptCheckWritePath enforces the
+    // <configDir>/<stem>/ containment for user scripts; built-ins are
+    // unrestricted. FsWrite was already pre-checked above.
+    std::string validatedPath = scriptCheckWritePath(ctx, eng, inst, pathStr);
+    if (validatedPath.empty()) return JS_EXCEPTION;
+
+    // Pull text via the same callback getTextFromRows uses. Empty
+    // when paneGetText is unwired (headless tests) or when the
+    // range is empty / out of range — match getTextFromRows behaviour
+    // and write an empty file in that case rather than throwing,
+    // since "the range had no text" is a legitimate result.
+    std::string text;
+    if (eng->callbacks().paneGetText) {
+        text = eng->callbacks().paneGetText(pane->id, startId, startCol, endId, endCol);
+    }
+
+    // Auto-create parent dir (matches fs.writeFileSync). Failure
+    // here is logged inside scriptEnsureParentDir.
+    if (!scriptEnsureParentDir(validatedPath))
+        return JS_ThrowTypeError(ctx, "writeRangeToFile: cannot create directory for '%s'",
+                                  validatedPath.c_str());
+
+    // Atomic write: <path>.tmp -> rename. The .tmp lands in the same
+    // directory so rename is a single inode swap (no cross-device
+    // copy). On crash the partial .tmp remains; the user's prior file
+    // is untouched. We don't fsync — the kernel will flush on close,
+    // and a crash mid-write is rare enough that the cost of fsync on
+    // every applet save isn't justified. If durability matters more
+    // than throughput, callers should fsync explicitly via fs APIs
+    // (which they don't have for this path; future work).
+    std::string tmpPath = validatedPath + ".tmp";
+    {
+        std::ofstream f(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!f) return JS_ThrowTypeError(ctx, "writeRangeToFile: cannot open '%s'",
+                                          tmpPath.c_str());
+        f.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!f) return JS_ThrowTypeError(ctx, "writeRangeToFile: write failed for '%s'",
+                                          tmpPath.c_str());
+        // RAII close on scope exit.
+    }
+
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, validatedPath, ec);
+    if (ec) {
+        // Best-effort cleanup; ignore secondary failure.
+        std::error_code _ignore;
+        std::filesystem::remove(tmpPath, _ignore);
+        return JS_ThrowTypeError(ctx,
+            "writeRangeToFile: rename '%s' -> '%s' failed: %s",
+            tmpPath.c_str(), validatedPath.c_str(), ec.message().c_str());
+    }
+
+    return JS_NewInt64(ctx, static_cast<int64_t>(text.size()));
+}
+
+// pane.captureOutputToFile(path, opts?) -> MbOutputCapture
+//
+// Open a streaming capture of this pane's PTY output. Writes are
+// applied at the post-coalesce / pre-filter point inside Terminal,
+// so the captured byte stream matches what the emulator sees
+// regardless of script-level output filters.
+//
+// PERMISSIONS: PaneRead (the source content) AND FsWrite (the
+// destination file). Both pre-checked before the path is even
+// touched, so a permission failure can't leak even the raw path
+// through error formatting.
+//
+// SANDBOX: validated by scriptCheckWritePath — same rules as
+// fs.writeFileSync. Built-in scripts unrestricted; user scripts
+// confined to <configDir>/<scriptStem>/ or /tmp/masterbandit/.
+//
+// UNIQUENESS: a Terminal accepts multiple concurrent captures, but
+// each must point at a distinct path. Calling with a path already
+// in use throws — the caller is expected to stop the previous
+// capture first (or pick a different path).
+//
+// FORMAT: opts.format is "raw" (default) or "asciicast".
+//   - "raw": every byte the emulator received, written verbatim.
+//   - "asciicast": asciicast v2 (https://docs.asciinema.org/...).
+//                  Header line written at open; each PTY chunk
+//                  becomes one [<elapsed_seconds>, "o", <chunk>]
+//                  record, JSON-escaped per RFC 8259.
+//
+// AUTO-STOP: if a write fails (disk full, EIO, fd revoked), the
+// capture is closed and a "stopped" event fires on the returned
+// handle with reason="io-error" and the strerror text. Other
+// captures on the same Terminal are unaffected.
+//
+// CLEANUP: the capture is tracked on the calling instance's
+// owned-resource list; unloading the script auto-stops it.
+static JSValue jsPaneCaptureOutputToFile(JSContext* ctx, JSValueConst this_val,
+                                          int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx,
+            "captureOutputToFile requires (path: string, opts?: object)");
+    REQUIRE_PERM(ctx, PaneRead);
+    REQUIRE_PERM(ctx, FsWrite);
+
+    auto* pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive)
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    Engine* eng = engineFromCtx(ctx);
+    auto* inst = eng->findInstanceByCtx(ctx);
+    if (!inst) return JS_ThrowTypeError(ctx,
+        "captureOutputToFile: no script context");
+
+    Terminal* t = eng->terminal(pane->id);
+    if (!t) return JS_ThrowTypeError(ctx,
+        "captureOutputToFile: pane has no live Terminal");
+
+    // path
+    const char* rawPath = JS_ToCString(ctx, argv[0]);
+    if (!rawPath) return JS_EXCEPTION;
+    std::string pathStr(rawPath);
+    JS_FreeCString(ctx, rawPath);
+
+    // opts.format (default "raw")
+    std::string formatStr = "raw";
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        if (!JS_IsObject(argv[1]))
+            return JS_ThrowTypeError(ctx,
+                "captureOutputToFile: opts must be an object");
+        JSValue f = JS_GetPropertyStr(ctx, argv[1], "format");
+        if (!JS_IsUndefined(f) && !JS_IsNull(f)) {
+            if (!JS_IsString(f)) {
+                JS_FreeValue(ctx, f);
+                return JS_ThrowTypeError(ctx,
+                    "captureOutputToFile: opts.format must be a string");
+            }
+            const char* s = JS_ToCString(ctx, f);
+            if (s) { formatStr = s; JS_FreeCString(ctx, s); }
+        }
+        JS_FreeValue(ctx, f);
+    }
+
+    Terminal::CaptureFormat cf;
+    if (formatStr == "raw") {
+        cf = Terminal::CaptureFormat::Raw;
+    } else if (formatStr == "asciicast") {
+        cf = Terminal::CaptureFormat::Asciicast;
+    } else if (formatStr == "text") {
+        cf = Terminal::CaptureFormat::Text;
+    } else {
+        return JS_ThrowTypeError(ctx,
+            "captureOutputToFile: opts.format must be \"raw\", \"asciicast\", or \"text\" (got \"%s\")",
+            formatStr.c_str());
+    }
+
+    // Sandbox-validate the path. scriptCheckWritePath already pre-
+    // creates /tmp/masterbandit/ if the path lands there, and
+    // produces a TypeError on sandbox violation.
+    std::string validatedPath = scriptCheckWritePath(ctx, eng, inst, pathStr);
+    if (validatedPath.empty()) return JS_EXCEPTION;
+
+    // Auto-create destination directory before fopen — without this
+    // a path like /tmp/masterbandit/captures/foo.cast would fail
+    // at addOutputCapture's fopen, even though the sandbox check
+    // accepted it.
+    if (!scriptEnsureParentDir(validatedPath))
+        return JS_ThrowTypeError(ctx,
+            "captureOutputToFile: cannot create directory for '%s'",
+            validatedPath.c_str());
+
+    std::string err;
+    bool ok = t->addOutputCapture(validatedPath, cf, &err);
+    if (!ok) {
+        return JS_ThrowTypeError(ctx,
+            "captureOutputToFile: %s", err.c_str());
+    }
+
+    // Track on the instance for cleanup-on-unload.
+    inst->ownedOutputCaptures.push_back({pane->id, validatedPath});
+
+    // Build the handle. Register it in a global registry keyed by
+    // (paneId:path) so notifyCaptureStopped can find it later.
+    JSValue handle = jsOutputCaptureNew(ctx, pane->id,
+                                         validatedPath, formatStr,
+                                         inst->id);
+    std::string regKey = pane->id.toString() + ":" + validatedPath;
+    registerInGlobal(ctx, "__capture_registry", regKey, handle);
+    return handle;
+}
+
 static JSValue jsPaneRowIdAt(JSContext* ctx, JSValueConst this_val,
                               int argc, JSValueConst* argv)
 {
     if (argc < 1) return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
+    // rowId is only useful as input to text/link extraction or for
+    // cross-referencing selection/command records. Gate consistently
+    // under pane.read so a text-denied script can't probe row positions.
+    REQUIRE_PERM(ctx, PaneRead);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -509,6 +780,7 @@ static JSValue jsPaneLinkAt(JSContext* ctx, JSValueConst this_val,
                             int argc, JSValueConst* argv)
 {
     if (argc < 2) return JS_ThrowTypeError(ctx, "linkAt requires (rowId, col)");
+    REQUIRE_PERM(ctx, PaneRead);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -526,6 +798,7 @@ static JSValue jsPaneGetLinksFromRows(JSContext* ctx, JSValueConst this_val,
                                        int argc, JSValueConst* argv)
 {
     if (argc < 2) return JS_ThrowTypeError(ctx, "getLinksFromRows requires (startRowId, endRowId, limit?)");
+    REQUIRE_PERM(ctx, PaneRead);
     auto* pane = jsPaneGet(ctx, this_val);
     if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
     Engine* eng = engineFromCtx(ctx);
@@ -603,7 +876,7 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         return arr;
     }
     case 11: { // selection → { startRowId, startCol, endRowId, endCol } | null
-        REQUIRE_PERM(ctx, PaneSelection);
+        REQUIRE_PERM(ctx, PaneRead);
         if (!info.hasSelection) return JS_NULL;
         JSValue obj = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartLineId)));
@@ -612,13 +885,12 @@ static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
         JS_SetPropertyStr(ctx, obj, "endCol",     JS_NewInt32(ctx, info.selectionEndCol));
         return obj;
     }
-    case 12: { // cursor → { rowId, col }
-        REQUIRE_PERM(ctx, PaneSelection);
-        JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "rowId", JS_NewInt64(ctx, static_cast<int64_t>(info.cursorLineId)));
-        JS_SetPropertyStr(ctx, obj, "col",   JS_NewInt32(ctx, info.cursorCol));
-        return obj;
-    }
+    // case 12 (cursor) is intentionally absent: pane.cursor resolves via
+    // the inherited Terminal base getter (jsTerminalGetProp magic 2),
+    // which performs a live mutex-locked read against the emulator and
+    // applies the same PaneRead gate when `this` is a pane. The previous
+    // case-12 fallback used the paneInfo snapshot and was never wired
+    // into jsPaneProto, so removing it has no observable effect.
     case 13: return JS_NewInt64(ctx, static_cast<int64_t>(info.oldestLineId));
     case 14: return JS_NewInt64(ctx, static_cast<int64_t>(info.newestLineId));
     case 15: { // mousePosition → { cellX, cellY, pixelX, pixelY } | null
@@ -685,12 +957,17 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("write", 1, jsPaneWrite),
     JS_CFUNC_DEF("paste", 1, jsPanePaste),
     JS_CFUNC_DEF("getTextFromRows", 4, jsPaneGetTextFromRows),
+    JS_CFUNC_DEF("writeRangeToFile", 5, jsPaneWriteRangeToFile),
+    JS_CFUNC_DEF("captureOutputToFile", 2, jsPaneCaptureOutputToFile),
     JS_CFUNC_DEF("getLinksFromRows", 2, jsPaneGetLinksFromRows),
     JS_CFUNC_DEF("linkAt", 2, jsPaneLinkAt),
     JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CFUNC_DEF("createEmbeddedTerminal", 1, jsPaneCreateEmbedded),
-    JS_CGETSET_MAGIC_DEF("nodeId", jsPaneGetProp, nullptr, 0),
+    // pane.nodeId is the LayoutTree node UUID (magic 17 below). A prior
+    // duplicate entry at magic 0 returned the engine PaneId string —
+    // unreachable due to QuickJS last-write-wins on duplicate prop
+    // names, and semantically wrong (PaneId ≠ tree node UUID). Removed.
     JS_CGETSET_MAGIC_DEF("title", jsPaneGetProp, nullptr, 3),
     JS_CGETSET_MAGIC_DEF("cwd", jsPaneGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
@@ -1169,6 +1446,165 @@ static const JSCFunctionListEntry jsEmbeddedProto[] = {
 };
 
 // ============================================================================
+// MbOutputCapture JS class — opaque handle returned by pane.captureOutputToFile
+// ============================================================================
+//
+// Shape:
+//   handle.path        : string  — sandbox-validated absolute path
+//   handle.format      : "raw" | "asciicast"
+//   handle.active      : boolean — false after stop() or auto-stop
+//   handle.stop()      : explicit stop; idempotent. Fires "stopped"
+//                        listeners with reason="explicit".
+//   handle.addEventListener("stopped", fn) / removeEventListener
+//
+// "stopped" event payload: { reason: "explicit" | "io-error",
+//                            error: string }   — error="" for explicit.
+//
+// Listeners live as a JS array on the handle object itself (same
+// pattern as pane / popup listeners), keyed by `__evt_stopped`.
+
+static JSClassID jsOutputCaptureClassId;
+
+struct JsOutputCaptureData {
+    PaneId paneId;
+    std::string path;     // sandbox-validated absolute path
+    std::string format;   // "raw" | "asciicast"
+    bool active;          // false after stop() or auto-stop
+    InstanceId instId;    // owning script instance, for cleanup-on-unload
+};
+
+static void jsOutputCaptureFinalize(JSRuntime*, JSValue val)
+{
+    delete static_cast<JsOutputCaptureData*>(
+        JS_GetOpaque(val, jsOutputCaptureClassId));
+}
+
+static JSClassDef jsOutputCaptureClassDef = {
+    "OutputCapture", jsOutputCaptureFinalize
+};
+
+static JSValue jsOutputCaptureNew(JSContext* ctx,
+                                   PaneId paneId,
+                                   const std::string& path,
+                                   const std::string& format,
+                                   InstanceId instId)
+{
+    JSValue obj = JS_NewObjectClass(ctx, jsOutputCaptureClassId);
+    if (JS_IsException(obj)) return obj;
+    JS_SetOpaque(obj, new JsOutputCaptureData{
+        paneId, path, format, /*active*/true, instId
+    });
+    return obj;
+}
+
+static JsOutputCaptureData* jsOutputCaptureGet(JSContext* ctx, JSValueConst val)
+{
+    return static_cast<JsOutputCaptureData*>(
+        JS_GetOpaque(val, jsOutputCaptureClassId));
+}
+
+// handle.stop() — idempotent. Mirrors removeOutputCapture; the engine
+// stop also fires the "stopped" event via the platform-side callback
+// path, so we don't synthesise one here. Returns true the first time
+// it actually stopped a live capture, false if already stopped.
+static JSValue jsOutputCaptureStop(JSContext* ctx, JSValueConst this_val,
+                                    int, JSValueConst*)
+{
+    auto* d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) return JS_NewBool(ctx, false);
+    if (!d->active) return JS_NewBool(ctx, false);
+
+    Engine* eng = engineFromCtx(ctx);
+    Terminal* t = eng ? eng->terminal(d->paneId) : nullptr;
+    if (!t) {
+        // Pane already gone (terminal exited / tree pruned). Mark
+        // inactive so subsequent calls no-op; the underlying file
+        // was closed by Terminal's dtor.
+        d->active = false;
+        return JS_NewBool(ctx, false);
+    }
+    bool removed = t->removeOutputCapture(d->path);
+    d->active = false; // even if removed==false (race), the handle is dead
+    return JS_NewBool(ctx, removed);
+}
+
+static JSValue jsOutputCaptureAddEventListener(JSContext* ctx,
+                                                JSValueConst this_val,
+                                                int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_ThrowTypeError(ctx,
+            "addEventListener requires (string, function)");
+    auto* d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) return JS_ThrowTypeError(ctx, "capture is destroyed");
+
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+    // Only "stopped" is defined for now. Other event names install
+    // listeners that will simply never fire — same forgiving pattern
+    // pane uses for unknown events.
+    std::string prop = std::string("__evt_") + event;
+    JS_FreeCString(ctx, event);
+
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    if (JS_IsUndefined(arr)) {
+        arr = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, this_val, prop.c_str(), JS_DupValue(ctx, arr));
+    }
+    JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
+    JS_Call(ctx, pushFn, arr, 1, &argv[1]);
+    JS_FreeValue(ctx, pushFn);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsOutputCaptureRemoveEventListener(JSContext* ctx,
+                                                   JSValueConst this_val,
+                                                   int argc, JSValueConst* argv)
+{
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+        return JS_ThrowTypeError(ctx,
+            "removeEventListener requires (string, function)");
+    auto* d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) return JS_ThrowTypeError(ctx, "capture is destroyed");
+    const char* event = JS_ToCString(ctx, argv[0]);
+    if (!event) return JS_EXCEPTION;
+    std::string prop = std::string("__evt_") + event;
+    JS_FreeCString(ctx, event);
+    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    removeFromJSArray(ctx, arr, argv[1]);
+    JS_FreeValue(ctx, arr);
+    return JS_UNDEFINED;
+}
+
+static JSValue jsOutputCaptureGetProp(JSContext* ctx, JSValueConst this_val,
+                                       int magic)
+{
+    auto* d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) return JS_UNDEFINED;
+    switch (magic) {
+    case 0: return JS_NewStringLen(ctx, d->path.data(), d->path.size());
+    case 1: return JS_NewStringLen(ctx, d->format.data(), d->format.size());
+    case 2: return JS_NewBool(ctx, d->active);
+    case 3: { // paneId — useful when the script has lost the pane handle
+        std::string s = d->paneId.toString();
+        return JS_NewStringLen(ctx, s.data(), s.size());
+    }
+    default: return JS_UNDEFINED;
+    }
+}
+
+static const JSCFunctionListEntry jsOutputCaptureProto[] = {
+    JS_CFUNC_DEF("stop",                0, jsOutputCaptureStop),
+    JS_CFUNC_DEF("addEventListener",    2, jsOutputCaptureAddEventListener),
+    JS_CFUNC_DEF("removeEventListener", 2, jsOutputCaptureRemoveEventListener),
+    JS_CGETSET_MAGIC_DEF("path",   jsOutputCaptureGetProp, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("format", jsOutputCaptureGetProp, nullptr, 1),
+    JS_CGETSET_MAGIC_DEF("active", jsOutputCaptureGetProp, nullptr, 2),
+    JS_CGETSET_MAGIC_DEF("paneId", jsOutputCaptureGetProp, nullptr, 3),
+};
+
+// ============================================================================
 // Terminal JS base class — shared prototype for Pane / Popup / EmbeddedTerminal
 // ============================================================================
 //
@@ -1249,12 +1685,12 @@ static JSValue jsTerminalGetProp(JSContext* ctx, JSValueConst this_val, int magi
     case 0: return JS_NewInt32(ctx, emu->width());
     case 1: return JS_NewInt32(ctx, emu->height());
     case 2: {
-        // cursor → { rowId, col, visible }.  PaneSelection gate applies
+        // cursor → { rowId, col, visible }.  PaneRead gate applies
         // only when the caller is a shell pane — applets querying their
         // own popup/embedded don't need the extra grant (the cursor they
         // see is their own drawing).
         if (JS_GetClassID(this_val) == jsPaneClassId) {
-            REQUIRE_PERM(ctx, PaneSelection);
+            REQUIRE_PERM(ctx, PaneRead);
         }
         std::lock_guard<std::recursive_mutex> _lk(emu->mutex());
         int absRow = emu->document().historySize() + emu->cursorY();
@@ -1726,6 +2162,163 @@ static JSValue jsMbHasPermission(JSContext* ctx, JSValueConst, int argc, JSValue
     return JS_NewBool(ctx, (inst->permissions & bits) == bits);
 }
 
+// mb.process.spawn(path, args?, opts?) -> number (pid)
+//
+// Detached, fire-and-forget process launch. Wraps platformSpawnDetached
+// via the AppCallbacks::spawnProcess shim. Use cases: open the user's
+// $EDITOR on a file, fire xdg-open on a URL, run an out-of-band linter,
+// poke a desktop notification daemon — anything that doesn't belong in
+// a terminal pane.
+//
+// Args:
+//   path  : string. PATH-resolved via execvp(3); may be a basename or
+//           absolute path.
+//   args  : string[] (default []). argv[1..N] as the child sees them.
+//           argv[0] is set to `path` automatically — callers don't need
+//           to repeat it. Pass any positional / option flags here.
+//   opts  : { cwd?: string; env?: { [k: string]: string } } (default {}).
+//           cwd: chdir target before exec; empty / omitted → inherit
+//                mb's cwd. Failure to chdir aborts the spawn (logged
+//                from the parent via the errno-pipe path; from the
+//                script's perspective the spawn just silently fails).
+//           env: per-key merge over the inherited environment. Missing
+//                key in `env` → inherited value preserved. Present key
+//                with empty string → key is set to empty (NOT removed).
+//                v1 has no key-removal syntax.
+//
+// Permissions: process.spawn (group: process). Built-ins get it via
+// Perm::All. No second permission required — the model is "either you
+// can spawn external processes or you can't"; we don't try to scope by
+// path or argv pattern (impossible to enforce safely against a
+// determined script anyway).
+//
+// Returns:
+//   pid : intermediate-child pid on successful fork. Note this is NOT
+//         the grandchild's pid (which is what actually runs the binary)
+//         — there's no portable way to surface that without breaking
+//         the detached double-fork pattern. v1 has no API for waiting
+//         on / killing the spawned process; if/when a tracked variant
+//         is added, it'll return a handle object, not just a pid.
+//   0   : pre-fork failure (e.g. ENOMEM). Logged on the C++ side; the
+//         JS caller sees a 0 return and should fall back gracefully.
+//
+// Throws on permission denial, missing/invalid args, or an internal
+// platform-callback being unwired (shouldn't happen in production —
+// this is a "did you forget to call setCallbacks?" guard).
+//
+// Does NOT throw on grandchild exec failure — that's lossy by design
+// (see the platform-side comment on platformSpawnDetached). Scripts
+// that need exec-success confirmation must check via some external
+// signal (e.g. the spawned process's own side effects).
+static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "process.spawn requires (path: string, args?: string[], opts?: object)");
+    REQUIRE_PERM(ctx, ProcessSpawn);
+
+    Engine* eng = engineFromCtx(ctx);
+    if (!eng->callbacks().spawnProcess)
+        return JS_ThrowTypeError(ctx, "process.spawn: not wired (internal: AppCallbacks.spawnProcess unset)");
+
+    AppCallbacks::ProcessSpawnReq req;
+
+    // path (mandatory)
+    {
+        const char* p = JS_ToCString(ctx, argv[0]);
+        if (!p) return JS_EXCEPTION;
+        req.path = p;
+        JS_FreeCString(ctx, p);
+        if (req.path.empty())
+            return JS_ThrowTypeError(ctx, "process.spawn: path must be non-empty");
+    }
+
+    // args (optional). Implicit argv[0] = path is added by
+    // platformSpawnDetached when the caller's argv is empty, so we
+    // mirror that here: if the caller supplied an args array, prepend
+    // path so the layout the platform sees is [path, ...args]. If the
+    // caller supplied nothing (or undefined / null), pass empty and
+    // let the platform default kick in.
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        if (!JS_IsArray(argv[1]))
+            return JS_ThrowTypeError(ctx, "process.spawn: args must be an array of strings");
+        JSValue lenVal = JS_GetPropertyStr(ctx, argv[1], "length");
+        uint32_t len = 0;
+        JS_ToUint32(ctx, &len, lenVal);
+        JS_FreeValue(ctx, lenVal);
+        // Reserve path + len. argv[0] is the program name as the child
+        // sees it — defaults to `path`. Scripts that want a different
+        // argv[0] (rare; e.g. busybox-style multicall binaries) can
+        // pass it as args[0] and we'll pass it through verbatim.
+        req.argv.reserve(len + 1);
+        req.argv.push_back(req.path);
+        for (uint32_t i = 0; i < len; ++i) {
+            JSValue elt = JS_GetPropertyUint32(ctx, argv[1], i);
+            if (!JS_IsString(elt)) {
+                JS_FreeValue(ctx, elt);
+                return JS_ThrowTypeError(ctx, "process.spawn: args[%u] is not a string", i);
+            }
+            const char* s = JS_ToCString(ctx, elt);
+            if (!s) { JS_FreeValue(ctx, elt); return JS_EXCEPTION; }
+            req.argv.emplace_back(s);
+            JS_FreeCString(ctx, s);
+            JS_FreeValue(ctx, elt);
+        }
+    }
+
+    // opts (optional)
+    if (argc >= 3 && !JS_IsUndefined(argv[2]) && !JS_IsNull(argv[2])) {
+        if (!JS_IsObject(argv[2]))
+            return JS_ThrowTypeError(ctx, "process.spawn: opts must be an object");
+
+        // cwd
+        JSValue cwdVal = JS_GetPropertyStr(ctx, argv[2], "cwd");
+        if (!JS_IsUndefined(cwdVal) && !JS_IsNull(cwdVal)) {
+            if (!JS_IsString(cwdVal)) {
+                JS_FreeValue(ctx, cwdVal);
+                return JS_ThrowTypeError(ctx, "process.spawn: opts.cwd must be a string");
+            }
+            const char* s = JS_ToCString(ctx, cwdVal);
+            if (s) { req.cwd = s; JS_FreeCString(ctx, s); }
+        }
+        JS_FreeValue(ctx, cwdVal);
+
+        // env: { K: V, ... }. Iterating own enumerable string-keyed
+        // props matches Node child_process semantics. We don't try to
+        // detect Symbol-keyed entries — strings only.
+        JSValue envVal = JS_GetPropertyStr(ctx, argv[2], "env");
+        if (!JS_IsUndefined(envVal) && !JS_IsNull(envVal)) {
+            if (!JS_IsObject(envVal)) {
+                JS_FreeValue(ctx, envVal);
+                return JS_ThrowTypeError(ctx, "process.spawn: opts.env must be an object");
+            }
+            JSPropertyEnum* props = nullptr;
+            uint32_t plen = 0;
+            if (JS_GetOwnPropertyNames(ctx, &props, &plen, envVal,
+                                       JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+                for (uint32_t i = 0; i < plen; ++i) {
+                    const char* keyC = JS_AtomToCString(ctx, props[i].atom);
+                    JSValue v = JS_GetProperty(ctx, envVal, props[i].atom);
+                    if (keyC && JS_IsString(v)) {
+                        const char* valC = JS_ToCString(ctx, v);
+                        if (valC) {
+                            req.env.emplace_back(keyC, valC);
+                            JS_FreeCString(ctx, valC);
+                        }
+                    }
+                    if (keyC) JS_FreeCString(ctx, keyC);
+                    JS_FreeValue(ctx, v);
+                    JS_FreeAtom(ctx, props[i].atom);
+                }
+                js_free(ctx, props);
+            }
+        }
+        JS_FreeValue(ctx, envVal);
+    }
+
+    pid_t pid = eng->callbacks().spawnProcess(req);
+    return JS_NewInt32(ctx, static_cast<int32_t>(pid));
+}
+
 // mb.setNamespace(name) — claim a namespace for this script instance
 static JSValue jsMbSetNamespace(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
@@ -2018,6 +2611,9 @@ Engine::Engine()
 
     JS_NewClassID(rt_, &jsCommandClassId);
     JS_NewClass(rt_, jsCommandClassId, &jsCommandClassDef);
+
+    JS_NewClassID(rt_, &jsOutputCaptureClassId);
+    JS_NewClass(rt_, jsOutputCaptureClassId, &jsOutputCaptureClassDef);
 }
 
 Engine::~Engine()
@@ -2099,6 +2695,15 @@ JSContext* Engine::createContext()
     JSValue commandProto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, commandProto, jsCommandProto, jsCommandProtoCount);
     JS_SetClassProto(ctx, jsCommandClassId, commandProto);
+
+    // OutputCapture is a flat handle (no Terminal-base inheritance —
+    // it doesn't represent a TerminalEmulator), so we install its
+    // proto directly without makeSubProto.
+    JSValue captureProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, captureProto,
+        jsOutputCaptureProto,
+        sizeof(jsOutputCaptureProto) / sizeof(jsOutputCaptureProto[0]));
+    JS_SetClassProto(ctx, jsOutputCaptureClassId, captureProto);
 
     // Timer globals
     JSValue global = JS_GetGlobalObject(ctx);
@@ -2621,6 +3226,19 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
     JS_SetPropertyStr(ctx, mb, "setClipboard",
         JS_NewCFunction(ctx, jsMbSetClipboard, "setClipboard", 1));
 
+    // mb.process — namespace for external process management. v1 has
+    // exactly one method (spawn); the namespace exists to give us
+    // breathing room for tracked spawn / kill / list / SIGCHLD-watch
+    // follow-ups without polluting the top-level mb surface. Created
+    // unconditionally; permission gating happens at method-call time
+    // (REQUIRE_PERM(ctx, ProcessSpawn) inside jsMbProcessSpawn).
+    {
+        JSValue process = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, process, "spawn",
+            JS_NewCFunction(ctx, jsMbProcessSpawn, "spawn", 3));
+        JS_SetPropertyStr(ctx, mb, "process", process);
+    }
+
     installLayoutBindings(*this, ctx, mb);
 
     JS_SetPropertyStr(ctx, global, "mb", mb);
@@ -2716,6 +3334,19 @@ void Engine::unload(InstanceId id)
         // 2b. Destroy owned embedded terminals
         for (auto& ref : it->ownedEmbeddeds)
             if (callbacks_.destroyEmbedded) callbacks_.destroyEmbedded(ref.pane, ref.lineId);
+        // 2c. Stop owned output captures. Direct Terminal access (no
+        //     AppCallbacks indirection) — Engine already owns the
+        //     terminal map. Terminal::removeOutputCapture closes the
+        //     file and fires the onCaptureStopped callback, which the
+        //     platform routes to notifyCaptureStopped → JS "stopped"
+        //     event. Even though the instance is being torn down, the
+        //     event still fires for any other instance subscribed to
+        //     the same handle (rare: scripts pass capture handles
+        //     between modules; harmless either way).
+        for (auto& ref : it->ownedOutputCaptures) {
+            if (Terminal* t = terminal(ref.pane))
+                t->removeOutputCapture(ref.path);
+        }
 
         // 3. Decrement filter counts for this instance's registrations.
         //    Mirror the count change into the per-pane atomic flag so
@@ -3603,6 +4234,93 @@ void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
             JS_FreeValue(inst.ctx, arr);
         }
         JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyRowEvicted(PaneId pane, uint64_t lineId)
+{
+    // Posted from PlatformDawn after the parse worker yields mMutex, so
+    // we're safely on the main thread when entering QuickJS.
+    //
+    // Permission gating happens at SUBSCRIPTION time (jsPaneAddEventListener
+    // requires PaneRead for "rowEvicted"); here we just dispatch to
+    // whatever listeners managed to register. A script that lost its
+    // grant after subscribing would still receive events until it
+    // explicitly removes the listener — same model as commandComplete /
+    // selection events.
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_rowEvicted");
+            // Payload: { rowId } object, matching the shape of other
+            // row-id-bearing payloads (cursor, selection, links).
+            JSValue ev = JS_NewObject(inst.ctx);
+            JS_SetPropertyStr(inst.ctx, ev, "rowId",
+                              JS_NewInt64(inst.ctx, static_cast<int64_t>(lineId)));
+            enqueueListeners(inst.ctx, arr, 1, &ev);
+            JS_FreeValue(inst.ctx, ev);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyCaptureStopped(PaneId pane,
+                                   const std::string& path,
+                                   const std::string& reason,
+                                   const std::string& errorMessage)
+{
+    // Posted from PlatformDawn after Terminal::onCaptureStopped fires
+    // off-thread (from the parse worker on auto-stop, or main on
+    // explicit stop). PlatformDawn always posts to main, so we're
+    // safely on the main thread when entering QuickJS.
+    //
+    // Lookup is by (paneId:path) — the same key used at registration
+    // in jsPaneCaptureOutputToFile. The MbOutputCapture handle has a
+    // private listener array (`__evt_stopped`); we mark the handle
+    // inactive (active=false) before firing so listeners that re-
+    // enter via handle.active see the right state.
+    std::string regKey = pane.toString() + ":" + path;
+
+    IterGuard guard(this);
+    for (auto& inst : instances_) {
+        if (!inst.ctx) continue;
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__capture_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) continue;
+
+        JSValue handle = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
+        if (!JS_IsUndefined(handle)) {
+            // Mark dead first so listeners that read .active inside
+            // their callback see the post-stop state.
+            if (auto* d = jsOutputCaptureGet(inst.ctx, handle)) {
+                d->active = false;
+            }
+            JSValue arr = JS_GetPropertyStr(inst.ctx, handle, "__evt_stopped");
+            JSValue ev = JS_NewObject(inst.ctx);
+            JS_SetPropertyStr(inst.ctx, ev, "reason",
+                              JS_NewStringLen(inst.ctx, reason.data(), reason.size()));
+            JS_SetPropertyStr(inst.ctx, ev, "error",
+                              JS_NewStringLen(inst.ctx, errorMessage.data(),
+                                              errorMessage.size()));
+            enqueueListeners(inst.ctx, arr, 1, &ev);
+            JS_FreeValue(inst.ctx, ev);
+            JS_FreeValue(inst.ctx, arr);
+            // Drop the registry entry so a subsequent capture with
+            // the same (paneId, path) registers a fresh handle.
+            JS_SetPropertyStr(inst.ctx, registry, regKey.c_str(), JS_UNDEFINED);
+        }
+        JS_FreeValue(inst.ctx, handle);
         JS_FreeValue(inst.ctx, registry);
     }
 }

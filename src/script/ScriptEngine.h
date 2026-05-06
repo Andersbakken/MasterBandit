@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <sys/types.h> // pid_t (process spawn callback return)
+
 #include <eventloop/EventLoop.h>
 
 struct JSRuntime;
@@ -243,6 +245,23 @@ struct AppCallbacks {
         uint64_t endLineId;   int endCol;
     };
     std::function<std::vector<LinkInfo>(PaneId, uint64_t startLineId, uint64_t endLineId, int limit)> paneGetLinksFromRows;
+
+    // Launch an external (non-PTY) process detached from mb. Wraps
+    // platformSpawnDetached; lives behind the AppCallbacks indirection
+    // so the script engine TU doesn't pull in PlatformDawn.h.
+    //
+    // Returns the intermediate-child pid on successful fork, 0 on
+    // pre-fork failure. A nonzero return does NOT guarantee the
+    // grandchild's exec succeeded — see platformSpawnDetached's docs.
+    // The v1 detached API has no exit-code or pid-of-grandchild
+    // observability; tracked spawns are a follow-up.
+    struct ProcessSpawnReq {
+        std::string path;
+        std::vector<std::string> argv;
+        std::string cwd; // empty == inherit
+        std::vector<std::pair<std::string, std::string>> env; // empty == inherit
+    };
+    std::function<pid_t(const ProcessSpawnReq&)> spawnProcess;
 };
 
 class Engine {
@@ -368,6 +387,24 @@ public:
     // keyboard nav, Escape, or script API). Payload is the new command
     // id, or null when cleared.
     void notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> commandId);
+    // Fires when a logical-line id is evicted from a pane's scrollback
+    // past the archive cap. Payload is the evicted lineId. Listeners
+    // tracking specific row ids (e.g. for prompt anchoring) can treat
+    // this as the signal that the id is now invalid for any
+    // text/link/selection query. Gated on PaneRead at subscription time
+    // (see jsPaneAddEventListener).
+    void notifyRowEvicted(PaneId pane, uint64_t lineId);
+    // Fires when an output capture (registered via pane.captureOutputToFile)
+    // stops. `path` is the sandbox-validated path used at registration —
+    // it's the registry key on the JS side and uniquely identifies the
+    // handle. `reason` is "explicit" (script called .stop() or instance
+    // unloaded) or "io-error" (a write failed). `errorMessage` is
+    // populated for io-error and empty for explicit. Posts to JS
+    // listeners attached to the corresponding MbOutputCapture handle.
+    void notifyCaptureStopped(PaneId pane,
+                              const std::string& path,
+                              const std::string& reason,
+                              const std::string& errorMessage);
 
     // Deliver input to listeners on registered objects across all contexts.
     void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);
@@ -440,6 +477,15 @@ public:
         std::vector<PopupRef> ownedPopups;
         struct EmbeddedRef { PaneId pane; uint64_t lineId; };
         std::vector<EmbeddedRef> ownedEmbeddeds;
+        // (paneId, capture-file-path) for each pane.captureOutputToFile()
+        // call this instance made. On unload we walk these and call
+        // Terminal::removeOutputCapture for each, freeing the FILE*
+        // handles even if the script never explicitly stopped them.
+        // Path is the sandbox-validated value, matching what
+        // addOutputCapture was given — the unload sweep can re-key
+        // off it without needing to re-validate.
+        struct OutputCaptureRef { PaneId pane; std::string path; };
+        std::vector<OutputCaptureRef> ownedOutputCaptures;
         std::vector<PaneId> paneOutputFilters; // panes with output filters from this instance
         std::vector<PaneId> paneInputFilters;
         std::vector<PaneId> paneMouseMoveListeners;

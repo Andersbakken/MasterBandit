@@ -680,6 +680,18 @@ int PlatformDawn::exec()
             if (source == "primary") window_->setPrimarySelection(text);
             else window_->setClipboard(text);
         };
+        // Process spawn — direct passthrough to platformSpawnDetached.
+        // Doesn't touch any PlatformDawn member state, so capturing
+        // `this` is unnecessary; the lambda is stateless. Kept as a
+        // closure (vs. taking the function-pointer's address directly)
+        // so future hooks (e.g. metrics, allowlist enforcement at the
+        // platform layer) can land here without re-plumbing the signature.
+        scbs.spawnProcess = [](const Script::AppCallbacks::ProcessSpawnReq& req) -> pid_t {
+            ProcessSpawnOptions opts;
+            opts.cwd = req.cwd;
+            opts.env = req.env;
+            return platformSpawnDetached(req.path, req.argv, opts);
+        };
         scriptEngine_.setCallbacks(std::move(scbs));
     }
 

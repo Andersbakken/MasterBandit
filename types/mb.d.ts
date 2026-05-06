@@ -25,6 +25,7 @@
 type MbPermission =
     // Groups
     | "ui" | "io" | "shell" | "actions" | "tabs" | "scripts" | "fs" | "net" | "clipboard" | "layout"
+    | "process"
     // Individual bits
     | "ui.popup.create"   | "ui.popup.destroy" | "ui.focus"
     | "io.filter.input"   | "io.filter.output" | "io.inject"
@@ -35,11 +36,226 @@ type MbPermission =
     | "fs.read"           | "fs.write"
     | "net.listen.local"
     | "clipboard.read"    | "clipboard.write"
-    | "pane.selection"
-    | "layout.modify";
+    /**
+     * Read pane document content: `selection`, `cursor`, scrollback text
+     * extraction (`getTextFromRows` / `getLinksFromRows` / `linkAt` /
+     * `rowIdAt` / `writeRangeToFile`) and the `rowEvicted` lifecycle
+     * event.
+     */
+    | "pane.read"
+    | "layout.modify"
+    /**
+     * Launch external (non-PTY) processes via `mb.process.spawn`.
+     * Materially different threat model from `shell.write` (bounded
+     * to the current pane's PTY) and `io.inject` (synthetic terminal
+     * input only): this bit grants execution of arbitrary binaries
+     * with the user's environment. Held separate so popup-only or
+     * shell-only scripts don't pick it up implicitly.
+     */
+    | "process.spawn";
 
 /** Comma-separated permission string, e.g. `"shell,net.listen.local"`. */
 type MbPermissionList = string;
+
+// ============================================================================
+// Process spawn
+// ============================================================================
+
+/**
+ * Options bag for `mb.process.spawn`.
+ *
+ * `cwd` and `env` are independently optional — pass either, both, or
+ * neither. Omitted means "inherit from mb's process".
+ */
+interface MbProcessSpawnOptions {
+    /**
+     * Working directory for the spawned process. Empty string or
+     * omitted → inherit mb's cwd. The chdir is performed in the
+     * grandchild *after* fork but *before* exec; failure aborts the
+     * spawn (the child `_exit(127)`s and the script-side return
+     * stays the intermediate-child pid — there's no synchronous error
+     * channel for post-fork failures in v1).
+     */
+    cwd?: string;
+    /**
+     * Environment variable overrides. Each key in this object replaces
+     * (or appends, if absent) the corresponding entry in the inherited
+     * environment. Keys absent here keep their inherited value. There
+     * is no syntax for *removing* an inherited key in v1 — workaround
+     * is to set it to the empty string.
+     *
+     * Values must be strings; non-string entries are silently dropped.
+     */
+    env?: { [key: string]: string };
+}
+
+interface MbProcess {
+    /**
+     * Launch an external process detached from mb. Fire-and-forget:
+     * the spawned process runs as its own session leader (`setsid(2)`),
+     * does not inherit mb's tty or stdio (stdin/stdout/stderr are
+     * reopened to `/dev/null`), and is reaped by init/launchd rather
+     * than mb. There is no exit-code or output-capture surface in v1
+     * — if you need to wait on the process or read its output, use a
+     * terminal pane via `mb.layout.createTerminal` instead.
+     *
+     * Argv semantics: argv[0] is set to `path` automatically. The
+     * `args` array becomes argv[1..N] as the child sees it. No shell
+     * is involved — `path` is resolved via `execvp(3)` PATH lookup,
+     * and arguments are passed verbatim with no metacharacter
+     * expansion or quoting. This is intentional: shell-style commands
+     * are an injection vector when scripts splice user input.
+     *
+     * @param path  Program to execute (basename or absolute path).
+     * @param args  argv[1..N]. Defaults to `[]` (program runs with no
+     *              arguments, which is what most launchers want).
+     * @param opts  Optional cwd / env overrides. See
+     *              `MbProcessSpawnOptions`.
+     * @returns     The intermediate-child pid on successful fork,
+     *              or `0` on pre-fork failure (e.g. resource limits).
+     *              Note this is *not* the grandchild pid that actually
+     *              runs the binary — there's no portable way to surface
+     *              that without breaking the detached double-fork
+     *              pattern. v1 has no API for tracking, signalling, or
+     *              waiting on the spawned process; if those are added,
+     *              they'll come as a separate `spawnTracked` returning
+     *              a handle.
+     *
+     * @throws TypeError on missing args, invalid arg types, or if the
+     *         caller lacks `process.spawn` permission.
+     *
+     * Does NOT throw on grandchild exec failure (e.g. binary not found
+     * in PATH). The failure is logged from the C++ side via spdlog,
+     * but the script just sees the spawn return a pid and proceed —
+     * this is a fundamental tradeoff of the detached model. If you
+     * need exec-success confirmation, validate the binary exists with
+     * a synchronous `fs.statSync` first, or use a tracked spawn (when
+     * available).
+     *
+     * @example
+     *   // Open the user's $EDITOR on a file
+     *   mb.process.spawn(process.env.EDITOR ?? "vi", ["/etc/hosts"]);
+     *
+     *   // Run a linter in a specific directory with extra env
+     *   mb.process.spawn("eslint", ["--fix", "src/"], {
+     *     cwd: "/home/me/project",
+     *     env: { NODE_OPTIONS: "--max-old-space-size=4096" }
+     *   });
+     */
+    spawn(path: string, args?: string[], opts?: MbProcessSpawnOptions): number;
+}
+
+// ============================================================================
+// Output capture
+// ============================================================================
+
+/**
+ * Format used to encode captured PTY output.
+ *
+ * - `"raw"` writes every byte the emulator received, verbatim. The
+ *   resulting file contains all ANSI/CSI/OSC escapes and binary
+ *   bytes; viewers like `less -R` or `cat` (with reset on exit)
+ *   replay it close to what the user saw. Smallest format, no
+ *   per-record overhead.
+ * - `"text"` writes escape-stripped plain text suitable for direct
+ *   consumption by an LLM, log scraper, or human reading the file
+ *   without an interpreter. ANSI/CSI/OSC/DCS/SS3 sequences are
+ *   dropped along with C0 control characters other than `\n` and
+ *   `\t`. CR is normalised: `\r\n` becomes `\n` and bare `\r` is
+ *   dropped (in-place updates like progress bars produce repeated
+ *   content but no cursor-driven overwrites — modelling overwrites
+ *   would require a full emulator). UTF-8 high bytes pass through
+ *   verbatim. Stripper state persists across PTY chunks so a CSI
+ *   split mid-sequence still gets dropped correctly.
+ * - `"asciicast"` writes asciicast v2 (https://docs.asciinema.org).
+ *   A header line at open carries terminal dimensions and the
+ *   wall-clock timestamp; each subsequent PTY chunk becomes one
+ *   `[<elapsed_seconds>, "o", <chunk>]` JSON-lines record.
+ *   Replayable with the asciinema toolchain. Larger than raw because
+ *   of JSON framing, but seekable + tooling-rich.
+ */
+type MbOutputCaptureFormat = "raw" | "text" | "asciicast";
+
+/** Options for `pane.captureOutputToFile`. */
+interface MbOutputCaptureOptions {
+    /** On-disk format. Defaults to `"raw"`. */
+    format?: MbOutputCaptureFormat;
+}
+
+/**
+ * Reason a capture stopped, surfaced via the `stopped` event.
+ *
+ * - `"explicit"`: the script called `.stop()` on the handle, OR the
+ *   owning script instance was unloaded (cleanup sweep). `error`
+ *   is the empty string in this case.
+ * - `"io-error"`: a write to the destination file failed (disk full,
+ *   EIO, fd revoked, etc.). The capture has been auto-stopped and
+ *   the FILE* closed; the `error` field carries the strerror text
+ *   from the failing write.
+ */
+type MbOutputCaptureStopReason = "explicit" | "io-error";
+
+/** Payload of the `stopped` event on `MbOutputCapture`. */
+interface MbOutputCaptureStoppedEvent {
+    reason: MbOutputCaptureStopReason;
+    /** strerror text on `io-error`; empty string otherwise. */
+    error: string;
+}
+
+/**
+ * Handle returned by `pane.captureOutputToFile`. Carries enough
+ * identifying state for the script to reason about the capture, but
+ * the underlying file handle is owned by the C++ Terminal. The
+ * handle stays alive after `.stop()` (or auto-stop) — methods just
+ * become no-ops; `active` is the canonical "still capturing?" flag.
+ *
+ * Multiple captures per pane are supported, but each must point at
+ * a distinct path. Calling `pane.captureOutputToFile` twice with
+ * the same path on the same pane throws.
+ */
+interface MbOutputCapture {
+    /** Sandbox-validated absolute path being written to. */
+    readonly path: string;
+    /** Format passed at registration time. */
+    readonly format: MbOutputCaptureFormat;
+    /**
+     * `true` until the capture stops. Flips to `false` immediately
+     * BEFORE the `stopped` event fires, so listeners that check
+     * `handle.active` from inside the callback see the post-stop
+     * state. Idempotent stops (calling `.stop()` on an already-
+     * stopped handle) leave it `false`.
+     */
+    readonly active: boolean;
+    /** UUID string of the pane this capture is attached to. */
+    readonly paneId: string;
+
+    /**
+     * Stop this capture. Closes the file and fires the `stopped`
+     * event with reason `"explicit"`. Idempotent: returns `true`
+     * the first time it actually closed a live capture, `false`
+     * if the handle was already stopped (either by a prior
+     * `.stop()`, an auto-stop on I/O error, or the owning
+     * instance's unload sweep).
+     */
+    stop(): boolean;
+
+    /**
+     * Subscribe to the lifecycle event for this capture. Currently
+     * only `"stopped"` is defined; other event names install
+     * listeners that will simply never fire. Listeners are stored
+     * on the handle object directly — they're freed when the handle
+     * is garbage-collected, so there's no leak from forgetting to
+     * `removeEventListener`.
+     */
+    addEventListener(
+        event: "stopped",
+        fn: (ev: MbOutputCaptureStoppedEvent) => void
+    ): void;
+    removeEventListener(
+        event: "stopped",
+        fn: (ev: MbOutputCaptureStoppedEvent) => void
+    ): void;
+}
 
 // ============================================================================
 // Mouse event
@@ -139,8 +355,8 @@ interface MbTerminal {
     /**
      * Current cursor state. `rowId` is a stable logical-line id (same
      * numbering as `pane.oldestRowId`/`newestRowId`). On a pane this is
-     * gated on `pane.selection`; on popups/embeddeds it's ungated —
-     * applets can always introspect their own children.
+     * gated on `pane.read`; on popups/embeddeds it's ungated — applets
+     * can always introspect their own children.
      */
     readonly cursor: {
         readonly rowId: number;
@@ -183,10 +399,10 @@ interface MbPane extends MbTerminal {
     readonly popups: MbPopupInfo[];
     /**
      * Current text selection, or `null` if nothing is selected or
-     * `pane.selection` permission not granted.
+     * `pane.read` permission not granted.
      * Start is always before or equal to end (normalized).
      * Column values are exclusive (one past the last selected column),
-     * matching `getTextFromRows` convention. Requires `pane.selection`.
+     * matching `getTextFromRows` convention. Requires `pane.read`.
      */
     readonly selection: {
         readonly startRowId: number;
@@ -196,7 +412,7 @@ interface MbPane extends MbTerminal {
         readonly endCol: number;
     } | null;
     // `cursor` is inherited from MbTerminal. On a pane specifically,
-    // reading it still requires `pane.selection` at runtime.
+    // reading it still requires `pane.read` at runtime.
 
     /** Mouse position within this pane, or `null` if the mouse is outside. */
     readonly mousePosition: {
@@ -237,22 +453,89 @@ interface MbPane extends MbTerminal {
      * wrapped line is covered end-to-end at the current width. IDs come from
      * `MbCommand` fields or from `rowIdAt()`. Returns an empty string if the
      * start line has been evicted from the archive. `startCol` is inclusive,
-     * `endCol` is exclusive (one past the last column).
+     * `endCol` is exclusive (one past the last column). Requires `pane.read`.
      */
     getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /**
+     * Write the same text `getTextFromRows` would return directly to a
+     * file. Useful for dumping selections, command output, or arbitrary
+     * scrollback ranges without materialising the result as a JS string
+     * the script then has to forward through `mb:fs`.
+     *
+     * Atomic on success: writes to `<path>.tmp` first, then renames into
+     * place. The destination directory is auto-created. The path is
+     * validated against the same sandbox as `fs.writeFileSync` —
+     * built-in scripts may write anywhere; user scripts may write only
+     * under `<configDir>/<scriptStem>/`.
+     *
+     * Range semantics are identical to `getTextFromRows`: `startRowId`
+     * resolves to the first abs row of that logical line, `endRowId` to
+     * the last; `startCol` is inclusive, `endCol` exclusive. An empty
+     * range writes a zero-byte file (does not throw).
+     *
+     * Requires both `pane.read` (the source) and `fs.write` (the
+     * destination). Returns the number of bytes written. Throws on
+     * permission denial, sandbox violation, or I/O failure.
+     */
+    writeRangeToFile(path: string, startRowId: number, startCol: number, endRowId: number, endCol: number): number;
+    /**
+     * Open a streaming capture of this pane's PTY output. Returns a
+     * handle the script can later `.stop()`; multiple concurrent
+     * captures per pane are supported as long as their paths are
+     * distinct.
+     *
+     * Captured bytes are taken at the post-coalesce / pre-filter
+     * point inside the emulator — they reflect what the terminal
+     * actually saw on the wire, regardless of any script-level
+     * `output` filter that's also attached to this pane.
+     *
+     * Path is validated against the same sandbox as
+     * `fs.writeFileSync` (built-in scripts unrestricted; user
+     * scripts confined to `<configDir>/<scriptStem>/` or
+     * `/tmp/masterbandit/`). The destination directory is auto-
+     * created. Existing files are truncated.
+     *
+     * If a write fails (disk full, EIO, ...), the capture
+     * auto-stops and the handle's `stopped` event fires with
+     * `reason="io-error"` and the strerror text. Other captures on
+     * the same pane are unaffected.
+     *
+     * Captures are tracked on the calling instance — unloading the
+     * script auto-stops every capture it owns.
+     *
+     * Requires both `pane.read` (the source) and `fs.write` (the
+     * destination). Throws on permission denial, sandbox violation,
+     * duplicate path on the same pane, or open failure.
+     *
+     * @example
+     *   // Tail the user's shell into a JSON-Lines asciicast for an
+     *   // LLM helper to follow along with.
+     *   const cap = pane.captureOutputToFile(
+     *     "/tmp/masterbandit/session.cast",
+     *     { format: "asciicast" }
+     *   );
+     *   cap.addEventListener("stopped", ev => {
+     *     if (ev.reason === "io-error") console.error("capture died:", ev.error);
+     *   });
+     *   // ... later
+     *   cap.stop();
+     */
+    captureOutputToFile(path: string, opts?: MbOutputCaptureOptions): MbOutputCapture;
+    /**
      * Return hyperlinks (OSC 8) within a row-id range. Each entry has the URL
      * and the cell span it covers. `endCol` is exclusive. `limit` caps the
-     * number of results (0 = unlimited).
+     * number of results (0 = unlimited). Requires `pane.read`.
      */
     getLinksFromRows(startRowId: number, endRowId: number, limit?: number): MbLinkInfo[];
     /**
      * Return the URL (OSC 8 hyperlink) at a given cell, or `null` if none.
+     * Requires `pane.read`.
      */
     linkAt(rowId: number, col: number): string | null;
     /**
      * Return the stable row ID for a screen row (0 = top of visible screen).
      * Returns `null` if `screenRow` is out of range (≥ terminal height).
+     * Requires `pane.read`.
      */
     rowIdAt(screenRow: number): number | null;
     /**
@@ -335,6 +618,21 @@ interface MbPane extends MbTerminal {
      * Payload is the new selected command id or `null` when cleared.
      */
     addEventListener(event: "commandSelectionChanged", fn: (commandId: number | null) => void): void;
+    /**
+     * Fires when a logical-line id is evicted from this pane's
+     * scrollback past the archive cap. Payload carries the evicted
+     * `rowId` — after this fires, the id is no longer valid for any
+     * text/link/selection query on this pane (calls will return empty
+     * results). Useful for scripts that anchor state to specific rows
+     * (prompt markers, bookmarks, embedded terminals) and need to
+     * invalidate their tracking. Requires `pane.read`.
+     *
+     * Subscribing or removing a listener requires `pane.read`. The
+     * event fires once per evicted id, on the main thread, after the
+     * parser has yielded its lock — handlers can safely call any
+     * synchronous pane API.
+     */
+    addEventListener(event: "rowEvicted", fn: (ev: { rowId: number }) => void): void;
 
     removeEventListener(event: "input",  fn: (data: string) => string | void): void;
     removeEventListener(event: "output", fn: (data: string) => string | void): void;
@@ -348,6 +646,7 @@ interface MbPane extends MbTerminal {
     removeEventListener(event: `osc:${number}`, fn: (payload: string) => void): void;
     removeEventListener(event: "commandComplete", fn: (cmd: MbCommand) => void): void;
     removeEventListener(event: "commandSelectionChanged", fn: (commandId: number | null) => void): void;
+    removeEventListener(event: "rowEvicted", fn: (ev: { rowId: number }) => void): void;
 }
 
 interface MbPopupInfo {
@@ -815,6 +1114,16 @@ interface MbGlobal {
      * @param source `"clipboard"` (default) or `"primary"` (X11 primary selection).
      */
     setClipboard(text: string, source?: "clipboard" | "primary"): void;
+
+    // --- External process management ---
+    /**
+     * External (non-PTY) process APIs. Distinct from `pane.write` /
+     * `pane.paste` (which talk to an existing pane's shell) and from
+     * `mb.layout.createTerminal` (which spawns a new pane with a PTY).
+     * Use this for editors, GUI tools, OS integrations, etc. — anything
+     * that should run alongside mb rather than inside a terminal pane.
+     */
+    readonly process: MbProcess;
 
     // --- Lifecycle events ---
     /** Fires once per new pane. Fires on every loaded instance. */

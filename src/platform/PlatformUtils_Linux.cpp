@@ -346,73 +346,7 @@ DBusMessage* buildSettingsReadCall()
     return call;
 }
 
-void spawnDetached(const char* path, char* const argv[])
-{
-    // Errno-reporting pipe. Both ends are O_CLOEXEC so a successful
-    // execvp in the grandchild closes the write end automatically; the
-    // parent's read returns EOF and we know exec succeeded. If exec
-    // fails (or the inner fork fails), the failing process writes the
-    // errno to the pipe before _exit, and the parent's read picks it
-    // up. Pattern is well-known; see e.g. APUE §10.18.
-    int errPipe[2];
-    if (pipe2(errPipe, O_CLOEXEC) < 0) {
-        spdlog::warn("spawnDetached({}): pipe2: {}", path, strerror(errno));
-        return;
-    }
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(errPipe[0]);
-        close(errPipe[1]);
-        spdlog::warn("spawnDetached({}): fork: {}", path, strerror(errno));
-        return;
-    }
-    if (pid == 0) {
-        // Child: only the grandchild needs the write end. Drop the
-        // read end so we can't accidentally read our own errno.
-        close(errPipe[0]);
-        pid_t inner = fork();
-        if (inner == 0) {
-            // Grandchild. setsid detaches from our process group so
-            // the launched program isn't killed when mb's controlling
-            // terminal goes away.
-            setsid();
-            execvp(path, argv);
-            int err = errno;
-            ssize_t n = write(errPipe[1], &err, sizeof(err));
-            (void)n;
-            _exit(127);
-        }
-        if (inner < 0) {
-            int err = errno;
-            ssize_t n = write(errPipe[1], &err, sizeof(err));
-            (void)n;
-        }
-        close(errPipe[1]);
-        _exit(0);
-    }
-
-    // Parent: close write end so EOF is detectable on read once the
-    // grandchild's copy goes away (either via exec or _exit).
-    close(errPipe[1]);
-    int status;
-    waitpid(pid, &status, 0);
-
-    int err = 0;
-    ssize_t n;
-    do {
-        n = read(errPipe[0], &err, sizeof(err));
-    } while (n < 0 && errno == EINTR);
-    close(errPipe[0]);
-
-    if (n == static_cast<ssize_t>(sizeof(err))) {
-        spdlog::warn("spawnDetached({}): execvp failed: {}",
-                     path, strerror(err));
-    }
-    // n == 0  → exec succeeded (write end closed by O_CLOEXEC); no log.
-    // n == -1 → read error (rare, e.g. EBADF if pipe was closed twice);
-    //          treat as "unknown outcome" and stay silent.
-}
 
 // OSC 99 o= gating state (kitty notifications.py:955-962). Pushed in by
 // PlatformDawn.cpp's onFocus / onVisibility hooks via
@@ -919,14 +853,17 @@ std::vector<std::string> platformActiveNotifications(const std::string& sourceTa
     return out;
 }
 
+// platformSpawnDetached lives in PlatformSpawn.cpp so mb-tests can link
+// it without dragging in the rest of this TU's notification / DBus
+// dependencies. platformOpenURL stays here because it's the only direct
+// caller and pulls only the spawn declaration through PlatformDawn.h.
+
 void platformOpenURL(const std::string& url)
 {
-    char* argv[] = {
-        const_cast<char*>("xdg-open"),
-        const_cast<char*>(url.c_str()),
-        nullptr
-    };
-    spawnDetached("xdg-open", argv);
+    // Reuse the detached-spawn primitive instead of duplicating the
+    // double-fork dance. xdg-open inherits mb's environment by default
+    // (no overrides) and stays in mb's cwd — both fine for URL open.
+    platformSpawnDetached("xdg-open", {"xdg-open", url}, ProcessSpawnOptions{});
 }
 
 std::string platformProcessCWD(pid_t pid)

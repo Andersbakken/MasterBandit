@@ -1,5 +1,6 @@
 set(PLATFORM_SOURCES
     PlatformDawn.cpp
+    PlatformSpawn.cpp
     Platform_EventLoop.cpp
     Platform_Actions.cpp
     Platform_Tabs.cpp

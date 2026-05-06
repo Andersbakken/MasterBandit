@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <thread>
 #ifdef __APPLE__
 #include <libproc.h>
@@ -35,15 +36,25 @@ Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
     // yields the lock between chunks. The render-thread snapshot path
     // also takes mMutex, so no cycle.
     document().setOnLineIdEvicted([this](uint64_t lineId) {
+        // Internal: graveyard any embedded anchored at this lineId.
+        // Runs first so external `onLineIdEvicted` listeners observe a
+        // consistent post-eviction state (mEmbedded entry already gone).
         auto it = mEmbedded.find(lineId);
-        if (it == mEmbedded.end()) return;
-        auto evicted = std::move(it->second);
-        mEmbedded.erase(it);
-        if (mFocusedEmbeddedLineId.load(std::memory_order_acquire) == lineId)
-            mFocusedEmbeddedLineId.store(0, std::memory_order_release);
-        mEvictedEmbeddeds.push_back({lineId, std::move(evicted)});
-        mEvictedHasItems.store(true, std::memory_order_release);
-        if (onPopupEvent) onPopupEvent();
+        if (it != mEmbedded.end()) {
+            auto evicted = std::move(it->second);
+            mEmbedded.erase(it);
+            if (mFocusedEmbeddedLineId.load(std::memory_order_acquire) == lineId)
+                mFocusedEmbeddedLineId.store(0, std::memory_order_release);
+            mEvictedEmbeddeds.push_back({lineId, std::move(evicted)});
+            mEvictedHasItems.store(true, std::memory_order_release);
+            if (onPopupEvent) onPopupEvent();
+        }
+        // External: fire the script-engine bridge for `rowEvicted` JS
+        // events. Always called (not gated on embedded presence) so
+        // scripts tracking arbitrary line ids see every eviction.
+        // Caller is the parse worker holding mMutex — the platform's
+        // hook must post to the main thread before touching QuickJS.
+        if (onLineIdEvicted) onLineIdEvicted(lineId);
     });
 }
 
@@ -72,6 +83,415 @@ Terminal::~Terminal()
         mDeferredFgTimerId = 0;
     }
     if (mMasterFD != -1) ::close(mMasterFD);
+
+    // Close any still-open output captures. Skip the onCaptureStopped
+    // callback during teardown — the engine that registered them is
+    // either also being destroyed (process exit) or has already had
+    // the owning instance unloaded (which calls removeOutputCapture
+    // for each owned capture before teardown reaches us). Logging
+    // here would be noise either way.
+    {
+        std::lock_guard<std::mutex> lk(mCapturesMutex);
+        for (auto& cap : mCaptures) {
+            std::lock_guard<std::mutex> capLk(cap->mu);
+            if (!cap->stopped && cap->fp) {
+                std::fclose(cap->fp);
+                cap->fp = nullptr;
+                cap->stopped = true;
+            }
+        }
+        mCaptures.clear();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Output-capture API
+// ─────────────────────────────────────────────────────────────────────
+
+bool Terminal::addOutputCapture(const std::string& path,
+                                 CaptureFormat format,
+                                 std::string* errorOut)
+{
+    auto setErr = [&](const std::string& msg) {
+        if (errorOut) *errorOut = msg;
+    };
+
+    {
+        std::lock_guard<std::mutex> lk(mCapturesMutex);
+        for (const auto& c : mCaptures) {
+            if (c->path == path && !c->stopped) {
+                setErr("a capture for this path is already active on this terminal");
+                return false;
+            }
+        }
+    }
+
+    // Open the destination file. "wb" truncates: matches the documented
+    // semantics ("starts a fresh capture"). Append is intentionally not
+    // supported in v1 — asciicast in particular has a header line that
+    // would be invalid mid-stream, and raw appends interleave badly
+    // across mb sessions.
+    FILE* fp = std::fopen(path.c_str(), "wb");
+    if (!fp) {
+        setErr(std::string("fopen failed: ") + std::strerror(errno));
+        return false;
+    }
+
+    auto entry = std::make_unique<CaptureEntry>();
+    entry->path    = path;
+    entry->format  = format;
+    entry->fp      = fp;
+    entry->stopped = false;
+    entry->start   = std::chrono::steady_clock::now();
+
+    // Asciicast v2 header. Format spec:
+    //   https://docs.asciinema.org/manual/asciicast/v2/
+    // We emit a minimal header — version, width, height, timestamp.
+    // Optional fields (title, env, theme) can be added later if anyone
+    // needs them; the recorder + replayer ecosystem accepts the minimal
+    // form. Width/height come from the live emulator. Timestamp is
+    // absolute (Unix seconds) — recorder convention. We use
+    // system_clock here, NOT steady_clock; the steady_clock origin is
+    // for relative event timestamps below.
+    if (format == CaptureFormat::Asciicast) {
+        auto now = std::chrono::system_clock::now();
+        auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count();
+        // Take the emulator lock briefly to read width/height; both are
+        // updated under mMutex by resize.
+        int w, h;
+        {
+            std::lock_guard<std::recursive_mutex> _lk(mutex());
+            w = width();
+            h = height();
+        }
+        // Single fwrite for the header so it never tears with a
+        // concurrent record write (won't happen in practice — we
+        // haven't published the entry to mCaptures yet — but cheaper
+        // than three fwrites anyway).
+        char hdr[256];
+        int n = std::snprintf(hdr, sizeof(hdr),
+            "{\"version\":2,\"width\":%d,\"height\":%d,\"timestamp\":%lld}\n",
+            w, h, static_cast<long long>(secs));
+        if (n <= 0 || n >= static_cast<int>(sizeof(hdr))
+            || std::fwrite(hdr, 1, static_cast<size_t>(n), fp) != static_cast<size_t>(n)) {
+            std::fclose(fp);
+            setErr("failed to write asciicast header");
+            return false;
+        }
+        std::fflush(fp);
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(mCapturesMutex);
+        mCaptures.push_back(std::move(entry));
+    }
+    return true;
+}
+
+bool Terminal::removeOutputCapture(const std::string& path)
+{
+    // Pull the matching entry out under the captures lock so producers
+    // see the smaller vector immediately. Then close + notify outside
+    // the outer lock so a slow close doesn't block other captures or
+    // the producer-side snapshot window.
+    std::unique_ptr<CaptureEntry> taken;
+    {
+        std::lock_guard<std::mutex> lk(mCapturesMutex);
+        for (auto it = mCaptures.begin(); it != mCaptures.end(); ++it) {
+            if ((*it)->path == path) {
+                taken = std::move(*it);
+                mCaptures.erase(it);
+                break;
+            }
+        }
+    }
+    if (!taken) return false;
+
+    stopCaptureLocked(taken.get(), CaptureStopReason::Explicit, std::string{});
+    return true;
+}
+
+bool Terminal::hasOutputCapture(const std::string& path) const
+{
+    std::lock_guard<std::mutex> lk(mCapturesMutex);
+    for (const auto& c : mCaptures) {
+        if (c->path == path && !c->stopped)
+            return true;
+    }
+    return false;
+}
+
+void Terminal::deliverCapturedOutput(const char* data, size_t len)
+{
+    if (len == 0) return;
+
+    // Snapshot the captures vector under the outer lock so we can iterate
+    // without holding it across I/O. We take raw pointers (safe — the
+    // entries are unique_ptr-owned by `mCaptures` and we hold the lock
+    // while reading; the entries themselves outlive this function only
+    // because no other thread removes from `mCaptures` without the
+    // outer lock — and even then, removeOutputCapture moves the
+    // unique_ptr out before destroying it, so a producer that snapped
+    // the pointer right before a remove still has a valid object).
+    //
+    // EDIT: that's not quite right; an entry destroyed between snapshot
+    // and use IS use-after-free. To make this safe we need the entry
+    // lifetime to outlast the snapshot loop. Two options:
+    //   (a) hold mCapturesMutex across the entire delivery loop. Slows
+    //       down add/remove during heavy delivery but is correct.
+    //   (b) shared_ptr<CaptureEntry> in the vector; snapshot copies the
+    //       shared_ptr.
+    // (a) is simpler and the heavy-delivery / concurrent-add scenario
+    // is rare in practice (scripts add a capture once and let it run);
+    // we take (a) here. If this becomes a perf issue switch to (b).
+    std::lock_guard<std::mutex> outerLk(mCapturesMutex);
+
+    for (auto& cap : mCaptures) {
+        // Per-entry lock serialises with concurrent writes from the
+        // other producer thread (main vs worker). Held across the
+        // fwrite + format-specific framing work.
+        std::lock_guard<std::mutex> capLk(cap->mu);
+        if (cap->stopped || !cap->fp) continue;
+
+        // Local helper: handle a failed write by closing this capture
+        // and firing the stopped event with reason=IoError. Deduplicates
+        // the close-and-notify dance across the format arms below.
+        // Returns true if the caller should `continue` to the next
+        // capture (always, in practice).
+        auto onWriteFailure = [&]() {
+            std::string err = std::string("write failed: ")
+                              + std::strerror(errno);
+            // Note: stopCaptureLocked grabs cap->mu; we already hold
+            // it, so close inline and synthesise the notification
+            // ourselves.
+            std::fclose(cap->fp);
+            cap->fp = nullptr;
+            cap->stopped = true;
+            if (onCaptureStopped) {
+                onCaptureStopped(cap->path,
+                                 CaptureStopReason::IoError, err);
+            }
+        };
+
+        // Compute write payload per format.
+        if (cap->format == CaptureFormat::Raw) {
+            size_t n = std::fwrite(data, 1, len, cap->fp);
+            if (n != len) { onWriteFailure(); continue; }
+            // Don't fflush per chunk for raw — buffered writes are fine
+            // and the OS flushes on close. Asciicast does flush per
+            // record so a crash mid-stream still leaves a parseable
+            // file up to the last complete record.
+        } else if (cap->format == CaptureFormat::Text) {
+            // Escape-stripped plain text. State machine carries across
+            // chunks via cap->textState (see TextStripState definition).
+            // We accumulate output into a per-call buffer and write
+            // once at the end so we minimise fwrite calls under the
+            // capture mutex.
+            std::string out;
+            out.reserve(len); // upper bound — strip can only shrink
+
+            // Stripping by-byte. The state machine recognises sequence
+            // STARTS and FINALS; everything in between is dropped. We
+            // never look INSIDE a sequence's parameter bytes.
+            //
+            // Sequence terminators (per ECMA-48 / xterm reality):
+            //   CSI (ESC [ … final): final is 0x40-0x7E.
+            //   OSC (ESC ] … ST):    ST is BEL (0x07) or ESC \\ (ESC then 0x5C).
+            //   DCS (ESC P … ST):    same ST as OSC.
+            //   SS3 (ESC O <ch>):    one byte of payload, then back to ground.
+            //   ESC <intermediate 0x20-0x2F> <final 0x30-0x7E>:
+            //                        two-byte escape (charset designation, etc.).
+            //   ESC <other>:         one-byte escape (RIS, IND, NEL, ...).
+            for (size_t i = 0; i < len; ++i) {
+                unsigned char c = static_cast<unsigned char>(data[i]);
+                switch (cap->textState) {
+                case TextStripState::Ground:
+                    if (c == 0x1b) { // ESC
+                        cap->textState = TextStripState::Esc;
+                    } else if (c == '\r') {
+                        // Wait one byte to check for "\r\n" → "\n";
+                        // bare \r will be dropped.
+                        cap->textState = TextStripState::SeenCr;
+                    } else if (c == '\n' || c == '\t') {
+                        out += static_cast<char>(c);
+                    } else if (c >= 0x20 && c != 0x7f) {
+                        // Printable ASCII (0x20-0x7E) and UTF-8 high
+                        // bytes (0x80-0xFF). UTF-8 multi-byte sequences
+                        // pass through naturally — we don't decode.
+                        out += static_cast<char>(c);
+                    }
+                    // All other C0 controls (0x00-0x1F except \n/\t/\r/ESC)
+                    // and DEL (0x7f) are silently dropped.
+                    break;
+
+                case TextStripState::Esc:
+                    if (c == '[') {
+                        cap->textState = TextStripState::Csi;
+                    } else if (c == ']') {
+                        cap->textState = TextStripState::Osc;
+                    } else if (c == 'P') {
+                        cap->textState = TextStripState::Dcs;
+                    } else if (c == 'O') {
+                        cap->textState = TextStripState::Ss3;
+                    } else if (c >= 0x20 && c <= 0x2f) {
+                        // Intermediate byte; need one more (final).
+                        cap->textState = TextStripState::EscIntermediate;
+                    } else {
+                        // ESC <single byte>: complete two-byte escape
+                        // (RIS=ESC c, NEL=ESC E, IND=ESC D, etc.).
+                        cap->textState = TextStripState::Ground;
+                    }
+                    break;
+
+                case TextStripState::EscIntermediate:
+                    // ESC <intermediate> <final>. Consume the final and
+                    // return to ground regardless of value.
+                    cap->textState = TextStripState::Ground;
+                    break;
+
+                case TextStripState::Csi:
+                    // Parameter / intermediate bytes are 0x20-0x3F.
+                    // Final byte is 0x40-0x7E (terminates the CSI).
+                    if (c >= 0x40 && c <= 0x7e) {
+                        cap->textState = TextStripState::Ground;
+                    }
+                    // Else: still inside parameters; stay in Csi.
+                    break;
+
+                case TextStripState::Osc:
+                    if (c == 0x07) { // BEL terminates OSC (xterm)
+                        cap->textState = TextStripState::Ground;
+                    } else if (c == 0x1b) { // ESC, expect \\ for ST
+                        cap->textState = TextStripState::OscEsc;
+                    }
+                    // All other bytes are OSC payload — drop.
+                    break;
+
+                case TextStripState::OscEsc:
+                    // ECMA-48 ST is ESC \\. xterm also accepts BEL
+                    // (handled in Osc state). If we see ESC followed
+                    // by anything other than 0x5C, treat that as an
+                    // ESC escape that interrupted the OSC (real
+                    // implementations just abort the OSC; matching
+                    // them is fine).
+                    cap->textState = TextStripState::Ground;
+                    break;
+
+                case TextStripState::Dcs:
+                    // Like OSC but BEL doesn't terminate DCS. Only
+                    // ESC \\ (ST) ends it.
+                    if (c == 0x1b) {
+                        cap->textState = TextStripState::DcsEsc;
+                    }
+                    break;
+
+                case TextStripState::DcsEsc:
+                    // ESC inside DCS — \\ is ST (proper end).
+                    cap->textState = TextStripState::Ground;
+                    break;
+
+                case TextStripState::Ss3:
+                    // ESC O <one byte>: function-key sequence.
+                    cap->textState = TextStripState::Ground;
+                    break;
+
+                case TextStripState::SeenCr:
+                    if (c == '\n') {
+                        // CRLF → LF. Emit the LF only.
+                        out += '\n';
+                        cap->textState = TextStripState::Ground;
+                    } else {
+                        // Bare CR (drop) followed by some other byte.
+                        // Re-process this byte from Ground.
+                        cap->textState = TextStripState::Ground;
+                        --i; // re-read this byte through the Ground arm
+                    }
+                    break;
+                }
+            }
+
+            if (!out.empty()) {
+                size_t n = std::fwrite(out.data(), 1, out.size(), cap->fp);
+                if (n != out.size()) { onWriteFailure(); continue; }
+            }
+            // Don't fflush per chunk — text output is meant for tail-
+            // following but the libc page buffer is fine for that;
+            // tail -f sees blocks as they flush. If a script needs
+            // tighter latency it can stop and restart the capture.
+        } else { // Asciicast
+            // Each PTY chunk becomes one record:
+            //   [<elapsed_seconds>, "o", <utf-8 string>]
+            // Strings need JSON escaping; we use a tight inline encoder
+            // since asciicast is a hot path for any active capture.
+            auto elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - cap->start).count();
+
+            std::string out;
+            out.reserve(len * 2 + 32);
+            char prefix[64];
+            int pn = std::snprintf(prefix, sizeof(prefix),
+                "[%.6f, \"o\", \"", elapsed);
+            out.append(prefix, prefix + pn);
+
+            for (size_t i = 0; i < len; ++i) {
+                unsigned char c = static_cast<unsigned char>(data[i]);
+                switch (c) {
+                case '"':  out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\b': out += "\\b";  break;
+                case '\f': out += "\\f";  break;
+                case '\n': out += "\\n";  break;
+                case '\r': out += "\\r";  break;
+                case '\t': out += "\\t";  break;
+                default:
+                    if (c < 0x20 || c == 0x7f) {
+                        // \u00xx for the remaining C0 controls + DEL.
+                        char buf[8];
+                        std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                        out += buf;
+                    } else {
+                        // Pass UTF-8 high bytes through verbatim. The
+                        // PTY producer guarantees byte-aligned UTF-8;
+                        // we don't decode + re-encode for speed. A
+                        // chunk that splits a multi-byte sequence at
+                        // its boundary still produces valid JSON when
+                        // the next chunk arrives — JSON parsers see
+                        // two strings containing partial UTF-8
+                        // sequences, which asciicast replayers handle
+                        // by concatenating before display.
+                        out += static_cast<char>(c);
+                    }
+                }
+            }
+            out += "\"]\n";
+
+            size_t n = std::fwrite(out.data(), 1, out.size(), cap->fp);
+            if (n != out.size()) { onWriteFailure(); continue; }
+            std::fflush(cap->fp);
+        }
+    }
+}
+
+void Terminal::stopCaptureLocked(CaptureEntry* entry,
+                                  CaptureStopReason reason,
+                                  const std::string& errorMessage)
+{
+    bool wasOpen = false;
+    std::string path;
+    {
+        std::lock_guard<std::mutex> capLk(entry->mu);
+        path = entry->path;
+        if (!entry->stopped && entry->fp) {
+            std::fclose(entry->fp);
+            entry->fp = nullptr;
+            wasOpen = true;
+        }
+        entry->stopped = true;
+    }
+    if (wasOpen && onCaptureStopped) {
+        onCaptureStopped(path, reason, errorMessage);
+    }
 }
 
 bool Terminal::init(const TerminalOptions &options)
@@ -388,6 +808,12 @@ void Terminal::flushReadBuffer()
         buf.swap(mReadCoalesceBuffer);
     }
 
+    // Output capture tap: pre-filter, post-coalesce. Captures see the
+    // bytes the emulator sees regardless of script-level filtering, so
+    // an LLM tooling capture mirrors what actually happened on the
+    // wire even when another script is rewriting the stream.
+    deliverCapturedOutput(buf.data(), buf.size());
+
     if (mPlatformCbs.shouldFilterOutput && mPlatformCbs.shouldFilterOutput()) {
         std::string s(buf.begin(), buf.end());
         mPlatformCbs.filterOutput(s);
@@ -466,6 +892,12 @@ bool Terminal::queueParse(const ParseSubmitFn& submit)
                 }
                 buf.swap(mReadCoalesceBuffer);
             }
+
+            // Output capture tap, pre-filter. See the same call in
+            // flushReadBuffer for rationale; both code paths must hit
+            // this so a capture sees ALL output regardless of which
+            // path drained the coalesce buffer.
+            deliverCapturedOutput(buf.data(), buf.size());
 
             // Filter pass (one-shot — runs on whatever filter result
             // is current; runOnMain bounce inside makes it safe).

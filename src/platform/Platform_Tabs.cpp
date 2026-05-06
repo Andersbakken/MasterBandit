@@ -433,6 +433,38 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, Uuid subtreeRoot, const std
     terminal->onEmbeddedResized = [this, nodeId](uint64_t lineId, int cols, int rows) {
         scriptEngine_.deliverEmbeddedResized(nodeId, lineId, cols, rows);
     };
+    // Bridge document-level row eviction to JS `rowEvicted` listeners.
+    // The Terminal callback fires on the parse worker under mMutex, so
+    // we must hop to the main thread before invoking QuickJS. We do NOT
+    // re-acquire mMutex on the main side: lineId is a stable scalar and
+    // the engine's notify path only touches JS state (no document
+    // access), so there's nothing to lock.
+    terminal->onLineIdEvicted = [this, nodeId](uint64_t lineId) {
+        eventLoop_->post([this, nodeId, lineId] {
+            scriptEngine_.notifyRowEvicted(nodeId, lineId);
+        });
+    };
+    // Bridge output-capture stop events to JS "stopped" listeners.
+    // Fires from whichever thread observed the stop:
+    //   - Explicit removeOutputCapture: from the calling thread,
+    //     usually main (script .stop()), occasionally main during
+    //     unload sweep.
+    //   - IO-error auto-stop: from the parse worker (deliverCaptured-
+    //     Output runs there during queueParse) or main (during
+    //     flushReadBuffer in tests / headless).
+    // Either way, hop to the main thread before touching QuickJS.
+    terminal->onCaptureStopped =
+        [this, nodeId](const std::string& path,
+                       Terminal::CaptureStopReason reason,
+                       const std::string& errorMessage) {
+            const char* reasonStr =
+                (reason == Terminal::CaptureStopReason::Explicit) ? "explicit"
+                                                                  : "io-error";
+            eventLoop_->post([this, nodeId, path, reasonStr, errorMessage] {
+                scriptEngine_.notifyCaptureStopped(nodeId, path,
+                                                    reasonStr, errorMessage);
+            });
+        };
     auto opts = terminalOptions_;
     if (!cwd.empty()) opts.cwd = cwd;
 

@@ -33,6 +33,7 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"clipboard",   Perm::GroupClipboard},
     {"layout",      Perm::GroupLayout},
     {"config",      Perm::GroupConfig},
+    {"process",     Perm::GroupProcess},
     // Individual
     {"ui.popup.create",   Perm::UiPopupCreate},
     {"ui.popup.destroy",  Perm::UiPopupDestroy},
@@ -52,7 +53,8 @@ static const std::unordered_map<std::string, uint32_t> kPermNames = {
     {"net.listen.local",  Perm::NetListenLocal},
     {"clipboard.read",    Perm::ClipboardRead},
     {"clipboard.write",   Perm::ClipboardWrite},
-    {"pane.selection",    Perm::PaneSelection},
+    {"pane.read",         Perm::PaneRead},
+    {"process.spawn",     Perm::ProcessSpawn},
     {"layout.modify",     Perm::LayoutModify},
     {"config.modify",     Perm::ConfigModify},
 };
@@ -106,6 +108,7 @@ std::string permissionsToString(uint32_t perms)
         {Perm::GroupClipboard, "clipboard"},
         {Perm::GroupLayout,    "layout"},
         {Perm::GroupConfig,    "config"},
+        {Perm::GroupProcess,   "process"},
     };
 
     uint32_t remaining = perms;
@@ -137,9 +140,10 @@ std::string permissionsToString(uint32_t perms)
         {Perm::NetListenLocal,  "net.listen.local"},
         {Perm::ClipboardRead,   "clipboard.read"},
         {Perm::ClipboardWrite,  "clipboard.write"},
-        {Perm::PaneSelection,   "pane.selection"},
+        {Perm::PaneRead,        "pane.read"},
         {Perm::LayoutModify,    "layout.modify"},
         {Perm::ConfigModify,    "config.modify"},
+        {Perm::ProcessSpawn,    "process.spawn"},
     };
     for (const auto& b : bits) {
         if (remaining & b.bit) {

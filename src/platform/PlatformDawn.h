@@ -142,6 +142,58 @@ std::vector<std::string> platformActiveNotifications(const std::string& sourceTa
 void platformOpenURL(const std::string& url);
 std::string platformProcessCWD(pid_t pid);
 
+// Launch an external (non-PTY) process detached from mb. Used by the
+// `mb.process.spawn` script API and by anything else that wants to run
+// a binary without attaching its stdio to a terminal pane.
+//
+// Semantics:
+//   - PATH lookup via execvp(3) — `path` may be a basename or absolute.
+//   - Argv-style. argv[0] is the program name as the child sees it; the
+//     caller is expected to mirror `path` there unless they have a
+//     reason not to. No shell, no quoting, no metacharacter expansion.
+//   - Detached: double-forks, calls setsid(2), reaps the intermediate
+//     child synchronously so mb leaves no zombie. The grandchild is
+//     adopted by init/launchd. mb's controlling tty is dropped.
+//   - stdio: reopened to /dev/null in the grandchild so the spawned
+//     program can't write back into mb's terminal (we have no PTY for
+//     it) and can't read from mb's stdin.
+//   - cwd: empty string → inherit. Non-empty → chdir(2) before exec.
+//     Failure to chdir aborts the spawn (errno surfaces via the same
+//     errno-pipe path that catches execvp failures).
+//   - env: empty vector → inherit mb's environment. Non-empty → merge
+//     over the inherited env (key=value pairs replace, new keys add;
+//     no key removal in v1). Use the helper rather than rolling your
+//     own envp to keep the merge semantics consistent.
+//   - cwd / env strings must outlive the call (they're consumed
+//     synchronously, before fork returns).
+//
+// Returns:
+//   pid > 0 : intermediate child reaped successfully. The grandchild
+//             may still have failed exec — we log warn from the parent
+//             when the errno pipe carries a value. pid is the
+//             intermediate child's, NOT the grandchild's; v1 has no
+//             API for tracking the grandchild's lifecycle (would need
+//             SIGCHLD / pidfd plumbing — see "tracked" follow-up).
+//   0       : fork failed pre-spawn. errno-class info logged; caller
+//             should treat as a synchronous failure.
+//
+// Errors after fork but before exec (chdir, exec) are reported via
+// spdlog::warn from the parent and cause the spawn to fail silently
+// from the script's perspective. Returning a structured error code
+// from the v1 detached API would require waiting for the grandchild,
+// which defeats "detached" — the lossy log is the price.
+//
+// Implemented per-platform:
+//   - PlatformUtils_Linux.cpp   (existing spawnDetached refactored)
+//   - PlatformUtils_macOS.mm    (new; same fork-based approach)
+struct ProcessSpawnOptions {
+    std::string cwd;                                     // empty == inherit
+    std::vector<std::pair<std::string, std::string>> env; // empty == inherit
+};
+pid_t platformSpawnDetached(const std::string& path,
+                            const std::vector<std::string>& argv,
+                            const ProcessSpawnOptions& opts);
+
 #include "LayoutTree.h"
 #include "Rect.h"
 #include "Uuid.h"

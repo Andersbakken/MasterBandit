@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <UserNotifications/UserNotifications.h>
+#include "PlatformDawn.h" // declarations for platform* free functions
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -476,6 +477,9 @@ void platformOpenURL(const std::string& url)
         }
     }];
 }
+
+// platformSpawnDetached lives in PlatformSpawn.cpp (cross-platform). The
+// macOS flavour falls out of the same #ifdef'd file used by Linux.
 
 std::string platformProcessCWD(pid_t pid)
 {

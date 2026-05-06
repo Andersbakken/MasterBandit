@@ -6,7 +6,9 @@
 #include <eventloop/EventLoop.h>
 #include "PtyMux.h"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>  // FILE* (output capture)
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -245,6 +247,99 @@ public:
     // by JS (em.resize) or cascaded from the parent.
     std::function<void(uint64_t lineId, int cols, int rows)> onEmbeddedResized;
 
+    // Set by platform; called when a logical-line id is evicted from
+    // scrollback past the archive cap. Fired from the parse worker
+    // thread under mMutex (delegated from Document::setOnLineIdEvicted),
+    // so callbacks must NOT take locks the worker may hold and must NOT
+    // call back into the engine synchronously — post to the main thread.
+    // Platform wires this to scriptEngine_.notifyRowEvicted so JS
+    // "rowEvicted" listeners fire after the parser releases the lock.
+    // Invoked AFTER the existing internal embedded-cleanup logic for
+    // the same lineId, so listeners observe a consistent post-eviction
+    // state (the embedded, if any, has already been graveyarded).
+    std::function<void(uint64_t lineId)> onLineIdEvicted;
+
+    // ─────────────────────────────────────────────────────────────────
+    // Output-capture taps
+    //
+    // A "capture" subscribes to the post-coalesce, pre-filter PTY
+    // output stream and writes it to a file. Multiple captures per
+    // Terminal are supported — different consumers (LLM tool, debug
+    // log, asciicast recorder) can attach concurrently. Uniqueness
+    // is enforced by file path: addOutputCapture refuses duplicates
+    // pointing at the same path so two callers can't unknowingly
+    // interleave writes into the same file.
+    //
+    // THREADING: producer side fires from any thread that consumed
+    // bytes from mReadCoalesceBuffer (main `flushReadBuffer` and
+    // worker `queueParse` lambda). Each capture serialises its own
+    // file writes under a per-capture mutex. The captures vector
+    // itself is protected by mCapturesMutex; producers grab it
+    // briefly to snapshot the vector, then release before doing I/O.
+    // I/O is done while holding the per-capture mutex — slow disk
+    // writes block whichever thread is delivering, by design (see
+    // the design conversation; queue + dedicated writer thread is a
+    // documented follow-up if this shows up in profiles).
+    //
+    // Captures auto-stop on write failure. Stop also fires the
+    // onCaptureStopped callback (set by platform → scriptEngine_)
+    // so JS gets a `stopped` event with a structured reason.
+    // On-disk capture format.
+    //   Raw       : every byte the emulator received, verbatim. Includes
+    //               all escapes and binary bytes. Smallest / cheapest.
+    //   Asciicast : asciicast v2 JSON-Lines, replayable with the
+    //               asciinema toolchain.
+    //   Text      : escape-stripped plain text, intended for LLM
+    //               consumption or human reading without an interpreter.
+    //               ANSI/CSI/OSC/DCS/SS3 sequences and most C0 controls
+    //               are dropped; printable ASCII, UTF-8 high bytes,
+    //               TAB, and LF are preserved. CR is normalised:
+    //               "\r\n" → "\n", bare "\r" dropped (in-place updates
+    //               like progress bars produce repeated content but no
+    //               cursor-driven overwrites — modelling overwrites
+    //               would require a full emulator and isn't worth it
+    //               for a follow-along log).
+    enum class CaptureFormat { Raw, Asciicast, Text };
+    enum class CaptureStopReason {
+        // External: script called .stop() or the owning instance was
+        // unloaded. No "error" payload accompanies this.
+        Explicit,
+        // Internal: a write to the destination file failed (disk full,
+        // EIO, fd revoked, etc.). The captured errno-style message is
+        // surfaced as the event payload.
+        IoError,
+    };
+
+    // Caller-supplied callback for the JS "stopped" event. Payload is
+    // (path, reason, errorMessage). errorMessage is empty for Explicit
+    // stops. Fired from whichever thread observed the stop — platform
+    // is responsible for hopping to main if it needs JS-thread context.
+    // Set by Platform_Tabs.cpp at Terminal construction.
+    std::function<void(const std::string& path,
+                       CaptureStopReason reason,
+                       const std::string& errorMessage)> onCaptureStopped;
+
+    // Open a new output capture targeting `path`. Returns true on
+    // success (file opened, capture registered), false if `path` is
+    // already capturing on this Terminal or if the file open failed.
+    // For asciicast format, writes the v2 header line synchronously
+    // so the destination file is a valid asciicast even if no PTY
+    // bytes ever arrive. cols/rows/title come from the live emulator
+    // state at registration time. errorOut (if non-null) carries a
+    // human-readable failure reason on `false` return.
+    bool addOutputCapture(const std::string& path,
+                          CaptureFormat format,
+                          std::string* errorOut = nullptr);
+
+    // Stop a previously-added capture. Idempotent — unknown paths or
+    // already-stopped captures return false silently. Fires the
+    // onCaptureStopped callback with reason=Explicit on success.
+    bool removeOutputCapture(const std::string& path);
+
+    // True iff a capture is currently registered for `path` on this
+    // Terminal. Cheap — takes mCapturesMutex briefly.
+    bool hasOutputCapture(const std::string& path) const;
+
 protected:
     void writeToOutput(const char* data, size_t len) override;
 
@@ -410,6 +505,82 @@ private:
     // mutators and the parse-worker eviction callback. Atomic to
     // avoid a lock just for this single uint64_t read.
     std::atomic<uint64_t> mFocusedEmbeddedLineId { 0 }; // 0 = none focused
+
+    // ─────────────────────────────────────────────────────────────────
+    // Output-capture internals (see public API + threading note above)
+
+    // Text-format stripper state. Lives per-capture so escape
+    // sequences split across chunk boundaries (very common: a CSI
+    // can land as "\x1b[" then "31m" in two PTY reads) reassemble
+    // correctly. State machine is a small subset of the VT/xterm
+    // parser — we recognise sequence kinds well enough to know
+    // when they end, but throw all of them away.
+    enum class TextStripState {
+        Ground,        // normal text — pass printable / UTF-8 / LF / TAB
+        Esc,           // saw ESC (0x1b); next byte selects the kind
+        Csi,           // ESC [ ... <terminator 0x40-0x7E>
+        Osc,           // ESC ] ... <BEL or ESC \>
+        OscEsc,        // saw ESC inside OSC — next byte may be ST (\\)
+        Dcs,           // ESC P ... <ESC \>
+        DcsEsc,        // saw ESC inside DCS — next byte may be ST
+        Ss3,           // ESC O <single byte>
+        EscIntermediate, // ESC followed by 0x20-0x2F (intermediate); next byte is final
+        SeenCr,        // saw CR; if next is LF emit only LF, else
+                       //   drop the CR and re-process this byte
+    };
+    struct CaptureEntry {
+        std::string path;
+        CaptureFormat format;
+        // FILE* over int fd: we want buffered writes (single fwrite per
+        // chunk + per-write fflush in asciicast mode for crash safety
+        // of the latest record). std::ofstream would do, but FILE* lets
+        // us reach for fileno()+fsync() later without re-plumbing.
+        FILE* fp { nullptr };
+        // Per-capture mutex serialises writes from main + worker.
+        // Held only across a single record write (fwrite + maybe
+        // fflush), so contention windows are short.
+        std::mutex mu;
+        // Once stopped, producers must not write. Set under `mu`.
+        // Producers re-check after acquiring `mu` so a concurrent stop
+        // is observed before the write.
+        bool stopped { false };
+        // Asciicast v2 needs a wall-clock origin for relative
+        // timestamps. Captured at registration time. Steady-clock would
+        // give monotonic time but asciicast records *real* timestamps
+        // (replay tools display elapsed since record start), so steady
+        // is fine — the absolute value is meaningless to the format.
+        std::chrono::steady_clock::time_point start;
+        // Text-format parser state. Untouched for Raw / Asciicast.
+        TextStripState textState { TextStripState::Ground };
+    };
+    // Wrap each entry in a unique_ptr so the per-entry mutex has a
+    // stable address even when the vector resizes. shared_ptr would
+    // also work; unique_ptr suffices because the vector owns and
+    // producers only ever borrow.
+    std::vector<std::unique_ptr<CaptureEntry>> mCaptures; // protected by mCapturesMutex
+    mutable std::mutex                          mCapturesMutex;
+
+protected:
+    // Producer-side tap. Snapshots the captures vector under the
+    // mutex (cheap pointer copy), then iterates without holding the
+    // outer lock; each CaptureEntry serialises its own writes via
+    // its own mutex. Called from flushReadBuffer (main) and the
+    // queueParse worker (off-thread). Failures inside any single
+    // capture stop only that capture and fire onCaptureStopped — the
+    // others continue normally. Protected (not private) so test
+    // subclasses can drive the tap synchronously without spinning up
+    // a real PTY.
+    void deliverCapturedOutput(const char* data, size_t len);
+
+private:
+    // Stop a capture and close its file. Caller owns whether to
+    // notify (Explicit stops do; IoError stops also do, with a
+    // populated errorMessage). MUST be called WITHOUT holding
+    // entry->mu — closeOne grabs it. errorOut is the message that
+    // will travel to onCaptureStopped on IoError.
+    void stopCaptureLocked(CaptureEntry* entry,
+                            CaptureStopReason reason,
+                            const std::string& errorMessage);
 
     // Embeddeds that the eviction callback extracted from mEmbedded.
     // The callback fires while the parse worker holds mMutex (deep

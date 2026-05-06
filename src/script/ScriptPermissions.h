@@ -46,7 +46,10 @@ enum Perm : uint32_t {
     ClipboardRead     = 1 << 17,  // read system clipboard / primary selection
     ClipboardWrite    = 1 << 18,  // write system clipboard / primary selection
     // pane query group
-    PaneSelection     = 1 << 19,  // read pane.selection / pane.cursor
+    // Read access to pane document content: selection, cursor, scrollback
+    // text extraction (getTextFromRows / getLinksFromRows / linkAt /
+    // rowIdAt) and rowEvicted lifecycle events.
+    PaneRead          = 1 << 19,
     // layout group — structural mutation of the UI tree (create/destroy nodes,
     // reparent, change active children, bind TabBars). Read-only introspection
     // (mb.layout.node, computeRects) is currently ungated.
@@ -57,6 +60,13 @@ enum Perm : uint32_t {
     // wins against TOML hot-reload (a subsequent disk edit's applyConfig
     // overwrites JS patches; not persisted to disk).
     ConfigModify      = 1 << 21,
+    // process group — launch external (non-PTY) processes via mb.process.spawn.
+    // Materially different threat model from shell.write (which is bounded to
+    // an existing pane's PTY) and io.inject (which only synthesises terminal
+    // input): a script with this bit can run arbitrary binaries with the
+    // user's environment. Held separate so popup-only / shell-only scripts
+    // don't get it implicitly. Built-ins receive it via Perm::All.
+    ProcessSpawn      = 1 << 23,
 
     // Group masks
     GroupUi      = UiPopupCreate | UiPopupDestroy,
@@ -70,6 +80,7 @@ enum Perm : uint32_t {
     GroupClipboard = ClipboardRead | ClipboardWrite,
     GroupLayout    = LayoutModify,
     GroupConfig    = ConfigModify,
+    GroupProcess   = ProcessSpawn,
 
     All          = 0xFFFFFFFF,
 };
@@ -89,7 +100,7 @@ std::string sha256Hex(const std::string& content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
-inline constexpr int kAllowlistVersion = 9;
+inline constexpr int kAllowlistVersion = 11;
 
 // Persistent allowlist/denylist for script permissions
 class Allowlist {

@@ -60,3 +60,33 @@ endfunction()
 add_subdirectory(3rdparty)
 add_subdirectory(src)
 add_subdirectory(tests)
+
+# Convenience target: format every C/C++ file under src/ and tests/ with the
+# repo's .clang-format. Run via `ninja clang_format` (or
+# `cmake --build build --target clang_format`). Not part of `all` — manual
+# only. .mm files are excluded; .clang-format is Language: Cpp.
+find_program(CLANG_FORMAT_EXECUTABLE NAMES clang-format)
+if(CLANG_FORMAT_EXECUTABLE)
+    file(GLOB_RECURSE MB_CLANG_FORMAT_SOURCES
+        CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/src/*.cpp"
+        "${CMAKE_SOURCE_DIR}/src/*.cc"
+        "${CMAKE_SOURCE_DIR}/src/*.cxx"
+        "${CMAKE_SOURCE_DIR}/src/*.c"
+        "${CMAKE_SOURCE_DIR}/src/*.h"
+        "${CMAKE_SOURCE_DIR}/src/*.hpp"
+        "${CMAKE_SOURCE_DIR}/tests/*.cpp"
+        "${CMAKE_SOURCE_DIR}/tests/*.cc"
+        "${CMAKE_SOURCE_DIR}/tests/*.cxx"
+        "${CMAKE_SOURCE_DIR}/tests/*.c"
+        "${CMAKE_SOURCE_DIR}/tests/*.h"
+        "${CMAKE_SOURCE_DIR}/tests/*.hpp"
+    )
+    add_custom_target(clang_format
+        COMMAND ${CLANG_FORMAT_EXECUTABLE} -i ${MB_CLANG_FORMAT_SOURCES}
+        COMMENT "clang-format src/ and tests/"
+        VERBATIM
+    )
+else()
+    message(STATUS "clang-format not found; 'clang_format' target unavailable")
+endif()

@@ -55,6 +55,16 @@ std::vector<Binding>        parseBindings(const std::vector<BindingConfig>& conf
 // Built-in default bindings (used when no config overrides them).
 std::vector<Binding>        defaultBindings();
 
+// Merge defaults with user bindings: any default whose key sequence equals a
+// user binding's sequence is dropped, then user bindings are appended. Lets a
+// user binding for e.g. ctrl+shift+w → close_tab shadow the default
+// ctrl+shift+w → close_pane on that exact stroke, while leaving defaults bound
+// to other strokes alone — distinct from the action-type dedup mouse bindings
+// use, because keyboard typically wants per-stroke override (multiple strokes
+// can legitimately bind the same action).
+std::vector<Binding>        mergeKeyBindings(std::vector<Binding> defaults,
+                                              std::vector<Binding> user);
+
 // --- Mouse bindings ---
 
 struct MouseBindingConfig; // defined in Config.h

@@ -209,3 +209,114 @@ TEST_CASE("SequenceMatcher: Match clears prefix state, no abortedPrefix")
     CHECK(r.result == R::Match);
     CHECK(r.abortedPrefix.empty());
 }
+
+TEST_CASE("mergeKeyBindings: user shadows default on same stroke")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ks("ctrl+shift+w")}, Action::ClosePane{}),
+    };
+    std::vector<Binding> user = {
+        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
+    REQUIRE(merged.size() == 1);
+    CHECK(std::holds_alternative<Action::CloseTab>(merged[0].action));
+}
+
+TEST_CASE("mergeKeyBindings: default for different stroke is preserved")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ks("ctrl+shift+w")}, Action::ClosePane{}),
+        mkBinding({ks("ctrl+shift+t")}, Action::NewTab{}),
+    };
+    std::vector<Binding> user = {
+        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
+    REQUIRE(merged.size() == 2);
+    CHECK(std::holds_alternative<Action::NewTab>(merged[0].action));
+    CHECK(std::holds_alternative<Action::CloseTab>(merged[1].action));
+}
+
+TEST_CASE("mergeKeyBindings: empty user keeps all defaults")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
+        mkBinding({ks("ctrl+w")}, Action::ClosePane{}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), {});
+    REQUIRE(merged.size() == 2);
+    CHECK(std::holds_alternative<Action::NewTab>(merged[0].action));
+    CHECK(std::holds_alternative<Action::ClosePane>(merged[1].action));
+}
+
+TEST_CASE("mergeKeyBindings: empty defaults yields just user bindings")
+{
+    std::vector<Binding> user = {
+        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
+    };
+    auto merged = mergeKeyBindings({}, std::move(user));
+    REQUIRE(merged.size() == 1);
+    CHECK(std::holds_alternative<Action::NewTab>(merged[0].action));
+}
+
+TEST_CASE("mergeKeyBindings: multi-key sequence shadows by full sequence equality")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
+        mkBinding({ks("ctrl+x"), ks("3")}, Action::NewTab{}),
+    };
+    std::vector<Binding> user = {
+        mkBinding({ks("ctrl+x"), ks("2")}, Action::CloseTab{}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
+    REQUIRE(merged.size() == 2);
+    CHECK(std::holds_alternative<Action::NewTab>(merged[0].action));
+    CHECK(std::holds_alternative<Action::CloseTab>(merged[1].action));
+}
+
+TEST_CASE("mergeKeyBindings: duplicate user bindings on same stroke are both kept")
+{
+    // Preserves the intentional double-fire feature: binding the same stroke
+    // twice in user config should fire both actions (matches the dispatch
+    // semantic tested in 'multiple actions bound to same stroke all fire').
+    std::vector<Binding> user = {
+        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
+        mkBinding({ks("ctrl+t")}, Action::ReloadConfig{}),
+    };
+    auto merged = mergeKeyBindings({}, std::move(user));
+    REQUIRE(merged.size() == 2);
+    CHECK(std::holds_alternative<Action::NewTab>(merged[0].action));
+    CHECK(std::holds_alternative<Action::ReloadConfig>(merged[1].action));
+}
+
+TEST_CASE("mergeKeyBindings: stroke with different mods is not shadowed")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ks("ctrl+w")}, Action::ClosePane{}),
+    };
+    std::vector<Binding> user = {
+        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
+    REQUIRE(merged.size() == 2);
+    CHECK(std::holds_alternative<Action::ClosePane>(merged[0].action));
+    CHECK(std::holds_alternative<Action::CloseTab>(merged[1].action));
+}
+
+TEST_CASE("mergeKeyBindings: dispatch behavior — user-shadowed stroke fires only user action")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ks("ctrl+shift+w")}, Action::ClosePane{}),
+    };
+    std::vector<Binding> user = {
+        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
+
+    SequenceMatcher sm;
+    auto r = sm.advance(ks("ctrl+shift+w"), merged);
+    CHECK(r.result == R::Match);
+    REQUIRE(r.actions.size() == 1);
+    CHECK(std::holds_alternative<Action::CloseTab>(r.actions[0]));
+}

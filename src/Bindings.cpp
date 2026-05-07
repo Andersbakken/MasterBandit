@@ -403,6 +403,24 @@ std::vector<Binding> defaultBindings()
 #endif
 }
 
+std::vector<Binding> mergeKeyBindings(std::vector<Binding> defaults,
+                                       std::vector<Binding> user)
+{
+    std::vector<Binding> result;
+    result.reserve(defaults.size() + user.size());
+    for (auto& d : defaults) {
+        bool shadowed = false;
+        for (const auto& u : user) {
+            if (d.keys == u.keys) { shadowed = true; break; }
+        }
+        if (!shadowed)
+            result.push_back(std::move(d));
+    }
+    for (auto& u : user)
+        result.push_back(std::move(u));
+    return result;
+}
+
 SequenceMatcher::MatchResult SequenceMatcher::advance(
     const KeyStroke& ks, const std::vector<Binding>& bindings)
 {

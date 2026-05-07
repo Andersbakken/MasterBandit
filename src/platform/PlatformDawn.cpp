@@ -938,9 +938,8 @@ void PlatformDawn::createTerminal(const TerminalOptions& options)
     defaultBgColor_ = color::parseHexRGBA(cs.background, 0x00000000);
 
     {
-        std::vector<Binding> all = defaultBindings();
         auto userBindings = parseBindings(options.keybindings);
-        all.insert(all.end(), userBindings.begin(), userBindings.end());
+        auto all = mergeKeyBindings(defaultBindings(), std::move(userBindings));
         inputController_->setKeyBindings(std::move(all));
     }
     {
@@ -1150,9 +1149,9 @@ void PlatformDawn::applyConfig(const Config& config)
     }
 
     // Keybindings
-    std::vector<Binding> allKey = defaultBindings();
     auto userBindings = parseBindings(config.keybindings);
-    allKey.insert(allKey.end(), userBindings.begin(), userBindings.end());
+    const std::size_t userBindingCount = userBindings.size();
+    auto allKey = mergeKeyBindings(defaultBindings(), std::move(userBindings));
     auto userMouseBindings = parseMouseBindings(config.mousebindings);
     auto allMouse = mergeMouseBindings(defaultMouseBindings(), std::move(userMouseBindings));
     if (inputController_) {
@@ -1278,7 +1277,7 @@ void PlatformDawn::applyConfig(const Config& config)
 
     tabBarDirty_ = true;
     setNeedsRedraw();
-    spdlog::info("Config reloaded: {} user keybindings", userBindings.size());
+    spdlog::info("Config reloaded: {} user keybindings", userBindingCount);
 
     // Fire JS `configChanged` so scripts (default-ui, applets) can re-read
     // whatever config bits they care about — e.g. default-ui checks

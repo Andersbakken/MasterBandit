@@ -74,6 +74,14 @@ struct DecorationStyle
 
 // Live storage on TerminalEmulator. Anchors are line-id+cellOffset (same as
 // Selection). Mutated under TerminalEmulator::mMutex.
+//
+// `startCellOffset` and `endCellOffset` are CUMULATIVE cell offsets within
+// their respective logical lines (NOT visual-row columns; resolveDecoration
+// does `row = firstAbs + off/w; col = off % w` to recover visual position).
+// `endCellOffset` is **inclusive** — the column index of the last covered
+// cell. The JS `addDecoration` API exposes `endCol` as exclusive (matching
+// `pane.selection.endCol`, `getTextFromRows`, `MbMatch.endCol`); the binding
+// layer converts at the boundary by storing `ec - 1` here.
 struct Decoration
 {
     uint64_t id { 0 };
@@ -82,7 +90,7 @@ struct Decoration
     uint64_t startLineId { 0 };
     int startCellOffset { 0 };
     uint64_t endLineId { 0 };
-    int endCellOffset { 0 };
+    int endCellOffset { 0 }; // INCLUSIVE — see comment above
     DecorationShape shape { DecorationShape::Range };
     DecorationStyle style;
     int zPriority { 0 };

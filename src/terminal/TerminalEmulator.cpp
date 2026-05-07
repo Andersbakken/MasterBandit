@@ -439,6 +439,32 @@ void TerminalEmulator::resetViewport()
     }
 }
 
+bool TerminalEmulator::scrollToRow(uint64_t lineId)
+{
+    if (lineId == 0) {
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    int abs = mDocument.firstAbsOfLine(lineId);
+    if (abs < 0) {
+        return false; // evicted
+    }
+    int histSize  = mDocument.historySize();
+    // Mirror the private `scrollTo(targetAbsRow)` lambda in scrollToPrompt:
+    // bringing abs row N to the visual top sets viewportOffset = histSize -
+    // N, clamped to [0, histSize]. If the requested row sits in the live
+    // viewport (abs >= histSize), reset to live.
+    int newOffset = histSize - abs;
+    int clamped   = std::clamp(newOffset, 0, histSize);
+    if (clamped == mViewportOffset) {
+        return false;
+    }
+    mViewportOffset = clamped;
+    grid().markAllDirty();
+    publishAndFireEvent(static_cast<int>(ScrollbackChanged));
+    return true;
+}
+
 void TerminalEmulator::scrollToPrompt(int direction, bool wrap)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
@@ -754,7 +780,18 @@ uint64_t TerminalEmulator::addDecoration(Decoration spec)
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     spec.id = mNextDecorationId++;
     mDecorations.push_back(std::move(spec));
-    return mDecorations.back().id;
+    uint64_t id = mDecorations.back().id;
+    // Publish a fresh snapshot so the render thread picks up the new
+    // decoration on the next frame. Without this, the published snapshot
+    // is whatever the parser last produced — for a JS-only mutation
+    // (e.g. scrollback-search adding highlights with no PTY traffic
+    // happening), the renderer would otherwise sit on a stale snapshot
+    // indefinitely. We previously got away with this by accident in the
+    // applet's flow because `pane.scrollToRow` published as a side
+    // effect; but on a no-scrollback pane, `scrollToRow` is a no-op and
+    // nothing else republishes.
+    buildAndPublishSnapshotLocked();
+    return id;
 }
 
 bool TerminalEmulator::removeDecoration(uint64_t id)
@@ -763,6 +800,7 @@ bool TerminalEmulator::removeDecoration(uint64_t id)
     for (auto it = mDecorations.begin(); it != mDecorations.end(); ++it) {
         if (it->id == id) {
             mDecorations.erase(it);
+            buildAndPublishSnapshotLocked();
             return true;
         }
     }
@@ -782,7 +820,11 @@ size_t TerminalEmulator::clearUserDecorations(std::string_view tag)
                            return tag.empty() ? true : (d.tag == tag);
                        }),
         mDecorations.end());
-    return before - mDecorations.size();
+    size_t cleared = before - mDecorations.size();
+    if (cleared > 0) {
+        buildAndPublishSnapshotLocked();
+    }
+    return cleared;
 }
 
 std::optional<ResolvedDecoration>

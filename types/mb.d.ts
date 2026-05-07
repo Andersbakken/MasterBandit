@@ -307,6 +307,24 @@ interface MbLinkInfo {
     readonly endCol: number;
 }
 
+/**
+ * One match returned from `pane.findText`. Anchored on logical-line ids;
+ * `startCol` / `endCol` are cumulative cell offsets within the logical line,
+ * NOT visual-row columns — they're directly usable as `addDecoration`
+ * `startCol` / `endCol` (`Decoration::startCellOffset` /
+ * `endCellOffset`). `endCol` is exclusive (one past the last matched cell).
+ *
+ * `startRowId === endRowId` for every match — the search engine confines
+ * each hit to a single logical line.
+ */
+interface MbMatch {
+    readonly startRowId: number;
+    readonly startCol: number;
+    readonly endRowId: number;
+    /** Exclusive — one past the last column of the match. */
+    readonly endCol: number;
+}
+
 interface MbMouseEvent {
     /** `"press"` | `"release"` (and possibly `"move"` for future use). */
     type: "press" | "release";
@@ -433,8 +451,16 @@ interface MbTerminal {
      */
     addDecoration(spec: {
         startRowId: number;
+        /** Cell-offset within the logical line. Inclusive. */
         startCol: number;
         endRowId: number;
+        /**
+         * Cell-offset within the logical line. **Exclusive** — one past the
+         * last covered cell, matching `pane.selection.endCol`,
+         * `getTextFromRows`, `MbCommand.outputEnd.col`, `MbLinkInfo.endCol`,
+         * and `MbMatch.endCol`. A single-line decoration with
+         * `endCol <= startCol` is rejected (paints nothing).
+         */
         endCol: number;
         style?: {
             /** Packed RGBA8 (0xAABBGGRR — alpha in MSB). */
@@ -629,6 +655,48 @@ interface MbPane extends MbTerminal {
      * Requires `pane.read`.
      */
     rowIdAt(screenRow: number): number | null;
+    /**
+     * Search the pane's scrollback + visible grid for `needle`. Each match
+     * is confined to a single logical line (`startRowId === endRowId`).
+     * Cell columns are cumulative offsets within the logical line, suitable
+     * for use as `addDecoration` `startCol` / `endCol`.
+     *
+     * Default behavior is case-insensitive literal substring search. Set
+     * `opts.regex = true` to interpret `needle` as an ECMAScript regex
+     * (invalid syntax returns an empty array rather than throwing). Set
+     * `opts.caseSensitive` to disable folding. Set `opts.wholeWord` to
+     * require word boundaries (literal-mode only — regex callers can use
+     * `\b` directly). `opts.limit` caps the number of matches returned;
+     * the walk stops early when reached.
+     *
+     * Walks oldest → newest, so the returned vector is sorted in scroll
+     * order (top of scrollback first). Empty `needle` returns `[]`.
+     *
+     * Lines that straddle the scrollback / visible-grid boundary (a
+     * partially-soft-wrapped live edit line) are searched on the
+     * scrollback side only — the visible-grid continuation can't be
+     * decoration-anchored correctly via line-id resolution.
+     *
+     * Requires `pane.read`.
+     */
+    findText(needle: string, opts?: {
+        /** Treat `needle` as ECMAScript regex. Default `false`. */
+        regex?: boolean;
+        /** Default `false` (i.e. case-insensitive). */
+        caseSensitive?: boolean;
+        /** Match only at word boundaries. Literal-mode only. Default `false`. */
+        wholeWord?: boolean;
+        /** Hard cap; <= 0 means no cap. Default 10000. */
+        limit?: number;
+    }): MbMatch[];
+    /**
+     * Scroll the viewport so the line with the given logical id is at the
+     * top. Returns `true` iff the viewport actually changed; `false` if the
+     * id was evicted from the archive cap, the row is already in the live
+     * viewport, or the row is already at the visible top. Requires
+     * `pane.read`.
+     */
+    scrollToRow(rowId: number): boolean;
     /**
      * Set (or clear with `null`) the OSC 133 command selection highlight.
      * `id` must refer to a live command in `pane.commands`; unknown ids are

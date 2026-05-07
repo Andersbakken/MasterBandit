@@ -307,6 +307,14 @@ public:
     // the ends of the command ring (true → Cmd+Up at oldest wraps to newest,
     // Cmd+Down at newest wraps to oldest; false → clamps at ends).
     void scrollToPrompt(int direction, bool wrap = true);
+
+    // Scroll the viewport so the line with the given logical id is visible
+    // (best-effort: brings the line's first abs row to the top of the
+    // viewport, clamped by the available history). Returns true if the id
+    // resolves and the viewport changed; false if the id has been evicted
+    // past the archive cap, the id resolves to a row already in the
+    // viewport (no-op), or the row is already at the visible top.
+    bool scrollToRow(uint64_t lineId);
     void selectCommandOutput();              // select output around current viewport position
     std::string serializeScrollback() const; // serialize all content for pager
 

@@ -332,9 +332,6 @@ std::optional<Action::Any> parseAction(const std::string &name,
     if (name == "select_command_output") {
         return Action::SelectCommandOutput {};
     }
-    if (name == "show_scrollback") {
-        return Action::ShowScrollback {};
-    }
     if (name == "copy_last_command") {
         return Action::CopyLastCommand {};
     }
@@ -476,8 +473,11 @@ std::vector<Binding> defaultBindings()
         // Prompt navigation
         { { *parseKeyStroke("meta+up") }, Action::ScrollToPrompt { -1 } },
         { { *parseKeyStroke("meta+down") }, Action::ScrollToPrompt { 1 } },
-        // Scrollback search
-        { { *parseKeyStroke("meta+f") }, Action::ShowScrollback {} },
+        // Scrollback search (in-pane, decoration-overlay-driven). The
+        // built-in `scrollback-search.js` applet registers
+        // `search.open`; opening it on a pane that already has a search
+        // popup toggles it closed.
+        { { *parseKeyStroke("meta+f") }, Action::ScriptAction { "search.open", {} } },
         // Tab / pane reorder
         { { *parseKeyStroke("meta+shift+pageup") }, Action::MoveTab { -1 } },
         { { *parseKeyStroke("meta+shift+pagedown") }, Action::MoveTab { +1 } },
@@ -533,8 +533,11 @@ std::vector<Binding> defaultBindings()
         // Prompt navigation
         { { *parseKeyStroke("ctrl+alt+z") }, Action::ScrollToPrompt { -1 } },
         { { *parseKeyStroke("ctrl+alt+x") }, Action::ScrollToPrompt { 1 } },
-        // Scrollback search
-        { { *parseKeyStroke("ctrl+shift+f") }, Action::ShowScrollback {} },
+        // Scrollback search (in-pane, decoration-overlay-driven). The
+        // built-in `scrollback-search.js` applet registers
+        // `search.open`; opening it on a pane that already has a search
+        // popup toggles it closed.
+        { { *parseKeyStroke("ctrl+shift+f") }, Action::ScriptAction { "search.open", {} } },
         // Tab / pane reorder
         { { *parseKeyStroke("ctrl+alt+pageup") }, Action::MoveTab { -1 } },
         { { *parseKeyStroke("ctrl+alt+pagedown") }, Action::MoveTab { +1 } },

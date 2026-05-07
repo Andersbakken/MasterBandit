@@ -495,13 +495,16 @@ Created on first render, cleaned up when the overlay exits. The overlay's
 content area excludes the tab bar and resizes dynamically if the tab bar
 changes visibility.
 
-**Scrollback pager** (`ShowScrollback` action):
-1. Serializes all scrollback (tier-2 archive + tier-1 history + screen) to a
-   temp file via `serializeScrollback()`.
-2. Spawns `less -R <tmpfile>` as an overlay terminal using `TerminalOptions::command`.
-3. On exit (PTY closes), cleanup is deferred to the next idle tick to avoid
-   use-after-free (the exit callback fires from `Terminal::readFromFD`).
-4. Keybindings: Cmd+F (macOS), Ctrl+Shift+F (Linux).
+**Scrollback search**: in-pane decoration-overlay-driven search. The
+keybinding (Cmd+F / Ctrl+Shift+F) invokes the `search.open` script action
+registered by the built-in `scrollback-search.js` applet. The applet calls
+`pane.findText(needle, opts)` (literal substring or ECMAScript regex,
+case-insensitive by default), then paints highlight `Decoration`s tagged
+`"search"` for every match and a higher-zPriority `"current-match"`
+decoration on the active hit. `n` / `N` step through results; `pane.scrollToRow`
+centers the current match. Esc clears decorations and closes the popup.
+`serializeScrollback()` is still exposed in the C++ API for the
+`copy_document` action but no longer drives a `less` pager.
 
 **Mode 2026 (synchronized output)**: when active, rendering is deferred until
 the app disables sync. Prevents showing intermediate states during screen

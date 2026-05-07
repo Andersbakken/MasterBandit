@@ -388,8 +388,7 @@ Uuid Engine::createTabSubtree()
 {
     // The tab is a Stack whose activeChild is the "content" Container
     // (holding the pane Terminals). Additional siblings may be added later
-    // — e.g. by Action::ShowScrollback — and swapped in via setActiveChild
-    // to produce what used to be the "overlay" UX.
+    // and swapped in via setActiveChild to produce overlay-style UX.
     ::LayoutTree &tree = *layoutTree_;
     Uuid stack         = tree.createStack();
     Uuid content       = tree.createContainer(SplitDir::Horizontal);

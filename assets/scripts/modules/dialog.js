@@ -6,7 +6,7 @@
 //        applet-loader for the script permission prompt; future home for
 //        prompt(), alert().
 
-import { render, createTheme, box, text, row, button } from "mb:tui";
+import { render, createTheme, box, text, row, button, measure } from "mb:tui";
 
 const _defaultTheme = createTheme({
     bg:     '#1a1b26',
@@ -58,28 +58,6 @@ export function confirm(opts) {
         const lines  = String(message).split('\n');
         const labels = buttons.map(b => '[ ' + (b.label ?? '') + ' ]');
 
-        // Inner width: max of (title, longest message line, buttons row).
-        // Buttons row = sum of label widths + 2-cell gap between buttons.
-        const titleW = title ? title.length : 0;
-        const msgW   = lines.reduce((m, l) => Math.max(m, l.length), 0);
-        const btnsW  = labels.reduce((s, l) => s + l.length, 0)
-                     + Math.max(0, labels.length - 1) * 2;
-        const innerW = Math.max(titleW, msgW, btnsW, 16);
-
-        // Inner height = (title + blank) + lines + blank + buttons row.
-        const innerH = (title ? 2 : 0) + lines.length + 2;
-
-        // Outer dimensions = inner + border (2) + padding (2 * 1 each side).
-        const w = innerW + 4;
-        const h = innerH + 4;
-
-        const cx = Math.max(0, Math.floor((pane.cols - w) / 2));
-        const cy = Math.max(0, Math.floor((pane.rows - h) / 2));
-
-        const id = 'mb-dialog-' + Math.random().toString(36).slice(2, 10);
-        const popup = pane.createPopup({ id, x: cx, y: cy, w, h });
-        if (!popup) { resolve(-1); return; }
-
         let resolved = false;
         let ui = null;
         const finish = (idx) => {
@@ -108,6 +86,37 @@ export function confirm(opts) {
             onClick:    () => finish(i),
         }));
 
+        const children = [];
+        if (title) {
+            children.push(text({ value: title, align: 'center', color: 'bright-white.bold' }));
+            children.push(text({ value: '' }));
+        }
+        for (const line of lines) children.push(text({ value: line, align: 'center' }));
+        children.push(text({ value: '' }));
+        children.push(row({ gap: 2, justify: 'center' }, buttonNodes));
+
+        const root = box({ border: 'round', padding: 1 }, children);
+
+        // Width: enough to fit title / longest line / buttons row inside the
+        // box's border + padding (2 cells of border + 2 cells of padding =
+        // 4 cells of overhead). The minimum 16 is a stylistic floor so
+        // single-word dialogs ("OK"/"Cancel") don't shrink to a tiny strip.
+        // Height: derived by measure() once we know the width.
+        const titleW = title ? title.length : 0;
+        const msgW   = lines.reduce((m, l) => Math.max(m, l.length), 0);
+        const btnsW  = labels.reduce((s, l) => s + l.length, 0)
+                     + Math.max(0, labels.length - 1) * 2;
+        const w      = Math.max(titleW, msgW, btnsW, 16) + 4;
+        const m      = measure(root, w);
+        const h      = m.h;
+
+        const cx = Math.max(0, Math.floor((pane.cols - w) / 2));
+        const cy = Math.max(0, Math.floor((pane.rows - h) / 2));
+
+        const id = 'mb-dialog-' + Math.random().toString(36).slice(2, 10);
+        const popup = pane.createPopup({ id, x: cx, y: cy, w, h });
+        if (!popup) { resolve(-1); return; }
+
         // Keyboard shortcuts: each button may declare `key` (single char,
         // case-insensitive). Listen on the popup directly — tui's own input
         // handler ignores letter keys on a focused button so both fire safely.
@@ -124,17 +133,6 @@ export function confirm(opts) {
                 if (idx !== undefined) finish(idx);
             });
         }
-
-        const children = [];
-        if (title) {
-            children.push(text({ value: title, align: 'center', color: 'bright-white.bold' }));
-            children.push(text({ value: '' }));
-        }
-        for (const line of lines) children.push(text({ value: line, align: 'center' }));
-        children.push(text({ value: '' }));
-        children.push(row({ gap: 2, justify: 'center' }, buttonNodes));
-
-        const root = box({ border: 'round', padding: 1 }, children);
 
         ui = render(popup, root, {
             theme: theme ?? _defaultTheme,

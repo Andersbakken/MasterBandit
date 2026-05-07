@@ -274,6 +274,43 @@ int PlatformDawn::exec()
             }
             return std::nullopt;
         };
+        scbs.paneFindText = [this](Script::PaneId paneId,
+                                   const std::string &needle,
+                                   const Script::AppCallbacks::FindOptions &opts)
+            -> std::vector<Script::AppCallbacks::FindMatch>
+        {
+            std::vector<Script::AppCallbacks::FindMatch> out;
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return out;
+            }
+            std::lock_guard<std::recursive_mutex> _lk(p->mutex());
+            Document::FindOptions docOpts;
+            docOpts.regex         = opts.regex;
+            docOpts.caseSensitive = opts.caseSensitive;
+            docOpts.wholeWord     = opts.wholeWord;
+            docOpts.limit         = opts.limit;
+            auto matches          = p->document().findText(needle, docOpts);
+            out.reserve(matches.size());
+            for (const auto &m : matches) {
+                Script::AppCallbacks::FindMatch fm;
+                fm.startLineId = m.startLineId;
+                fm.startCol    = m.startCol;
+                fm.endLineId   = m.endLineId;
+                fm.endCol      = m.endCol;
+                out.push_back(fm);
+            }
+            return out;
+        };
+        scbs.paneScrollToRow = [this](Script::PaneId paneId, uint64_t lineId) -> bool
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
+                // No need to take the mutex here — scrollToRow() takes it
+                // internally. Same shape as paneSetSelectedCommand.
+                return p->scrollToRow(lineId);
+            }
+            return false;
+        };
         scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo>
         {
             std::vector<Script::AppCallbacks::TabInfo> result;
@@ -931,6 +968,7 @@ int PlatformDawn::exec()
         scriptEngine_.setBuiltinModulesDir(scriptsDir + "modules");
         scriptEngine_.loadController(scriptsDir + "applet-loader.js");
         scriptEngine_.loadController(scriptsDir + "command-palette.js");
+        scriptEngine_.loadController(scriptsDir + "scrollback-search.js");
         if (scriptEngine_.loadController(scriptsDir + "default-ui.js") == 0) {
             spdlog::critical("failed to load default-ui.js from '{}'", scriptsDir);
             std::exit(1);

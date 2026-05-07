@@ -124,6 +124,49 @@ public:
                                  int startCol = 0,
                                  int endCol   = std::numeric_limits<int>::max()) const;
 
+    // Search options for findText.
+    //
+    // Regex engine: RE2 (linear-time, no backreferences, no lookahead /
+    // lookbehind). Syntax close to PCRE for the common subset; see
+    // https://github.com/google/re2/wiki/Syntax. Choosing RE2 over
+    // std::regex eliminates catastrophic backtracking — pathological
+    // user-typed patterns cannot hang the search thread.
+    struct FindOptions
+    {
+        bool regex         = false; // treat needle as RE2 regex
+        bool caseSensitive = false; // case-insensitive by default
+        bool wholeWord     = false; // literal mode only: word-boundary match (\b)
+        int limit          = 10000; // hard cap on matches returned (0 = no cap)
+    };
+
+    // One match. Anchors are logical-line ids; both ends always equal each
+    // other in this implementation (matches are confined to a single
+    // logical line). startCol is the cell column of the first matched
+    // character; endCol is exclusive (one past the last matched cell —
+    // matches `getTextFromRows` / Decoration convention). startLineId ==
+    // endLineId for every Match.
+    struct Match
+    {
+        uint64_t startLineId;
+        int startCol;
+        uint64_t endLineId;
+        int endCol;
+    };
+
+    // Walk every logical line in scrollback + visible grid, looking for
+    // `needle`. Each logical line is searched independently — a match
+    // cannot span lines (terminal scrollback wraps, so a "line" can already
+    // be many display rows; cross-line matching across hard newlines isn't
+    // a useful generalization). Walks oldest → newest, so the returned
+    // vector is sorted by abs-row order. Honors `opts.limit` as a hard cap;
+    // exceeding it stops the walk early.
+    //
+    // Empty needle returns no matches. Invalid regex (when opts.regex is
+    // set) returns no matches. Wide-glyph trailing cells (`Cell::wc == 0`)
+    // are encoded as a single space in the search text, matching
+    // getTextFromLines' behavior.
+    std::vector<Match> findText(std::string_view needle, const FindOptions &opts) const;
+
     // Eviction callback: fires once per dropped line ID after it's removed
     // from scrollback. Used by Terminal to destroy embedded terminals
     // anchored to evicted lines.

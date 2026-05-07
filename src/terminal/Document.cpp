@@ -2,9 +2,11 @@
 #include "Utf8.h"
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <re2/re2.h>
 
 // =========================================================================
 // Document
@@ -1260,4 +1262,372 @@ void Document::resizeReflow(int newCols, int newRows, CursorTrack *cursor)
             }
         }
     }
+}
+
+// ----------------------------------------------------------------------------
+// findText
+// ----------------------------------------------------------------------------
+//
+// Searches every logical line independently. A "logical line" is the
+// shell-emitted line as a single contiguous cell run, regardless of how
+// soft-wrapping splits it across visual rows at the current width. Matches
+// span at most one logical line (`startLineId == endLineId`).
+//
+// Algorithm:
+//   1. For each logical line, build a per-line UTF-8 buffer plus a parallel
+//      byte→cell-column index. (Cell columns are NOT byte offsets — wide
+//      glyphs span 2 cells but encode 1+ bytes; combining marks live in
+//      CellExtra and aren't included in the search text. Sticking to the
+//      `Cell::wc` codepoint stream matches getTextFromLines' notion of
+//      "what's on the line".)
+//   2. Run substring or regex search on that buffer.
+//   3. For each hit, translate the byte range back through byteToCol to
+//      cell columns; emit a Match anchored on the line id.
+//
+// The first visible-grid logical line is merged with the last scrollback
+// logical line when they share an id (soft-wrap straddle), so a match
+// crossing that boundary isn't missed.
+
+namespace {
+
+struct LineBuf
+{
+    uint64_t lineId = 0;
+    std::string text;
+    // For each byte in `text`, the cell-offset within the logical line that
+    // it originated from. Length == text.size(). For multi-byte UTF-8
+    // characters every byte gets the same offset. "Cell offset" means the
+    // value Decoration::startCellOffset / endCellOffset takes — cumulative
+    // across visual-row wraps within one logical line, NOT 0..cols-1 per
+    // row. resolveDecoration() does `row = firstAbs + off/w; col = off%w`,
+    // so a match crossing a visual-wrap boundary resolves correctly.
+    std::vector<int> byteToOffset;
+    // Cell offset AFTER the last appended cell — resolves to the exclusive
+    // end-column for matches that end at byte == text.size().
+    int byteToOffsetEnd = 0;
+};
+
+// Append cells [from..to) into `out`, growing both `text` and
+// `byteToOffset`. `baseOffset` is the cumulative cell offset within the
+// logical line at which `cells[from]` lives — for scrollback lines that's
+// always 0 (the block stores the whole logical line contiguously); for
+// visible-grid multi-row logical lines it's `(rowIdxWithinLine) * cols_`.
+//
+// Wide-glyph trailing cells (wc == 0) become a single space, mirroring
+// getTextFromLines' visible-text contract.
+void appendCellsToLineBuf(LineBuf &out, const Cell *cells, int from, int to, int baseOffset)
+{
+    for (int c = from; c < to; ++c) {
+        int off     = baseOffset + c;
+        char32_t cp = cells[c].wc;
+        if (cp == 0) {
+            out.text += ' ';
+            out.byteToOffset.push_back(off);
+        } else if (cp < 0x80) {
+            out.text += static_cast<char>(cp);
+            out.byteToOffset.push_back(off);
+        } else {
+            char buf[4];
+            int n = utf8::encode(cp, buf);
+            for (int k = 0; k < n; ++k) {
+                out.text += buf[k];
+                out.byteToOffset.push_back(off);
+            }
+        }
+    }
+    out.byteToOffsetEnd = baseOffset + to;
+}
+
+// Trim trailing nulls (cells with wc == 0 at the very end of a line are
+// padding from the cell ring; we don't want a bare line of spaces to be
+// "matchable" by a needle of spaces). Mirrors LineBuffer::lineText.
+int trimmedLen(const Cell *cells, int len)
+{
+    while (len > 0 && cells[len - 1].wc == 0) {
+        --len;
+    }
+    return len;
+}
+
+// ASCII-only lowercase. Sufficient for our case-insensitive flag because
+// the search text is built from arbitrary codepoints; folding non-ASCII
+// would require ICU. Documented limitation.
+char asciiToLower(char c)
+{
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+bool isWordChar(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '_';
+}
+
+// Substring search with optional case-insensitivity. `hay` is the line buffer,
+// `needle` is the search term. Returns a vector of (byteOffset, byteLength)
+// pairs. byteLength == needle.size() always; kept as a pair for symmetry with
+// the regex branch.
+std::vector<std::pair<size_t, size_t>>
+substringMatches(const std::string &hay, std::string_view needle,
+                 bool caseSensitive, bool wholeWord, int remainingLimit)
+{
+    std::vector<std::pair<size_t, size_t>> out;
+    if (needle.empty() || hay.size() < needle.size()) {
+        return out;
+    }
+    // Lowercased lookups when case-insensitive; we don't allocate a folded
+    // copy of hay — for each candidate position we compare byte-by-byte.
+    // O(n*m) worst case; for terminal scrollback this is fine and avoids
+    // the allocation overhead.
+    auto eqAt = [&](size_t pos) -> bool
+    {
+        for (size_t k = 0; k < needle.size(); ++k) {
+            char a = hay[pos + k];
+            char b = needle[k];
+            if (!caseSensitive) {
+                a = asciiToLower(a);
+                b = asciiToLower(b);
+            }
+            if (a != b) {
+                return false;
+            }
+        }
+        return true;
+    };
+    auto wordOk = [&](size_t pos) -> bool
+    {
+        if (!wholeWord) {
+            return true;
+        }
+        bool leftOk  = (pos == 0) || !isWordChar(hay[pos - 1]);
+        size_t end   = pos + needle.size();
+        bool rightOk = (end >= hay.size()) || !isWordChar(hay[end]);
+        return leftOk && rightOk;
+    };
+    for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+        if (!eqAt(i) || !wordOk(i)) {
+            continue;
+        }
+        out.emplace_back(i, needle.size());
+        if (remainingLimit > 0 && static_cast<int>(out.size()) >= remainingLimit) {
+            break;
+        }
+        // Skip past this match so we don't return overlapping hits for
+        // self-overlapping needles like "aa" in "aaaa".
+        i += needle.size() - 1;
+    }
+    return out;
+}
+
+std::vector<std::pair<size_t, size_t>>
+regexMatches(const std::string &hay, const re2::RE2 &re, int remainingLimit)
+{
+    std::vector<std::pair<size_t, size_t>> out;
+    // We use RE2::Match (the lower-level entry point) rather than
+    // FindAndConsume because the latter requires the caller's submatch
+    // arguments to correspond to capture groups in the pattern. User
+    // patterns coming from a Cmd+F box won't have groups; FindAndConsume
+    // would silently return false and produce zero matches for valid
+    // group-less patterns like "[0-9]+".
+    //
+    // Match(submatch, 1) requests submatch[0] (the whole match). pos is
+    // advanced past the match (or by 1 on a zero-width hit) to drive
+    // non-overlapping iteration through the line.
+    re2::StringPiece textSP(hay);
+    size_t pos          = 0;
+    const size_t endpos = hay.size();
+    re2::StringPiece sub;
+    while (pos <= endpos) {
+        if (!re.Match(textSP, pos, endpos, re2::RE2::UNANCHORED, &sub, 1)) {
+            break;
+        }
+        size_t matchPos = static_cast<size_t>(sub.data() - hay.data());
+        size_t matchLen = sub.size();
+        if (matchLen == 0) {
+            // Zero-width match (e.g. /^/, /$/). Advance by one byte to
+            // make progress; skip emitting the empty hit.
+            pos = matchPos + 1;
+            continue;
+        }
+        out.emplace_back(matchPos, matchLen);
+        if (remainingLimit > 0 && static_cast<int>(out.size()) >= remainingLimit) {
+            break;
+        }
+        pos = matchPos + matchLen;
+    }
+    return out;
+}
+
+// Convert byte-range matches in `buf.text` to cell-offset Match records
+// anchored on `buf.lineId`. The output startCol/endCol fields hold cell
+// offsets within the logical line (suitable as Decoration startCellOffset
+// / endCellOffset), NOT visual-row columns. Appends to `out`.
+void emitMatches(const LineBuf &buf,
+                 const std::vector<std::pair<size_t, size_t>> &byteHits,
+                 std::vector<Document::Match> &out)
+{
+    for (auto [bytePos, byteLen] : byteHits) {
+        Document::Match m;
+        m.startLineId  = buf.lineId;
+        m.endLineId    = buf.lineId;
+        m.startCol     = (bytePos < buf.byteToOffset.size())
+                ? buf.byteToOffset[bytePos]
+                : buf.byteToOffsetEnd;
+        size_t endByte = bytePos + byteLen;
+        if (endByte == 0) {
+            m.endCol = m.startCol;
+        } else if (endByte <= buf.byteToOffset.size()) {
+            // Exclusive: cell offset AFTER the last matched cell. The cell
+            // containing the last matched byte is byteToOffset[endByte-1];
+            // exclusive end is that cell + 1.
+            m.endCol = buf.byteToOffset[endByte - 1] + 1;
+        } else {
+            m.endCol = buf.byteToOffsetEnd;
+        }
+        out.push_back(m);
+    }
+}
+
+} // namespace
+
+std::vector<Document::Match>
+Document::findText(std::string_view needle, const FindOptions &opts) const
+{
+    std::vector<Match> results;
+    if (needle.empty()) {
+        return results;
+    }
+
+    // Build the regex up front (constant per call). Bail to empty result on
+    // syntax errors rather than throwing — the JS layer prefers a clean
+    // empty list to a try/catch dance.
+    //
+    // RE2 is the engine: linear-time guarantee (no catastrophic
+    // backtracking), so a malicious or accidentally-pathological pattern
+    // can't hang the search. Trade-off vs std::regex: no backreferences
+    // (`\1`), no lookahead/lookbehind. Pattern syntax is RE2 dialect,
+    // close to PCRE/ECMAScript for everything our `/.../` UI accepts.
+    std::optional<re2::RE2> compiled;
+    if (opts.regex) {
+        re2::RE2::Options reOpts;
+        reOpts.set_log_errors(false); // silence stderr on bad user input
+        reOpts.set_case_sensitive(opts.caseSensitive);
+        compiled.emplace(re2::StringPiece(needle.data(), needle.size()), reOpts);
+        if (!compiled->ok()) {
+            return results;
+        }
+    }
+
+    const int hardCap = opts.limit > 0 ? opts.limit : std::numeric_limits<int>::max();
+    auto remaining    = [&]() -> int
+    {
+        return std::max(0, hardCap - static_cast<int>(results.size()));
+    };
+
+    auto runOnBuffer = [&](const LineBuf &buf)
+    {
+        if (buf.text.empty()) {
+            return;
+        }
+        std::vector<std::pair<size_t, size_t>> hits;
+        if (compiled) {
+            hits = regexMatches(buf.text, *compiled, remaining());
+        } else {
+            hits = substringMatches(buf.text, needle, opts.caseSensitive, opts.wholeWord, remaining());
+        }
+        emitMatches(buf, hits, results);
+    };
+
+    // -------- Scrollback --------
+    //
+    // Iterate every logical line in scrollback in order (oldest first).
+    // The last logical line may be "partial" — soft-wrap-continued in the
+    // visible grid (the user's live edit line). The id of that partial is
+    // tracked so the visible-grid pass can skip its continuation:
+    // resolveDecoration anchors via firstAbsOfLine(id), which points into
+    // scrollback, so a visible-grid match at offset≥L_sb would resolve to
+    // the wrong abs row. Better to under-match (rare straddles) than to
+    // paint highlights on the wrong cells.
+    const int blockCount     = scrollback_.blockCount();
+    const bool sbLastPartial = scrollback_.lastLineIsPartial();
+    uint64_t sbLastPartialId = 0;
+    if (sbLastPartial && blockCount > 0) {
+        const auto &lastBlock = scrollback_.block(blockCount - 1);
+        const int lastN       = lastBlock.numLines();
+        if (lastN > 0) {
+            sbLastPartialId = lastBlock.lineId(lastN - 1);
+        }
+    }
+
+    for (int bi = 0; bi < blockCount; ++bi) {
+        if (results.size() >= static_cast<size_t>(hardCap) && hardCap > 0) {
+            break;
+        }
+        const auto &block = scrollback_.block(bi);
+        const int n       = block.numLines();
+        for (int li = 0; li < n; ++li) {
+            const Cell *p = block.lineCells(li);
+            int len       = trimmedLen(p, block.lineLength(li));
+            uint64_t id   = block.lineId(li);
+
+            LineBuf buf;
+            buf.lineId = id;
+            appendCellsToLineBuf(buf, p, 0, len, /*baseOffset=*/0);
+            runOnBuffer(buf);
+
+            if (results.size() >= static_cast<size_t>(hardCap) && hardCap > 0) {
+                break;
+            }
+        }
+    }
+
+    // -------- Visible grid --------
+    //
+    // Walk screenLineId_ and accumulate consecutive same-id rows into one
+    // search buffer. Skip logical lines whose id matches the scrollback
+    // partial (see comment above on why straddles can't be anchored
+    // correctly via line-id decoration). Cell offsets are cumulative within
+    // the logical line: the k-th visual row of a multi-row visible-grid
+    // logical line contributes cells at offsets `k * cols_ ..
+    // k * cols_ + cols_ - 1`. resolveDecoration's `row = firstAbs + off/w`
+    // recovers the abs row.
+    if (results.size() < static_cast<size_t>(hardCap) || hardCap == 0) {
+        int i = 0;
+        while (i < screenHeight_) {
+            uint64_t id = screenLineId_[i];
+            int j       = i;
+            while (j < screenHeight_ && screenLineId_[j] == id) {
+                ++j;
+            }
+
+            // Skip straddle lines (also skips id == 0, which never has
+            // valid scrollback presence anyway — defensive).
+            if (id != 0 && sbLastPartial && id == sbLastPartialId) {
+                i = j;
+                continue;
+            }
+
+            LineBuf buf;
+            buf.lineId = id;
+            for (int sr = i; sr < j; ++sr) {
+                int phys      = screenRowToPhysical(sr);
+                const Cell *p = rowPtr(phys);
+                // Intermediate rows of a soft-wrap chain are full-width by
+                // construction (pushVisibleRowToScrollback keeps len=cols_
+                // for soft rows). Only the last row of the chain may have
+                // trailing nulls trimmed — matches getTextFromLines.
+                bool isLast   = (sr == j - 1);
+                int rowLen    = isLast ? trimmedLen(p, cols_) : cols_;
+                int baseOff   = (sr - i) * cols_;
+                appendCellsToLineBuf(buf, p, 0, rowLen, baseOff);
+            }
+            runOnBuffer(buf);
+            if (results.size() >= static_cast<size_t>(hardCap) && hardCap > 0) {
+                break;
+            }
+            i = j;
+        }
+    }
+
+    return results;
 }

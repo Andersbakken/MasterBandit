@@ -326,7 +326,7 @@ TEST_CASE("actionPermission: safe actions return 0 (no extra perm)")
 {
     CHECK(Script::actionPermission("CopySelection") == 0u);
     CHECK(Script::actionPermission("ScrollUp") == 0u);
-    CHECK(Script::actionPermission("ShowScrollback") == 0u);
+    CHECK(Script::actionPermission("CopyDocument") == 0u);
     CHECK(Script::actionPermission("UnknownActionName") == 0u);
 }
 

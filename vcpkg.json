@@ -9,6 +9,7 @@
         "stb",
         "doctest",
         "cxxopts",
-        "quickjs-ng"
+        "quickjs-ng",
+        "re2"
     ]
 }

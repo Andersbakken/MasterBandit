@@ -281,6 +281,23 @@ function getValue(v) {
 // Node constructors
 // ============================================================================
 
+// Layout sizing rules (so callers know how big to make their popup):
+//
+//   text  / input — exactly 1 row.
+//   list           — `props.height` rows (default 5).
+//   col            — sum of children's heights.
+//   row            — max of children's heights (children are laid out side-by-side).
+//   box            — sum of children's heights, plus 1 row each for `border`,
+//                    `borderTop`, `borderBottom`, plus 2*`padding`.
+//
+// Use `measure(root, width)` to compute the total height a tree needs at a
+// given width without having to hand-roll the arithmetic. Most popup-sized
+// applets should pass the result directly to `pane.createPopup({...measure(root, w)})`.
+//
+// Borders consume 1 cell on each side they're enabled on. `border: "round"`
+// or `border: "line"` enables all four; `borderTop` / `borderBottom` /
+// `borderLeft` / `borderRight` enable individually.
+
 export function box(props, children) {
     if (Array.isArray(props)) { children = props; props = {}; }
     const p = props || {};
@@ -937,6 +954,30 @@ class RenderInstance {
 // ============================================================================
 // Public API
 // ============================================================================
+
+// Compute the total cell-grid footprint a node tree needs at a given width.
+// Returns { w, h } suitable for passing straight to `pane.createPopup`. The
+// width is whatever you pass in (the caller decides how wide to make the
+// popup); the height is derived from the tree.
+//
+// This is the right way to size a popup that hosts a tui tree — without it,
+// callers end up hand-computing "1 (top border) + 1 (input) + 1 (status) +
+// 1 (bottom border)" and inevitably get the arithmetic wrong on the next
+// edit.
+//
+// Notes:
+// - The supplied root must be the same object you'll later pass to render().
+//   measure() mutates internal _x/_y/_w/_h fields on the nodes; calling it
+//   on a tree that's already mounted in a render() instance is fine — the
+//   first paint after the next render tick recomputes them.
+// - Pass `availH = Infinity` (the default) to let content drive height.
+//   If you pass a finite height the layout will clip children that don't
+//   fit, just like render() does at runtime.
+export function measure(root, availW, availH) {
+    if (availH === undefined) availH = Number.MAX_SAFE_INTEGER;
+    layout(root, 0, 0, availW, availH);
+    return { w: availW, h: root._h };
+}
 
 export function render(target, root, opts) {
     return new RenderInstance(target, root, opts);

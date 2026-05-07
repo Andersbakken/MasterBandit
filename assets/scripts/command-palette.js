@@ -1,5 +1,5 @@
 // command-palette.js — fuzzy command palette, built with mb:tui
-import { signal, computed, effect, render, createTheme, box, text, input, list } from "mb:tui";
+import { signal, computed, effect, render, createTheme, box, text, input, list, measure } from "mb:tui";
 
 const theme = createTheme({
     bg:     '#0d1b2a',
@@ -63,15 +63,6 @@ mb.addEventListener("action", "palette.open", () => {
         selected.value = 0;
     });
 
-    function dims(cols, rows) {
-        const w      = Math.min(80, Math.max(40, Math.floor(cols * 0.6)));
-        const listH  = Math.min(20, Math.max(5,  Math.floor(rows * 0.5)));
-        const h      = 2 + 1 + 1 + listH + 1;
-        const x      = Math.max(0, Math.floor((cols - w) / 2));
-        const y      = Math.max(0, Math.floor((rows - h) / 2));
-        return { w, h, x, y, listH };
-    }
-
     function buildRoot(listH) {
         return box({ border: "round" }, [
             input({ value: query, prompt: " > " }),
@@ -100,13 +91,22 @@ mb.addEventListener("action", "palette.open", () => {
         ]);
     }
 
-    const d = dims(pane.cols, pane.rows);
+    function popupRect(cols, rows) {
+        const w     = Math.min(80, Math.max(40, Math.floor(cols * 0.6)));
+        const listH = Math.min(20, Math.max(5,  Math.floor(rows * 0.5)));
+        const m     = measure(buildRoot(listH), w);
+        const x     = Math.max(0, Math.floor((cols - w) / 2));
+        const y     = Math.max(0, Math.floor((rows - m.h) / 2));
+        return { x, y, w: m.w, h: m.h, listH };
+    }
+
+    const d     = popupRect(pane.cols, pane.rows);
     const popup = pane.createPopup({ id: "palette", x: d.x, y: d.y, w: d.w, h: d.h });
     if (!popup) return;
 
     const resizeCb = (cols, rows) => {
         if (!ui) return;
-        const nd = dims(cols, rows);
+        const nd = popupRect(cols, rows);
         popup.resize({ x: nd.x, y: nd.y, w: nd.w, h: nd.h });
         ui.resize(nd.w, nd.h, buildRoot(nd.listH));
     };

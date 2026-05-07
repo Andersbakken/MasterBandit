@@ -23,10 +23,12 @@ target_include_directories(terminal PUBLIC
 )
 
 find_package(ZLIB REQUIRED)
+find_package(re2 CONFIG REQUIRED)
 
 target_link_libraries(terminal PUBLIC
     spdlog::spdlog
     ZLIB::ZLIB
+    re2::re2
     grapheme
     # PtyMux pulls in FdPoller_kqueue / FdPoller_epoll from the
     # eventloop OBJECT lib. Marking PUBLIC so consumers (mb-tests,

@@ -45,6 +45,7 @@ set(TEST_SOURCES
     test_tabs_multibar.cpp
     test_uuid.cpp
     test_pty_mux.cpp
+    test_findtext.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp

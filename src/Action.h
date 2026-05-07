@@ -137,10 +137,6 @@ struct SelectCommandOutput
 {
 };
 
-struct ShowScrollback
-{
-};
-
 struct CopyLastCommand
 {
 }; // prompt + input + output of last command to clipboard
@@ -182,7 +178,7 @@ using Any = std::variant<
     Copy, Paste,
     ScrollUp, ScrollDown, ScrollToTop, ScrollToBottom,
     IncreaseFontSize, DecreaseFontSize, ResetFontSize,
-    ScrollToPrompt, SelectCommandOutput, ShowScrollback,
+    ScrollToPrompt, SelectCommandOutput,
     CopyLastCommand, CopySelectedCommandOutput, CopyDocument,
     FocusPopup, ReloadConfig, ScriptAction,
     PasteSelection,

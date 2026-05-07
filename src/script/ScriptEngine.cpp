@@ -902,6 +902,108 @@ static JSValue jsPaneRowIdAt(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt64(ctx, static_cast<int64_t>(*result));
 }
 
+// pane.findText(needle, opts?) -> Array<{startRowId, startCol, endRowId, endCol}>
+//
+// Walks scrollback + visible grid for substring or regex hits. Each match
+// is confined to one logical line; startRowId === endRowId always. Cell
+// columns are logical-line offsets (cumulative across visual wraps),
+// directly usable as decoration startCol/endCol. Empty needle, missing
+// pane, or regex syntax error yield an empty array. Requires `pane.read`.
+static JSValue jsPaneFindText(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "findText requires (needle: string, opts?)");
+    }
+    REQUIRE_PERM(ctx, PaneRead);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneFindText) {
+        return JS_NewArray(ctx);
+    }
+
+    const char *needleC = JS_ToCString(ctx, argv[0]);
+    if (!needleC) {
+        return JS_EXCEPTION;
+    }
+    std::string needle(needleC);
+    JS_FreeCString(ctx, needleC);
+
+    Script::AppCallbacks::FindOptions opts;
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        auto readBool = [&](const char *name, bool &out)
+        {
+            JSValue v = JS_GetPropertyStr(ctx, argv[1], name);
+            if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+                out = JS_ToBool(ctx, v) != 0;
+            }
+            JS_FreeValue(ctx, v);
+        };
+        readBool("regex", opts.regex);
+        readBool("caseSensitive", opts.caseSensitive);
+        readBool("wholeWord", opts.wholeWord);
+        JSValue lv = JS_GetPropertyStr(ctx, argv[1], "limit");
+        if (!JS_IsUndefined(lv) && !JS_IsNull(lv)) {
+            int32_t n = 0;
+            if (JS_ToInt32(ctx, &n, lv) >= 0) {
+                opts.limit = n;
+            }
+        }
+        JS_FreeValue(ctx, lv);
+    }
+
+    auto matches = eng->callbacks().paneFindText(pane->id, needle, opts);
+    JSValue arr  = JS_NewArray(ctx);
+    for (size_t i = 0; i < matches.size(); ++i) {
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(matches[i].startLineId)));
+        JS_SetPropertyStr(ctx, obj, "startCol", JS_NewInt32(ctx, matches[i].startCol));
+        JS_SetPropertyStr(ctx, obj, "endRowId", JS_NewInt64(ctx, static_cast<int64_t>(matches[i].endLineId)));
+        JS_SetPropertyStr(ctx, obj, "endCol", JS_NewInt32(ctx, matches[i].endCol));
+        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), obj);
+    }
+    return arr;
+}
+
+// pane.scrollToRow(rowId) -> boolean
+//
+// Scrolls the pane's viewport so the given logical row is at the top.
+// Returns true iff the viewport actually changed; false if the row was
+// evicted, the row is already in the live viewport, or the row is already
+// at the visible top. Triggers a redraw when the viewport changed.
+// Requires `pane.read` (mutating viewport position is observable to TUI
+// apps; same gating shape as the rest of the read-side scrollback API).
+static JSValue jsPaneScrollToRow(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "scrollToRow requires (rowId)");
+    }
+    REQUIRE_PERM(ctx, PaneRead);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneScrollToRow) {
+        return JS_NewBool(ctx, false);
+    }
+    int64_t rowId = 0;
+    if (JS_ToInt64(ctx, &rowId, argv[0]) < 0) {
+        return JS_EXCEPTION;
+    }
+    bool changed = eng->callbacks().paneScrollToRow(pane->id, static_cast<uint64_t>(rowId));
+    if (changed) {
+        if (auto &cb = eng->callbacks().requestRedraw) {
+            cb();
+        }
+    }
+    return JS_NewBool(ctx, changed);
+}
+
 static JSValue jsPaneLinkAt(JSContext *ctx, JSValueConst this_val,
                             int argc, JSValueConst *argv)
 {
@@ -1128,6 +1230,8 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CFUNC_DEF("getLinksFromRows", 2, jsPaneGetLinksFromRows),
     JS_CFUNC_DEF("linkAt", 2, jsPaneLinkAt),
     JS_CFUNC_DEF("rowIdAt", 1, jsPaneRowIdAt),
+    JS_CFUNC_DEF("findText", 2, jsPaneFindText),
+    JS_CFUNC_DEF("scrollToRow", 1, jsPaneScrollToRow),
     JS_CFUNC_DEF("createPopup", 1, jsPaneCreatePopup),
     JS_CFUNC_DEF("createEmbeddedTerminal", 1, jsPaneCreateEmbedded),
     // pane.nodeId is the LayoutTree node UUID (magic 17 below). A prior
@@ -2096,7 +2200,26 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
     d.startLineId     = static_cast<uint64_t>(s);
     d.endLineId       = static_cast<uint64_t>(e);
     d.startCellOffset = sc;
-    d.endCellOffset   = ec;
+    // JS-side `endCol` is EXCLUSIVE (one past the last covered cell),
+    // matching `pane.selection.endCol`, `getTextFromRows`,
+    // `MbCommand.outputEnd.col`, `MbLinkInfo.endCol`, and `MbMatch.endCol`.
+    // The internal `Decoration::endCellOffset` is INCLUSIVE because the
+    // renderer's per-row paint loop and resolveDecoration's clamp math both
+    // treat it that way. Convert here at the boundary.
+    //
+    // Validation: a zero-width range on a single line (sc >= ec when
+    // startLineId == endLineId) is rejected — it paints nothing and a
+    // silently-stored phantom decoration the renderer can never display
+    // would just leak into the snapshot.
+    if (s == e && ec <= sc) {
+        return JS_ThrowTypeError(ctx, "addDecoration: endCol must be > startCol on a single-line range");
+    }
+    // For multi-line ranges, ec == 0 means "stop at col 0 of endRowId",
+    // i.e. the final row contributes nothing. The inclusive primitive
+    // can't express "no cells on the final row" cleanly; clamp to col 0
+    // (paints one cell). Acceptable degradation; multi-line decorations
+    // with ec == 0 are rare (selection pinned at row boundary).
+    d.endCellOffset = (ec > 0) ? (ec - 1) : 0;
 
     int32_t z = 0;
     if (readInt32("zPriority", z)) {

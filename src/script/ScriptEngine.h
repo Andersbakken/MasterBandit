@@ -150,6 +150,34 @@ struct AppCallbacks
     // Resolve the logical-line id for a screen row position.
     std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneLineIdAt;
 
+    // Scrollback text search. `needle` is a literal substring (default) or
+    // an ECMAScript regex when opts.regex is true. Matches are confined to
+    // a single logical line (`startLineId == endLineId` for every Match).
+    // startCol / endCol are cell offsets within the logical line, suitable
+    // as Decoration startCellOffset / endCellOffset.
+    struct FindMatch
+    {
+        uint64_t startLineId;
+        int startCol;
+        uint64_t endLineId;
+        int endCol;
+    };
+
+    struct FindOptions
+    {
+        bool regex         = false;
+        bool caseSensitive = false;
+        bool wholeWord     = false;
+        int limit          = 10000;
+    };
+
+    std::function<std::vector<FindMatch>(PaneId, const std::string &needle, const FindOptions &)> paneFindText;
+
+    // Scroll the pane's viewport so the row with the given logical id is at
+    // the top. Returns false if the id evicted, the id resolves into the
+    // live viewport (no-op), or the pane is unknown.
+    std::function<bool(PaneId, uint64_t lineId)> paneScrollToRow;
+
     // Query tab/pane structure. `id` IS the tab's subtreeRoot Uuid (same
     // value as `nodeId` would have been under the old int alias); the
     // separate `nodeId` string field is kept as a convenience for scripts

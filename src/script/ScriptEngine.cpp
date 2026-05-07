@@ -1,16 +1,16 @@
 #include "ScriptEngine.h"
-#include "ScriptFsModule.h"
-#include "ScriptWsModule.h"
-#include "ScriptLayoutBindings.h"
 #include "Action.h"
 #include "LayoutTree.h"
+#include "ScriptFsModule.h"
+#include "ScriptLayoutBindings.h"
+#include "ScriptWsModule.h"
 #include "Terminal.h"
 #include "Utils.h"
 #include "Uuid.h"
 
+#include <eventloop/EventLoop.h>
 #include <quickjs.h>
 #include <spdlog/spdlog.h>
-#include <eventloop/EventLoop.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -18,14 +18,14 @@
 #include <sstream>
 
 #ifdef __APPLE__
-#include <stdlib.h>  // arc4random_buf
+#include <stdlib.h> // arc4random_buf
 #else
-#include <sys/random.h>  // getrandom
+#include <sys/random.h> // getrandom
 #endif
 
 namespace fs = std::filesystem;
 
-static void fillSecureRandom(unsigned char* buf, size_t len)
+static void fillSecureRandom(unsigned char *buf, size_t len)
 {
 #ifdef __APPLE__
     arc4random_buf(buf, len);
@@ -33,11 +33,12 @@ static void fillSecureRandom(unsigned char* buf, size_t len)
     size_t off = 0;
     while (off < len) {
         ssize_t r = getrandom(buf + off, len - off, 0);
-        if (r > 0) off += static_cast<size_t>(r);
-        else if (r < 0 && errno != EINTR) {
+        if (r > 0) {
+            off += static_cast<size_t>(r);
+        } else if (r < 0 && errno != EINTR) {
             // Fall back to /dev/urandom if getrandom is unavailable.
             std::ifstream f("/dev/urandom", std::ios::binary);
-            f.read(reinterpret_cast<char*>(buf + off), static_cast<std::streamsize>(len - off));
+            f.read(reinterpret_cast<char *>(buf + off), static_cast<std::streamsize>(len - off));
             break;
         }
     }
@@ -46,7 +47,7 @@ static void fillSecureRandom(unsigned char* buf, size_t len)
 
 namespace Script {
 
-static spdlog::logger& sLog()
+static spdlog::logger &sLog()
 {
     static auto l = spdlog::get("script");
     return l ? *l : *spdlog::default_logger();
@@ -58,54 +59,62 @@ static spdlog::logger& sLog()
 
 // Resolve a canonical path, rejecting symlinks that escape the sandbox.
 // Returns empty string if the path is outside the allowed directory.
-static std::string resolveAndValidate(const std::string& path, const std::string& allowedDir)
+static std::string resolveAndValidate(const std::string &path, const std::string &allowedDir)
 {
     std::error_code ec;
 
     // Resolve the allowed directory to a canonical path
     auto canonicalAllowed = fs::canonical(allowedDir, ec);
-    if (ec) return {};
+    if (ec) {
+        return {};
+    }
 
     // Check if the target exists (without following the final symlink yet)
-    if (!fs::exists(path, ec) || ec) return {};
+    if (!fs::exists(path, ec) || ec) {
+        return {};
+    }
 
     // Resolve to canonical path (resolves all symlinks)
     auto canonicalPath = fs::canonical(path, ec);
-    if (ec) return {};
+    if (ec) {
+        return {};
+    }
 
     // Verify the resolved path is under the allowed directory
     auto rel = canonicalPath.lexically_relative(canonicalAllowed);
-    if (rel.empty() || rel.string().starts_with(".."))
+    if (rel.empty() || rel.string().starts_with("..")) {
         return {};
+    }
 
     return canonicalPath.string();
 }
 
 // Module name normalizer: resolves import specifiers to absolute paths.
 // Called by QuickJS before the module loader.
-static char* moduleNormalize(JSContext* ctx, const char* base_name,
-                             const char* name, void* opaque)
+static char *moduleNormalize(JSContext *ctx, const char *base_name,
+                             const char *name, void *opaque)
 {
-    auto* eng = static_cast<Engine*>(opaque);
+    auto *eng = static_cast<Engine *>(opaque);
 
     // Built-in module (mb:fs, mb:tui, etc.)
     if (strncmp(name, "mb:", 3) == 0) {
         // Native C++ modules — returned as-is, handled in moduleLoader
-        static const char* kNativeModules[] = { "fs", "ws", nullptr };
-        std::string moduleName = name + 3;
+        static const char *kNativeModules[] = { "fs", "ws", nullptr };
+        std::string moduleName              = name + 3;
         for (int i = 0; kNativeModules[i]; ++i) {
-            if (moduleName == kNativeModules[i])
+            if (moduleName == kNativeModules[i]) {
                 return js_strdup(ctx, name); // pass through unchanged
+            }
         }
 
         // JS file modules in builtinModulesDir
-        const auto& modulesDir = eng->builtinModulesDir();
+        const auto &modulesDir = eng->builtinModulesDir();
         if (modulesDir.empty()) {
             JS_ThrowReferenceError(ctx, "No built-in modules directory configured");
             return nullptr;
         }
         std::string modulePath = modulesDir + "/" + moduleName + ".js";
-        auto resolved = resolveAndValidate(modulePath, modulesDir);
+        auto resolved          = resolveAndValidate(modulePath, modulesDir);
         if (resolved.empty()) {
             JS_ThrowReferenceError(ctx, "Built-in module '%s' not found", name);
             return nullptr;
@@ -115,50 +124,53 @@ static char* moduleNormalize(JSContext* ctx, const char* base_name,
 
     // Relative import — resolve against the importing script's directory
     fs::path basePath(base_name);
-    fs::path baseDir = basePath.parent_path();
+    fs::path baseDir  = basePath.parent_path();
     fs::path resolved = baseDir / name;
 
     // Add .js extension if not present
-    if (!resolved.has_extension())
+    if (!resolved.has_extension()) {
         resolved.replace_extension(".js");
+    }
 
     std::string resolvedStr = resolved.string();
 
     // Validate: must be under the script's directory or the built-in modules dir
-    auto* inst = eng->findInstanceByCtx(ctx);
+    auto *inst = eng->findInstanceByCtx(ctx);
     if (!inst) {
         JS_ThrowReferenceError(ctx, "Module '%s': no script context for import", name);
         return nullptr;
     }
 
     fs::path scriptDir = fs::path(inst->path).parent_path();
-    auto validated = resolveAndValidate(resolvedStr, scriptDir.string());
+    auto validated     = resolveAndValidate(resolvedStr, scriptDir.string());
     if (validated.empty()) {
         // Try built-in modules dir as fallback
-        const auto& modulesDir = eng->builtinModulesDir();
-        if (!modulesDir.empty())
+        const auto &modulesDir = eng->builtinModulesDir();
+        if (!modulesDir.empty()) {
             validated = resolveAndValidate(resolvedStr, modulesDir);
+        }
     }
     if (validated.empty()) {
         JS_ThrowReferenceError(ctx, "Module '%s' is outside allowed directories", name);
         return nullptr;
     }
 
-    char* result = js_strdup(ctx, validated.c_str());
+    char *result = js_strdup(ctx, validated.c_str());
     return result;
 }
 
-
 // Module loader: reads the source file for a resolved module path.
-static JSModuleDef* moduleLoader(JSContext* ctx, const char* module_name, void* opaque)
+static JSModuleDef *moduleLoader(JSContext *ctx, const char *module_name, void *opaque)
 {
-    auto* eng = static_cast<Engine*>(opaque);
+    auto *eng = static_cast<Engine *>(opaque);
 
     // Native C++ modules
-    if (strcmp(module_name, "mb:fs") == 0)
+    if (strcmp(module_name, "mb:fs") == 0) {
         return createFsNativeModule(ctx, eng);
-    if (strcmp(module_name, "mb:ws") == 0)
+    }
+    if (strcmp(module_name, "mb:ws") == 0) {
         return createWsNativeModule(ctx, eng);
+    }
 
     std::ifstream f(module_name, std::ios::binary);
     if (!f) {
@@ -169,48 +181,63 @@ static JSModuleDef* moduleLoader(JSContext* ctx, const char* module_name, void* 
     ss << f.rdbuf();
     std::string src = ss.str();
 
-    JSValue func = JS_Eval(ctx, src.c_str(), src.size(), module_name,
-                           JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-    if (JS_IsException(func)) return nullptr;
+    JSValue func = JS_Eval(ctx, src.c_str(), src.size(), module_name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(func)) {
+        return nullptr;
+    }
 
-    JSModuleDef* m = (JSModuleDef*)JS_VALUE_GET_PTR(func);
+    JSModuleDef *m = (JSModuleDef *)JS_VALUE_GET_PTR(func);
     JS_FreeValue(ctx, func);
     return m;
 }
 
-
-static Engine* engineFromCtx(JSContext* ctx) {
-    return static_cast<Engine*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
+static Engine *engineFromCtx(JSContext *ctx)
+{
+    return static_cast<Engine *>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
 }
 
-static Engine::Instance* instanceFromCtx(JSContext* ctx) {
-    auto* eng = engineFromCtx(ctx);
+static Engine::Instance *instanceFromCtx(JSContext *ctx)
+{
+    auto *eng    = engineFromCtx(ctx);
     uintptr_t id = reinterpret_cast<uintptr_t>(JS_GetContextOpaque(ctx));
     return eng->findInstance(static_cast<InstanceId>(id));
 }
 
-static bool checkPerm(JSContext* ctx, uint32_t required) {
-    auto* inst = instanceFromCtx(ctx);
+static bool checkPerm(JSContext *ctx, uint32_t required)
+{
+    auto *inst = instanceFromCtx(ctx);
     return inst && (inst->permissions & required) != 0;
 }
 
 // Schedule termination of a script that violated permissions
-static void scheduleTermination(JSContext* ctx) {
-    auto* eng = engineFromCtx(ctx);
-    auto* inst = instanceFromCtx(ctx);
-    if (!inst || inst->builtIn) return;
+static void scheduleTermination(JSContext *ctx)
+{
+    auto *eng  = engineFromCtx(ctx);
+    auto *inst = instanceFromCtx(ctx);
+    if (!inst || inst->builtIn) {
+        return;
+    }
     InstanceId id = inst->id;
     sLog().error("ScriptEngine: terminating '{}' (id={}) for permission violation",
-                  inst->path, id);
-    if (!eng->loop()) { eng->unload(id); return; }
-    eng->loop()->addTimer(0, false, [eng, id]() { eng->unload(id); });
+                 inst->path,
+                 id);
+    if (!eng->loop()) {
+        eng->unload(id);
+        return;
+    }
+    eng->loop()->addTimer(0, false, [eng, id]()
+                          {
+                              eng->unload(id);
+                          });
 }
 
-#define REQUIRE_PERM(ctx, perm) \
-    do { if (!checkPerm(ctx, Script::Perm::perm)) { \
-        scheduleTermination(ctx); \
-        return JS_ThrowTypeError(ctx, "permission denied: " #perm " not granted"); \
-    } } while(0)
+#define REQUIRE_PERM(ctx, perm)                                                        \
+    do {                                                                               \
+        if (!checkPerm(ctx, Script::Perm::perm)) {                                     \
+            scheduleTermination(ctx);                                                  \
+            return JS_ThrowTypeError(ctx, "permission denied: " #perm " not granted"); \
+        }                                                                              \
+    } while (0)
 
 // ============================================================================
 // Pane JS class
@@ -218,35 +245,36 @@ static void scheduleTermination(JSContext* ctx) {
 
 static JSClassID jsPaneClassId;
 
-struct JsPaneData {
+struct JsPaneData
+{
     PaneId id;
     bool alive;
 };
 
-static void jsPaneFinalize(JSRuntime*, JSValue val)
+static void jsPaneFinalize(JSRuntime *, JSValue val)
 {
-    delete static_cast<JsPaneData*>(JS_GetOpaque(val, jsPaneClassId));
+    delete static_cast<JsPaneData *>(JS_GetOpaque(val, jsPaneClassId));
 }
 
 static JSClassDef jsPaneClassDef = { "Pane", jsPaneFinalize };
 
-static JSValue jsPaneNew(JSContext* ctx, PaneId id)
+static JSValue jsPaneNew(JSContext *ctx, PaneId id)
 {
     JSValue obj = JS_NewObjectClass(ctx, jsPaneClassId);
-    JS_SetOpaque(obj, new JsPaneData{id, true});
+    JS_SetOpaque(obj, new JsPaneData { id, true });
     return obj;
 }
 
-static JsPaneData* jsPaneGet(JSContext* ctx, JSValueConst val)
+static JsPaneData *jsPaneGet(JSContext *ctx, JSValueConst val)
 {
-    return static_cast<JsPaneData*>(JS_GetOpaque(val, jsPaneClassId));
+    return static_cast<JsPaneData *>(JS_GetOpaque(val, jsPaneClassId));
 }
 
 // Register a JS object in a global registry by integer key, so filters can find it.
-static void registerInGlobal(JSContext* ctx, const char* registryName,
-                              uint32_t key, JSValueConst obj)
+static void registerInGlobal(JSContext *ctx, const char *registryName,
+                             uint32_t key, JSValueConst obj)
 {
-    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue global   = JS_GetGlobalObject(ctx);
     JSValue registry = JS_GetPropertyStr(ctx, global, registryName);
     if (JS_IsUndefined(registry)) {
         registry = JS_NewObject(ctx);
@@ -264,10 +292,10 @@ static void registerInGlobal(JSContext* ctx, const char* registryName,
 
 // String-keyed variant — needed for pane/tab registries since pane ids are
 // now Uuids (their string form) rather than ints.
-static void registerInGlobal(JSContext* ctx, const char* registryName,
-                              const std::string& key, JSValueConst obj)
+static void registerInGlobal(JSContext *ctx, const char *registryName,
+                             const std::string &key, JSValueConst obj)
 {
-    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue global   = JS_GetGlobalObject(ctx);
     JSValue registry = JS_GetPropertyStr(ctx, global, registryName);
     if (JS_IsUndefined(registry)) {
         registry = JS_NewObject(ctx);
@@ -283,9 +311,11 @@ static void registerInGlobal(JSContext* ctx, const char* registryName,
 }
 
 // Remove a callback from a JS array by identity (indexOf + splice).
-static void removeFromJSArray(JSContext* ctx, JSValue arr, JSValueConst fn)
+static void removeFromJSArray(JSContext *ctx, JSValue arr, JSValueConst fn)
 {
-    if (JS_IsUndefined(arr)) return;
+    if (JS_IsUndefined(arr)) {
+        return;
+    }
     JSValue indexOfFn = JS_GetPropertyStr(ctx, arr, "indexOf");
     JSValue idxVal    = JS_Call(ctx, indexOfFn, arr, 1, &fn);
     JS_FreeValue(ctx, indexOfFn);
@@ -294,8 +324,8 @@ static void removeFromJSArray(JSContext* ctx, JSValue arr, JSValueConst fn)
     JS_FreeValue(ctx, idxVal);
     if (idx >= 0) {
         JSValue spliceFn = JS_GetPropertyStr(ctx, arr, "splice");
-        JSValue args[2] = { JS_NewInt32(ctx, idx), JS_NewInt32(ctx, 1) };
-        JSValue res = JS_Call(ctx, spliceFn, arr, 2, args);
+        JSValue args[2]  = { JS_NewInt32(ctx, idx), JS_NewInt32(ctx, 1) };
+        JSValue res      = JS_Call(ctx, spliceFn, arr, 2, args);
         JS_FreeValue(ctx, res);
         JS_FreeValue(ctx, args[0]);
         JS_FreeValue(ctx, args[1]);
@@ -303,38 +333,55 @@ static void removeFromJSArray(JSContext* ctx, JSValue arr, JSValueConst fn)
     }
 }
 
-static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
-                                       int argc, JSValueConst* argv)
+static JSValue jsPaneAddEventListener(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
+    }
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
 
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
 
-    auto* inst = instanceFromCtx(ctx);
+    auto *inst        = instanceFromCtx(ctx);
     InstanceId instId = inst ? inst->id : 0;
 
     std::string prop;
     if (strcmp(event, "output") == 0) {
-        if (!checkPerm(ctx, Perm::IoFilterOutput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput"); }
+        if (!checkPerm(ctx, Perm::IoFilterOutput)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: IoFilterOutput");
+        }
         prop = "__output_filters";
         eng->addPaneOutputFilter(pane->id, instId);
         registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else if (strcmp(event, "input") == 0) {
-        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
+        if (!checkPerm(ctx, Perm::IoFilterInput)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput");
+        }
         prop = "__input_filters";
         eng->addPaneInputFilter(pane->id, instId);
         registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else if (strcmp(event, "mouse") == 0) {
-        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        if (!checkPerm(ctx, Perm::GroupUi)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: ui");
+        }
         prop = "__mouse_listeners";
         registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else if (strcmp(event, "mousemove") == 0) {
-        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        if (!checkPerm(ctx, Perm::GroupUi)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: ui");
+        }
         prop = "__evt_mousemove";
         eng->addPaneMouseMoveListener(pane->id, instId);
         registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
@@ -379,20 +426,30 @@ static JSValue jsPaneAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsPaneRemoveEventListener(JSContext* ctx, JSValueConst this_val,
-                                          int argc, JSValueConst* argv)
+static JSValue jsPaneRemoveEventListener(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    }
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
     std::string prop;
-    if      (strcmp(event, "output") == 0) prop = "__output_filters";
-    else if (strcmp(event, "input")  == 0) prop = "__input_filters";
-    else if (strcmp(event, "mouse")  == 0) prop = "__mouse_listeners";
-    else                                   prop = std::string("__evt_") + event;
+    if (strcmp(event, "output") == 0) {
+        prop = "__output_filters";
+    } else if (strcmp(event, "input") == 0) {
+        prop = "__input_filters";
+    } else if (strcmp(event, "mouse") == 0) {
+        prop = "__mouse_listeners";
+    } else {
+        prop = std::string("__evt_") + event;
+    }
     JS_FreeCString(ctx, event);
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
     removeFromJSArray(ctx, arr, argv[1]);
@@ -400,37 +457,51 @@ static JSValue jsPaneRemoveEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsPaneWrite(JSContext* ctx, JSValueConst this_val,
-                            int argc, JSValueConst* argv)
+static JSValue jsPaneWrite(JSContext *ctx, JSValueConst this_val,
+                           int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "write requires (string)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "write requires (string)");
+    }
     REQUIRE_PERM(ctx, ShellWrite);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().paneHasPty(pane->id))
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneHasPty(pane->id)) {
         return JS_ThrowTypeError(ctx, "pane has no PTY");
+    }
     size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
+    const char *str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) {
+        return JS_EXCEPTION;
+    }
     eng->callbacks().writePaneToShell(pane->id, std::string(str, len));
     JS_FreeCString(ctx, str);
     return JS_UNDEFINED;
 }
 
-static JSValue jsPanePaste(JSContext* ctx, JSValueConst this_val,
-                            int argc, JSValueConst* argv)
+static JSValue jsPanePaste(JSContext *ctx, JSValueConst this_val,
+                           int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "paste requires (string)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "paste requires (string)");
+    }
     REQUIRE_PERM(ctx, ShellWrite);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().paneHasPty(pane->id))
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneHasPty(pane->id)) {
         return JS_ThrowTypeError(ctx, "pane has no PTY");
+    }
     size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
+    const char *str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) {
+        return JS_EXCEPTION;
+    }
     eng->callbacks().pastePaneText(pane->id, std::string(str, len));
     JS_FreeCString(ctx, str);
     return JS_UNDEFINED;
@@ -438,7 +509,7 @@ static JSValue jsPanePaste(JSContext* ctx, JSValueConst this_val,
 
 // getText extracts text from a logical-line-id range with col bounds.
 using GetTextFn = std::function<std::string(uint64_t startLineId, int startCol,
-                                             uint64_t endLineId, int endCol)>;
+                                            uint64_t endLineId, int endCol)>;
 
 // ----- Command object class -----
 //
@@ -454,7 +525,8 @@ using GetTextFn = std::function<std::string(uint64_t startLineId, int startCol,
 // infra) so the Engine ctor can reference them. The getter body, proto table,
 // and buildCommandObject live together further down.
 
-struct CmdObjData {
+struct CmdObjData
+{
     Script::CommandInfo info;
     Script::PaneId paneId;
     // Sentinel means "not decoded yet". Freed via JS_FreeValueRT in finalizer.
@@ -464,10 +536,12 @@ struct CmdObjData {
 
 static JSClassID jsCommandClassId;
 
-static void jsCommandFinalize(JSRuntime* rt, JSValue val)
+static void jsCommandFinalize(JSRuntime *rt, JSValue val)
 {
-    auto* d = static_cast<CmdObjData*>(JS_GetOpaque(val, jsCommandClassId));
-    if (!d) return;
+    auto *d = static_cast<CmdObjData *>(JS_GetOpaque(val, jsCommandClassId));
+    if (!d) {
+        return;
+    }
     JS_FreeValueRT(rt, d->cachedCommand);
     JS_FreeValueRT(rt, d->cachedOutput);
     delete d;
@@ -482,19 +556,25 @@ extern const size_t jsCommandProtoCount;
 // Callers pass the owning paneId; at property-access time the getter uses
 // engineFromCtx(ctx) + Engine::callbacks().paneGetText(paneId, ..), which
 // safely returns an empty string if the pane has been destroyed.
-static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, PaneId paneId);
+static JSValue buildCommandObject(JSContext *ctx, const Script::CommandInfo &p, PaneId paneId);
 
-static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
-                                      int argc, JSValueConst* argv)
+static JSValue jsPaneGetTextFromRows(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
 {
-    if (argc < 4) return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
+    if (argc < 4) {
+        return JS_ThrowTypeError(ctx, "getTextFromRows requires (startRowId, startCol, endRowId, endCol)");
+    }
     // Reading arbitrary scrollback ranges exposes credentials, history,
     // and command output. Gate under pane.read (formerly pane.selection).
     REQUIRE_PERM(ctx, PaneRead);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().paneGetText) return JS_NewString(ctx, "");
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneGetText) {
+        return JS_NewString(ctx, "");
+    }
     uint64_t startId = 0, endId = 0;
     int32_t startCol = 0, endCol = 0;
     JS_ToIndex(ctx, &startId, argv[0]);
@@ -528,54 +608,72 @@ static JSValue jsPaneGetTextFromRows(JSContext* ctx, JSValueConst this_val,
 // below) needs to construct a handle, and Engine::notifyCaptureStopped
 // (much further down) needs to read its opaque data.
 struct JsOutputCaptureData;
-static JSValue jsOutputCaptureNew(JSContext* ctx,
-                                   PaneId paneId,
-                                   const std::string& path,
-                                   const std::string& format,
-                                   InstanceId instId);
-static JsOutputCaptureData* jsOutputCaptureGet(JSContext* ctx, JSValueConst val);
+static JSValue jsOutputCaptureNew(JSContext *ctx,
+                                  PaneId paneId,
+                                  const std::string &path,
+                                  const std::string &format,
+                                  InstanceId instId);
+static JsOutputCaptureData *jsOutputCaptureGet(JSContext *ctx, JSValueConst val);
 
 // NOT STREAMING: the entire range is materialised in memory first.
 // For unbounded ranges this is the same memory profile as
 // getTextFromRows. A future enhancement could iterate logical lines
 // from Document and write per-row, capping resident memory; not
 // worth the complexity until a concrete use case shows up.
-static JSValue jsPaneWriteRangeToFile(JSContext* ctx, JSValueConst this_val,
-                                       int argc, JSValueConst* argv)
+static JSValue jsPaneWriteRangeToFile(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
 {
-    if (argc < 5) return JS_ThrowTypeError(ctx,
-        "writeRangeToFile requires (path, startRowId, startCol, endRowId, endCol)");
+    if (argc < 5) {
+        return JS_ThrowTypeError(ctx,
+                                 "writeRangeToFile requires (path, startRowId, startCol, endRowId, endCol)");
+    }
 
     // Gate before extracting *any* arguments to avoid leaking even
     // path strings via thrown error formatting.
     REQUIRE_PERM(ctx, PaneRead);
     REQUIRE_PERM(ctx, FsWrite);
 
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    auto* inst = eng->findInstanceByCtx(ctx);
-    if (!inst) return JS_ThrowTypeError(ctx, "writeRangeToFile: no script context");
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    auto *inst  = eng->findInstanceByCtx(ctx);
+    if (!inst) {
+        return JS_ThrowTypeError(ctx, "writeRangeToFile: no script context");
+    }
 
     // Path
-    const char* rawPath = JS_ToCString(ctx, argv[0]);
-    if (!rawPath) return JS_EXCEPTION;
+    const char *rawPath = JS_ToCString(ctx, argv[0]);
+    if (!rawPath) {
+        return JS_EXCEPTION;
+    }
     std::string pathStr(rawPath);
     JS_FreeCString(ctx, rawPath);
 
     // Range
     uint64_t startId = 0, endId = 0;
     int32_t startCol = 0, endCol = 0;
-    if (JS_ToIndex(ctx, &startId, argv[1]) < 0) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &startCol, argv[2]) < 0) return JS_EXCEPTION;
-    if (JS_ToIndex(ctx, &endId,   argv[3]) < 0) return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &endCol,  argv[4]) < 0) return JS_EXCEPTION;
+    if (JS_ToIndex(ctx, &startId, argv[1]) < 0) {
+        return JS_EXCEPTION;
+    }
+    if (JS_ToInt32(ctx, &startCol, argv[2]) < 0) {
+        return JS_EXCEPTION;
+    }
+    if (JS_ToIndex(ctx, &endId, argv[3]) < 0) {
+        return JS_EXCEPTION;
+    }
+    if (JS_ToInt32(ctx, &endCol, argv[4]) < 0) {
+        return JS_EXCEPTION;
+    }
 
     // Sandbox-validate. scriptCheckWritePath enforces the
     // <configDir>/<stem>/ containment for user scripts; built-ins are
     // unrestricted. FsWrite was already pre-checked above.
     std::string validatedPath = scriptCheckWritePath(ctx, eng, inst, pathStr);
-    if (validatedPath.empty()) return JS_EXCEPTION;
+    if (validatedPath.empty()) {
+        return JS_EXCEPTION;
+    }
 
     // Pull text via the same callback getTextFromRows uses. Empty
     // when paneGetText is unwired (headless tests) or when the
@@ -589,9 +687,9 @@ static JSValue jsPaneWriteRangeToFile(JSContext* ctx, JSValueConst this_val,
 
     // Auto-create parent dir (matches fs.writeFileSync). Failure
     // here is logged inside scriptEnsureParentDir.
-    if (!scriptEnsureParentDir(validatedPath))
-        return JS_ThrowTypeError(ctx, "writeRangeToFile: cannot create directory for '%s'",
-                                  validatedPath.c_str());
+    if (!scriptEnsureParentDir(validatedPath)) {
+        return JS_ThrowTypeError(ctx, "writeRangeToFile: cannot create directory for '%s'", validatedPath.c_str());
+    }
 
     // Atomic write: <path>.tmp -> rename. The .tmp lands in the same
     // directory so rename is a single inode swap (no cross-device
@@ -604,11 +702,13 @@ static JSValue jsPaneWriteRangeToFile(JSContext* ctx, JSValueConst this_val,
     std::string tmpPath = validatedPath + ".tmp";
     {
         std::ofstream f(tmpPath, std::ios::binary | std::ios::trunc);
-        if (!f) return JS_ThrowTypeError(ctx, "writeRangeToFile: cannot open '%s'",
-                                          tmpPath.c_str());
+        if (!f) {
+            return JS_ThrowTypeError(ctx, "writeRangeToFile: cannot open '%s'", tmpPath.c_str());
+        }
         f.write(text.data(), static_cast<std::streamsize>(text.size()));
-        if (!f) return JS_ThrowTypeError(ctx, "writeRangeToFile: write failed for '%s'",
-                                          tmpPath.c_str());
+        if (!f) {
+            return JS_ThrowTypeError(ctx, "writeRangeToFile: write failed for '%s'", tmpPath.c_str());
+        }
         // RAII close on scope exit.
     }
 
@@ -619,8 +719,10 @@ static JSValue jsPaneWriteRangeToFile(JSContext* ctx, JSValueConst this_val,
         std::error_code _ignore;
         std::filesystem::remove(tmpPath, _ignore);
         return JS_ThrowTypeError(ctx,
-            "writeRangeToFile: rename '%s' -> '%s' failed: %s",
-            tmpPath.c_str(), validatedPath.c_str(), ec.message().c_str());
+                                 "writeRangeToFile: rename '%s' -> '%s' failed: %s",
+                                 tmpPath.c_str(),
+                                 validatedPath.c_str(),
+                                 ec.message().c_str());
     }
 
     return JS_NewInt64(ctx, static_cast<int64_t>(text.size()));
@@ -661,48 +763,60 @@ static JSValue jsPaneWriteRangeToFile(JSContext* ctx, JSValueConst this_val,
 //
 // CLEANUP: the capture is tracked on the calling instance's
 // owned-resource list; unloading the script auto-stops it.
-static JSValue jsPaneCaptureOutputToFile(JSContext* ctx, JSValueConst this_val,
-                                          int argc, JSValueConst* argv)
+static JSValue jsPaneCaptureOutputToFile(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsString(argv[0]))
+    if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx,
-            "captureOutputToFile requires (path: string, opts?: object)");
+                                 "captureOutputToFile requires (path: string, opts?: object)");
+    }
     REQUIRE_PERM(ctx, PaneRead);
     REQUIRE_PERM(ctx, FsWrite);
 
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive)
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
         return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    auto* inst = eng->findInstanceByCtx(ctx);
-    if (!inst) return JS_ThrowTypeError(ctx,
-        "captureOutputToFile: no script context");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    auto *inst  = eng->findInstanceByCtx(ctx);
+    if (!inst) {
+        return JS_ThrowTypeError(ctx,
+                                 "captureOutputToFile: no script context");
+    }
 
-    Terminal* t = eng->terminal(pane->id);
-    if (!t) return JS_ThrowTypeError(ctx,
-        "captureOutputToFile: pane has no live Terminal");
+    Terminal *t = eng->terminal(pane->id);
+    if (!t) {
+        return JS_ThrowTypeError(ctx,
+                                 "captureOutputToFile: pane has no live Terminal");
+    }
 
     // path
-    const char* rawPath = JS_ToCString(ctx, argv[0]);
-    if (!rawPath) return JS_EXCEPTION;
+    const char *rawPath = JS_ToCString(ctx, argv[0]);
+    if (!rawPath) {
+        return JS_EXCEPTION;
+    }
     std::string pathStr(rawPath);
     JS_FreeCString(ctx, rawPath);
 
     // opts.format (default "raw")
     std::string formatStr = "raw";
     if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
-        if (!JS_IsObject(argv[1]))
+        if (!JS_IsObject(argv[1])) {
             return JS_ThrowTypeError(ctx,
-                "captureOutputToFile: opts must be an object");
+                                     "captureOutputToFile: opts must be an object");
+        }
         JSValue f = JS_GetPropertyStr(ctx, argv[1], "format");
         if (!JS_IsUndefined(f) && !JS_IsNull(f)) {
             if (!JS_IsString(f)) {
                 JS_FreeValue(ctx, f);
                 return JS_ThrowTypeError(ctx,
-                    "captureOutputToFile: opts.format must be a string");
+                                         "captureOutputToFile: opts.format must be a string");
             }
-            const char* s = JS_ToCString(ctx, f);
-            if (s) { formatStr = s; JS_FreeCString(ctx, s); }
+            const char *s = JS_ToCString(ctx, f);
+            if (s) {
+                formatStr = s;
+                JS_FreeCString(ctx, s);
+            }
         }
         JS_FreeValue(ctx, f);
     }
@@ -716,103 +830,131 @@ static JSValue jsPaneCaptureOutputToFile(JSContext* ctx, JSValueConst this_val,
         cf = Terminal::CaptureFormat::Text;
     } else {
         return JS_ThrowTypeError(ctx,
-            "captureOutputToFile: opts.format must be \"raw\", \"asciicast\", or \"text\" (got \"%s\")",
-            formatStr.c_str());
+                                 "captureOutputToFile: opts.format must be \"raw\", \"asciicast\", or \"text\" (got \"%s\")",
+                                 formatStr.c_str());
     }
 
     // Sandbox-validate the path. scriptCheckWritePath already pre-
     // creates /tmp/masterbandit/ if the path lands there, and
     // produces a TypeError on sandbox violation.
     std::string validatedPath = scriptCheckWritePath(ctx, eng, inst, pathStr);
-    if (validatedPath.empty()) return JS_EXCEPTION;
+    if (validatedPath.empty()) {
+        return JS_EXCEPTION;
+    }
 
     // Auto-create destination directory before fopen — without this
     // a path like /tmp/masterbandit/captures/foo.cast would fail
     // at addOutputCapture's fopen, even though the sandbox check
     // accepted it.
-    if (!scriptEnsureParentDir(validatedPath))
+    if (!scriptEnsureParentDir(validatedPath)) {
         return JS_ThrowTypeError(ctx,
-            "captureOutputToFile: cannot create directory for '%s'",
-            validatedPath.c_str());
+                                 "captureOutputToFile: cannot create directory for '%s'",
+                                 validatedPath.c_str());
+    }
 
     std::string err;
     bool ok = t->addOutputCapture(validatedPath, cf, &err);
     if (!ok) {
         return JS_ThrowTypeError(ctx,
-            "captureOutputToFile: %s", err.c_str());
+                                 "captureOutputToFile: %s",
+                                 err.c_str());
     }
 
     // Track on the instance for cleanup-on-unload.
-    inst->ownedOutputCaptures.push_back({pane->id, validatedPath});
+    inst->ownedOutputCaptures.push_back({ pane->id, validatedPath });
 
     // Build the handle. Register it in a global registry keyed by
     // (paneId:path) so notifyCaptureStopped can find it later.
-    JSValue handle = jsOutputCaptureNew(ctx, pane->id,
-                                         validatedPath, formatStr,
-                                         inst->id);
+    JSValue handle     = jsOutputCaptureNew(ctx, pane->id, validatedPath, formatStr, inst->id);
     std::string regKey = pane->id.toString() + ":" + validatedPath;
     registerInGlobal(ctx, "__capture_registry", regKey, handle);
     return handle;
 }
 
-static JSValue jsPaneRowIdAt(JSContext* ctx, JSValueConst this_val,
-                              int argc, JSValueConst* argv)
+static JSValue jsPaneRowIdAt(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "rowIdAt requires (screenRow)");
+    }
     // rowId is only useful as input to text/link extraction or for
     // cross-referencing selection/command records. Gate consistently
     // under pane.read so a text-denied script can't probe row positions.
     REQUIRE_PERM(ctx, PaneRead);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    auto info = eng->callbacks().paneInfo(pane->id);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng       = engineFromCtx(ctx);
+    auto info         = eng->callbacks().paneInfo(pane->id);
     int32_t screenRow = 0;
     JS_ToInt32(ctx, &screenRow, argv[0]);
-    if (screenRow < 0 || screenRow >= info.rows) return JS_NULL;
-    if (!eng->callbacks().paneLineIdAt) return JS_NULL;
+    if (screenRow < 0 || screenRow >= info.rows) {
+        return JS_NULL;
+    }
+    if (!eng->callbacks().paneLineIdAt) {
+        return JS_NULL;
+    }
     auto result = eng->callbacks().paneLineIdAt(pane->id, screenRow);
-    if (!result.has_value()) return JS_NULL;
+    if (!result.has_value()) {
+        return JS_NULL;
+    }
     return JS_NewInt64(ctx, static_cast<int64_t>(*result));
 }
 
-static JSValue jsPaneLinkAt(JSContext* ctx, JSValueConst this_val,
-                            int argc, JSValueConst* argv)
+static JSValue jsPaneLinkAt(JSContext *ctx, JSValueConst this_val,
+                            int argc, JSValueConst *argv)
 {
-    if (argc < 2) return JS_ThrowTypeError(ctx, "linkAt requires (rowId, col)");
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "linkAt requires (rowId, col)");
+    }
     REQUIRE_PERM(ctx, PaneRead);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().paneUrlAt) return JS_NULL;
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneUrlAt) {
+        return JS_NULL;
+    }
     uint64_t lineId = 0;
-    int32_t col = 0;
+    int32_t col     = 0;
     JS_ToIndex(ctx, &lineId, argv[0]);
     JS_ToInt32(ctx, &col, argv[1]);
     auto url = eng->callbacks().paneUrlAt(pane->id, lineId, col);
-    if (url.empty()) return JS_NULL;
+    if (url.empty()) {
+        return JS_NULL;
+    }
     return JS_NewStringLen(ctx, url.data(), url.size());
 }
 
-static JSValue jsPaneGetLinksFromRows(JSContext* ctx, JSValueConst this_val,
-                                       int argc, JSValueConst* argv)
+static JSValue jsPaneGetLinksFromRows(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
 {
-    if (argc < 2) return JS_ThrowTypeError(ctx, "getLinksFromRows requires (startRowId, endRowId, limit?)");
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "getLinksFromRows requires (startRowId, endRowId, limit?)");
+    }
     REQUIRE_PERM(ctx, PaneRead);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().paneGetLinksFromRows) return JS_NewArray(ctx);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneGetLinksFromRows) {
+        return JS_NewArray(ctx);
+    }
     uint64_t startId = 0, endId = 0;
     int32_t limit = 0;
     JS_ToIndex(ctx, &startId, argv[0]);
     JS_ToIndex(ctx, &endId, argv[1]);
-    if (argc >= 3) JS_ToInt32(ctx, &limit, argv[2]);
-    auto links = eng->callbacks().paneGetLinksFromRows(pane->id, startId, endId, limit);
+    if (argc >= 3) {
+        JS_ToInt32(ctx, &limit, argv[2]);
+    }
+    auto links  = eng->callbacks().paneGetLinksFromRows(pane->id, startId, endId, limit);
     JSValue arr = JS_NewArray(ctx);
     for (size_t i = 0; i < links.size(); ++i) {
-        const auto& l = links[i];
-        JSValue obj = JS_NewObject(ctx);
+        const auto &l = links[i];
+        JSValue obj   = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, obj, "url", JS_NewStringLen(ctx, l.url.data(), l.url.size()));
         JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(l.startLineId)));
         JS_SetPropertyStr(ctx, obj, "startCol", JS_NewInt32(ctx, l.startCol));
@@ -823,119 +965,143 @@ static JSValue jsPaneGetLinksFromRows(JSContext* ctx, JSValueConst this_val,
     return arr;
 }
 
-static JSValue jsPaneGetProp(JSContext* ctx, JSValueConst this_val, int magic)
+static JSValue jsPaneGetProp(JSContext *ctx, JSValueConst this_val, int magic)
 {
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    auto info = eng->callbacks().paneInfo(pane->id);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_UNDEFINED;
+    }
+    Engine *eng = engineFromCtx(ctx);
+    auto info   = eng->callbacks().paneInfo(pane->id);
     switch (magic) {
-    case 0: {
-        std::string s = pane->id.toString();
-        return JS_NewStringLen(ctx, s.data(), s.size());
-    }
-    case 1: return JS_NewInt32(ctx, info.cols);
-    case 2: return JS_NewInt32(ctx, info.rows);
-    case 3: return JS_NewString(ctx, info.title.c_str());
-    case 4: return JS_NewString(ctx, info.cwd.c_str());
-    case 5: return JS_NewBool(ctx, info.hasPty);
-    case 6: return JS_NewBool(ctx, info.focused);
-    case 7: return info.focusedPopupId.empty()
-                 ? JS_NULL
-                 : JS_NewString(ctx, info.focusedPopupId.c_str());
-    case 8: return JS_NewString(ctx, info.foregroundProcess.c_str());
-    case 9: { // selectedCommand — full record of the OSC 133 command currently
-              // highlighted via Cmd+click / Cmd+double-click / scroll_to_prompt,
-              // or null if no selection. Gated on shell.commands (same as .commands
-              // and .selectedCommandId — both of which expose the same underlying
-              // id, just in lighter form).
-        if (!checkPerm(ctx, Perm::ShellReadCommands)) {
-            scheduleTermination(ctx);
-            return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+        case 0: {
+            std::string s = pane->id.toString();
+            return JS_NewStringLen(ctx, s.data(), s.size());
         }
-        if (!info.selectedCommandId) return JS_NULL;
-        if (!eng->callbacks().paneCommands) return JS_NULL;
-        auto list = eng->callbacks().paneCommands(pane->id, 0);
-        uint64_t target = *info.selectedCommandId;
-        for (const auto& rec : list) {
-            if (rec.id == target)
-                return buildCommandObject(ctx, rec, pane->id);
+        case 1: return JS_NewInt32(ctx, info.cols);
+        case 2: return JS_NewInt32(ctx, info.rows);
+        case 3: return JS_NewString(ctx, info.title.c_str());
+        case 4: return JS_NewString(ctx, info.cwd.c_str());
+        case 5: return JS_NewBool(ctx, info.hasPty);
+        case 6: return JS_NewBool(ctx, info.focused);
+        case 7: return info.focusedPopupId.empty()
+            ? JS_NULL
+            : JS_NewString(ctx, info.focusedPopupId.c_str());
+        case 8: return JS_NewString(ctx, info.foregroundProcess.c_str());
+        case 9: { // selectedCommand — full record of the OSC 133 command currently
+                  // highlighted via Cmd+click / Cmd+double-click / scroll_to_prompt,
+                  // or null if no selection. Gated on shell.commands (same as .commands
+                  // and .selectedCommandId — both of which expose the same underlying
+                  // id, just in lighter form).
+            if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+                scheduleTermination(ctx);
+                return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+            }
+            if (!info.selectedCommandId) {
+                return JS_NULL;
+            }
+            if (!eng->callbacks().paneCommands) {
+                return JS_NULL;
+            }
+            auto list       = eng->callbacks().paneCommands(pane->id, 0);
+            uint64_t target = *info.selectedCommandId;
+            for (const auto &rec : list) {
+                if (rec.id == target) {
+                    return buildCommandObject(ctx, rec, pane->id);
+                }
+            }
+            return JS_NULL;
         }
-        return JS_NULL;
-    }
-    case 10: { // commands — gated on shell.commands.
-        if (!checkPerm(ctx, Perm::ShellReadCommands)) {
-            scheduleTermination(ctx);
-            return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+        case 10: { // commands — gated on shell.commands.
+            if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+                scheduleTermination(ctx);
+                return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+            }
+            JSValue arr = JS_NewArray(ctx);
+            if (!eng->callbacks().paneCommands) {
+                return arr;
+            }
+            auto list = eng->callbacks().paneCommands(pane->id, 0);
+            for (size_t i = 0; i < list.size(); ++i) {
+                JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], pane->id));
+            }
+            return arr;
         }
-        JSValue arr = JS_NewArray(ctx);
-        if (!eng->callbacks().paneCommands) return arr;
-        auto list = eng->callbacks().paneCommands(pane->id, 0);
-        for (size_t i = 0; i < list.size(); ++i)
-            JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), buildCommandObject(ctx, list[i], pane->id));
-        return arr;
-    }
-    case 11: { // selection → { startRowId, startCol, endRowId, endCol } | null
-        REQUIRE_PERM(ctx, PaneRead);
-        if (!info.hasSelection) return JS_NULL;
-        JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartLineId)));
-        JS_SetPropertyStr(ctx, obj, "startCol",   JS_NewInt32(ctx, info.selectionStartCol));
-        JS_SetPropertyStr(ctx, obj, "endRowId",   JS_NewInt64(ctx, static_cast<int64_t>(info.selectionEndLineId)));
-        JS_SetPropertyStr(ctx, obj, "endCol",     JS_NewInt32(ctx, info.selectionEndCol));
-        return obj;
-    }
-    // case 12 (cursor) is intentionally absent: pane.cursor resolves via
-    // the inherited Terminal base getter (jsTerminalGetProp magic 2),
-    // which performs a live mutex-locked read against the emulator and
-    // applies the same PaneRead gate when `this` is a pane. The previous
-    // case-12 fallback used the paneInfo snapshot and was never wired
-    // into jsPaneProto, so removing it has no observable effect.
-    case 13: return JS_NewInt64(ctx, static_cast<int64_t>(info.oldestLineId));
-    case 14: return JS_NewInt64(ctx, static_cast<int64_t>(info.newestLineId));
-    case 15: { // mousePosition → { cellX, cellY, pixelX, pixelY } | null
-        if (!info.mouseInPane) return JS_NULL;
-        JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "cellX",  JS_NewInt32(ctx, info.mouseCellX));
-        JS_SetPropertyStr(ctx, obj, "cellY",  JS_NewInt32(ctx, info.mouseCellY));
-        JS_SetPropertyStr(ctx, obj, "pixelX", JS_NewInt32(ctx, info.mousePixelX));
-        JS_SetPropertyStr(ctx, obj, "pixelY", JS_NewInt32(ctx, info.mousePixelY));
-        return obj;
-    }
-    case 16: { // selectedCommandId → number | null (gated on shell.commands, matching .commands)
-        if (!checkPerm(ctx, Perm::ShellReadCommands)) {
-            scheduleTermination(ctx);
-            return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+        case 11: { // selection → { startRowId, startCol, endRowId, endCol } | null
+            REQUIRE_PERM(ctx, PaneRead);
+            if (!info.hasSelection) {
+                return JS_NULL;
+            }
+            JSValue obj = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionStartLineId)));
+            JS_SetPropertyStr(ctx, obj, "startCol", JS_NewInt32(ctx, info.selectionStartCol));
+            JS_SetPropertyStr(ctx, obj, "endRowId", JS_NewInt64(ctx, static_cast<int64_t>(info.selectionEndLineId)));
+            JS_SetPropertyStr(ctx, obj, "endCol", JS_NewInt32(ctx, info.selectionEndCol));
+            return obj;
         }
-        if (!info.selectedCommandId) return JS_NULL;
-        return JS_NewInt64(ctx, static_cast<int64_t>(*info.selectedCommandId));
-    }
-    case 17: // nodeId → UUID string of this pane's Terminal node in the shared
-             // LayoutTree, or null if unattached. Ungated — UUIDs are just
-             // handles that round-trip through mb.layout.node(...), which has
-             // its own permission discipline for mutations.
-        return info.nodeId.empty()
-                 ? JS_NULL
-                 : JS_NewStringLen(ctx, info.nodeId.data(), info.nodeId.size());
-    default: return JS_UNDEFINED;
+        // case 12 (cursor) is intentionally absent: pane.cursor resolves via
+        // the inherited Terminal base getter (jsTerminalGetProp magic 2),
+        // which performs a live mutex-locked read against the emulator and
+        // applies the same PaneRead gate when `this` is a pane. The previous
+        // case-12 fallback used the paneInfo snapshot and was never wired
+        // into jsPaneProto, so removing it has no observable effect.
+        case 13: return JS_NewInt64(ctx, static_cast<int64_t>(info.oldestLineId));
+        case 14: return JS_NewInt64(ctx, static_cast<int64_t>(info.newestLineId));
+        case 15: { // mousePosition → { cellX, cellY, pixelX, pixelY } | null
+            if (!info.mouseInPane) {
+                return JS_NULL;
+            }
+            JSValue obj = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, obj, "cellX", JS_NewInt32(ctx, info.mouseCellX));
+            JS_SetPropertyStr(ctx, obj, "cellY", JS_NewInt32(ctx, info.mouseCellY));
+            JS_SetPropertyStr(ctx, obj, "pixelX", JS_NewInt32(ctx, info.mousePixelX));
+            JS_SetPropertyStr(ctx, obj, "pixelY", JS_NewInt32(ctx, info.mousePixelY));
+            return obj;
+        }
+        case 16: { // selectedCommandId → number | null (gated on shell.commands, matching .commands)
+            if (!checkPerm(ctx, Perm::ShellReadCommands)) {
+                scheduleTermination(ctx);
+                return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
+            }
+            if (!info.selectedCommandId) {
+                return JS_NULL;
+            }
+            return JS_NewInt64(ctx, static_cast<int64_t>(*info.selectedCommandId));
+        }
+        case 17: // nodeId → UUID string of this pane's Terminal node in the shared
+                 // LayoutTree, or null if unattached. Ungated — UUIDs are just
+                 // handles that round-trip through mb.layout.node(...), which has
+                 // its own permission discipline for mutations.
+            return info.nodeId.empty()
+                ? JS_NULL
+                : JS_NewStringLen(ctx, info.nodeId.data(), info.nodeId.size());
+        default: return JS_UNDEFINED;
     }
 }
 
-static JSValue jsPaneSelectCommand(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+static JSValue jsPaneSelectCommand(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_UNDEFINED;
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_UNDEFINED;
+    }
     if (!checkPerm(ctx, Perm::ShellReadCommands)) {
         scheduleTermination(ctx);
         return JS_ThrowTypeError(ctx, "permission denied: shell.commands not granted");
     }
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().paneSetSelectedCommand) return JS_UNDEFINED;
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().paneSetSelectedCommand) {
+        return JS_UNDEFINED;
+    }
     std::optional<uint64_t> id;
     if (argc >= 1 && !JS_IsNull(argv[0]) && !JS_IsUndefined(argv[0])) {
         int64_t v = 0;
-        if (JS_ToInt64(ctx, &v, argv[0]) < 0) return JS_EXCEPTION;
-        if (v < 0) return JS_ThrowRangeError(ctx, "selectCommand: id must be non-negative");
+        if (JS_ToInt64(ctx, &v, argv[0]) < 0) {
+            return JS_EXCEPTION;
+        }
+        if (v < 0) {
+            return JS_ThrowRangeError(ctx, "selectCommand: id must be non-negative");
+        }
         id = static_cast<uint64_t>(v);
     }
     eng->callbacks().paneSetSelectedCommand(pane->id, id);
@@ -943,10 +1109,10 @@ static JSValue jsPaneSelectCommand(JSContext* ctx, JSValueConst this_val, int ar
 }
 
 // Forward declarations — defined after Popup / Embedded classes
-static JSValue jsPaneCreatePopup(JSContext*, JSValueConst, int, JSValueConst*);
-static JSValue jsPaneGetPopups(JSContext*, JSValueConst);
-static JSValue jsPaneCreateEmbedded(JSContext*, JSValueConst, int, JSValueConst*);
-static JSValue jsPaneGetEmbeddeds(JSContext*, JSValueConst);
+static JSValue jsPaneCreatePopup(JSContext *, JSValueConst, int, JSValueConst *);
+static JSValue jsPaneGetPopups(JSContext *, JSValueConst);
+static JSValue jsPaneCreateEmbedded(JSContext *, JSValueConst, int, JSValueConst *);
+static JSValue jsPaneGetEmbeddeds(JSContext *, JSValueConst);
 
 static const JSCFunctionListEntry jsPaneProto[] = {
     // Methods & getters listed here are PANE-SPECIFIC. `inject`, `cols`,
@@ -977,13 +1143,13 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
     JS_CGETSET_DEF("embeddeds", jsPaneGetEmbeddeds, nullptr),
     JS_CGETSET_MAGIC_DEF("selectedCommand", jsPaneGetProp, nullptr, 9),
-    JS_CGETSET_MAGIC_DEF("commands",    jsPaneGetProp, nullptr, 10),
-    JS_CGETSET_MAGIC_DEF("selection",    jsPaneGetProp, nullptr, 11),
-    JS_CGETSET_MAGIC_DEF("oldestRowId",     jsPaneGetProp, nullptr, 13),
-    JS_CGETSET_MAGIC_DEF("newestRowId",     jsPaneGetProp, nullptr, 14),
-    JS_CGETSET_MAGIC_DEF("mousePosition",   jsPaneGetProp, nullptr, 15),
+    JS_CGETSET_MAGIC_DEF("commands", jsPaneGetProp, nullptr, 10),
+    JS_CGETSET_MAGIC_DEF("selection", jsPaneGetProp, nullptr, 11),
+    JS_CGETSET_MAGIC_DEF("oldestRowId", jsPaneGetProp, nullptr, 13),
+    JS_CGETSET_MAGIC_DEF("newestRowId", jsPaneGetProp, nullptr, 14),
+    JS_CGETSET_MAGIC_DEF("mousePosition", jsPaneGetProp, nullptr, 15),
     JS_CGETSET_MAGIC_DEF("selectedCommandId", jsPaneGetProp, nullptr, 16),
-    JS_CGETSET_MAGIC_DEF("nodeId",            jsPaneGetProp, nullptr, 17),
+    JS_CGETSET_MAGIC_DEF("nodeId", jsPaneGetProp, nullptr, 17),
     JS_CFUNC_DEF("selectCommand", 1, jsPaneSelectCommand),
 };
 
@@ -993,48 +1159,52 @@ static const JSCFunctionListEntry jsPaneProto[] = {
 
 static JSClassID jsPopupClassId;
 
-struct JsPopupData {
+struct JsPopupData
+{
     PaneId paneId;
     std::string popupId;
     bool alive;
 };
 
-static void jsPopupFinalize(JSRuntime*, JSValue val)
+static void jsPopupFinalize(JSRuntime *, JSValue val)
 {
-    delete static_cast<JsPopupData*>(JS_GetOpaque(val, jsPopupClassId));
+    delete static_cast<JsPopupData *>(JS_GetOpaque(val, jsPopupClassId));
 }
 
 static JSClassDef jsPopupClassDef = { "Popup", jsPopupFinalize };
 
-static JSValue jsPopupNew(JSContext* ctx, PaneId paneId, const std::string& popupId)
+static JSValue jsPopupNew(JSContext *ctx, PaneId paneId, const std::string &popupId)
 {
     JSValue obj = JS_NewObjectClass(ctx, jsPopupClassId);
-    JS_SetOpaque(obj, new JsPopupData{paneId, popupId, true});
+    JS_SetOpaque(obj, new JsPopupData { paneId, popupId, true });
     return obj;
 }
 
-static JsPopupData* jsPopupGet(JSContext* ctx, JSValueConst val)
+static JsPopupData *jsPopupGet(JSContext *ctx, JSValueConst val)
 {
-    return static_cast<JsPopupData*>(JS_GetOpaque(val, jsPopupClassId));
+    return static_cast<JsPopupData *>(JS_GetOpaque(val, jsPopupClassId));
 }
 
 // popup.close()
-static JSValue jsPopupClose(JSContext* ctx, JSValueConst this_val,
-                               int, JSValueConst*)
+static JSValue jsPopupClose(JSContext *ctx, JSValueConst this_val,
+                            int, JSValueConst *)
 {
     REQUIRE_PERM(ctx, UiPopupDestroy);
-    auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
+    auto *popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) {
+        return JS_ThrowTypeError(ctx, "popup is destroyed");
+    }
     engineFromCtx(ctx)->callbacks().destroyPopup(popup->paneId, popup->popupId);
     popup->alive = false;
 
     // Clear popup registry so a future popup with the same id on the same pane
     // registers fresh and input is delivered to the new popup's listeners.
     std::string regKey = popup->paneId.toString() + ":" + popup->popupId;
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue registry = JS_GetPropertyStr(ctx, global, "__popup_registry");
-    if (!JS_IsUndefined(registry))
+    JSValue global     = JS_GetGlobalObject(ctx);
+    JSValue registry   = JS_GetPropertyStr(ctx, global, "__popup_registry");
+    if (!JS_IsUndefined(registry)) {
         JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_UNDEFINED);
+    }
     JS_FreeValue(ctx, registry);
     JS_FreeValue(ctx, global);
 
@@ -1042,26 +1212,40 @@ static JSValue jsPopupClose(JSContext* ctx, JSValueConst this_val,
 }
 
 // popup.addEventListener(event, fn) — stores on the popup object
-static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
-                                        int argc, JSValueConst* argv)
+static JSValue jsPopupAddEventListener(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
-    auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
+    }
+    auto *popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) {
+        return JS_ThrowTypeError(ctx, "popup is destroyed");
+    }
 
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
 
     std::string prop;
     if (strcmp(event, "input") == 0) {
-        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
+        if (!checkPerm(ctx, Perm::IoFilterInput)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput");
+        }
         prop = "__input_filters";
     } else if (strcmp(event, "mouse") == 0) {
-        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        if (!checkPerm(ctx, Perm::GroupUi)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: ui");
+        }
         prop = "__mouse_listeners";
     } else if (strcmp(event, "mousemove") == 0) {
-        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        if (!checkPerm(ctx, Perm::GroupUi)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: ui");
+        }
         prop = "__evt_mousemove";
     } else {
         prop = std::string("__evt_") + event;
@@ -1069,18 +1253,19 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
     JS_FreeCString(ctx, event);
 
     // Register in popup registry for input/mouse delivery
-    Engine* eng = engineFromCtx(ctx);
+    Engine *eng        = engineFromCtx(ctx);
     std::string regKey = popup->paneId.toString() + ":" + popup->popupId;
     // Use a string-keyed property on a global popup registry
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue registry = JS_GetPropertyStr(ctx, global, "__popup_registry");
+    JSValue global     = JS_GetGlobalObject(ctx);
+    JSValue registry   = JS_GetPropertyStr(ctx, global, "__popup_registry");
     if (JS_IsUndefined(registry)) {
         registry = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, global, "__popup_registry", JS_DupValue(ctx, registry));
     }
     JSValue existing = JS_GetPropertyStr(ctx, registry, regKey.c_str());
-    if (JS_IsUndefined(existing))
+    if (JS_IsUndefined(existing)) {
         JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_DupValue(ctx, this_val));
+    }
     JS_FreeValue(ctx, existing);
     JS_FreeValue(ctx, registry);
     JS_FreeValue(ctx, global);
@@ -1097,19 +1282,28 @@ static JSValue jsPopupAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsPopupRemoveEventListener(JSContext* ctx, JSValueConst this_val,
-                                           int argc, JSValueConst* argv)
+static JSValue jsPopupRemoveEventListener(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
-    auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    }
+    auto *popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) {
+        return JS_ThrowTypeError(ctx, "popup is destroyed");
+    }
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
     std::string prop;
-    if      (strcmp(event, "input") == 0) prop = "__input_filters";
-    else if (strcmp(event, "mouse") == 0) prop = "__mouse_listeners";
-    else                                  prop = std::string("__evt_") + event;
+    if (strcmp(event, "input") == 0) {
+        prop = "__input_filters";
+    } else if (strcmp(event, "mouse") == 0) {
+        prop = "__mouse_listeners";
+    } else {
+        prop = std::string("__evt_") + event;
+    }
     JS_FreeCString(ctx, event);
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
     removeFromJSArray(ctx, arr, argv[1]);
@@ -1118,55 +1312,74 @@ static JSValue jsPopupRemoveEventListener(JSContext* ctx, JSValueConst this_val,
 }
 
 // popup property getters
-static JSValue jsPopupGetProp(JSContext* ctx, JSValueConst this_val, int magic)
+static JSValue jsPopupGetProp(JSContext *ctx, JSValueConst this_val, int magic)
 {
-    auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    switch (magic) {
-    case 0: {
-        std::string s = popup->paneId.toString();
-        return JS_NewStringLen(ctx, s.data(), s.size());
-    }
-    case 1: return JS_NewString(ctx, popup->popupId.c_str());
-    case 2: {
-        auto info = eng->callbacks().paneInfo(popup->paneId);
-        return JS_NewBool(ctx, info.focusedPopupId == popup->popupId);
-    }
-    case 5: case 6: {
-        // x, y — look up from panePopups (cols/rows come from Terminal base).
-        auto popups = eng->callbacks().panePopups(popup->paneId);
-        for (const auto& p : popups) {
-            if (p.id == popup->popupId) {
-                if (magic == 5) return JS_NewInt32(ctx, p.x);
-                if (magic == 6) return JS_NewInt32(ctx, p.y);
-            }
-        }
+    auto *popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) {
         return JS_UNDEFINED;
     }
-    default: return JS_UNDEFINED;
+    Engine *eng = engineFromCtx(ctx);
+    switch (magic) {
+        case 0: {
+            std::string s = popup->paneId.toString();
+            return JS_NewStringLen(ctx, s.data(), s.size());
+        }
+        case 1: return JS_NewString(ctx, popup->popupId.c_str());
+        case 2: {
+            auto info = eng->callbacks().paneInfo(popup->paneId);
+            return JS_NewBool(ctx, info.focusedPopupId == popup->popupId);
+        }
+        case 5:
+        case 6: {
+            // x, y — look up from panePopups (cols/rows come from Terminal base).
+            auto popups = eng->callbacks().panePopups(popup->paneId);
+            for (const auto &p : popups) {
+                if (p.id == popup->popupId) {
+                    if (magic == 5) {
+                        return JS_NewInt32(ctx, p.x);
+                    }
+                    if (magic == 6) {
+                        return JS_NewInt32(ctx, p.y);
+                    }
+                }
+            }
+            return JS_UNDEFINED;
+        }
+        default: return JS_UNDEFINED;
     }
 }
 
 // popup.resize({x, y, w, h})
-static JSValue jsPopupResize(JSContext* ctx, JSValueConst this_val,
-                              int argc, JSValueConst* argv)
+static JSValue jsPopupResize(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsObject(argv[0])) return JS_ThrowTypeError(ctx, "resize requires ({x, y, w, h})");
+    if (argc < 1 || !JS_IsObject(argv[0])) {
+        return JS_ThrowTypeError(ctx, "resize requires ({x, y, w, h})");
+    }
     REQUIRE_PERM(ctx, UiPopupCreate);
-    auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_ThrowTypeError(ctx, "popup is destroyed");
+    auto *popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) {
+        return JS_ThrowTypeError(ctx, "popup is destroyed");
+    }
 
     int32_t x, y, w, h;
     JSValue v;
     // Default to current values if not specified — need to query
     // For simplicity, all four are required
-    v = JS_GetPropertyStr(ctx, argv[0], "x"); JS_ToInt32(ctx, &x, v); JS_FreeValue(ctx, v);
-    v = JS_GetPropertyStr(ctx, argv[0], "y"); JS_ToInt32(ctx, &y, v); JS_FreeValue(ctx, v);
-    v = JS_GetPropertyStr(ctx, argv[0], "w"); JS_ToInt32(ctx, &w, v); JS_FreeValue(ctx, v);
-    v = JS_GetPropertyStr(ctx, argv[0], "h"); JS_ToInt32(ctx, &h, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "x");
+    JS_ToInt32(ctx, &x, v);
+    JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "y");
+    JS_ToInt32(ctx, &y, v);
+    JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "w");
+    JS_ToInt32(ctx, &w, v);
+    JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "h");
+    JS_ToInt32(ctx, &h, v);
+    JS_FreeValue(ctx, v);
 
-    Engine* eng = engineFromCtx(ctx);
+    Engine *eng = engineFromCtx(ctx);
     eng->callbacks().resizePopup(popup->paneId, popup->popupId, x, y, w, h);
     return JS_UNDEFINED;
 }
@@ -1175,15 +1388,16 @@ static JSValue jsPopupResize(JSContext* ctx, JSValueConst this_val,
 // the pane's focused embedded). Gated on UiFocus so OSC-loaded scripts
 // without explicit focus permission cannot hijack the keyboard. Returns
 // true on success, false if the popup is already gone.
-static JSValue jsPopupFocus(JSContext* ctx, JSValueConst this_val,
-                             int, JSValueConst*)
+static JSValue jsPopupFocus(JSContext *ctx, JSValueConst this_val,
+                            int, JSValueConst *)
 {
     REQUIRE_PERM(ctx, UiFocus);
-    auto* popup = jsPopupGet(ctx, this_val);
-    if (!popup || !popup->alive) return JS_NewBool(ctx, false);
-    Engine* eng = engineFromCtx(ctx);
-    bool ok = eng->callbacks().setFocusedPopup
-            && eng->callbacks().setFocusedPopup(popup->paneId, popup->popupId);
+    auto *popup = jsPopupGet(ctx, this_val);
+    if (!popup || !popup->alive) {
+        return JS_NewBool(ctx, false);
+    }
+    Engine *eng = engineFromCtx(ctx);
+    bool ok     = eng->callbacks().setFocusedPopup && eng->callbacks().setFocusedPopup(popup->paneId, popup->popupId);
     return JS_NewBool(ctx, ok);
 }
 
@@ -1202,58 +1416,81 @@ static const JSCFunctionListEntry jsPopupProto[] = {
 };
 
 // pane.createPopup({id, x, y, w, h}) -> Popup
-static JSValue jsPaneCreatePopup(JSContext* ctx, JSValueConst this_val,
-                                  int argc, JSValueConst* argv)
+static JSValue jsPaneCreatePopup(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsObject(argv[0])) return JS_ThrowTypeError(ctx, "createPopup requires ({id, x, y, w, h})");
+    if (argc < 1 || !JS_IsObject(argv[0])) {
+        return JS_ThrowTypeError(ctx, "createPopup requires ({id, x, y, w, h})");
+    }
     REQUIRE_PERM(ctx, UiPopupCreate);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
 
-    const char* id = nullptr;
-    JSValue idVal = JS_GetPropertyStr(ctx, argv[0], "id");
-    if (JS_IsString(idVal)) id = JS_ToCString(ctx, idVal);
+    const char *id = nullptr;
+    JSValue idVal  = JS_GetPropertyStr(ctx, argv[0], "id");
+    if (JS_IsString(idVal)) {
+        id = JS_ToCString(ctx, idVal);
+    }
     JS_FreeValue(ctx, idVal);
-    if (!id) return JS_ThrowTypeError(ctx, "createPopup: missing 'id' property");
+    if (!id) {
+        return JS_ThrowTypeError(ctx, "createPopup: missing 'id' property");
+    }
 
     int32_t x = 0, y = 0, w = 20, h = 5;
     JSValue v;
-    v = JS_GetPropertyStr(ctx, argv[0], "x"); JS_ToInt32(ctx, &x, v); JS_FreeValue(ctx, v);
-    v = JS_GetPropertyStr(ctx, argv[0], "y"); JS_ToInt32(ctx, &y, v); JS_FreeValue(ctx, v);
-    v = JS_GetPropertyStr(ctx, argv[0], "w"); JS_ToInt32(ctx, &w, v); JS_FreeValue(ctx, v);
-    v = JS_GetPropertyStr(ctx, argv[0], "h"); JS_ToInt32(ctx, &h, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "x");
+    JS_ToInt32(ctx, &x, v);
+    JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "y");
+    JS_ToInt32(ctx, &y, v);
+    JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "w");
+    JS_ToInt32(ctx, &w, v);
+    JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, argv[0], "h");
+    JS_ToInt32(ctx, &h, v);
+    JS_FreeValue(ctx, v);
 
     std::string popupId(id);
     JS_FreeCString(ctx, id);
 
     Uuid paneId = pane->id;
-    bool ok = eng->callbacks().createPopup(paneId, popupId, x, y, w, h,
-        [eng, paneId, popupId](const char* data, size_t len) {
-            // Deliver input to popup listeners
-            std::string regKey = paneId.toString() + ":" + popupId;
-            eng->deliverPopupInput(regKey, data, len);
-        });
+    bool ok     = eng->callbacks().createPopup(paneId, popupId, x, y, w, h, [eng, paneId, popupId](const char *data, size_t len)
+                                           {
+                                               // Deliver input to popup listeners
+                                               std::string regKey = paneId.toString() + ":" + popupId;
+                                               eng->deliverPopupInput(regKey, data, len);
+                                           });
 
-    if (!ok) return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
+    if (!ok) {
+        return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
+    }
 
     // Track ownership for cleanup on unload
-    auto* inst = instanceFromCtx(ctx);
-    if (inst) inst->ownedPopups.push_back({paneId, popupId});
+    auto *inst = instanceFromCtx(ctx);
+    if (inst) {
+        inst->ownedPopups.push_back({ paneId, popupId });
+    }
 
     return jsPopupNew(ctx, paneId, popupId);
 }
 
 // pane.popups — returns array of Popup objects for this pane
-static JSValue jsPaneGetPopups(JSContext* ctx, JSValueConst this_val)
+static JSValue jsPaneGetPopups(JSContext *ctx, JSValueConst this_val)
 {
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_NewArray(ctx);
-    Engine* eng = engineFromCtx(ctx);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_NewArray(ctx);
+    }
+    Engine *eng = engineFromCtx(ctx);
     auto popups = eng->callbacks().panePopups(pane->id);
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < popups.size(); ++i)
+    for (uint32_t i = 0; i < popups.size(); ++i) {
         JS_SetPropertyUint32(ctx, arr, i, jsPopupNew(ctx, pane->id, popups[i].id));
+    }
     return arr;
 }
 
@@ -1263,53 +1500,62 @@ static JSValue jsPaneGetPopups(JSContext* ctx, JSValueConst this_val)
 
 static JSClassID jsEmbeddedClassId;
 
-struct JsEmbeddedData {
+struct JsEmbeddedData
+{
     PaneId paneId;
     uint64_t lineId;
     bool alive;
 };
 
-static void jsEmbeddedFinalize(JSRuntime*, JSValue val)
+static void jsEmbeddedFinalize(JSRuntime *, JSValue val)
 {
-    delete static_cast<JsEmbeddedData*>(JS_GetOpaque(val, jsEmbeddedClassId));
+    delete static_cast<JsEmbeddedData *>(JS_GetOpaque(val, jsEmbeddedClassId));
 }
 
 static JSClassDef jsEmbeddedClassDef = { "EmbeddedTerminal", jsEmbeddedFinalize };
 
-static JSValue jsEmbeddedNew(JSContext* ctx, PaneId paneId, uint64_t lineId)
+static JSValue jsEmbeddedNew(JSContext *ctx, PaneId paneId, uint64_t lineId)
 {
     JSValue obj = JS_NewObjectClass(ctx, jsEmbeddedClassId);
-    JS_SetOpaque(obj, new JsEmbeddedData{paneId, lineId, true});
+    JS_SetOpaque(obj, new JsEmbeddedData { paneId, lineId, true });
     return obj;
 }
 
-static JsEmbeddedData* jsEmbeddedGet(JSContext*, JSValueConst val)
+static JsEmbeddedData *jsEmbeddedGet(JSContext *, JSValueConst val)
 {
-    return static_cast<JsEmbeddedData*>(JS_GetOpaque(val, jsEmbeddedClassId));
+    return static_cast<JsEmbeddedData *>(JS_GetOpaque(val, jsEmbeddedClassId));
 }
 
 // embedded.resize(rows)
-static JSValue jsEmbeddedResize(JSContext* ctx, JSValueConst this_val,
-                                  int argc, JSValueConst* argv)
+static JSValue jsEmbeddedResize(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "resize requires (rows)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "resize requires (rows)");
+    }
     REQUIRE_PERM(ctx, UiPopupCreate);
-    auto* em = jsEmbeddedGet(ctx, this_val);
-    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    auto *em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) {
+        return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    }
     int32_t rows = 0;
-    if (JS_ToInt32(ctx, &rows, argv[0]) < 0) return JS_EXCEPTION;
+    if (JS_ToInt32(ctx, &rows, argv[0]) < 0) {
+        return JS_EXCEPTION;
+    }
     bool ok = engineFromCtx(ctx)->callbacks().resizeEmbedded(em->paneId, em->lineId, rows);
     return JS_NewBool(ctx, ok);
 }
 
 // embedded.close()
-static JSValue jsEmbeddedClose(JSContext* ctx, JSValueConst this_val,
-                                int, JSValueConst*)
+static JSValue jsEmbeddedClose(JSContext *ctx, JSValueConst this_val,
+                               int, JSValueConst *)
 {
     REQUIRE_PERM(ctx, UiPopupDestroy);
-    auto* em = jsEmbeddedGet(ctx, this_val);
-    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
-    Engine* eng = engineFromCtx(ctx);
+    auto *em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) {
+        return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    }
+    Engine *eng        = engineFromCtx(ctx);
     // Capture regKey before destroy invalidates the embedded.
     std::string regKey = em->paneId.toString() + ":" + std::to_string(em->lineId);
     eng->callbacks().destroyEmbedded(em->paneId, em->lineId);
@@ -1318,10 +1564,11 @@ static JSValue jsEmbeddedClose(JSContext* ctx, JSValueConst this_val,
     // future embedded at the same lineId (unlikely — ids are monotonic)
     // registers fresh.
     eng->deliverEmbeddedDestroyed(regKey);
-    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue global   = JS_GetGlobalObject(ctx);
     JSValue registry = JS_GetPropertyStr(ctx, global, "__embedded_registry");
-    if (!JS_IsUndefined(registry))
+    if (!JS_IsUndefined(registry)) {
         JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_UNDEFINED);
+    }
     JS_FreeValue(ctx, registry);
     JS_FreeValue(ctx, global);
     return JS_UNDEFINED;
@@ -1329,23 +1576,34 @@ static JSValue jsEmbeddedClose(JSContext* ctx, JSValueConst this_val,
 
 // embedded.addEventListener(event, fn)
 // Supported events: "input" (keystrokes when focused), "destroyed" (eviction or close).
-static JSValue jsEmbeddedAddEventListener(JSContext* ctx, JSValueConst this_val,
-                                            int argc, JSValueConst* argv)
+static JSValue jsEmbeddedAddEventListener(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
-    auto* em = jsEmbeddedGet(ctx, this_val);
-    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    }
+    auto *em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) {
+        return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    }
 
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
 
     std::string prop;
     if (strcmp(event, "input") == 0) {
-        if (!checkPerm(ctx, Perm::IoFilterInput)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput"); }
+        if (!checkPerm(ctx, Perm::IoFilterInput)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: IoFilterInput");
+        }
         prop = "__input_filters";
     } else if (strcmp(event, "mouse") == 0 || strcmp(event, "mousemove") == 0) {
-        if (!checkPerm(ctx, Perm::GroupUi)) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "permission denied: ui"); }
+        if (!checkPerm(ctx, Perm::GroupUi)) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "permission denied: ui");
+        }
         // Mirror pane: "mouse" → dedicated list (press/release), "mousemove" → __evt_ bucket.
         prop = (strcmp(event, "mouse") == 0) ? "__mouse_listeners" : "__evt_mousemove";
     } else {
@@ -1354,15 +1612,16 @@ static JSValue jsEmbeddedAddEventListener(JSContext* ctx, JSValueConst this_val,
     JS_FreeCString(ctx, event);
 
     std::string regKey = em->paneId.toString() + ":" + std::to_string(em->lineId);
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue registry = JS_GetPropertyStr(ctx, global, "__embedded_registry");
+    JSValue global     = JS_GetGlobalObject(ctx);
+    JSValue registry   = JS_GetPropertyStr(ctx, global, "__embedded_registry");
     if (JS_IsUndefined(registry)) {
         registry = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, global, "__embedded_registry", JS_DupValue(ctx, registry));
     }
     JSValue existing = JS_GetPropertyStr(ctx, registry, regKey.c_str());
-    if (JS_IsUndefined(existing))
+    if (JS_IsUndefined(existing)) {
         JS_SetPropertyStr(ctx, registry, regKey.c_str(), JS_DupValue(ctx, this_val));
+    }
     JS_FreeValue(ctx, existing);
     JS_FreeValue(ctx, registry);
     JS_FreeValue(ctx, global);
@@ -1379,19 +1638,28 @@ static JSValue jsEmbeddedAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsEmbeddedRemoveEventListener(JSContext* ctx, JSValueConst this_val,
-                                               int argc, JSValueConst* argv)
+static JSValue jsEmbeddedRemoveEventListener(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
-    auto* em = jsEmbeddedGet(ctx, this_val);
-    if (!em || !em->alive) return JS_ThrowTypeError(ctx, "embedded is destroyed");
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    }
+    auto *em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) {
+        return JS_ThrowTypeError(ctx, "embedded is destroyed");
+    }
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
     std::string prop;
-    if (strcmp(event, "input") == 0)           prop = "__input_filters";
-    else if (strcmp(event, "mouse") == 0)      prop = "__mouse_listeners";
-    else                                        prop = std::string("__evt_") + event;
+    if (strcmp(event, "input") == 0) {
+        prop = "__input_filters";
+    } else if (strcmp(event, "mouse") == 0) {
+        prop = "__mouse_listeners";
+    } else {
+        prop = std::string("__evt_") + event;
+    }
     JS_FreeCString(ctx, event);
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
     removeFromJSArray(ctx, arr, argv[1]);
@@ -1400,21 +1668,29 @@ static JSValue jsEmbeddedRemoveEventListener(JSContext* ctx, JSValueConst this_v
 }
 
 // embedded.<property> getter
-static JSValue jsEmbeddedGetProp(JSContext* ctx, JSValueConst this_val, int magic)
+static JSValue jsEmbeddedGetProp(JSContext *ctx, JSValueConst this_val, int magic)
 {
-    auto* em = jsEmbeddedGet(ctx, this_val);
-    if (!em || !em->alive) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    switch (magic) {
-    case 0: { std::string s = em->paneId.toString(); return JS_NewStringLen(ctx, s.data(), s.size()); }
-    case 1: return JS_NewInt64(ctx, static_cast<int64_t>(em->lineId));
-    case 4: {
-        // focused — cols/rows now come from the Terminal base class.
-        auto embeds = eng->callbacks().paneEmbeddeds(em->paneId);
-        for (const auto& e : embeds)
-            if (e.lineId == em->lineId) return JS_NewBool(ctx, e.focused);
+    auto *em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) {
         return JS_UNDEFINED;
     }
+    Engine *eng = engineFromCtx(ctx);
+    switch (magic) {
+        case 0: {
+            std::string s = em->paneId.toString();
+            return JS_NewStringLen(ctx, s.data(), s.size());
+        }
+        case 1: return JS_NewInt64(ctx, static_cast<int64_t>(em->lineId));
+        case 4: {
+            // focused — cols/rows now come from the Terminal base class.
+            auto embeds = eng->callbacks().paneEmbeddeds(em->paneId);
+            for (const auto &e : embeds) {
+                if (e.lineId == em->lineId) {
+                    return JS_NewBool(ctx, e.focused);
+                }
+            }
+            return JS_UNDEFINED;
+        }
     }
     return JS_UNDEFINED;
 }
@@ -1422,15 +1698,16 @@ static JSValue jsEmbeddedGetProp(JSContext* ctx, JSValueConst this_val, int magi
 // embedded.focus() — make this embedded the focused embedded on its pane
 // (and clear the pane's focused popup). Gated on UiFocus, mirroring
 // popup.focus(). Returns true on success, false if already gone.
-static JSValue jsEmbeddedFocus(JSContext* ctx, JSValueConst this_val,
-                                int, JSValueConst*)
+static JSValue jsEmbeddedFocus(JSContext *ctx, JSValueConst this_val,
+                               int, JSValueConst *)
 {
     REQUIRE_PERM(ctx, UiFocus);
-    auto* em = jsEmbeddedGet(ctx, this_val);
-    if (!em || !em->alive) return JS_NewBool(ctx, false);
-    Engine* eng = engineFromCtx(ctx);
-    bool ok = eng->callbacks().setFocusedEmbedded
-            && eng->callbacks().setFocusedEmbedded(em->paneId, em->lineId);
+    auto *em = jsEmbeddedGet(ctx, this_val);
+    if (!em || !em->alive) {
+        return JS_NewBool(ctx, false);
+    }
+    Engine *eng = engineFromCtx(ctx);
+    bool ok     = eng->callbacks().setFocusedEmbedded && eng->callbacks().setFocusedEmbedded(em->paneId, em->lineId);
     return JS_NewBool(ctx, ok);
 }
 
@@ -1441,7 +1718,7 @@ static const JSCFunctionListEntry jsEmbeddedProto[] = {
     JS_CFUNC_DEF("focus", 0, jsEmbeddedFocus),
     JS_CFUNC_DEF("close", 0, jsEmbeddedClose),
     JS_CGETSET_MAGIC_DEF("paneId", jsEmbeddedGetProp, nullptr, 0),
-    JS_CGETSET_MAGIC_DEF("id",     jsEmbeddedGetProp, nullptr, 1),
+    JS_CGETSET_MAGIC_DEF("id", jsEmbeddedGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("focused", jsEmbeddedGetProp, nullptr, 4),
 };
 
@@ -1465,41 +1742,43 @@ static const JSCFunctionListEntry jsEmbeddedProto[] = {
 
 static JSClassID jsOutputCaptureClassId;
 
-struct JsOutputCaptureData {
+struct JsOutputCaptureData
+{
     PaneId paneId;
-    std::string path;     // sandbox-validated absolute path
-    std::string format;   // "raw" | "asciicast"
-    bool active;          // false after stop() or auto-stop
-    InstanceId instId;    // owning script instance, for cleanup-on-unload
+    std::string path;   // sandbox-validated absolute path
+    std::string format; // "raw" | "asciicast"
+    bool active;        // false after stop() or auto-stop
+    InstanceId instId;  // owning script instance, for cleanup-on-unload
 };
 
-static void jsOutputCaptureFinalize(JSRuntime*, JSValue val)
+static void jsOutputCaptureFinalize(JSRuntime *, JSValue val)
 {
-    delete static_cast<JsOutputCaptureData*>(
+    delete static_cast<JsOutputCaptureData *>(
         JS_GetOpaque(val, jsOutputCaptureClassId));
 }
 
 static JSClassDef jsOutputCaptureClassDef = {
-    "OutputCapture", jsOutputCaptureFinalize
+    "OutputCapture",
+    jsOutputCaptureFinalize
 };
 
-static JSValue jsOutputCaptureNew(JSContext* ctx,
-                                   PaneId paneId,
-                                   const std::string& path,
-                                   const std::string& format,
-                                   InstanceId instId)
+static JSValue jsOutputCaptureNew(JSContext *ctx,
+                                  PaneId paneId,
+                                  const std::string &path,
+                                  const std::string &format,
+                                  InstanceId instId)
 {
     JSValue obj = JS_NewObjectClass(ctx, jsOutputCaptureClassId);
-    if (JS_IsException(obj)) return obj;
-    JS_SetOpaque(obj, new JsOutputCaptureData{
-        paneId, path, format, /*active*/true, instId
-    });
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+    JS_SetOpaque(obj, new JsOutputCaptureData { paneId, path, format, /*active*/ true, instId });
     return obj;
 }
 
-static JsOutputCaptureData* jsOutputCaptureGet(JSContext* ctx, JSValueConst val)
+static JsOutputCaptureData *jsOutputCaptureGet(JSContext *ctx, JSValueConst val)
 {
-    return static_cast<JsOutputCaptureData*>(
+    return static_cast<JsOutputCaptureData *>(
         JS_GetOpaque(val, jsOutputCaptureClassId));
 }
 
@@ -1507,15 +1786,19 @@ static JsOutputCaptureData* jsOutputCaptureGet(JSContext* ctx, JSValueConst val)
 // stop also fires the "stopped" event via the platform-side callback
 // path, so we don't synthesise one here. Returns true the first time
 // it actually stopped a live capture, false if already stopped.
-static JSValue jsOutputCaptureStop(JSContext* ctx, JSValueConst this_val,
-                                    int, JSValueConst*)
+static JSValue jsOutputCaptureStop(JSContext *ctx, JSValueConst this_val,
+                                   int, JSValueConst *)
 {
-    auto* d = jsOutputCaptureGet(ctx, this_val);
-    if (!d) return JS_NewBool(ctx, false);
-    if (!d->active) return JS_NewBool(ctx, false);
+    auto *d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) {
+        return JS_NewBool(ctx, false);
+    }
+    if (!d->active) {
+        return JS_NewBool(ctx, false);
+    }
 
-    Engine* eng = engineFromCtx(ctx);
-    Terminal* t = eng ? eng->terminal(d->paneId) : nullptr;
+    Engine *eng = engineFromCtx(ctx);
+    Terminal *t = eng ? eng->terminal(d->paneId) : nullptr;
     if (!t) {
         // Pane already gone (terminal exited / tree pruned). Mark
         // inactive so subsequent calls no-op; the underlying file
@@ -1524,22 +1807,27 @@ static JSValue jsOutputCaptureStop(JSContext* ctx, JSValueConst this_val,
         return JS_NewBool(ctx, false);
     }
     bool removed = t->removeOutputCapture(d->path);
-    d->active = false; // even if removed==false (race), the handle is dead
+    d->active    = false; // even if removed==false (race), the handle is dead
     return JS_NewBool(ctx, removed);
 }
 
-static JSValue jsOutputCaptureAddEventListener(JSContext* ctx,
-                                                JSValueConst this_val,
-                                                int argc, JSValueConst* argv)
+static JSValue jsOutputCaptureAddEventListener(JSContext *ctx,
+                                               JSValueConst this_val,
+                                               int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx,
-            "addEventListener requires (string, function)");
-    auto* d = jsOutputCaptureGet(ctx, this_val);
-    if (!d) return JS_ThrowTypeError(ctx, "capture is destroyed");
+                                 "addEventListener requires (string, function)");
+    }
+    auto *d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "capture is destroyed");
+    }
 
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
     // Only "stopped" is defined for now. Other event names install
     // listeners that will simply never fire — same forgiving pattern
     // pane uses for unknown events.
@@ -1558,17 +1846,22 @@ static JSValue jsOutputCaptureAddEventListener(JSContext* ctx,
     return JS_UNDEFINED;
 }
 
-static JSValue jsOutputCaptureRemoveEventListener(JSContext* ctx,
-                                                   JSValueConst this_val,
-                                                   int argc, JSValueConst* argv)
+static JSValue jsOutputCaptureRemoveEventListener(JSContext *ctx,
+                                                  JSValueConst this_val,
+                                                  int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx,
-            "removeEventListener requires (string, function)");
-    auto* d = jsOutputCaptureGet(ctx, this_val);
-    if (!d) return JS_ThrowTypeError(ctx, "capture is destroyed");
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+                                 "removeEventListener requires (string, function)");
+    }
+    auto *d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "capture is destroyed");
+    }
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
     std::string prop = std::string("__evt_") + event;
     JS_FreeCString(ctx, event);
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
@@ -1577,28 +1870,30 @@ static JSValue jsOutputCaptureRemoveEventListener(JSContext* ctx,
     return JS_UNDEFINED;
 }
 
-static JSValue jsOutputCaptureGetProp(JSContext* ctx, JSValueConst this_val,
-                                       int magic)
+static JSValue jsOutputCaptureGetProp(JSContext *ctx, JSValueConst this_val,
+                                      int magic)
 {
-    auto* d = jsOutputCaptureGet(ctx, this_val);
-    if (!d) return JS_UNDEFINED;
-    switch (magic) {
-    case 0: return JS_NewStringLen(ctx, d->path.data(), d->path.size());
-    case 1: return JS_NewStringLen(ctx, d->format.data(), d->format.size());
-    case 2: return JS_NewBool(ctx, d->active);
-    case 3: { // paneId — useful when the script has lost the pane handle
-        std::string s = d->paneId.toString();
-        return JS_NewStringLen(ctx, s.data(), s.size());
+    auto *d = jsOutputCaptureGet(ctx, this_val);
+    if (!d) {
+        return JS_UNDEFINED;
     }
-    default: return JS_UNDEFINED;
+    switch (magic) {
+        case 0: return JS_NewStringLen(ctx, d->path.data(), d->path.size());
+        case 1: return JS_NewStringLen(ctx, d->format.data(), d->format.size());
+        case 2: return JS_NewBool(ctx, d->active);
+        case 3: { // paneId — useful when the script has lost the pane handle
+            std::string s = d->paneId.toString();
+            return JS_NewStringLen(ctx, s.data(), s.size());
+        }
+        default: return JS_UNDEFINED;
     }
 }
 
 static const JSCFunctionListEntry jsOutputCaptureProto[] = {
-    JS_CFUNC_DEF("stop",                0, jsOutputCaptureStop),
-    JS_CFUNC_DEF("addEventListener",    2, jsOutputCaptureAddEventListener),
+    JS_CFUNC_DEF("stop", 0, jsOutputCaptureStop),
+    JS_CFUNC_DEF("addEventListener", 2, jsOutputCaptureAddEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, jsOutputCaptureRemoveEventListener),
-    JS_CGETSET_MAGIC_DEF("path",   jsOutputCaptureGetProp, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("path", jsOutputCaptureGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("format", jsOutputCaptureGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("active", jsOutputCaptureGetProp, nullptr, 2),
     JS_CGETSET_MAGIC_DEF("paneId", jsOutputCaptureGetProp, nullptr, 3),
@@ -1623,136 +1918,174 @@ static JSClassDef jsTerminalClassDef = { "Terminal", nullptr };
 
 // Branch on the concrete JS class. JS_GetOpaque returns non-null only when
 // `val` is exactly that class id, so the chain finds the right opaque in O(1).
-static TerminalEmulator* resolveEmulatorFromVal(JSContext* ctx, JSValueConst val)
+static TerminalEmulator *resolveEmulatorFromVal(JSContext *ctx, JSValueConst val)
 {
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng) return nullptr;
-    if (auto* p = static_cast<JsPaneData*>(JS_GetOpaque(val, jsPaneClassId))) {
-        if (!p->alive) return nullptr;
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng) {
+        return nullptr;
+    }
+    if (auto *p = static_cast<JsPaneData *>(JS_GetOpaque(val, jsPaneClassId))) {
+        if (!p->alive) {
+            return nullptr;
+        }
         return eng->terminal(p->id);
     }
-    if (auto* d = static_cast<JsPopupData*>(JS_GetOpaque(val, jsPopupClassId))) {
-        if (!d->alive) return nullptr;
-        Terminal* parent = eng->terminal(d->paneId);
+    if (auto *d = static_cast<JsPopupData *>(JS_GetOpaque(val, jsPopupClassId))) {
+        if (!d->alive) {
+            return nullptr;
+        }
+        Terminal *parent = eng->terminal(d->paneId);
         return parent ? parent->findPopup(d->popupId) : nullptr;
     }
-    if (auto* d = static_cast<JsEmbeddedData*>(JS_GetOpaque(val, jsEmbeddedClassId))) {
-        if (!d->alive) return nullptr;
-        Terminal* parent = eng->terminal(d->paneId);
+    if (auto *d = static_cast<JsEmbeddedData *>(JS_GetOpaque(val, jsEmbeddedClassId))) {
+        if (!d->alive) {
+            return nullptr;
+        }
+        Terminal *parent = eng->terminal(d->paneId);
         return parent ? parent->findEmbedded(d->lineId) : nullptr;
     }
     return nullptr;
 }
 
 // terminal.inject(data)
-static JSValue jsTerminalInject(JSContext* ctx, JSValueConst this_val,
-                                 int argc, JSValueConst* argv)
+static JSValue jsTerminalInject(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "inject requires (string)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "inject requires (string)");
+    }
     REQUIRE_PERM(ctx, IoInject);
-    TerminalEmulator* emu = resolveEmulatorFromVal(ctx, this_val);
-    if (!emu) return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    }
     size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
+    const char *str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) {
+        return JS_EXCEPTION;
+    }
     emu->injectData(str, len);
     JS_FreeCString(ctx, str);
-    if (auto& cb = engineFromCtx(ctx)->callbacks().requestRedraw) cb();
+    if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
+        cb();
+    }
     return JS_UNDEFINED;
 }
 
 // Shared getters: 0 = cols, 1 = rows, 2 = cursor, 3 = kind, 4 = cellWidth, 5 = cellHeight.
-static JSValue jsTerminalGetProp(JSContext* ctx, JSValueConst this_val, int magic)
+static JSValue jsTerminalGetProp(JSContext *ctx, JSValueConst this_val, int magic)
 {
     if (magic == 3) {
         // `kind` — discriminator for subclass. Doesn't require a live emulator.
         JSClassID cid = JS_GetClassID(this_val);
-        if (cid == jsPaneClassId)     return JS_NewString(ctx, "pane");
-        if (cid == jsPopupClassId)    return JS_NewString(ctx, "popup");
-        if (cid == jsEmbeddedClassId) return JS_NewString(ctx, "embedded");
+        if (cid == jsPaneClassId) {
+            return JS_NewString(ctx, "pane");
+        }
+        if (cid == jsPopupClassId) {
+            return JS_NewString(ctx, "popup");
+        }
+        if (cid == jsEmbeddedClassId) {
+            return JS_NewString(ctx, "embedded");
+        }
         return JS_NewString(ctx, "terminal");
     }
     if (magic == 4 || magic == 5) {
         // cellWidth / cellHeight in pixels — window-global font metrics.
-        auto& cb = engineFromCtx(ctx)->callbacks().fontCellSize;
-        if (!cb) return JS_NewFloat64(ctx, 0.0);
+        auto &cb = engineFromCtx(ctx)->callbacks().fontCellSize;
+        if (!cb) {
+            return JS_NewFloat64(ctx, 0.0);
+        }
         auto [cw, ch] = cb();
         return JS_NewFloat64(ctx, magic == 4 ? cw : ch);
     }
-    TerminalEmulator* emu = resolveEmulatorFromVal(ctx, this_val);
-    if (!emu) return JS_UNDEFINED;
-    switch (magic) {
-    case 0: return JS_NewInt32(ctx, emu->width());
-    case 1: return JS_NewInt32(ctx, emu->height());
-    case 2: {
-        // cursor → { rowId, col, visible }.  PaneRead gate applies
-        // only when the caller is a shell pane — applets querying their
-        // own popup/embedded don't need the extra grant (the cursor they
-        // see is their own drawing).
-        if (JS_GetClassID(this_val) == jsPaneClassId) {
-            REQUIRE_PERM(ctx, PaneRead);
-        }
-        std::lock_guard<std::recursive_mutex> _lk(emu->mutex());
-        int absRow = emu->document().historySize() + emu->cursorY();
-        uint64_t rowId = emu->document().lineIdForAbs(absRow);
-        JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "rowId",   JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
-        JS_SetPropertyStr(ctx, obj, "col",     JS_NewInt32(ctx, emu->cursorX()));
-        JS_SetPropertyStr(ctx, obj, "visible", JS_NewBool(ctx, emu->cursorVisible()));
-        return obj;
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) {
+        return JS_UNDEFINED;
     }
+    switch (magic) {
+        case 0: return JS_NewInt32(ctx, emu->width());
+        case 1: return JS_NewInt32(ctx, emu->height());
+        case 2: {
+            // cursor → { rowId, col, visible }.  PaneRead gate applies
+            // only when the caller is a shell pane — applets querying their
+            // own popup/embedded don't need the extra grant (the cursor they
+            // see is their own drawing).
+            if (JS_GetClassID(this_val) == jsPaneClassId) {
+                REQUIRE_PERM(ctx, PaneRead);
+            }
+            std::lock_guard<std::recursive_mutex> _lk(emu->mutex());
+            int absRow     = emu->document().historySize() + emu->cursorY();
+            uint64_t rowId = emu->document().lineIdForAbs(absRow);
+            JSValue obj    = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, obj, "rowId", JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
+            JS_SetPropertyStr(ctx, obj, "col", JS_NewInt32(ctx, emu->cursorX()));
+            JS_SetPropertyStr(ctx, obj, "visible", JS_NewBool(ctx, emu->cursorVisible()));
+            return obj;
+        }
     }
     return JS_UNDEFINED;
 }
 
 static const JSCFunctionListEntry jsTerminalProto[] = {
     JS_CFUNC_DEF("inject", 1, jsTerminalInject),
-    JS_CGETSET_MAGIC_DEF("cols",       jsTerminalGetProp, nullptr, 0),
-    JS_CGETSET_MAGIC_DEF("rows",       jsTerminalGetProp, nullptr, 1),
-    JS_CGETSET_MAGIC_DEF("cursor",     jsTerminalGetProp, nullptr, 2),
-    JS_CGETSET_MAGIC_DEF("kind",       jsTerminalGetProp, nullptr, 3),
-    JS_CGETSET_MAGIC_DEF("cellWidth",  jsTerminalGetProp, nullptr, 4),
+    JS_CGETSET_MAGIC_DEF("cols", jsTerminalGetProp, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("rows", jsTerminalGetProp, nullptr, 1),
+    JS_CGETSET_MAGIC_DEF("cursor", jsTerminalGetProp, nullptr, 2),
+    JS_CGETSET_MAGIC_DEF("kind", jsTerminalGetProp, nullptr, 3),
+    JS_CGETSET_MAGIC_DEF("cellWidth", jsTerminalGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("cellHeight", jsTerminalGetProp, nullptr, 5),
 };
 
 // pane.createEmbeddedTerminal({rows}) -> EmbeddedTerminal | null
-static JSValue jsPaneCreateEmbedded(JSContext* ctx, JSValueConst this_val,
-                                      int argc, JSValueConst* argv)
+static JSValue jsPaneCreateEmbedded(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsObject(argv[0]))
+    if (argc < 1 || !JS_IsObject(argv[0])) {
         return JS_ThrowTypeError(ctx, "createEmbeddedTerminal requires ({rows})");
+    }
     REQUIRE_PERM(ctx, UiPopupCreate);
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_ThrowTypeError(ctx, "pane is destroyed");
-    Engine* eng = engineFromCtx(ctx);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_ThrowTypeError(ctx, "pane is destroyed");
+    }
+    Engine *eng = engineFromCtx(ctx);
 
     int32_t rows = 0;
-    JSValue v = JS_GetPropertyStr(ctx, argv[0], "rows");
-    JS_ToInt32(ctx, &rows, v); JS_FreeValue(ctx, v);
-    if (rows <= 0) return JS_ThrowTypeError(ctx, "createEmbeddedTerminal: 'rows' must be > 0");
+    JSValue v    = JS_GetPropertyStr(ctx, argv[0], "rows");
+    JS_ToInt32(ctx, &rows, v);
+    JS_FreeValue(ctx, v);
+    if (rows <= 0) {
+        return JS_ThrowTypeError(ctx, "createEmbeddedTerminal: 'rows' must be > 0");
+    }
 
-    Uuid paneId = pane->id;
+    Uuid paneId     = pane->id;
     uint64_t lineId = eng->callbacks().createEmbedded(paneId, rows);
 
-    if (lineId == 0)
+    if (lineId == 0) {
         return JS_NULL;
+    }
 
-    auto* inst = instanceFromCtx(ctx);
-    if (inst) inst->ownedEmbeddeds.push_back({paneId, lineId});
+    auto *inst = instanceFromCtx(ctx);
+    if (inst) {
+        inst->ownedEmbeddeds.push_back({ paneId, lineId });
+    }
 
     return jsEmbeddedNew(ctx, paneId, lineId);
 }
 
 // pane.embeddeds — array of EmbeddedTerminal objects for this pane
-static JSValue jsPaneGetEmbeddeds(JSContext* ctx, JSValueConst this_val)
+static JSValue jsPaneGetEmbeddeds(JSContext *ctx, JSValueConst this_val)
 {
-    auto* pane = jsPaneGet(ctx, this_val);
-    if (!pane || !pane->alive) return JS_NewArray(ctx);
-    Engine* eng = engineFromCtx(ctx);
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        return JS_NewArray(ctx);
+    }
+    Engine *eng = engineFromCtx(ctx);
     auto embeds = eng->callbacks().paneEmbeddeds(pane->id);
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < embeds.size(); ++i)
+    for (uint32_t i = 0; i < embeds.size(); ++i) {
         JS_SetPropertyUint32(ctx, arr, i, jsEmbeddedNew(ctx, pane->id, embeds[i].lineId));
+    }
     return arr;
 }
 
@@ -1765,14 +2098,18 @@ static JSValue jsPaneGetEmbeddeds(JSContext* ctx, JSValueConst this_val)
 // mb global — controller API
 // ============================================================================
 
-static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
-                                 int argc, JSValueConst* argv)
+static JSValue jsMbInvokeAction(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "invokeAction requires (name, ...args)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "invokeAction requires (name, ...args)");
+    }
     REQUIRE_PERM(ctx, ActionsInvoke);
-    Engine* eng = engineFromCtx(ctx);
-    const char* name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_EXCEPTION;
+    Engine *eng      = engineFromCtx(ctx);
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
 
     uint32_t extraPerm = actionPermission(std::string(name));
     if (extraPerm && !checkPerm(ctx, extraPerm)) {
@@ -1787,8 +2124,11 @@ static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
 
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
-        const char* arg = JS_ToCString(ctx, argv[i]);
-        if (arg) { args.emplace_back(arg); JS_FreeCString(ctx, arg); }
+        const char *arg = JS_ToCString(ctx, argv[i]);
+        if (arg) {
+            args.emplace_back(arg);
+            JS_FreeCString(ctx, arg);
+        }
     }
     bool ok = eng->callbacks().invokeAction(std::string(name), args);
     JS_FreeCString(ctx, name);
@@ -1797,14 +2137,17 @@ static JSValue jsMbInvokeAction(JSContext* ctx, JSValueConst this_val,
 
 // mb.addEventListener("action", "ActionName", fn) — 3 args
 // mb.addEventListener("tabCreated", fn) — 2 args
-static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
-                                     int argc, JSValueConst* argv)
+static JSValue jsMbAddEventListener(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]))
+    if (argc < 2 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "addEventListener requires (string, ...)");
+    }
 
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
 
     std::string prop;
     JSValueConst callback;
@@ -1815,8 +2158,11 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
             JS_FreeCString(ctx, event);
             return JS_ThrowTypeError(ctx, "addEventListener('action', ...) requires (string, string, function)");
         }
-        const char* actionName = JS_ToCString(ctx, argv[1]);
-        if (!actionName) { JS_FreeCString(ctx, event); return JS_EXCEPTION; }
+        const char *actionName = JS_ToCString(ctx, argv[1]);
+        if (!actionName) {
+            JS_FreeCString(ctx, event);
+            return JS_EXCEPTION;
+        }
         prop = std::string("__evt_action_") + actionName;
         JS_FreeCString(ctx, actionName);
         callback = argv[2];
@@ -1826,14 +2172,14 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
             JS_FreeCString(ctx, event);
             return JS_ThrowTypeError(ctx, "addEventListener requires (string, function)");
         }
-        prop = std::string("__evt_") + event;
+        prop     = std::string("__evt_") + event;
         callback = argv[1];
     }
     JS_FreeCString(ctx, event);
 
     JSValue global = JS_GetGlobalObject(ctx);
-    JSValue mb = JS_GetPropertyStr(ctx, global, "mb");
-    JSValue arr = JS_GetPropertyStr(ctx, mb, prop.c_str());
+    JSValue mb     = JS_GetPropertyStr(ctx, global, "mb");
+    JSValue arr    = JS_GetPropertyStr(ctx, mb, prop.c_str());
     if (JS_IsUndefined(arr)) {
         arr = JS_NewArray(ctx);
         JS_SetPropertyStr(ctx, mb, prop.c_str(), JS_DupValue(ctx, arr));
@@ -1847,14 +2193,17 @@ static JSValue jsMbAddEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
-                                        int argc, JSValueConst* argv)
+static JSValue jsMbRemoveEventListener(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsString(argv[0]))
+    if (argc < 2 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "removeEventListener requires (string, ...)");
+    }
 
-    const char* event = JS_ToCString(ctx, argv[0]);
-    if (!event) return JS_EXCEPTION;
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
 
     std::string prop;
     JSValueConst callback;
@@ -1863,21 +2212,27 @@ static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
             JS_FreeCString(ctx, event);
             return JS_ThrowTypeError(ctx, "removeEventListener('action', ...) requires (string, string, function)");
         }
-        const char* actionName = JS_ToCString(ctx, argv[1]);
-        if (!actionName) { JS_FreeCString(ctx, event); return JS_EXCEPTION; }
+        const char *actionName = JS_ToCString(ctx, argv[1]);
+        if (!actionName) {
+            JS_FreeCString(ctx, event);
+            return JS_EXCEPTION;
+        }
         prop = std::string("__evt_action_") + actionName;
         JS_FreeCString(ctx, actionName);
         callback = argv[2];
     } else {
-        if (!JS_IsFunction(ctx, argv[1])) { JS_FreeCString(ctx, event); return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)"); }
-        prop = std::string("__evt_") + event;
+        if (!JS_IsFunction(ctx, argv[1])) {
+            JS_FreeCString(ctx, event);
+            return JS_ThrowTypeError(ctx, "removeEventListener requires (string, function)");
+        }
+        prop     = std::string("__evt_") + event;
         callback = argv[1];
     }
     JS_FreeCString(ctx, event);
 
     JSValue global = JS_GetGlobalObject(ctx);
-    JSValue mb = JS_GetPropertyStr(ctx, global, "mb");
-    JSValue arr = JS_GetPropertyStr(ctx, mb, prop.c_str());
+    JSValue mb     = JS_GetPropertyStr(ctx, global, "mb");
+    JSValue arr    = JS_GetPropertyStr(ctx, mb, prop.c_str());
     removeFromJSArray(ctx, arr, callback);
     JS_FreeValue(ctx, arr);
     JS_FreeValue(ctx, mb);
@@ -1885,23 +2240,28 @@ static JSValue jsMbRemoveEventListener(JSContext* ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbGetActivePane(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbGetActivePane(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
     // Engine holds the global focused-terminal Uuid — no need to walk through
     // the tabs() callback (which is itself derived from the layout tree).
-    Engine* eng = engineFromCtx(ctx);
+    Engine *eng  = engineFromCtx(ctx);
     Uuid focused = eng->focusedTerminalNodeId();
-    if (focused.isNil() || !eng->terminal(focused)) return JS_UNDEFINED;
+    if (focused.isNil() || !eng->terminal(focused)) {
+        return JS_UNDEFINED;
+    }
     return jsPaneNew(ctx, focused);
 }
 
 // PascalCase → snake_case: "FocusPane" → "focus_pane"
-static std::string toSnakeCase(std::string_view name) {
+static std::string toSnakeCase(std::string_view name)
+{
     std::string result;
     for (size_t i = 0; i < name.size(); ++i) {
         char c = name[i];
         if (c >= 'A' && c <= 'Z') {
-            if (i > 0) result += '_';
+            if (i > 0) {
+                result += '_';
+            }
             result += static_cast<char>(c + 32);
         } else {
             result += c;
@@ -1911,45 +2271,54 @@ static std::string toSnakeCase(std::string_view name) {
 }
 
 // PascalCase → spaced label: "FocusPane" → "Focus Pane"
-static std::string toLabel(std::string_view name) {
+static std::string toLabel(std::string_view name)
+{
     std::string result;
     for (size_t i = 0; i < name.size(); ++i) {
         char c = name[i];
-        if (c >= 'A' && c <= 'Z' && i > 0)
+        if (c >= 'A' && c <= 'Z' && i > 0) {
             result += ' ';
+        }
         result += c;
     }
     return result;
 }
 
-static JSValue jsMbActionsRegister(JSContext*, JSValueConst, int, JSValueConst*);
-static JSValue jsMbActionsUnregister(JSContext*, JSValueConst, int, JSValueConst*);
+static JSValue jsMbActionsRegister(JSContext *, JSValueConst, int, JSValueConst *);
+static JSValue jsMbActionsUnregister(JSContext *, JSValueConst, int, JSValueConst *);
 
 // mb.actions -> array of {name, label, builtin, args?} objects plus
 // register/unregister methods for handler ownership of JS-owned actions.
-static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbGetActions(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
-    Engine* eng = engineFromCtx(ctx);
+    Engine *eng = engineFromCtx(ctx);
 
     // Directional arg expansions for actions that take Direction
-    struct ArgVariant { const char* arg; const char* labelSuffix; };
-    static const std::unordered_map<std::string_view, std::vector<ArgVariant>> argVariants = {
-        {"SplitPane",  {{"right", "Right"}, {"down", "Down"}, {"left", "Left"}, {"up", "Up"}}},
-        {"FocusPane",  {{"next", "Next"}, {"prev", "Previous"}, {"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}}},
-        {"AdjustPaneSize", {{"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}}},
-        {"ScrollToPrompt", {{"-1", "Previous"}, {"1", "Next"}}},
-        {"MoveTab",     {{"left", "Left"}, {"right", "Right"}}},
-        {"SwapPane",    {{"left", "Left"}, {"right", "Right"}, {"up", "Up"}, {"down", "Down"}, {"next", "Next"}, {"prev", "Previous"}}},
-        {"RotatePanes", {{"cw", "Clockwise"}, {"ccw", "Counterclockwise"}}},
+    struct ArgVariant
+    {
+        const char *arg;
+        const char *labelSuffix;
     };
 
-    JSValue arr = JS_NewArray(ctx);
+    static const std::unordered_map<std::string_view, std::vector<ArgVariant>> argVariants = {
+        { "SplitPane", { { "right", "Right" }, { "down", "Down" }, { "left", "Left" }, { "up", "Up" } } },
+        { "FocusPane", { { "next", "Next" }, { "prev", "Previous" }, { "left", "Left" }, { "right", "Right" }, { "up", "Up" }, { "down", "Down" } } },
+        { "AdjustPaneSize", { { "left", "Left" }, { "right", "Right" }, { "up", "Up" }, { "down", "Down" } } },
+        { "ScrollToPrompt", { { "-1", "Previous" }, { "1", "Next" } } },
+        { "MoveTab", { { "left", "Left" }, { "right", "Right" } } },
+        { "SwapPane", { { "left", "Left" }, { "right", "Right" }, { "up", "Up" }, { "down", "Down" }, { "next", "Next" }, { "prev", "Previous" } } },
+        { "RotatePanes", { { "cw", "Clockwise" }, { "ccw", "Counterclockwise" } } },
+    };
+
+    JSValue arr  = JS_NewArray(ctx);
     uint32_t idx = 0;
 
     for (Action::TypeIndex i = 0; i < Action::count; ++i) {
         auto pascalName = Action::nameTable[i];
         // Skip ScriptAction — script actions come from the registered set below
-        if (pascalName == "ScriptAction") continue;
+        if (pascalName == "ScriptAction") {
+            continue;
+        }
 
         std::string snakeName = toSnakeCase(pascalName);
         std::string baseLabel = toLabel(pascalName);
@@ -1957,7 +2326,7 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
         auto vit = argVariants.find(pascalName);
         if (vit != argVariants.end()) {
             // Expand into one entry per variant
-            for (const auto& v : vit->second) {
+            for (const auto &v : vit->second) {
                 JSValue obj = JS_NewObject(ctx);
                 JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, snakeName.c_str()));
                 std::string label = baseLabel + " " + v.labelSuffix;
@@ -1978,7 +2347,7 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
     }
 
     // Script actions
-    for (const auto& fullName : eng->registeredActions()) {
+    for (const auto &fullName : eng->registeredActions()) {
         JSValue obj = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, fullName.c_str()));
         JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, fullName.c_str()));
@@ -1990,10 +2359,8 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
     // regenerated on every `mb.actions` access, but consumers that capture it
     // into a local (`const a = mb.actions; a.register(...)`) still have the
     // methods bound.
-    JS_SetPropertyStr(ctx, arr, "register",
-        JS_NewCFunction(ctx, jsMbActionsRegister, "register", 2));
-    JS_SetPropertyStr(ctx, arr, "unregister",
-        JS_NewCFunction(ctx, jsMbActionsUnregister, "unregister", 1));
+    JS_SetPropertyStr(ctx, arr, "register", JS_NewCFunction(ctx, jsMbActionsRegister, "register", 2));
+    JS_SetPropertyStr(ctx, arr, "unregister", JS_NewCFunction(ctx, jsMbActionsUnregister, "unregister", 1));
 
     return arr;
 }
@@ -2001,7 +2368,7 @@ static JSValue jsMbGetActions(JSContext* ctx, JSValueConst, int, JSValueConst*)
 // mb.createUuid() -> 36-char UUID v4 string ("xxxxxxxx-xxxx-4xxx-Nxxx-xxxxxxxxxxxx").
 // Ungated — providing randomness confers no capability. String form is the only
 // JS-safe representation; 128-bit integers don't round-trip through JS Number.
-static JSValue jsMbCreateUuid(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbCreateUuid(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
     std::string s = Uuid::generate().toString();
     return JS_NewStringLen(ctx, s.data(), s.size());
@@ -2010,13 +2377,14 @@ static JSValue jsMbCreateUuid(JSContext* ctx, JSValueConst, int, JSValueConst*)
 // mb.createSecureToken(length = 32) -> hex string
 // Generates `length` cryptographically-secure random bytes and returns them as a 2*length
 // hex string. Ungated — providing randomness confers no capability.
-static JSValue jsMbCreateSecureToken(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbCreateSecureToken(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     int length = 32;
     if (argc >= 1 && JS_IsNumber(argv[0])) {
         int32_t n;
-        if (JS_ToInt32(ctx, &n, argv[0]) == 0 && n > 0 && n <= 4096)
+        if (JS_ToInt32(ctx, &n, argv[0]) == 0 && n > 0 && n <= 4096) {
             length = n;
+        }
     }
 
     std::vector<unsigned char> buf(static_cast<size_t>(length));
@@ -2033,22 +2401,23 @@ static JSValue jsMbCreateSecureToken(JSContext* ctx, JSValueConst, int argc, JSV
 }
 
 // Convert a LoadResult to a JS { status, id?, error? } object.
-static JSValue loadResultToJs(JSContext* ctx, const Engine::LoadResult& res)
+static JSValue loadResultToJs(JSContext *ctx, const Engine::LoadResult &res)
 {
-    JSValue obj = JS_NewObject(ctx);
-    const char* statusStr = "error";
+    JSValue obj           = JS_NewObject(ctx);
+    const char *statusStr = "error";
     switch (res.status) {
-        case Engine::LoadResult::Status::Loaded:  statusStr = "loaded";  break;
+        case Engine::LoadResult::Status::Loaded: statusStr = "loaded"; break;
         case Engine::LoadResult::Status::Pending: statusStr = "pending"; break;
-        case Engine::LoadResult::Status::Denied:  statusStr = "denied";  break;
-        case Engine::LoadResult::Status::Error:   statusStr = "error";   break;
+        case Engine::LoadResult::Status::Denied: statusStr = "denied"; break;
+        case Engine::LoadResult::Status::Error: statusStr = "error"; break;
     }
     JS_SetPropertyStr(ctx, obj, "status", JS_NewString(ctx, statusStr));
-    if (res.status == Engine::LoadResult::Status::Loaded)
+    if (res.status == Engine::LoadResult::Status::Loaded) {
         JS_SetPropertyStr(ctx, obj, "id", JS_NewInt64(ctx, static_cast<int64_t>(res.id)));
-    if (res.status == Engine::LoadResult::Status::Error && !res.error.empty())
-        JS_SetPropertyStr(ctx, obj, "error",
-                          JS_NewStringLen(ctx, res.error.data(), res.error.size()));
+    }
+    if (res.status == Engine::LoadResult::Status::Error && !res.error.empty()) {
+        JS_SetPropertyStr(ctx, obj, "error", JS_NewStringLen(ctx, res.error.data(), res.error.size()));
+    }
     return obj;
 }
 
@@ -2065,22 +2434,27 @@ static JSValue loadResultToJs(JSContext* ctx, const Engine::LoadResult& res)
 // spawn separate built-in instances doesn't grant new authority — it
 // just gives them lifecycle control. User scripts must NEVER be able
 // to escape their sandbox, so the attempt is a hard error.
-static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbLoadScript(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     if (argc < 1) {
-        Engine::LoadResult res{ Engine::LoadResult::Status::Error, 0, "path argument required" };
+        Engine::LoadResult res { Engine::LoadResult::Status::Error, 0, "path argument required" };
         return loadResultToJs(ctx, res);
     }
     REQUIRE_PERM(ctx, ScriptsLoad);
-    Engine* eng = engineFromCtx(ctx);
+    Engine *eng = engineFromCtx(ctx);
 
-    const char* path = JS_ToCString(ctx, argv[0]);
-    if (!path) return JS_EXCEPTION;
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_EXCEPTION;
+    }
 
     std::string permsStr;
     if (argc >= 2) {
-        const char* p = JS_ToCString(ctx, argv[1]);
-        if (p) { permsStr = p; JS_FreeCString(ctx, p); }
+        const char *p = JS_ToCString(ctx, argv[1]);
+        if (p) {
+            permsStr = p;
+            JS_FreeCString(ctx, p);
+        }
     }
 
     uint32_t perms = parsePermissions(permsStr);
@@ -2094,14 +2468,14 @@ static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueCon
     // termination and we throw rather than returning a misleading
     // success / pending result.
     if (perms & Perm::BuiltIn) {
-        auto* inst = instanceFromCtx(ctx);
+        auto *inst = instanceFromCtx(ctx);
         if (!inst || !inst->builtIn) {
             JS_FreeCString(ctx, path);
             sLog().error("ScriptEngine: user script attempted to load '{}' as built-in",
                          inst ? inst->path : std::string("(unknown)"));
             scheduleTermination(ctx);
             return JS_ThrowTypeError(ctx,
-                "loadScript: 'builtin' permission may only be requested by built-in scripts");
+                                     "loadScript: 'builtin' permission may only be requested by built-in scripts");
         }
     }
 
@@ -2112,22 +2486,28 @@ static JSValue jsMbLoadScript(JSContext* ctx, JSValueConst, int argc, JSValueCon
 
 // mb.approveScript(path, response) — response is "y", "n", "a", "d".
 // Returns the final LoadResult as { status, id?, error? }.
-static JSValue jsMbApproveScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbApproveScript(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     if (argc < 2) {
-        Engine::LoadResult res{ Engine::LoadResult::Status::Error, 0, "approveScript requires path and response" };
+        Engine::LoadResult res { Engine::LoadResult::Status::Error, 0, "approveScript requires path and response" };
         return loadResultToJs(ctx, res);
     }
     // Only built-in scripts can approve
-    auto* inst = instanceFromCtx(ctx);
-    if (!inst || !inst->builtIn)
+    auto *inst = instanceFromCtx(ctx);
+    if (!inst || !inst->builtIn) {
         return JS_ThrowTypeError(ctx, "approveScript is only available to built-in scripts");
+    }
 
-    Engine* eng = engineFromCtx(ctx);
-    const char* path = JS_ToCString(ctx, argv[0]);
-    if (!path) return JS_EXCEPTION;
-    const char* resp = JS_ToCString(ctx, argv[1]);
-    if (!resp) { JS_FreeCString(ctx, path); return JS_EXCEPTION; }
+    Engine *eng      = engineFromCtx(ctx);
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) {
+        return JS_EXCEPTION;
+    }
+    const char *resp = JS_ToCString(ctx, argv[1]);
+    if (!resp) {
+        JS_FreeCString(ctx, path);
+        return JS_EXCEPTION;
+    }
 
     char response = resp[0];
     JS_FreeCString(ctx, resp);
@@ -2138,28 +2518,39 @@ static JSValue jsMbApproveScript(JSContext* ctx, JSValueConst, int argc, JSValue
 }
 
 // mb.unloadScript(id)
-static JSValue jsMbUnloadScript(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbUnloadScript(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "unloadScript requires (id)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "unloadScript requires (id)");
+    }
     REQUIRE_PERM(ctx, ScriptsUnload);
-    Engine* eng = engineFromCtx(ctx);
+    Engine *eng = engineFromCtx(ctx);
     int64_t id;
     JS_ToInt64(ctx, &id, argv[0]);
-    if (id > 0) eng->unload(static_cast<uint64_t>(id));
+    if (id > 0) {
+        eng->unload(static_cast<uint64_t>(id));
+    }
     return JS_UNDEFINED;
 }
 
 // mb.exit() — unload the calling script instance via a zero-delay timer
-static JSValue jsMbExit(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbExit(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
-    Engine* eng = engineFromCtx(ctx);
-    auto* inst = instanceFromCtx(ctx);
-    if (!inst) return JS_UNDEFINED;
-    if (inst->builtIn) return JS_ThrowTypeError(ctx, "built-in scripts cannot call exit()");
+    Engine *eng = engineFromCtx(ctx);
+    auto *inst  = instanceFromCtx(ctx);
+    if (!inst) {
+        return JS_UNDEFINED;
+    }
+    if (inst->builtIn) {
+        return JS_ThrowTypeError(ctx, "built-in scripts cannot call exit()");
+    }
 
     InstanceId id = inst->id;
     if (eng->loop()) {
-        eng->loop()->addTimer(0, false, [eng, id]() { eng->unload(id); });
+        eng->loop()->addTimer(0, false, [eng, id]()
+                              {
+                                  eng->unload(id);
+                              });
     } else {
         eng->unload(id);
     }
@@ -2170,10 +2561,12 @@ static JSValue jsMbExit(JSContext* ctx, JSValueConst, int, JSValueConst*)
 // mb.quit() — quit the application. Distinct from mb.exit() (which only
 // unloads the calling script instance). Used by the default UI controller
 // when the last terminal has exited.
-static JSValue jsMbQuit(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbQuit(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
-    Engine* eng = engineFromCtx(ctx);
-    if (eng && eng->callbacks().quit) eng->callbacks().quit();
+    Engine *eng = engineFromCtx(ctx);
+    if (eng && eng->callbacks().quit) {
+        eng->callbacks().quit();
+    }
     return JS_UNDEFINED;
 }
 
@@ -2182,16 +2575,24 @@ static JSValue jsMbQuit(JSContext* ctx, JSValueConst, int, JSValueConst*)
 // ("ui.focus", "config.modify") and group names ("ui", "io"). Group names
 // return true only when ALL bits in the group are granted, matching the
 // "this script has the full group" semantic. Unknown names return false.
-static JSValue jsMbHasPermission(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbHasPermission(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsString(argv[0])) return JS_NewBool(ctx, false);
-    const char* name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_NewBool(ctx, false);
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_NewBool(ctx, false);
+    }
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_NewBool(ctx, false);
+    }
     uint32_t bits = Script::parsePermissions(name);
     JS_FreeCString(ctx, name);
-    if (bits == 0) return JS_NewBool(ctx, false);  // unknown name
-    auto* inst = instanceFromCtx(ctx);
-    if (!inst) return JS_NewBool(ctx, false);
+    if (bits == 0) {
+        return JS_NewBool(ctx, false); // unknown name
+    }
+    auto *inst = instanceFromCtx(ctx);
+    if (!inst) {
+        return JS_NewBool(ctx, false);
+    }
     return JS_NewBool(ctx, (inst->permissions & bits) == bits);
 }
 
@@ -2243,26 +2644,31 @@ static JSValue jsMbHasPermission(JSContext* ctx, JSValueConst, int argc, JSValue
 // (see the platform-side comment on platformSpawnDetached). Scripts
 // that need exec-success confirmation must check via some external
 // signal (e.g. the spawned process's own side effects).
-static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbProcessSpawn(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsString(argv[0]))
+    if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "process.spawn requires (path: string, args?: string[], opts?: object)");
+    }
     REQUIRE_PERM(ctx, ProcessSpawn);
 
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().spawnProcess)
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().spawnProcess) {
         return JS_ThrowTypeError(ctx, "process.spawn: not wired (internal: AppCallbacks.spawnProcess unset)");
+    }
 
     AppCallbacks::ProcessSpawnReq req;
 
     // path (mandatory)
     {
-        const char* p = JS_ToCString(ctx, argv[0]);
-        if (!p) return JS_EXCEPTION;
+        const char *p = JS_ToCString(ctx, argv[0]);
+        if (!p) {
+            return JS_EXCEPTION;
+        }
         req.path = p;
         JS_FreeCString(ctx, p);
-        if (req.path.empty())
+        if (req.path.empty()) {
             return JS_ThrowTypeError(ctx, "process.spawn: path must be non-empty");
+        }
     }
 
     // args (optional). Implicit argv[0] = path is added by
@@ -2272,10 +2678,11 @@ static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueC
     // caller supplied nothing (or undefined / null), pass empty and
     // let the platform default kick in.
     if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
-        if (!JS_IsArray(argv[1]))
+        if (!JS_IsArray(argv[1])) {
             return JS_ThrowTypeError(ctx, "process.spawn: args must be an array of strings");
+        }
         JSValue lenVal = JS_GetPropertyStr(ctx, argv[1], "length");
-        uint32_t len = 0;
+        uint32_t len   = 0;
         JS_ToUint32(ctx, &len, lenVal);
         JS_FreeValue(ctx, lenVal);
         // Reserve path + len. argv[0] is the program name as the child
@@ -2290,8 +2697,11 @@ static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueC
                 JS_FreeValue(ctx, elt);
                 return JS_ThrowTypeError(ctx, "process.spawn: args[%u] is not a string", i);
             }
-            const char* s = JS_ToCString(ctx, elt);
-            if (!s) { JS_FreeValue(ctx, elt); return JS_EXCEPTION; }
+            const char *s = JS_ToCString(ctx, elt);
+            if (!s) {
+                JS_FreeValue(ctx, elt);
+                return JS_EXCEPTION;
+            }
             req.argv.emplace_back(s);
             JS_FreeCString(ctx, s);
             JS_FreeValue(ctx, elt);
@@ -2300,8 +2710,9 @@ static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueC
 
     // opts (optional)
     if (argc >= 3 && !JS_IsUndefined(argv[2]) && !JS_IsNull(argv[2])) {
-        if (!JS_IsObject(argv[2]))
+        if (!JS_IsObject(argv[2])) {
             return JS_ThrowTypeError(ctx, "process.spawn: opts must be an object");
+        }
 
         // cwd
         JSValue cwdVal = JS_GetPropertyStr(ctx, argv[2], "cwd");
@@ -2310,8 +2721,11 @@ static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueC
                 JS_FreeValue(ctx, cwdVal);
                 return JS_ThrowTypeError(ctx, "process.spawn: opts.cwd must be a string");
             }
-            const char* s = JS_ToCString(ctx, cwdVal);
-            if (s) { req.cwd = s; JS_FreeCString(ctx, s); }
+            const char *s = JS_ToCString(ctx, cwdVal);
+            if (s) {
+                req.cwd = s;
+                JS_FreeCString(ctx, s);
+            }
         }
         JS_FreeValue(ctx, cwdVal);
 
@@ -2324,21 +2738,22 @@ static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueC
                 JS_FreeValue(ctx, envVal);
                 return JS_ThrowTypeError(ctx, "process.spawn: opts.env must be an object");
             }
-            JSPropertyEnum* props = nullptr;
-            uint32_t plen = 0;
-            if (JS_GetOwnPropertyNames(ctx, &props, &plen, envVal,
-                                       JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+            JSPropertyEnum *props = nullptr;
+            uint32_t plen         = 0;
+            if (JS_GetOwnPropertyNames(ctx, &props, &plen, envVal, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
                 for (uint32_t i = 0; i < plen; ++i) {
-                    const char* keyC = JS_AtomToCString(ctx, props[i].atom);
-                    JSValue v = JS_GetProperty(ctx, envVal, props[i].atom);
+                    const char *keyC = JS_AtomToCString(ctx, props[i].atom);
+                    JSValue v        = JS_GetProperty(ctx, envVal, props[i].atom);
                     if (keyC && JS_IsString(v)) {
-                        const char* valC = JS_ToCString(ctx, v);
+                        const char *valC = JS_ToCString(ctx, v);
                         if (valC) {
                             req.env.emplace_back(keyC, valC);
                             JS_FreeCString(ctx, valC);
                         }
                     }
-                    if (keyC) JS_FreeCString(ctx, keyC);
+                    if (keyC) {
+                        JS_FreeCString(ctx, keyC);
+                    }
                     JS_FreeValue(ctx, v);
                     JS_FreeAtom(ctx, props[i].atom);
                 }
@@ -2353,48 +2768,61 @@ static JSValue jsMbProcessSpawn(JSContext* ctx, JSValueConst, int argc, JSValueC
 }
 
 // mb.setNamespace(name) — claim a namespace for this script instance
-static JSValue jsMbSetNamespace(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbSetNamespace(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsString(argv[0]))
+    if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "setNamespace requires a non-empty string argument");
+    }
 
-    const char* ns = JS_ToCString(ctx, argv[0]);
-    if (!ns) return JS_EXCEPTION;
+    const char *ns = JS_ToCString(ctx, argv[0]);
+    if (!ns) {
+        return JS_EXCEPTION;
+    }
     std::string nsStr(ns);
     JS_FreeCString(ctx, ns);
 
-    if (nsStr.empty())
+    if (nsStr.empty()) {
         return JS_ThrowTypeError(ctx, "namespace must not be empty");
+    }
 
-    Engine* eng = engineFromCtx(ctx);
-    auto* inst = instanceFromCtx(ctx);
-    if (!inst) return JS_ThrowTypeError(ctx, "no script instance");
+    Engine *eng = engineFromCtx(ctx);
+    auto *inst  = instanceFromCtx(ctx);
+    if (!inst) {
+        return JS_ThrowTypeError(ctx, "no script instance");
+    }
 
-    if (!eng->setNamespace(inst->id, nsStr))
+    if (!eng->setNamespace(inst->id, nsStr)) {
         return JS_ThrowTypeError(ctx, "namespace '%s' is already taken or already set", nsStr.c_str());
+    }
 
     return JS_UNDEFINED;
 }
 
 // mb.registerAction(name) — register a script action as "namespace.name"
-static JSValue jsMbRegisterAction(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbRegisterAction(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ActionsInvoke);
-    if (argc < 1 || !JS_IsString(argv[0]))
+    if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "registerAction requires a string argument");
+    }
 
-    const char* name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_EXCEPTION;
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
     std::string nameStr(name);
     JS_FreeCString(ctx, name);
 
-    Engine* eng = engineFromCtx(ctx);
-    auto* inst = instanceFromCtx(ctx);
-    if (!inst) return JS_ThrowTypeError(ctx, "no script instance");
+    Engine *eng = engineFromCtx(ctx);
+    auto *inst  = instanceFromCtx(ctx);
+    if (!inst) {
+        return JS_ThrowTypeError(ctx, "no script instance");
+    }
 
-    if (!eng->registerAction(inst->id, nameStr))
+    if (!eng->registerAction(inst->id, nameStr)) {
         return JS_ThrowTypeError(ctx, "registerAction failed: namespace not set, "
-                                       "or action already registered by a different instance");
+                                      "or action already registered by a different instance");
+    }
 
     return JS_UNDEFINED;
 }
@@ -2403,26 +2831,32 @@ static JSValue jsMbRegisterAction(JSContext* ctx, JSValueConst, int argc, JSValu
 // Microtask event dispatch
 // ============================================================================
 
-static JSValue eventJobFunc(JSContext* ctx, int argc, JSValueConst* argv)
+static JSValue eventJobFunc(JSContext *ctx, int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_UNDEFINED;
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_UNDEFINED;
+    }
     JSValue ret = JS_Call(ctx, argv[0], JS_UNDEFINED, argc - 1, argv + 1);
     if (JS_IsException(ret)) {
-        JSValue exc = JS_GetException(ctx);
-        const char* s = JS_ToCString(ctx, exc);
+        JSValue exc   = JS_GetException(ctx);
+        const char *s = JS_ToCString(ctx, exc);
         sLog().error("ScriptEngine: event handler error: {}", s ? s : "(null)");
-        if (s) JS_FreeCString(ctx, s);
+        if (s) {
+            JS_FreeCString(ctx, s);
+        }
         JS_FreeValue(ctx, exc);
     }
     JS_FreeValue(ctx, ret);
     return JS_UNDEFINED;
 }
 
-static void enqueueListeners(JSContext* ctx, JSValue arr, int extraArgc, JSValue* extraArgv)
+static void enqueueListeners(JSContext *ctx, JSValue arr, int extraArgc, JSValue *extraArgv)
 {
-    if (JS_IsUndefined(arr)) return;
+    if (JS_IsUndefined(arr)) {
+        return;
+    }
     JSValue lenVal = JS_GetPropertyStr(ctx, arr, "length");
-    int32_t len = 0;
+    int32_t len    = 0;
     JS_ToInt32(ctx, &len, lenVal);
     JS_FreeValue(ctx, lenVal);
 
@@ -2431,10 +2865,10 @@ static void enqueueListeners(JSContext* ctx, JSValue arr, int extraArgc, JSValue
         if (JS_IsFunction(ctx, fn)) {
             std::vector<JSValue> jobArgs;
             jobArgs.push_back(fn);
-            for (int j = 0; j < extraArgc; ++j)
+            for (int j = 0; j < extraArgc; ++j) {
                 jobArgs.push_back(extraArgv[j]);
-            JS_EnqueueJob(ctx, eventJobFunc,
-                          static_cast<int>(jobArgs.size()), jobArgs.data());
+            }
+            JS_EnqueueJob(ctx, eventJobFunc, static_cast<int>(jobArgs.size()), jobArgs.data());
         }
         JS_FreeValue(ctx, fn);
     }
@@ -2446,22 +2880,26 @@ static void enqueueListeners(JSContext* ctx, JSValue arr, int extraArgc, JSValue
 // ============================================================================
 
 // Fire a JS timer by jsId. For one-shot timers, removes the entry after firing.
-static void fireJsTimer(Engine* eng, uint32_t jsId)
+static void fireJsTimer(Engine *eng, uint32_t jsId)
 {
-    auto& timers = eng->jsTimers();
-    auto it = timers.find(jsId);
-    if (it == timers.end()) return;
+    auto &timers = eng->jsTimers();
+    auto it      = timers.find(jsId);
+    if (it == timers.end()) {
+        return;
+    }
 
-    JSContext* ctx = it->second.ctx;
+    JSContext *ctx = it->second.ctx;
     JSValue cb     = it->second.callback;
     bool interval  = it->second.interval;
 
     JSValue ret = JS_Call(ctx, cb, JS_UNDEFINED, 0, nullptr);
     if (JS_IsException(ret)) {
-        JSValue exc = JS_GetException(ctx);
-        const char* s = JS_ToCString(ctx, exc);
+        JSValue exc   = JS_GetException(ctx);
+        const char *s = JS_ToCString(ctx, exc);
         sLog().error("ScriptEngine: timer error: {}", s ? s : "(null)");
-        if (s) JS_FreeCString(ctx, s);
+        if (s) {
+            JS_FreeCString(ctx, s);
+        }
         JS_FreeValue(ctx, exc);
     }
     JS_FreeValue(ctx, ret);
@@ -2473,61 +2911,93 @@ static void fireJsTimer(Engine* eng, uint32_t jsId)
 }
 
 // setTimeout(fn, ms) -> timerId
-static JSValue jsSetTimeout(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsSetTimeout(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->loop()) return JS_UNDEFINED;
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_UNDEFINED;
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->loop()) {
+        return JS_UNDEFINED;
+    }
 
     int64_t ms = 0;
-    if (argc >= 2) JS_ToInt64(ctx, &ms, argv[1]);
-    if (ms < 0) ms = 0;
+    if (argc >= 2) {
+        JS_ToInt64(ctx, &ms, argv[1]);
+    }
+    if (ms < 0) {
+        ms = 0;
+    }
 
-    uint32_t jsId = eng->nextTimer();
+    uint32_t jsId             = eng->nextTimer();
     EventLoop::TimerId loopId = eng->loop()->addTimer(
-        static_cast<uint64_t>(ms), false,
-        [eng, jsId]() { fireJsTimer(eng, jsId); });
+        static_cast<uint64_t>(ms),
+        false,
+        [eng, jsId]()
+        {
+            fireJsTimer(eng, jsId);
+        });
 
-    auto& t = eng->jsTimers()[jsId];
-    t.ctx = ctx; t.callback = JS_DupValue(ctx, argv[0]);
-    t.loopId = loopId; t.interval = false; t.ms = static_cast<uint64_t>(ms);
+    auto &t    = eng->jsTimers()[jsId];
+    t.ctx      = ctx;
+    t.callback = JS_DupValue(ctx, argv[0]);
+    t.loopId   = loopId;
+    t.interval = false;
+    t.ms       = static_cast<uint64_t>(ms);
     return JS_NewUint32(ctx, jsId);
 }
 
 // setInterval(fn, ms) -> timerId
-static JSValue jsSetInterval(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsSetInterval(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 2 || !JS_IsFunction(ctx, argv[0])) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->loop()) return JS_UNDEFINED;
+    if (argc < 2 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_UNDEFINED;
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->loop()) {
+        return JS_UNDEFINED;
+    }
 
     int64_t ms = 0;
     JS_ToInt64(ctx, &ms, argv[1]);
-    if (ms < 1) ms = 1;
+    if (ms < 1) {
+        ms = 1;
+    }
 
-    uint32_t jsId = eng->nextTimer();
+    uint32_t jsId             = eng->nextTimer();
     EventLoop::TimerId loopId = eng->loop()->addTimer(
-        static_cast<uint64_t>(ms), true,
-        [eng, jsId]() { fireJsTimer(eng, jsId); });
+        static_cast<uint64_t>(ms),
+        true,
+        [eng, jsId]()
+        {
+            fireJsTimer(eng, jsId);
+        });
 
-    auto& t = eng->jsTimers()[jsId];
-    t.ctx = ctx; t.callback = JS_DupValue(ctx, argv[0]);
-    t.loopId = loopId; t.interval = true; t.ms = static_cast<uint64_t>(ms);
+    auto &t    = eng->jsTimers()[jsId];
+    t.ctx      = ctx;
+    t.callback = JS_DupValue(ctx, argv[0]);
+    t.loopId   = loopId;
+    t.interval = true;
+    t.ms       = static_cast<uint64_t>(ms);
     return JS_NewUint32(ctx, jsId);
 }
 
 // clearTimeout(id) / clearInterval(id) — same implementation
-static JSValue jsClearTimer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsClearTimer(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_UNDEFINED;
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->loop()) return JS_UNDEFINED;
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->loop()) {
+        return JS_UNDEFINED;
+    }
 
     uint32_t jsId;
     JS_ToUint32(ctx, &jsId, argv[0]);
 
-    auto& timers = eng->jsTimers();
-    auto it = timers.find(jsId);
+    auto &timers = eng->jsTimers();
+    auto it      = timers.find(jsId);
     if (it != timers.end()) {
         eng->loop()->removeTimer(it->second.loopId);
         JS_FreeValue(it->second.ctx, it->second.callback);
@@ -2549,63 +3019,73 @@ static std::shared_ptr<spdlog::logger> jsLogger()
 
 static int sJsIndent = 0;
 
-static std::string jsConsoleMsg(JSContext* ctx, int argc, JSValueConst* argv)
+static std::string jsConsoleMsg(JSContext *ctx, int argc, JSValueConst *argv)
 {
     std::string msg;
-    if (sJsIndent > 0) msg.append(static_cast<size_t>(sJsIndent * 2), ' ');
+    if (sJsIndent > 0) {
+        msg.append(static_cast<size_t>(sJsIndent * 2), ' ');
+    }
     for (int i = 0; i < argc; ++i) {
-        if (i > 0) msg += ' ';
-        const char* s = JS_ToCString(ctx, argv[i]);
-        if (s) { msg += s; JS_FreeCString(ctx, s); }
+        if (i > 0) {
+            msg += ' ';
+        }
+        const char *s = JS_ToCString(ctx, argv[i]);
+        if (s) {
+            msg += s;
+            JS_FreeCString(ctx, s);
+        }
     }
     return msg;
 }
 
-static JSValue jsConsoleGroup(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsConsoleGroup(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc > 0)
+    if (argc > 0) {
         jsLogger()->info("{}", jsConsoleMsg(ctx, argc, argv));
+    }
     ++sJsIndent;
     return JS_UNDEFINED;
 }
 
-static JSValue jsConsoleGroupEnd(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsConsoleGroupEnd(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
-    if (sJsIndent > 0) --sJsIndent;
+    if (sJsIndent > 0) {
+        --sJsIndent;
+    }
     return JS_UNDEFINED;
 }
 
-static JSValue jsConsoleTrace(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsConsoleTrace(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     jsLogger()->trace("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
-static JSValue jsConsoleDebug(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsConsoleDebug(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     jsLogger()->debug("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
-static JSValue jsConsoleInfo(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsConsoleInfo(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     jsLogger()->info("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
-static JSValue jsConsoleLog(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsConsoleLog(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     jsLogger()->info("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
-static JSValue jsConsoleWarn(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsConsoleWarn(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     jsLogger()->warn("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
 }
 
-static JSValue jsConsoleError(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsConsoleError(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     jsLogger()->error("{}", jsConsoleMsg(ctx, argc, argv));
     return JS_UNDEFINED;
@@ -2658,25 +3138,35 @@ Engine::~Engine()
     // Collect ids first; unload() mutates instances_.
     std::vector<InstanceId> ids;
     ids.reserve(instances_.size());
-    for (const auto& inst : instances_) ids.push_back(inst.id);
-    for (InstanceId id : ids) unload(id);
+    for (const auto &inst : instances_) {
+        ids.push_back(inst.id);
+    }
+    for (InstanceId id : ids) {
+        unload(id);
+    }
     // Any remaining entries (dead contexts flagged during iteration) are
     // already freed; just drop the vector slots. Timer callbacks not
     // attached to an instance, plus global action-handler/timer state, get
     // swept here as a belt-and-braces step.
-    for (auto& [_, t] : jsTimers_) {
-        if (loop_) loop_->removeTimer(t.loopId);
+    for (auto &[_, t] : jsTimers_) {
+        if (loop_) {
+            loop_->removeTimer(t.loopId);
+        }
         JS_FreeValue(t.ctx, t.callback);
     }
     jsTimers_.clear();
-    for (auto& [_, h] : actionHandlers_) {
+    for (auto &[_, h] : actionHandlers_) {
         JS_FreeValue(h.ctx, h.fn);
     }
     actionHandlers_.clear();
-    for (auto& inst : instances_) {
-        if (inst.ctx) JS_FreeContext(inst.ctx);
+    for (auto &inst : instances_) {
+        if (inst.ctx) {
+            JS_FreeContext(inst.ctx);
+        }
     }
-    if (rt_) JS_FreeRuntime(rt_);
+    if (rt_) {
+        JS_FreeRuntime(rt_);
+    }
 }
 
 // Engine::terminal / insertTerminal / extractTerminal are defined inline in
@@ -2686,19 +3176,21 @@ Engine::~Engine()
 // out-of-line ~Engine() since ScriptEngine.cpp includes Terminal.h, so
 // unique_ptr<Terminal>::~unique_ptr instantiates against the complete type.
 
-void Engine::setCallbacks(AppCallbacks cbs) { callbacks_ = std::move(cbs); }
-
-JSContext* Engine::createContext()
+void Engine::setCallbacks(AppCallbacks cbs)
 {
-    JSContext* ctx = JS_NewContext(rt_);
+    callbacks_ = std::move(cbs);
+}
+
+JSContext *Engine::createContext()
+{
+    JSContext *ctx = JS_NewContext(rt_);
 
     // Terminal base prototype — shared across Pane / Popup / EmbeddedTerminal.
     // Methods on the base (`inject`, `cols`, `rows`, `cursor`, `kind`) resolve
     // the backing TerminalEmulator via a class-id-branching resolver, so
     // applets don't need to know or care which concrete kind they're holding.
     JSValue terminalProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, terminalProto,
-        jsTerminalProto, sizeof(jsTerminalProto) / sizeof(jsTerminalProto[0]));
+    JS_SetPropertyFunctionList(ctx, terminalProto, jsTerminalProto, sizeof(jsTerminalProto) / sizeof(jsTerminalProto[0]));
     JS_SetClassProto(ctx, jsTerminalClassId, terminalProto);
 
     // Expose `Terminal` on the global so `x instanceof Terminal` works.
@@ -2708,7 +3200,8 @@ JSContext* Engine::createContext()
         JS_FreeValue(ctx, global);
     }
 
-    auto makeSubProto = [&](const JSCFunctionListEntry* entries, size_t count) {
+    auto makeSubProto = [&](const JSCFunctionListEntry *entries, size_t count)
+    {
         JSValue p = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, p, entries, static_cast<int>(count));
         // Chain to Terminal.prototype so instances inherit base methods.
@@ -2733,100 +3226,99 @@ JSContext* Engine::createContext()
     // it doesn't represent a TerminalEmulator), so we install its
     // proto directly without makeSubProto.
     JSValue captureProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, captureProto,
-        jsOutputCaptureProto,
-        sizeof(jsOutputCaptureProto) / sizeof(jsOutputCaptureProto[0]));
+    JS_SetPropertyFunctionList(ctx, captureProto, jsOutputCaptureProto, sizeof(jsOutputCaptureProto) / sizeof(jsOutputCaptureProto[0]));
     JS_SetClassProto(ctx, jsOutputCaptureClassId, captureProto);
 
     // Timer globals
     JSValue global = JS_GetGlobalObject(ctx);
-    JS_SetPropertyStr(ctx, global, "setTimeout",
-        JS_NewCFunction(ctx, jsSetTimeout, "setTimeout", 2));
-    JS_SetPropertyStr(ctx, global, "setInterval",
-        JS_NewCFunction(ctx, jsSetInterval, "setInterval", 2));
-    JS_SetPropertyStr(ctx, global, "clearTimeout",
-        JS_NewCFunction(ctx, jsClearTimer, "clearTimeout", 1));
-    JS_SetPropertyStr(ctx, global, "clearInterval",
-        JS_NewCFunction(ctx, jsClearTimer, "clearInterval", 1));
+    JS_SetPropertyStr(ctx, global, "setTimeout", JS_NewCFunction(ctx, jsSetTimeout, "setTimeout", 2));
+    JS_SetPropertyStr(ctx, global, "setInterval", JS_NewCFunction(ctx, jsSetInterval, "setInterval", 2));
+    JS_SetPropertyStr(ctx, global, "clearTimeout", JS_NewCFunction(ctx, jsClearTimer, "clearTimeout", 1));
+    JS_SetPropertyStr(ctx, global, "clearInterval", JS_NewCFunction(ctx, jsClearTimer, "clearInterval", 1));
 
     // console object
     JSValue console = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, console, "group",
-        JS_NewCFunction(ctx, jsConsoleGroup, "group", 0));
-    JS_SetPropertyStr(ctx, console, "groupEnd",
-        JS_NewCFunction(ctx, jsConsoleGroupEnd, "groupEnd", 0));
-    JS_SetPropertyStr(ctx, console, "groupCollapsed",
-        JS_NewCFunction(ctx, jsConsoleGroup, "groupCollapsed", 0)); // same as group
-    JS_SetPropertyStr(ctx, console, "trace",
-        JS_NewCFunction(ctx, jsConsoleTrace, "trace", 0));
-    JS_SetPropertyStr(ctx, console, "debug",
-        JS_NewCFunction(ctx, jsConsoleDebug, "debug", 0));
-    JS_SetPropertyStr(ctx, console, "info",
-        JS_NewCFunction(ctx, jsConsoleInfo, "info", 0));
-    JS_SetPropertyStr(ctx, console, "log",
-        JS_NewCFunction(ctx, jsConsoleLog, "log", 0));
-    JS_SetPropertyStr(ctx, console, "warn",
-        JS_NewCFunction(ctx, jsConsoleWarn, "warn", 0));
-    JS_SetPropertyStr(ctx, console, "error",
-        JS_NewCFunction(ctx, jsConsoleError, "error", 0));
+    JS_SetPropertyStr(ctx, console, "group", JS_NewCFunction(ctx, jsConsoleGroup, "group", 0));
+    JS_SetPropertyStr(ctx, console, "groupEnd", JS_NewCFunction(ctx, jsConsoleGroupEnd, "groupEnd", 0));
+    JS_SetPropertyStr(ctx, console, "groupCollapsed", JS_NewCFunction(ctx, jsConsoleGroup, "groupCollapsed", 0)); // same as group
+    JS_SetPropertyStr(ctx, console, "trace", JS_NewCFunction(ctx, jsConsoleTrace, "trace", 0));
+    JS_SetPropertyStr(ctx, console, "debug", JS_NewCFunction(ctx, jsConsoleDebug, "debug", 0));
+    JS_SetPropertyStr(ctx, console, "info", JS_NewCFunction(ctx, jsConsoleInfo, "info", 0));
+    JS_SetPropertyStr(ctx, console, "log", JS_NewCFunction(ctx, jsConsoleLog, "log", 0));
+    JS_SetPropertyStr(ctx, console, "warn", JS_NewCFunction(ctx, jsConsoleWarn, "warn", 0));
+    JS_SetPropertyStr(ctx, console, "error", JS_NewCFunction(ctx, jsConsoleError, "error", 0));
     JS_SetPropertyStr(ctx, global, "console", console);
     JS_FreeValue(ctx, global);
 
     return ctx;
 }
 
-static JSValue jsMbRegisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
-static JSValue jsMbUnregisterTcap(JSContext*, JSValueConst, int, JSValueConst*);
+static JSValue jsMbRegisterTcap(JSContext *, JSValueConst, int, JSValueConst *);
+static JSValue jsMbUnregisterTcap(JSContext *, JSValueConst, int, JSValueConst *);
 
 // Internal: parse the live Config snapshot into a fresh JS object. Used by
 // the `mb.config` getter and by the patch/add/remove helpers (which read the
 // current snapshot, mutate it, and submit the result).
-static JSValue jsConfigParseSnapshot(JSContext* ctx)
+static JSValue jsConfigParseSnapshot(JSContext *ctx)
 {
-    auto& cb = engineFromCtx(ctx)->callbacks().configJson;
-    if (!cb) return JS_NULL;
+    auto &cb = engineFromCtx(ctx)->callbacks().configJson;
+    if (!cb) {
+        return JS_NULL;
+    }
     std::string json = cb();
-    if (json.empty()) return JS_NULL;
+    if (json.empty()) {
+        return JS_NULL;
+    }
     return JS_ParseJSON(ctx, json.data(), json.size(), "<mb.config>");
 }
 
 // Internal: serialize a JS Config object via JSON.stringify and submit it
 // through the applyConfigJson callback. On parse/validation failure throws
 // a JS Error with the diagnostic from glaze (returns JS_EXCEPTION).
-static JSValue jsConfigApplyObject(JSContext* ctx, JSValueConst configObj)
+static JSValue jsConfigApplyObject(JSContext *ctx, JSValueConst configObj)
 {
-    auto& cb = engineFromCtx(ctx)->callbacks().applyConfigJson;
-    if (!cb) return JS_ThrowTypeError(ctx, "mb.config: not wired");
+    auto &cb = engineFromCtx(ctx)->callbacks().applyConfigJson;
+    if (!cb) {
+        return JS_ThrowTypeError(ctx, "mb.config: not wired");
+    }
 
     JSValue jsonVal = JS_JSONStringify(ctx, configObj, JS_UNDEFINED, JS_UNDEFINED);
-    if (JS_IsException(jsonVal)) return JS_EXCEPTION;
-    size_t len = 0;
-    const char* s = JS_ToCStringLen(ctx, &len, jsonVal);
+    if (JS_IsException(jsonVal)) {
+        return JS_EXCEPTION;
+    }
+    size_t len    = 0;
+    const char *s = JS_ToCStringLen(ctx, &len, jsonVal);
     JS_FreeValue(ctx, jsonVal);
-    if (!s) return JS_EXCEPTION;
+    if (!s) {
+        return JS_EXCEPTION;
+    }
     std::string json(s, len);
     JS_FreeCString(ctx, s);
 
     std::string err = cb(json);
-    if (!err.empty())
+    if (!err.empty()) {
         return JS_ThrowTypeError(ctx, "%s", err.c_str());
+    }
     return JS_UNDEFINED;
 }
 
 // Recursively deep-merge `src` into `dst`, mutating `dst` in place.
 // Object-typed fields recurse; arrays and primitives replace wholesale.
 // `null` in `src` clears the field on `dst`. Returns false on JS exception.
-static bool jsDeepMergeInto(JSContext* ctx, JSValue dst, JSValueConst src)
+static bool jsDeepMergeInto(JSContext *ctx, JSValue dst, JSValueConst src)
 {
-    JSPropertyEnum* tab = nullptr;
-    uint32_t len = 0;
-    if (JS_GetOwnPropertyNames(ctx, &tab, &len, src,
-            JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0)
+    JSPropertyEnum *tab = nullptr;
+    uint32_t len        = 0;
+    if (JS_GetOwnPropertyNames(ctx, &tab, &len, src, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0) {
         return false;
+    }
     bool ok = true;
     for (uint32_t i = 0; i < len && ok; ++i) {
         JSValue srcVal = JS_GetProperty(ctx, src, tab[i].atom);
-        if (JS_IsException(srcVal)) { ok = false; break; }
+        if (JS_IsException(srcVal)) {
+            ok = false;
+            break;
+        }
 
         // Recurse for plain objects (not arrays, not null).
         if (JS_IsObject(srcVal) && !JS_IsArray(srcVal) && !JS_IsNull(srcVal)) {
@@ -2840,11 +3332,13 @@ static bool jsDeepMergeInto(JSContext* ctx, JSValue dst, JSValueConst src)
             JS_FreeValue(ctx, dstVal);
         }
         // Replace wholesale (arrays, primitives, type mismatch).
-        if (JS_SetProperty(ctx, dst, tab[i].atom, srcVal) < 0)
+        if (JS_SetProperty(ctx, dst, tab[i].atom, srcVal) < 0) {
             ok = false; // srcVal consumed by JS_SetProperty even on failure
+        }
     }
-    for (uint32_t i = 0; i < len; ++i)
+    for (uint32_t i = 0; i < len; ++i) {
         JS_FreeAtom(ctx, tab[i].atom);
+    }
     js_free(ctx, tab);
     return ok;
 }
@@ -2853,15 +3347,17 @@ static bool jsDeepMergeInto(JSContext* ctx, JSValue dst, JSValueConst src)
 // Config and applies the result. Object fields recurse; arrays (keybinding,
 // mousebinding) and primitives are replaced wholesale. Throws on validation
 // failure.
-static JSValue jsMbConfigPatch(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbConfigPatch(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ConfigModify);
-    if (argc < 1 || !JS_IsObject(argv[0]) || JS_IsArray(argv[0]))
+    if (argc < 1 || !JS_IsObject(argv[0]) || JS_IsArray(argv[0])) {
         return JS_ThrowTypeError(ctx, "mb.config.patch(partial): expected object");
+    }
 
     JSValue snap = jsConfigParseSnapshot(ctx);
-    if (JS_IsNull(snap) || JS_IsException(snap))
+    if (JS_IsNull(snap) || JS_IsException(snap)) {
         return JS_ThrowTypeError(ctx, "mb.config.patch: cannot read current config");
+    }
 
     if (!jsDeepMergeInto(ctx, snap, argv[0])) {
         JS_FreeValue(ctx, snap);
@@ -2877,8 +3373,8 @@ static JSValue jsMbConfigPatch(JSContext* ctx, JSValueConst, int argc, JSValueCo
 // or creates an empty array if the property is missing/wrong type.
 // `outSnap` is set to the snapshot object (caller frees on success).
 // Returns JS_EXCEPTION (with thrown error) on read failure.
-static JSValue jsConfigGetArrayField(JSContext* ctx, const char* fieldName,
-                                     JSValue* outSnap)
+static JSValue jsConfigGetArrayField(JSContext *ctx, const char *fieldName,
+                                     JSValue *outSnap)
 {
     JSValue snap = jsConfigParseSnapshot(ctx);
     if (JS_IsNull(snap) || JS_IsException(snap)) {
@@ -2899,7 +3395,7 @@ static JSValue jsConfigGetArrayField(JSContext* ctx, const char* fieldName,
 // keybindings) a string-array `keys` / (for mousebindings) string `button`,
 // `event`. We delegate full schema validation to glaze on the apply path —
 // here we just reject obvious shape errors so callers get a clearer message.
-static bool jsValidatePlainObject(JSContext* ctx, JSValueConst v, const char* sig)
+static bool jsValidatePlainObject(JSContext *ctx, JSValueConst v, const char *sig)
 {
     if (!JS_IsObject(v) || JS_IsArray(v) || JS_IsNull(v)) {
         JS_ThrowTypeError(ctx, "%s: expected object", sig);
@@ -2912,20 +3408,28 @@ static bool jsValidatePlainObject(JSContext* ctx, JSValueConst v, const char* si
 // Appends the entry to config.keybinding[] and applies. Convenience over
 // `mb.config.patch({keybinding: [...mb.config.keybinding, b]})`. Does not
 // remove duplicates; later entries win in the merge inside applyConfig.
-static JSValue jsMbConfigAddKeybinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbConfigAddKeybinding(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ConfigModify);
-    if (argc < 1) return JS_ThrowTypeError(ctx, "addKeybinding({keys, action, args?})");
-    if (!jsValidatePlainObject(ctx, argv[0], "addKeybinding")) return JS_EXCEPTION;
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "addKeybinding({keys, action, args?})");
+    }
+    if (!jsValidatePlainObject(ctx, argv[0], "addKeybinding")) {
+        return JS_EXCEPTION;
+    }
 
     JSValue snap;
     JSValue arr = jsConfigGetArrayField(ctx, "keybinding", &snap);
-    if (JS_IsException(arr)) return JS_EXCEPTION;
+    if (JS_IsException(arr)) {
+        return JS_EXCEPTION;
+    }
 
     uint32_t len = 0;
     JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
     if (JS_ToUint32(ctx, &len, lenv) != 0) {
-        JS_FreeValue(ctx, lenv); JS_FreeValue(ctx, arr); JS_FreeValue(ctx, snap);
+        JS_FreeValue(ctx, lenv);
+        JS_FreeValue(ctx, arr);
+        JS_FreeValue(ctx, snap);
         return JS_EXCEPTION;
     }
     JS_FreeValue(ctx, lenv);
@@ -2943,11 +3447,15 @@ static JSValue jsMbConfigAddKeybinding(JSContext* ctx, JSValueConst, int argc, J
 // mb.config.removeKeybinding({keys: string[]}) — removes all entries with a
 // matching `keys` array (exact element-wise match, order-sensitive). Returns
 // the count of removed entries (0 if none matched).
-static JSValue jsMbConfigRemoveKeybinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbConfigRemoveKeybinding(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ConfigModify);
-    if (argc < 1) return JS_ThrowTypeError(ctx, "removeKeybinding({keys})");
-    if (!jsValidatePlainObject(ctx, argv[0], "removeKeybinding")) return JS_EXCEPTION;
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "removeKeybinding({keys})");
+    }
+    if (!jsValidatePlainObject(ctx, argv[0], "removeKeybinding")) {
+        return JS_EXCEPTION;
+    }
 
     JSValue matchKeys = JS_GetPropertyStr(ctx, argv[0], "keys");
     if (!JS_IsArray(matchKeys)) {
@@ -2957,44 +3465,65 @@ static JSValue jsMbConfigRemoveKeybinding(JSContext* ctx, JSValueConst, int argc
 
     JSValue snap;
     JSValue arr = jsConfigGetArrayField(ctx, "keybinding", &snap);
-    if (JS_IsException(arr)) { JS_FreeValue(ctx, matchKeys); return JS_EXCEPTION; }
+    if (JS_IsException(arr)) {
+        JS_FreeValue(ctx, matchKeys);
+        return JS_EXCEPTION;
+    }
 
-    auto strArrayEqual = [&](JSValue a, JSValue b) -> bool {
-        if (!JS_IsArray(a) || !JS_IsArray(b)) return false;
+    auto strArrayEqual = [&](JSValue a, JSValue b) -> bool
+    {
+        if (!JS_IsArray(a) || !JS_IsArray(b)) {
+            return false;
+        }
         uint32_t la = 0, lb = 0;
         JSValue lav = JS_GetPropertyStr(ctx, a, "length");
         JSValue lbv = JS_GetPropertyStr(ctx, b, "length");
-        JS_ToUint32(ctx, &la, lav); JS_ToUint32(ctx, &lb, lbv);
-        JS_FreeValue(ctx, lav); JS_FreeValue(ctx, lbv);
-        if (la != lb) return false;
+        JS_ToUint32(ctx, &la, lav);
+        JS_ToUint32(ctx, &lb, lbv);
+        JS_FreeValue(ctx, lav);
+        JS_FreeValue(ctx, lbv);
+        if (la != lb) {
+            return false;
+        }
         for (uint32_t i = 0; i < la; ++i) {
-            JSValue av = JS_GetPropertyUint32(ctx, a, i);
-            JSValue bv = JS_GetPropertyUint32(ctx, b, i);
-            const char* as = JS_ToCString(ctx, av);
-            const char* bs = JS_ToCString(ctx, bv);
-            bool eq = (as && bs && std::strcmp(as, bs) == 0);
-            if (as) JS_FreeCString(ctx, as);
-            if (bs) JS_FreeCString(ctx, bs);
-            JS_FreeValue(ctx, av); JS_FreeValue(ctx, bv);
-            if (!eq) return false;
+            JSValue av     = JS_GetPropertyUint32(ctx, a, i);
+            JSValue bv     = JS_GetPropertyUint32(ctx, b, i);
+            const char *as = JS_ToCString(ctx, av);
+            const char *bs = JS_ToCString(ctx, bv);
+            bool eq        = (as && bs && std::strcmp(as, bs) == 0);
+            if (as) {
+                JS_FreeCString(ctx, as);
+            }
+            if (bs) {
+                JS_FreeCString(ctx, bs);
+            }
+            JS_FreeValue(ctx, av);
+            JS_FreeValue(ctx, bv);
+            if (!eq) {
+                return false;
+            }
         }
         return true;
     };
 
     uint32_t arrLen = 0;
-    JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
+    JSValue lenv    = JS_GetPropertyStr(ctx, arr, "length");
     JS_ToUint32(ctx, &arrLen, lenv);
     JS_FreeValue(ctx, lenv);
 
     JSValue filtered = JS_NewArray(ctx);
-    uint32_t outIdx = 0;
-    int removed = 0;
+    uint32_t outIdx  = 0;
+    int removed      = 0;
     for (uint32_t i = 0; i < arrLen; ++i) {
-        JSValue entry = JS_GetPropertyUint32(ctx, arr, i);
+        JSValue entry     = JS_GetPropertyUint32(ctx, arr, i);
         JSValue entryKeys = JS_GetPropertyStr(ctx, entry, "keys");
-        bool match = strArrayEqual(entryKeys, matchKeys);
+        bool match        = strArrayEqual(entryKeys, matchKeys);
         JS_FreeValue(ctx, entryKeys);
-        if (match) { JS_FreeValue(ctx, entry); ++removed; continue; }
+        if (match) {
+            JS_FreeValue(ctx, entry);
+            ++removed;
+            continue;
+        }
         JS_SetPropertyUint32(ctx, filtered, outIdx++, entry); // ownership transferred
     }
     JS_FreeValue(ctx, arr);
@@ -3003,23 +3532,31 @@ static JSValue jsMbConfigRemoveKeybinding(JSContext* ctx, JSValueConst, int argc
 
     JSValue applyRet = jsConfigApplyObject(ctx, snap);
     JS_FreeValue(ctx, snap);
-    if (JS_IsException(applyRet)) return JS_EXCEPTION;
+    if (JS_IsException(applyRet)) {
+        return JS_EXCEPTION;
+    }
     JS_FreeValue(ctx, applyRet);
     return JS_NewInt32(ctx, removed);
 }
 
 // mb.config.addMousebinding({button, event, mode?, region?, action, args?})
 // Appends to config.mousebinding[] and applies.
-static JSValue jsMbConfigAddMousebinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbConfigAddMousebinding(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ConfigModify);
-    if (argc < 1) return JS_ThrowTypeError(ctx,
-        "addMousebinding({button, event, mode?, region?, action, args?})");
-    if (!jsValidatePlainObject(ctx, argv[0], "addMousebinding")) return JS_EXCEPTION;
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "addMousebinding({button, event, mode?, region?, action, args?})");
+    }
+    if (!jsValidatePlainObject(ctx, argv[0], "addMousebinding")) {
+        return JS_EXCEPTION;
+    }
 
     JSValue snap;
     JSValue arr = jsConfigGetArrayField(ctx, "mousebinding", &snap);
-    if (JS_IsException(arr)) return JS_EXCEPTION;
+    if (JS_IsException(arr)) {
+        return JS_EXCEPTION;
+    }
 
     uint32_t len = 0;
     JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
@@ -3037,19 +3574,27 @@ static JSValue jsMbConfigAddMousebinding(JSContext* ctx, JSValueConst, int argc,
 // mb.config.removeMousebinding({button, event, mode?, region?})
 // Removes all entries whose specified fields match (omitted fields are
 // wildcards). Returns the count removed.
-static JSValue jsMbConfigRemoveMousebinding(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbConfigRemoveMousebinding(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ConfigModify);
-    if (argc < 1) return JS_ThrowTypeError(ctx,
-        "removeMousebinding({button, event, mode?, region?})");
-    if (!jsValidatePlainObject(ctx, argv[0], "removeMousebinding")) return JS_EXCEPTION;
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "removeMousebinding({button, event, mode?, region?})");
+    }
+    if (!jsValidatePlainObject(ctx, argv[0], "removeMousebinding")) {
+        return JS_EXCEPTION;
+    }
 
-    auto getStr = [&](JSValueConst obj, const char* key) -> std::string {
+    auto getStr = [&](JSValueConst obj, const char *key) -> std::string
+    {
         JSValue v = JS_GetPropertyStr(ctx, obj, key);
         std::string out;
         if (JS_IsString(v)) {
-            const char* s = JS_ToCString(ctx, v);
-            if (s) { out = s; JS_FreeCString(ctx, s); }
+            const char *s = JS_ToCString(ctx, v);
+            if (s) {
+                out = s;
+                JS_FreeCString(ctx, s);
+            }
         }
         JS_FreeValue(ctx, v);
         return out;
@@ -3061,24 +3606,38 @@ static JSValue jsMbConfigRemoveMousebinding(JSContext* ctx, JSValueConst, int ar
 
     JSValue snap;
     JSValue arr = jsConfigGetArrayField(ctx, "mousebinding", &snap);
-    if (JS_IsException(arr)) return JS_EXCEPTION;
+    if (JS_IsException(arr)) {
+        return JS_EXCEPTION;
+    }
 
     uint32_t arrLen = 0;
-    JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
+    JSValue lenv    = JS_GetPropertyStr(ctx, arr, "length");
     JS_ToUint32(ctx, &arrLen, lenv);
     JS_FreeValue(ctx, lenv);
 
     JSValue filtered = JS_NewArray(ctx);
-    uint32_t outIdx = 0;
-    int removed = 0;
+    uint32_t outIdx  = 0;
+    int removed      = 0;
     for (uint32_t i = 0; i < arrLen; ++i) {
         JSValue entry = JS_GetPropertyUint32(ctx, arr, i);
-        bool match = true;
-        if (!mButton.empty() && getStr(entry, "button") != mButton) match = false;
-        if (match && !mEvent.empty()  && getStr(entry, "event")  != mEvent)  match = false;
-        if (match && !mMode.empty()   && getStr(entry, "mode")   != mMode)   match = false;
-        if (match && !mRegion.empty() && getStr(entry, "region") != mRegion) match = false;
-        if (match) { JS_FreeValue(ctx, entry); ++removed; continue; }
+        bool match    = true;
+        if (!mButton.empty() && getStr(entry, "button") != mButton) {
+            match = false;
+        }
+        if (match && !mEvent.empty() && getStr(entry, "event") != mEvent) {
+            match = false;
+        }
+        if (match && !mMode.empty() && getStr(entry, "mode") != mMode) {
+            match = false;
+        }
+        if (match && !mRegion.empty() && getStr(entry, "region") != mRegion) {
+            match = false;
+        }
+        if (match) {
+            JS_FreeValue(ctx, entry);
+            ++removed;
+            continue;
+        }
         JS_SetPropertyUint32(ctx, filtered, outIdx++, entry);
     }
     JS_FreeValue(ctx, arr);
@@ -3086,7 +3645,9 @@ static JSValue jsMbConfigRemoveMousebinding(JSContext* ctx, JSValueConst, int ar
 
     JSValue applyRet = jsConfigApplyObject(ctx, snap);
     JS_FreeValue(ctx, snap);
-    if (JS_IsException(applyRet)) return JS_EXCEPTION;
+    if (JS_IsException(applyRet)) {
+        return JS_EXCEPTION;
+    }
     JS_FreeValue(ctx, applyRet);
     return JS_NewInt32(ctx, removed);
 }
@@ -3104,38 +3665,43 @@ static JSValue jsMbConfigRemoveMousebinding(JSContext* ctx, JSValueConst, int ar
 //
 // All mutations go through the same applyConfig path as TOML hot-reload;
 // changes are ephemeral (not persisted to disk).
-static JSValue jsMbConfig(JSContext* ctx, JSValueConst, int, JSValueConst*)
+static JSValue jsMbConfig(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
     JSValue obj = jsConfigParseSnapshot(ctx);
-    if (JS_IsNull(obj) || JS_IsException(obj)) return obj;
+    if (JS_IsNull(obj) || JS_IsException(obj)) {
+        return obj;
+    }
 
-    JS_SetPropertyStr(ctx, obj, "patch",
-        JS_NewCFunction(ctx, jsMbConfigPatch, "patch", 1));
-    JS_SetPropertyStr(ctx, obj, "addKeybinding",
-        JS_NewCFunction(ctx, jsMbConfigAddKeybinding, "addKeybinding", 1));
-    JS_SetPropertyStr(ctx, obj, "removeKeybinding",
-        JS_NewCFunction(ctx, jsMbConfigRemoveKeybinding, "removeKeybinding", 1));
-    JS_SetPropertyStr(ctx, obj, "addMousebinding",
-        JS_NewCFunction(ctx, jsMbConfigAddMousebinding, "addMousebinding", 1));
-    JS_SetPropertyStr(ctx, obj, "removeMousebinding",
-        JS_NewCFunction(ctx, jsMbConfigRemoveMousebinding, "removeMousebinding", 1));
+    JS_SetPropertyStr(ctx, obj, "patch", JS_NewCFunction(ctx, jsMbConfigPatch, "patch", 1));
+    JS_SetPropertyStr(ctx, obj, "addKeybinding", JS_NewCFunction(ctx, jsMbConfigAddKeybinding, "addKeybinding", 1));
+    JS_SetPropertyStr(ctx, obj, "removeKeybinding", JS_NewCFunction(ctx, jsMbConfigRemoveKeybinding, "removeKeybinding", 1));
+    JS_SetPropertyStr(ctx, obj, "addMousebinding", JS_NewCFunction(ctx, jsMbConfigAddMousebinding, "addMousebinding", 1));
+    JS_SetPropertyStr(ctx, obj, "removeMousebinding", JS_NewCFunction(ctx, jsMbConfigRemoveMousebinding, "removeMousebinding", 1));
     return obj;
 }
 
 // mb.pane(nodeId) -> Pane | null. Construct a Pane object wrapping the
 // terminal at `nodeId`. Returns null when the UUID is malformed or doesn't
 // refer to a live Terminal in the engine's terminal map.
-static JSValue jsMbPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbPane(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1 || !JS_IsString(argv[0])) return JS_NULL;
-    size_t len = 0;
-    const char* s = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!s) return JS_NULL;
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_NULL;
+    }
+    size_t len    = 0;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) {
+        return JS_NULL;
+    }
     Uuid u = Uuid::fromString(std::string_view(s, len));
     JS_FreeCString(ctx, s);
-    if (u.isNil()) return JS_NULL;
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->terminal(u)) return JS_NULL;
+    if (u.isNil()) {
+        return JS_NULL;
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->terminal(u)) {
+        return JS_NULL;
+    }
     return jsPaneNew(ctx, u);
 }
 
@@ -3144,15 +3710,17 @@ static JSValue jsMbPane(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
 // X11 backend has to round-trip a SELECTION_NOTIFY through the event loop;
 // resolving directly was a busy-poll source on the main thread that raced
 // with middle-click pastes (see the OSC 52 / requestSelection discussion).
-static JSValue jsMbGetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbGetClipboard(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ClipboardRead);
-    Engine* eng = engineFromCtx(ctx);
+    Engine *eng = engineFromCtx(ctx);
 
     JSValue resolveFn = JS_UNDEFINED, rejectFn = JS_UNDEFINED;
     JSValue resolvers[2];
     JSValue promise = JS_NewPromiseCapability(ctx, resolvers);
-    if (JS_IsException(promise)) return JS_EXCEPTION;
+    if (JS_IsException(promise)) {
+        return JS_EXCEPTION;
+    }
     resolveFn = resolvers[0];
     rejectFn  = resolvers[1];
 
@@ -3167,97 +3735,91 @@ static JSValue jsMbGetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueC
 
     std::string source = "clipboard";
     if (argc >= 1 && JS_IsString(argv[0])) {
-        const char* s = JS_ToCString(ctx, argv[0]);
-        if (s) { source = s; JS_FreeCString(ctx, s); }
+        const char *s = JS_ToCString(ctx, argv[0]);
+        if (s) {
+            source = s;
+            JS_FreeCString(ctx, s);
+        }
     }
 
     // Hold a reference to the resolve fn for the callback. Reject is unused
     // here (we never reject — empty string represents "no clipboard").
     JS_FreeValue(ctx, rejectFn);
-    auto resolveHolder = std::make_shared<JSValue>(resolveFn);
-    JSContext* ctxCapture = ctx;
+    auto resolveHolder    = std::make_shared<JSValue>(resolveFn);
+    JSContext *ctxCapture = ctx;
 
     eng->callbacks().getClipboard(source,
-        [ctxCapture, resolveHolder](std::string text) {
-            JSValue str = JS_NewStringLen(ctxCapture, text.data(), text.size());
-            JS_Call(ctxCapture, *resolveHolder, JS_UNDEFINED, 1, &str);
-            JS_FreeValue(ctxCapture, str);
-            JS_FreeValue(ctxCapture, *resolveHolder);
-        });
+                                  [ctxCapture, resolveHolder](std::string text)
+                                  {
+                                      JSValue str = JS_NewStringLen(ctxCapture, text.data(), text.size());
+                                      JS_Call(ctxCapture, *resolveHolder, JS_UNDEFINED, 1, &str);
+                                      JS_FreeValue(ctxCapture, str);
+                                      JS_FreeValue(ctxCapture, *resolveHolder);
+                                  });
     return promise;
 }
 
 // mb.setClipboard(text, source?).  source = "clipboard" | "primary" (default "clipboard")
-static JSValue jsMbSetClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbSetClipboard(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (argc < 1) return JS_ThrowTypeError(ctx, "setClipboard requires (text, source?)");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "setClipboard requires (text, source?)");
+    }
     REQUIRE_PERM(ctx, ClipboardWrite);
-    Engine* eng = engineFromCtx(ctx);
-    if (!eng->callbacks().setClipboard) return JS_UNDEFINED;
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng->callbacks().setClipboard) {
+        return JS_UNDEFINED;
+    }
     size_t len;
-    const char* str = JS_ToCStringLen(ctx, &len, argv[0]);
-    if (!str) return JS_EXCEPTION;
+    const char *str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) {
+        return JS_EXCEPTION;
+    }
     std::string source = "clipboard";
     if (argc >= 2 && JS_IsString(argv[1])) {
-        const char* s = JS_ToCString(ctx, argv[1]);
-        if (s) { source = s; JS_FreeCString(ctx, s); }
+        const char *s = JS_ToCString(ctx, argv[1]);
+        if (s) {
+            source = s;
+            JS_FreeCString(ctx, s);
+        }
     }
     eng->callbacks().setClipboard(source, std::string(str, len));
     JS_FreeCString(ctx, str);
     return JS_UNDEFINED;
 }
 
-void Engine::setupGlobals(JSContext* ctx, InstanceId id)
+void Engine::setupGlobals(JSContext *ctx, InstanceId id)
 {
     JSValue global = JS_GetGlobalObject(ctx);
-    JSValue mb = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, mb, "invokeAction",
-        JS_NewCFunction(ctx, jsMbInvokeAction, "invokeAction", 1));
-    JS_SetPropertyStr(ctx, mb, "addEventListener",
-        JS_NewCFunction(ctx, jsMbAddEventListener, "addEventListener", 2));
-    JS_SetPropertyStr(ctx, mb, "removeEventListener",
-        JS_NewCFunction(ctx, jsMbRemoveEventListener, "removeEventListener", 2));
+    JSValue mb     = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, mb, "invokeAction", JS_NewCFunction(ctx, jsMbInvokeAction, "invokeAction", 1));
+    JS_SetPropertyStr(ctx, mb, "addEventListener", JS_NewCFunction(ctx, jsMbAddEventListener, "addEventListener", 2));
+    JS_SetPropertyStr(ctx, mb, "removeEventListener", JS_NewCFunction(ctx, jsMbRemoveEventListener, "removeEventListener", 2));
     // Getter properties on mb object
-    auto defineGetter = [&](const char* name, JSCFunction* getter) {
+    auto defineGetter = [&](const char *name, JSCFunction *getter)
+    {
         JSAtom atom = JS_NewAtom(ctx, name);
-        JS_DefinePropertyGetSet(ctx, mb, atom,
-            JS_NewCFunction(ctx, getter, name, 0), JS_UNDEFINED,
-            JS_PROP_ENUMERABLE | JS_PROP_CONFIGURABLE);
+        JS_DefinePropertyGetSet(ctx, mb, atom, JS_NewCFunction(ctx, getter, name, 0), JS_UNDEFINED, JS_PROP_ENUMERABLE | JS_PROP_CONFIGURABLE);
         JS_FreeAtom(ctx, atom);
     };
     defineGetter("activePane", jsMbGetActivePane);
     defineGetter("actions", jsMbGetActions);
     defineGetter("config", jsMbConfig);
-    JS_SetPropertyStr(ctx, mb, "pane",
-        JS_NewCFunction(ctx, jsMbPane, "pane", 1));
-    JS_SetPropertyStr(ctx, mb, "unloadScript",
-        JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
-    JS_SetPropertyStr(ctx, mb, "loadScript",
-        JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
-    JS_SetPropertyStr(ctx, mb, "createSecureToken",
-        JS_NewCFunction(ctx, jsMbCreateSecureToken, "createSecureToken", 1));
-    JS_SetPropertyStr(ctx, mb, "createUuid",
-        JS_NewCFunction(ctx, jsMbCreateUuid, "createUuid", 0));
-    JS_SetPropertyStr(ctx, mb, "approveScript",
-        JS_NewCFunction(ctx, jsMbApproveScript, "approveScript", 2));
-    JS_SetPropertyStr(ctx, mb, "setNamespace",
-        JS_NewCFunction(ctx, jsMbSetNamespace, "setNamespace", 1));
-    JS_SetPropertyStr(ctx, mb, "registerAction",
-        JS_NewCFunction(ctx, jsMbRegisterAction, "registerAction", 1));
-    JS_SetPropertyStr(ctx, mb, "exit",
-        JS_NewCFunction(ctx, jsMbExit, "exit", 0));
-    JS_SetPropertyStr(ctx, mb, "quit",
-        JS_NewCFunction(ctx, jsMbQuit, "quit", 0));
-    JS_SetPropertyStr(ctx, mb, "hasPermission",
-        JS_NewCFunction(ctx, jsMbHasPermission, "hasPermission", 1));
-    JS_SetPropertyStr(ctx, mb, "registerTcap",
-        JS_NewCFunction(ctx, jsMbRegisterTcap, "registerTcap", 2));
-    JS_SetPropertyStr(ctx, mb, "unregisterTcap",
-        JS_NewCFunction(ctx, jsMbUnregisterTcap, "unregisterTcap", 1));
-    JS_SetPropertyStr(ctx, mb, "getClipboard",
-        JS_NewCFunction(ctx, jsMbGetClipboard, "getClipboard", 0));
-    JS_SetPropertyStr(ctx, mb, "setClipboard",
-        JS_NewCFunction(ctx, jsMbSetClipboard, "setClipboard", 1));
+    JS_SetPropertyStr(ctx, mb, "pane", JS_NewCFunction(ctx, jsMbPane, "pane", 1));
+    JS_SetPropertyStr(ctx, mb, "unloadScript", JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
+    JS_SetPropertyStr(ctx, mb, "loadScript", JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
+    JS_SetPropertyStr(ctx, mb, "createSecureToken", JS_NewCFunction(ctx, jsMbCreateSecureToken, "createSecureToken", 1));
+    JS_SetPropertyStr(ctx, mb, "createUuid", JS_NewCFunction(ctx, jsMbCreateUuid, "createUuid", 0));
+    JS_SetPropertyStr(ctx, mb, "approveScript", JS_NewCFunction(ctx, jsMbApproveScript, "approveScript", 2));
+    JS_SetPropertyStr(ctx, mb, "setNamespace", JS_NewCFunction(ctx, jsMbSetNamespace, "setNamespace", 1));
+    JS_SetPropertyStr(ctx, mb, "registerAction", JS_NewCFunction(ctx, jsMbRegisterAction, "registerAction", 1));
+    JS_SetPropertyStr(ctx, mb, "exit", JS_NewCFunction(ctx, jsMbExit, "exit", 0));
+    JS_SetPropertyStr(ctx, mb, "quit", JS_NewCFunction(ctx, jsMbQuit, "quit", 0));
+    JS_SetPropertyStr(ctx, mb, "hasPermission", JS_NewCFunction(ctx, jsMbHasPermission, "hasPermission", 1));
+    JS_SetPropertyStr(ctx, mb, "registerTcap", JS_NewCFunction(ctx, jsMbRegisterTcap, "registerTcap", 2));
+    JS_SetPropertyStr(ctx, mb, "unregisterTcap", JS_NewCFunction(ctx, jsMbUnregisterTcap, "unregisterTcap", 1));
+    JS_SetPropertyStr(ctx, mb, "getClipboard", JS_NewCFunction(ctx, jsMbGetClipboard, "getClipboard", 0));
+    JS_SetPropertyStr(ctx, mb, "setClipboard", JS_NewCFunction(ctx, jsMbSetClipboard, "setClipboard", 1));
 
     // mb.process — namespace for external process management. v1 has
     // exactly one method (spawn); the namespace exists to give us
@@ -3267,8 +3829,7 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
     // (REQUIRE_PERM(ctx, ProcessSpawn) inside jsMbProcessSpawn).
     {
         JSValue process = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, process, "spawn",
-            JS_NewCFunction(ctx, jsMbProcessSpawn, "spawn", 3));
+        JS_SetPropertyStr(ctx, process, "spawn", JS_NewCFunction(ctx, jsMbProcessSpawn, "spawn", 3));
         JS_SetPropertyStr(ctx, mb, "process", process);
     }
 
@@ -3278,25 +3839,28 @@ void Engine::setupGlobals(JSContext* ctx, InstanceId id)
     JS_FreeValue(ctx, global);
 }
 
-InstanceId Engine::loadController(const std::string& path) {
+InstanceId Engine::loadController(const std::string &path)
+{
     std::string src = io::readFile(path);
     if (src.empty()) {
         sLog().error("ScriptEngine: failed to read '{}'", path);
         return 0;
     }
-    JSContext* ctx = createContext();
-    InstanceId id = nextId_++;
+    JSContext *ctx = createContext();
+    InstanceId id  = nextId_++;
     setupGlobals(ctx, id);
 
-    instances_.push_back({id, ctx, path, /*contentHash=*/"", Perm::All, /*builtIn=*/true});
-    JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
+    instances_.push_back({ id, ctx, path, /*contentHash=*/"", Perm::All, /*builtIn=*/true });
+    JS_SetContextOpaque(ctx, reinterpret_cast<void *>(static_cast<uintptr_t>(id)));
 
     JSValue result = JS_Eval(ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
     if (JS_IsException(result)) {
-        JSValue exc = JS_GetException(ctx);
-        const char* str = JS_ToCString(ctx, exc);
+        JSValue exc     = JS_GetException(ctx);
+        const char *str = JS_ToCString(ctx, exc);
         sLog().error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
-        if (str) JS_FreeCString(ctx, str);
+        if (str) {
+            JS_FreeCString(ctx, str);
+        }
         JS_FreeValue(ctx, exc);
         JS_FreeValue(ctx, result);
         JS_FreeContext(ctx);
@@ -3309,9 +3873,9 @@ InstanceId Engine::loadController(const std::string& path) {
     return id;
 }
 
-bool Engine::reevalInstance(InstanceId id, const std::string& path)
+bool Engine::reevalInstance(InstanceId id, const std::string &path)
 {
-    Instance* inst = findInstance(id);
+    Instance *inst = findInstance(id);
     if (!inst || !inst->ctx) {
         sLog().error("ScriptEngine: reevalInstance: id {} not found", id);
         return false;
@@ -3321,14 +3885,16 @@ bool Engine::reevalInstance(InstanceId id, const std::string& path)
         sLog().error("ScriptEngine: reevalInstance: failed to read '{}'", path);
         return false;
     }
-    JSValue result = JS_Eval(inst->ctx, src.c_str(), src.size(),
-                             path.c_str(), JS_EVAL_TYPE_MODULE);
+    JSValue result = JS_Eval(inst->ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
     if (JS_IsException(result)) {
-        JSValue exc = JS_GetException(inst->ctx);
-        const char* str = JS_ToCString(inst->ctx, exc);
+        JSValue exc     = JS_GetException(inst->ctx);
+        const char *str = JS_ToCString(inst->ctx, exc);
         sLog().error("ScriptEngine: reevalInstance '{}' error: {}",
-                     path, str ? str : "(null)");
-        if (str) JS_FreeCString(inst->ctx, str);
+                     path,
+                     str ? str : "(null)");
+        if (str) {
+            JS_FreeCString(inst->ctx, str);
+        }
         JS_FreeValue(inst->ctx, exc);
         JS_FreeValue(inst->ctx, result);
         return false;
@@ -3341,32 +3907,44 @@ bool Engine::reevalInstance(InstanceId id, const std::string& path)
 void Engine::unload(InstanceId id)
 {
     for (auto it = instances_.begin(); it != instances_.end(); ++it) {
-        if (it->id != id) continue;
+        if (it->id != id) {
+            continue;
+        }
 
-        JSContext* ctx = it->ctx;
+        JSContext *ctx = it->ctx;
         sLog().info("ScriptEngine: unloading '{}' (id={})", it->path, id);
 
         // 1. Kill all timers belonging to this context
         {
             std::vector<uint32_t> toRemove;
-            for (auto& [jsId, t] : jsTimers_) {
-                if (t.ctx == ctx) toRemove.push_back(jsId);
+            for (auto &[jsId, t] : jsTimers_) {
+                if (t.ctx == ctx) {
+                    toRemove.push_back(jsId);
+                }
             }
             for (uint32_t jsId : toRemove) {
                 auto it = jsTimers_.find(jsId);
-                if (it == jsTimers_.end()) continue;
-                if (loop_) loop_->removeTimer(it->second.loopId);
+                if (it == jsTimers_.end()) {
+                    continue;
+                }
+                if (loop_) {
+                    loop_->removeTimer(it->second.loopId);
+                }
                 JS_FreeValue(it->second.ctx, it->second.callback);
                 jsTimers_.erase(it);
             }
         }
 
         // 2. Destroy owned popups
-        for (auto& ref : it->ownedPopups)
+        for (auto &ref : it->ownedPopups) {
             callbacks_.destroyPopup(ref.pane, ref.popupId);
+        }
         // 2b. Destroy owned embedded terminals
-        for (auto& ref : it->ownedEmbeddeds)
-            if (callbacks_.destroyEmbedded) callbacks_.destroyEmbedded(ref.pane, ref.lineId);
+        for (auto &ref : it->ownedEmbeddeds) {
+            if (callbacks_.destroyEmbedded) {
+                callbacks_.destroyEmbedded(ref.pane, ref.lineId);
+            }
+        }
         // 2c. Stop owned output captures. Direct Terminal access (no
         //     AppCallbacks indirection) — Engine already owns the
         //     terminal map. Terminal::removeOutputCapture closes the
@@ -3376,9 +3954,10 @@ void Engine::unload(InstanceId id)
         //     event still fires for any other instance subscribed to
         //     the same handle (rare: scripts pass capture handles
         //     between modules; harmless either way).
-        for (auto& ref : it->ownedOutputCaptures) {
-            if (Terminal* t = terminal(ref.pane))
+        for (auto &ref : it->ownedOutputCaptures) {
+            if (Terminal *t = terminal(ref.pane)) {
                 t->removeOutputCapture(ref.path);
+            }
         }
 
         // 3. Decrement filter counts for this instance's registrations.
@@ -3390,8 +3969,9 @@ void Engine::unload(InstanceId id)
             if (fc != paneOutputFilterCount_.end() && --fc->second <= 0) {
                 paneOutputFilterCount_.erase(fc);
                 if (auto fl = paneOutputFilterFlag_.find(pane);
-                    fl != paneOutputFilterFlag_.end())
+                    fl != paneOutputFilterFlag_.end()) {
                     fl->second->store(false, std::memory_order_release);
+                }
             }
         }
         for (auto pane : it->paneInputFilters) {
@@ -3399,29 +3979,32 @@ void Engine::unload(InstanceId id)
             if (fc != paneInputFilterCount_.end() && --fc->second <= 0) {
                 paneInputFilterCount_.erase(fc);
                 if (auto fl = paneInputFilterFlag_.find(pane);
-                    fl != paneInputFilterFlag_.end())
+                    fl != paneInputFilterFlag_.end()) {
                     fl->second->store(false, std::memory_order_release);
+                }
             }
         }
         for (auto pane : it->paneMouseMoveListeners) {
             auto fc = paneMouseMoveCount_.find(pane);
-            if (fc != paneMouseMoveCount_.end() && --fc->second <= 0)
+            if (fc != paneMouseMoveCount_.end() && --fc->second <= 0) {
                 paneMouseMoveCount_.erase(fc);
+            }
         }
 
         // 5. Remove registered actions owned by this instance. Owner is
         // tracked in the map value; previously this matched by namespace
         // prefix, but since two instances could share a namespace we now
         // erase only what's actually ours.
-        for (auto ait = registeredActions_.begin(); ait != registeredActions_.end(); ) {
-            if (ait->second == id)
+        for (auto ait = registeredActions_.begin(); ait != registeredActions_.end();) {
+            if (ait->second == id) {
                 ait = registeredActions_.erase(ait);
-            else
+            } else {
                 ++ait;
+            }
         }
 
         // 6. Drop any action handlers registered by this instance.
-        for (auto ahit = actionHandlers_.begin(); ahit != actionHandlers_.end(); ) {
+        for (auto ahit = actionHandlers_.begin(); ahit != actionHandlers_.end();) {
             if (ahit->second.id == id) {
                 JS_FreeValue(ahit->second.ctx, ahit->second.fn);
                 ahit = actionHandlers_.erase(ahit);
@@ -3444,7 +4027,8 @@ void Engine::unload(InstanceId id)
     }
 }
 
-void Engine::setConfigDir(const std::string& dir) {
+void Engine::setConfigDir(const std::string &dir)
+{
     configDir_ = dir;
     allowlist_.load(dir);
 }
@@ -3452,19 +4036,26 @@ void Engine::setConfigDir(const std::string& dir) {
 // Collect {path, sha256} for every .js file in the directory tree of scriptPath,
 // sorted for deterministic comparison.
 static std::vector<std::pair<std::string, std::string>>
-collectDirModules(const std::string& scriptPath)
+collectDirModules(const std::string &scriptPath)
 {
     std::vector<std::pair<std::string, std::string>> result;
     fs::path dir = fs::path(scriptPath).parent_path();
     std::error_code ec;
-    for (auto& entry : fs::recursive_directory_iterator(dir, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file(ec) || ec) continue;
-        if (entry.path().extension() != ".js") continue;
-        std::string p = entry.path().string();
+    for (auto &entry : fs::recursive_directory_iterator(dir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || ec) {
+            continue;
+        }
+        if (entry.path().extension() != ".js") {
+            continue;
+        }
+        std::string p       = entry.path().string();
         std::string content = io::readFile(p);
-        if (!content.empty())
+        if (!content.empty()) {
             result.emplace_back(std::move(p), sha256Hex(content));
+        }
     }
     std::sort(result.begin(), result.end());
     return result;
@@ -3472,15 +4063,18 @@ collectDirModules(const std::string& scriptPath)
 
 // Returns true if the modules stored in the allowlist entry match the current
 // state of the script's directory (same set of files, same hashes).
-static bool verifyModuleHashes(const Allowlist::AllowEntry& entry)
+static bool verifyModuleHashes(const Allowlist::AllowEntry &entry)
 {
-    if (entry.modules.empty()) return true; // no modules recorded — allow (old entry)
+    if (entry.modules.empty()) {
+        return true; // no modules recorded — allow (old entry)
+    }
     auto current = collectDirModules(entry.path);
     return current == entry.modules;
 }
 
-Engine::LoadResult Engine::loadScript(const std::string& path,
-                                       uint32_t requestedPerms) {
+Engine::LoadResult Engine::loadScript(const std::string &path,
+                                      uint32_t requestedPerms)
+{
     std::string content = io::readFile(path);
     if (content.empty()) {
         sLog().error("ScriptEngine: failed to read '{}'", path);
@@ -3496,10 +4090,10 @@ Engine::LoadResult Engine::loadScript(const std::string& path,
     // by definition; the BuiltIn marker bit itself is consumed by
     // loadScriptInternal and not stored on the Instance.
     if (requestedPerms & Perm::BuiltIn) {
-        InstanceId id = loadScriptInternal(path, content,
-                                            Perm::All | Perm::BuiltIn);
-        if (id == 0)
+        InstanceId id = loadScriptInternal(path, content, Perm::All | Perm::BuiltIn);
+        if (id == 0) {
             return { LoadResult::Status::Error, 0, "script evaluation failed" };
+        }
         return { LoadResult::Status::Loaded, id, {} };
     }
 
@@ -3510,13 +4104,14 @@ Engine::LoadResult Engine::loadScript(const std::string& path,
         return { LoadResult::Status::Denied, 0, {} };
     }
 
-    const auto* entry = allowlist_.check(path, hash);
+    const auto *entry = allowlist_.check(path, hash);
     if (entry) {
         if ((requestedPerms & ~entry->permissions) == 0) {
             if (verifyModuleHashes(*entry)) {
                 InstanceId id = loadScriptInternal(path, content, requestedPerms);
-                if (id == 0)
+                if (id == 0) {
                     return { LoadResult::Status::Error, 0, "script evaluation failed" };
+                }
                 return { LoadResult::Status::Loaded, id, {} };
             }
             sLog().info("ScriptEngine: module files changed for '{}', re-prompting", path);
@@ -3525,23 +4120,24 @@ Engine::LoadResult Engine::loadScript(const std::string& path,
     }
 
     // Store pending script and notify JS to show permission prompt
-    std::string pendingKey = path; // keyed by path
-    pendingScripts_[pendingKey] = {path, content, hash, requestedPerms, "", Uuid{}};
+    std::string pendingKey      = path; // keyed by path
+    pendingScripts_[pendingKey] = { path, content, hash, requestedPerms, "", Uuid {} };
 
     // Fire scriptPermissionRequired event on mb
     notifyPermissionRequired(path, permissionsToString(requestedPerms), hash);
     return { LoadResult::Status::Pending, 0, {} };
 }
 
-InstanceId Engine::loadScriptInternal(const std::string& path, const std::string& content,
-                                       uint32_t permissions) {
+InstanceId Engine::loadScriptInternal(const std::string &path, const std::string &content,
+                                      uint32_t permissions)
+{
     std::string hash = sha256Hex(content);
 
     // Built-in elevation: the marker bit lives in `permissions` itself.
     // Strip it from the value we store on the Instance (it's not a
     // permission, it's a request flag) but use its presence to set
     // the builtIn flag on the instance.
-    const bool asBuiltIn = (permissions & Perm::BuiltIn) != 0;
+    const bool asBuiltIn       = (permissions & Perm::BuiltIn) != 0;
     const uint32_t storedPerms = permissions & ~Perm::BuiltIn;
 
     // Idempotent reload: if an existing instance has identical path, content hash,
@@ -3554,10 +4150,11 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     // re-requested as user (or vice versa) is NOT idempotent — they're
     // different trust levels and need a full reload through the unload
     // path below.
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        if (inst.builtIn == asBuiltIn && inst.path == path
-            && inst.contentHash == hash && inst.permissions == storedPerms) {
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        if (inst.builtIn == asBuiltIn && inst.path == path && inst.contentHash == hash && inst.permissions == storedPerms) {
             sLog().info("ScriptEngine: identical reload of '{}' (id={}), no-op", path, inst.id);
             return inst.id;
         }
@@ -3566,8 +4163,10 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     // Unload any existing instance with the same path (content or perms differ).
     // We unload regardless of the previous instance's built-in status — a
     // re-load with different trust intent should replace, not coexist.
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
         if (inst.path == path) {
             sLog().info("ScriptEngine: replacing existing instance of '{}'", path);
             unload(inst.id);
@@ -3575,19 +4174,21 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
         }
     }
 
-    JSContext* ctx = createContext();
-    InstanceId id = nextId_++;
+    JSContext *ctx = createContext();
+    InstanceId id  = nextId_++;
     setupGlobals(ctx, id);
 
-    instances_.push_back({id, ctx, path, hash, storedPerms, asBuiltIn});
-    JS_SetContextOpaque(ctx, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
+    instances_.push_back({ id, ctx, path, hash, storedPerms, asBuiltIn });
+    JS_SetContextOpaque(ctx, reinterpret_cast<void *>(static_cast<uintptr_t>(id)));
 
     JSValue result = JS_Eval(ctx, content.c_str(), content.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
     if (JS_IsException(result)) {
-        JSValue exc = JS_GetException(ctx);
-        const char* str = JS_ToCString(ctx, exc);
+        JSValue exc     = JS_GetException(ctx);
+        const char *str = JS_ToCString(ctx, exc);
         sLog().error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
-        if (str) JS_FreeCString(ctx, str);
+        if (str) {
+            JS_FreeCString(ctx, str);
+        }
         JS_FreeValue(ctx, exc);
         JS_FreeValue(ctx, result);
         JS_FreeContext(ctx);
@@ -3597,11 +4198,14 @@ InstanceId Engine::loadScriptInternal(const std::string& path, const std::string
     JS_FreeValue(ctx, result);
     sLog().info("ScriptEngine: loaded {} '{}' (id={}, perms={})",
                 asBuiltIn ? "built-in" : "script",
-                path, id, permissionsToString(storedPerms));
+                path,
+                id,
+                permissionsToString(storedPerms));
     return id;
 }
 
-Engine::LoadResult Engine::approveScript(const std::string& path, char response) {
+Engine::LoadResult Engine::approveScript(const std::string &path, char response)
+{
     auto it = pendingScripts_.find(path);
     if (it == pendingScripts_.end()) {
         sLog().warn("ScriptEngine: no pending script for '{}'", path);
@@ -3611,107 +4215,134 @@ Engine::LoadResult Engine::approveScript(const std::string& path, char response)
     PendingScript pending = std::move(it->second);
     pendingScripts_.erase(it);
 
-    auto tryLoad = [&]() -> LoadResult {
+    auto tryLoad = [&]() -> LoadResult
+    {
         InstanceId id = loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
-        if (id == 0)
+        if (id == 0) {
             return { LoadResult::Status::Error, 0, "script evaluation failed" };
+        }
         return { LoadResult::Status::Loaded, id, {} };
     };
 
     switch (response) {
-    case 'y': case 'Y':
-        return tryLoad();
-    case 'a': case 'A': {
-        auto modules = collectDirModules(pending.path);
-        allowlist_.allow(pending.path, pending.hash, pending.requestedPerms, modules);
-        allowlist_.save();
-        return tryLoad();
-    }
-    case 'd': case 'D':
-        allowlist_.deny(pending.path, pending.hash);
-        allowlist_.save();
-        sLog().info("ScriptEngine: permanently denied '{}'", pending.path);
-        return { LoadResult::Status::Denied, 0, {} };
-    case 'n': case 'N':
-    default:
-        sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
-        return { LoadResult::Status::Denied, 0, {} };
+        case 'y':
+        case 'Y':
+            return tryLoad();
+        case 'a':
+        case 'A': {
+            auto modules = collectDirModules(pending.path);
+            allowlist_.allow(pending.path, pending.hash, pending.requestedPerms, modules);
+            allowlist_.save();
+            return tryLoad();
+        }
+        case 'd':
+        case 'D':
+            allowlist_.deny(pending.path, pending.hash);
+            allowlist_.save();
+            sLog().info("ScriptEngine: permanently denied '{}'", pending.path);
+            return { LoadResult::Status::Denied, 0, {} };
+        case 'n':
+        case 'N':
+        default:
+            sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
+            return { LoadResult::Status::Denied, 0, {} };
     }
 }
 
 // ============================================================================
 // Custom XTGETTCAP
 
-std::optional<std::string> Engine::lookupCustomTcap(const std::string& name) const
+std::optional<std::string> Engine::lookupCustomTcap(const std::string &name) const
 {
     // Called from any thread (parser workers most often). Shared lock for reads.
     std::shared_lock<std::shared_mutex> lock(customTcapsMutex_);
     auto it = customTcaps_.find(name);
-    if (it != customTcaps_.end())
+    if (it != customTcaps_.end()) {
         return it->second;
+    }
     return std::nullopt;
 }
 
-void Engine::registerTcap(const std::string& name, const std::string& value)
+void Engine::registerTcap(const std::string &name, const std::string &value)
 {
     std::unique_lock<std::shared_mutex> lock(customTcapsMutex_);
     customTcaps_[name] = value;
 }
 
-void Engine::unregisterTcap(const std::string& name)
+void Engine::unregisterTcap(const std::string &name)
 {
     std::unique_lock<std::shared_mutex> lock(customTcapsMutex_);
     customTcaps_.erase(name);
 }
 
-static JSValue jsMbRegisterTcap(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbRegisterTcap(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ActionsInvoke);
-    if (argc < 2 || !JS_IsString(argv[0])) return JS_ThrowTypeError(ctx, "registerTcap requires (name, value)");
-    const char* name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_EXCEPTION;
+    if (argc < 2 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "registerTcap requires (name, value)");
+    }
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
     std::string value;
     if (argc >= 2 && JS_IsString(argv[1])) {
-        const char* v = JS_ToCString(ctx, argv[1]);
-        if (v) { value = v; JS_FreeCString(ctx, v); }
+        const char *v = JS_ToCString(ctx, argv[1]);
+        if (v) {
+            value = v;
+            JS_FreeCString(ctx, v);
+        }
     }
     engineFromCtx(ctx)->registerTcap(name, value);
     JS_FreeCString(ctx, name);
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbUnregisterTcap(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbUnregisterTcap(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ActionsInvoke);
-    if (argc < 1 || !JS_IsString(argv[0])) return JS_ThrowTypeError(ctx, "unregisterTcap requires (name)");
-    const char* name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_EXCEPTION;
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "unregisterTcap requires (name)");
+    }
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
     engineFromCtx(ctx)->unregisterTcap(name);
     JS_FreeCString(ctx, name);
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbActionsRegister(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbActionsRegister(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, LayoutModify);
-    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
         return JS_ThrowTypeError(ctx, "mb.actions.register(name, fn)");
-    const char* name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_EXCEPTION;
-    auto* inst = instanceFromCtx(ctx);
-    if (!inst) { JS_FreeCString(ctx, name); return JS_ThrowTypeError(ctx, "no instance"); }
+    }
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+    auto *inst = instanceFromCtx(ctx);
+    if (!inst) {
+        JS_FreeCString(ctx, name);
+        return JS_ThrowTypeError(ctx, "no instance");
+    }
     engineFromCtx(ctx)->registerActionHandler(inst->id, name, argv[1]);
     JS_FreeCString(ctx, name);
     return JS_UNDEFINED;
 }
 
-static JSValue jsMbActionsUnregister(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+static JSValue jsMbActionsUnregister(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, LayoutModify);
-    if (argc < 1 || !JS_IsString(argv[0]))
+    if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "mb.actions.unregister(name)");
-    const char* name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_EXCEPTION;
+    }
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
     engineFromCtx(ctx)->unregisterActionHandler(name);
     JS_FreeCString(ctx, name);
     return JS_UNDEFINED;
@@ -3739,38 +4370,44 @@ bool Engine::hasPaneMouseMoveListeners(PaneId pane) const
     return it != paneMouseMoveCount_.end() && it->second > 0;
 }
 
-bool Engine::filterPaneOutput(PaneId pane, std::string& data)
+bool Engine::filterPaneOutput(PaneId pane, std::string &data)
 {
     return runPaneFilters(pane, "__output_filters", data);
 }
 
-bool Engine::filterPaneInput(PaneId pane, std::string& data)
+bool Engine::filterPaneInput(PaneId pane, std::string &data)
 {
     return runPaneFilters(pane, "__input_filters", data);
 }
 
 // Run filters on all Pane JS objects with matching id across controller contexts.
 // Pane objects are found via a __pane_registry global keyed by id.
-bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& data)
+bool Engine::runPaneFilters(PaneId pane, const char *filterProp, std::string &data)
 {
     IterGuard guard(this);
     bool modified = false;
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
 
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         JS_FreeValue(inst.ctx, registry);
-        if (JS_IsUndefined(paneObj)) continue;
+        if (JS_IsUndefined(paneObj)) {
+            continue;
+        }
 
         JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, filterProp);
         if (!JS_IsUndefined(arr)) {
             JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
-            int32_t len = 0;
+            int32_t len    = 0;
             JS_ToInt32(inst.ctx, &len, lenVal);
             JS_FreeValue(inst.ctx, lenVal);
 
@@ -3782,17 +4419,24 @@ bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& da
                     JS_FreeValue(inst.ctx, arg);
 
                     if (JS_IsException(ret)) {
-                        JSValue exc = JS_GetException(inst.ctx);
-                        const char* s = JS_ToCString(inst.ctx, exc);
+                        JSValue exc   = JS_GetException(inst.ctx);
+                        const char *s = JS_ToCString(inst.ctx, exc);
                         sLog().error("ScriptEngine: filter error: {}", s ? s : "(null)");
-                        if (s) JS_FreeCString(inst.ctx, s);
+                        if (s) {
+                            JS_FreeCString(inst.ctx, s);
+                        }
                         JS_FreeValue(inst.ctx, exc);
                     } else if (JS_IsString(ret)) {
                         size_t rlen;
-                        const char* rstr = JS_ToCStringLen(inst.ctx, &rlen, ret);
-                        if (rstr) { data.assign(rstr, rlen); modified = true; JS_FreeCString(inst.ctx, rstr); }
+                        const char *rstr = JS_ToCStringLen(inst.ctx, &rlen, ret);
+                        if (rstr) {
+                            data.assign(rstr, rlen);
+                            modified = true;
+                            JS_FreeCString(inst.ctx, rstr);
+                        }
                     } else if (JS_IsNull(ret)) {
-                        data.clear(); modified = true;
+                        data.clear();
+                        modified = true;
                     }
                     JS_FreeValue(inst.ctx, ret);
                 }
@@ -3809,16 +4453,18 @@ bool Engine::runPaneFilters(PaneId pane, const char* filterProp, std::string& da
 // Async notifications
 // ============================================================================
 
-void Engine::notifyAction(const std::string& actionName)
+void Engine::notifyAction(const std::string &actionName)
 {
     IterGuard guard(this);
     std::string prop = std::string("__evt_action_") + actionName;
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
         enqueueListeners(inst.ctx, arr, 0, nullptr);
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
@@ -3826,18 +4472,22 @@ void Engine::notifyAction(const std::string& actionName)
     }
 }
 
-void Engine::notifyPermissionRequired(const std::string& path,
-                                       const std::string& permissions,
-                                       const std::string& hash)
+void Engine::notifyPermissionRequired(const std::string &path,
+                                      const std::string &permissions,
+                                      const std::string &hash)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        if (!inst.builtIn) continue; // only built-in scripts see permission requests
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        if (!inst.builtIn) {
+            continue; // only built-in scripts see permission requests
+        }
 
         JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr = JS_GetPropertyStr(inst.ctx, mb, "__evt_scriptPermissionRequired");
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_scriptPermissionRequired");
         if (!JS_IsUndefined(arr)) {
             JSValue args[3] = {
                 JS_NewString(inst.ctx, path.c_str()),
@@ -3858,12 +4508,14 @@ void Engine::notifyPermissionRequired(const std::string& path,
 void Engine::notifyPaneCreated(TabId tab, PaneId pane)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
 
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr = JS_GetPropertyStr(inst.ctx, mb, "__evt_paneCreated");
+        JSValue global  = JS_GetGlobalObject(inst.ctx);
+        JSValue mb      = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr     = JS_GetPropertyStr(inst.ctx, mb, "__evt_paneCreated");
         JSValue paneObj = jsPaneNew(inst.ctx, pane);
         enqueueListeners(inst.ctx, arr, 1, &paneObj);
         JS_FreeValue(inst.ctx, paneObj);
@@ -3876,8 +4528,10 @@ void Engine::notifyPaneCreated(TabId tab, PaneId pane)
 void Engine::notifyConfigChanged()
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_configChanged");
@@ -3894,17 +4548,19 @@ void Engine::notifyPaneDestroyed(PaneId pane, Uuid nodeId)
     // time the listener fires, so the payload is (id, nodeId) scalars, not
     // a Pane object (mirrors the convention in TODO.md:165).
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_paneDestroyed");
-        std::string ps = pane.toString();
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global  = JS_GetGlobalObject(inst.ctx);
+        JSValue mb      = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr     = JS_GetPropertyStr(inst.ctx, mb, "__evt_paneDestroyed");
+        std::string ps  = pane.toString();
         JSValue args[2] = {
             JS_NewStringLen(inst.ctx, ps.data(), ps.size()),
             nodeId.isNil()
-              ? JS_NULL
-              : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36),
+                ? JS_NULL
+                : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36),
         };
         enqueueListeners(inst.ctx, arr, 2, args);
         JS_FreeValue(inst.ctx, args[0]);
@@ -3921,12 +4577,14 @@ void Engine::notifyTabCreated(TabId tab)
 {
     IterGuard guard(this);
     std::string s = tab.toString();
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
 
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
+        JSValue mb       = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr      = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
         JSValue tabIdStr = JS_NewStringLen(inst.ctx, s.data(), s.size());
         enqueueListeners(inst.ctx, arr, 1, &tabIdStr);
         JS_FreeValue(inst.ctx, tabIdStr);
@@ -3939,12 +4597,14 @@ void Engine::notifyTabCreated(TabId tab)
 bool Engine::hasQuitListeners() const
 {
     // Const-iterate without IterGuard (no listener fan-out, no mutation).
-    for (const auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (const auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_quit-requested");
-        bool any = false;
+        bool any       = false;
         if (JS_IsArray(arr)) {
             JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
             int32_t arrLen = 0;
@@ -3955,7 +4615,9 @@ bool Engine::hasQuitListeners() const
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);
-        if (any) return true;
+        if (any) {
+            return true;
+        }
     }
     return false;
 }
@@ -3963,8 +4625,10 @@ bool Engine::hasQuitListeners() const
 void Engine::fireQuitRequested()
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_quit-requested");
@@ -3979,11 +4643,13 @@ void Engine::notifyTabDestroyed(TabId tab)
 {
     IterGuard guard(this);
     std::string s = tab.toString();
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabDestroyed");
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
+        JSValue mb       = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr      = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabDestroyed");
         JSValue tabIdStr = JS_NewStringLen(inst.ctx, s.data(), s.size());
         enqueueListeners(inst.ctx, arr, 1, &tabIdStr);
         JS_FreeValue(inst.ctx, tabIdStr);
@@ -3998,18 +4664,17 @@ void Engine::notifyTabDestroyed(TabId tab)
 void Engine::notifyTerminalExited(PaneId pane, Uuid nodeId)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_terminalExited");
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global  = JS_GetGlobalObject(inst.ctx);
+        JSValue mb      = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr     = JS_GetPropertyStr(inst.ctx, mb, "__evt_terminalExited");
         JSValue payload = JS_NewObject(inst.ctx);
-        std::string ps = pane.toString();
-        JS_SetPropertyStr(inst.ctx, payload, "paneId",
-            JS_NewStringLen(inst.ctx, ps.data(), ps.size()));
-        JS_SetPropertyStr(inst.ctx, payload, "paneNodeId",
-            nodeId.isNil() ? JS_NULL
-                           : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36));
+        std::string ps  = pane.toString();
+        JS_SetPropertyStr(inst.ctx, payload, "paneId", JS_NewStringLen(inst.ctx, ps.data(), ps.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "paneNodeId", nodeId.isNil() ? JS_NULL : JS_NewStringLen(inst.ctx, nodeId.toString().c_str(), 36));
         enqueueListeners(inst.ctx, arr, 1, &payload);
         JS_FreeValue(inst.ctx, payload);
         JS_FreeValue(inst.ctx, arr);
@@ -4021,18 +4686,21 @@ void Engine::notifyTerminalExited(PaneId pane, Uuid nodeId)
 void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
 
-
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
-            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_resized");
+            JSValue arr    = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_resized");
             JSValue args[] = { JS_NewInt32(inst.ctx, cols), JS_NewInt32(inst.ctx, rows) };
             enqueueListeners(inst.ctx, arr, 2, args);
             JS_FreeValue(inst.ctx, args[0]);
@@ -4044,19 +4712,22 @@ void Engine::notifyPaneResized(PaneId pane, int cols, int rows)
     }
 }
 
-void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
+void Engine::notifyOSC(PaneId pane, int oscNum, const std::string &payload)
 {
     IterGuard guard(this);
     std::string prop = "__evt_osc:" + std::to_string(oscNum);
 
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
 
-
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
@@ -4072,8 +4743,8 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
 
         // Also check mb-level listeners — pass pane object directly
         JSValue global2 = JS_GetGlobalObject(inst.ctx);
-        JSValue mb = JS_GetPropertyStr(inst.ctx, global2, "mb");
-        JSValue mbArr = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
+        JSValue mb      = JS_GetPropertyStr(inst.ctx, global2, "mb");
+        JSValue mbArr   = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
         if (!JS_IsUndefined(mbArr) && !JS_IsUndefined(paneObj)) {
             JSValue args[] = {
                 JS_DupValue(inst.ctx, paneObj),
@@ -4090,15 +4761,19 @@ void Engine::notifyOSC(PaneId pane, int oscNum, const std::string& payload)
     }
 }
 
-void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& processName)
+void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string &processName)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
@@ -4116,12 +4791,16 @@ void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string& proc
 void Engine::notifyPaneFocusChanged(PaneId pane, bool focused)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
@@ -4136,15 +4815,19 @@ void Engine::notifyPaneFocusChanged(PaneId pane, bool focused)
     }
 }
 
-void Engine::notifyFocusedPopupChanged(PaneId pane, const std::string& popupId)
+void Engine::notifyFocusedPopupChanged(PaneId pane, const std::string &popupId)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
@@ -4162,20 +4845,24 @@ void Engine::notifyFocusedPopupChanged(PaneId pane, const std::string& popupId)
 void Engine::notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, int pixelY)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_mousemove");
             if (!JS_IsUndefined(arr)) {
                 JSValue ev = JS_NewObject(inst.ctx);
-                JS_SetPropertyStr(inst.ctx, ev, "cellX",  JS_NewInt32(inst.ctx, cellX));
-                JS_SetPropertyStr(inst.ctx, ev, "cellY",  JS_NewInt32(inst.ctx, cellY));
+                JS_SetPropertyStr(inst.ctx, ev, "cellX", JS_NewInt32(inst.ctx, cellX));
+                JS_SetPropertyStr(inst.ctx, ev, "cellY", JS_NewInt32(inst.ctx, cellY));
                 JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
                 JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
                 enqueueListeners(inst.ctx, arr, 1, &ev);
@@ -4192,39 +4879,44 @@ void Engine::notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, 
 // (class id / finalizer / class def are declared near the top of the file
 // so the Engine ctor can reference them.)
 
-static JSValue jsCmdMakePos(JSContext* ctx, uint64_t rowId, int absRow, int col)
+static JSValue jsCmdMakePos(JSContext *ctx, uint64_t rowId, int absRow, int col)
 {
     JSValue pos = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, pos, "rowId",  JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
+    JS_SetPropertyStr(ctx, pos, "rowId", JS_NewInt64(ctx, static_cast<int64_t>(rowId)));
     JS_SetPropertyStr(ctx, pos, "absRow", JS_NewInt32(ctx, absRow));
-    JS_SetPropertyStr(ctx, pos, "col",    JS_NewInt32(ctx, col));
+    JS_SetPropertyStr(ctx, pos, "col", JS_NewInt32(ctx, col));
     return pos;
 }
 
 // Magic numbers map to property names in jsCommandProto below.
-static JSValue jsCmdGet(JSContext* ctx, JSValueConst this_val, int magic)
+static JSValue jsCmdGet(JSContext *ctx, JSValueConst this_val, int magic)
 {
-    auto* d = static_cast<CmdObjData*>(JS_GetOpaque2(ctx, this_val, jsCommandClassId));
-    if (!d) return JS_EXCEPTION;
+    auto *d = static_cast<CmdObjData *>(JS_GetOpaque2(ctx, this_val, jsCommandClassId));
+    if (!d) {
+        return JS_EXCEPTION;
+    }
     switch (magic) {
         case 0: return JS_NewInt64(ctx, static_cast<int64_t>(d->info.id));
         case 1: return JS_NewStringLen(ctx, d->info.cwd.data(), d->info.cwd.size());
         case 2: return d->info.exitCode.has_value()
-                     ? JS_NewInt32(ctx, *d->info.exitCode)
-                     : JS_NULL;
+            ? JS_NewInt32(ctx, *d->info.exitCode)
+            : JS_NULL;
         case 3: return JS_NewInt64(ctx, static_cast<int64_t>(d->info.startMs));
         case 4: return JS_NewInt64(ctx, static_cast<int64_t>(d->info.endMs));
         case 5: { // command text — lazy
             if (JS_IsUninitialized(d->cachedCommand)) {
-                Engine* eng = engineFromCtx(ctx);
+                Engine *eng = engineFromCtx(ctx);
                 if (eng && eng->callbacks().paneGetText &&
                     d->info.commandStartCol >= 0 && d->info.outputStartLineId) {
                     std::string s = eng->callbacks().paneGetText(
-                        d->paneId, d->info.commandStartLineId, d->info.commandStartCol,
-                        d->info.outputStartLineId, d->info.outputStartCol);
-                    while (!s.empty() && (s.back() == ' ' || s.back() == '\n' ||
-                                          s.back() == '\r' || s.back() == '\t'))
+                        d->paneId,
+                        d->info.commandStartLineId,
+                        d->info.commandStartCol,
+                        d->info.outputStartLineId,
+                        d->info.outputStartCol);
+                    while (!s.empty() && (s.back() == ' ' || s.back() == '\n' || s.back() == '\r' || s.back() == '\t')) {
                         s.pop_back();
+                    }
                     d->cachedCommand = JS_NewStringLen(ctx, s.data(), s.size());
                 } else {
                     d->cachedCommand = JS_NewString(ctx, "");
@@ -4234,12 +4926,15 @@ static JSValue jsCmdGet(JSContext* ctx, JSValueConst this_val, int magic)
         }
         case 6: { // output text — lazy
             if (JS_IsUninitialized(d->cachedOutput)) {
-                Engine* eng = engineFromCtx(ctx);
+                Engine *eng = engineFromCtx(ctx);
                 if (eng && eng->callbacks().paneGetText &&
                     d->info.outputStartCol >= 0 && d->info.outputEndLineId) {
                     std::string s = eng->callbacks().paneGetText(
-                        d->paneId, d->info.outputStartLineId, d->info.outputStartCol,
-                        d->info.outputEndLineId, d->info.outputEndCol);
+                        d->paneId,
+                        d->info.outputStartLineId,
+                        d->info.outputStartCol,
+                        d->info.outputEndLineId,
+                        d->info.outputEndCol);
                     d->cachedOutput = JS_NewStringLen(ctx, s.data(), s.size());
                 } else {
                     d->cachedOutput = JS_NewString(ctx, "");
@@ -4250,46 +4945,52 @@ static JSValue jsCmdGet(JSContext* ctx, JSValueConst this_val, int magic)
         // rowId is the stable logical-line identifier (reflow-invariant, shared
         // across all physical rows of a soft-wrapped line). absRow is the
         // resolved abs at object-build time (may shift on the next reflow).
-        case 7:  return jsCmdMakePos(ctx, d->info.promptStartLineId,  d->info.promptStartAbsRow,  d->info.promptStartCol);
-        case 8:  return jsCmdMakePos(ctx, d->info.commandStartLineId, d->info.commandStartAbsRow, d->info.commandStartCol);
-        case 9:  return jsCmdMakePos(ctx, d->info.outputStartLineId,  d->info.outputStartAbsRow,  d->info.outputStartCol);
-        case 10: return jsCmdMakePos(ctx, d->info.outputEndLineId,    d->info.outputEndAbsRow,    d->info.outputEndCol);
+        case 7: return jsCmdMakePos(ctx, d->info.promptStartLineId, d->info.promptStartAbsRow, d->info.promptStartCol);
+        case 8: return jsCmdMakePos(ctx, d->info.commandStartLineId, d->info.commandStartAbsRow, d->info.commandStartCol);
+        case 9: return jsCmdMakePos(ctx, d->info.outputStartLineId, d->info.outputStartAbsRow, d->info.outputStartCol);
+        case 10: return jsCmdMakePos(ctx, d->info.outputEndLineId, d->info.outputEndAbsRow, d->info.outputEndCol);
         default: return JS_UNDEFINED;
     }
 }
 
 const JSCFunctionListEntry jsCommandProto[] = {
-    JS_CGETSET_MAGIC_DEF("id",           jsCmdGet, nullptr,  0),
-    JS_CGETSET_MAGIC_DEF("cwd",          jsCmdGet, nullptr,  1),
-    JS_CGETSET_MAGIC_DEF("exitCode",     jsCmdGet, nullptr,  2),
-    JS_CGETSET_MAGIC_DEF("startMs",      jsCmdGet, nullptr,  3),
-    JS_CGETSET_MAGIC_DEF("endMs",        jsCmdGet, nullptr,  4),
-    JS_CGETSET_MAGIC_DEF("command",      jsCmdGet, nullptr,  5),
-    JS_CGETSET_MAGIC_DEF("output",       jsCmdGet, nullptr,  6),
-    JS_CGETSET_MAGIC_DEF("promptStart",  jsCmdGet, nullptr,  7),
-    JS_CGETSET_MAGIC_DEF("commandStart", jsCmdGet, nullptr,  8),
-    JS_CGETSET_MAGIC_DEF("outputStart",  jsCmdGet, nullptr,  9),
-    JS_CGETSET_MAGIC_DEF("outputEnd",    jsCmdGet, nullptr, 10),
+    JS_CGETSET_MAGIC_DEF("id", jsCmdGet, nullptr, 0),
+    JS_CGETSET_MAGIC_DEF("cwd", jsCmdGet, nullptr, 1),
+    JS_CGETSET_MAGIC_DEF("exitCode", jsCmdGet, nullptr, 2),
+    JS_CGETSET_MAGIC_DEF("startMs", jsCmdGet, nullptr, 3),
+    JS_CGETSET_MAGIC_DEF("endMs", jsCmdGet, nullptr, 4),
+    JS_CGETSET_MAGIC_DEF("command", jsCmdGet, nullptr, 5),
+    JS_CGETSET_MAGIC_DEF("output", jsCmdGet, nullptr, 6),
+    JS_CGETSET_MAGIC_DEF("promptStart", jsCmdGet, nullptr, 7),
+    JS_CGETSET_MAGIC_DEF("commandStart", jsCmdGet, nullptr, 8),
+    JS_CGETSET_MAGIC_DEF("outputStart", jsCmdGet, nullptr, 9),
+    JS_CGETSET_MAGIC_DEF("outputEnd", jsCmdGet, nullptr, 10),
 };
 const size_t jsCommandProtoCount = sizeof(jsCommandProto) / sizeof(jsCommandProto[0]);
 
-static JSValue buildCommandObject(JSContext* ctx, const Script::CommandInfo& p, PaneId paneId)
+static JSValue buildCommandObject(JSContext *ctx, const Script::CommandInfo &p, PaneId paneId)
 {
     JSValue obj = JS_NewObjectClass(ctx, jsCommandClassId);
-    if (JS_IsException(obj)) return obj;
-    JS_SetOpaque(obj, new CmdObjData{p, paneId, JS_UNINITIALIZED, JS_UNINITIALIZED});
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+    JS_SetOpaque(obj, new CmdObjData { p, paneId, JS_UNINITIALIZED, JS_UNINITIALIZED });
     return obj;
 }
 
-void Engine::notifyCommandComplete(PaneId pane, const CommandInfo& rec)
+void Engine::notifyCommandComplete(PaneId pane, const CommandInfo &rec)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
@@ -4316,21 +5017,24 @@ void Engine::notifyRowEvicted(PaneId pane, uint64_t lineId)
     // explicitly removes the listener — same model as commandComplete /
     // selection events.
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_rowEvicted");
             // Payload: { rowId } object, matching the shape of other
             // row-id-bearing payloads (cursor, selection, links).
-            JSValue ev = JS_NewObject(inst.ctx);
-            JS_SetPropertyStr(inst.ctx, ev, "rowId",
-                              JS_NewInt64(inst.ctx, static_cast<int64_t>(lineId)));
+            JSValue ev  = JS_NewObject(inst.ctx);
+            JS_SetPropertyStr(inst.ctx, ev, "rowId", JS_NewInt64(inst.ctx, static_cast<int64_t>(lineId)));
             enqueueListeners(inst.ctx, arr, 1, &ev);
             JS_FreeValue(inst.ctx, ev);
             JS_FreeValue(inst.ctx, arr);
@@ -4341,9 +5045,9 @@ void Engine::notifyRowEvicted(PaneId pane, uint64_t lineId)
 }
 
 void Engine::notifyCaptureStopped(PaneId pane,
-                                   const std::string& path,
-                                   const std::string& reason,
-                                   const std::string& errorMessage)
+                                  const std::string &path,
+                                  const std::string &reason,
+                                  const std::string &errorMessage)
 {
     // Posted from PlatformDawn after Terminal::onCaptureStopped fires
     // off-thread (from the parse worker on auto-stop, or main on
@@ -4358,27 +5062,28 @@ void Engine::notifyCaptureStopped(PaneId pane,
     std::string regKey = pane.toString() + ":" + path;
 
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__capture_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue handle = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
         if (!JS_IsUndefined(handle)) {
             // Mark dead first so listeners that read .active inside
             // their callback see the post-stop state.
-            if (auto* d = jsOutputCaptureGet(inst.ctx, handle)) {
+            if (auto *d = jsOutputCaptureGet(inst.ctx, handle)) {
                 d->active = false;
             }
             JSValue arr = JS_GetPropertyStr(inst.ctx, handle, "__evt_stopped");
-            JSValue ev = JS_NewObject(inst.ctx);
-            JS_SetPropertyStr(inst.ctx, ev, "reason",
-                              JS_NewStringLen(inst.ctx, reason.data(), reason.size()));
-            JS_SetPropertyStr(inst.ctx, ev, "error",
-                              JS_NewStringLen(inst.ctx, errorMessage.data(),
-                                              errorMessage.size()));
+            JSValue ev  = JS_NewObject(inst.ctx);
+            JS_SetPropertyStr(inst.ctx, ev, "reason", JS_NewStringLen(inst.ctx, reason.data(), reason.size()));
+            JS_SetPropertyStr(inst.ctx, ev, "error", JS_NewStringLen(inst.ctx, errorMessage.data(), errorMessage.size()));
             enqueueListeners(inst.ctx, arr, 1, &ev);
             JS_FreeValue(inst.ctx, ev);
             JS_FreeValue(inst.ctx, arr);
@@ -4394,12 +5099,16 @@ void Engine::notifyCaptureStopped(PaneId pane,
 void Engine::notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> commandId)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
@@ -4416,16 +5125,20 @@ void Engine::notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> 
     }
 }
 
-void Engine::deliverInput(const char* registryName, uint32_t key,
-                           const char* data, size_t len)
+void Engine::deliverInput(const char *registryName, uint32_t key,
+                          const char *data, size_t len)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, registryName);
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue obj = JS_GetPropertyUint32(inst.ctx, registry, key);
         if (JS_IsUndefined(obj)) {
@@ -4453,10 +5166,12 @@ void Engine::deliverInput(const char* registryName, uint32_t key,
             if (JS_IsFunction(inst.ctx, fn)) {
                 JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &arg);
                 if (JS_IsException(ret)) {
-                    JSValue exc = JS_GetException(inst.ctx);
-                    const char* s = JS_ToCString(inst.ctx, exc);
+                    JSValue exc   = JS_GetException(inst.ctx);
+                    const char *s = JS_ToCString(inst.ctx, exc);
                     sLog().error("ScriptEngine: input listener error: {}", s ? s : "(null)");
-                    if (s) JS_FreeCString(inst.ctx, s);
+                    if (s) {
+                        JS_FreeCString(inst.ctx, s);
+                    }
                     JS_FreeValue(inst.ctx, exc);
                 }
                 JS_FreeValue(inst.ctx, ret);
@@ -4470,15 +5185,19 @@ void Engine::deliverInput(const char* registryName, uint32_t key,
     }
 }
 
-void Engine::deliverPopupInput(const std::string& regKey, const char* data, size_t len)
+void Engine::deliverPopupInput(const std::string &regKey, const char *data, size_t len)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__popup_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
         if (!JS_IsUndefined(obj)) {
@@ -4495,10 +5214,12 @@ void Engine::deliverPopupInput(const std::string& regKey, const char* data, size
                     if (JS_IsFunction(inst.ctx, fn)) {
                         JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &arg);
                         if (JS_IsException(ret)) {
-                            JSValue exc = JS_GetException(inst.ctx);
-                            const char* s = JS_ToCString(inst.ctx, exc);
+                            JSValue exc   = JS_GetException(inst.ctx);
+                            const char *s = JS_ToCString(inst.ctx, exc);
                             sLog().error("ScriptEngine: popup input error: {}", s ? s : "(null)");
-                            if (s) JS_FreeCString(inst.ctx, s);
+                            if (s) {
+                                JS_FreeCString(inst.ctx, s);
+                            }
                             JS_FreeValue(inst.ctx, exc);
                         }
                         JS_FreeValue(inst.ctx, ret);
@@ -4514,15 +5235,19 @@ void Engine::deliverPopupInput(const std::string& regKey, const char* data, size
     }
 }
 
-void Engine::deliverEmbeddedInput(const std::string& regKey, const char* data, size_t len)
+void Engine::deliverEmbeddedInput(const std::string &regKey, const char *data, size_t len)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__embedded_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
         if (!JS_IsUndefined(obj)) {
@@ -4539,10 +5264,12 @@ void Engine::deliverEmbeddedInput(const std::string& regKey, const char* data, s
                     if (JS_IsFunction(inst.ctx, fn)) {
                         JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &arg);
                         if (JS_IsException(ret)) {
-                            JSValue exc = JS_GetException(inst.ctx);
-                            const char* s = JS_ToCString(inst.ctx, exc);
+                            JSValue exc   = JS_GetException(inst.ctx);
+                            const char *s = JS_ToCString(inst.ctx, exc);
                             sLog().error("ScriptEngine: embedded input error: {}", s ? s : "(null)");
-                            if (s) JS_FreeCString(inst.ctx, s);
+                            if (s) {
+                                JS_FreeCString(inst.ctx, s);
+                            }
                             JS_FreeValue(inst.ctx, exc);
                         }
                         JS_FreeValue(inst.ctx, ret);
@@ -4558,15 +5285,19 @@ void Engine::deliverEmbeddedInput(const std::string& regKey, const char* data, s
     }
 }
 
-void Engine::deliverEmbeddedDestroyed(const std::string& regKey)
+void Engine::deliverEmbeddedDestroyed(const std::string &regKey)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__embedded_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
         if (!JS_IsUndefined(obj)) {
@@ -4578,27 +5309,33 @@ void Engine::deliverEmbeddedDestroyed(const std::string& regKey)
             JS_FreeValue(inst.ctx, arr);
 
             // Mark JsEmbeddedData as !alive so subsequent method calls throw.
-            auto* emData = static_cast<JsEmbeddedData*>(JS_GetOpaque(obj, jsEmbeddedClassId));
-            if (emData) emData->alive = false;
+            auto *emData = static_cast<JsEmbeddedData *>(JS_GetOpaque(obj, jsEmbeddedClassId));
+            if (emData) {
+                emData->alive = false;
+            }
         }
         JS_FreeValue(inst.ctx, obj);
         JS_FreeValue(inst.ctx, registry);
     }
 }
 
-void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
-                                     const std::string& type, int cellX, int cellY,
-                                     int pixelX, int pixelY, int button)
+void Engine::deliverPopupMouseEvent(PaneId pane, const std::string &popupId,
+                                    const std::string &type, int cellX, int cellY,
+                                    int pixelX, int pixelY, int button)
 {
     IterGuard guard(this);
     std::string regKey = pane.toString() + ":" + popupId;
 
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__popup_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue obj = JS_GetPropertyStr(inst.ctx, registry, regKey.c_str());
         if (!JS_IsUndefined(obj)) {
@@ -4623,10 +5360,12 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
                     if (JS_IsFunction(inst.ctx, fn)) {
                         JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &ev);
                         if (JS_IsException(ret)) {
-                            JSValue exc = JS_GetException(inst.ctx);
-                            const char* s = JS_ToCString(inst.ctx, exc);
+                            JSValue exc   = JS_GetException(inst.ctx);
+                            const char *s = JS_ToCString(inst.ctx, exc);
                             sLog().error("ScriptEngine: popup mouse error: {}", s ? s : "(null)");
-                            if (s) JS_FreeCString(inst.ctx, s);
+                            if (s) {
+                                JS_FreeCString(inst.ctx, s);
+                            }
                             JS_FreeValue(inst.ctx, exc);
                         }
                         JS_FreeValue(inst.ctx, ret);
@@ -4642,17 +5381,21 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
     }
 }
 
-void Engine::deliverMouseToRegistry(const char* registryName,
-                                     const std::string& key, const std::string& type,
-                                     int cellX, int cellY, int pixelX, int pixelY, int button)
+void Engine::deliverMouseToRegistry(const char *registryName,
+                                    const std::string &key, const std::string &type,
+                                    int cellX, int cellY, int pixelX, int pixelY, int button)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, registryName);
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue obj = JS_GetPropertyStr(inst.ctx, registry, key.c_str());
         if (!JS_IsUndefined(obj)) {
@@ -4676,10 +5419,12 @@ void Engine::deliverMouseToRegistry(const char* registryName,
                     if (JS_IsFunction(inst.ctx, fn)) {
                         JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &ev);
                         if (JS_IsException(ret)) {
-                            JSValue exc = JS_GetException(inst.ctx);
-                            const char* s = JS_ToCString(inst.ctx, exc);
+                            JSValue exc   = JS_GetException(inst.ctx);
+                            const char *s = JS_ToCString(inst.ctx, exc);
                             sLog().error("ScriptEngine: mouse event error: {}", s ? s : "(null)");
-                            if (s) JS_FreeCString(inst.ctx, s);
+                            if (s) {
+                                JS_FreeCString(inst.ctx, s);
+                            }
                             JS_FreeValue(inst.ctx, exc);
                         }
                         JS_FreeValue(inst.ctx, ret);
@@ -4696,48 +5441,60 @@ void Engine::deliverMouseToRegistry(const char* registryName,
 }
 
 void Engine::deliverEmbeddedMouseEvent(PaneId pane, uint64_t lineId,
-                                        const std::string& type,
-                                        int cellX, int cellY, int pixelX, int pixelY,
-                                        int button)
+                                       const std::string &type,
+                                       int cellX, int cellY, int pixelX, int pixelY,
+                                       int button)
 {
     deliverMouseToRegistry("__embedded_registry",
                            pane.toString() + ":" + std::to_string(lineId),
-                           type, cellX, cellY, pixelX, pixelY, button);
+                           type,
+                           cellX,
+                           cellY,
+                           pixelX,
+                           pixelY,
+                           button);
 }
 
-void Engine::deliverMousemoveToRegistry(const char* regName,
-                                         const std::string& key,
-                                         int cellX, int cellY, int pixelX, int pixelY)
+void Engine::deliverMousemoveToRegistry(const char *regName,
+                                        const std::string &key,
+                                        int cellX, int cellY, int pixelX, int pixelY)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, regName);
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue obj = JS_GetPropertyStr(inst.ctx, registry, key.c_str());
         if (!JS_IsUndefined(obj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__evt_mousemove");
             if (!JS_IsUndefined(arr)) {
                 JSValue ev = JS_NewObject(inst.ctx);
-                JS_SetPropertyStr(inst.ctx, ev, "cellX",  JS_NewInt32(inst.ctx, cellX));
-                JS_SetPropertyStr(inst.ctx, ev, "cellY",  JS_NewInt32(inst.ctx, cellY));
+                JS_SetPropertyStr(inst.ctx, ev, "cellX", JS_NewInt32(inst.ctx, cellX));
+                JS_SetPropertyStr(inst.ctx, ev, "cellY", JS_NewInt32(inst.ctx, cellY));
                 JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
                 JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
                 JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
-                int32_t arrLen = 0; JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                int32_t arrLen = 0;
+                JS_ToInt32(inst.ctx, &arrLen, lenVal);
                 JS_FreeValue(inst.ctx, lenVal);
                 for (int32_t i = 0; i < arrLen; ++i) {
                     JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
                     if (JS_IsFunction(inst.ctx, fn)) {
                         JSValue ret = JS_Call(inst.ctx, fn, obj, 1, &ev);
                         if (JS_IsException(ret)) {
-                            JSValue exc = JS_GetException(inst.ctx);
-                            const char* s = JS_ToCString(inst.ctx, exc);
+                            JSValue exc   = JS_GetException(inst.ctx);
+                            const char *s = JS_ToCString(inst.ctx, exc);
                             sLog().error("ScriptEngine: mousemove error: {}", s ? s : "(null)");
-                            if (s) JS_FreeCString(inst.ctx, s);
+                            if (s) {
+                                JS_FreeCString(inst.ctx, s);
+                            }
                             JS_FreeValue(inst.ctx, exc);
                         }
                         JS_FreeValue(inst.ctx, ret);
@@ -4753,32 +5510,42 @@ void Engine::deliverMousemoveToRegistry(const char* regName,
     }
 }
 
-void Engine::deliverPopupMouseMove(PaneId pane, const std::string& popupId,
-                                    int cellX, int cellY, int pixelX, int pixelY)
+void Engine::deliverPopupMouseMove(PaneId pane, const std::string &popupId,
+                                   int cellX, int cellY, int pixelX, int pixelY)
 {
     deliverMousemoveToRegistry("__popup_registry",
                                pane.toString() + ":" + popupId,
-                               cellX, cellY, pixelX, pixelY);
+                               cellX,
+                               cellY,
+                               pixelX,
+                               pixelY);
 }
 
 void Engine::deliverEmbeddedMouseMove(PaneId pane, uint64_t lineId,
-                                       int cellX, int cellY, int pixelX, int pixelY)
+                                      int cellX, int cellY, int pixelX, int pixelY)
 {
     deliverMousemoveToRegistry("__embedded_registry",
                                pane.toString() + ":" + std::to_string(lineId),
-                               cellX, cellY, pixelX, pixelY);
+                               cellX,
+                               cellY,
+                               pixelX,
+                               pixelY);
 }
 
-void Engine::deliverResizedToRegistry(const char* regName, const std::string& key,
-                                       int cols, int rows)
+void Engine::deliverResizedToRegistry(const char *regName, const std::string &key,
+                                      int cols, int rows)
 {
     IterGuard guard(this);
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, regName);
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
         JSValue obj = JS_GetPropertyStr(inst.ctx, registry, key.c_str());
         if (!JS_IsUndefined(obj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, obj, "__evt_resized");
@@ -4788,17 +5555,20 @@ void Engine::deliverResizedToRegistry(const char* regName, const std::string& ke
                     JS_NewInt32(inst.ctx, rows),
                 };
                 JSValue lenVal = JS_GetPropertyStr(inst.ctx, arr, "length");
-                int32_t arrLen = 0; JS_ToInt32(inst.ctx, &arrLen, lenVal);
+                int32_t arrLen = 0;
+                JS_ToInt32(inst.ctx, &arrLen, lenVal);
                 JS_FreeValue(inst.ctx, lenVal);
                 for (int32_t i = 0; i < arrLen; ++i) {
                     JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
                     if (JS_IsFunction(inst.ctx, fn)) {
                         JSValue ret = JS_Call(inst.ctx, fn, obj, 2, argv);
                         if (JS_IsException(ret)) {
-                            JSValue exc = JS_GetException(inst.ctx);
-                            const char* s = JS_ToCString(inst.ctx, exc);
+                            JSValue exc   = JS_GetException(inst.ctx);
+                            const char *s = JS_ToCString(inst.ctx, exc);
                             sLog().error("ScriptEngine: resized error: {}", s ? s : "(null)");
-                            if (s) JS_FreeCString(inst.ctx, s);
+                            if (s) {
+                                JS_FreeCString(inst.ctx, s);
+                            }
                             JS_FreeValue(inst.ctx, exc);
                         }
                         JS_FreeValue(inst.ctx, ret);
@@ -4815,29 +5585,33 @@ void Engine::deliverResizedToRegistry(const char* regName, const std::string& ke
     }
 }
 
-void Engine::deliverPopupResized(PaneId pane, const std::string& popupId, int cols, int rows)
+void Engine::deliverPopupResized(PaneId pane, const std::string &popupId, int cols, int rows)
 {
     deliverResizedToRegistry("__popup_registry",
-                             pane.toString() + ":" + popupId, cols, rows);
+                             pane.toString() + ":" + popupId,
+                             cols,
+                             rows);
 }
 
 void Engine::deliverEmbeddedResized(PaneId pane, uint64_t lineId, int cols, int rows)
 {
     deliverResizedToRegistry("__embedded_registry",
-                             pane.toString() + ":" + std::to_string(lineId), cols, rows);
+                             pane.toString() + ":" + std::to_string(lineId),
+                             cols,
+                             rows);
 }
 
-void Engine::deliverPaneMouseEvent(PaneId pane, const std::string& type,
-                                    int cellX, int cellY, int pixelX, int pixelY, int button)
+void Engine::deliverPaneMouseEvent(PaneId pane, const std::string &type,
+                                   int cellX, int cellY, int pixelX, int pixelY, int button)
 {
-    deliverMouseToRegistry("__pane_registry", pane.toString(),
-                                 type, cellX, cellY, pixelX, pixelY, button);
+    deliverMouseToRegistry("__pane_registry", pane.toString(), type, cellX, cellY, pixelX, pixelY, button);
 }
 
 void Engine::executePendingJobs()
 {
-    JSContext* pctx;
-    while (JS_ExecutePendingJob(rt_, &pctx) > 0) {}
+    JSContext *pctx;
+    while (JS_ExecutePendingJob(rt_, &pctx) > 0) {
+    }
 }
 
 // ============================================================================
@@ -4864,14 +5638,17 @@ void Engine::cleanupPane(PaneId pane)
         paneInputFilterFlag_.erase(fl);
     }
 
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
 
-
-        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
         JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
         JS_FreeValue(inst.ctx, global);
-        if (JS_IsUndefined(registry)) continue;
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
 
         JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
         if (!JS_IsUndefined(paneObj)) {
@@ -4881,8 +5658,10 @@ void Engine::cleanupPane(PaneId pane)
             JS_FreeValue(inst.ctx, arr);
 
             // Mark dead
-            auto* data = jsPaneGet(inst.ctx, paneObj);
-            if (data) data->alive = false;
+            auto *data = jsPaneGet(inst.ctx, paneObj);
+            if (data) {
+                data->alive = false;
+            }
 
             // Remove from registry
             JS_SetPropertyStr(inst.ctx, registry, pane.toString().c_str(), JS_UNDEFINED);
@@ -4904,25 +5683,34 @@ void Engine::cleanupTab(TabId)
 // Helpers
 // ============================================================================
 
-Engine::Instance* Engine::findInstance(InstanceId id)
+Engine::Instance *Engine::findInstance(InstanceId id)
 {
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        if (inst.id == id) return &inst;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        if (inst.id == id) {
+            return &inst;
+        }
     }
     return nullptr;
 }
 
-Engine::Instance* Engine::findInstanceByCtx(JSContext* ctx)
+Engine::Instance *Engine::findInstanceByCtx(JSContext *ctx)
 {
-    for (auto& inst : instances_) {
-        if (!inst.ctx) continue;
-        if (inst.ctx == ctx) return &inst;
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        if (inst.ctx == ctx) {
+            return &inst;
+        }
     }
     return nullptr;
 }
 
-void Engine::addPaneOutputFilter(PaneId pane, InstanceId instId) {
+void Engine::addPaneOutputFilter(PaneId pane, InstanceId instId)
+{
     paneOutputFilterCount_[pane]++;
     // Lazily create the per-pane atomic so the parse worker can read
     // it without taking any lock. outputFilterFlag() returns a
@@ -4930,48 +5718,65 @@ void Engine::addPaneOutputFilter(PaneId pane, InstanceId instId) {
     // that same atomic.
     auto fl = outputFilterFlag(pane);
     fl->store(true, std::memory_order_release);
-    if (auto* inst = findInstance(instId))
+    if (auto *inst = findInstance(instId)) {
         inst->paneOutputFilters.push_back(pane);
+    }
 }
 
-void Engine::addPaneInputFilter(PaneId pane, InstanceId instId) {
+void Engine::addPaneInputFilter(PaneId pane, InstanceId instId)
+{
     paneInputFilterCount_[pane]++;
     auto fl = inputFilterFlag(pane);
     fl->store(true, std::memory_order_release);
-    if (auto* inst = findInstance(instId))
+    if (auto *inst = findInstance(instId)) {
         inst->paneInputFilters.push_back(pane);
+    }
 }
 
 std::shared_ptr<std::atomic<bool>> Engine::outputFilterFlag(PaneId pane)
 {
-    auto& slot = paneOutputFilterFlag_[pane];
-    if (!slot) slot = std::make_shared<std::atomic<bool>>(false);
+    auto &slot = paneOutputFilterFlag_[pane];
+    if (!slot) {
+        slot = std::make_shared<std::atomic<bool>>(false);
+    }
     return slot;
 }
 
 std::shared_ptr<std::atomic<bool>> Engine::inputFilterFlag(PaneId pane)
 {
-    auto& slot = paneInputFilterFlag_[pane];
-    if (!slot) slot = std::make_shared<std::atomic<bool>>(false);
+    auto &slot = paneInputFilterFlag_[pane];
+    if (!slot) {
+        slot = std::make_shared<std::atomic<bool>>(false);
+    }
     return slot;
 }
 
-void Engine::addPaneMouseMoveListener(PaneId pane, InstanceId instId) {
+void Engine::addPaneMouseMoveListener(PaneId pane, InstanceId instId)
+{
     paneMouseMoveCount_[pane]++;
-    if (auto* inst = findInstance(instId))
+    if (auto *inst = findInstance(instId)) {
         inst->paneMouseMoveListeners.push_back(pane);
+    }
 }
 
-bool Engine::setNamespace(InstanceId id, const std::string& ns)
+bool Engine::setNamespace(InstanceId id, const std::string &ns)
 {
-    auto* inst = findInstance(id);
-    if (!inst) return false;
-    if (!inst->ns.empty()) return false; // already set
+    auto *inst = findInstance(id);
+    if (!inst) {
+        return false;
+    }
+    if (!inst->ns.empty()) {
+        return false; // already set
+    }
 
     // Check no other instance holds this namespace
-    for (auto& other : instances_) {
-        if (!other.ctx) continue;
-        if (other.id != id && other.ns == ns) return false;
+    for (auto &other : instances_) {
+        if (!other.ctx) {
+            continue;
+        }
+        if (other.id != id && other.ns == ns) {
+            return false;
+        }
     }
 
     inst->ns = ns;
@@ -4979,14 +5784,18 @@ bool Engine::setNamespace(InstanceId id, const std::string& ns)
     return true;
 }
 
-bool Engine::registerAction(InstanceId id, const std::string& name)
+bool Engine::registerAction(InstanceId id, const std::string &name)
 {
-    auto* inst = findInstance(id);
-    if (!inst) return false;
-    if (inst->ns.empty()) return false; // no namespace set
+    auto *inst = findInstance(id);
+    if (!inst) {
+        return false;
+    }
+    if (inst->ns.empty()) {
+        return false; // no namespace set
+    }
 
     std::string fullName = inst->ns + "." + name;
-    auto it = registeredActions_.find(fullName);
+    auto it              = registeredActions_.find(fullName);
     if (it != registeredActions_.end()) {
         // Already registered. Idempotent for the same instance (this is
         // what enables config.js to be re-eval'd in the same context on
@@ -4999,7 +5808,7 @@ bool Engine::registerAction(InstanceId id, const std::string& name)
     return true;
 }
 
-bool Engine::isActionRegistered(const std::string& fullName) const
+bool Engine::isActionRegistered(const std::string &fullName) const
 {
     return registeredActions_.count(fullName) > 0;
 }
@@ -5008,48 +5817,58 @@ std::vector<std::string> Engine::registeredActions() const
 {
     std::vector<std::string> names;
     names.reserve(registeredActions_.size());
-    for (const auto& [name, id] : registeredActions_) names.push_back(name);
+    for (const auto &[name, id] : registeredActions_) {
+        names.push_back(name);
+    }
     return names;
 }
 
-bool Engine::registerActionHandler(InstanceId id, const std::string& name, JSValue fn)
+bool Engine::registerActionHandler(InstanceId id, const std::string &name, JSValue fn)
 {
-    Instance* inst = findInstance(id);
-    if (!inst || !inst->ctx) return false;
+    Instance *inst = findInstance(id);
+    if (!inst || !inst->ctx) {
+        return false;
+    }
     auto it = actionHandlers_.find(name);
     if (it != actionHandlers_.end()) {
         JS_FreeValue(it->second.ctx, it->second.fn);
-        it->second = ActionHandler{id, inst->ctx, JS_DupValue(inst->ctx, fn)};
+        it->second = ActionHandler { id, inst->ctx, JS_DupValue(inst->ctx, fn) };
     } else {
         actionHandlers_.emplace(name,
-            ActionHandler{id, inst->ctx, JS_DupValue(inst->ctx, fn)});
+                                ActionHandler { id, inst->ctx, JS_DupValue(inst->ctx, fn) });
     }
     return true;
 }
 
-bool Engine::unregisterActionHandler(const std::string& name)
+bool Engine::unregisterActionHandler(const std::string &name)
 {
     auto it = actionHandlers_.find(name);
-    if (it == actionHandlers_.end()) return false;
+    if (it == actionHandlers_.end()) {
+        return false;
+    }
     JS_FreeValue(it->second.ctx, it->second.fn);
     actionHandlers_.erase(it);
     return true;
 }
 
-bool Engine::invokeActionHandler(const std::string& name,
-                                 const std::function<JSValue(JSContext*)>& buildArgs)
+bool Engine::invokeActionHandler(const std::string &name,
+                                 const std::function<JSValue(JSContext *)> &buildArgs)
 {
     auto it = actionHandlers_.find(name);
-    if (it == actionHandlers_.end()) return false;
-    JSContext* ctx = it->second.ctx;
-    JSValue fn = JS_DupValue(ctx, it->second.fn); // protect against re-entry unregister
-    JSValue args = buildArgs ? buildArgs(ctx) : JS_UNDEFINED;
+    if (it == actionHandlers_.end()) {
+        return false;
+    }
+    JSContext *ctx = it->second.ctx;
+    JSValue fn     = JS_DupValue(ctx, it->second.fn); // protect against re-entry unregister
+    JSValue args   = buildArgs ? buildArgs(ctx) : JS_UNDEFINED;
     JSValue result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &args);
     if (JS_IsException(result)) {
-        JSValue exc = JS_GetException(ctx);
-        const char* s = JS_ToCString(ctx, exc);
+        JSValue exc   = JS_GetException(ctx);
+        const char *s = JS_ToCString(ctx, exc);
         sLog().error("action handler '{}' threw: {}", name, s ? s : "(unknown)");
-        if (s) JS_FreeCString(ctx, s);
+        if (s) {
+            JS_FreeCString(ctx, s);
+        }
         JS_FreeValue(ctx, exc);
     }
     JS_FreeValue(ctx, result);

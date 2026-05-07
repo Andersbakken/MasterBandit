@@ -31,7 +31,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern char** environ; // POSIX: process environment for default inheritance.
+extern char **environ; // POSIX: process environment for default inheritance.
                        // On macOS this is fine for executables (this TU is
                        // linked directly into the executable). Frameworks
                        // / dylibs would need _NSGetEnviron — n/a here.
@@ -45,11 +45,13 @@ extern char** environ; // POSIX: process environment for default inheritance.
 // is then handed to the grandchild which only does pointer-arithmetic
 // reads.
 namespace platform_spawn_detail {
-struct MergedEnv {
+struct MergedEnv
+{
     std::vector<std::string> storage; // owning "K=V" strings
-    std::vector<char*>       envp;    // points into storage; nullptr-terminated
+    std::vector<char *> envp;         // points into storage; nullptr-terminated
 };
-static MergedEnv buildEnv(const std::vector<std::pair<std::string, std::string>>& overrides)
+
+static MergedEnv buildEnv(const std::vector<std::pair<std::string, std::string>> &overrides)
 {
     MergedEnv out;
     if (overrides.empty()) {
@@ -58,23 +60,24 @@ static MergedEnv buildEnv(const std::vector<std::pair<std::string, std::string>>
         // parent's environ until exec replaces the address space —
         // which happens in the grandchild before any of these
         // pointers could be invalidated.
-        for (char** p = environ; *p; ++p)
+        for (char **p = environ; *p; ++p) {
             out.envp.push_back(*p);
+        }
         out.envp.push_back(nullptr);
         return out;
     }
     // Index existing env by key for fast replace.
     std::unordered_map<std::string, size_t> keyToIdx;
-    for (char** p = environ; *p; ++p) {
+    for (char **p = environ; *p; ++p) {
         std::string entry = *p;
-        auto eq = entry.find('=');
-        std::string key = (eq == std::string::npos) ? entry : entry.substr(0, eq);
-        keyToIdx[key] = out.storage.size();
+        auto eq           = entry.find('=');
+        std::string key   = (eq == std::string::npos) ? entry : entry.substr(0, eq);
+        keyToIdx[key]     = out.storage.size();
         out.storage.push_back(std::move(entry));
     }
-    for (const auto& kv : overrides) {
+    for (const auto &kv : overrides) {
         std::string entry = kv.first + "=" + kv.second;
-        auto it = keyToIdx.find(kv.first);
+        auto it           = keyToIdx.find(kv.first);
         if (it != keyToIdx.end()) {
             out.storage[it->second] = std::move(entry);
         } else {
@@ -83,15 +86,17 @@ static MergedEnv buildEnv(const std::vector<std::pair<std::string, std::string>>
         }
     }
     out.envp.reserve(out.storage.size() + 1);
-    for (auto& s : out.storage) out.envp.push_back(s.data());
+    for (auto &s : out.storage) {
+        out.envp.push_back(s.data());
+    }
     out.envp.push_back(nullptr);
     return out;
 }
 } // namespace platform_spawn_detail
 
-pid_t platformSpawnDetached(const std::string& path,
-                            const std::vector<std::string>& argv,
-                            const ProcessSpawnOptions& opts)
+pid_t platformSpawnDetached(const std::string &path,
+                            const std::vector<std::string> &argv,
+                            const ProcessSpawnOptions &opts)
 {
     if (path.empty()) {
         spdlog::warn("platformSpawnDetached: empty path");
@@ -101,15 +106,17 @@ pid_t platformSpawnDetached(const std::string& path,
     // Build argv as a char* vector. Strings owned by `argv` outlive
     // this function (the parent waits for the intermediate child
     // before returning), so .data() pointers are stable.
-    std::vector<char*> cargv;
+    std::vector<char *> cargv;
     cargv.reserve(argv.size() + 1);
-    for (const auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+    for (const auto &a : argv) {
+        cargv.push_back(const_cast<char *>(a.c_str()));
+    }
     cargv.push_back(nullptr);
 
     // If argv is empty, default argv[0] to the binary path so execvp
     // sees a non-empty argv[0]. Saves callers from boilerplate.
     if (cargv.size() == 1) {
-        cargv.insert(cargv.begin(), const_cast<char*>(path.c_str()));
+        cargv.insert(cargv.begin(), const_cast<char *>(path.c_str()));
     }
 
     platform_spawn_detail::MergedEnv env =
@@ -170,7 +177,9 @@ pid_t platformSpawnDetached(const std::string& path,
                 dup2(devnull, STDIN_FILENO);
                 dup2(devnull, STDOUT_FILENO);
                 dup2(devnull, STDERR_FILENO);
-                if (devnull > STDERR_FILENO) close(devnull);
+                if (devnull > STDERR_FILENO) {
+                    close(devnull);
+                }
             }
 
             // chdir before exec if requested. Errors here surface as
@@ -178,7 +187,7 @@ pid_t platformSpawnDetached(const std::string& path,
             // below).
             if (!opts.cwd.empty()) {
                 if (chdir(opts.cwd.c_str()) < 0) {
-                    int err = errno;
+                    int err   = errno;
                     ssize_t n = write(errPipe[1], &err, sizeof(err));
                     (void)n;
                     _exit(127);
@@ -195,13 +204,13 @@ pid_t platformSpawnDetached(const std::string& path,
             environ = env.envp.data();
             execvp(path.c_str(), cargv.data());
 #endif
-            int err = errno;
+            int err   = errno;
             ssize_t n = write(errPipe[1], &err, sizeof(err));
             (void)n;
             _exit(127);
         }
         if (inner < 0) {
-            int err = errno;
+            int err   = errno;
             ssize_t n = write(errPipe[1], &err, sizeof(err));
             (void)n;
         }
@@ -224,7 +233,8 @@ pid_t platformSpawnDetached(const std::string& path,
 
     if (n == static_cast<ssize_t>(sizeof(err))) {
         spdlog::warn("platformSpawnDetached({}): execvp/chdir failed: {}",
-                     path, strerror(err));
+                     path,
+                     strerror(err));
         // We still return pid; the intermediate child reaped fine.
         // The grandchild that failed exec has already _exit(127)'d
         // and been adopted by init for reaping — we never see it.

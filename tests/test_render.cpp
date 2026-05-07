@@ -1,9 +1,9 @@
-#include <doctest/doctest.h>
 #include "MBConnection.h"
 #include "Utils.h"
+#include <doctest/doctest.h>
 #include <glaze/glaze.hpp>
-#include <vector>
 #include <string>
+#include <vector>
 
 // These tests require a GPU and launch mb --test as a child process.
 // A single shared process is reused across tests (reset between each).
@@ -13,7 +13,7 @@
 
 TEST_CASE("render: headless startup and screenshot" * doctest::test_suite("render"))
 {
-    auto& rt = MBConnection::shared();
+    auto &rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.wait(500);
@@ -29,7 +29,7 @@ TEST_CASE("render: headless startup and screenshot" * doctest::test_suite("rende
 
 TEST_CASE("render: text injection and cell rect screenshot" * doctest::test_suite("render"))
 {
-    auto& rt = MBConnection::shared();
+    auto &rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.reset();
@@ -48,7 +48,7 @@ TEST_CASE("render: text injection and cell rect screenshot" * doctest::test_suit
 
 TEST_CASE("render: pane screenshot" * doctest::test_suite("render"))
 {
-    auto& rt = MBConnection::shared();
+    auto &rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.reset();
@@ -65,9 +65,9 @@ TEST_CASE("render: VS16 warning emoji renders as color" * doctest::test_suite("r
     // our inject and our screenshot, avoiding zsh prompt interference.
     // Supply the bundled COLRv1 emoji subset so the emoji renders in color.
     MBConnection::Options opts;
-    opts.shell = "/bin/cat";
+    opts.shell         = "/bin/cat";
     opts.emojiFontPath = MB_TEST_EMOJI_FONT;
-    auto& rt = MBConnection::shared(opts);
+    auto &rt           = MBConnection::shared(opts);
     rt.reset();
 
     rt.wait(300);
@@ -101,9 +101,9 @@ TEST_CASE("render: VS16 emoji draws exactly one glyph at base cell" * doctest::t
     // draws a black square, not a colored emoji). What we actually want is
     // "exactly one drawable glyph maps to the warn cell" — count, not pixels.
     MBConnection::Options opts;
-    opts.shell = "/bin/cat";
+    opts.shell         = "/bin/cat";
     opts.emojiFontPath = MB_TEST_BUGGY_VS16_FONT;
-    auto& rt = MBConnection::shared(opts);
+    auto &rt           = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -122,30 +122,39 @@ TEST_CASE("render: VS16 emoji draws exactly one glyph at base cell" * doctest::t
     // The test only needs counts[0] for row 0. Parse minimally.
     glz::generic doc;
     REQUIRE(glz::read_json(doc, gridJson) == glz::error_code::none);
-    auto* obj = std::get_if<glz::generic::object_t>(&doc.data);
+    auto *obj = std::get_if<glz::generic::object_t>(&doc.data);
     REQUIRE(obj != nullptr);
     auto cgcIt = obj->find("cell_glyph_counts");
     REQUIRE(cgcIt != obj->end());
-    auto* rows = std::get_if<glz::generic::array_t>(&cgcIt->second.data);
+    auto *rows = std::get_if<glz::generic::array_t>(&cgcIt->second.data);
     REQUIRE(rows != nullptr);
     REQUIRE(!rows->empty());
 
     // Find row 0's count array.
-    bool found = false;
+    bool found     = false;
     int row0Count0 = -1;
-    for (const auto& r : *rows) {
-        auto* ro = std::get_if<glz::generic::object_t>(&r.data);
-        if (!ro) continue;
+    for (const auto &r : *rows) {
+        auto *ro = std::get_if<glz::generic::object_t>(&r.data);
+        if (!ro) {
+            continue;
+        }
         auto yIt = ro->find("y");
         auto cIt = ro->find("counts");
-        if (yIt == ro->end() || cIt == ro->end()) continue;
-        auto* yn = std::get_if<double>(&yIt->second.data);
-        auto* cn = std::get_if<glz::generic::array_t>(&cIt->second.data);
-        if (!yn || !cn) continue;
-        if (static_cast<int>(*yn) != 0) continue;
+        if (yIt == ro->end() || cIt == ro->end()) {
+            continue;
+        }
+        auto *yn = std::get_if<double>(&yIt->second.data);
+        auto *cn = std::get_if<glz::generic::array_t>(&cIt->second.data);
+        if (!yn || !cn) {
+            continue;
+        }
+        if (static_cast<int>(*yn) != 0) {
+            continue;
+        }
         REQUIRE(!cn->empty());
-        if (auto* d = std::get_if<double>(&(*cn)[0].data))
+        if (auto *d = std::get_if<double>(&(*cn)[0].data)) {
             row0Count0 = static_cast<int>(*d);
+        }
         found = true;
         break;
     }
@@ -162,7 +171,7 @@ TEST_CASE("render: DEC line drawing (ESC ( 0) produces box characters" * doctest
     // Use /bin/cat so the shell doesn't emit a prompt before our inject.
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    auto& rt = MBConnection::shared(opts);
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -184,10 +193,10 @@ TEST_CASE("render: warning sign without VS16 renders as narrow monochrome" * doc
     // Inconsolata as primary (no U+26A0), DejaVu subset as non-COLR fallback (has U+26A0),
     // no emoji font — so ⚠ must render via the non-COLR fallback path.
     MBConnection::Options opts;
-    opts.fontPath = MB_TEST_TEXT_FONT;
+    opts.fontPath         = MB_TEST_TEXT_FONT;
     opts.fallbackFontPath = MB_TEST_FALLBACK_FONT;
-    opts.shell = "/bin/cat";
-    auto& rt = MBConnection::shared(opts);
+    opts.shell            = "/bin/cat";
+    auto &rt              = MBConnection::shared(opts);
     rt.reset();
 
     rt.wait(300);
@@ -205,17 +214,17 @@ TEST_CASE("render: warning sign without VS16 renders as narrow monochrome" * doc
 static MBConnection::Options mixedEmojiOpts()
 {
     MBConnection::Options opts;
-    opts.fontPath = MB_TEST_TEXT_FONT;
+    opts.fontPath         = MB_TEST_TEXT_FONT;
     opts.fallbackFontPath = MB_TEST_FALLBACK_FONT;
-    opts.emojiFontPath = MB_TEST_EMOJI_FONT;
-    opts.shell = "/bin/cat";
+    opts.emojiFontPath    = MB_TEST_EMOJI_FONT;
+    opts.shell            = "/bin/cat";
     return opts;
 }
 
 TEST_CASE("render: text followed by VS16 emoji" * doctest::test_suite("render"))
 {
     // "Hi ⚠️" — ASCII text then a VS16-widened COLR emoji (4 cells: H i space ⚠️)
-    auto& rt = MBConnection::shared(mixedEmojiOpts());
+    auto &rt = MBConnection::shared(mixedEmojiOpts());
     rt.reset();
     rt.wait(300);
     rt.injectData("Hi \xe2\x9a\xa0\xef\xb8\x8f");
@@ -228,7 +237,7 @@ TEST_CASE("render: text followed by VS16 emoji" * doctest::test_suite("render"))
 TEST_CASE("render: text followed by wide emoji" * doctest::test_suite("render"))
 {
     // "Hi 🍄" — ASCII text then an inherently wide COLR emoji (5 cells: H i space 🍄🍄)
-    auto& rt = MBConnection::shared(mixedEmojiOpts());
+    auto &rt = MBConnection::shared(mixedEmojiOpts());
     rt.reset();
     rt.wait(300);
     rt.injectData("Hi \xf0\x9f\x8d\x84");
@@ -241,7 +250,7 @@ TEST_CASE("render: text followed by wide emoji" * doctest::test_suite("render"))
 TEST_CASE("render: text followed by non-VS16 warning" * doctest::test_suite("render"))
 {
     // "Hi ⚠" — ASCII text then a plain monochrome warning sign via fallback (4 cells)
-    auto& rt = MBConnection::shared(mixedEmojiOpts());
+    auto &rt = MBConnection::shared(mixedEmojiOpts());
     rt.reset();
     rt.wait(300);
     rt.injectData("Hi \xe2\x9a\xa0");
@@ -254,9 +263,9 @@ TEST_CASE("render: text followed by non-VS16 warning" * doctest::test_suite("ren
 TEST_CASE("render: wide COLRv1 emoji renders in color" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;
-    opts.shell = "/bin/cat";
+    opts.shell         = "/bin/cat";
     opts.emojiFontPath = MB_TEST_EMOJI_FONT;
-    auto& rt = MBConnection::shared(opts);
+    auto &rt           = MBConnection::shared(opts);
     rt.reset();
 
     rt.wait(300);
@@ -273,7 +282,7 @@ TEST_CASE("render: wide COLRv1 emoji renders in color" * doctest::test_suite("re
 // ── Kitty graphics rendering ────────────────────────────────────────────────
 
 // Helper: build a kitty graphics APC escape with base64-encoded RGBA payload
-static std::string kittyGfxEscape(const std::string& params, const std::vector<uint8_t>& payload)
+static std::string kittyGfxEscape(const std::string &params, const std::vector<uint8_t> &payload)
 {
     std::string cmd = "\x1b_G" + params;
     if (!payload.empty()) {
@@ -289,7 +298,10 @@ static std::vector<uint8_t> solidRGBA(int w, int h, uint8_t r, uint8_t g, uint8_
 {
     std::vector<uint8_t> data(static_cast<size_t>(w) * h * 4);
     for (size_t i = 0; i < data.size(); i += 4) {
-        data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = a;
+        data[i]     = r;
+        data[i + 1] = g;
+        data[i + 2] = b;
+        data[i + 3] = a;
     }
     return data;
 }
@@ -298,9 +310,9 @@ TEST_CASE("render: kitty graphics solid red image" * doctest::test_suite("render
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -318,9 +330,9 @@ TEST_CASE("render: kitty graphics image with cell scaling" * doctest::test_suite
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -338,18 +350,78 @@ TEST_CASE("render: kitty graphics source rect crop" * doctest::test_suite("rende
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
     // 4x4 image: top-left red, top-right green, bottom-left blue, bottom-right white
     std::vector<uint8_t> px = {
-        255,0,0,255, 255,0,0,255, 0,255,0,255, 0,255,0,255,
-        255,0,0,255, 255,0,0,255, 0,255,0,255, 0,255,0,255,
-        0,0,255,255, 0,0,255,255, 255,255,255,255, 255,255,255,255,
-        0,0,255,255, 0,0,255,255, 255,255,255,255, 255,255,255,255,
+        255,
+        0,
+        0,
+        255,
+        255,
+        0,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        255,
+        0,
+        0,
+        255,
+        255,
+        0,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        0,
+        0,
+        255,
+        255,
+        0,
+        0,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        0,
+        0,
+        255,
+        255,
+        0,
+        0,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
     };
     // Crop to the top-right 2x2 (green quadrant): x=2,y=0,w=2,h=2
     rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=4,v=4,x=2,y=0,w=2,h=2,c=4,r=2,q=2", px));
@@ -364,9 +436,9 @@ TEST_CASE("render: kitty graphics two images vertically" * doctest::test_suite("
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -393,9 +465,9 @@ TEST_CASE("render: kitty graphics multiple placements of same image" * doctest::
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -425,9 +497,9 @@ TEST_CASE("render: kitty graphics placement replacement" * doctest::test_suite("
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -455,9 +527,9 @@ TEST_CASE("render: kitty graphics sub-cell pixel offset" * doctest::test_suite("
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -491,9 +563,9 @@ TEST_CASE("render: kitty graphics delete at cursor removes image" * doctest::tes
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -525,9 +597,9 @@ TEST_CASE("render: kitty graphics frame composition" * doctest::test_suite("rend
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -562,9 +634,9 @@ TEST_CASE("render: kitty graphics z-layering below text" * doctest::test_suite("
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -588,9 +660,9 @@ TEST_CASE("render: kitty graphics z-layering above text" * doctest::test_suite("
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -614,9 +686,9 @@ TEST_CASE("render: italic text" * doctest::test_suite("render"))
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -630,20 +702,32 @@ TEST_CASE("render: italic text" * doctest::test_suite("render"))
 }
 
 // Pull obs.frames_presented out of the queryStats JSON; returns 0 on parse failure.
-static uint64_t framesPresented(const std::string& statsJson)
+static uint64_t framesPresented(const std::string &statsJson)
 {
     glz::generic j;
-    if (glz::read_json(j, statsJson) != 0) return 0;
-    auto* root = std::get_if<glz::generic::object_t>(&j.data);
-    if (!root) return 0;
+    if (glz::read_json(j, statsJson) != 0) {
+        return 0;
+    }
+    auto *root = std::get_if<glz::generic::object_t>(&j.data);
+    if (!root) {
+        return 0;
+    }
     auto it = root->find("obs");
-    if (it == root->end()) return 0;
-    auto* obs = std::get_if<glz::generic::object_t>(&it->second.data);
-    if (!obs) return 0;
+    if (it == root->end()) {
+        return 0;
+    }
+    auto *obs = std::get_if<glz::generic::object_t>(&it->second.data);
+    if (!obs) {
+        return 0;
+    }
     auto fpIt = obs->find("frames_presented");
-    if (fpIt == obs->end()) return 0;
-    auto* d = std::get_if<double>(&fpIt->second.data);
-    if (!d) return 0;
+    if (fpIt == obs->end()) {
+        return 0;
+    }
+    auto *d = std::get_if<double>(&fpIt->second.data);
+    if (!d) {
+        return 0;
+    }
     return static_cast<uint64_t>(*d);
 }
 
@@ -663,9 +747,9 @@ TEST_CASE("render: kitty animated image advances frames over time" * doctest::te
     // in pixels).
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -699,7 +783,7 @@ TEST_CASE("render: kitty animated image advances frames over time" * doctest::te
     rt.wait(120);
     auto pngMid2 = rt.screenshotPaneRect(0, 0, 0, 4, 2);
     rt.wait(200);
-    auto pngEnd  = rt.screenshotPaneRect(0, 0, 0, 4, 2);
+    auto pngEnd          = rt.screenshotPaneRect(0, 0, 0, 4, 2);
     uint64_t framesAfter = framesPresented(rt.queryStats());
 
     // frames_presented must have advanced — the animation timer should have
@@ -708,9 +792,9 @@ TEST_CASE("render: kitty animated image advances frames over time" * doctest::te
 
     // Strong check: pixel data must have flipped at some point during the
     // wait. Red vs blue → channel diff well above the JPEG/AA tolerance.
-    int d1 = MBConnection::comparePng(pngStart, pngMid1);
-    int d2 = MBConnection::comparePng(pngStart, pngMid2);
-    int d3 = MBConnection::comparePng(pngStart, pngEnd);
+    int d1      = MBConnection::comparePng(pngStart, pngMid1);
+    int d2      = MBConnection::comparePng(pngStart, pngMid2);
+    int d3      = MBConnection::comparePng(pngStart, pngEnd);
     int maxDiff = std::max(d1, std::max(d2, d3));
     CHECK(maxDiff > 50);
 }
@@ -729,9 +813,9 @@ TEST_CASE("render: kitty image survives column resize" * doctest::test_suite("re
     // pixel actually still gets drawn after the resize lands on the renderer.
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
@@ -771,16 +855,30 @@ TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite(
 {
     MBConnection::Options opts;
     opts.shell = "/bin/cat";
-    opts.cols = 40;
-    opts.rows = 10;
-    auto& rt = MBConnection::shared(opts);
+    opts.cols  = 40;
+    opts.rows  = 10;
+    auto &rt   = MBConnection::shared(opts);
     rt.reset();
     rt.wait(300);
 
     // 2x2 checkerboard: red, blue, blue, red
     std::vector<uint8_t> px = {
-        255, 0, 0, 255,   0, 0, 255, 255,
-        0, 0, 255, 255,   255, 0, 0, 255,
+        255,
+        0,
+        0,
+        255,
+        0,
+        0,
+        255,
+        255,
+        0,
+        0,
+        255,
+        255,
+        255,
+        0,
+        0,
+        255,
     };
     rt.injectData(kittyGfxEscape("a=T,i=1,f=32,s=2,v=2,c=4,r=2,q=2", px));
     rt.wait(300);

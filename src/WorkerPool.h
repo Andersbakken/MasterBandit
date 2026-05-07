@@ -21,16 +21,21 @@
 // uses a per-batch counter + condvar so multiple dispatch() calls
 // (and any number of submit()s) can be in flight simultaneously
 // without one blocking the others.
-class WorkerPool {
+class WorkerPool
+{
 public:
     explicit WorkerPool(uint32_t numThreads = 0)
     {
         if (numThreads == 0) {
             unsigned hw = std::thread::hardware_concurrency();
-            numThreads = hw == 0 ? 2u : std::min(hw, 8u);
+            numThreads  = hw == 0 ? 2u : std::min(hw, 8u);
         }
-        for (uint32_t i = 0; i < numThreads; ++i)
-            threads_.emplace_back([this] { workerLoop(); });
+        for (uint32_t i = 0; i < numThreads; ++i) {
+            threads_.emplace_back([this]
+                                  {
+                                      workerLoop();
+                                  });
+        }
     }
 
     ~WorkerPool()
@@ -40,12 +45,13 @@ public:
             stopping_ = true;
         }
         cv_.notify_all();
-        for (auto& t : threads_)
+        for (auto &t : threads_) {
             t.join();
+        }
     }
 
-    WorkerPool(const WorkerPool&) = delete;
-    WorkerPool& operator=(const WorkerPool&) = delete;
+    WorkerPool(const WorkerPool &)            = delete;
+    WorkerPool &operator=(const WorkerPool &) = delete;
 
     // Fire-and-forget. Returns immediately; fn runs on some worker.
     void submit(std::function<void()> fn)
@@ -72,16 +78,20 @@ public:
     // notify makes the waiter's predicate check fully ordered with the
     // worker's release of the mutex, so the waiter cannot see 0 until the
     // worker is past the notify call.
-    void dispatch(const std::vector<uint32_t>& items, const std::function<void(uint32_t)>& fn)
+    void dispatch(const std::vector<uint32_t> &items, const std::function<void(uint32_t)> &fn)
     {
-        if (items.empty()) return;
+        if (items.empty()) {
+            return;
+        }
 
-        struct Batch {
-            std::mutex              m;
+        struct Batch
+        {
+            std::mutex m;
             std::condition_variable cv;
-            int                     remaining;        // protected by m
-            const std::function<void(uint32_t)>* fn;
+            int remaining; // protected by m
+            const std::function<void(uint32_t)> *fn;
         };
+
         Batch batch;
         batch.remaining = static_cast<int>(items.size());
         batch.fn        = &fn;
@@ -89,17 +99,23 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for (uint32_t item : items) {
-                queue_.emplace_back([&batch, item] {
-                    (*batch.fn)(item);
-                    std::lock_guard<std::mutex> lk(batch.m);
-                    if (--batch.remaining == 0) batch.cv.notify_one();
-                });
+                queue_.emplace_back([&batch, item]
+                                    {
+                                        (*batch.fn)(item);
+                                        std::lock_guard<std::mutex> lk(batch.m);
+                                        if (--batch.remaining == 0) {
+                                            batch.cv.notify_one();
+                                        }
+                                    });
             }
         }
         cv_.notify_all();
 
         std::unique_lock<std::mutex> lk(batch.m);
-        batch.cv.wait(lk, [&]{ return batch.remaining == 0; });
+        batch.cv.wait(lk, [&]
+                      {
+                          return batch.remaining == 0;
+                      });
     }
 
     uint32_t threadCount() const { return static_cast<uint32_t>(threads_.size()); }
@@ -111,8 +127,13 @@ private:
             std::function<void()> task;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this]{ return stopping_ || !queue_.empty(); });
-                if (stopping_ && queue_.empty()) return;
+                cv_.wait(lock, [this]
+                         {
+                             return stopping_ || !queue_.empty();
+                         });
+                if (stopping_ && queue_.empty()) {
+                    return;
+                }
                 task = std::move(queue_.front());
                 queue_.pop_front();
             }
@@ -120,9 +141,9 @@ private:
         }
     }
 
-    std::vector<std::thread>            threads_;
-    std::mutex                          mutex_;
-    std::condition_variable             cv_;
-    std::deque<std::function<void()>>   queue_;
-    bool                                stopping_ { false };
+    std::vector<std::thread> threads_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<std::function<void()>> queue_;
+    bool stopping_ { false };
 };

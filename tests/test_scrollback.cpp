@@ -1,9 +1,9 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 // Push enough lines to get content into scrollback history.
 // With a 5-row terminal, writing 10 lines pushes 5 into history.
-static void fillScrollback(TestTerminal& t, int extraLines)
+static void fillScrollback(TestTerminal &t, int extraLines)
 {
     int rows = t.term.height();
     for (int i = 0; i < rows + extraLines; ++i) {
@@ -88,8 +88,9 @@ TEST_CASE("viewportRow with offset returns history content")
 {
     TestTerminal t(20, 5);
     // Write lines so we know content: "line0" through "line7"
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 8; ++i) {
         t.feed("line" + std::to_string(i) + "\r\n");
+    }
 
     // With 5-row terminal and 8 lines written, 3 lines are in history.
     // Scroll 1 line into history.

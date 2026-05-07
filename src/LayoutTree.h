@@ -10,14 +10,16 @@
 #include <variant>
 #include <vector>
 
-enum class NodeKind : uint8_t {
+enum class NodeKind : uint8_t
+{
     Terminal  = 0,
     Container = 1,
     Stack     = 2,
     TabBar    = 3,
 };
 
-enum class SplitDir : uint8_t {
+enum class SplitDir : uint8_t
+{
     Horizontal, // children laid out left to right
     Vertical,   // children laid out top to bottom
 };
@@ -25,25 +27,29 @@ enum class SplitDir : uint8_t {
 // Per-slot sizing hints. All cell counts are in cells along the container's
 // split axis; min/max/fixed are converted to pixels at layout time using the
 // cellW/cellH passed to computeRects().
-struct ChildSlot {
-    Uuid id;             // child node (must exist in the tree)
-    int  stretch    = 1; // >=0; 0 means "don't grow"; ignored if fixedCells > 0
-    int  minCells   = 0; // lower bound along split axis; 0 = no min
-    int  maxCells   = 0; // upper bound; 0 = no max
-    int  fixedCells = 0; // 0 = use stretch; >0 = pin to this cell count (stretch ignored)
+struct ChildSlot
+{
+    Uuid id;            // child node (must exist in the tree)
+    int stretch    = 1; // >=0; 0 means "don't grow"; ignored if fixedCells > 0
+    int minCells   = 0; // lower bound along split axis; 0 = no min
+    int maxCells   = 0; // upper bound; 0 = no max
+    int fixedCells = 0; // 0 = use stretch; >0 = pin to this cell count (stretch ignored)
 };
 
-struct TerminalData {
+struct TerminalData
+{
     // Empty: Terminal lifetime lives in Script::Engine's terminals_ map
     // (keyed by the tree Uuid). The tree only tracks identity / topology.
 };
 
-struct ContainerData {
+struct ContainerData
+{
     SplitDir dir = SplitDir::Horizontal;
     std::vector<ChildSlot> children;
 };
 
-struct StackData {
+struct StackData
+{
     std::vector<ChildSlot> children; // stretch/min/max ignored (only one visible)
     Uuid activeChild;                // nil if empty stack
     bool opaque = false;             // true = navigation treats this stack as a single node
@@ -55,11 +61,13 @@ struct StackData {
     Uuid zoomTarget;
 };
 
-struct TabBarData {
-    Uuid boundStack;                 // nil or dangling → renders empty
+struct TabBarData
+{
+    Uuid boundStack; // nil or dangling → renders empty
 };
 
-struct Node {
+struct Node
+{
     Uuid id;
     Uuid parent; // nil = root (or detached)
     std::string label;
@@ -68,7 +76,8 @@ struct Node {
     NodeKind kind() const { return static_cast<NodeKind>(data.index()); }
 };
 
-class LayoutTree {
+class LayoutTree
+{
 public:
     // --- Node creation (returns the new node's UUID) ---
     Uuid createTerminal();
@@ -80,6 +89,7 @@ public:
     // Setting a root whose parent is not nil is rejected. The previous root
     // (if any) is NOT destroyed — caller is responsible.
     bool setRoot(Uuid id);
+
     Uuid root() const { return root_; }
 
     // --- Child management ---
@@ -151,8 +161,8 @@ public:
     void destroyNode(Uuid id);
 
     // --- Lookup ---
-    Node*       node(Uuid id);
-    const Node* node(Uuid id) const;
+    Node *node(Uuid id);
+    const Node *node(Uuid id) const;
 
     // Walk `descendant`'s parent chain; return true if any ancestor equals
     // `ancestor`. `ancestor == descendant` is also true (reflexive). Either
@@ -186,8 +196,8 @@ public:
     // wired up) naturally bypasses non-zoomed Containers because their
     // children aren't in `rects`.
     void dividersIn(Uuid start, int dividerPixels,
-                    const std::unordered_map<Uuid, Rect, UuidHash>& rects,
-                    std::vector<std::pair<Uuid, Rect>>& out) const;
+                    const std::unordered_map<Uuid, Rect, UuidHash> &rects,
+                    std::vector<std::pair<Uuid, Rect>> &out) const;
 
     // Starting at `fromParent`, walk up the parent chain collapsing each
     // Container that has exactly one child: the only child is promoted into
@@ -203,7 +213,7 @@ public:
     // parent (Container); `newChild` must be orphaned. Returns the wrapper
     // Uuid on success, nil on any validation failure.
     Uuid splitByWrapping(Uuid existingChild, SplitDir dir,
-                          Uuid newChild, bool newIsFirst);
+                         Uuid newChild, bool newIsFirst);
 
     // Walk up from `target` until we find a Container parent whose SplitDir
     // matches `axis`. Grow `target`'s side by `pixelDelta` and shrink its
@@ -213,14 +223,14 @@ public:
     // ancestor exists or if `ancestorRoot` is nil. `window` is the pixel box
     // the subtree lays out into.
     bool resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
-                              Uuid ancestorRoot, Rect window,
-                              int cellW, int cellH);
+                             Uuid ancestorRoot, Rect window,
+                             int cellW, int cellH);
 
     // Collect every Terminal-kind leaf Uuid in `start`'s subtree. If
     // `onlyActiveStack` is true, Stack recursion follows `activeChild` only
     // (matches the "currently visible" semantics).
     void terminalLeavesIn(Uuid start, bool onlyActiveStack,
-                          std::vector<Uuid>& out) const;
+                          std::vector<Uuid> &out) const;
 
     // Return the leftmost Terminal's Uuid inside `start`'s subtree — useful
     // for naming dividers by their "first neighbour" paneId.
@@ -232,8 +242,19 @@ public:
     // takeDirty() to recompute rects + cascade TIOCSWINSZ exactly once per
     // frame, regardless of how many mutations accumulated. External callers
     // (e.g. framebuffer resize) can manually markDirty().
-    void markDirty() { dirty_ = true; ++revision_; }
-    bool takeDirty() { bool d = dirty_; dirty_ = false; return d; }
+    void markDirty()
+    {
+        dirty_ = true;
+        ++revision_;
+    }
+
+    bool takeDirty()
+    {
+        bool d = dirty_;
+        dirty_ = false;
+        return d;
+    }
+
     bool isDirty() const { return dirty_; }
 
     // Monotonic revision counter — bumped on every markDirty. Unlike the
@@ -246,6 +267,6 @@ public:
 private:
     std::unordered_map<Uuid, std::unique_ptr<Node>, UuidHash> nodes_;
     Uuid root_;
-    bool dirty_ = true; // initial: first frame must compute
-    uint64_t revision_ = 1; // caches track this; starts at 1 so 0 = "no cache"
+    bool dirty_        = true; // initial: first frame must compute
+    uint64_t revision_ = 1;    // caches track this; starts at 1 so 0 = "no cache"
 };

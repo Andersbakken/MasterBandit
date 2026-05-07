@@ -6,19 +6,19 @@
 
 // Rename Xlib's Window typedef so it doesn't clash with our class Window
 #define Window XlibWindow
-#include <X11/Xlib.h>
 #include <X11/Xlib-xcb.h>
+#include <X11/Xlib.h>
 #undef Window
 
 #include <xcb/xcb.h>
-#include <xcb/xcb_util.h>
 #include <xcb/xcb_cursor.h>
+#include <xcb/xcb_util.h>
 // xcb/xkb.h uses "explicit" as a C field name which is reserved in C++.
 #define explicit explicit_
 #include <xcb/xkb.h>
 #undef explicit
-#include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-x11.h>
+#include <xkbcommon/xkbcommon.h>
 
 #include <Utf8.h>
 
@@ -31,10 +31,10 @@
 
 // Undefine Xlib macros that clash with other code
 #ifdef Success
-#  undef Success
+#undef Success
 #endif
 #ifdef None
-#  undef None
+#undef None
 #endif
 
 // ---------- keysym → Key translation table (adapted from GLFW x11_init.c) ----------
@@ -45,102 +45,105 @@ static Key keysymToKey(xkb_keysym_t sym)
     // Key_A..Z = 0x41..0x5A, no Key_a..z. Shift is reported separately in
     // the modifier mask, so normalize lowercase here. Without this, e.g.
     // ctrl+e fails to match (xkb returns 'e' = 0x65, outside Key_A..Z).
-    if (sym >= 'a' && sym <= 'z')
+    if (sym >= 'a' && sym <= 'z') {
         sym = sym - 'a' + 'A';
+    }
     // Latin-1 and ASCII printable range maps directly
-    if (sym >= 0x20 && sym <= 0x7e)
+    if (sym >= 0x20 && sym <= 0x7e) {
         return static_cast<Key>(sym);
-    if (sym >= 0xa0 && sym <= 0xff)
+    }
+    if (sym >= 0xa0 && sym <= 0xff) {
         return static_cast<Key>(sym);
+    }
 
     switch (sym) {
-    case XKB_KEY_Escape:       return Key_Escape;
-    case XKB_KEY_Tab:          return Key_Tab;
-    case XKB_KEY_ISO_Left_Tab: return Key_Backtab;
-    case XKB_KEY_BackSpace:    return Key_Backspace;
-    case XKB_KEY_Return:       return Key_Return;
-    case XKB_KEY_KP_Enter:     return Key_Enter;
-    case XKB_KEY_Insert:       return Key_Insert;
-    case XKB_KEY_Delete:       return Key_Delete;
-    case XKB_KEY_Pause:        return Key_Pause;
-    case XKB_KEY_Print:        return Key_Print;
-    case XKB_KEY_Home:         return Key_Home;
-    case XKB_KEY_End:          return Key_End;
-    case XKB_KEY_Left:         return Key_Left;
-    case XKB_KEY_Up:           return Key_Up;
-    case XKB_KEY_Right:        return Key_Right;
-    case XKB_KEY_Down:         return Key_Down;
-    case XKB_KEY_Page_Up:      return Key_PageUp;
-    case XKB_KEY_Page_Down:    return Key_PageDown;
-    case XKB_KEY_Shift_L:      return Key_Shift_L;
-    case XKB_KEY_Shift_R:      return Key_Shift_R;
-    case XKB_KEY_Control_L:    return Key_Control_L;
-    case XKB_KEY_Control_R:    return Key_Control_R;
-    case XKB_KEY_Alt_L:        return Key_Alt_L;
-    case XKB_KEY_Alt_R:        return Key_Alt_R;
-    case XKB_KEY_Super_L:      return Key_Super_L;
-    case XKB_KEY_Super_R:      return Key_Super_R;
-    case XKB_KEY_Hyper_L:      return Key_Hyper_L;
-    case XKB_KEY_Hyper_R:      return Key_Hyper_R;
-    case XKB_KEY_Menu:         return Key_Menu;
-    case XKB_KEY_Help:         return Key_Help;
-    case XKB_KEY_Caps_Lock:    return Key_CapsLock;
-    case XKB_KEY_Num_Lock:     return Key_NumLock;
-    case XKB_KEY_Scroll_Lock:  return Key_ScrollLock;
-    case XKB_KEY_F1:           return Key_F1;
-    case XKB_KEY_F2:           return Key_F2;
-    case XKB_KEY_F3:           return Key_F3;
-    case XKB_KEY_F4:           return Key_F4;
-    case XKB_KEY_F5:           return Key_F5;
-    case XKB_KEY_F6:           return Key_F6;
-    case XKB_KEY_F7:           return Key_F7;
-    case XKB_KEY_F8:           return Key_F8;
-    case XKB_KEY_F9:           return Key_F9;
-    case XKB_KEY_F10:          return Key_F10;
-    case XKB_KEY_F11:          return Key_F11;
-    case XKB_KEY_F12:          return Key_F12;
-    case XKB_KEY_F13:          return Key_F13;
-    case XKB_KEY_F14:          return Key_F14;
-    case XKB_KEY_F15:          return Key_F15;
-    case XKB_KEY_F16:          return Key_F16;
-    case XKB_KEY_F17:          return Key_F17;
-    case XKB_KEY_F18:          return Key_F18;
-    case XKB_KEY_F19:          return Key_F19;
-    case XKB_KEY_F20:          return Key_F20;
-    case XKB_KEY_F21:          return Key_F21;
-    case XKB_KEY_F22:          return Key_F22;
-    case XKB_KEY_F23:          return Key_F23;
-    case XKB_KEY_F24:          return Key_F24;
-    case XKB_KEY_F25:          return Key_F25;
-    case XKB_KEY_F26:          return Key_F26;
-    case XKB_KEY_F27:          return Key_F27;
-    case XKB_KEY_F28:          return Key_F28;
-    case XKB_KEY_F29:          return Key_F29;
-    case XKB_KEY_F30:          return Key_F30;
-    case XKB_KEY_F31:          return Key_F31;
-    case XKB_KEY_F32:          return Key_F32;
-    case XKB_KEY_F33:          return Key_F33;
-    case XKB_KEY_F34:          return Key_F34;
-    case XKB_KEY_F35:          return Key_F35;
-    case XKB_KEY_KP_0:         return Key_KP_0;
-    case XKB_KEY_KP_1:         return Key_KP_1;
-    case XKB_KEY_KP_2:         return Key_KP_2;
-    case XKB_KEY_KP_3:         return Key_KP_3;
-    case XKB_KEY_KP_4:         return Key_KP_4;
-    case XKB_KEY_KP_5:         return Key_KP_5;
-    case XKB_KEY_KP_6:         return Key_KP_6;
-    case XKB_KEY_KP_7:         return Key_KP_7;
-    case XKB_KEY_KP_8:         return Key_KP_8;
-    case XKB_KEY_KP_9:         return Key_KP_9;
-    case XKB_KEY_KP_Decimal:   return Key_KP_Decimal;
-    case XKB_KEY_KP_Divide:    return Key_KP_Divide;
-    case XKB_KEY_KP_Multiply:  return Key_KP_Multiply;
-    case XKB_KEY_KP_Subtract:  return Key_KP_Subtract;
-    case XKB_KEY_KP_Add:       return Key_KP_Add;
-    case XKB_KEY_KP_Equal:     return Key_KP_Equal;
-    case XKB_KEY_Mode_switch:  return Key_Mode_switch;
-    case XKB_KEY_Multi_key:    return Key_Multi_key;
-    default:                   return Key_unknown;
+        case XKB_KEY_Escape: return Key_Escape;
+        case XKB_KEY_Tab: return Key_Tab;
+        case XKB_KEY_ISO_Left_Tab: return Key_Backtab;
+        case XKB_KEY_BackSpace: return Key_Backspace;
+        case XKB_KEY_Return: return Key_Return;
+        case XKB_KEY_KP_Enter: return Key_Enter;
+        case XKB_KEY_Insert: return Key_Insert;
+        case XKB_KEY_Delete: return Key_Delete;
+        case XKB_KEY_Pause: return Key_Pause;
+        case XKB_KEY_Print: return Key_Print;
+        case XKB_KEY_Home: return Key_Home;
+        case XKB_KEY_End: return Key_End;
+        case XKB_KEY_Left: return Key_Left;
+        case XKB_KEY_Up: return Key_Up;
+        case XKB_KEY_Right: return Key_Right;
+        case XKB_KEY_Down: return Key_Down;
+        case XKB_KEY_Page_Up: return Key_PageUp;
+        case XKB_KEY_Page_Down: return Key_PageDown;
+        case XKB_KEY_Shift_L: return Key_Shift_L;
+        case XKB_KEY_Shift_R: return Key_Shift_R;
+        case XKB_KEY_Control_L: return Key_Control_L;
+        case XKB_KEY_Control_R: return Key_Control_R;
+        case XKB_KEY_Alt_L: return Key_Alt_L;
+        case XKB_KEY_Alt_R: return Key_Alt_R;
+        case XKB_KEY_Super_L: return Key_Super_L;
+        case XKB_KEY_Super_R: return Key_Super_R;
+        case XKB_KEY_Hyper_L: return Key_Hyper_L;
+        case XKB_KEY_Hyper_R: return Key_Hyper_R;
+        case XKB_KEY_Menu: return Key_Menu;
+        case XKB_KEY_Help: return Key_Help;
+        case XKB_KEY_Caps_Lock: return Key_CapsLock;
+        case XKB_KEY_Num_Lock: return Key_NumLock;
+        case XKB_KEY_Scroll_Lock: return Key_ScrollLock;
+        case XKB_KEY_F1: return Key_F1;
+        case XKB_KEY_F2: return Key_F2;
+        case XKB_KEY_F3: return Key_F3;
+        case XKB_KEY_F4: return Key_F4;
+        case XKB_KEY_F5: return Key_F5;
+        case XKB_KEY_F6: return Key_F6;
+        case XKB_KEY_F7: return Key_F7;
+        case XKB_KEY_F8: return Key_F8;
+        case XKB_KEY_F9: return Key_F9;
+        case XKB_KEY_F10: return Key_F10;
+        case XKB_KEY_F11: return Key_F11;
+        case XKB_KEY_F12: return Key_F12;
+        case XKB_KEY_F13: return Key_F13;
+        case XKB_KEY_F14: return Key_F14;
+        case XKB_KEY_F15: return Key_F15;
+        case XKB_KEY_F16: return Key_F16;
+        case XKB_KEY_F17: return Key_F17;
+        case XKB_KEY_F18: return Key_F18;
+        case XKB_KEY_F19: return Key_F19;
+        case XKB_KEY_F20: return Key_F20;
+        case XKB_KEY_F21: return Key_F21;
+        case XKB_KEY_F22: return Key_F22;
+        case XKB_KEY_F23: return Key_F23;
+        case XKB_KEY_F24: return Key_F24;
+        case XKB_KEY_F25: return Key_F25;
+        case XKB_KEY_F26: return Key_F26;
+        case XKB_KEY_F27: return Key_F27;
+        case XKB_KEY_F28: return Key_F28;
+        case XKB_KEY_F29: return Key_F29;
+        case XKB_KEY_F30: return Key_F30;
+        case XKB_KEY_F31: return Key_F31;
+        case XKB_KEY_F32: return Key_F32;
+        case XKB_KEY_F33: return Key_F33;
+        case XKB_KEY_F34: return Key_F34;
+        case XKB_KEY_F35: return Key_F35;
+        case XKB_KEY_KP_0: return Key_KP_0;
+        case XKB_KEY_KP_1: return Key_KP_1;
+        case XKB_KEY_KP_2: return Key_KP_2;
+        case XKB_KEY_KP_3: return Key_KP_3;
+        case XKB_KEY_KP_4: return Key_KP_4;
+        case XKB_KEY_KP_5: return Key_KP_5;
+        case XKB_KEY_KP_6: return Key_KP_6;
+        case XKB_KEY_KP_7: return Key_KP_7;
+        case XKB_KEY_KP_8: return Key_KP_8;
+        case XKB_KEY_KP_9: return Key_KP_9;
+        case XKB_KEY_KP_Decimal: return Key_KP_Decimal;
+        case XKB_KEY_KP_Divide: return Key_KP_Divide;
+        case XKB_KEY_KP_Multiply: return Key_KP_Multiply;
+        case XKB_KEY_KP_Subtract: return Key_KP_Subtract;
+        case XKB_KEY_KP_Add: return Key_KP_Add;
+        case XKB_KEY_KP_Equal: return Key_KP_Equal;
+        case XKB_KEY_Mode_switch: return Key_Mode_switch;
+        case XKB_KEY_Multi_key: return Key_Multi_key;
+        default: return Key_unknown;
     }
 }
 
@@ -149,33 +152,43 @@ static Key keysymToKey(xkb_keysym_t sym)
 // character produced by current modifiers — using the post-mod keysym (e.g.
 // what `xkb_state_key_get_one_sym` returns) breaks ctrl+alt+letter chords on
 // any layout where Ctrl+Alt selects a higher level (AltGr / Mode_switch).
-static xkb_keysym_t baseKeysymForKeycode(xkb_state* state,
-                                          xkb_keymap* keymap,
-                                          xkb_keycode_t keycode)
+static xkb_keysym_t baseKeysymForKeycode(xkb_state *state,
+                                         xkb_keymap *keymap,
+                                         xkb_keycode_t keycode)
 {
-    if (!state || !keymap) return XKB_KEY_NoSymbol;
+    if (!state || !keymap) {
+        return XKB_KEY_NoSymbol;
+    }
     xkb_layout_index_t group = xkb_state_key_get_layout(state, keycode);
-    const xkb_keysym_t* syms = nullptr;
-    int nsyms = xkb_keymap_key_get_syms_by_level(keymap, keycode, group, 0, &syms);
-    if (nsyms < 1 || !syms) return XKB_KEY_NoSymbol;
+    const xkb_keysym_t *syms = nullptr;
+    int nsyms                = xkb_keymap_key_get_syms_by_level(keymap, keycode, group, 0, &syms);
+    if (nsyms < 1 || !syms) {
+        return XKB_KEY_NoSymbol;
+    }
     return syms[0];
 }
 
-static uint32_t xkbStateToModifiers(xkb_state* state)
+static uint32_t xkbStateToModifiers(xkb_state *state)
 {
     uint32_t m = 0;
-    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_SHIFT,
-                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= ShiftModifier;
-    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CTRL,
-                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= CtrlModifier;
-    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_ALT,
-                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= AltModifier;
-    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_LOGO,
-                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MetaModifier;
-    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CAPS,
-                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= CapsLockModifier;
-    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_NUM,
-                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= NumLockModifier;
+    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        m |= ShiftModifier;
+    }
+    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        m |= CtrlModifier;
+    }
+    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        m |= AltModifier;
+    }
+    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        m |= MetaModifier;
+    }
+    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CAPS, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        m |= CapsLockModifier;
+    }
+    if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_NUM, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        m |= NumLockModifier;
+    }
     return m;
 }
 
@@ -193,26 +206,44 @@ void XCBWindow::updateXKBMods()
 
 void XCBWindow::updateXKBStateFromCore(uint16_t state)
 {
-    if (!xkbState_) return;
+    if (!xkbState_) {
+        return;
+    }
 
     // Map X11 modifier mask bits to xkb mod index bitmask
     xkb_mod_mask_t xkbMask = 0;
-    if ((state & XCB_MOD_MASK_SHIFT)   && xkbMods_.shift   != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.shift);
-    if ((state & XCB_MOD_MASK_LOCK)    && xkbMods_.lock    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.lock);
-    if ((state & XCB_MOD_MASK_CONTROL) && xkbMods_.control != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.control);
-    if ((state & XCB_MOD_MASK_1)       && xkbMods_.mod1    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod1);
-    if ((state & XCB_MOD_MASK_2)       && xkbMods_.mod2    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod2);
-    if ((state & XCB_MOD_MASK_3)       && xkbMods_.mod3    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod3);
-    if ((state & XCB_MOD_MASK_4)       && xkbMods_.mod4    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod4);
-    if ((state & XCB_MOD_MASK_5)       && xkbMods_.mod5    != XKB_MOD_INVALID) xkbMask |= (1u << xkbMods_.mod5);
+    if ((state & XCB_MOD_MASK_SHIFT) && xkbMods_.shift != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.shift);
+    }
+    if ((state & XCB_MOD_MASK_LOCK) && xkbMods_.lock != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.lock);
+    }
+    if ((state & XCB_MOD_MASK_CONTROL) && xkbMods_.control != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.control);
+    }
+    if ((state & XCB_MOD_MASK_1) && xkbMods_.mod1 != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.mod1);
+    }
+    if ((state & XCB_MOD_MASK_2) && xkbMods_.mod2 != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.mod2);
+    }
+    if ((state & XCB_MOD_MASK_3) && xkbMods_.mod3 != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.mod3);
+    }
+    if ((state & XCB_MOD_MASK_4) && xkbMods_.mod4 != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.mod4);
+    }
+    if ((state & XCB_MOD_MASK_5) && xkbMods_.mod5 != XKB_MOD_INVALID) {
+        xkbMask |= (1u << xkbMods_.mod5);
+    }
 
     // Preserve latched/locked from current state, put the rest in depressed
     xkb_mod_mask_t depressed = xkb_state_serialize_mods(xkbState_, XKB_STATE_MODS_DEPRESSED);
     xkb_mod_mask_t latched   = xkb_state_serialize_mods(xkbState_, XKB_STATE_MODS_LATCHED);
     xkb_mod_mask_t locked    = xkb_state_serialize_mods(xkbState_, XKB_STATE_MODS_LOCKED);
 
-    latched   &= xkbMask;
-    locked    &= xkbMask;
+    latched &= xkbMask;
+    locked &= xkbMask;
     depressed &= xkbMask;
     // Any bits in xkbMask not accounted for go into depressed
     depressed |= ~(depressed | latched | locked) & xkbMask;
@@ -225,7 +256,10 @@ void XCBWindow::updateXKBStateFromCore(uint16_t state)
 
 // ---------- constructor / destructor ----------
 
-XCBWindow::XCBWindow(EventLoop& loop) : loop_(loop) {}
+XCBWindow::XCBWindow(EventLoop &loop)
+    : loop_(loop)
+{
+}
 
 XCBWindow::~XCBWindow()
 {
@@ -234,13 +268,13 @@ XCBWindow::~XCBWindow()
 
 // ---------- cursors ----------
 
-static xcb_cursor_t createGlyphCursor(xcb_connection_t* conn, xcb_font_t font, uint16_t glyph)
+static xcb_cursor_t createGlyphCursor(xcb_connection_t *conn, xcb_font_t font, uint16_t glyph)
 {
     xcb_cursor_t cursor = xcb_generate_id(conn);
-    xcb_create_glyph_cursor(conn, cursor, font, font,
-        glyph, glyph + 1,
-        0, 0, 0,                 // fg: black
-        0xFFFF, 0xFFFF, 0xFFFF); // bg: white
+    xcb_create_glyph_cursor(conn, cursor, font, font, glyph, glyph + 1, 0, 0, 0, // fg: black
+                            0xFFFF,
+                            0xFFFF,
+                            0xFFFF); // bg: white
     return cursor;
 }
 
@@ -256,24 +290,26 @@ void XCBWindow::createCursors()
     // 0 leaves the window inheriting the root window's cursor (the big
     // "X"), so we need our own fallback to the legacy cursor-font glyphs.
     // Glyph indices are from <X11/cursorfont.h>.
-    struct CursorSpec {
-        xcb_cursor_t XCBWindow::* member;
-        const char*               themeName;
-        uint16_t                  glyph;
+    struct CursorSpec
+    {
+        xcb_cursor_t XCBWindow::*member;
+        const char *themeName;
+        uint16_t glyph;
     };
+
     // The cursor font lacks a true not-allowed/forbidden glyph;
     // X_cursor (0) is the closest.
     static const CursorSpec specs[] = {
-        { &XCBWindow::cursorArrow_,      "default",     68  }, // XC_left_ptr
-        { &XCBWindow::cursorIBeam_,      "text",        152 }, // XC_xterm
-        { &XCBWindow::cursorPointer_,    "pointer",     60  }, // XC_hand2
-        { &XCBWindow::cursorCrosshair_,  "crosshair",   34  }, // XC_crosshair
-        { &XCBWindow::cursorWait_,       "wait",        150 }, // XC_watch
-        { &XCBWindow::cursorHelp_,       "help",        92  }, // XC_question_arrow
-        { &XCBWindow::cursorMove_,       "move",        52  }, // XC_fleur
-        { &XCBWindow::cursorNotAllowed_, "not-allowed", 0   }, // XC_X_cursor
-        { &XCBWindow::cursorResizeH_,    "ew-resize",   108 }, // XC_sb_h_double_arrow
-        { &XCBWindow::cursorResizeV_,    "ns-resize",   116 }, // XC_sb_v_double_arrow
+        { &XCBWindow::cursorArrow_, "default", 68 },           // XC_left_ptr
+        { &XCBWindow::cursorIBeam_, "text", 152 },             // XC_xterm
+        { &XCBWindow::cursorPointer_, "pointer", 60 },         // XC_hand2
+        { &XCBWindow::cursorCrosshair_, "crosshair", 34 },     // XC_crosshair
+        { &XCBWindow::cursorWait_, "wait", 150 },              // XC_watch
+        { &XCBWindow::cursorHelp_, "help", 92 },               // XC_question_arrow
+        { &XCBWindow::cursorMove_, "move", 52 },               // XC_fleur
+        { &XCBWindow::cursorNotAllowed_, "not-allowed", 0 },   // XC_X_cursor
+        { &XCBWindow::cursorResizeH_, "ew-resize", 108 },      // XC_sb_h_double_arrow
+        { &XCBWindow::cursorResizeV_, "ns-resize", 116 },      // XC_sb_v_double_arrow
         { &XCBWindow::cursorResizeNESW_, "nesw-resize", 136 }, // XC_top_right_corner
         { &XCBWindow::cursorResizeNWSE_, "nwse-resize", 134 }, // XC_top_left_corner
     };
@@ -288,17 +324,21 @@ void XCBWindow::createCursors()
     // Open the legacy cursor font lazily (only if we actually need a fallback).
     xcb_font_t glyphFont = 0;
     bool glyphFontOpened = false;
-    auto ensureGlyphFont = [&]() {
-        if (glyphFontOpened) return;
+    auto ensureGlyphFont = [&]()
+    {
+        if (glyphFontOpened) {
+            return;
+        }
         glyphFontOpened = true;
-        glyphFont = xcb_generate_id(conn_);
+        glyphFont       = xcb_generate_id(conn_);
         xcb_open_font(conn_, glyphFont, 6, "cursor");
     };
 
-    for (const auto& s : specs) {
+    for (const auto &s : specs) {
         xcb_cursor_t c = 0;
-        if (haveCtx)
+        if (haveCtx) {
             c = xcb_cursor_load_cursor(cursorCtx_, s.themeName);
+        }
         if (!c) {
             ensureGlyphFont();
             c = createGlyphCursor(conn_, glyphFont, s.glyph);
@@ -306,38 +346,43 @@ void XCBWindow::createCursors()
         this->*(s.member) = c;
     }
 
-    if (glyphFontOpened)
+    if (glyphFontOpened) {
         xcb_close_font(conn_, glyphFont);
+    }
 }
 
 void XCBWindow::setCursorStyle(CursorStyle shape)
 {
-    if (shape == currentCursor_ || !conn_ || !window_) return;
+    if (shape == currentCursor_ || !conn_ || !window_) {
+        return;
+    }
     currentCursor_ = shape;
     xcb_cursor_t c;
     switch (shape) {
-    case CursorStyle::Arrow:       c = cursorArrow_;      break;
-    case CursorStyle::IBeam:       c = cursorIBeam_;      break;
-    case CursorStyle::Pointer:     c = cursorPointer_;    break;
-    case CursorStyle::Crosshair:   c = cursorCrosshair_;  break;
-    case CursorStyle::Wait:        c = cursorWait_;       break;
-    case CursorStyle::Help:        c = cursorHelp_;       break;
-    case CursorStyle::Move:        c = cursorMove_;       break;
-    case CursorStyle::NotAllowed:  c = cursorNotAllowed_; break;
-    case CursorStyle::ResizeH:     c = cursorResizeH_;    break;
-    case CursorStyle::ResizeV:     c = cursorResizeV_;    break;
-    case CursorStyle::ResizeNESW:  c = cursorResizeNESW_; break;
-    case CursorStyle::ResizeNWSE:  c = cursorResizeNWSE_; break;
-    default: return;
+        case CursorStyle::Arrow: c = cursorArrow_; break;
+        case CursorStyle::IBeam: c = cursorIBeam_; break;
+        case CursorStyle::Pointer: c = cursorPointer_; break;
+        case CursorStyle::Crosshair: c = cursorCrosshair_; break;
+        case CursorStyle::Wait: c = cursorWait_; break;
+        case CursorStyle::Help: c = cursorHelp_; break;
+        case CursorStyle::Move: c = cursorMove_; break;
+        case CursorStyle::NotAllowed: c = cursorNotAllowed_; break;
+        case CursorStyle::ResizeH: c = cursorResizeH_; break;
+        case CursorStyle::ResizeV: c = cursorResizeV_; break;
+        case CursorStyle::ResizeNESW: c = cursorResizeNESW_; break;
+        case CursorStyle::ResizeNWSE: c = cursorResizeNWSE_; break;
+        default: return;
     }
-    if (!c) return; // never replace a valid cursor with XCB_CURSOR_NONE
+    if (!c) {
+        return; // never replace a valid cursor with XCB_CURSOR_NONE
+    }
     xcb_change_window_attributes(conn_, window_, XCB_CW_CURSOR, &c);
     xcb_flush(conn_);
 }
 
 // ---------- create / destroy ----------
 
-bool XCBWindow::create(int width, int height, const std::string& title)
+bool XCBWindow::create(int width, int height, const std::string &title)
 {
     // Open via Xlib so we have a Display* for the Dawn surface (SurfaceSourceXlibWindow)
     display_ = XOpenDisplay(nullptr);
@@ -349,7 +394,8 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     conn_ = XGetXCBConnection(display_);
     if (!conn_ || xcb_connection_has_error(conn_)) {
         spdlog::error("XCBWindow: XGetXCBConnection failed");
-        XCloseDisplay(display_); display_ = nullptr;
+        XCloseDisplay(display_);
+        display_ = nullptr;
         return false;
     }
     XSetEventQueueOwner(display_, XCBOwnsEventQueue);
@@ -357,10 +403,11 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     int screenNum = XDefaultScreen(display_);
 
     // Get screen
-    const xcb_setup_t* setup = xcb_get_setup(conn_);
+    const xcb_setup_t *setup   = xcb_get_setup(conn_);
     xcb_screen_iterator_t iter = xcb_setup_roots_iterator(setup);
-    for (int i = 0; i < screenNum; ++i)
+    for (int i = 0; i < screenNum; ++i) {
         xcb_screen_next(&iter);
+    }
     screen_ = iter.data;
 
     // Intern atoms
@@ -377,29 +424,37 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     atomMbSelection_         = internAtom("MB_SELECTION");
 
     // Create window
-    window_ = xcb_generate_id(conn_);
+    window_           = xcb_generate_id(conn_);
     // XCB_BACK_PIXMAP_NONE: preserve old content during swapchain transitions
     // instead of flashing black (the default background pixel).
-    uint32_t mask = XCB_CW_BACK_PIXMAP | XCB_CW_EVENT_MASK;
+    uint32_t mask     = XCB_CW_BACK_PIXMAP | XCB_CW_EVENT_MASK;
     uint32_t values[] = {
         XCB_BACK_PIXMAP_NONE,
         XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE |
-        XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
-        XCB_EVENT_MASK_POINTER_MOTION |
-        XCB_EVENT_MASK_EXPOSURE |
-        XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-        XCB_EVENT_MASK_FOCUS_CHANGE |
-        // VisibilityChange feeds the "occluded" input to onVisibility (kitty
-        // OSC 99 o=invisible parity); PropertyChange picks up _NET_WM_STATE
-        // updates so the iconified bit tracks WM-driven hide/minimize.
-        XCB_EVENT_MASK_VISIBILITY_CHANGE |
-        XCB_EVENT_MASK_PROPERTY_CHANGE
+            XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
+            XCB_EVENT_MASK_POINTER_MOTION |
+            XCB_EVENT_MASK_EXPOSURE |
+            XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+            XCB_EVENT_MASK_FOCUS_CHANGE |
+            // VisibilityChange feeds the "occluded" input to onVisibility (kitty
+            // OSC 99 o=invisible parity); PropertyChange picks up _NET_WM_STATE
+            // updates so the iconified bit tracks WM-driven hide/minimize.
+            XCB_EVENT_MASK_VISIBILITY_CHANGE |
+            XCB_EVENT_MASK_PROPERTY_CHANGE
     };
     xcb_create_window(conn_,
-        XCB_COPY_FROM_PARENT, window_, screen_->root,
-        0, 0, static_cast<uint16_t>(width), static_cast<uint16_t>(height),
-        0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen_->root_visual,
-        mask, values);
+                      XCB_COPY_FROM_PARENT,
+                      window_,
+                      screen_->root,
+                      0,
+                      0,
+                      static_cast<uint16_t>(width),
+                      static_cast<uint16_t>(height),
+                      0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                      screen_->root_visual,
+                      mask,
+                      values);
 
     // Create mouse cursors and set default to I-beam (terminal window)
     createCursors();
@@ -408,14 +463,12 @@ bool XCBWindow::create(int width, int height, const std::string& title)
 
     // Create XSync counter for _NET_WM_SYNC_REQUEST (eliminates resize flicker)
     syncCounter_ = xcb_generate_id(conn_);
-    xcb_sync_create_counter(conn_, syncCounter_, {0, 0});
-    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
-        atomNetWmSyncRequestCtr_, XCB_ATOM_CARDINAL, 32, 1, &syncCounter_);
+    xcb_sync_create_counter(conn_, syncCounter_, { 0, 0 });
+    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_, atomNetWmSyncRequestCtr_, XCB_ATOM_CARDINAL, 32, 1, &syncCounter_);
 
     // Set WM_PROTOCOLS: WM_DELETE_WINDOW + _NET_WM_SYNC_REQUEST
     xcb_atom_t protocols[] = { atomWmDeleteWindow_, atomNetWmSyncRequest_ };
-    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
-        atomWmProtocols_, XCB_ATOM_ATOM, 32, 2, protocols);
+    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_, atomWmProtocols_, XCB_ATOM_ATOM, 32, 2, protocols);
 
     // WM_CLASS — two NUL-terminated strings: instance, class. GNOME Shell's
     // notification daemon traces a notification's sender PID back to its
@@ -424,9 +477,7 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     // identifier covers both paths and a future .desktop file resolves
     // cleanly.
     static const char kWmClass[] = "it.masterband.mb\0it.masterband.mb";
-    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
-        XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8,
-        sizeof(kWmClass) - 1, kWmClass);
+    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, sizeof(kWmClass) - 1, kWmClass);
 
     setTitle(title);
     xcb_map_window(conn_, window_);
@@ -437,7 +488,7 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     // Query actual geometry — a tiling WM may have already forced a
     // different size during mapping, without sending a ConfigureNotify.
     auto geomCookie = xcb_get_geometry(conn_, window_);
-    if (auto* geom = xcb_get_geometry_reply(conn_, geomCookie, nullptr)) {
+    if (auto *geom = xcb_get_geometry_reply(conn_, geomCookie, nullptr)) {
         width_  = geom->width;
         height_ = geom->height;
         free(geom);
@@ -456,17 +507,19 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     // Use xkbcommon-x11 to get the keymap from the server
     uint8_t xkbFirstEvent = 0;
     if (xkb_x11_setup_xkb_extension(conn_,
-            XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION,
-            XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS,
-            nullptr, nullptr, &xkbFirstEvent, nullptr) != 1) {
+                                    XKB_X11_MIN_MAJOR_XKB_VERSION,
+                                    XKB_X11_MIN_MINOR_XKB_VERSION,
+                                    XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS,
+                                    nullptr,
+                                    nullptr,
+                                    &xkbFirstEvent,
+                                    nullptr) != 1) {
         spdlog::warn("XCBWindow: XKB extension not available, falling back to default keymap");
         xkbKeymap_ = xkb_keymap_new_from_names(xkbCtx_, nullptr, XKB_KEYMAP_COMPILE_NO_FLAGS);
     } else {
         xkbEventBase_ = xkbFirstEvent;
-        xkbDeviceId_ = xkb_x11_get_core_keyboard_device_id(conn_);
-        xkbKeymap_   = xkb_x11_keymap_new_from_device(xkbCtx_, conn_, xkbDeviceId_,
-                                                        XKB_KEYMAP_COMPILE_NO_FLAGS);
-
+        xkbDeviceId_  = xkb_x11_get_core_keyboard_device_id(conn_);
+        xkbKeymap_    = xkb_x11_keymap_new_from_device(xkbCtx_, conn_, xkbDeviceId_, XKB_KEYMAP_COMPILE_NO_FLAGS);
     }
 
     if (!xkbKeymap_) {
@@ -485,32 +538,39 @@ bool XCBWindow::create(int width, int height, const std::string& title)
     // Subscribe to XKB state change events for modifier tracking.
     if (xkbEventBase_) {
         xcb_xkb_select_events(conn_,
-            XCB_XKB_ID_USE_CORE_KBD,
-            XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
-            0,
-            XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
-            0, 0, nullptr);
+                              XCB_XKB_ID_USE_CORE_KBD,
+                              XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
+                              0,
+                              XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
+                              0,
+                              0,
+                              nullptr);
     }
 
     // Register the XCB fd with the event loop
     int fd = xcb_get_file_descriptor(conn_);
-    loop_.watchFd(fd, EventLoop::FdEvents::Readable,
-        [this](EventLoop::FdEvents) { processEvents(); });
+    loop_.watchFd(fd, EventLoop::FdEvents::Readable, [this](EventLoop::FdEvents)
+                  {
+                      processEvents();
+                  });
 
     // Tiling WMs may resize the window after mapping without sending a
     // ConfigureNotify that we can observe.  Schedule a one-shot geometry
     // check once the event loop starts so we pick up the real size.
-    loop_.addTimer(0, false, [this]() {
-        auto cookie = xcb_get_geometry(conn_, window_);
-        if (auto* geom = xcb_get_geometry_reply(conn_, cookie, nullptr)) {
-            if (geom->width != width_ || geom->height != height_) {
-                width_  = geom->width;
-                height_ = geom->height;
-                if (onFramebufferResize) onFramebufferResize(width_, height_);
-            }
-            free(geom);
-        }
-    });
+    loop_.addTimer(0, false, [this]()
+                   {
+                       auto cookie = xcb_get_geometry(conn_, window_);
+                       if (auto *geom = xcb_get_geometry_reply(conn_, cookie, nullptr)) {
+                           if (geom->width != width_ || geom->height != height_) {
+                               width_  = geom->width;
+                               height_ = geom->height;
+                               if (onFramebufferResize) {
+                                   onFramebufferResize(width_, height_);
+                               }
+                           }
+                           free(geom);
+                       }
+                   });
 
     return true;
 }
@@ -521,36 +581,59 @@ void XCBWindow::destroy()
         loop_.removeTimer(selectionSweepTimer_);
         selectionSweepTimer_ = 0;
     }
-    pendingSelections_.clear();  // drop callbacks; nothing to deliver to during shutdown
+    pendingSelections_.clear(); // drop callbacks; nothing to deliver to during shutdown
 
     if (conn_) {
         int fd = xcb_get_file_descriptor(conn_);
         loop_.removeFd(fd);
     }
 
-    if (xkbState_)   { xkb_state_unref(xkbState_);   xkbState_   = nullptr; }
-    if (xkbKeymap_)  { xkb_keymap_unref(xkbKeymap_);  xkbKeymap_  = nullptr; }
-    if (xkbCtx_)     { xkb_context_unref(xkbCtx_);    xkbCtx_     = nullptr; }
+    if (xkbState_) {
+        xkb_state_unref(xkbState_);
+        xkbState_ = nullptr;
+    }
+    if (xkbKeymap_) {
+        xkb_keymap_unref(xkbKeymap_);
+        xkbKeymap_ = nullptr;
+    }
+    if (xkbCtx_) {
+        xkb_context_unref(xkbCtx_);
+        xkbCtx_ = nullptr;
+    }
 
     if (conn_) {
-        xcb_cursor_t* all[] = {
-            &cursorArrow_, &cursorIBeam_, &cursorPointer_, &cursorCrosshair_,
-            &cursorWait_,  &cursorHelp_,  &cursorMove_,    &cursorNotAllowed_,
-            &cursorResizeH_, &cursorResizeV_, &cursorResizeNESW_, &cursorResizeNWSE_,
+        xcb_cursor_t *all[] = {
+            &cursorArrow_,
+            &cursorIBeam_,
+            &cursorPointer_,
+            &cursorCrosshair_,
+            &cursorWait_,
+            &cursorHelp_,
+            &cursorMove_,
+            &cursorNotAllowed_,
+            &cursorResizeH_,
+            &cursorResizeV_,
+            &cursorResizeNESW_,
+            &cursorResizeNWSE_,
         };
-        for (xcb_cursor_t* c : all) {
-            if (*c) { xcb_free_cursor(conn_, *c); *c = 0; }
+        for (xcb_cursor_t *c : all) {
+            if (*c) {
+                xcb_free_cursor(conn_, *c);
+                *c = 0;
+            }
         }
         if (cursorCtx_) {
             xcb_cursor_context_free(cursorCtx_);
             cursorCtx_ = nullptr;
         }
-        if (window_) xcb_destroy_window(conn_, window_);
+        if (window_) {
+            xcb_destroy_window(conn_, window_);
+        }
         window_ = 0;
-        conn_   = nullptr;  // owned by Xlib display, don't disconnect separately
+        conn_   = nullptr; // owned by Xlib display, don't disconnect separately
     }
     if (display_) {
-        XCloseDisplay(display_);  // closes the underlying XCB connection too
+        XCloseDisplay(display_); // closes the underlying XCB connection too
         display_ = nullptr;
     }
 }
@@ -559,7 +642,9 @@ void XCBWindow::destroy()
 
 void XCBWindow::raise()
 {
-    if (!conn_ || !window_) return;
+    if (!conn_ || !window_) {
+        return;
+    }
     // EWMH _NET_ACTIVE_WINDOW client message. source_indication = 2 means
     // "request from a pager / taskbar / notification daemon proxy" — most
     // EWMH-compliant compositors honor source=2 without a focus-stealing
@@ -569,60 +654,54 @@ void XCBWindow::raise()
     // (notably some tiling WMs) ignore _NET_ACTIVE_WINDOW entirely.
     xcb_atom_t atomNetActiveWindow = internAtom("_NET_ACTIVE_WINDOW");
     if (atomNetActiveWindow != 0) {
-        xcb_client_message_event_t ev{};
-        ev.response_type = XCB_CLIENT_MESSAGE;
-        ev.format        = 32;
-        ev.window        = window_;
-        ev.type          = atomNetActiveWindow;
-        ev.data.data32[0] = 2;                   // source: pager
-        ev.data.data32[1] = XCB_CURRENT_TIME;    // timestamp
-        ev.data.data32[2] = 0;                   // requestor's currently-active window (none)
+        xcb_client_message_event_t ev {};
+        ev.response_type  = XCB_CLIENT_MESSAGE;
+        ev.format         = 32;
+        ev.window         = window_;
+        ev.type           = atomNetActiveWindow;
+        ev.data.data32[0] = 2;                // source: pager
+        ev.data.data32[1] = XCB_CURRENT_TIME; // timestamp
+        ev.data.data32[2] = 0;                // requestor's currently-active window (none)
         ev.data.data32[3] = 0;
         ev.data.data32[4] = 0;
-        xcb_send_event(conn_, 0, screen_->root,
-                       XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
-                       XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT,
-                       reinterpret_cast<const char*>(&ev));
+        xcb_send_event(conn_, 0, screen_->root, XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, reinterpret_cast<const char *>(&ev));
     }
     // Also raise + request input focus directly. Compositors that honor
     // _NET_ACTIVE_WINDOW will overwrite these; on simpler WMs this is the
     // fallback that actually works.
     const uint32_t values[] = { XCB_STACK_MODE_ABOVE };
     xcb_configure_window(conn_, window_, XCB_CONFIG_WINDOW_STACK_MODE, values);
-    xcb_set_input_focus(conn_, XCB_INPUT_FOCUS_POINTER_ROOT, window_,
-                        XCB_CURRENT_TIME);
+    xcb_set_input_focus(conn_, XCB_INPUT_FOCUS_POINTER_ROOT, window_, XCB_CURRENT_TIME);
     xcb_flush(conn_);
 }
 
-void XCBWindow::setTitle(const std::string& title)
+void XCBWindow::setTitle(const std::string &title)
 {
-    if (!conn_ || !window_) return;
-    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
-        XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8,
-        static_cast<uint32_t>(title.size()), title.c_str());
+    if (!conn_ || !window_) {
+        return;
+    }
+    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, static_cast<uint32_t>(title.size()), title.c_str());
     // Also set _NET_WM_NAME for UTF-8 compositors
     xcb_atom_t netWmName = internAtom("_NET_WM_NAME");
-    xcb_atom_t utf8 = atomUtf8String_;
-    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_,
-        netWmName, utf8, 8,
-        static_cast<uint32_t>(title.size()), title.c_str());
+    xcb_atom_t utf8      = atomUtf8String_;
+    xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, window_, netWmName, utf8, 8, static_cast<uint32_t>(title.size()), title.c_str());
     xcb_flush(conn_);
 }
 
-void XCBWindow::getFramebufferSize(int& w, int& h) const
+void XCBWindow::getFramebufferSize(int &w, int &h) const
 {
     w = width_;
     h = height_;
 }
 
-void XCBWindow::getContentScale(float& x, float& y) const
+void XCBWindow::getContentScale(float &x, float &y) const
 {
     // X11 screen DPI from server, fallback to 1.0
     // For HiDPI detection we'd query Xrandr; keep simple for now
     x = y = 1.0f;
 }
 
-void XCBWindow::getScreenSize(int& w, int& h) const
+void XCBWindow::getScreenSize(int &w, int &h) const
 {
     if (screen_) {
         w = screen_->width_in_pixels;
@@ -655,125 +734,131 @@ wgpu::Surface XCBWindow::createWgpuSurface(wgpu::Instance instance)
 
 void XCBWindow::processEvents()
 {
-    xcb_generic_event_t* event;
+    xcb_generic_event_t *event;
     while ((event = xcb_poll_for_event(conn_)) != nullptr) {
         uint8_t type = event->response_type & ~0x80;
         switch (type) {
-        case XCB_KEY_PRESS: {
-            auto* ev = reinterpret_cast<xcb_key_press_event_t*>(event);
-            // Detect auto-repeat: same keycode arriving without a true release
-            bool isRepeat = (ev->detail == lastPressKeycode_ && ev->time == lastPressTime_);
-            lastPressKeycode_ = ev->detail;
-            lastPressTime_    = ev->time;
-            handleKeyPress(ev, isRepeat);
-            break;
-        }
-        case XCB_KEY_RELEASE: {
-            auto* ev = reinterpret_cast<xcb_key_release_event_t*>(event);
-            // Peek: if the next event is a KeyPress with the same keycode+time, it's auto-repeat
-            xcb_generic_event_t* next = xcb_poll_for_event(conn_);
-            if (next) {
-                uint8_t nextType = next->response_type & ~0x80;
-                if (nextType == XCB_KEY_PRESS) {
-                    auto* nextEv = reinterpret_cast<xcb_key_press_event_t*>(next);
-                    if (nextEv->detail == ev->detail && nextEv->time == ev->time) {
-                        // Auto-repeat pair: skip the release, treat the press as repeat.
-                        lastPressKeycode_ = nextEv->detail;
-                        lastPressTime_    = nextEv->time;
-                        handleKeyPress(nextEv, true);
-                        free(next);
-                        break;
+            case XCB_KEY_PRESS: {
+                auto *ev          = reinterpret_cast<xcb_key_press_event_t *>(event);
+                // Detect auto-repeat: same keycode arriving without a true release
+                bool isRepeat     = (ev->detail == lastPressKeycode_ && ev->time == lastPressTime_);
+                lastPressKeycode_ = ev->detail;
+                lastPressTime_    = ev->time;
+                handleKeyPress(ev, isRepeat);
+                break;
+            }
+            case XCB_KEY_RELEASE: {
+                auto *ev                  = reinterpret_cast<xcb_key_release_event_t *>(event);
+                // Peek: if the next event is a KeyPress with the same keycode+time, it's auto-repeat
+                xcb_generic_event_t *next = xcb_poll_for_event(conn_);
+                if (next) {
+                    uint8_t nextType = next->response_type & ~0x80;
+                    if (nextType == XCB_KEY_PRESS) {
+                        auto *nextEv = reinterpret_cast<xcb_key_press_event_t *>(next);
+                        if (nextEv->detail == ev->detail && nextEv->time == ev->time) {
+                            // Auto-repeat pair: skip the release, treat the press as repeat.
+                            lastPressKeycode_ = nextEv->detail;
+                            lastPressTime_    = nextEv->time;
+                            handleKeyPress(nextEv, true);
+                            free(next);
+                            break;
+                        }
+                    }
+                    // Not a repeat: process the release then the next event on next iteration
+                    // Re-queue by processing the saved next event immediately
+                    handleKeyRelease(ev);
+                    // Process next now (recurse into switch by reusing the event)
+                    uint8_t nextType2 = next->response_type & ~0x80;
+                    switch (nextType2) {
+                        case XCB_KEY_PRESS: {
+                            auto *n           = reinterpret_cast<xcb_key_press_event_t *>(next);
+                            lastPressKeycode_ = n->detail;
+                            lastPressTime_    = n->time;
+                            handleKeyPress(n, false);
+                            break;
+                        }
+                        default:
+                            // Put it back indirectly by processing it here
+                            // (small duplication to avoid recursion)
+                            break;
+                    }
+                    free(next);
+                } else {
+                    handleKeyRelease(ev);
+                }
+                break;
+            }
+            case XCB_BUTTON_PRESS: {
+                handleButtonPress(reinterpret_cast<xcb_button_press_event_t *>(event));
+                break;
+            }
+            case XCB_BUTTON_RELEASE: {
+                handleButtonRelease(reinterpret_cast<xcb_button_release_event_t *>(event));
+                break;
+            }
+            case XCB_MOTION_NOTIFY: {
+                handleMotion(reinterpret_cast<xcb_motion_notify_event_t *>(event));
+                break;
+            }
+            case XCB_FOCUS_IN: {
+                handleFocusIn(reinterpret_cast<xcb_focus_in_event_t *>(event));
+                break;
+            }
+            case XCB_FOCUS_OUT: {
+                handleFocusOut(reinterpret_cast<xcb_focus_out_event_t *>(event));
+                break;
+            }
+            case XCB_CONFIGURE_NOTIFY: {
+                handleConfigureNotify(reinterpret_cast<xcb_configure_notify_event_t *>(event));
+                break;
+            }
+            case XCB_CLIENT_MESSAGE: {
+                handleClientMessage(reinterpret_cast<xcb_client_message_event_t *>(event));
+                break;
+            }
+            case XCB_SELECTION_REQUEST: {
+                handleSelectionRequest(reinterpret_cast<xcb_selection_request_event_t *>(event));
+                break;
+            }
+            case XCB_SELECTION_NOTIFY: {
+                handleSelectionNotify(reinterpret_cast<xcb_selection_notify_event_t *>(event));
+                break;
+            }
+            case XCB_EXPOSE:
+                if (onExpose) {
+                    onExpose();
+                }
+                break;
+            case XCB_VISIBILITY_NOTIFY: {
+                handleVisibilityNotify(reinterpret_cast<xcb_visibility_notify_event_t *>(event));
+                break;
+            }
+            case XCB_MAP_NOTIFY: {
+                handleMapNotify(reinterpret_cast<xcb_map_notify_event_t *>(event));
+                break;
+            }
+            case XCB_UNMAP_NOTIFY: {
+                handleUnmapNotify(reinterpret_cast<xcb_unmap_notify_event_t *>(event));
+                break;
+            }
+            case XCB_PROPERTY_NOTIFY: {
+                handlePropertyNotify(reinterpret_cast<xcb_property_notify_event_t *>(event));
+                break;
+            }
+            default:
+                if (xkbEventBase_ && type == xkbEventBase_) {
+                    auto *xkbEvent = reinterpret_cast<xcb_xkb_state_notify_event_t *>(event);
+                    if (xkbEvent->xkbType == XCB_XKB_STATE_NOTIFY && xkbState_) {
+                        xkb_state_update_mask(xkbState_,
+                                              xkbEvent->baseMods,
+                                              xkbEvent->latchedMods,
+                                              xkbEvent->lockedMods,
+                                              xkbEvent->baseGroup,
+                                              xkbEvent->latchedGroup,
+                                              xkbEvent->lockedGroup);
                     }
                 }
-                // Not a repeat: process the release then the next event on next iteration
-                // Re-queue by processing the saved next event immediately
-                handleKeyRelease(ev);
-                // Process next now (recurse into switch by reusing the event)
-                uint8_t nextType2 = next->response_type & ~0x80;
-                switch (nextType2) {
-                case XCB_KEY_PRESS: {
-                    auto* n = reinterpret_cast<xcb_key_press_event_t*>(next);
-                    lastPressKeycode_ = n->detail;
-                    lastPressTime_    = n->time;
-                    handleKeyPress(n, false);
-                    break;
-                }
-                default:
-                    // Put it back indirectly by processing it here
-                    // (small duplication to avoid recursion)
-                    break;
-                }
-                free(next);
-            } else {
-                handleKeyRelease(ev);
-            }
-            break;
-        }
-        case XCB_BUTTON_PRESS: {
-            handleButtonPress(reinterpret_cast<xcb_button_press_event_t*>(event));
-            break;
-        }
-        case XCB_BUTTON_RELEASE: {
-            handleButtonRelease(reinterpret_cast<xcb_button_release_event_t*>(event));
-            break;
-        }
-        case XCB_MOTION_NOTIFY: {
-            handleMotion(reinterpret_cast<xcb_motion_notify_event_t*>(event));
-            break;
-        }
-        case XCB_FOCUS_IN: {
-            handleFocusIn(reinterpret_cast<xcb_focus_in_event_t*>(event));
-            break;
-        }
-        case XCB_FOCUS_OUT: {
-            handleFocusOut(reinterpret_cast<xcb_focus_out_event_t*>(event));
-            break;
-        }
-        case XCB_CONFIGURE_NOTIFY: {
-            handleConfigureNotify(reinterpret_cast<xcb_configure_notify_event_t*>(event));
-            break;
-        }
-        case XCB_CLIENT_MESSAGE: {
-            handleClientMessage(reinterpret_cast<xcb_client_message_event_t*>(event));
-            break;
-        }
-        case XCB_SELECTION_REQUEST: {
-            handleSelectionRequest(reinterpret_cast<xcb_selection_request_event_t*>(event));
-            break;
-        }
-        case XCB_SELECTION_NOTIFY: {
-            handleSelectionNotify(reinterpret_cast<xcb_selection_notify_event_t*>(event));
-            break;
-        }
-        case XCB_EXPOSE:
-            if (onExpose) onExpose();
-            break;
-        case XCB_VISIBILITY_NOTIFY: {
-            handleVisibilityNotify(reinterpret_cast<xcb_visibility_notify_event_t*>(event));
-            break;
-        }
-        case XCB_MAP_NOTIFY: {
-            handleMapNotify(reinterpret_cast<xcb_map_notify_event_t*>(event));
-            break;
-        }
-        case XCB_UNMAP_NOTIFY: {
-            handleUnmapNotify(reinterpret_cast<xcb_unmap_notify_event_t*>(event));
-            break;
-        }
-        case XCB_PROPERTY_NOTIFY: {
-            handlePropertyNotify(reinterpret_cast<xcb_property_notify_event_t*>(event));
-            break;
-        }
-        default:
-            if (xkbEventBase_ && type == xkbEventBase_) {
-                auto* xkbEvent = reinterpret_cast<xcb_xkb_state_notify_event_t*>(event);
-                if (xkbEvent->xkbType == XCB_XKB_STATE_NOTIFY && xkbState_) {
-                    xkb_state_update_mask(xkbState_,
-                        xkbEvent->baseMods, xkbEvent->latchedMods, xkbEvent->lockedMods,
-                        xkbEvent->baseGroup, xkbEvent->latchedGroup, xkbEvent->lockedGroup);
-                }
-            }
-            break;
+                break;
         }
         free(event);
     }
@@ -782,9 +867,11 @@ void XCBWindow::processEvents()
 
 // ---------- input handlers ----------
 
-void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
+void XCBWindow::handleKeyPress(xcb_key_press_event_t *ev, bool isRepeat)
 {
-    if (!xkbState_) return;
+    if (!xkbState_) {
+        return;
+    }
 
     xkb_keycode_t keycode = ev->detail;
 
@@ -803,10 +890,12 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
 
     xkb_state_update_key(xkbState_, keycode, XKB_KEY_DOWN);
 
-    uint32_t mods = xkbStateToModifiers(xkbState_);
+    uint32_t mods    = xkbStateToModifiers(xkbState_);
     KeyAction action = isRepeat ? KeyAction_Repeat : KeyAction_Press;
 
-    if (onKey) onKey(static_cast<int>(k), static_cast<int>(keycode), static_cast<int>(action), static_cast<int>(mods));
+    if (onKey) {
+        onKey(static_cast<int>(k), static_cast<int>(keycode), static_cast<int>(action), static_cast<int>(mods));
+    }
 
     // Emit char for printable keys (non-control, non-repeat or repeat)
     if (onChar && !(mods & CtrlModifier) && !(mods & MetaModifier)) {
@@ -817,9 +906,11 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
     }
 }
 
-void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
+void XCBWindow::handleKeyRelease(xcb_key_release_event_t *ev)
 {
-    if (!xkbState_) return;
+    if (!xkbState_) {
+        return;
+    }
 
     xkb_keycode_t keycode = ev->detail;
 
@@ -835,92 +926,119 @@ void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
 
     uint32_t mods = xkbStateToModifiers(xkbState_);
 
-    if (onKey) onKey(static_cast<int>(k), static_cast<int>(keycode),
-                      static_cast<int>(KeyAction_Release), static_cast<int>(mods));
+    if (onKey) {
+        onKey(static_cast<int>(k), static_cast<int>(keycode), static_cast<int>(KeyAction_Release), static_cast<int>(mods));
+    }
 }
 
-void XCBWindow::handleButtonPress(xcb_button_press_event_t* ev)
+void XCBWindow::handleButtonPress(xcb_button_press_event_t *ev)
 {
     // XCB buttons: 1=left, 2=middle, 3=right, 4/5=scroll
     int button = -1;
     switch (ev->detail) {
-    case 1: button = static_cast<int>(LeftButton); break;
-    case 2: button = static_cast<int>(MidButton); break;
-    case 3: button = static_cast<int>(RightButton); break;
-    case 4:
-        if (onScroll) onScroll(0.0, 1.0);
-        return;
-    case 5:
-        if (onScroll) onScroll(0.0, -1.0);
-        return;
-    case 6:
-        if (onScroll) onScroll(-1.0, 0.0);
-        return;
-    case 7:
-        if (onScroll) onScroll(1.0, 0.0);
-        return;
-    default: return;
+        case 1: button = static_cast<int>(LeftButton); break;
+        case 2: button = static_cast<int>(MidButton); break;
+        case 3: button = static_cast<int>(RightButton); break;
+        case 4:
+            if (onScroll) {
+                onScroll(0.0, 1.0);
+            }
+            return;
+        case 5:
+            if (onScroll) {
+                onScroll(0.0, -1.0);
+            }
+            return;
+        case 6:
+            if (onScroll) {
+                onScroll(-1.0, 0.0);
+            }
+            return;
+        case 7:
+            if (onScroll) {
+                onScroll(1.0, 0.0);
+            }
+            return;
+        default: return;
     }
     uint32_t mods = xkbState_ ? xkbStateToModifiers(xkbState_) : 0;
-    if (onMouseButton) onMouseButton(button, static_cast<int>(KeyAction_Press), static_cast<int>(mods));
-    if (onCursorPos)   onCursorPos(ev->event_x, ev->event_y);
+    if (onMouseButton) {
+        onMouseButton(button, static_cast<int>(KeyAction_Press), static_cast<int>(mods));
+    }
+    if (onCursorPos) {
+        onCursorPos(ev->event_x, ev->event_y);
+    }
 }
 
-void XCBWindow::handleButtonRelease(xcb_button_release_event_t* ev)
+void XCBWindow::handleButtonRelease(xcb_button_release_event_t *ev)
 {
     int button = -1;
     switch (ev->detail) {
-    case 1: button = static_cast<int>(LeftButton); break;
-    case 2: button = static_cast<int>(MidButton); break;
-    case 3: button = static_cast<int>(RightButton); break;
-    default: return;
+        case 1: button = static_cast<int>(LeftButton); break;
+        case 2: button = static_cast<int>(MidButton); break;
+        case 3: button = static_cast<int>(RightButton); break;
+        default: return;
     }
     uint32_t mods = xkbState_ ? xkbStateToModifiers(xkbState_) : 0;
-    if (onMouseButton) onMouseButton(button, static_cast<int>(KeyAction_Release), static_cast<int>(mods));
+    if (onMouseButton) {
+        onMouseButton(button, static_cast<int>(KeyAction_Release), static_cast<int>(mods));
+    }
 }
 
-void XCBWindow::handleMotion(xcb_motion_notify_event_t* ev)
+void XCBWindow::handleMotion(xcb_motion_notify_event_t *ev)
 {
-    if (onCursorPos) onCursorPos(ev->event_x, ev->event_y);
+    if (onCursorPos) {
+        onCursorPos(ev->event_x, ev->event_y);
+    }
 }
 
-void XCBWindow::handleFocusIn(xcb_focus_in_event_t*)
+void XCBWindow::handleFocusIn(xcb_focus_in_event_t *)
 {
-    if (onFocus) onFocus(true);
+    if (onFocus) {
+        onFocus(true);
+    }
 }
 
-void XCBWindow::handleFocusOut(xcb_focus_out_event_t*)
+void XCBWindow::handleFocusOut(xcb_focus_out_event_t *)
 {
-    if (onFocus) onFocus(false);
+    if (onFocus) {
+        onFocus(false);
+    }
 }
 
-void XCBWindow::handleVisibilityNotify(xcb_visibility_notify_event_t* ev)
+void XCBWindow::handleVisibilityNotify(xcb_visibility_notify_event_t *ev)
 {
     // XCB_VISIBILITY_FULLY_OBSCURED == 2: every pixel of the window is
     // covered by other windows. Treat partially-obscured/unobscured as
     // visible (matches kitty/glfw GLFW_OCCLUDED, which only flips on
     // VisibilityFullyObscured per the X11 protocol).
     bool obscured = (ev->state == XCB_VISIBILITY_FULLY_OBSCURED);
-    if (obscured == fullyObscured_) return;
+    if (obscured == fullyObscured_) {
+        return;
+    }
     fullyObscured_ = obscured;
     refreshVisibility();
 }
 
-void XCBWindow::handleMapNotify(xcb_map_notify_event_t*)
+void XCBWindow::handleMapNotify(xcb_map_notify_event_t *)
 {
-    if (mapped_) return;
+    if (mapped_) {
+        return;
+    }
     mapped_ = true;
     refreshVisibility();
 }
 
-void XCBWindow::handleUnmapNotify(xcb_unmap_notify_event_t*)
+void XCBWindow::handleUnmapNotify(xcb_unmap_notify_event_t *)
 {
-    if (!mapped_) return;
+    if (!mapped_) {
+        return;
+    }
     mapped_ = false;
     refreshVisibility();
 }
 
-void XCBWindow::handlePropertyNotify(xcb_property_notify_event_t* ev)
+void XCBWindow::handlePropertyNotify(xcb_property_notify_event_t *ev)
 {
     if (atomNetWmState_ && ev->atom == atomNetWmState_) {
         updateIconifiedFromNetWmState();
@@ -933,25 +1051,40 @@ void XCBWindow::updateIconifiedFromNetWmState()
     // is in the list (set by mutter/kwin/openbox/etc. on minimize). Modern
     // WMs use _NET_WM_STATE_HIDDEN in preference to the legacy WM_STATE
     // IconicState; we check the new path only.
-    if (!atomNetWmState_ || !atomNetWmStateHidden_) return;
+    if (!atomNetWmState_ || !atomNetWmStateHidden_) {
+        return;
+    }
     xcb_get_property_cookie_t c = xcb_get_property(
-        conn_, 0, window_, atomNetWmState_, XCB_ATOM_ATOM, 0, 64);
-    xcb_generic_error_t* err = nullptr;
-    xcb_get_property_reply_t* r = xcb_get_property_reply(conn_, c, &err);
-    if (err) { free(err); }
+        conn_,
+        0,
+        window_,
+        atomNetWmState_,
+        XCB_ATOM_ATOM,
+        0,
+        64);
+    xcb_generic_error_t *err    = nullptr;
+    xcb_get_property_reply_t *r = xcb_get_property_reply(conn_, c, &err);
+    if (err) {
+        free(err);
+    }
     bool hidden = false;
     if (r) {
         if (r->type == XCB_ATOM_ATOM && r->format == 32) {
-            int n = xcb_get_property_value_length(r) / 4;
-            const xcb_atom_t* atoms = static_cast<const xcb_atom_t*>(
+            int n                   = xcb_get_property_value_length(r) / 4;
+            const xcb_atom_t *atoms = static_cast<const xcb_atom_t *>(
                 xcb_get_property_value(r));
             for (int i = 0; i < n; ++i) {
-                if (atoms[i] == atomNetWmStateHidden_) { hidden = true; break; }
+                if (atoms[i] == atomNetWmStateHidden_) {
+                    hidden = true;
+                    break;
+                }
             }
         }
         free(r);
     }
-    if (hidden == iconified_) return;
+    if (hidden == iconified_) {
+        return;
+    }
     iconified_ = hidden;
     refreshVisibility();
 }
@@ -959,12 +1092,16 @@ void XCBWindow::updateIconifiedFromNetWmState()
 void XCBWindow::refreshVisibility()
 {
     bool nowVisible = mapped_ && !iconified_ && !fullyObscured_;
-    if (nowVisible == visible_) return;
+    if (nowVisible == visible_) {
+        return;
+    }
     visible_ = nowVisible;
-    if (onVisibility) onVisibility(nowVisible);
+    if (onVisibility) {
+        onVisibility(nowVisible);
+    }
 }
 
-void XCBWindow::handleConfigureNotify(xcb_configure_notify_event_t* ev)
+void XCBWindow::handleConfigureNotify(xcb_configure_notify_event_t *ev)
 {
     if (ev->width != width_ || ev->height != height_) {
         width_  = ev->width;
@@ -977,13 +1114,18 @@ void XCBWindow::handleConfigureNotify(xcb_configure_notify_event_t* ev)
             loop_.removeTimer(resizeDebounceTimer_);
             resizeDebounceTimer_ = 0;
         }
-        inLiveResize_ = true;
-        resizeDebounceTimer_ = loop_.addTimer(100, false, [this]() {
-            resizeDebounceTimer_ = 0;
-            inLiveResize_ = false;
-            if (onLiveResizeEnd) onLiveResizeEnd();
-        });
-        if (onFramebufferResize) onFramebufferResize(width_, height_);
+        inLiveResize_        = true;
+        resizeDebounceTimer_ = loop_.addTimer(100, false, [this]()
+                                              {
+                                                  resizeDebounceTimer_ = 0;
+                                                  inLiveResize_        = false;
+                                                  if (onLiveResizeEnd) {
+                                                      onLiveResizeEnd();
+                                                  }
+                                              });
+        if (onFramebufferResize) {
+            onFramebufferResize(width_, height_);
+        }
     }
 }
 
@@ -992,9 +1134,11 @@ bool XCBWindow::inLiveResize() const
     return inLiveResize_;
 }
 
-void XCBWindow::handleClientMessage(xcb_client_message_event_t* ev)
+void XCBWindow::handleClientMessage(xcb_client_message_event_t *ev)
 {
-    if (ev->type != atomWmProtocols_) return;
+    if (ev->type != atomWmProtocols_) {
+        return;
+    }
     if (ev->data.data32[0] == atomWmDeleteWindow_) {
         shouldClose_ = true;
     } else if (ev->data.data32[0] == atomNetWmSyncRequest_) {
@@ -1014,18 +1158,19 @@ void XCBWindow::handleClientMessage(xcb_client_message_event_t* ev)
 
 // ---------- clipboard ----------
 
-xcb_atom_t XCBWindow::internAtom(const char* name, bool onlyIfExists) const
+xcb_atom_t XCBWindow::internAtom(const char *name, bool onlyIfExists) const
 {
-    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(conn_, onlyIfExists ? 1 : 0,
-                                                       static_cast<uint16_t>(strlen(name)), name);
-    xcb_intern_atom_reply_t* reply  = xcb_intern_atom_reply(conn_, cookie, nullptr);
-    if (!reply) return XCB_ATOM_NONE;
+    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(conn_, onlyIfExists ? 1 : 0, static_cast<uint16_t>(strlen(name)), name);
+    xcb_intern_atom_reply_t *reply  = xcb_intern_atom_reply(conn_, cookie, nullptr);
+    if (!reply) {
+        return XCB_ATOM_NONE;
+    }
     xcb_atom_t atom = reply->atom;
     free(reply);
     return atom;
 }
 
-void XCBWindow::setClipboard(const std::string& text)
+void XCBWindow::setClipboard(const std::string &text)
 {
     clipboardContent_ = text;
     xcb_set_selection_owner(conn_, window_, atomClipboard_, XCB_CURRENT_TIME);
@@ -1038,29 +1183,29 @@ void XCBWindow::setClipboard(const std::string& text)
 // getPrimarySelection here; they were busy-polls that raced with the async
 // path and have been removed.
 
-void XCBWindow::setPrimarySelection(const std::string& text)
+void XCBWindow::setPrimarySelection(const std::string &text)
 {
     primaryContent_ = text;
     xcb_set_selection_owner(conn_, window_, atomPrimary_, XCB_CURRENT_TIME);
     xcb_flush(conn_);
 }
 
-
 std::string XCBWindow::readSelectionProperty(xcb_atom_t property) const
 {
-    xcb_get_property_cookie_t c = xcb_get_property(conn_, 1 /* delete */, window_,
-                                                     property, XCB_ATOM_ANY, 0, UINT32_MAX);
-    xcb_get_property_reply_t* r = xcb_get_property_reply(conn_, c, nullptr);
-    if (!r) return {};
-    std::string result(static_cast<const char*>(xcb_get_property_value(r)),
-                        xcb_get_property_value_length(r));
+    xcb_get_property_cookie_t c = xcb_get_property(conn_, 1 /* delete */, window_, property, XCB_ATOM_ANY, 0, UINT32_MAX);
+    xcb_get_property_reply_t *r = xcb_get_property_reply(conn_, c, nullptr);
+    if (!r) {
+        return {};
+    }
+    std::string result(static_cast<const char *>(xcb_get_property_value(r)),
+                       xcb_get_property_value_length(r));
     free(r);
     return result;
 }
 
-void XCBWindow::handleSelectionRequest(xcb_selection_request_event_t* ev)
+void XCBWindow::handleSelectionRequest(xcb_selection_request_event_t *ev)
 {
-    xcb_selection_notify_event_t notify{};
+    xcb_selection_notify_event_t notify {};
     notify.response_type = XCB_SELECTION_NOTIFY;
     notify.requestor     = ev->requestor;
     notify.selection     = ev->selection;
@@ -1068,23 +1213,20 @@ void XCBWindow::handleSelectionRequest(xcb_selection_request_event_t* ev)
     notify.property      = XCB_ATOM_NONE;
     notify.time          = ev->time;
 
-    const std::string& content = (ev->selection == atomPrimary_)
-                                ? primaryContent_ : clipboardContent_;
+    const std::string &content = (ev->selection == atomPrimary_)
+        ? primaryContent_
+        : clipboardContent_;
 
     if (ev->target == atomTargets_) {
         xcb_atom_t supported[] = { atomUtf8String_, XCB_ATOM_STRING };
-        xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, ev->requestor,
-                             ev->property, XCB_ATOM_ATOM, 32, 2, supported);
+        xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, ev->requestor, ev->property, XCB_ATOM_ATOM, 32, 2, supported);
         notify.property = ev->property;
     } else if (ev->target == atomUtf8String_ || ev->target == XCB_ATOM_STRING) {
-        xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, ev->requestor,
-                             ev->property, ev->target, 8,
-                             static_cast<uint32_t>(content.size()), content.c_str());
+        xcb_change_property(conn_, XCB_PROP_MODE_REPLACE, ev->requestor, ev->property, ev->target, 8, static_cast<uint32_t>(content.size()), content.c_str());
         notify.property = ev->property;
     }
 
-    xcb_send_event(conn_, 0, ev->requestor, XCB_EVENT_MASK_NO_EVENT,
-                    reinterpret_cast<const char*>(&notify));
+    xcb_send_event(conn_, 0, ev->requestor, XCB_EVENT_MASK_NO_EVENT, reinterpret_cast<const char *>(&notify));
     xcb_flush(conn_);
 }
 
@@ -1102,61 +1244,78 @@ static uint64_t monotonicMs()
 
 void XCBWindow::requestSelection(SelectionSource src, SelectionCallback cb)
 {
-    if (!conn_) { cb(std::nullopt); return; }
+    if (!conn_) {
+        cb(std::nullopt);
+        return;
+    }
     xcb_atom_t selection = (src == SelectionSource::Primary) ? atomPrimary_ : atomClipboard_;
 
     // If we own the selection, satisfy from in-memory content immediately.
     xcb_get_selection_owner_cookie_t c = xcb_get_selection_owner(conn_, selection);
-    xcb_get_selection_owner_reply_t* r = xcb_get_selection_owner_reply(conn_, c, nullptr);
+    xcb_get_selection_owner_reply_t *r = xcb_get_selection_owner_reply(conn_, c, nullptr);
     if (r && r->owner == window_) {
-        const std::string& s = (selection == atomPrimary_) ? primaryContent_ : clipboardContent_;
+        const std::string &s = (selection == atomPrimary_) ? primaryContent_ : clipboardContent_;
         free(r);
-        if (s.empty()) cb(std::nullopt);
-        else           cb(s);
+        if (s.empty()) {
+            cb(std::nullopt);
+        } else {
+            cb(s);
+        }
         return;
     }
-    if (r) free(r);
+    if (r) {
+        free(r);
+    }
 
-    xcb_convert_selection(conn_, window_, selection,
-                          atomUtf8String_, atomMbSelection_, XCB_CURRENT_TIME);
+    xcb_convert_selection(conn_, window_, selection, atomUtf8String_, atomMbSelection_, XCB_CURRENT_TIME);
     xcb_flush(conn_);
 
     constexpr uint64_t kTimeoutMs = 5000;
-    pendingSelections_.push_back({selection, std::move(cb), monotonicMs() + kTimeoutMs});
+    pendingSelections_.push_back({ selection, std::move(cb), monotonicMs() + kTimeoutMs });
 
     if (selectionSweepTimer_ == 0) {
-        selectionSweepTimer_ = loop_.addTimer(250, true,
-            [this]() { sweepStaleSelectionRequests(); });
+        selectionSweepTimer_ = loop_.addTimer(250, true, [this]()
+                                              {
+                                                  sweepStaleSelectionRequests();
+                                              });
     }
 }
 
 void XCBWindow::sweepStaleSelectionRequests()
 {
-    if (pendingSelections_.empty()) return;
+    if (pendingSelections_.empty()) {
+        return;
+    }
     const uint64_t now = monotonicMs();
     std::vector<SelectionCallback> toFire;
     pendingSelections_.erase(
-        std::remove_if(pendingSelections_.begin(), pendingSelections_.end(),
-            [&](PendingSelectionRequest& p) {
-                if (p.deadlineMs <= now) {
-                    toFire.push_back(std::move(p.cb));
-                    return true;
-                }
-                return false;
-            }),
+        std::remove_if(pendingSelections_.begin(), pendingSelections_.end(), [&](PendingSelectionRequest &p)
+                       {
+                           if (p.deadlineMs <= now) {
+                               toFire.push_back(std::move(p.cb));
+                               return true;
+                           }
+                           return false;
+                       }),
         pendingSelections_.end());
     if (pendingSelections_.empty() && selectionSweepTimer_ != 0) {
         loop_.removeTimer(selectionSweepTimer_);
         selectionSweepTimer_ = 0;
     }
-    for (auto& cb : toFire) cb(std::nullopt);
+    for (auto &cb : toFire) {
+        cb(std::nullopt);
+    }
 }
 
-void XCBWindow::handleSelectionNotify(xcb_selection_notify_event_t* ev)
+void XCBWindow::handleSelectionNotify(xcb_selection_notify_event_t *ev)
 {
-    auto it = std::find_if(pendingSelections_.begin(), pendingSelections_.end(),
-        [&](const PendingSelectionRequest& p) { return p.selection == ev->selection; });
-    if (it == pendingSelections_.end()) return;  // unsolicited or already swept
+    auto it = std::find_if(pendingSelections_.begin(), pendingSelections_.end(), [&](const PendingSelectionRequest &p)
+                           {
+                               return p.selection == ev->selection;
+                           });
+    if (it == pendingSelections_.end()) {
+        return; // unsolicited or already swept
+    }
     SelectionCallback cb = std::move(it->cb);
     pendingSelections_.erase(it);
     if (pendingSelections_.empty() && selectionSweepTimer_ != 0) {
@@ -1164,19 +1323,29 @@ void XCBWindow::handleSelectionNotify(xcb_selection_notify_event_t* ev)
         selectionSweepTimer_ = 0;
     }
 
-    if (ev->property == XCB_ATOM_NONE) { cb(std::nullopt); return; }
+    if (ev->property == XCB_ATOM_NONE) {
+        cb(std::nullopt);
+        return;
+    }
     std::string text = readSelectionProperty(atomMbSelection_);
-    if (text.empty()) cb(std::nullopt);
-    else              cb(std::move(text));
+    if (text.empty()) {
+        cb(std::nullopt);
+    } else {
+        cb(std::move(text));
+    }
 }
 
 // ---------- key name ----------
 
 std::string XCBWindow::keyName(int keycode) const
 {
-    if (!xkbState_) return {};
+    if (!xkbState_) {
+        return {};
+    }
     uint32_t cp = xkb_state_key_get_utf32(xkbState_, static_cast<xkb_keycode_t>(keycode));
-    if (cp < 0x20 || cp == 0x7f) return {};
+    if (cp < 0x20 || cp == 0x7f) {
+        return {};
+    }
     std::string result;
     utf8::append(result, cp);
     return result;
@@ -1184,13 +1353,19 @@ std::string XCBWindow::keyName(int keycode) const
 
 uint32_t XCBWindow::shiftedKeyCodepoint(int keycode) const
 {
-    if (!xkbKeymap_) return 0;
+    if (!xkbKeymap_) {
+        return 0;
+    }
     // Level 1 is the shifted variant in the current layout group
     xkb_layout_index_t group = xkb_state_key_get_layout(xkbState_, static_cast<xkb_keycode_t>(keycode));
-    const xkb_keysym_t* syms = nullptr;
-    int nsyms = xkb_keymap_key_get_syms_by_level(xkbKeymap_, static_cast<xkb_keycode_t>(keycode), group, 1, &syms);
-    if (nsyms < 1 || !syms) return 0;
+    const xkb_keysym_t *syms = nullptr;
+    int nsyms                = xkb_keymap_key_get_syms_by_level(xkbKeymap_, static_cast<xkb_keycode_t>(keycode), group, 1, &syms);
+    if (nsyms < 1 || !syms) {
+        return 0;
+    }
     uint32_t cp = xkb_keysym_to_utf32(syms[0]);
-    if (cp < 0x20 || cp == 0x7f) return 0;
+    if (cp < 0x20 || cp == 0x7f) {
+        return 0;
+    }
     return cp;
 }

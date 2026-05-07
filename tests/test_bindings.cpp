@@ -3,8 +3,8 @@
 // NoMatch" + timeout additions don't regress single-key or basic multi-key
 // flows.
 
-#include <doctest/doctest.h>
 #include "Bindings.h"
+#include <doctest/doctest.h>
 
 namespace {
 
@@ -13,10 +13,10 @@ namespace {
 // tests — we only inspect which actions come back out of MatchResult.
 Binding mkBinding(std::vector<KeyStroke> keys, Action::Any action)
 {
-    return Binding{std::move(keys), std::move(action)};
+    return Binding { std::move(keys), std::move(action) };
 }
 
-KeyStroke ks(const char* spec)
+KeyStroke ks(const char *spec)
 {
     auto parsed = parseKeyStroke(spec);
     REQUIRE(parsed.has_value());
@@ -31,7 +31,7 @@ using R = SequenceMatcher::Result;
 TEST_CASE("SequenceMatcher: single-key binding matches immediately")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+t") }, Action::NewTab {}),
     };
     SequenceMatcher sm;
     auto r = sm.advance(ks("ctrl+t"), bindings);
@@ -43,7 +43,7 @@ TEST_CASE("SequenceMatcher: single-key binding matches immediately")
 TEST_CASE("SequenceMatcher: multi-key binding requires full sequence")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::ClosePane {}),
     };
     SequenceMatcher sm;
     // First key: prefix match, no actions yet.
@@ -61,7 +61,7 @@ TEST_CASE("SequenceMatcher: multi-key binding requires full sequence")
 TEST_CASE("SequenceMatcher: prefix then unrelated key is NoMatch")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::ClosePane {}),
     };
     SequenceMatcher sm;
     CHECK(sm.advance(ks("ctrl+x"), bindings).result == R::Prefix);
@@ -83,8 +83,8 @@ TEST_CASE("SequenceMatcher: exact match preferred over pure-prefix match")
     // longer binding becomes unreachable because the exact hit resets
     // the matcher before any follow-up key can arrive.
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+x")}, Action::NewTab{}),
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+x") }, Action::NewTab {}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::ClosePane {}),
     };
     SequenceMatcher sm;
     auto r = sm.advance(ks("ctrl+x"), bindings);
@@ -96,8 +96,8 @@ TEST_CASE("SequenceMatcher: exact match preferred over pure-prefix match")
 TEST_CASE("SequenceMatcher: multiple actions bound to same stroke all fire")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
-        mkBinding({ks("ctrl+t")}, Action::ReloadConfig{}),
+        mkBinding({ ks("ctrl+t") }, Action::NewTab {}),
+        mkBinding({ ks("ctrl+t") }, Action::ReloadConfig {}),
     };
     SequenceMatcher sm;
     auto r = sm.advance(ks("ctrl+t"), bindings);
@@ -110,7 +110,7 @@ TEST_CASE("SequenceMatcher: multiple actions bound to same stroke all fire")
 TEST_CASE("SequenceMatcher: unrelated key with no prefix state is NoMatch")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+t") }, Action::NewTab {}),
     };
     SequenceMatcher sm;
     auto r = sm.advance(ks("a"), bindings);
@@ -128,7 +128,7 @@ TEST_CASE("SequenceMatcher: empty binding table returns NoMatch")
 TEST_CASE("SequenceMatcher: reset() clears prefix state")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::ClosePane {}),
     };
     SequenceMatcher sm;
     CHECK(sm.advance(ks("ctrl+x"), bindings).result == R::Prefix);
@@ -141,7 +141,7 @@ TEST_CASE("SequenceMatcher: reset() clears prefix state")
 TEST_CASE("SequenceMatcher: three-key sequence walks Prefix → Prefix → Match")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+a"), ks("b"), ks("c")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+a"), ks("b"), ks("c") }, Action::NewTab {}),
     };
     SequenceMatcher sm;
     CHECK(sm.advance(ks("ctrl+a"), bindings).result == R::Prefix);
@@ -159,7 +159,7 @@ TEST_CASE("SequenceMatcher: NoMatch after prefix returns the aborted prefix keys
     // resend it to the shell. The current failing key ('a') is NOT
     // included; the caller handles it as a fresh keystroke.
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::ClosePane {}),
     };
     SequenceMatcher sm;
     CHECK(sm.advance(ks("ctrl+x"), bindings).result == R::Prefix);
@@ -175,7 +175,7 @@ TEST_CASE("SequenceMatcher: NoMatch with no prior prefix has empty abortedPrefix
     // not produce anything to replay — the failing key is the caller's
     // concern to handle as a regular keystroke.
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+t") }, Action::NewTab {}),
     };
     SequenceMatcher sm;
     auto r = sm.advance(ks("a"), bindings);
@@ -186,7 +186,7 @@ TEST_CASE("SequenceMatcher: NoMatch with no prior prefix has empty abortedPrefix
 TEST_CASE("SequenceMatcher: multi-prefix NoMatch returns all prior prefix keys in order")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+a"), ks("b"), ks("c")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+a"), ks("b"), ks("c") }, Action::NewTab {}),
     };
     SequenceMatcher sm;
     CHECK(sm.advance(ks("ctrl+a"), bindings).result == R::Prefix);
@@ -201,7 +201,7 @@ TEST_CASE("SequenceMatcher: multi-prefix NoMatch returns all prior prefix keys i
 TEST_CASE("SequenceMatcher: Match clears prefix state, no abortedPrefix")
 {
     std::vector<Binding> bindings = {
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::ClosePane {}),
     };
     SequenceMatcher sm;
     CHECK(sm.advance(ks("ctrl+x"), bindings).result == R::Prefix);
@@ -213,10 +213,10 @@ TEST_CASE("SequenceMatcher: Match clears prefix state, no abortedPrefix")
 TEST_CASE("mergeKeyBindings: user shadows default on same stroke")
 {
     std::vector<Binding> defaults = {
-        mkBinding({ks("ctrl+shift+w")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+shift+w") }, Action::ClosePane {}),
     };
     std::vector<Binding> user = {
-        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+        mkBinding({ ks("ctrl+shift+w") }, Action::CloseTab {}),
     };
     auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
     REQUIRE(merged.size() == 1);
@@ -226,11 +226,11 @@ TEST_CASE("mergeKeyBindings: user shadows default on same stroke")
 TEST_CASE("mergeKeyBindings: default for different stroke is preserved")
 {
     std::vector<Binding> defaults = {
-        mkBinding({ks("ctrl+shift+w")}, Action::ClosePane{}),
-        mkBinding({ks("ctrl+shift+t")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+shift+w") }, Action::ClosePane {}),
+        mkBinding({ ks("ctrl+shift+t") }, Action::NewTab {}),
     };
     std::vector<Binding> user = {
-        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+        mkBinding({ ks("ctrl+shift+w") }, Action::CloseTab {}),
     };
     auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
     REQUIRE(merged.size() == 2);
@@ -241,8 +241,8 @@ TEST_CASE("mergeKeyBindings: default for different stroke is preserved")
 TEST_CASE("mergeKeyBindings: empty user keeps all defaults")
 {
     std::vector<Binding> defaults = {
-        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
-        mkBinding({ks("ctrl+w")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+t") }, Action::NewTab {}),
+        mkBinding({ ks("ctrl+w") }, Action::ClosePane {}),
     };
     auto merged = mergeKeyBindings(std::move(defaults), {});
     REQUIRE(merged.size() == 2);
@@ -253,7 +253,7 @@ TEST_CASE("mergeKeyBindings: empty user keeps all defaults")
 TEST_CASE("mergeKeyBindings: empty defaults yields just user bindings")
 {
     std::vector<Binding> user = {
-        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+t") }, Action::NewTab {}),
     };
     auto merged = mergeKeyBindings({}, std::move(user));
     REQUIRE(merged.size() == 1);
@@ -263,11 +263,11 @@ TEST_CASE("mergeKeyBindings: empty defaults yields just user bindings")
 TEST_CASE("mergeKeyBindings: multi-key sequence shadows by full sequence equality")
 {
     std::vector<Binding> defaults = {
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::ClosePane{}),
-        mkBinding({ks("ctrl+x"), ks("3")}, Action::NewTab{}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::ClosePane {}),
+        mkBinding({ ks("ctrl+x"), ks("3") }, Action::NewTab {}),
     };
     std::vector<Binding> user = {
-        mkBinding({ks("ctrl+x"), ks("2")}, Action::CloseTab{}),
+        mkBinding({ ks("ctrl+x"), ks("2") }, Action::CloseTab {}),
     };
     auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
     REQUIRE(merged.size() == 2);
@@ -281,8 +281,8 @@ TEST_CASE("mergeKeyBindings: duplicate user bindings on same stroke are both kep
     // twice in user config should fire both actions (matches the dispatch
     // semantic tested in 'multiple actions bound to same stroke all fire').
     std::vector<Binding> user = {
-        mkBinding({ks("ctrl+t")}, Action::NewTab{}),
-        mkBinding({ks("ctrl+t")}, Action::ReloadConfig{}),
+        mkBinding({ ks("ctrl+t") }, Action::NewTab {}),
+        mkBinding({ ks("ctrl+t") }, Action::ReloadConfig {}),
     };
     auto merged = mergeKeyBindings({}, std::move(user));
     REQUIRE(merged.size() == 2);
@@ -293,10 +293,10 @@ TEST_CASE("mergeKeyBindings: duplicate user bindings on same stroke are both kep
 TEST_CASE("mergeKeyBindings: stroke with different mods is not shadowed")
 {
     std::vector<Binding> defaults = {
-        mkBinding({ks("ctrl+w")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+w") }, Action::ClosePane {}),
     };
     std::vector<Binding> user = {
-        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+        mkBinding({ ks("ctrl+shift+w") }, Action::CloseTab {}),
     };
     auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
     REQUIRE(merged.size() == 2);
@@ -307,10 +307,10 @@ TEST_CASE("mergeKeyBindings: stroke with different mods is not shadowed")
 TEST_CASE("mergeKeyBindings: dispatch behavior — user-shadowed stroke fires only user action")
 {
     std::vector<Binding> defaults = {
-        mkBinding({ks("ctrl+shift+w")}, Action::ClosePane{}),
+        mkBinding({ ks("ctrl+shift+w") }, Action::ClosePane {}),
     };
     std::vector<Binding> user = {
-        mkBinding({ks("ctrl+shift+w")}, Action::CloseTab{}),
+        mkBinding({ ks("ctrl+shift+w") }, Action::CloseTab {}),
     };
     auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
 

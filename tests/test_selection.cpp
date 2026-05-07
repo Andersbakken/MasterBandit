@@ -1,18 +1,18 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 static MouseEvent makeMouseEvent(int col, int row, Button button = LeftButton,
                                  bool xRightHalf = false)
 {
     MouseEvent ev;
-    ev.x = col;
-    ev.y = row;
-    ev.globalX = col;
-    ev.globalY = row;
+    ev.x          = col;
+    ev.y          = row;
+    ev.globalX    = col;
+    ev.globalY    = row;
     ev.xRightHalf = xRightHalf;
-    ev.button  = button;
-    ev.buttons = button;
-    ev.modifiers = 0;
+    ev.button     = button;
+    ev.buttons    = button;
+    ev.modifiers  = 0;
     return ev;
 }
 
@@ -64,9 +64,9 @@ TEST_CASE("drag creates a selection")
     t.term.mousePressEvent(&press);
     CHECK_FALSE(t.term.hasSelection()); // not yet — mouse hasn't moved
     t.term.mouseMoveEvent(&move);
-    CHECK(t.term.hasSelection());       // now active
+    CHECK(t.term.hasSelection()); // now active
     t.term.mouseReleaseEvent(&rel);
-    CHECK(t.term.hasSelection());       // finalized
+    CHECK(t.term.hasSelection()); // finalized
     CHECK_FALSE(t.term.selectedText().empty());
 }
 
@@ -243,7 +243,7 @@ TEST_CASE("autowrapped line copies as one logical line (no embedded newline)")
     // them must copy a single string with no '\n', because the wrap is a
     // visual artifact, not part of the source text.
     TestTerminal t(10, 5);
-    t.feed("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");  // 30 chars → rows 0..2
+    t.feed("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"); // 30 chars → rows 0..2
 
     auto press = makeMouseEvent(0, 0);
     auto move  = makeMouseEvent(9, 2, LeftButton, /*xRightHalf=*/true);
@@ -282,7 +282,7 @@ TEST_CASE("autowrap row that exactly fills the line still joins on copy")
     // the next char triggers the wrap. The first row's continued_ should
     // still be set so a select-all returns one joined string.
     TestTerminal t(5, 5);
-    t.feed("HELLOWORLD");  // exactly fills row 0, wraps to row 1
+    t.feed("HELLOWORLD"); // exactly fills row 0, wraps to row 1
 
     auto press = makeMouseEvent(0, 0);
     auto move  = makeMouseEvent(4, 1, LeftButton, /*xRightHalf=*/true);

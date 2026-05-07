@@ -11,11 +11,11 @@
 // COLR vs non-COLR preference, emoji-vs-system routing) without depending on
 // whatever fonts the host OS happens to have installed.
 
-#include <doctest/doctest.h>
 #include "text.h"
+#include <doctest/doctest.h>
 #include <fstream>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -25,26 +25,29 @@ namespace {
 //   Noto Color Emoji subset: U+26A0 + U+1F344 (MUSHROOM), both COLRv1 paint.
 // So U+26A0 sits in both fallbacks — useful for testing emoji-vs-non-emoji
 // routing. U+1F344 is emoji-only. Plain ASCII stays in the primary.
-constexpr char32_t kAsciiCp         = U'A';       // primary
-constexpr char32_t kNonEmojiFbCp    = 0x26A0;     // ⚠  in both fallbacks
-constexpr char32_t kEmojiOnlyCp     = 0x1F344;    // 🍄 in Noto only
+constexpr char32_t kAsciiCp      = U'A';    // primary
+constexpr char32_t kNonEmojiFbCp = 0x26A0;  // ⚠  in both fallbacks
+constexpr char32_t kEmojiOnlyCp  = 0x1F344; // 🍄 in Noto only
 
-std::vector<uint8_t> loadFile(const std::string& path)
+std::vector<uint8_t> loadFile(const std::string &path)
 {
     std::ifstream f(path, std::ios::binary);
-    if (!f) return {};
-    return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+    if (!f) {
+        return {};
+    }
+    return { std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>() };
 }
 
 // Build a TextSystem loaded with Inconsolata as primary, with mock fallback
 // lambdas that record invocation counts and return the bundled test fonts.
-struct FallbackFixture {
+struct FallbackFixture
+{
     TextSystem ts;
     std::vector<uint8_t> primary;
     std::vector<uint8_t> systemFb;
     std::vector<uint8_t> emojiFb;
-    int systemCalls = 0;
-    int emojiCalls  = 0;
+    int systemCalls       = 0;
+    int emojiCalls        = 0;
     char32_t lastSystemCp = 0;
     char32_t lastEmojiCp  = 0;
 
@@ -55,29 +58,36 @@ struct FallbackFixture {
         primary  = loadFile(MB_TEST_TEXT_FONT);
         systemFb = loadFile(MB_TEST_FALLBACK_FONT);
         emojiFb  = loadFile(MB_TEST_EMOJI_FONT);
-        if (primary.empty() || systemFb.empty() || emojiFb.empty()) return;
+        if (primary.empty() || systemFb.empty() || emojiFb.empty()) {
+            return;
+        }
 
-        std::vector<std::vector<uint8_t>> primaryList = {primary};
-        if (!ts.registerFont("test", primaryList, 48.0f)) return;
+        std::vector<std::vector<uint8_t>> primaryList = { primary };
+        if (!ts.registerFont("test", primaryList, 48.0f)) {
+            return;
+        }
         ts.setPrimaryFontPath("test", MB_TEST_TEXT_FONT);
 
-        ts.setSystemFallback([this](const std::string&, char32_t cp) {
-            ++systemCalls;
-            lastSystemCp = cp;
-            return systemFb;
-        });
-        ts.setEmojiFallback([this](char32_t cp) {
-            ++emojiCalls;
-            lastEmojiCp = cp;
-            return emojiFb;
-        });
+        ts.setSystemFallback([this](const std::string &, char32_t cp)
+                             {
+                                 ++systemCalls;
+                                 lastSystemCp = cp;
+                                 return systemFb;
+                             });
+        ts.setEmojiFallback([this](char32_t cp)
+                            {
+                                ++emojiCalls;
+                                lastEmojiCp = cp;
+                                return emojiFb;
+                            });
         ready = true;
     }
 
     // Helper: decode (fontIndex, glyphId) from a packed ShapedRunGlyph id.
     // glyphKey() in text.cpp packs as (fontIndex << 32) | glyphId.
     static uint32_t fontIndexOf(uint64_t packed) { return static_cast<uint32_t>(packed >> 32); }
-    static uint32_t glyphIdOf  (uint64_t packed) { return static_cast<uint32_t>(packed & 0xFFFFFFFFu); }
+
+    static uint32_t glyphIdOf(uint64_t packed) { return static_cast<uint32_t>(packed & 0xFFFFFFFFu); }
 };
 
 // UTF-8 encode a single codepoint into a std::string (simple, tests only).
@@ -197,7 +207,7 @@ TEST_CASE("font fallback: emoji codepoint prefers emoji callback over system cal
     // (U+FE0F) to force emoji presentation, which is the real-world way apps
     // convey "render this as the color emoji form".
     std::string text = u8(kNonEmojiFbCp) + u8(0xFE0F);
-    auto run = fx.ts.shapeRun("test", text, 20.0f);
+    auto run         = fx.ts.shapeRun("test", text, 20.0f);
     REQUIRE(run.glyphs.size() >= 1);
 
     // Emoji callback fired (the VS16 selector promoted this to emoji path).

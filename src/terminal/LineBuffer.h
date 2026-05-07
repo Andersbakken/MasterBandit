@@ -24,32 +24,37 @@
 //   - maxLogicalLines: primary, width-independent bound.
 //   - maxTotalCells:   backstop against pathological single long lines.
 
-struct LineMeta {
-    enum Eol : uint8_t {
-        EolHard = 0,  // explicit \n; logical line ends here
-        EolSoft = 1,  // autowrap; logical line continues on next physical row
-        EolDwc  = 2,  // DWC straddled the right edge; treated like Soft for join
+struct LineMeta
+{
+    enum Eol : uint8_t
+    {
+        EolHard = 0, // explicit \n; logical line ends here
+        EolSoft = 1, // autowrap; logical line continues on next physical row
+        EolDwc  = 2, // DWC straddled the right edge; treated like Soft for join
     };
-    enum Flag : uint8_t {
+
+    enum Flag : uint8_t
+    {
         HasWide = 1 << 0,
     };
 
-    uint8_t flags = 0;
-    Eol eol = EolHard;
-    bool isPartial = false;     // last line of last block; cells may be appended
+    uint8_t flags  = 0;
+    Eol eol        = EolHard;
+    bool isPartial = false; // last line of last block; cells may be appended
 
-    uint64_t lineId = 0;        // monotonic ID, stable across resize
+    uint64_t lineId = 0; // monotonic ID, stable across resize
 
     // Sparse extras (combining marks, hyperlinks, image refs, embedded ids,
     // underline color), keyed by column within this line.
     std::unordered_map<int, CellExtra> extras;
 
     // Per-line MRU wrap cache (computed by LogicalLineBlock).
-    mutable int cachedWidth = -1;
+    mutable int cachedWidth       = -1;
     mutable int cachedWrappedRows = 0;
 };
 
-class LogicalLineBlock {
+class LogicalLineBlock
+{
 public:
     // Target ~8 KB of cells per block. sizeof(Cell)==12, so 682 ≈ 8 KB.
     static constexpr int kCellCapacity = 682;
@@ -61,14 +66,16 @@ public:
     // open a new one. `extendsLast` is true only when the previous line in this
     // block is currently partial AND the new content is its continuation
     // (EOL_SOFT scroll-out chained to a partial scrollback line).
-    bool appendLine(const Cell* cells, int len,
+    bool appendLine(const Cell *cells, int len,
                     LineMeta::Eol eol, bool partial, bool extendsLast,
                     uint64_t lineId, uint8_t flags,
-                    const std::unordered_map<int, CellExtra>* extras);
+                    const std::unordered_map<int, CellExtra> *extras);
 
     // Number of currently visible (not dropped-from-head) logical lines.
     int numLines() const { return static_cast<int>(meta_.size()) - firstValidLine_; }
+
     bool empty() const { return numLines() == 0; }
+
     // Internal head pointer into meta_/cumulativeLengths_. Exposed so
     // LineBuffer's lineId index can store stable internal indices that
     // survive dropFront() (which advances firstValidLine_ rather than
@@ -83,11 +90,15 @@ public:
     int cellsUsed() const { return static_cast<int>(cells_.size()) - bufferStartOffset_; }
 
     // Line accessors. `i` is 0..numLines()-1, relative to current head.
-    const Cell* lineCells(int i) const;
+    const Cell *lineCells(int i) const;
     int lineLength(int i) const;
-    const LineMeta& meta(int i) const { return meta_[firstValidLine_ + i]; }
-    LineMeta& mutableMeta(int i);
+
+    const LineMeta &meta(int i) const { return meta_[firstValidLine_ + i]; }
+
+    LineMeta &mutableMeta(int i);
+
     uint64_t lineId(int i) const { return meta_[firstValidLine_ + i].lineId; }
+
     bool lastIsPartial() const;
 
     // Wrap calculations. MRU per block; per-line MRU lives in LineMeta.
@@ -105,21 +116,23 @@ public:
 
 private:
     std::vector<Cell> cells_;
-    std::vector<int> cumulativeLengths_;  // [i] = end offset of meta_[i] in cells_
+    std::vector<int> cumulativeLengths_; // [i] = end offset of meta_[i] in cells_
     std::vector<LineMeta> meta_;
-    int firstValidLine_ = 0;       // head pointer into meta_/cumulativeLengths_
-    int bufferStartOffset_ = 0;    // start offset of cells for firstValidLine_
+    int firstValidLine_    = 0; // head pointer into meta_/cumulativeLengths_
+    int bufferStartOffset_ = 0; // start offset of cells for firstValidLine_
 
-    mutable int cachedWidth_ = -1;
+    mutable int cachedWidth_       = -1;
     mutable int cachedWrappedRows_ = 0;
 
-    int lineStartOffset(int absLineIdx) const {
+    int lineStartOffset(int absLineIdx) const
+    {
         return (absLineIdx == firstValidLine_) ? bufferStartOffset_
-                                                : cumulativeLengths_[absLineIdx - 1];
+                                               : cumulativeLengths_[absLineIdx - 1];
     }
 };
 
-class LineBuffer {
+class LineBuffer
+{
 public:
     static constexpr int kDefaultMaxLogicalLines = 100000;
     static constexpr int kDefaultMaxTotalCells   = 50'000'000;
@@ -130,7 +143,9 @@ public:
     // Configuration.
     void setMaxLogicalLines(int n);
     void setMaxTotalCells(int n);
+
     int maxLogicalLines() const { return maxLogicalLines_; }
+
     int maxTotalCells() const { return maxTotalCells_; }
 
     // Append a row's used cells. The combination (wasContinued, isLastRowSoft)
@@ -145,33 +160,37 @@ public:
     // by adding the existing line's length when extending.
     //
     // `lineId` is assigned when starting a new line; ignored when extending.
-    void appendLine(const Cell* cells, int len,
+    void appendLine(const Cell *cells, int len,
                     LineMeta::Eol eol, bool partial, bool extendsLast,
                     uint64_t lineId, uint8_t flags,
-                    const std::unordered_map<int, CellExtra>* extras);
+                    const std::unordered_map<int, CellExtra> *extras);
 
     // Convenience: append a complete logical line that ends with a hard break.
-    void appendHardLine(const Cell* cells, int len,
+    void appendHardLine(const Cell *cells, int len,
                         uint64_t lineId, uint8_t flags,
-                        const std::unordered_map<int, CellExtra>* extras);
+                        const std::unordered_map<int, CellExtra> *extras);
 
     // Pop the last line off entirely (used when resize grows the visible grid
     // and we need to repopulate visible rows from the bottom of the
     // scrollback).
-    struct PoppedLine {
+    struct PoppedLine
+    {
         bool ok = false;
         std::vector<Cell> cells;
         LineMeta::Eol eol = LineMeta::EolHard;
-        bool wasPartial = false;
-        uint64_t lineId = 0;
-        uint8_t flags = 0;
+        bool wasPartial   = false;
+        uint64_t lineId   = 0;
+        uint8_t flags     = 0;
         std::unordered_map<int, CellExtra> extras;
     };
+
     PoppedLine popLastLine();
 
     // Counts.
     int totalLogicalLines() const { return totalLines_; }
+
     int totalCells() const { return totalCells_; }
+
     int blockCount() const { return static_cast<int>(blocks_.size()); }
 
     // Wrap calculations.
@@ -179,27 +198,30 @@ public:
 
     // Resolve a wrapped-row index (0..numWrappedRows-1) to a (block, line,
     // offset) position. Returns false on out-of-range.
-    struct WrappedLineRef {
-        int blockIdx = 0;
-        int lineInBlock = 0;
-        int rowOffset = 0;     // start offset within the logical line's cells
-        int rowLength = 0;     // length of this wrapped row (≤ width)
+    struct WrappedLineRef
+    {
+        int blockIdx          = 0;
+        int lineInBlock       = 0;
+        int rowOffset         = 0; // start offset within the logical line's cells
+        int rowLength         = 0; // length of this wrapped row (≤ width)
         bool isFirstRowOfLine = false;
-        bool isLastRowOfLine = false;
-        LineMeta::Eol eol = LineMeta::EolHard;
+        bool isLastRowOfLine  = false;
+        LineMeta::Eol eol     = LineMeta::EolHard;
     };
-    bool wrappedRowAt(int wrappedRow, int width, WrappedLineRef* out) const;
+
+    bool wrappedRowAt(int wrappedRow, int width, WrappedLineRef *out) const;
 
     // Direct cell pointer for the resolved wrapped row.
-    const Cell* cellsAt(const WrappedLineRef& ref) const;
+    const Cell *cellsAt(const WrappedLineRef &ref) const;
 
     // Convenience: resolve and fetch in one call. *outLen receives row length.
     // Returns nullptr on out-of-range.
-    const Cell* wrappedRowCells(int wrappedRow, int width, int* outLen) const;
+    const Cell *wrappedRowCells(int wrappedRow, int width, int *outLen) const;
 
     // Logical-line iteration.
-    const LogicalLineBlock& block(int i) const { return blocks_[i]; }
-    LogicalLineBlock& block(int i) { return blocks_[i]; }
+    const LogicalLineBlock &block(int i) const { return blocks_[i]; }
+
+    LogicalLineBlock &block(int i) { return blocks_[i]; }
 
     // Last logical line accessors (for the in-progress soft-wrap append
     // chain, and for the visible-grid restore-from-scrollback path).
@@ -217,10 +239,12 @@ public:
     // linear scan in logicalIndexOfLineId / firstAbsOfLine. Returns nullopt
     // when the line was evicted, has never been added, or its block has
     // been popped from the front.
-    struct FoundLine {
-        int blockIdx;          // current deque index of the block
-        int externalLineIdx;   // 0-based, post-dropFront external index
+    struct FoundLine
+    {
+        int blockIdx;        // current deque index of the block
+        int externalLineIdx; // 0-based, post-dropFront external index
     };
+
     std::optional<FoundLine> findLine(uint64_t id) const;
 
     // Wrapped-row offset to the start of `blockIdx`. Cached via
@@ -228,7 +252,7 @@ public:
     int numWrappedRowsBeforeBlock(int blockIdx, int width) const;
 
     // Iteration helpers: resolve logical-index → (block, lineInBlock).
-    bool resolveLogicalIndex(int idx, int* blockIdx, int* lineInBlock) const;
+    bool resolveLogicalIndex(int idx, int *blockIdx, int *lineInBlock) const;
 
     // Plain-text extraction helper: full text of a logical line, no
     // formatting. trims trailing nulls.
@@ -248,7 +272,8 @@ public:
     void invalidateWrapCaches();
 
     // Eviction callback (fires once per dropped line ID after it's removed).
-    void setOnLineIdEvicted(std::function<void(uint64_t)> cb) {
+    void setOnLineIdEvicted(std::function<void(uint64_t)> cb)
+    {
         onLineIdEvicted_ = std::move(cb);
     }
 
@@ -266,7 +291,7 @@ private:
     // wrapped rows in blocks_[0..i] at cachedSumWidth_. Lets numWrappedRows()
     // be O(1) and wrappedRowAt() be O(log blocks + lines_per_block). Any
     // structural mutation invalidates by setting cachedSumWidth_ = -1.
-    mutable int cachedSumWidth_ = -1;
+    mutable int cachedSumWidth_         = -1;
     mutable int cachedTotalWrappedRows_ = 0;
     mutable std::vector<int> cachedBlockEndCum_;
 
@@ -276,10 +301,12 @@ private:
     // and pop_front() (handled by adjusting firstBlockSeq_, see below).
     // Updated on every appendLine that creates a new line, on popLastLine,
     // and on enforceLimits eviction; cleared on clear().
-    struct LineLocation {
+    struct LineLocation
+    {
         uint64_t blockSeq;
-        int      internalLineIdx;
+        int internalLineIdx;
     };
+
     std::unordered_map<uint64_t, LineLocation> lineIdIndex_;
     // Stable, monotonic seq for blocks_.front(). Increments by 1 every time
     // a head block is popped. blocks_[i] has seq == firstBlockSeq_ + i, so
@@ -288,6 +315,7 @@ private:
     uint64_t firstBlockSeq_ = 0;
 
     void ensureSumCache(int width) const;
+
     void invalidateSumCache() { cachedSumWidth_ = -1; }
 
     void enforceLimits();

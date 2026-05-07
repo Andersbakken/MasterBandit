@@ -25,26 +25,28 @@
 // indexed by `abs row` = scrollback wrapped rows + visible grid rows;
 // this is used by selection, line-id lookups, and JS callbacks.
 
-class Document : public IGrid {
+class Document : public IGrid
+{
 public:
     Document();
     Document(int cols, int screenHeight,
              int maxLogicalLines = LineBuffer::kDefaultMaxLogicalLines,
              int maxTotalCells   = LineBuffer::kDefaultMaxTotalCells);
     ~Document();
-    Document(Document&&) noexcept;
-    Document& operator=(Document&&) noexcept;
-    Document(const Document&) = delete;
-    Document& operator=(const Document&) = delete;
+    Document(Document &&) noexcept;
+    Document &operator=(Document &&) noexcept;
+    Document(const Document &)            = delete;
+    Document &operator=(const Document &) = delete;
 
     // --- IGrid interface (screen-relative coordinates, visible grid only) ---
     int cols() const override { return cols_; }
+
     int rows() const override { return screenHeight_; }
 
-    Cell& cell(int col, int screenRow) override;
-    const Cell& cell(int col, int screenRow) const override;
-    Cell* row(int screenRow) override;
-    const Cell* row(int screenRow) const override;
+    Cell &cell(int col, int screenRow) override;
+    const Cell &cell(int col, int screenRow) const override;
+    Cell *row(int screenRow) override;
+    const Cell *row(int screenRow) const override;
 
     void markRowDirty(int screenRow) override;
     void markAllDirty() override;
@@ -60,8 +62,8 @@ public:
     void deleteChars(int screenRow, int col, int count) override;
     void insertChars(int screenRow, int col, int count) override;
 
-    const CellExtra* getExtra(int col, int screenRow) const override;
-    CellExtra& ensureExtra(int col, int screenRow) override;
+    const CellExtra *getExtra(int col, int screenRow) const override;
+    CellExtra &ensureExtra(int col, int screenRow) override;
     void clearExtra(int col, int screenRow) override;
     void clearRowExtras(int screenRow) override;
     void markRowHasWide(int screenRow) override;
@@ -73,8 +75,8 @@ public:
     // padded to cols_ cells. The pointer is into an internal buffer that's
     // overwritten on each call; copy if you need it.
     int historySize() const;
-    const Cell* historyRow(int idx) const;
-    const std::unordered_map<int, CellExtra>* historyExtras(int idx) const;
+    const Cell *historyRow(int idx) const;
+    const std::unordered_map<int, CellExtra> *historyExtras(int idx) const;
     bool isHistoryRowContinued(int idx) const;
     void clearHistory();
 
@@ -85,15 +87,17 @@ public:
     // Returned pointers alias internal storage: valid until the next
     // mutation or the next viewportRow/historyRow call (which overwrites
     // the wrap buffer).
-    const Cell* viewportRow(int viewRow, int viewportOffset) const;
-    const std::unordered_map<int, CellExtra>* viewportExtras(int viewRow, int viewportOffset) const;
+    const Cell *viewportRow(int viewRow, int viewportOffset) const;
+    const std::unordered_map<int, CellExtra> *viewportExtras(int viewRow, int viewportOffset) const;
 
     // --- Resize ---
-    struct CursorTrack {
-        int srcX, srcY;   // input: cursor position as abs row index (history + screen)
-        int dstX, dstY;   // output: cursor position in destination abs row index
+    struct CursorTrack
+    {
+        int srcX, srcY; // input: cursor position as abs row index (history + screen)
+        int dstX, dstY; // output: cursor position in destination abs row index
     };
-    void resize(int newCols, int newRows, CursorTrack* cursor = nullptr);
+
+    void resize(int newCols, int newRows, CursorTrack *cursor = nullptr);
 
     // --- Per-row continuation flag (visible grid only) ---
     bool isRowContinued(int screenRow) const;
@@ -118,7 +122,7 @@ public:
     // Inclusive endpoints. startCol/endCol clip the first/last line.
     std::string getTextFromLines(uint64_t startLineId, uint64_t endLineId,
                                  int startCol = 0,
-                                 int endCol = std::numeric_limits<int>::max()) const;
+                                 int endCol   = std::numeric_limits<int>::max()) const;
 
     // Eviction callback: fires once per dropped line ID after it's removed
     // from scrollback. Used by Terminal to destroy embedded terminals
@@ -135,19 +139,21 @@ private:
     static constexpr int SEG_SIZE  = 1 << SEG_SHIFT;
     static constexpr int SEG_MASK  = SEG_SIZE - 1;
 
-    int cols_ = 0;
+    int cols_         = 0;
     int screenHeight_ = 0;
 
     int ringCapacity_ = 0;
-    int ringHead_ = 0;            // physical slot after last visible row
-    std::vector<Cell*> segments_;
+    int ringHead_     = 0; // physical slot after last visible row
+    std::vector<Cell *> segments_;
     std::vector<std::unordered_map<int, CellExtra>> ringExtras_;
 
-    enum RowFlag : uint8_t {
+    enum RowFlag : uint8_t
+    {
         Continued = 1 << 0,
         HasWide   = 1 << 1,
     };
-    std::vector<uint8_t> rowFlags_;  // indexed by physical ring slot
+
+    std::vector<uint8_t> rowFlags_; // indexed by physical ring slot
 
     // --- Scrollback ---
     LineBuffer scrollback_;
@@ -163,8 +169,8 @@ private:
     // Lazy padded buffer for historyRow() callers.
     mutable std::vector<Cell> wrapBuffer_;
     mutable std::unordered_map<int, CellExtra> wrapBufferExtras_;
-    mutable int wrapBufferRowIdx_ = -1;
-    mutable int wrapBufferWidth_ = -1;
+    mutable int wrapBufferRowIdx_     = -1;
+    mutable int wrapBufferWidth_      = -1;
     mutable bool wrapBufferContinued_ = false;
 
     // External eviction listener.
@@ -172,14 +178,22 @@ private:
 
     // Helpers
     bool rowFlag(int phys, RowFlag f) const { return (rowFlags_[phys] & f) != 0; }
-    void setRowFlag(int phys, RowFlag f, bool v) {
-        if (v) rowFlags_[phys] = rowFlags_[phys] | f;
-        else   rowFlags_[phys] = rowFlags_[phys] & static_cast<uint8_t>(~f);
+
+    void setRowFlag(int phys, RowFlag f, bool v)
+    {
+        if (v) {
+            rowFlags_[phys] = rowFlags_[phys] | f;
+        } else {
+            rowFlags_[phys] = rowFlags_[phys] & static_cast<uint8_t>(~f);
+        }
     }
 
     int ringMask() const { return ringCapacity_ - 1; }
+
     int screenRowToPhysical(int screenRow) const;
-    Cell* rowPtr(int physical) const {
+
+    Cell *rowPtr(int physical) const
+    {
         return segments_[physical >> SEG_SHIFT] + (physical & SEG_MASK) * cols_;
     }
 
@@ -196,7 +210,7 @@ private:
     // Reflow the visible grid for a width or height change. Pushes used
     // visible-grid rows into scrollback, then pops back enough wrapped
     // rows at the new width to fill the new visible grid.
-    void resizeReflow(int newCols, int newRows, CursorTrack* cursor);
+    void resizeReflow(int newCols, int newRows, CursorTrack *cursor);
 
     // Allocate a fresh visible-grid ring (replaces existing one). Called
     // by resize when cols change. Updates segments_, ringCapacity_,

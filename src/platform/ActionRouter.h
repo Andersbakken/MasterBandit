@@ -8,22 +8,24 @@ class PlatformDawn;
 // observer registry (the JS-facing addListener / removeListener API) and the
 // sequencing around a dispatch: execute the action, notify listeners, flush
 // script-engine microtasks.
-class ActionRouter {
+class ActionRouter
+{
 public:
-    ActionRouter() = default;
+    ActionRouter()  = default;
     ~ActionRouter() = default;
 
-    ActionRouter(const ActionRouter&) = delete;
-    ActionRouter& operator=(const ActionRouter&) = delete;
+    ActionRouter(const ActionRouter &)            = delete;
+    ActionRouter &operator=(const ActionRouter &) = delete;
 
-    void setPlatform(PlatformDawn* p) { platform_ = p; }
+    void setPlatform(PlatformDawn *p) { platform_ = p; }
 
-    void dispatch(const Action::Any& action);
+    void dispatch(const Action::Any &action);
 
-    Action::Dispatcher& listeners() { return listeners_; }
-    const Action::Dispatcher& listeners() const { return listeners_; }
+    Action::Dispatcher &listeners() { return listeners_; }
+
+    const Action::Dispatcher &listeners() const { return listeners_; }
 
 private:
-    PlatformDawn* platform_ = nullptr;
+    PlatformDawn *platform_ = nullptr;
     Action::Dispatcher listeners_;
 };

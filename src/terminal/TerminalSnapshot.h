@@ -19,7 +19,8 @@
 // ordering of rows and inline embeddeds inside the viewport. The renderer
 // reads only this snapshot — it never dereferences the live Terminal during
 // rendering.
-struct TerminalSnapshot {
+struct TerminalSnapshot
+{
     // Dimensions of the viewport.
     int rows { 0 };
     int cols { 0 };
@@ -49,29 +50,35 @@ struct TerminalSnapshot {
     // embedded). `cellYStart` is in whole-cell units measured from the top
     // of the viewport; renderer multiplies by cellH to get pixels, then
     // subtracts `topPixelSubY` for smooth scroll. Populated in update().
-    struct Segment {
-        enum class Kind : uint8_t { Row, Embedded };
-        Kind     kind       { Kind::Row };
+    struct Segment
+    {
+        enum class Kind : uint8_t
+        {
+            Row,
+            Embedded
+        };
+        Kind kind { Kind::Row };
         // Absolute row this segment corresponds to. For Row: the row itself.
         // For Embedded: the anchor row of the embedded terminal (covered by
         // the embedded visually, so not otherwise drawn).
-        int      absRow     { -1 };
+        int absRow { -1 };
         // Logical-line id of `absRow`. For Row: the row's line id. For
         // Embedded: the anchor line id the embedded Terminal is keyed on.
-        uint64_t lineId     { 0 };
+        uint64_t lineId { 0 };
         // How many cell rows this segment occupies vertically. Row = 1,
         // Embedded = embedded terminal's row count.
-        int      rowCount   { 1 };
+        int rowCount { 1 };
         // Top edge in whole-cell units, cumulative from the first segment.
-        int      cellYStart { 0 };
+        int cellYStart { 0 };
     };
+
     std::vector<Segment> segments;
 
     // Find the segment containing viewport pixel y (measured from the pane's
     // top content edge, i.e. after padTop has been subtracted). cellH is the
     // pixel height of one cell row. Returns nullptr when y falls outside any
     // segment (e.g. past the last row or into the bottom padding).
-    const Segment* segmentAtPixelY(int y, float cellH) const;
+    const Segment *segmentAtPixelY(int y, float cellH) const;
 
     // Cursor.
     int cursorX { 0 };
@@ -92,9 +99,11 @@ struct TerminalSnapshot {
 
     // Per-row sorted extras. Only populated for rows that have any extras in
     // the underlying grid; otherwise the inner vector is empty.
-    struct RowExtras {
-        std::vector<std::pair<int, CellExtra>> entries;  // (col, extra), sorted by col
+    struct RowExtras
+    {
+        std::vector<std::pair<int, CellExtra>> entries; // (col, extra), sorted by col
     };
+
     std::vector<RowExtras> rowExtras;
 
     // Selection — resolved to current abs rows under the Terminal mutex in
@@ -109,12 +118,14 @@ struct TerminalSnapshot {
     // via Cmd+Click or keyboard nav. Resolved to absolute rows at snapshot
     // time; renderer converts to viewport-relative using historySize and
     // viewportOffset (same math as isCellSelected). Cleared on alt screen.
-    struct SelectedCommandRegion {
+    struct SelectedCommandRegion
+    {
         int startAbsRow;
         int startCol;
         int endAbsRow;
         int endCol;
     };
+
     std::optional<SelectedCommandRegion> selectedCommand;
 
     // Per-image view for rendering and animation scheduling. Populated from
@@ -131,21 +142,23 @@ struct TerminalSnapshot {
     // entry's (still-alive) rgba vector — safe because rgba content is
     // immutable after load, and vector<Frame> moves preserve inner buffer
     // identity.
-    struct ImageView {
+    struct ImageView
+    {
         std::shared_ptr<const TerminalEmulator::ImageEntry> entry;
         uint32_t pixelWidth { 0 }, pixelHeight { 0 };
         uint32_t cellWidth { 0 }, cellHeight { 0 };
         uint32_t cropX { 0 }, cropY { 0 }, cropW { 0 }, cropH { 0 };
         uint32_t currentFrameIndex { 0 };
-        uint32_t totalFrames { 1 };  // 1 + extraFrames.size()
+        uint32_t totalFrames { 1 }; // 1 + extraFrames.size()
         uint32_t frameGeneration { 0 };
         uint32_t currentFrameGap { 40 };
         uint64_t frameShownAt { 0 };
         bool hasAnimation { false };
-        const uint8_t* currentFrameRGBA { nullptr };
+        const uint8_t *currentFrameRGBA { nullptr };
         size_t currentFrameRGBASize { 0 };
         std::unordered_map<uint32_t, TerminalEmulator::ImageEntry::Placement> placements;
     };
+
     std::unordered_map<uint32_t, ImageView> images;
 
     // Mode 2026 — when true the render thread should re-present the prior
@@ -161,7 +174,7 @@ struct TerminalSnapshot {
     // is active and the snapshot was not updated (caller should re-present
     // prior frame). Clears per-row dirty flags on `term.grid()` for rows
     // that were re-copied.
-    bool update(TerminalEmulator& term);
+    bool update(TerminalEmulator &term);
 
 private:
     // Cached geometry from the last successful update — used to detect

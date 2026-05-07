@@ -1,3 +1,3 @@
 #pragma once
 
-int runCLI(int argc, char** argv);
+int runCLI(int argc, char **argv);

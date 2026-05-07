@@ -1,30 +1,33 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 // Helper: send OSC 133 marker
-static void osc133(TestTerminal& t, const std::string& kind) {
+static void osc133(TestTerminal &t, const std::string &kind)
+{
     t.osc("133;" + kind);
 }
 
 // Helpers for lazily extracting text from a CommandRecord via the document.
-static std::string recordCommandText(const TerminalEmulator& term,
-                                      const TerminalEmulator::CommandRecord& r)
+static std::string recordCommandText(const TerminalEmulator &term,
+                                     const TerminalEmulator::CommandRecord &r)
 {
-    if (r.commandStartCol < 0) return {};
-    auto text = term.document().getTextFromLines(r.commandStartLineId, r.outputStartLineId,
-                                                 r.commandStartCol, r.outputStartCol);
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\n' ||
-                              text.back() == '\r' || text.back() == '\t'))
+    if (r.commandStartCol < 0) {
+        return {};
+    }
+    auto text = term.document().getTextFromLines(r.commandStartLineId, r.outputStartLineId, r.commandStartCol, r.outputStartCol);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\n' || text.back() == '\r' || text.back() == '\t')) {
         text.pop_back();
+    }
     return text;
 }
 
-static std::string recordOutputText(const TerminalEmulator& term,
-                                     const TerminalEmulator::CommandRecord& r)
+static std::string recordOutputText(const TerminalEmulator &term,
+                                    const TerminalEmulator::CommandRecord &r)
 {
-    if (r.outputStartCol < 0) return {};
-    return term.document().getTextFromLines(r.outputStartLineId, r.outputEndLineId,
-                                            r.outputStartCol, r.outputEndCol);
+    if (r.outputStartCol < 0) {
+        return {};
+    }
+    return term.document().getTextFromLines(r.outputStartLineId, r.outputEndLineId, r.outputStartCol, r.outputEndCol);
 }
 
 // === OSC 133 marker storage ===
@@ -187,7 +190,7 @@ TEST_CASE("serializeScrollback: tier-2 archive lines preserved")
     }
 
     // Ordering: archived line00 must appear before line11.
-    auto p0 = content.find("line00");
+    auto p0  = content.find("line00");
     auto p11 = content.find("line11");
     REQUIRE(p0 != std::string::npos);
     REQUIRE(p11 != std::string::npos);
@@ -219,7 +222,9 @@ TEST_CASE("serializeScrollback: tier-2 ordering is monotonic across all lines")
         CAPTURE(needle);
         REQUIRE(pos != std::string::npos);
         CHECK(content.find(needle, pos + 1) == std::string::npos); // unique
-        if (i > 0) CHECK(pos > prev);
+        if (i > 0) {
+            CHECK(pos > prev);
+        }
         prev = pos;
     }
 }
@@ -230,15 +235,19 @@ TEST_CASE("serializeScrollback: wide chars survive tier-2 roundtrip")
     t.term.resetScrollback(100);
 
     // First row: a wide char (中) followed by ASCII, then newline.
-    t.feed("\xe4\xb8\xad" "ab\r\n");
+    t.feed("\xe4\xb8\xad"
+           "ab\r\n");
     // Push the wide-char row into the tier-2 archive.
-    for (int i = 0; i < 8; ++i) t.feed("pad\r\n");
+    for (int i = 0; i < 8; ++i) {
+        t.feed("pad\r\n");
+    }
 
     REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
     std::string content = t.term.serializeScrollback();
     // Wide char encoded as UTF-8, with no spacer artifact between it and "ab".
-    CHECK(content.find("\xe4\xb8\xad" "ab") != std::string::npos);
+    CHECK(content.find("\xe4\xb8\xad"
+                       "ab") != std::string::npos);
 }
 
 TEST_CASE("serializeScrollback: wrapped line is searchable as one string")
@@ -249,7 +258,9 @@ TEST_CASE("serializeScrollback: wrapped line is searchable as one string")
 
     t.feed("abcdefghij1234567890\r\n");
     // Push the wrapped pair into history / tier-2.
-    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+    for (int i = 0; i < 8; ++i) {
+        t.feed("z\r\n");
+    }
 
     std::string content = t.term.serializeScrollback();
     // A pager search like /abcdefghij1234567890 must succeed even though
@@ -264,7 +275,9 @@ TEST_CASE("serializeScrollback: combining marks preserved through tier-2")
     t.term.resetScrollback(100);
 
     t.feed("\xe2\x9a\xa0\xef\xb8\x8f\r\n"); // ⚠️
-    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+    for (int i = 0; i < 8; ++i) {
+        t.feed("z\r\n");
+    }
 
     REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
@@ -284,7 +297,9 @@ TEST_CASE("serializeScrollback: full-width row (no trailing blanks) preserved")
 
     t.feed("0123456789"); // exactly 10 chars; cursor sits at the right edge
     t.feed("\r\n");
-    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+    for (int i = 0; i < 8; ++i) {
+        t.feed("z\r\n");
+    }
 
     REQUIRE(t.term.document().scrollbackLogicalLines() > 0);
 
@@ -300,7 +315,9 @@ TEST_CASE("serializeScrollback: SGR colors are stripped from output (documented 
     t.term.resetScrollback(100);
 
     t.feed("\x1b[31mred\x1b[0m text\r\n");
-    for (int i = 0; i < 8; ++i) t.feed("z\r\n");
+    for (int i = 0; i < 8; ++i) {
+        t.feed("z\r\n");
+    }
 
     std::string content = t.term.serializeScrollback();
     CHECK(content.find("red text") != std::string::npos);
@@ -320,9 +337,9 @@ TEST_CASE("OSC 133: full A/B/C/D lifecycle captures command + output + exit code
     t.feed("file1.txt\r\nfile2.txt\r\n");
     osc133(t, "D;0");
 
-    const auto& ring = t.term.commands();
+    const auto &ring = t.term.commands();
     REQUIRE(ring.size() == 1);
-    const auto& r = ring.back();
+    const auto &r = ring.back();
     CHECK(r.complete);
     CHECK(r.exitCode.has_value());
     CHECK(r.exitCode.value() == 0);
@@ -335,8 +352,10 @@ TEST_CASE("OSC 133: full A/B/C/D lifecycle captures command + output + exit code
 TEST_CASE("OSC 133: D exit code non-zero")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A");  t.feed("$ ");
-    osc133(t, "B");  t.feed("false");
+    osc133(t, "A");
+    t.feed("$ ");
+    osc133(t, "B");
+    t.feed("false");
     osc133(t, "C");
     osc133(t, "D;1");
     REQUIRE(t.term.commands().size() == 1);
@@ -346,7 +365,9 @@ TEST_CASE("OSC 133: D exit code non-zero")
 TEST_CASE("OSC 133: D exit code from err= option overrides bare arg")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A");  osc133(t, "B");  osc133(t, "C");
+    osc133(t, "A");
+    osc133(t, "B");
+    osc133(t, "C");
     // Spec: non-empty err= wins over bare exit code.
     osc133(t, "D;0;err=42");
     REQUIRE(t.term.commands().size() == 1);
@@ -356,7 +377,9 @@ TEST_CASE("OSC 133: D exit code from err= option overrides bare arg")
 TEST_CASE("OSC 133: D without exit code leaves exitCode unset")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A");  osc133(t, "B");  osc133(t, "C");
+    osc133(t, "A");
+    osc133(t, "B");
+    osc133(t, "C");
     osc133(t, "D");
     REQUIRE(t.term.commands().size() == 1);
     CHECK_FALSE(t.term.commands().back().exitCode.has_value());
@@ -371,7 +394,7 @@ TEST_CASE("OSC 133: collapse case — second A before D updates in-flight record
     osc133(t, "B");
     t.feed("ls");
     // Shell now collapses — cursor moves up, rewrites, emits A again.
-    t.csi("H");  // cursor to (1,1) → screen (0,0)
+    t.csi("H"); // cursor to (1,1) → screen (0,0)
     osc133(t, "A");
     t.feed("$ ");
     osc133(t, "B");
@@ -388,16 +411,18 @@ TEST_CASE("OSC 133: collapse case — second A before D updates in-flight record
 TEST_CASE("OSC 133: N closes in-flight command implicitly")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A");  osc133(t, "B");
+    osc133(t, "A");
+    osc133(t, "B");
     t.feed("partial-command");
     // N kills the in-flight command (no C/D seen) and starts a new one.
     osc133(t, "N");
-    osc133(t, "B");  osc133(t, "C");
+    osc133(t, "B");
+    osc133(t, "C");
     osc133(t, "D;0");
 
     // Two records: the first is incomplete (no C/D) and stays in-flight;
     // N finalizes it without exit code. Second completes normally.
-    const auto& ring = t.term.commands();
+    const auto &ring = t.term.commands();
     REQUIRE(ring.size() == 2);
     CHECK(ring[0].complete);
     CHECK_FALSE(ring[0].exitCode.has_value()); // N doesn't carry an exit code
@@ -408,9 +433,11 @@ TEST_CASE("OSC 133: N closes in-flight command implicitly")
 TEST_CASE("OSC 133: P treated as prompt start without rewriting command")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A");   // start prompt
-    osc133(t, "P");   // explicit P — should keep the in-flight record alive, not start a new one
-    osc133(t, "B");  osc133(t, "C");  osc133(t, "D;0");
+    osc133(t, "A"); // start prompt
+    osc133(t, "P"); // explicit P — should keep the in-flight record alive, not start a new one
+    osc133(t, "B");
+    osc133(t, "C");
+    osc133(t, "D;0");
     // Just one record produced.
     CHECK(t.term.commands().size() == 1);
 }
@@ -419,9 +446,11 @@ TEST_CASE("OSC 133: cwd captured from OSC 7 at A time")
 {
     TestTerminal t(40, 5);
     t.osc("7;file:///home/user/proj");
-    osc133(t, "A");   osc133(t, "B");
+    osc133(t, "A");
+    osc133(t, "B");
     t.feed("pwd");
-    osc133(t, "C");   osc133(t, "D;0");
+    osc133(t, "C");
+    osc133(t, "D;0");
 
     REQUIRE(t.term.commands().size() == 1);
     CHECK(t.term.commands().back().cwd == "/home/user/proj");
@@ -429,28 +458,35 @@ TEST_CASE("OSC 133: cwd captured from OSC 7 at A time")
 
 TEST_CASE("OSC 133: commandComplete callback fires with the record")
 {
-    bool fired = false;
+    bool fired      = false;
     uint64_t seenId = 0;
     std::optional<int> seenExit;
     uint64_t seenCmdRowId = 0, seenOutRowId = 0;
 
     // Custom TestTerminal-style setup with event callback.
     TerminalCallbacks cb;
-    cb.event = [&](TerminalEmulator*, int ev, void* payload) {
+    cb.event = [&](TerminalEmulator *, int ev, void *payload)
+    {
         if (ev == TerminalEmulator::CommandComplete && payload) {
-            const auto* r = static_cast<const TerminalEmulator::CommandRecord*>(payload);
-            fired = true;
-            seenId = r->id;
-            seenExit = r->exitCode;
-            seenCmdRowId = r->commandStartLineId;
-            seenOutRowId = r->outputStartLineId;
+            const auto *r = static_cast<const TerminalEmulator::CommandRecord *>(payload);
+            fired         = true;
+            seenId        = r->id;
+            seenExit      = r->exitCode;
+            seenCmdRowId  = r->commandStartLineId;
+            seenOutRowId  = r->outputStartLineId;
         }
     };
 
     TerminalEmulator term(cb);
     term.resize(40, 5);
-    auto feed = [&](const std::string& s) { term.injectData(s.data(), s.size()); };
-    auto osc = [&](const std::string& s) { feed("\x1b]" + s + "\x07"); };
+    auto feed = [&](const std::string &s)
+    {
+        term.injectData(s.data(), s.size());
+    };
+    auto osc = [&](const std::string &s)
+    {
+        feed("\x1b]" + s + "\x07");
+    };
 
     osc("133;A");
     feed("$ ");
@@ -479,7 +515,7 @@ TEST_CASE("OSC 133: second A after output finalizes previous command without exi
     t.feed("$ ");
 
     // Previous command was auto-finalized (no exit code), new command is in-flight.
-    const auto& ring = t.term.commands();
+    const auto &ring = t.term.commands();
     REQUIRE(ring.size() == 2);
     CHECK(ring[0].complete);
     CHECK_FALSE(ring[0].exitCode.has_value());
@@ -501,10 +537,12 @@ TEST_CASE("OSC 133: captured output survives scrolling into tier-1 history")
     osc133(t, "D;0");
 
     // Scroll the prompt into history by writing more content.
-    for (int i = 0; i < 20; ++i) t.feed("filler line\r\n");
+    for (int i = 0; i < 20; ++i) {
+        t.feed("filler line\r\n");
+    }
 
     // Text is extracted lazily from the document — rows are in tier-1 history.
-    const auto* last = t.term.lastCommand();
+    const auto *last = t.term.lastCommand();
     REQUIRE(last != nullptr);
     CHECK(last->complete);
     CHECK(recordCommandText(t.term, *last) == "cmd");
@@ -519,18 +557,20 @@ TEST_CASE("OSC 133: semantic type round-trips through tier-2 archive")
     t.term.resetScrollback(100); // tight history
 
     osc133(t, "A");
-    t.feed("$ prompt\r\n");    // this row becomes tier-1 after scroll
+    t.feed("$ prompt\r\n"); // this row becomes tier-1 after scroll
     osc133(t, "C");
     t.feed("out\r\n");
     osc133(t, "D;0");
     // Keep writing to push early rows into tier-2 archive.
-    for (int i = 0; i < 10; ++i) t.feed("filler\r\n");
+    for (int i = 0; i < 10; ++i) {
+        t.feed("filler\r\n");
+    }
 
     // Historical content should be in archive. Access via historyRow —
     // parseArchivedRow reconstitutes cells including semantic type.
     int histSize = t.term.document().historySize();
     REQUIRE(histSize > 2);
-    const Cell* row0 = t.term.document().historyRow(0);
+    const Cell *row0 = t.term.document().historyRow(0);
     REQUIRE(row0 != nullptr);
     // Row 0's first non-blank char should be tagged Prompt (the "$ prompt" row)
     // because the archive roundtrip preserved the semantic type.
@@ -548,11 +588,11 @@ TEST_CASE("OSC 133: cells are tagged with SemanticType at write time")
 {
     TestTerminal t(20, 5);
     osc133(t, "A");
-    t.feed("$ ");              // prompt cells
+    t.feed("$ "); // prompt cells
     osc133(t, "B");
-    t.feed("ls");              // input cells
+    t.feed("ls"); // input cells
     osc133(t, "C");
-    t.feed("out");             // output cells (partial — no newline yet)
+    t.feed("out"); // output cells (partial — no newline yet)
 
     CHECK(t.cell(0, 0).attrs.semanticType() == CellAttrs::Prompt);
     CHECK(t.cell(1, 0).attrs.semanticType() == CellAttrs::Prompt);
@@ -584,8 +624,8 @@ TEST_CASE("OSC 133: clear operation resets cells to Output")
     // Every cell is now Prompt-tagged.
     CHECK(t.cell(0, 0).attrs.semanticType() == CellAttrs::Prompt);
     // Clear the row via EL (erase in line).
-    t.csi("H");        // cursor home
-    t.csi("2K");       // erase entire line
+    t.csi("H");  // cursor home
+    t.csi("2K"); // erase entire line
     // Cleared cells should be Output (default), not Prompt.
     CHECK(t.cell(0, 0).attrs.semanticType() == CellAttrs::Output);
     CHECK(t.cell(5, 0).attrs.semanticType() == CellAttrs::Output);
@@ -595,15 +635,19 @@ TEST_CASE("OSC 133: lastCommand skips in-flight tail and returns previous comple
 {
     TestTerminal t(20, 3);
     // A completed command.
-    osc133(t, "A");  osc133(t, "B");  t.feed("cmd1");
-    osc133(t, "C");  osc133(t, "D;0");
+    osc133(t, "A");
+    osc133(t, "B");
+    t.feed("cmd1");
+    osc133(t, "C");
+    osc133(t, "D;0");
     // A new in-flight command (prompt shown, user hasn't finished typing).
-    osc133(t, "A");  osc133(t, "B");
+    osc133(t, "A");
+    osc133(t, "B");
     t.feed("cmd2-typing");
 
     // The in-flight command is the ring's tail but has no exit code.
     // lastCommand() should look past it to the previously-completed one.
-    const auto* last = t.term.lastCommand();
+    const auto *last = t.term.lastCommand();
     REQUIRE(last != nullptr);
     CHECK(last->complete);
     CHECK(recordCommandText(t.term, *last) == "cmd1");
@@ -613,10 +657,16 @@ TEST_CASE("OSC 133: lastCommand skips in-flight tail and returns previous comple
 TEST_CASE("OSC 133: lastCommand returns most recent completed")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A");  osc133(t, "B");  t.feed("cmd1");
-    osc133(t, "C");  osc133(t, "D;0");
-    osc133(t, "A");  osc133(t, "B");  t.feed("cmd2");
-    osc133(t, "C");  osc133(t, "D;1");
+    osc133(t, "A");
+    osc133(t, "B");
+    t.feed("cmd1");
+    osc133(t, "C");
+    osc133(t, "D;0");
+    osc133(t, "A");
+    osc133(t, "B");
+    t.feed("cmd2");
+    osc133(t, "C");
+    osc133(t, "D;1");
 
     REQUIRE(t.term.lastCommand() != nullptr);
     CHECK(recordCommandText(t.term, *t.term.lastCommand()) == "cmd2");
@@ -631,7 +681,9 @@ TEST_CASE("OSC 133: command ring retains > 256 records when archive has room")
     // Feed 300 quick commands; each takes 1 screen row (prompt + output wrap).
     // With the default 4096-row tier-1 archive, nothing evicts past the floor.
     for (int i = 0; i < 300; ++i) {
-        osc133(t, "A"); osc133(t, "B"); osc133(t, "C");
+        osc133(t, "A");
+        osc133(t, "B");
+        osc133(t, "C");
         osc133(t, "D;0");
         t.feed("\r\n");
     }
@@ -642,24 +694,30 @@ TEST_CASE("OSC 133: command ring retains > 256 records when archive has room")
 TEST_CASE("OSC 133: commandForLineId hits the containing record")
 {
     TestTerminal t(40, 8);
-    osc133(t, "A"); t.feed("$ ");
-    osc133(t, "B"); t.feed("cmd1");
-    osc133(t, "C"); t.feed("out1\r\n");
+    osc133(t, "A");
+    t.feed("$ ");
+    osc133(t, "B");
+    t.feed("cmd1");
+    osc133(t, "C");
+    t.feed("out1\r\n");
     osc133(t, "D;0");
-    osc133(t, "A"); t.feed("$ ");
-    osc133(t, "B"); t.feed("cmd2");
-    osc133(t, "C"); t.feed("out2\r\n");
+    osc133(t, "A");
+    t.feed("$ ");
+    osc133(t, "B");
+    t.feed("cmd2");
+    osc133(t, "C");
+    t.feed("out2\r\n");
     osc133(t, "D;1");
 
     REQUIRE(t.term.commands().size() == 2);
-    const auto& r0 = t.term.commands()[0];
-    const auto& r1 = t.term.commands()[1];
+    const auto &r0 = t.term.commands()[0];
+    const auto &r1 = t.term.commands()[1];
 
-    const auto* hit0 = t.term.commandForLineId(r0.promptStartLineId);
+    const auto *hit0 = t.term.commandForLineId(r0.promptStartLineId);
     REQUIRE(hit0 != nullptr);
     CHECK(hit0->id == r0.id);
 
-    const auto* hit1 = t.term.commandForLineId(r1.outputEndLineId);
+    const auto *hit1 = t.term.commandForLineId(r1.outputEndLineId);
     REQUIRE(hit1 != nullptr);
     CHECK(hit1->id == r1.id);
 
@@ -670,8 +728,11 @@ TEST_CASE("OSC 133: commandForLineId hits the containing record")
 TEST_CASE("OSC 133: setSelectedCommand populates selectedCommandId")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A"); osc133(t, "B"); t.feed("cmd");
-    osc133(t, "C"); osc133(t, "D;0");
+    osc133(t, "A");
+    osc133(t, "B");
+    t.feed("cmd");
+    osc133(t, "C");
+    osc133(t, "D;0");
 
     REQUIRE(t.term.commands().size() == 1);
     uint64_t id = t.term.commands()[0].id;
@@ -688,21 +749,29 @@ TEST_CASE("OSC 133: setSelectedCommand populates selectedCommandId")
 TEST_CASE("OSC 133: setSelectedCommand rejects unknown id")
 {
     TestTerminal t(40, 5);
-    osc133(t, "A"); osc133(t, "B"); osc133(t, "C"); osc133(t, "D;0");
-    t.term.setSelectedCommand(uint64_t{99999});
+    osc133(t, "A");
+    osc133(t, "B");
+    osc133(t, "C");
+    osc133(t, "D;0");
+    t.term.setSelectedCommand(uint64_t { 99999 });
     CHECK_FALSE(t.term.selectedCommandId().has_value());
 }
 
 TEST_CASE("OSC 133: scrollToPrompt sets selection on landed command")
 {
     TestTerminal t(20, 3);
-    osc133(t, "A"); t.feed("$ cmd1\r\n");
-    osc133(t, "C"); t.feed("o1\r\n");
+    osc133(t, "A");
+    t.feed("$ cmd1\r\n");
+    osc133(t, "C");
+    t.feed("o1\r\n");
     osc133(t, "D;0");
-    osc133(t, "A"); t.feed("$ cmd2\r\n");
-    osc133(t, "C"); t.feed("o2\r\n");
+    osc133(t, "A");
+    t.feed("$ cmd2\r\n");
+    osc133(t, "C");
+    t.feed("o2\r\n");
     osc133(t, "D;0");
-    osc133(t, "A"); t.feed("$ ");
+    osc133(t, "A");
+    t.feed("$ ");
 
     REQUIRE(t.term.commands().size() == 3);
     // With no selection, Cmd+Up anchors past the end of content so it lands
@@ -736,7 +805,7 @@ TEST_CASE("REP: wide character repeat")
 {
     TestTerminal t(10, 3);
     t.feed("\xe4\xb8\xad"); // 中 (wide)
-    t.csi("2b"); // repeat 2 times
+    t.csi("2b");            // repeat 2 times
     // Should have 3 wide chars = 6 cells
     CHECK(t.wc(0, 0) == U'\u4e2d');
     CHECK(t.wc(2, 0) == U'\u4e2d');

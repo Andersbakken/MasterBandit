@@ -1,7 +1,7 @@
 #pragma once
 
-#include <EventLoop.h>
 #include "../kqueue/FdPoller_kqueue.h"
+#include <EventLoop.h>
 
 #include <atomic>
 #include <cstdint>
@@ -17,11 +17,12 @@
 @class MBEventLoopDelegate;
 #else
 struct objc_object;
-using NSTimer            = objc_object;
+using NSTimer             = objc_object;
 using MBEventLoopDelegate = objc_object;
 #endif
 
-class NSAppEventLoop : public EventLoop {
+class NSAppEventLoop : public EventLoop
+{
 public:
     NSAppEventLoop();
     ~NSAppEventLoop() override;
@@ -35,10 +36,10 @@ public:
     void removeFd(int fd) override;
 
     TimerId addTimer(uint64_t ms, bool repeat, TimerCb cb) override;
-    void    removeTimer(TimerId id) override;
-    void    restartTimer(TimerId id) override;
+    void removeTimer(TimerId id) override;
+    void restartTimer(TimerId id) override;
 
-    void addFileWatch(const std::string& path, WatchCb cb) override;
+    void addFileWatch(const std::string &path, WatchCb cb) override;
     void removeFileWatch() override;
 
     // Called by the run loop observer / tick selector
@@ -60,16 +61,18 @@ private:
     // when any managed fd has events.
     std::unique_ptr<FdPollerKQueue> fdPoller_;
     // CFFileDescriptor wrapping fdPoller_->nativeHandle().
-    void* kqCfFdRef_  = nullptr;  // CFFileDescriptorRef
-    void* kqCfSource_ = nullptr;  // CFRunLoopSourceRef
+    void *kqCfFdRef_  = nullptr; // CFFileDescriptorRef
+    void *kqCfSource_ = nullptr; // CFRunLoopSourceRef
 
-    struct Timer {
-        TimerId  id;
+    struct Timer
+    {
+        TimerId id;
         uint64_t ms;
-        bool     repeat;
-        TimerCb  cb;
-        NSTimer* nsTimer = nullptr;
+        bool repeat;
+        TimerCb cb;
+        NSTimer *nsTimer = nullptr;
     };
+
     std::vector<Timer> timers_;
     TimerId nextTimerId_ = 1;
 
@@ -77,12 +80,17 @@ private:
     // by stat-and-mtime-check inside each registered callback. The
     // FSEventStream is shared across all watches in the same parent
     // directory.
-    struct WatchEntry { std::string path; WatchCb cb; };
+    struct WatchEntry
+    {
+        std::string path;
+        WatchCb cb;
+    };
+
     std::vector<WatchEntry> fileWatches_;
     std::string fileWatchDir_;
-    void*       fsEventStream_ = nullptr;  // FSEventStreamRef
+    void *fsEventStream_ = nullptr; // FSEventStreamRef
 
-    void* observer_ = nullptr;  // CFRunLoopObserverRef
+    void *observer_ = nullptr; // CFRunLoopObserverRef
     // wakeup() may be called from the render thread; observer callback reads
     // on main. CFRunLoopWakeUp is documented thread-safe; we only need the
     // flag to be atomic.

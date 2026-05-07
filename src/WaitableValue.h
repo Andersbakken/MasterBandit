@@ -21,11 +21,12 @@
 // notify_all() on every set() so multiple waiters are correct, though the
 // expected usage is a single waiter.
 template <typename T>
-class WaitableValue {
+class WaitableValue
+{
 public:
-    WaitableValue() = default;
-    WaitableValue(const WaitableValue&) = delete;
-    WaitableValue& operator=(const WaitableValue&) = delete;
+    WaitableValue()                                 = default;
+    WaitableValue(const WaitableValue &)            = delete;
+    WaitableValue &operator=(const WaitableValue &) = delete;
 
     void set(T v)
     {
@@ -59,12 +60,15 @@ public:
     std::optional<T> getOrWait(std::chrono::milliseconds timeout)
     {
         std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait_for(lk, timeout, [&] { return value_.has_value(); });
+        cv_.wait_for(lk, timeout, [&]
+                     {
+                         return value_.has_value();
+                     });
         return value_;
     }
 
 private:
-    mutable std::mutex      mu_;
+    mutable std::mutex mu_;
     std::condition_variable cv_;
-    std::optional<T>        value_;
+    std::optional<T> value_;
 };

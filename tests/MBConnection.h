@@ -1,42 +1,44 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
-#include <functional>
 
-#include <poll.h>
 #include <libwebsockets.h>
+#include <poll.h>
 
-class MBConnection {
+class MBConnection
+{
 public:
-    struct Options {
+    struct Options
+    {
         std::string fontPath;         // defaults to MB_TEST_FONT
         std::string fallbackFontPath; // optional non-COLR fallback font
         std::string emojiFontPath;    // optional COLRv1 emoji font
         std::string shell;            // defaults to user's shell; use "/bin/cat" for stable rendering tests
-        int cols = 80;
-        int rows = 24;
+        int cols       = 80;
+        int rows       = 24;
         float fontSize = 16.0f;
     };
 
     MBConnection();
-    explicit MBConnection(const Options& opts);
+    explicit MBConnection(const Options &opts);
     ~MBConnection();
 
-    MBConnection(const MBConnection&) = delete;
-    MBConnection& operator=(const MBConnection&) = delete;
+    MBConnection(const MBConnection &)            = delete;
+    MBConnection &operator=(const MBConnection &) = delete;
 
     // Connect to the mb --test child's IPC socket. Blocks with timeout.
     bool connect(int timeoutMs = 15000);
 
     // Inject text into the terminal
-    bool sendText(const std::string& text, int timeoutMs = 2000);
+    bool sendText(const std::string &text, int timeoutMs = 2000);
 
     // Inject a named key with optional modifiers
-    bool sendKey(const std::string& key, const std::vector<std::string>& mods = {}, int timeoutMs = 2000);
+    bool sendKey(const std::string &key, const std::vector<std::string> &mods = {}, int timeoutMs = 2000);
 
     // Inject raw data directly into the terminal emulator (bypass PTY)
-    bool injectData(const std::string& data, int timeoutMs = 2000);
+    bool injectData(const std::string &data, int timeoutMs = 2000);
 
     // Take a PNG screenshot of the full composite
     std::vector<uint8_t> screenshotPng(int timeoutMs = 5000);
@@ -55,22 +57,22 @@ public:
     std::string screenshotGridJson(int timeoutMs = 5000);
 
     // Compare two PNG byte buffers. Returns max absolute channel difference.
-    static int comparePng(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
+    static int comparePng(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b);
 
     // Compare against a reference file. If MB_UPDATE_REFS=1, saves actual as new reference.
-    bool matchesReference(const std::vector<uint8_t>& png, const std::string& refName, int tolerance = 2);
+    bool matchesReference(const std::vector<uint8_t> &png, const std::string &refName, int tolerance = 2);
 
     // Save raw PNG bytes to a file
-    static void savePng(const std::vector<uint8_t>& png, const std::string& path);
+    static void savePng(const std::vector<uint8_t> &png, const std::string &path);
 
     // Load raw PNG bytes from a file
-    static std::vector<uint8_t> loadPng(const std::string& path);
+    static std::vector<uint8_t> loadPng(const std::string &path);
 
     // Query stats JSON from the running instance
     std::string queryStats(int timeoutMs = 2000);
 
     // Dispatch a named action (e.g. "new_tab", "split_pane") with optional args
-    bool sendAction(const std::string& action, const std::vector<std::string>& args = {}, int timeoutMs = 2000);
+    bool sendAction(const std::string &action, const std::vector<std::string> &args = {}, int timeoutMs = 2000);
 
     // Wait for the given duration while keeping the WebSocket alive
     void wait(int ms);
@@ -78,28 +80,29 @@ public:
     // Reset terminal state (sends RIS) for reuse between tests
     bool reset(int timeoutMs = 2000);
 
-    const std::string& socketPath() const { return socketPath_; }
+    const std::string &socketPath() const { return socketPath_; }
+
     pid_t childPid() const { return pid_; }
 
     // Shared instance cache — one persistent mb --test child per unique
     // Options fingerprint. Reused across tests to avoid per-test process
     // spawn overhead; call reset() at the start of each test to return the
     // terminal to a clean state (kitty-grade RIS).
-    static MBConnection& shared(const Options& opts);
+    static MBConnection &shared(const Options &opts);
     // Backward-compatible shortcut for tests that don't care about options:
     // uses a 40x10 grid with default font/shell.
-    static MBConnection& shared();
+    static MBConnection &shared();
 
     // Public because it's referenced from the static protocol table
-    static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
-                          void* user, void* in, size_t len);
+    static int wsCallback(struct lws *wsi, enum lws_callback_reasons reason,
+                          void *user, void *in, size_t len);
 
 private:
     // Send a JSON request and block until response. Returns response JSON string.
-    std::string sendRequest(const std::string& json, int timeoutMs);
+    std::string sendRequest(const std::string &json, int timeoutMs);
 
     // Screenshot helper that builds the request JSON
-    std::vector<uint8_t> doScreenshot(const std::string& target, int x, int y, int w, int h, bool hasRect, int timeoutMs);
+    std::vector<uint8_t> doScreenshot(const std::string &target, int x, int y, int w, int h, bool hasRect, int timeoutMs);
 
     // Drive the lws event loop for one poll cycle (10ms timeout)
     void pumpOnce();
@@ -109,9 +112,9 @@ private:
 
     // WebSocket client state
     std::vector<struct pollfd> pollfds_;
-    struct lws_context* ctx_ = nullptr;
-    struct lws* wsi_ = nullptr;
-    bool connected_ = false;
+    struct lws_context *ctx_ = nullptr;
+    struct lws *wsi_         = nullptr;
+    bool connected_          = false;
 
     std::string pendingTx_;
     bool txPending_ = false;

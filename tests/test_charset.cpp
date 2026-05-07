@@ -1,5 +1,5 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 // ── default state: ASCII passes through ───────────────────────────────────────
 
@@ -63,9 +63,9 @@ TEST_CASE("UK charset only remaps '#'; other letters unchanged")
 TEST_CASE("Unsupported G0 designator falls back to ASCII")
 {
     TestTerminal t;
-    t.esc("(0");      // graphics
+    t.esc("(0"); // graphics
     t.feed("q");
-    t.esc("(F");      // unknown → ASCII
+    t.esc("(F"); // unknown → ASCII
     t.feed("q");
     CHECK(t.wc(0, 0) == 0x2500);
     CHECK(t.wc(1, 0) == U'q');
@@ -84,8 +84,8 @@ TEST_CASE("ESC ) 0 loads G1 but G0 still active")
 TEST_CASE("SO (0x0E) invokes G1 into GL")
 {
     TestTerminal t;
-    t.esc(")0");          // G1 = DEC graphics
-    t.feed("\x0E");       // SO → GL = G1
+    t.esc(")0");    // G1 = DEC graphics
+    t.feed("\x0E"); // SO → GL = G1
     t.feed("q");
     CHECK(t.wc(0, 0) == 0x2500);
 }
@@ -94,9 +94,9 @@ TEST_CASE("SI (0x0F) returns GL to G0")
 {
     TestTerminal t;
     t.esc(")0");
-    t.feed("\x0E");       // SO
+    t.feed("\x0E"); // SO
     t.feed("q");
-    t.feed("\x0F");       // SI
+    t.feed("\x0F"); // SI
     t.feed("q");
     CHECK(t.wc(0, 0) == 0x2500);
     CHECK(t.wc(1, 0) == U'q');
@@ -116,7 +116,7 @@ TEST_CASE("DEC graphics: characters below 0x5F pass through")
 {
     TestTerminal t;
     t.esc("(0");
-    t.feed("AZ");          // 0x41, 0x5A — below remap range
+    t.feed("AZ"); // 0x41, 0x5A — below remap range
     CHECK(t.wc(0, 0) == U'A');
     CHECK(t.wc(1, 0) == U'Z');
 }
@@ -136,31 +136,31 @@ TEST_CASE("DECSC saves charset; DECRC restores")
 {
     // DECRC restores cursor position too, so write in distinct columns.
     TestTerminal t;
-    t.csi("5G");          // cursor at column 5 (x=4)
-    t.esc("(0");          // G0 = graphics
-    t.esc("7");           // DECSC — saves (4,0), G0=graphics
-    t.csi("10G");         // cursor to column 10 (x=9)
-    t.esc("(B");          // ASCII
-    t.feed("q");          // ASCII 'q' at (9,0)
+    t.csi("5G");  // cursor at column 5 (x=4)
+    t.esc("(0");  // G0 = graphics
+    t.esc("7");   // DECSC — saves (4,0), G0=graphics
+    t.csi("10G"); // cursor to column 10 (x=9)
+    t.esc("(B");  // ASCII
+    t.feed("q");  // ASCII 'q' at (9,0)
     CHECK(t.wc(9, 0) == U'q');
-    t.esc("8");           // DECRC → cursor=(4,0), G0=graphics
-    t.feed("q");          // graphics ─ at (4,0)
+    t.esc("8");  // DECRC → cursor=(4,0), G0=graphics
+    t.feed("q"); // graphics ─ at (4,0)
     CHECK(t.wc(4, 0) == 0x2500);
 }
 
 TEST_CASE("DECSC/DECRC saves and restores shiftOut (GL)")
 {
     TestTerminal t;
-    t.esc(")0");          // G1 = graphics
+    t.esc(")0"); // G1 = graphics
     t.csi("5G");
-    t.feed("\x0E");       // SO → GL=G1
-    t.esc("7");           // DECSC saves cursor=(4,0), shiftOut=true
+    t.feed("\x0E"); // SO → GL=G1
+    t.esc("7");     // DECSC saves cursor=(4,0), shiftOut=true
     t.csi("10G");
-    t.feed("\x0F");       // SI → GL=G0
-    t.feed("q");          // ASCII at (9,0)
+    t.feed("\x0F"); // SI → GL=G0
+    t.feed("q");    // ASCII at (9,0)
     CHECK(t.wc(9, 0) == U'q');
-    t.esc("8");           // DECRC → cursor=(4,0), shiftOut=true
-    t.feed("q");          // graphics at (4,0)
+    t.esc("8");  // DECRC → cursor=(4,0), shiftOut=true
+    t.feed("q"); // graphics at (4,0)
     CHECK(t.wc(4, 0) == 0x2500);
 }
 
@@ -169,12 +169,12 @@ TEST_CASE("CSI s / CSI u also save/restore charset (shared DECSC slot)")
     TestTerminal t;
     t.csi("5G");
     t.esc("(0");
-    t.csi("s");           // SCP — shares the DECSC save slot
+    t.csi("s"); // SCP — shares the DECSC save slot
     t.csi("10G");
     t.esc("(B");
     t.feed("q");
     CHECK(t.wc(9, 0) == U'q');
-    t.csi("u");           // RCP
+    t.csi("u"); // RCP
     t.feed("q");
     CHECK(t.wc(4, 0) == 0x2500);
 }
@@ -184,11 +184,11 @@ TEST_CASE("CSI s / CSI u also save/restore charset (shared DECSC slot)")
 TEST_CASE("alt screen starts fresh — main's charset does not leak in")
 {
     TestTerminal t;
-    t.esc("(0");          // main: G0 = graphics
+    t.esc("(0"); // main: G0 = graphics
     t.feed("q");
     CHECK(t.wc(0, 0) == 0x2500);
 
-    t.csi("?1049h");      // enter alt
+    t.csi("?1049h"); // enter alt
     t.feed("q");
     CHECK(t.wc(0, 0) == U'q'); // alt starts with default ASCII charset
 }
@@ -196,12 +196,12 @@ TEST_CASE("alt screen starts fresh — main's charset does not leak in")
 TEST_CASE("alt screen's charset does not leak back to main")
 {
     TestTerminal t;
-    t.csi("?1049h");      // enter alt
-    t.esc("(0");          // alt: G0 = graphics
+    t.csi("?1049h"); // enter alt
+    t.esc("(0");     // alt: G0 = graphics
     t.feed("q");
     CHECK(t.wc(0, 0) == 0x2500);
 
-    t.csi("?1049l");      // back to main — main is still ASCII
+    t.csi("?1049l"); // back to main — main is still ASCII
     t.feed("q");
     // Main should be untouched: ASCII at position (0,0) of main (screen cleared
     // on alt swap in tests? — main content is preserved; cursor returns to
@@ -219,8 +219,8 @@ TEST_CASE("RIS resets charset to ASCII/G0")
     TestTerminal t;
     t.esc("(0");
     t.esc(")0");
-    t.feed("\x0E");       // SO
-    t.esc("c");           // RIS
+    t.feed("\x0E"); // SO
+    t.esc("c");     // RIS
     t.feed("q");
     CHECK(t.wc(0, 0) == U'q');
 }

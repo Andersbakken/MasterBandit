@@ -1,6 +1,6 @@
 #include "TerminalEmulator.h"
-#include <spdlog/spdlog.h>
 #include <optional>
+#include <spdlog/spdlog.h>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -11,7 +11,7 @@
 // We only advertise capabilities that this terminal actually implements.
 // ---------------------------------------------------------------------------
 
-static const std::unordered_map<std::string, std::string>& xtgettcapTable()
+static const std::unordered_map<std::string, std::string> &xtgettcapTable()
 {
     // clang-format off
     static const std::unordered_map<std::string, std::string> table = {
@@ -154,19 +154,30 @@ static const std::unordered_map<std::string, std::string>& xtgettcapTable()
 }
 
 // Decode a hex string into bytes. Returns false on invalid input.
-static bool hexDecode(std::string_view hex, std::string& out)
+static bool hexDecode(std::string_view hex, std::string &out)
 {
-    if (hex.size() % 2 != 0) return false;
+    if (hex.size() % 2 != 0) {
+        return false;
+    }
     out.reserve(hex.size() / 2);
     for (size_t i = 0; i < hex.size(); i += 2) {
-        auto hexNibble = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        auto hexNibble = [](char c) -> int
+        {
+            if (c >= '0' && c <= '9') {
+                return c - '0';
+            }
+            if (c >= 'a' && c <= 'f') {
+                return c - 'a' + 10;
+            }
+            if (c >= 'A' && c <= 'F') {
+                return c - 'A' + 10;
+            }
             return -1;
         };
         int hi = hexNibble(hex[i]), lo = hexNibble(hex[i + 1]);
-        if (hi < 0 || lo < 0) return false;
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
         out += static_cast<char>((hi << 4) | lo);
     }
     return true;
@@ -190,9 +201,10 @@ void TerminalEmulator::processDCS(std::string_view seq)
     // XTGETTCAP: DCS + q <hex-names> ST  (names separated by ';')
     if (seq.size() >= 2 && seq[0] == '+' && seq[1] == 'q') {
         std::string_view queries = seq.substr(2);
-        const auto& table = xtgettcapTable();
+        const auto &table        = xtgettcapTable();
 
-        auto handleOne = [&](std::string_view hexName) {
+        auto handleOne = [&](std::string_view hexName)
+        {
             std::string name;
             if (!hexDecode(hexName, name)) {
                 spdlog::warn("XTGETTCAP: invalid hex in query '{}'", std::string(hexName));
@@ -204,7 +216,7 @@ void TerminalEmulator::processDCS(std::string_view seq)
             }
 
             std::string resp = "\x1bP";
-            auto it = table.find(name);
+            auto it          = table.find(name);
             if (it != table.end()) {
                 resp += "1+r";
                 resp += hexName;
@@ -239,8 +251,9 @@ void TerminalEmulator::processDCS(std::string_view seq)
         while (pos <= queries.size()) {
             size_t semi = queries.find(';', pos);
             if (semi == std::string_view::npos) {
-                if (pos < queries.size())
+                if (pos < queries.size()) {
                     handleOne(queries.substr(pos));
+                }
                 break;
             }
             handleOne(queries.substr(pos, semi - pos));
@@ -256,25 +269,26 @@ void TerminalEmulator::processDCS(std::string_view seq)
             // Cursor shape query (DECSCUSR)
             // CursorBlock=0 maps to Ps=1 (blinking block); other values already match DECSCUSR
             int ps = static_cast<int>(mState->cursorShape);
-            if (ps == 0) ps = 1;
+            if (ps == 0) {
+                ps = 1;
+            }
             char resp[32];
             int len = snprintf(resp, sizeof(resp), "\x1bP1$r%d q\x1b\\", ps);
             writeToOutput(resp, len);
         } else if (sub == "m") {
             // SGR state query
             std::string params = buildCurrentSGR();
-            std::string resp = "\x1bP1$r" + params + "m\x1b\\";
+            std::string resp   = "\x1bP1$r" + params + "m\x1b\\";
             writeToOutput(resp.c_str(), resp.size());
         } else if (sub == "r") {
             // Scroll margins query (DECSTBM)
             // mState->scrollTop is 0-indexed; mState->scrollBottom is exclusive upper bound
             char resp[64];
-            int len = snprintf(resp, sizeof(resp), "\x1bP1$r%d;%dr\x1b\\",
-                mState->scrollTop + 1, mState->scrollBottom);
+            int len = snprintf(resp, sizeof(resp), "\x1bP1$r%d;%dr\x1b\\", mState->scrollTop + 1, mState->scrollBottom);
             writeToOutput(resp, len);
         } else {
             // Unknown subparam
-            const char* resp = "\x1bP0$r\x1b\\";
+            const char *resp = "\x1bP0$r\x1b\\";
             writeToOutput(resp, strlen(resp));
         }
         return;
@@ -288,37 +302,62 @@ void TerminalEmulator::processDCS(std::string_view seq)
 std::string TerminalEmulator::buildCurrentSGR() const
 {
     std::string p;
-    auto add = [&](int n) {
-        if (!p.empty()) p += ';';
+    auto add = [&](int n)
+    {
+        if (!p.empty()) {
+            p += ';';
+        }
         p += std::to_string(n);
     };
 
     // Text attributes
-    if (mState->currentAttrs.bold())          add(1);
-    if (mState->currentAttrs.dim())           add(2);
-    if (mState->currentAttrs.italic())        add(3);
-    if (mState->currentAttrs.underline())     add(4);
-    if (mState->currentAttrs.blink())         add(5);
-    if (mState->currentAttrs.inverse())       add(7);
-    if (mState->currentAttrs.invisible())     add(8);
-    if (mState->currentAttrs.strikethrough()) add(9);
+    if (mState->currentAttrs.bold()) {
+        add(1);
+    }
+    if (mState->currentAttrs.dim()) {
+        add(2);
+    }
+    if (mState->currentAttrs.italic()) {
+        add(3);
+    }
+    if (mState->currentAttrs.underline()) {
+        add(4);
+    }
+    if (mState->currentAttrs.blink()) {
+        add(5);
+    }
+    if (mState->currentAttrs.inverse()) {
+        add(7);
+    }
+    if (mState->currentAttrs.invisible()) {
+        add(8);
+    }
+    if (mState->currentAttrs.strikethrough()) {
+        add(9);
+    }
 
     // Foreground color — we always store RGB, never Indexed (SGR parse resolves at ingest).
     switch (mState->currentAttrs.fgMode()) {
-    case CellAttrs::Default: break;
-    case CellAttrs::RGB:
-        add(38); add(2);
-        add(mState->currentAttrs.fgR()); add(mState->currentAttrs.fgG()); add(mState->currentAttrs.fgB());
-        break;
+        case CellAttrs::Default: break;
+        case CellAttrs::RGB:
+            add(38);
+            add(2);
+            add(mState->currentAttrs.fgR());
+            add(mState->currentAttrs.fgG());
+            add(mState->currentAttrs.fgB());
+            break;
     }
 
     // Background color
     switch (mState->currentAttrs.bgMode()) {
-    case CellAttrs::Default: break;
-    case CellAttrs::RGB:
-        add(48); add(2);
-        add(mState->currentAttrs.bgR()); add(mState->currentAttrs.bgG()); add(mState->currentAttrs.bgB());
-        break;
+        case CellAttrs::Default: break;
+        case CellAttrs::RGB:
+            add(48);
+            add(2);
+            add(mState->currentAttrs.bgR());
+            add(mState->currentAttrs.bgG());
+            add(mState->currentAttrs.bgB());
+            break;
     }
 
     return p.empty() ? "0" : p;

@@ -3,9 +3,9 @@
 // independent TabBars bound to independent Stacks have independent
 // activeChild state.
 
-#include <doctest/doctest.h>
 #include "LayoutTree.h"
 #include "Uuid.h"
+#include <doctest/doctest.h>
 
 #include <unordered_set>
 #include <vector>
@@ -14,27 +14,41 @@ namespace {
 
 // Mini walker mirroring Engine::queryNodesByKind for the tree-only test.
 // Implementation duplicated here to keep this test free of Engine deps.
-std::vector<Uuid> walkByKind(const LayoutTree& t, NodeKind kind, Uuid start)
+std::vector<Uuid> walkByKind(const LayoutTree &t, NodeKind kind, Uuid start)
 {
     std::vector<Uuid> out;
-    if (start.isNil()) start = t.root();
-    if (start.isNil()) return out;
+    if (start.isNil()) {
+        start = t.root();
+    }
+    if (start.isNil()) {
+        return out;
+    }
 
-    std::vector<Uuid> queue{start};
+    std::vector<Uuid> queue { start };
     while (!queue.empty()) {
         Uuid cur = queue.back();
         queue.pop_back();
-        const Node* n = t.node(cur);
-        if (!n) continue;
-        if (n->kind() == kind) out.push_back(cur);
-        std::visit([&](const auto& d) {
-            using T = std::decay_t<decltype(d)>;
-            if constexpr (std::is_same_v<T, ContainerData>) {
-                for (const auto& s : d.children) queue.push_back(s.id);
-            } else if constexpr (std::is_same_v<T, StackData>) {
-                for (const auto& s : d.children) queue.push_back(s.id);
-            }
-        }, n->data);
+        const Node *n = t.node(cur);
+        if (!n) {
+            continue;
+        }
+        if (n->kind() == kind) {
+            out.push_back(cur);
+        }
+        std::visit([&](const auto &d)
+                   {
+                       using T = std::decay_t<decltype(d)>;
+                       if constexpr (std::is_same_v<T, ContainerData>) {
+                           for (const auto &s : d.children) {
+                               queue.push_back(s.id);
+                           }
+                       } else if constexpr (std::is_same_v<T, StackData>) {
+                           for (const auto &s : d.children) {
+                               queue.push_back(s.id);
+                           }
+                       }
+                   },
+                   n->data);
     }
     return out;
 }
@@ -65,14 +79,14 @@ TEST_CASE("multibar: two TabBars bound to two Stacks have independent activeChil
     Uuid b1     = t.createTerminal();
 
     REQUIRE(t.setRoot(root));
-    REQUIRE(t.appendChild(root, ChildSlot{barA,   0, 0, 0, 1}));
-    REQUIRE(t.appendChild(root, ChildSlot{stackA, 1}));
-    REQUIRE(t.appendChild(root, ChildSlot{barB,   0, 0, 0, 1}));
-    REQUIRE(t.appendChild(root, ChildSlot{stackB, 1}));
-    REQUIRE(t.appendChild(stackA, ChildSlot{a0}));
-    REQUIRE(t.appendChild(stackA, ChildSlot{a1}));
-    REQUIRE(t.appendChild(stackB, ChildSlot{b0}));
-    REQUIRE(t.appendChild(stackB, ChildSlot{b1}));
+    REQUIRE(t.appendChild(root, ChildSlot { barA, 0, 0, 0, 1 }));
+    REQUIRE(t.appendChild(root, ChildSlot { stackA, 1 }));
+    REQUIRE(t.appendChild(root, ChildSlot { barB, 0, 0, 0, 1 }));
+    REQUIRE(t.appendChild(root, ChildSlot { stackB, 1 }));
+    REQUIRE(t.appendChild(stackA, ChildSlot { a0 }));
+    REQUIRE(t.appendChild(stackA, ChildSlot { a1 }));
+    REQUIRE(t.appendChild(stackB, ChildSlot { b0 }));
+    REQUIRE(t.appendChild(stackB, ChildSlot { b1 }));
     REQUIRE(t.setTabBarStack(barA, stackA));
     REQUIRE(t.setTabBarStack(barB, stackB));
 
@@ -83,12 +97,12 @@ TEST_CASE("multibar: two TabBars bound to two Stacks have independent activeChil
     CHECK(barSet.count(barA) == 1);
     CHECK(barSet.count(barB) == 1);
 
-    const Node* bna = t.node(barA);
-    const Node* bnb = t.node(barB);
+    const Node *bna = t.node(barA);
+    const Node *bnb = t.node(barB);
     REQUIRE(bna);
     REQUIRE(bnb);
-    auto* bda = std::get_if<TabBarData>(&bna->data);
-    auto* bdb = std::get_if<TabBarData>(&bnb->data);
+    auto *bda = std::get_if<TabBarData>(&bna->data);
+    auto *bdb = std::get_if<TabBarData>(&bnb->data);
     REQUIRE(bda);
     REQUIRE(bdb);
     CHECK(bda->boundStack == stackA);
@@ -96,8 +110,8 @@ TEST_CASE("multibar: two TabBars bound to two Stacks have independent activeChil
     CHECK(bda->boundStack != bdb->boundStack);
 
     // Initial state: each Stack's activeChild is the first appended.
-    auto* sda = std::get_if<StackData>(&t.node(stackA)->data);
-    auto* sdb = std::get_if<StackData>(&t.node(stackB)->data);
+    auto *sda = std::get_if<StackData>(&t.node(stackA)->data);
+    auto *sdb = std::get_if<StackData>(&t.node(stackB)->data);
     REQUIRE(sda);
     REQUIRE(sdb);
     CHECK(sda->activeChild == a0);
@@ -126,17 +140,17 @@ TEST_CASE("multibar: queryNodes(kind, subtreeRoot) scopes the walk")
     //   └── Stack (sB) → Container (cB) → Terminal bT
     LayoutTree t;
     Uuid root = t.createContainer(SplitDir::Horizontal);
-    Uuid sA = t.createStack();
-    Uuid sB = t.createStack();
-    Uuid cB = t.createContainer(SplitDir::Vertical);
-    Uuid aT = t.createTerminal();
-    Uuid bT = t.createTerminal();
+    Uuid sA   = t.createStack();
+    Uuid sB   = t.createStack();
+    Uuid cB   = t.createContainer(SplitDir::Vertical);
+    Uuid aT   = t.createTerminal();
+    Uuid bT   = t.createTerminal();
     REQUIRE(t.setRoot(root));
-    REQUIRE(t.appendChild(root, ChildSlot{sA, 1}));
-    REQUIRE(t.appendChild(root, ChildSlot{sB, 1}));
-    REQUIRE(t.appendChild(sA,   ChildSlot{aT}));
-    REQUIRE(t.appendChild(sB,   ChildSlot{cB}));
-    REQUIRE(t.appendChild(cB,   ChildSlot{bT}));
+    REQUIRE(t.appendChild(root, ChildSlot { sA, 1 }));
+    REQUIRE(t.appendChild(root, ChildSlot { sB, 1 }));
+    REQUIRE(t.appendChild(sA, ChildSlot { aT }));
+    REQUIRE(t.appendChild(sB, ChildSlot { cB }));
+    REQUIRE(t.appendChild(cB, ChildSlot { bT }));
 
     auto allTerm = walkByKind(t, NodeKind::Terminal, {});
     CHECK(allTerm.size() == 2);
@@ -157,13 +171,13 @@ TEST_CASE("multibar: setLabel + tree walk lookup by label")
 {
     LayoutTree t;
     Uuid root = t.createContainer(SplitDir::Horizontal);
-    Uuid sA = t.createStack();
-    Uuid sB = t.createStack();
-    Uuid sC = t.createStack();
+    Uuid sA   = t.createStack();
+    Uuid sB   = t.createStack();
+    Uuid sC   = t.createStack();
     REQUIRE(t.setRoot(root));
-    REQUIRE(t.appendChild(root, ChildSlot{sA, 1}));
-    REQUIRE(t.appendChild(root, ChildSlot{sB, 1}));
-    REQUIRE(t.appendChild(root, ChildSlot{sC, 1}));
+    REQUIRE(t.appendChild(root, ChildSlot { sA, 1 }));
+    REQUIRE(t.appendChild(root, ChildSlot { sB, 1 }));
+    REQUIRE(t.appendChild(root, ChildSlot { sC, 1 }));
 
     t.setLabel(sA, "editor");
     t.setLabel(sB, "logs");
@@ -178,9 +192,12 @@ TEST_CASE("multibar: setLabel + tree walk lookup by label")
     CHECK(t.node(sC)->label.empty());
 
     // Mini findByLabel: walk siblings, return first match.
-    auto findByLabel = [&](const std::string& want) -> Uuid {
+    auto findByLabel = [&](const std::string &want) -> Uuid
+    {
         for (Uuid u : walkByKind(t, NodeKind::Stack, {})) {
-            if (t.node(u)->label == want) return u;
+            if (t.node(u)->label == want) {
+                return u;
+            }
         }
         return {};
     };

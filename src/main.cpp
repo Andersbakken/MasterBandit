@@ -1,15 +1,15 @@
-#include <unistd.h>
-#include <signal.h>
-#include "PlatformDawn.h"
-#include "Config.h"
-#include <cstring>
-#include <pwd.h>
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/sinks/basic_file_sink.h>
-#include <sstream>
 #include "CLIClient.h"
+#include "Config.h"
+#include "PlatformDawn.h"
+#include <cstring>
 #include <cxxopts.hpp>
+#include <pwd.h>
+#include <signal.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
+#include <unistd.h>
 
 static void cleanupSocketAndExit(int sig)
 {
@@ -27,8 +27,9 @@ static std::string defaultShell(const std::string &user)
         return shell;
     }
     if (struct passwd *pw = getpwnam(user.c_str())) {
-        if (pw->pw_shell && pw->pw_shell[0])
+        if (pw->pw_shell && pw->pw_shell[0]) {
             return pw->pw_shell;
+        }
     }
     return "/bin/sh";
 }
@@ -44,25 +45,13 @@ int main(int argc, char **argv)
     }
 
     cxxopts::Options opts("mb", "MasterBandit Terminal");
-    opts.add_options()
-        ("v,verbose", "Increase verbosity (repeatable)")
-        ("log", "Set subsystem log level: name=level[,name=level] (subsystems: script,js,render,terminal,input,font)", cxxopts::value<std::string>())
-        ("s,shell", "Shell to use", cxxopts::value<std::string>())
-        ("test", "Headless test mode (no window, no config)")
-        ("ipc", "Enable debug IPC socket")
-        ("font", "Font path (test mode)", cxxopts::value<std::string>())
-        ("emoji-font", "Emoji font path (test mode)", cxxopts::value<std::string>())
-        ("fallback-font", "Additional fallback font path (test mode)", cxxopts::value<std::string>())
-        ("cols", "Terminal columns (test mode)", cxxopts::value<int>()->default_value("80"))
-        ("rows", "Terminal rows (test mode)", cxxopts::value<int>()->default_value("24"))
-        ("font-size", "Font size (test mode)", cxxopts::value<float>()->default_value("16"))
-        ("h,help", "Print usage");
+    opts.add_options()("v,verbose", "Increase verbosity (repeatable)")("log", "Set subsystem log level: name=level[,name=level] (subsystems: script,js,render,terminal,input,font)", cxxopts::value<std::string>())("s,shell", "Shell to use", cxxopts::value<std::string>())("test", "Headless test mode (no window, no config)")("ipc", "Enable debug IPC socket")("font", "Font path (test mode)", cxxopts::value<std::string>())("emoji-font", "Emoji font path (test mode)", cxxopts::value<std::string>())("fallback-font", "Additional fallback font path (test mode)", cxxopts::value<std::string>())("cols", "Terminal columns (test mode)", cxxopts::value<int>()->default_value("80"))("rows", "Terminal rows (test mode)", cxxopts::value<int>()->default_value("24"))("font-size", "Font size (test mode)", cxxopts::value<float>()->default_value("16"))("h,help", "Print usage");
     opts.allow_unrecognised_options();
 
     cxxopts::ParseResult result;
     try {
         result = opts.parse(argc, argv);
-    } catch (const cxxopts::exceptions::exception& e) {
+    } catch (const cxxopts::exceptions::exception &e) {
         fprintf(stderr, "%s\n", e.what());
         fprintf(stderr, "%s\n", opts.help().c_str());
         return 2;
@@ -73,10 +62,14 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    bool testMode = result.count("test") > 0;
+    bool testMode          = result.count("test") > 0;
     uint32_t platformFlags = PlatformDawn::FlagNone;
-    if (testMode) platformFlags |= PlatformDawn::FlagHeadless;
-    if (result.count("ipc")) platformFlags |= PlatformDawn::FlagIPC;
+    if (testMode) {
+        platformFlags |= PlatformDawn::FlagHeadless;
+    }
+    if (result.count("ipc")) {
+        platformFlags |= PlatformDawn::FlagIPC;
+    }
 
     // Configure logging before anything else so no messages slip through at wrong level.
     static constexpr spdlog::level::level_enum kLevelMap[] = {
@@ -88,32 +81,52 @@ int main(int argc, char **argv)
         spdlog::level::critical, // 5
         spdlog::level::off,      // 6
     };
-    static auto parseSpdLevel = [](const std::string& s) -> spdlog::level::level_enum {
-        if (s == "trace" || s == "verbose") return spdlog::level::trace;
-        if (s == "debug")                   return spdlog::level::debug;
-        if (s == "info")                    return spdlog::level::info;
-        if (s == "warn" || s == "warning")  return spdlog::level::warn;
-        if (s == "error" || s == "err")     return spdlog::level::err;
-        if (s == "critical" || s == "fatal")return spdlog::level::critical;
-        if (s == "off" || s == "silent")    return spdlog::level::off;
+    static auto parseSpdLevel = [](const std::string &s) -> spdlog::level::level_enum
+    {
+        if (s == "trace" || s == "verbose") {
+            return spdlog::level::trace;
+        }
+        if (s == "debug") {
+            return spdlog::level::debug;
+        }
+        if (s == "info") {
+            return spdlog::level::info;
+        }
+        if (s == "warn" || s == "warning") {
+            return spdlog::level::warn;
+        }
+        if (s == "error" || s == "err") {
+            return spdlog::level::err;
+        }
+        if (s == "critical" || s == "fatal") {
+            return spdlog::level::critical;
+        }
+        if (s == "off" || s == "silent") {
+            return spdlog::level::off;
+        }
         return spdlog::level::err;
     };
 
-    int logLevel = 4; // Error
+    int logLevel  = 4; // Error
     int verbosity = static_cast<int>(result.count("verbose"));
-    for (int i = 0; i < verbosity; i++)
-        if (logLevel > 0) --logLevel;
+    for (int i = 0; i < verbosity; i++) {
+        if (logLevel > 0) {
+            --logLevel;
+        }
+    }
     const auto globalLevel = kLevelMap[logLevel];
 
-    static const char* kSubsystems[] = { "script", "render", "terminal", "input", "font", nullptr };
+    static const char *kSubsystems[] = { "script", "render", "terminal", "input", "font", nullptr };
 
     std::vector<spdlog::sink_ptr> sharedSinks;
     try {
         sharedSinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>("/tmp/mb.log", true));
-    } catch (...) {}
+    } catch (...) {
+    }
     sharedSinks.push_back(std::make_shared<spdlog::sinks::stderr_color_sink_mt>());
 
-    auto makeLogger = [&](const char* name, spdlog::level::level_enum lvl) {
+    auto makeLogger = [&](const char *name, spdlog::level::level_enum lvl)
+    {
         auto l = std::make_shared<spdlog::logger>(name, sharedSinks.begin(), sharedSinks.end());
         l->set_level(lvl);
         l->flush_on(spdlog::level::trace);
@@ -123,8 +136,9 @@ int main(int argc, char **argv)
 
     spdlog::set_level(globalLevel);
     spdlog::set_default_logger(makeLogger("mb", globalLevel));
-    for (int i = 0; kSubsystems[i]; ++i)
+    for (int i = 0; kSubsystems[i]; ++i) {
         makeLogger(kSubsystems[i], globalLevel);
+    }
     makeLogger("js", globalLevel < spdlog::level::info ? globalLevel : spdlog::level::info);
 
     if (result.count("log")) {
@@ -133,13 +147,16 @@ int main(int argc, char **argv)
         std::string token;
         while (std::getline(ss, token, ',')) {
             auto eq = token.find('=');
-            if (eq == std::string::npos) continue;
+            if (eq == std::string::npos) {
+                continue;
+            }
             std::string name  = token.substr(0, eq);
             std::string level = token.substr(eq + 1);
-            if (auto logger = spdlog::get(name))
+            if (auto logger = spdlog::get(name)) {
                 logger->set_level(parseSpdLevel(level));
-            else
+            } else {
                 fprintf(stderr, "warning: unknown log subsystem '%s'\n", name.c_str());
+            }
         }
     }
 
@@ -151,24 +168,24 @@ int main(int argc, char **argv)
 
     if (testMode) {
         platform->setTestConfig(
-            result.count("font") ? result["font"].as<std::string>() : std::string{},
+            result.count("font") ? result["font"].as<std::string>() : std::string {},
             result["cols"].as<int>(),
             result["rows"].as<int>(),
             result["font-size"].as<float>(),
-            result.count("emoji-font") ? result["emoji-font"].as<std::string>() : std::string{},
-            result.count("fallback-font") ? result["fallback-font"].as<std::string>() : std::string{});
+            result.count("emoji-font") ? result["emoji-font"].as<std::string>() : std::string {},
+            result.count("fallback-font") ? result["fallback-font"].as<std::string>() : std::string {});
     }
 
     TerminalOptions options;
     if (!testMode) {
-        Config config = loadConfig();
-        options.font = config.font;
-        options.fontSize = config.font_size;
-        options.boldStrength = config.bold_strength;
-        options.scrollbackLines = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
-        options.tabBar = config.tab_bar;
-        options.keybindings = config.keybindings;
-        options.mousebindings = config.mousebindings;
+        Config config                 = loadConfig();
+        options.font                  = config.font;
+        options.fontSize              = config.font_size;
+        options.boldStrength          = config.bold_strength;
+        options.scrollbackLines       = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
+        options.tabBar                = config.tab_bar;
+        options.keybindings           = config.keybindings;
+        options.mousebindings         = config.mousebindings;
         options.dividerColor          = config.divider_color;
         options.dividerWidth          = config.divider_width;
         options.inactivePaneTint      = config.inactive_pane_tint;
@@ -195,8 +212,9 @@ int main(int argc, char **argv)
 
     options.shell = defaultShell(options.user);
 
-    if (result.count("shell"))
+    if (result.count("shell")) {
         options.shell = result["shell"].as<std::string>();
+    }
 
     if (platformFlags & (PlatformDawn::FlagHeadless | PlatformDawn::FlagIPC)) {
         signal(SIGTERM, cleanupSocketAndExit);

@@ -5,14 +5,14 @@ namespace Action {
 ListenerId Dispatcher::addListener(TypeIndex type, Listener fn)
 {
     ListenerId id = nextId_++;
-    listeners_.push_back({id, type, false, std::move(fn)});
+    listeners_.push_back({ id, type, false, std::move(fn) });
     return id;
 }
 
 ListenerId Dispatcher::addListener(Listener fn)
 {
     ListenerId id = nextId_++;
-    listeners_.push_back({id, {}, true, std::move(fn)});
+    listeners_.push_back({ id, {}, true, std::move(fn) });
     return id;
 }
 
@@ -26,9 +26,9 @@ void Dispatcher::removeListener(ListenerId id)
     }
 }
 
-void Dispatcher::notify(TypeIndex type, const Any& action) const
+void Dispatcher::notify(TypeIndex type, const Any &action) const
 {
-    for (const auto& entry : listeners_) {
+    for (const auto &entry : listeners_) {
         if (entry.allTypes || entry.type == type) {
             entry.fn(type, action);
         }

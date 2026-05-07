@@ -1,27 +1,34 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
 #include "Utils.h"
-#include <cstring>
 #include <cstdio>
+#include <cstring>
+#include <doctest/doctest.h>
 #include <unistd.h>
 
 // Helper: TestTerminal with cell pixel size callbacks for kitty graphics
-struct GraphicsTerminal : TestTerminal {
+struct GraphicsTerminal : TestTerminal
+{
     GraphicsTerminal(int cols = 80, int rows = 24)
         : TestTerminal(cols, rows)
     {
-        auto& cbs = term.callbacks();
-        cbs.cellPixelWidth  = []() -> float { return 10.0f; };
-        cbs.cellPixelHeight = []() -> float { return 20.0f; };
+        auto &cbs          = term.callbacks();
+        cbs.cellPixelWidth = []() -> float
+        {
+            return 10.0f;
+        };
+        cbs.cellPixelHeight = []() -> float
+        {
+            return 20.0f;
+        };
     }
 
-    void apc(const std::string& s)
+    void apc(const std::string &s)
     {
         feed("\x1b_" + s + "\x1b\\");
     }
 
     // Send a kitty graphics command with optional base64 payload
-    void gfx(const std::string& params, const std::vector<uint8_t>& payload = {})
+    void gfx(const std::string &params, const std::vector<uint8_t> &payload = {})
     {
         std::string cmd = "\x1b_G" + params;
         if (!payload.empty()) {
@@ -37,12 +44,15 @@ struct GraphicsTerminal : TestTerminal {
     {
         std::vector<uint8_t> data(static_cast<size_t>(w) * h * 4);
         for (size_t i = 0; i < data.size(); i += 4) {
-            data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = a;
+            data[i]     = r;
+            data[i + 1] = g;
+            data[i + 2] = b;
+            data[i + 3] = a;
         }
         return data;
     }
 
-    const CellExtra* extra(int col, int row) const
+    const CellExtra *extra(int col, int row) const
     {
         return term.grid().getExtra(col, row);
     }
@@ -78,9 +88,9 @@ TEST_CASE("kitty graphics: transmit+display places image in grid")
     t.gfx("a=T,i=5,f=32,s=10,v=20,q=2", px);
 
     // Image should be in registry
-    auto& reg = t.term.imageRegistry();
+    auto &reg = t.term.imageRegistry();
     REQUIRE(reg.count(5));
-    auto& img = *reg.at(5);
+    auto &img = *reg.at(5);
     CHECK(img.pixelWidth == 10);
     CHECK(img.pixelHeight == 20);
     CHECK(img.id == 5);
@@ -90,7 +100,7 @@ TEST_CASE("kitty graphics: transmit+display places image in grid")
     CHECK(img.cellHeight == 1);
 
     // CellExtra should reference the image
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     REQUIRE(ex);
     CHECK(ex->imageId == 5);
 }
@@ -102,7 +112,7 @@ TEST_CASE("kitty graphics: transmit+display calculates cell dimensions from pixe
     auto px = GraphicsTerminal::solidRGBA(25, 45, 0, 0, 255);
     t.gfx("a=T,i=1,f=32,s=25,v=45,q=2", px);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.cellWidth == 3);
     CHECK(img.cellHeight == 3);
 }
@@ -113,7 +123,7 @@ TEST_CASE("kitty graphics: explicit c= and r= override calculated dimensions")
     auto px = GraphicsTerminal::solidRGBA(10, 10, 128, 128, 128);
     t.gfx("a=T,i=1,f=32,s=10,v=10,c=5,r=3,q=2", px);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.cellWidth == 5);
     CHECK(img.cellHeight == 3);
 }
@@ -128,7 +138,7 @@ TEST_CASE("kitty graphics: transmit-only does not place in grid")
     CHECK(t.term.imageRegistry().count(1));
 
     // But no cell extras placed (cursor didn't move)
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     CHECK((!ex || ex->imageId == 0));
 }
 
@@ -140,7 +150,7 @@ TEST_CASE("kitty graphics: auto-assign ID when i=0")
     auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
     t.gfx("a=t,f=32,s=1,v=1,q=2", px);
 
-    auto& reg = t.term.imageRegistry();
+    auto &reg = t.term.imageRegistry();
     CHECK(reg.size() == 1);
     // Should have an auto-assigned ID > 0
     CHECK(reg.begin()->second->id > 0);
@@ -151,10 +161,10 @@ TEST_CASE("kitty graphics: auto-assign ID when i=0")
 TEST_CASE("kitty graphics: RGB24 format converted to RGBA")
 {
     GraphicsTerminal t;
-    std::vector<uint8_t> rgb = {255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128};
+    std::vector<uint8_t> rgb = { 255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128 };
     t.gfx("a=t,i=1,f=24,s=2,v=2,q=2", rgb);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.pixelWidth == 2);
     CHECK(img.pixelHeight == 2);
     // First pixel: R=255, G=0, B=0, A=255
@@ -169,11 +179,11 @@ TEST_CASE("kitty graphics: RGB24 format converted to RGBA")
 TEST_CASE("kitty graphics: chunked transfer reassembles correctly")
 {
     GraphicsTerminal t;
-    auto px = GraphicsTerminal::solidRGBA(2, 2, 200, 100, 50);
+    auto px         = GraphicsTerminal::solidRGBA(2, 2, 200, 100, 50);
     std::string b64 = base64::encode(px.data(), px.size());
 
     // Split into two chunks
-    size_t half = b64.size() / 2;
+    size_t half        = b64.size() / 2;
     std::string chunk1 = b64.substr(0, half);
     std::string chunk2 = b64.substr(half);
 
@@ -184,7 +194,7 @@ TEST_CASE("kitty graphics: chunked transfer reassembles correctly")
     // Second chunk with m=0
     t.feed("\x1b_Gm=0;" + chunk2 + "\x1b\\");
     REQUIRE(t.term.imageRegistry().count(7));
-    auto& img = *t.term.imageRegistry().at(7);
+    auto &img = *t.term.imageRegistry().at(7);
     CHECK(img.pixelWidth == 2);
     CHECK(img.pixelHeight == 2);
 }
@@ -197,17 +207,17 @@ TEST_CASE("kitty graphics: chunked transfer preserves I= image number")
     // image with imageNumber=0 and causing every later a=a to resolve to no
     // image — animations loaded but never started.
     GraphicsTerminal t;
-    auto px = GraphicsTerminal::solidRGBA(2, 2, 10, 20, 30);
+    auto px         = GraphicsTerminal::solidRGBA(2, 2, 10, 20, 30);
     std::string b64 = base64::encode(px.data(), px.size());
-    size_t half = b64.size() / 2;
+    size_t half     = b64.size() / 2;
 
     // Root frame chunked over two APCs, identified only by I=
     t.feed("\x1b_Ga=T,I=1061220708,f=32,s=2,v=2,m=1,q=2;" + b64.substr(0, half) + "\x1b\\");
     t.feed("\x1b_Gm=0;" + b64.substr(half) + "\x1b\\");
 
-    auto& reg = t.term.imageRegistry();
+    auto &reg = t.term.imageRegistry();
     REQUIRE(reg.size() == 1);
-    auto& img = *reg.begin()->second;
+    auto &img = *reg.begin()->second;
     CHECK(img.imageNumber == 1061220708);
     // findImageByNumber must be able to resolve back to the stored image,
     // which is how a=f / a=a find their target when i= is not set.
@@ -265,7 +275,7 @@ TEST_CASE("kitty graphics: RIS clears image registry")
     t.gfx("a=t,i=2,f=32,s=1,v=1,q=2", px);
     REQUIRE(t.term.imageRegistry().size() == 2);
 
-    t.esc("c");  // RIS
+    t.esc("c"); // RIS
 
     CHECK(t.term.imageRegistry().empty());
 
@@ -285,7 +295,7 @@ TEST_CASE("kitty graphics: delete animation frames")
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.extraFrames.size() == 2);
 
     // Delete frames
@@ -306,7 +316,7 @@ TEST_CASE("kitty graphics: put displays previously transmitted image")
     t.gfx("a=t,i=3,f=32,s=10,v=10,q=2", px); // transmit only
 
     // No placement yet
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     CHECK((!ex || ex->imageId == 0));
 
     // Put
@@ -381,7 +391,7 @@ TEST_CASE("kitty graphics: frame load adds extra frames")
     auto frame2 = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=50,q=2", frame2);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.extraFrames.size() == 2);
     CHECK(img.extraFrames[0].gap == 100);
     CHECK(img.extraFrames[1].gap == 50);
@@ -396,7 +406,7 @@ TEST_CASE("kitty graphics: frame load with i=0 uses last image")
     auto frame = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     t.gfx("a=f,f=32,s=2,v=2,z=80,q=2", frame); // no i=
 
-    auto& img = *t.term.imageRegistry().at(10);
+    auto &img = *t.term.imageRegistry().at(10);
     CHECK(img.extraFrames.size() == 1);
 }
 
@@ -409,7 +419,7 @@ TEST_CASE("kitty graphics: animation control starts/stops animation")
     auto frame = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.animationState == TerminalEmulator::ImageEntry::Stopped);
 
     // Start animation (s=3 → Running)
@@ -438,7 +448,7 @@ TEST_CASE("kitty graphics: tickAnimations advances frame")
     // Set root frame gap to 10ms and start animation
     t.gfx("a=a,i=1,r=1,z=10"); // set gap for frame 1 (root) to 10ms
     t.gfx("a=a,i=1,s=3");      // start running
-    const auto& img = *t.term.imageRegistry().at(1);
+    const auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.currentFrameIndex == 0);
 
     // Force frameShownAt into the past to avoid wall-clock timing dependency
@@ -464,27 +474,27 @@ TEST_CASE("kitty graphics: partial frame composites onto c=1 root frame")
     t.gfx("a=T,i=1,f=32,s=4,v=4,q=2", base);
 
     // 2x2 green patch at offset (1,1), composited onto the root frame (c=1)
-    auto patch = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
+    auto patch      = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     std::string b64 = base64::encode(patch.data(), patch.size());
     t.feed("\x1b_Ga=f,i=1,f=32,s=2,v=2,c=1,x=1,y=1,z=40,q=2;" + b64 + "\x1b\\");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 1);
 
-    auto& frame = img.extraFrames[0];
+    auto &frame = img.extraFrames[0];
     // Pixel at (0,0) should be red (inherited from root)
     CHECK(frame.rgba[0] == 255); // R
     CHECK(frame.rgba[1] == 0);   // G
 
     // Pixel at (1,1) should be green (from patch)
     size_t idx = (1 * 4 + 1) * 4;
-    CHECK(frame.rgba[idx] == 0);     // R
+    CHECK(frame.rgba[idx] == 0);       // R
     CHECK(frame.rgba[idx + 1] == 255); // G
 
     // Pixel at (3,3) should be red (untouched)
     size_t idx2 = (3 * 4 + 3) * 4;
-    CHECK(frame.rgba[idx2] == 255);    // R
-    CHECK(frame.rgba[idx2 + 1] == 0);  // G
+    CHECK(frame.rgba[idx2] == 255);   // R
+    CHECK(frame.rgba[idx2 + 1] == 0); // G
 }
 
 TEST_CASE("kitty graphics: partial frame with c=0 treats base as transparent")
@@ -496,14 +506,14 @@ TEST_CASE("kitty graphics: partial frame with c=0 treats base as transparent")
     auto base = GraphicsTerminal::solidRGBA(4, 4, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=4,v=4,q=2", base);
 
-    auto patch = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
+    auto patch      = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     std::string b64 = base64::encode(patch.data(), patch.size());
     // No c= key: standalone frame
     t.feed("\x1b_Ga=f,i=1,f=32,s=2,v=2,x=1,y=1,z=40,q=2;" + b64 + "\x1b\\");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 1);
-    auto& frame = img.extraFrames[0];
+    auto &frame = img.extraFrames[0];
 
     // Pixel at (0,0) should be transparent black (no base) — not red.
     CHECK(frame.rgba[0] == 0); // R
@@ -529,13 +539,13 @@ TEST_CASE("kitty graphics: a=f C=1 overwrites base instead of alpha-blending")
     t.gfx("a=T,i=1,f=32,s=2,v=2,q=2", base);
 
     // 2x2 half-transparent green patch, composed onto root (c=1) with C=1 (overwrite)
-    auto patch = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0, 128);
+    auto patch      = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0, 128);
     std::string b64 = base64::encode(patch.data(), patch.size());
     t.feed("\x1b_Ga=f,i=1,f=32,s=2,v=2,c=1,C=1,z=40,q=2;" + b64 + "\x1b\\");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 1);
-    auto& frame = img.extraFrames[0];
+    auto &frame = img.extraFrames[0];
 
     // With overwrite (C=1), every pixel must be the source verbatim
     // (0, 255, 0, 128) — not blended with the white base.
@@ -550,10 +560,10 @@ TEST_CASE("kitty graphics: a=f C=1 overwrites base instead of alpha-blending")
     // Contrast: default (C=0, alpha-blend) path composed onto the same root
     // should pick up colour from the white base, not be verbatim source.
     t.feed("\x1b_Ga=f,i=1,f=32,s=2,v=2,c=1,z=40,q=2;" + b64 + "\x1b\\");
-    auto& blendedFrame = img.extraFrames[1];
-    CHECK(blendedFrame.rgba[0] > 0 );   // R picked up from white
+    auto &blendedFrame = img.extraFrames[1];
+    CHECK(blendedFrame.rgba[0] > 0); // R picked up from white
     CHECK(blendedFrame.rgba[0] < 255);
-    CHECK(blendedFrame.rgba[2] > 0 );   // B picked up from white
+    CHECK(blendedFrame.rgba[2] > 0); // B picked up from white
     CHECK(blendedFrame.rgba[2] < 255);
 }
 
@@ -565,11 +575,11 @@ TEST_CASE("kitty graphics: a=f with r=1 edits the root frame in place")
     GraphicsTerminal t;
     auto rootPx = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0); // red
     t.gfx("a=T,i=1,f=32,s=2,v=2,q=2", rootPx);
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.extraFrames.empty());
 
     // Edit root (r=1) with a 2x2 opaque blue patch, overwrite
-    auto patch = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
+    auto patch      = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
     std::string b64 = base64::encode(patch.data(), patch.size());
     t.feed("\x1b_Ga=f,i=1,f=32,s=2,v=2,r=1,C=1,q=2;" + b64 + "\x1b\\");
 
@@ -591,11 +601,11 @@ TEST_CASE("kitty graphics: a=f with r=N edits an existing extra frame")
     auto frame3 = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", frame3);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 2);
 
     // Edit frame 2 (extraFrames[0] — the red one) with a blue overwrite
-    auto patch = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
+    auto patch      = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
     std::string b64 = base64::encode(patch.data(), patch.size());
     t.feed("\x1b_Ga=f,i=1,f=32,s=2,v=2,r=2,C=1,z=80,q=2;" + b64 + "\x1b\\");
 
@@ -620,14 +630,14 @@ TEST_CASE("kitty graphics: a=f Y= fills base with packed RRGGBBAA")
 
     // 1x1 opaque green patch pasted at (2, 2); base filled with magenta/0xff
     // packed as 0xFF00FFFF (R=255, G=0, B=255, A=255).
-    auto patch = GraphicsTerminal::solidRGBA(1, 1, 0, 255, 0);
+    auto patch      = GraphicsTerminal::solidRGBA(1, 1, 0, 255, 0);
     std::string b64 = base64::encode(patch.data(), patch.size());
     // Y=4278255615  == 0xFF00FFFF
     t.feed("\x1b_Ga=f,i=1,f=32,s=1,v=1,x=2,y=2,Y=4278255615,q=2;" + b64 + "\x1b\\");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 1);
-    auto& f = img.extraFrames[0];
+    auto &f = img.extraFrames[0];
 
     // Pixel at (0,0): untouched base → magenta
     CHECK(f.rgba[0] == 255); // R
@@ -649,9 +659,9 @@ TEST_CASE("kitty graphics: chunked transfer preserves t= transmission type")
     // payload as direct base64.
     GraphicsTerminal t;
     // Write raw RGBA pixels to a temp file.
-    auto px = GraphicsTerminal::solidRGBA(2, 2, 77, 88, 99, 255);
+    auto px     = GraphicsTerminal::solidRGBA(2, 2, 77, 88, 99, 255);
     char tmpl[] = "/tmp/mb_kitty_chunk_t_XXXXXX";
-    int fd = mkstemp(tmpl);
+    int fd      = mkstemp(tmpl);
     REQUIRE(fd >= 0);
     auto written = write(fd, px.data(), px.size());
     REQUIRE(written == static_cast<ssize_t>(px.size()));
@@ -659,14 +669,15 @@ TEST_CASE("kitty graphics: chunked transfer preserves t= transmission type")
 
     // Send the filename base64-encoded, split across two chunks.
     std::string b64 = base64::encode(
-        reinterpret_cast<const uint8_t*>(tmpl), std::strlen(tmpl));
+        reinterpret_cast<const uint8_t *>(tmpl),
+        std::strlen(tmpl));
     size_t half = b64.size() / 2;
     t.feed("\x1b_Ga=T,i=9,f=32,s=2,v=2,t=f,m=1,q=2;" + b64.substr(0, half) + "\x1b\\");
     CHECK(t.term.imageRegistry().empty()); // not yet complete
     t.feed("\x1b_Gm=0;" + b64.substr(half) + "\x1b\\");
 
     REQUIRE(t.term.imageRegistry().count(9));
-    auto& img = *t.term.imageRegistry().at(9);
+    auto &img = *t.term.imageRegistry().at(9);
     CHECK(img.pixelWidth == 2);
     CHECK(img.pixelHeight == 2);
     // Confirm the file was actually read — first pixel should be 77,88,99,255.
@@ -686,9 +697,9 @@ TEST_CASE("kitty graphics: image number stores and retrieves")
     auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
     t.gfx("a=t,I=42,f=32,s=1,v=1,q=2", px);
 
-    auto& reg = t.term.imageRegistry();
+    auto &reg = t.term.imageRegistry();
     CHECK(reg.size() == 1);
-    auto& img = *reg.begin()->second;
+    auto &img = *reg.begin()->second;
     CHECK(img.imageNumber == 42);
 }
 
@@ -704,7 +715,7 @@ TEST_CASE("kitty graphics: put by image number")
     t.gfx("a=p,I=99");
     CHECK(t.output().find("OK") != std::string::npos);
 
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     REQUIRE(ex);
     CHECK(ex->imageId == imgId);
 }
@@ -716,12 +727,12 @@ TEST_CASE("kitty graphics: image number lookup returns most recent")
     t.gfx("a=t,I=7,f=32,s=1,v=1,q=2", px); // first
     t.gfx("a=t,I=7,f=32,s=1,v=1,q=2", px); // second (same number, different auto ID)
 
-    auto& reg = t.term.imageRegistry();
+    auto &reg = t.term.imageRegistry();
     CHECK(reg.size() == 2);
 
     // Both have I=7; findImageByNumber should return the higher ID (most recent)
     uint32_t maxId = 0;
-    for (auto& [id, img] : reg) {
+    for (auto &[id, img] : reg) {
         CHECK(img->imageNumber == 7);
         maxId = std::max(maxId, id);
     }
@@ -759,9 +770,9 @@ TEST_CASE("kitty graphics: animation frame load by image number")
     auto frame = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
     t.gfx("a=f,I=50,f=32,s=2,v=2,z=80,q=2", frame);
 
-    auto& reg = t.term.imageRegistry();
+    auto &reg = t.term.imageRegistry();
     CHECK(reg.size() == 1);
-    auto& img = *reg.begin()->second;
+    auto &img = *reg.begin()->second;
     CHECK(img.extraFrames.size() == 1);
 }
 
@@ -773,7 +784,7 @@ TEST_CASE("kitty graphics: crop parameters stored on image")
     auto px = GraphicsTerminal::solidRGBA(10, 10, 255, 0, 0);
     t.gfx("a=t,i=1,f=32,s=10,v=10,x=2,y=3,w=5,h=4,q=2", px);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.cropX == 2);
     CHECK(img.cropY == 3);
     CHECK(img.cropW == 5);
@@ -786,7 +797,7 @@ TEST_CASE("kitty graphics: no crop when w=0 h=0")
     auto px = GraphicsTerminal::solidRGBA(10, 10, 255, 0, 0);
     t.gfx("a=t,i=1,f=32,s=10,v=10,q=2", px);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.cropW == 0);
     CHECK(img.cropH == 0);
 }
@@ -817,12 +828,12 @@ TEST_CASE("kitty graphics: two images coexist in grid")
     CHECK(t.term.imageRegistry().count(2));
 
     // First image at col 0, row 0
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     REQUIRE(ex0);
     CHECK(ex0->imageId == 1);
 
     // Second image at col 0, row 1
-    const CellExtra* ex1 = t.extra(0, 1);
+    const CellExtra *ex1 = t.extra(0, 1);
     REQUIRE(ex1);
     CHECK(ex1->imageId == 2);
 }
@@ -839,8 +850,8 @@ TEST_CASE("kitty graphics: delete visible preserves non-visible image")
     CHECK(t.term.imageRegistry().size() == 2);
 
     // Both should have grid placements
-    const CellExtra* ex0 = t.extra(0, 0);
-    const CellExtra* ex1 = t.extra(0, 1);
+    const CellExtra *ex0 = t.extra(0, 0);
+    const CellExtra *ex1 = t.extra(0, 1);
     REQUIRE(ex0);
     REQUIRE(ex1);
     CHECK(ex0->imageId == 1);
@@ -871,7 +882,7 @@ TEST_CASE("kitty graphics: image persists through column resize")
 
     // Image should be in registry and grid
     CHECK(t.term.imageRegistry().count(1));
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     REQUIRE(ex);
     CHECK(ex->imageId == 1);
 
@@ -891,7 +902,7 @@ TEST_CASE("kitty graphics: image cell extras survive column resize")
     // Symptom: resizing the window made the image vanish entirely.
     GraphicsTerminal t(80, 24);
     auto px = GraphicsTerminal::solidRGBA(10, 20, 0, 0, 255);
-    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);  // 1x1 cells at 10x20 px
+    t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px); // 1x1 cells at 10x20 px
 
     // Image extras land at column 0 of the cursor row (and successive rows
     // for multi-row images). With cellPixelHeight=20, this image is 1 row.
@@ -908,8 +919,11 @@ TEST_CASE("kitty graphics: image cell extras survive column resize")
     bool found = false;
     for (int r = 0; r < t.term.height() && !found; ++r) {
         for (int c = 0; c < t.term.width(); ++c) {
-            const CellExtra* e = t.extra(c, r);
-            if (e && e->imageId == 1) { found = true; break; }
+            const CellExtra *e = t.extra(c, r);
+            if (e && e->imageId == 1) {
+                found = true;
+                break;
+            }
         }
     }
     CHECK(found);
@@ -925,7 +939,7 @@ TEST_CASE("kitty graphics: put with placement ID creates separate placement")
 
     // Place at row 0
     t.gfx("a=p,i=1,p=1,q=2");
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     REQUIRE(ex0);
     CHECK(ex0->imageId == 1);
     CHECK(ex0->imagePlacementId == 1);
@@ -933,19 +947,19 @@ TEST_CASE("kitty graphics: put with placement ID creates separate placement")
     // Move cursor down and place again with different placement ID
     t.feed("\r\n\n");
     t.gfx("a=p,i=1,p=2,q=2");
-    const CellExtra* ex2 = t.extra(0, 2);
+    const CellExtra *ex2 = t.extra(0, 2);
     REQUIRE(ex2);
     CHECK(ex2->imageId == 1);
     CHECK(ex2->imagePlacementId == 2);
 
     // First placement should still be there
-    const CellExtra* ex0b = t.extra(0, 0);
+    const CellExtra *ex0b = t.extra(0, 0);
     REQUIRE(ex0b);
     CHECK(ex0b->imageId == 1);
     CHECK(ex0b->imagePlacementId == 1);
 
     // Image has two placements
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.placements.size() == 2);
     CHECK(img.placements.count(1));
     CHECK(img.placements.count(2));
@@ -959,7 +973,7 @@ TEST_CASE("kitty graphics: put with same placement ID replaces old placement")
 
     // Place at row 0
     t.gfx("a=p,i=1,p=5,q=2");
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     REQUIRE(ex0);
     CHECK(ex0->imageId == 1);
 
@@ -968,11 +982,11 @@ TEST_CASE("kitty graphics: put with same placement ID replaces old placement")
     t.gfx("a=p,i=1,p=5,q=2");
 
     // Old position (row 0) should be cleared
-    const CellExtra* exOld = t.extra(0, 0);
+    const CellExtra *exOld = t.extra(0, 0);
     CHECK((!exOld || exOld->imageId == 0));
 
     // New position (row 3) should have the placement
-    const CellExtra* exNew = t.extra(0, 3);
+    const CellExtra *exNew = t.extra(0, 3);
     REQUIRE(exNew);
     CHECK(exNew->imageId == 1);
     CHECK(exNew->imagePlacementId == 5);
@@ -993,18 +1007,18 @@ TEST_CASE("kitty graphics: delete specific placement by ID")
     t.gfx("a=d,d=i,i=1,p=1");
 
     // Placement 1 cells should be gone
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     CHECK((!ex0 || ex0->imageId == 0));
 
     // Placement 2 cells should still exist
-    const CellExtra* ex2 = t.extra(0, 2);
+    const CellExtra *ex2 = t.extra(0, 2);
     REQUIRE(ex2);
     CHECK(ex2->imageId == 1);
     CHECK(ex2->imagePlacementId == 2);
 
     // Image still in registry (has remaining placement)
     CHECK(t.term.imageRegistry().count(1));
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.placements.size() == 1);
     CHECK(img.placements.count(2));
 }
@@ -1034,7 +1048,7 @@ TEST_CASE("kitty graphics: transmit+display stores placement ID in cells")
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,p=7,f=32,s=10,v=20,q=2", px);
 
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     REQUIRE(ex);
     CHECK(ex->imageId == 1);
     CHECK(ex->imagePlacementId == 7);
@@ -1049,9 +1063,9 @@ TEST_CASE("kitty graphics: placement stores per-placement display params")
     // Place with custom cell dimensions
     t.gfx("a=p,i=1,p=1,c=4,r=3,q=2");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
-    auto& pl = img.placements.at(1);
+    auto &pl = img.placements.at(1);
     CHECK(pl.cellWidth == 4);
     CHECK(pl.cellHeight == 3);
 }
@@ -1065,7 +1079,7 @@ TEST_CASE("kitty graphics: delete at cursor position (d=c)")
     // Place image at (0, 0)
     t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
 
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     REQUIRE(ex);
     CHECK(ex->imageId == 1);
 
@@ -1100,7 +1114,7 @@ TEST_CASE("kitty graphics: delete at cursor misses non-intersecting image")
     t.gfx("a=d,d=c");
 
     // Image should still be there
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     REQUIRE(ex);
     CHECK(ex->imageId == 1);
 }
@@ -1116,7 +1130,7 @@ TEST_CASE("kitty graphics: delete by cell position (d=p)")
     t.gfx("a=d,d=p,x=2,y=1");
 
     // Image cells should be cleared
-    const CellExtra* ex = t.extra(0, 0);
+    const CellExtra *ex = t.extra(0, 0);
     CHECK((!ex || ex->imageId == 0));
 }
 
@@ -1127,7 +1141,7 @@ TEST_CASE("kitty graphics: delete by column (d=x)")
     t.gfx("a=T,i=1,f=32,s=20,v=40,q=2", px);
 
     // Place second image at col 10
-    t.feed("\x1b[1;11H"); // row 1 col 11 (1-based)
+    t.feed("\x1b[1;11H");                                      // row 1 col 11 (1-based)
     auto px2 = GraphicsTerminal::solidRGBA(10, 20, 0, 255, 0); // 1x1 cells
     t.gfx("a=T,i=2,f=32,s=10,v=20,q=2", px2);
     CHECK(t.term.imageRegistry().size() == 2);
@@ -1135,11 +1149,11 @@ TEST_CASE("kitty graphics: delete by column (d=x)")
     // Delete column 1 (1-based = col 0) — should hit image 1 only
     t.gfx("a=d,d=x,x=1");
 
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     CHECK((!ex0 || ex0->imageId == 0));
 
     // Image 2 at col 10 should survive
-    const CellExtra* ex10 = t.extra(10, 0);
+    const CellExtra *ex10 = t.extra(10, 0);
     REQUIRE(ex10);
     CHECK(ex10->imageId == 2);
 }
@@ -1156,10 +1170,10 @@ TEST_CASE("kitty graphics: delete by row (d=y)")
     // Delete row 1 (1-based = row 0) — should hit image 1 only
     t.gfx("a=d,d=y,y=1");
 
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     CHECK((!ex0 || ex0->imageId == 0));
 
-    const CellExtra* ex2 = t.extra(0, 2);
+    const CellExtra *ex2 = t.extra(0, 2);
     REQUIRE(ex2);
     CHECK(ex2->imageId == 2);
 }
@@ -1193,7 +1207,7 @@ TEST_CASE("kitty graphics: animation control c= sets current frame")
     auto f2 = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
     t.gfx("a=f,i=1,f=32,s=2,v=2,z=40,q=2", f2);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     CHECK(img.currentFrameIndex == 0);
 
     // Switch to frame 2 (1-based)
@@ -1205,7 +1219,7 @@ TEST_CASE("kitty graphics: animation control c= sets current frame")
     CHECK(img.currentFrameIndex == 2);
 
     // Frame data should be blue (frame 3)
-    const auto& data = img.currentFrameRGBA();
+    const auto &data = img.currentFrameRGBA();
     CHECK(data[0] == 0);
     CHECK(data[2] == 255);
 }
@@ -1220,7 +1234,7 @@ TEST_CASE("kitty graphics: z-index stored on placement")
 
     t.gfx("a=p,i=1,p=1,z=-5,q=2");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
     CHECK(img.placements.at(1).zIndex == -5);
 }
@@ -1231,7 +1245,7 @@ TEST_CASE("kitty graphics: transmit+display stores z-index")
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,z=-1,q=2", px);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(0));
     CHECK(img.placements.at(0).zIndex == -1);
 }
@@ -1242,7 +1256,7 @@ TEST_CASE("kitty graphics: default z-index is 0")
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,q=2", px);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(0));
     CHECK(img.placements.at(0).zIndex == 0);
 }
@@ -1262,11 +1276,11 @@ TEST_CASE("kitty graphics: delete by z-index (d=z)")
     t.gfx("a=d,d=z,z=-1");
 
     // Placement 1 (z=-1) should be gone
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     CHECK((!ex0 || ex0->imageId == 0));
 
     // Placement 2 (z=5) should survive
-    const CellExtra* ex2 = t.extra(0, 2);
+    const CellExtra *ex2 = t.extra(0, 2);
     REQUIRE(ex2);
     CHECK(ex2->imageId == 1);
 }
@@ -1287,11 +1301,11 @@ TEST_CASE("kitty graphics: delete by position + z-index (d=q)")
     t.gfx("a=d,d=q,x=1,y=3,z=3");
 
     // Placement 2 should be gone
-    const CellExtra* ex2 = t.extra(0, 2);
+    const CellExtra *ex2 = t.extra(0, 2);
     CHECK((!ex2 || ex2->imageId == 0));
 
     // Placement 1 (z=-1) should still exist at row 0
-    const CellExtra* ex0 = t.extra(0, 0);
+    const CellExtra *ex0 = t.extra(0, 0);
     REQUIRE(ex0);
     CHECK(ex0->imageId == 1);
     CHECK(ex0->imagePlacementId == 1);
@@ -1308,7 +1322,7 @@ TEST_CASE("kitty graphics: frame composition copies rectangle between frames")
     auto frame2 = GraphicsTerminal::solidRGBA(4, 4, 0, 0, 255);
     t.gfx("a=f,i=1,f=32,s=4,v=4,z=40,q=2", frame2);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.extraFrames.size() == 1);
 
     // Compose: copy 2x2 from frame 1 (red) at src (0,0) to frame 2 (blue) at dst (1,1)
@@ -1318,14 +1332,14 @@ TEST_CASE("kitty graphics: frame composition copies rectangle between frames")
     CHECK(t.output().find("OK") != std::string::npos);
 
     // Frame 2 pixel at (0,0) should still be blue (untouched)
-    auto& f2 = img.extraFrames[0];
-    CHECK(f2.rgba[0] == 0);     // R
-    CHECK(f2.rgba[2] == 255);   // B
+    auto &f2 = img.extraFrames[0];
+    CHECK(f2.rgba[0] == 0);   // R
+    CHECK(f2.rgba[2] == 255); // B
 
     // Frame 2 pixel at (1,1) should now be red (copied from frame 1)
     size_t idx = (1 * 4 + 1) * 4;
-    CHECK(f2.rgba[idx] == 255);     // R
-    CHECK(f2.rgba[idx + 2] == 0);   // B
+    CHECK(f2.rgba[idx] == 255);   // R
+    CHECK(f2.rgba[idx + 2] == 0); // B
 }
 
 TEST_CASE("kitty graphics: frame composition alpha blends by default")
@@ -1349,8 +1363,8 @@ TEST_CASE("kitty graphics: frame composition alpha blends by default")
     CHECK(t.output().find("OK") != std::string::npos);
 
     // Frame 3 pixel (0,0): should be blended red over blue
-    auto& img = *t.term.imageRegistry().at(1);
-    auto& f3 = img.extraFrames[1];
+    auto &img = *t.term.imageRegistry().at(1);
+    auto &f3  = img.extraFrames[1];
     // Red channel: (255 * 128 + 0 * 127) / 255 ≈ 128
     CHECK(f3.rgba[0] > 100); // R should be significant
     // Blue channel: reduced from 255
@@ -1403,12 +1417,12 @@ TEST_CASE("kitty graphics: file transmission with S= and O= reads subrange")
 
     // Write a file with two 2x2 RGBA images back-to-back (32 bytes each)
     // First: red, Second: green
-    auto red = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    auto red   = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
     auto green = GraphicsTerminal::solidRGBA(2, 2, 0, 255, 0);
 
     std::string path = "/tmp/mb_test_subrange.bin";
     {
-        FILE* f = fopen(path.c_str(), "wb");
+        FILE *f = fopen(path.c_str(), "wb");
         REQUIRE(f);
         fwrite(red.data(), 1, red.size(), f);
         fwrite(green.data(), 1, green.size(), f);
@@ -1416,13 +1430,13 @@ TEST_CASE("kitty graphics: file transmission with S= and O= reads subrange")
     }
 
     // Transmit the green portion: offset=16 (skip red), size=16 (one 2x2 image)
-    std::string b64path = base64::encode(reinterpret_cast<const uint8_t*>(path.data()), path.size());
-    std::string esc = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,S=16,O=16;" + b64path + "\x1b\\";
+    std::string b64path = base64::encode(reinterpret_cast<const uint8_t *>(path.data()), path.size());
+    std::string esc     = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,S=16,O=16;" + b64path + "\x1b\\";
     t.feed(esc);
 
-    auto& reg = t.term.imageRegistry();
+    auto &reg = t.term.imageRegistry();
     REQUIRE(reg.count(1));
-    auto& img = *reg.at(1);
+    auto &img = *reg.at(1);
     CHECK(img.pixelWidth == 2);
     CHECK(img.pixelHeight == 2);
     // First pixel should be green (from offset 16)
@@ -1438,12 +1452,12 @@ TEST_CASE("kitty graphics: file transmission with O= only reads from offset to e
 {
     GraphicsTerminal t(40, 20);
 
-    auto red = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    auto red  = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
     auto blue = GraphicsTerminal::solidRGBA(2, 2, 0, 0, 255);
 
     std::string path = "/tmp/mb_test_offset.bin";
     {
-        FILE* f = fopen(path.c_str(), "wb");
+        FILE *f = fopen(path.c_str(), "wb");
         REQUIRE(f);
         fwrite(red.data(), 1, red.size(), f);
         fwrite(blue.data(), 1, blue.size(), f);
@@ -1451,11 +1465,11 @@ TEST_CASE("kitty graphics: file transmission with O= only reads from offset to e
     }
 
     // Transmit from offset 16 to end (no S=)
-    std::string b64path = base64::encode(reinterpret_cast<const uint8_t*>(path.data()), path.size());
-    std::string esc = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,O=16,q=2;" + b64path + "\x1b\\";
+    std::string b64path = base64::encode(reinterpret_cast<const uint8_t *>(path.data()), path.size());
+    std::string esc     = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,O=16,q=2;" + b64path + "\x1b\\";
     t.feed(esc);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     // Should be blue
     CHECK(img.rgba[0] == 0);
     CHECK(img.rgba[1] == 0);
@@ -1468,10 +1482,10 @@ TEST_CASE("kitty graphics: file transmission with out-of-range offset returns er
 {
     GraphicsTerminal t(40, 20);
 
-    auto px = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
+    auto px          = GraphicsTerminal::solidRGBA(2, 2, 255, 0, 0);
     std::string path = "/tmp/mb_test_oor.bin";
     {
-        FILE* f = fopen(path.c_str(), "wb");
+        FILE *f = fopen(path.c_str(), "wb");
         REQUIRE(f);
         fwrite(px.data(), 1, px.size(), f);
         fclose(f);
@@ -1479,8 +1493,8 @@ TEST_CASE("kitty graphics: file transmission with out-of-range offset returns er
 
     // Offset past end of file
     t.clearOutput();
-    std::string b64path = base64::encode(reinterpret_cast<const uint8_t*>(path.data()), path.size());
-    std::string esc = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,O=9999;" + b64path + "\x1b\\";
+    std::string b64path = base64::encode(reinterpret_cast<const uint8_t *>(path.data()), path.size());
+    std::string esc     = "\x1b_Ga=t,i=1,f=32,s=2,v=2,t=f,O=9999;" + b64path + "\x1b\\";
     t.feed(esc);
     CHECK(t.output().find("EINVAL") != std::string::npos);
     CHECK(t.term.imageRegistry().empty());
@@ -1496,9 +1510,9 @@ TEST_CASE("kitty graphics: sub-cell pixel offsets stored on placement")
 
     t.gfx("a=p,i=1,p=1,X=3,Y=5,q=2");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
-    auto& pl = img.placements.at(1);
+    auto &pl = img.placements.at(1);
     CHECK(pl.cellXOffset == 3);
     CHECK(pl.cellYOffset == 5);
 }
@@ -1509,9 +1523,9 @@ TEST_CASE("kitty graphics: transmit+display stores sub-cell offsets")
     auto px = GraphicsTerminal::solidRGBA(10, 20, 255, 0, 0);
     t.gfx("a=T,i=1,f=32,s=10,v=20,X=2,Y=4,q=2", px);
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(0));
-    auto& pl = img.placements.at(0);
+    auto &pl = img.placements.at(0);
     CHECK(pl.cellXOffset == 2);
     CHECK(pl.cellYOffset == 4);
 }
@@ -1525,9 +1539,9 @@ TEST_CASE("kitty graphics: placement with crop params")
     // Place with crop
     t.gfx("a=p,i=1,p=1,x=2,y=3,w=10,h=8,q=2");
 
-    auto& img = *t.term.imageRegistry().at(1);
+    auto &img = *t.term.imageRegistry().at(1);
     REQUIRE(img.placements.count(1));
-    auto& pl = img.placements.at(1);
+    auto &pl = img.placements.at(1);
     CHECK(pl.cropX == 2);
     CHECK(pl.cropY == 3);
     CHECK(pl.cropW == 10);

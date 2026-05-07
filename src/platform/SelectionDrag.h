@@ -12,13 +12,17 @@ class TerminalEmulator;
 // activeDrag_ pointer instead of the old selectionDrag* bools. Once a second
 // drag kind lands and forces extraction, this class will override
 // DragHandler::onMotion / onRelease.
-class SelectionDrag : public DragHandler {
+class SelectionDrag : public DragHandler
+{
 public:
-    SelectionDrag(double sx, double sy, MouseButton button, TerminalEmulator* term)
-        : DragHandler(sx, sy, button), term_(term) {}
+    SelectionDrag(double sx, double sy, MouseButton button, TerminalEmulator *term)
+        : DragHandler(sx, sy, button)
+        , term_(term)
+    {
+    }
 
-    TerminalEmulator* term() const { return term_; }
+    TerminalEmulator *term() const { return term_; }
 
 private:
-    TerminalEmulator* term_;
+    TerminalEmulator *term_;
 };

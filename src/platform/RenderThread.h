@@ -19,7 +19,8 @@ class Terminal;
 // stopped from ~PlatformDawn.
 class PlatformDawn;
 
-class RenderThread {
+class RenderThread
+{
     // mutex()/pending()/renderState() are coordination primitives, not
     // public API. PlatformDawn and InputController are the only legitimate
     // callers — they reach in through their own `platform_->renderThread_`
@@ -31,10 +32,10 @@ public:
     RenderThread();
     ~RenderThread();
 
-    RenderThread(const RenderThread&) = delete;
-    RenderThread& operator=(const RenderThread&) = delete;
+    RenderThread(const RenderThread &)            = delete;
+    RenderThread &operator=(const RenderThread &) = delete;
 
-    void setPlatform(PlatformDawn* p) { platform_ = p; }
+    void setPlatform(PlatformDawn *p) { platform_ = p; }
 
     // Lifecycle
     void start();
@@ -44,7 +45,7 @@ public:
     void wake();
 
     // Terminal exit queue
-    void enqueueTerminalExit(Terminal* t);
+    void enqueueTerminalExit(Terminal *t);
     void drainPendingExits();
 
     // Main-thread per-tick synchronization step.
@@ -59,10 +60,13 @@ public:
     // time has returned and released its local frameState_ references.
     // Incremented by the render thread at the end of each renderFrame via
     // notifyFrameCompleted(). Read by the main thread.
-    uint64_t completedFrames() const {
+    uint64_t completedFrames() const
+    {
         return completedFrames_.load(std::memory_order_acquire);
     }
-    void notifyFrameCompleted() {
+
+    void notifyFrameCompleted()
+    {
         completedFrames_.fetch_add(1, std::memory_order_release);
     }
 
@@ -76,40 +80,42 @@ private:
     // InputController::onKey holds it across keyPressEvent, which may fire
     // a popup input callback that closes the popup via
     // scbs.destroyPopup → reacquires this mutex to extract + graveyard).
-    std::recursive_mutex& mutex() { return mutex_; }
-    PendingMutations& pending() { return pending_; }
-    RenderFrameState& renderState() { return renderState_; }
+    std::recursive_mutex &mutex() { return mutex_; }
+
+    PendingMutations &pending() { return pending_; }
+
+    RenderFrameState &renderState() { return renderState_; }
 
     void threadMain();
 
-    PlatformDawn* platform_ = nullptr;
+    PlatformDawn *platform_ = nullptr;
 
     // Coarse mutex serializing render-thread reads against main-thread
     // structural mutations (tab/pane/popup create/destroy, tab switch,
     // resize). Terminal state is separately protected by
     // TerminalEmulator::mutex(). Recursive — see the mutex() accessor.
-    std::recursive_mutex            mutex_;
-    std::mutex                      renderCvMutex_;
-    std::condition_variable         renderCv_;
-    std::atomic<bool>               renderWake_ { false };
-    std::atomic<bool>               renderStop_ { false };
-    std::thread                     thread_;
+    std::recursive_mutex mutex_;
+    std::mutex renderCvMutex_;
+    std::condition_variable renderCv_;
+    std::atomic<bool> renderWake_ { false };
+    std::atomic<bool> renderStop_ { false };
+    std::thread thread_;
 
     // Main-thread-only mutation accumulator. Written at scattered call
     // sites without any lock; consumed by applyPendingMutations().
-    PendingMutations                pending_;
+    PendingMutations pending_;
 
     // Shadow copy of tab/pane structure for the render thread. Written by
     // applyPendingMutations() under mutex_, read by renderFrame() under
     // the same mutex.
-    RenderFrameState                renderState_;
+    RenderFrameState renderState_;
 
     // Deferred structural mutations from parse callbacks that mutate
     // PlatformDawn structural state (notably terminalExited). Pushed
     // without holding mutex_, drained under mutex_.
-    std::mutex                      deferredExitMutex_;
-    std::vector<Terminal*>          pendingExits_;
+    std::mutex deferredExitMutex_;
+    std::vector<Terminal *> pendingExits_;
 
     // Frame-completion counter. See completedFrames() / notifyFrameCompleted().
-    std::atomic<uint64_t>           completedFrames_ { 0 };
+    std::atomic<uint64_t> completedFrames_ { 0 };
 };

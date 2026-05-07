@@ -1,16 +1,16 @@
 #pragma once
 
 #include <dawn/webgpu_cpp.h>
-#include <spdlog/spdlog.h>
 #include <filesystem>
 #include <fstream>
+#include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
 #include <unordered_set>
 
 namespace renderer_utils {
 
-inline std::string loadFile(const char* path)
+inline std::string loadFile(const char *path)
 {
     std::ifstream f(path);
     if (!f.is_open()) {
@@ -22,9 +22,9 @@ inline std::string loadFile(const char* path)
     return ss.str();
 }
 
-inline std::string preprocessShader(const std::string& source,
-                                    const std::filesystem::path& shaderDir,
-                                    std::unordered_set<std::string>& visited)
+inline std::string preprocessShader(const std::string &source,
+                                    const std::filesystem::path &shaderDir,
+                                    std::unordered_set<std::string> &visited)
 {
     std::istringstream stream(source);
     std::ostringstream result;
@@ -37,8 +37,8 @@ inline std::string preprocessShader(const std::string& source,
             auto q2 = line.find('"', q1 + 1);
             if (q1 != std::string::npos && q2 != std::string::npos) {
                 std::string filename = line.substr(q1 + 1, q2 - q1 - 1);
-                auto includePath = shaderDir / filename;
-                auto canonical = includePath.string();
+                auto includePath     = shaderDir / filename;
+                auto canonical       = includePath.string();
 
                 if (visited.count(canonical)) {
                     result << "// [skipped circular include: " << filename << "]\n";
@@ -60,12 +60,14 @@ inline std::string preprocessShader(const std::string& source,
     return result.str();
 }
 
-inline std::string loadShaderSource(const char* path)
+inline std::string loadShaderSource(const char *path)
 {
-    auto fsPath = std::filesystem::path(path);
-    auto shaderDir = fsPath.parent_path();
+    auto fsPath        = std::filesystem::path(path);
+    auto shaderDir     = fsPath.parent_path();
     std::string source = loadFile(path);
-    if (source.empty()) return {};
+    if (source.empty()) {
+        return {};
+    }
 
     if (source.find("#include") == std::string::npos) {
         return source;
@@ -76,13 +78,15 @@ inline std::string loadShaderSource(const char* path)
     return preprocessShader(source, shaderDir, visited);
 }
 
-inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const char* path)
+inline wgpu::ShaderModule createShaderModule(wgpu::Device &device, const char *path)
 {
     std::string source = loadShaderSource(path);
-    if (source.empty()) return nullptr;
+    if (source.empty()) {
+        return nullptr;
+    }
 
     wgpu::ShaderSourceWGSL wgslSource;
-    wgslSource.code = {source.data(), source.size()};
+    wgslSource.code = { source.data(), source.size() };
 
     wgpu::ShaderModuleDescriptor desc;
     desc.nextInChain = &wgslSource;

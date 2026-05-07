@@ -74,7 +74,7 @@ private:
     void threadMain();
 
     std::unique_ptr<FdPoller> poller_;
-    std::thread               thread_;
-    std::atomic<bool>         running_       { false };
-    std::atomic<bool>         stopRequested_ { false };
+    std::thread thread_;
+    std::atomic<bool> running_ { false };
+    std::atomic<bool> stopRequested_ { false };
 };

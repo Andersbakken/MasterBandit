@@ -1,6 +1,6 @@
-#include <doctest/doctest.h>
 #include "Terminal.h"
 #include "TerminalSnapshot.h"
+#include <doctest/doctest.h>
 
 // Spec tests for Terminal::createEmbedded / extractEmbedded / resizeEmbedded
 // and the Document line-id eviction hook that destroys embeddeds whose anchor
@@ -23,12 +23,15 @@ std::unique_ptr<Terminal> makeParent(int cols = 80, int rows = 24,
 
 // Test helper: return any one lineId from the embedded map, or 0 if empty.
 // Used in tests where the parent has a single embedded.
-uint64_t firstEmbeddedLineId(Terminal& parent)
+uint64_t firstEmbeddedLineId(Terminal &parent)
 {
     uint64_t lineId = 0;
-    parent.forEachEmbedded([&lineId](uint64_t id, Terminal&) {
-        if (lineId == 0) lineId = id;
-    });
+    parent.forEachEmbedded([&lineId](uint64_t id, Terminal &)
+                           {
+                               if (lineId == 0) {
+                                   lineId = id;
+                               }
+                           });
     return lineId;
 }
 
@@ -43,12 +46,12 @@ TEST_CASE("createEmbedded: captures current cursor lineId as anchor, advances cu
     parent->injectData("line1\r\nline2\r\nline3\r\n", 22);
 
     int cursorBefore = parent->cursorY();
-    uint64_t anchor = parent->document().lineIdForAbs(
+    uint64_t anchor  = parent->document().lineIdForAbs(
         parent->document().historySize() + cursorBefore);
     REQUIRE(anchor != 0);
 
     PlatformCallbacks pcbs;
-    Terminal* em = parent->createEmbedded(5, std::move(pcbs));
+    Terminal *em = parent->createEmbedded(5, std::move(pcbs));
     REQUIRE(em != nullptr);
 
     // Cursor moved to a fresh row below the anchor.
@@ -67,7 +70,7 @@ TEST_CASE("createEmbedded: alt-screen refuses")
     REQUIRE(parent->usingAltScreen());
 
     PlatformCallbacks pcbs;
-    Terminal* em = parent->createEmbedded(3, std::move(pcbs));
+    Terminal *em = parent->createEmbedded(3, std::move(pcbs));
     CHECK(em == nullptr);
 }
 
@@ -84,7 +87,7 @@ TEST_CASE("createEmbedded: duplicate at same anchor row is refused")
 {
     auto parent = makeParent();
     PlatformCallbacks p1;
-    Terminal* em1 = parent->createEmbedded(4, std::move(p1));
+    Terminal *em1 = parent->createEmbedded(4, std::move(p1));
     REQUIRE(em1 != nullptr);
 
     // Bring cursor back to the anchor row without advancing — move cursor up
@@ -92,7 +95,7 @@ TEST_CASE("createEmbedded: duplicate at same anchor row is refused")
     parent->injectData("\x1b[A", 3);
 
     PlatformCallbacks p2;
-    Terminal* em2 = parent->createEmbedded(2, std::move(p2));
+    Terminal *em2 = parent->createEmbedded(2, std::move(p2));
     CHECK(em2 == nullptr); // anchor already occupied
 }
 
@@ -100,13 +103,16 @@ TEST_CASE("extractEmbedded: removes from map, returns unique_ptr")
 {
     auto parent = makeParent();
     PlatformCallbacks p;
-    Terminal* em = parent->createEmbedded(3, std::move(p));
+    Terminal *em = parent->createEmbedded(3, std::move(p));
     REQUIRE(em != nullptr);
 
     uint64_t lineId = 0;
-    parent->forEachEmbedded([&lineId](uint64_t id, Terminal&) {
-        if (lineId == 0) lineId = id;
-    });
+    parent->forEachEmbedded([&lineId](uint64_t id, Terminal &)
+                            {
+                                if (lineId == 0) {
+                                    lineId = id;
+                                }
+                            });
     REQUIRE(lineId != 0);
 
     auto extracted = parent->extractEmbedded(lineId);
@@ -120,7 +126,7 @@ TEST_CASE("extractEmbedded: clears focused embedded if it matches")
 {
     auto parent = makeParent();
     PlatformCallbacks p;
-    Terminal* em = parent->createEmbedded(3, std::move(p));
+    Terminal *em = parent->createEmbedded(3, std::move(p));
     REQUIRE(em != nullptr);
 
     uint64_t lineId = firstEmbeddedLineId(*parent);
@@ -135,7 +141,7 @@ TEST_CASE("resizeEmbedded: changes row count, preserves cols from parent")
 {
     auto parent = makeParent(80, 24);
     PlatformCallbacks p;
-    Terminal* em = parent->createEmbedded(3, std::move(p));
+    Terminal *em = parent->createEmbedded(3, std::move(p));
     REQUIRE(em != nullptr);
     CHECK(em->height() == 3);
 
@@ -161,7 +167,7 @@ TEST_CASE("activeTerm: prefers focused embedded over parent")
 {
     auto parent = makeParent();
     PlatformCallbacks p;
-    Terminal* em = parent->createEmbedded(3, std::move(p));
+    Terminal *em = parent->createEmbedded(3, std::move(p));
     REQUIRE(em != nullptr);
 
     CHECK(parent->activeTerm() == parent.get());
@@ -191,29 +197,30 @@ TEST_CASE("eviction: when anchor row evicts past archive cap, embedded moves to 
     // past tier-1 cap keeps the embedded alive (archive still resolves line
     // ids). We exercise extractEmbedded as the graveyard-ready path instead.
     PlatformCallbacks p;
-    Terminal* em = parent->createEmbedded(2, std::move(p));
+    Terminal *em = parent->createEmbedded(2, std::move(p));
     REQUIRE(em != nullptr);
     CHECK(parent->embeddedCount() == 1);
 
     // Draining with nothing evicted is a no-op.
     int drained = 0;
-    parent->drainEvictedEmbeddeds([&](uint64_t, std::unique_ptr<Terminal>) {
-        drained++;
-    });
+    parent->drainEvictedEmbeddeds([&](uint64_t, std::unique_ptr<Terminal>)
+                                  {
+                                      drained++;
+                                  });
     CHECK(drained == 0);
     CHECK_FALSE(parent->hasEvictedEmbeddeds());
 }
 
 TEST_CASE("createEmbedded: at top of screen anchors to lineId 1 (first row)")
 {
-    auto parent = makeParent(80, 24);
+    auto parent       = makeParent(80, 24);
     // Fresh parent — cursor is at (0, 0). Anchor is the first row's lineId.
     uint64_t expected = parent->document().lineIdForAbs(
         parent->document().historySize() + parent->cursorY());
     REQUIRE(expected != 0);
 
     PlatformCallbacks p;
-    Terminal* em = parent->createEmbedded(4, std::move(p));
+    Terminal *em = parent->createEmbedded(4, std::move(p));
     REQUIRE(em != nullptr);
     CHECK(parent->findEmbedded(expected) == em);
 }
@@ -242,7 +249,7 @@ TEST_CASE("TerminalSnapshot: embedded anchor produces an Embedded segment that d
     REQUIRE(parent->cursorY() == 5);
 
     PlatformCallbacks p;
-    Terminal* em = parent->createEmbedded(4, std::move(p));
+    Terminal *em = parent->createEmbedded(4, std::move(p));
     REQUIRE(em != nullptr);
 
     TerminalSnapshot snap;
@@ -273,8 +280,9 @@ TEST_CASE("TerminalSnapshot: embeddeds hidden on alt screen")
     TerminalSnapshot snap;
     REQUIRE(snap.update(*parent));
     // No Embedded segments should appear.
-    for (const auto& seg : snap.segments)
+    for (const auto &seg : snap.segments) {
         CHECK(seg.kind == TerminalSnapshot::Segment::Kind::Row);
+    }
 }
 
 TEST_CASE("TerminalSnapshot::segmentAtPixelY locates the right segment")
@@ -289,19 +297,23 @@ TEST_CASE("TerminalSnapshot::segmentAtPixelY locates the right segment")
 
     const float cellH = 20.0f;
     // y=0 → row 0
-    const auto* s0 = snap.segmentAtPixelY(0, cellH);
-    REQUIRE(s0); CHECK(s0->cellYStart == 0);
+    const auto *s0    = snap.segmentAtPixelY(0, cellH);
+    REQUIRE(s0);
+    CHECK(s0->cellYStart == 0);
     // y inside row 1 → segment 1
-    const auto* s1 = snap.segmentAtPixelY(25, cellH);
-    REQUIRE(s1); CHECK(s1->cellYStart == 1);
+    const auto *s1 = snap.segmentAtPixelY(25, cellH);
+    REQUIRE(s1);
+    CHECK(s1->cellYStart == 1);
     // y inside the embedded band (row 2, 3 rows tall → pixel [40, 100))
-    const auto* se = snap.segmentAtPixelY(55, cellH);
-    REQUIRE(se); CHECK(se->kind == TerminalSnapshot::Segment::Kind::Embedded);
+    const auto *se = snap.segmentAtPixelY(55, cellH);
+    REQUIRE(se);
+    CHECK(se->kind == TerminalSnapshot::Segment::Kind::Embedded);
     CHECK(se->cellYStart == 2);
     CHECK(se->rowCount == 3);
     // y right past the embedded → next Row segment (originally row 3, now cellYStart=5)
-    const auto* s3 = snap.segmentAtPixelY(105, cellH);
-    REQUIRE(s3); CHECK(s3->cellYStart == 5);
+    const auto *s3 = snap.segmentAtPixelY(105, cellH);
+    REQUIRE(s3);
+    CHECK(s3->cellYStart == 5);
     CHECK(s3->kind == TerminalSnapshot::Segment::Kind::Row);
 }
 
@@ -310,20 +322,27 @@ TEST_CASE("cycle focus ordering: lineIds are monotonic")
     // Ensures FocusPopup's embedded cycle has a stable, newest-last order.
     auto parent = makeParent();
     PlatformCallbacks p1, p2, p3;
-    Terminal* a = parent->createEmbedded(2, std::move(p1));
-    Terminal* b = parent->createEmbedded(2, std::move(p2));
-    Terminal* c = parent->createEmbedded(2, std::move(p3));
-    REQUIRE(a); REQUIRE(b); REQUIRE(c);
+    Terminal *a = parent->createEmbedded(2, std::move(p1));
+    Terminal *b = parent->createEmbedded(2, std::move(p2));
+    Terminal *c = parent->createEmbedded(2, std::move(p3));
+    REQUIRE(a);
+    REQUIRE(b);
+    REQUIRE(c);
 
     // Collect lineIds for each in creation order — they must be strictly
     // increasing so that sort-ascending on the lineId set yields creation
     // order.
     uint64_t firstA = 0, firstB = 0, firstC = 0;
-    parent->forEachEmbedded([&](uint64_t id, Terminal& t) {
-        if (&t == a) firstA = id;
-        else if (&t == b) firstB = id;
-        else if (&t == c) firstC = id;
-    });
+    parent->forEachEmbedded([&](uint64_t id, Terminal &t)
+                            {
+                                if (&t == a) {
+                                    firstA = id;
+                                } else if (&t == b) {
+                                    firstB = id;
+                                } else if (&t == c) {
+                                    firstC = id;
+                                }
+                            });
     CHECK(firstA < firstB);
     CHECK(firstB < firstC);
 }

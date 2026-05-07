@@ -14,6 +14,6 @@ void init(std::string exeDir);
 std::filesystem::path path(std::string_view name);
 
 // Root directory under which all resources live.
-const std::filesystem::path& root();
+const std::filesystem::path &root();
 
-}
+} //namespace Resources

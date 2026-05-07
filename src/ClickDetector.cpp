@@ -10,23 +10,23 @@ bool ClickDetector::withinRadius(int x1, int y1, int x2, int y2) const
 
 ClickDetector::Result ClickDetector::onPress(MouseButton button, int pixelX, int pixelY)
 {
-    int bi = idx(button);
-    auto now = Clock::now();
-    auto& rec = lastPress_[bi];
+    int bi    = idx(button);
+    auto now  = Clock::now();
+    auto &rec = lastPress_[bi];
 
-    bool wasDrag = dragStarted_;
+    bool wasDrag    = dragStarted_;
     buttonDown_[bi] = true;
-    dragStarted_ = false;
-    pressX_ = pixelX;
-    pressY_ = pixelY;
-    activeButton_ = button;
+    dragStarted_    = false;
+    pressX_         = pixelX;
+    pressY_         = pixelY;
+    activeButton_   = button;
 
     // Check if this press continues a multi-click sequence.
     // A drag between presses breaks the sequence (e.g. press, drag, release,
     // press should not count as double-click).
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - rec.time);
-    bool inTime = elapsed <= clickInterval_;
-    bool inRadius = withinRadius(pixelX, pixelY, rec.x, rec.y);
+    auto elapsed    = std::chrono::duration_cast<std::chrono::milliseconds>(now - rec.time);
+    bool inTime     = elapsed <= clickInterval_;
+    bool inRadius   = withinRadius(pixelX, pixelY, rec.x, rec.y);
     bool continuing = rec.count > 0 && inTime && inRadius && !wasDrag;
 
     if (continuing && rec.count < 3) {
@@ -35,21 +35,21 @@ ClickDetector::Result ClickDetector::onPress(MouseButton button, int pixelX, int
         rec.count = 1;
     }
     rec.time = now;
-    rec.x = pixelX;
-    rec.y = pixelY;
+    rec.x    = pixelX;
+    rec.y    = pixelY;
 
     MouseEventType type;
     switch (rec.count) {
-    case 2:  type = MouseEventType::DoublePress; break;
-    case 3:  type = MouseEventType::TriplePress; break;
-    default: type = MouseEventType::Press; break;
+        case 2: type = MouseEventType::DoublePress; break;
+        case 3: type = MouseEventType::TriplePress; break;
+        default: type = MouseEventType::Press; break;
     }
-    return {type, button};
+    return { type, button };
 }
 
 ClickDetector::Result ClickDetector::onRelease(MouseButton button, int /*pixelX*/, int /*pixelY*/)
 {
-    int bi = idx(button);
+    int bi          = idx(button);
     buttonDown_[bi] = false;
 
     MouseEventType type;
@@ -59,25 +59,31 @@ ClickDetector::Result ClickDetector::onRelease(MouseButton button, int /*pixelX*
         type = MouseEventType::Release;
     }
     dragStarted_ = false;
-    return {type, button};
+    return { type, button };
 }
 
 std::optional<ClickDetector::Result> ClickDetector::onMove(int pixelX, int pixelY)
 {
-    if (!buttonDown_[idx(activeButton_)]) return std::nullopt;
-    if (dragStarted_) return std::nullopt; // already reported Drag
+    if (!buttonDown_[idx(activeButton_)]) {
+        return std::nullopt;
+    }
+    if (dragStarted_) {
+        return std::nullopt; // already reported Drag
+    }
 
     // Middle-button drag isn't a meaningful gesture (no binding consumes it
     // and selection drags are left-only). Hand tremor or low-DPI surfaces
     // routinely emit a few pixels of motion between press and release;
     // promoting that to Drag suppresses the Click and silently breaks
     // middle-click paste. Keep middle as Click-or-nothing.
-    if (activeButton_ == MouseButton::Middle) return std::nullopt;
+    if (activeButton_ == MouseButton::Middle) {
+        return std::nullopt;
+    }
 
     int dx = pixelX - pressX_, dy = pixelY - pressY_;
     if (dx * dx + dy * dy > dragThreshold_ * dragThreshold_) {
         dragStarted_ = true;
-        return Result{MouseEventType::Drag, activeButton_};
+        return Result { MouseEventType::Drag, activeButton_ };
     }
     return std::nullopt;
 }

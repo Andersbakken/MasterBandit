@@ -1,25 +1,36 @@
-#include <doctest/doctest.h>
 #include "LineBuffer.h"
+#include <doctest/doctest.h>
 #include <string>
 
 namespace {
 
 // Build a Cell with a single ASCII codepoint and default attrs.
-Cell c(char ch) { Cell cell; cell.wc = static_cast<char32_t>(ch); return cell; }
+Cell c(char ch)
+{
+    Cell cell;
+    cell.wc = static_cast<char32_t>(ch);
+    return cell;
+}
 
 // Build a row of cells from a string.
-std::vector<Cell> row(const std::string& s) {
+std::vector<Cell> row(const std::string &s)
+{
     std::vector<Cell> r;
     r.reserve(s.size());
-    for (char ch : s) r.push_back(c(ch));
+    for (char ch : s) {
+        r.push_back(c(ch));
+    }
     return r;
 }
 
 // Pull the cells of a wrapped row out as a string. Trailing nulls are spaces.
-std::string wrappedRowText(const LineBuffer& lb, int wrappedRow, int width) {
-    int len = 0;
-    const Cell* p = lb.wrappedRowCells(wrappedRow, width, &len);
-    if (!p) return {};
+std::string wrappedRowText(const LineBuffer &lb, int wrappedRow, int width)
+{
+    int len       = 0;
+    const Cell *p = lb.wrappedRowCells(wrappedRow, width, &len);
+    if (!p) {
+        return {};
+    }
     std::string out;
     for (int i = 0; i < len; ++i) {
         char32_t cp = p[i].wc;
@@ -44,7 +55,7 @@ TEST_CASE("LineBuffer: append a single hard line")
 {
     LineBuffer lb;
     auto r = row("hello world");
-    lb.appendHardLine(r.data(), static_cast<int>(r.size()), /*lineId*/1, /*flags*/0, nullptr);
+    lb.appendHardLine(r.data(), static_cast<int>(r.size()), /*lineId*/ 1, /*flags*/ 0, nullptr);
     CHECK(lb.totalLogicalLines() == 1);
     CHECK(lb.totalCells() == 11);
     CHECK(lb.numWrappedRows(80) == 1);
@@ -82,15 +93,19 @@ TEST_CASE("LineBuffer: extend a partial line via soft EOL")
     LineBuffer lb;
     // Simulate a soft-wrapped scroll-out: first row is partial.
     auto p1 = row("ABCDEF");
-    lb.appendLine(p1.data(), 6, LineMeta::EolSoft, /*partial*/true, /*extendsLast*/false,
-                  /*lineId*/1, 0, nullptr);
+    lb.appendLine(p1.data(), 6, LineMeta::EolSoft, /*partial*/ true, /*extendsLast*/ false,
+                  /*lineId*/ 1,
+                  0,
+                  nullptr);
     CHECK(lb.totalLogicalLines() == 1);
     CHECK(lb.lastLineIsPartial());
 
     // Second row continues the same logical line.
     auto p2 = row("GHIJ");
-    lb.appendLine(p2.data(), 4, LineMeta::EolHard, /*partial*/false, /*extendsLast*/true,
-                  /*lineId*/0 /*ignored*/, 0, nullptr);
+    lb.appendLine(p2.data(), 4, LineMeta::EolHard, /*partial*/ false, /*extendsLast*/ true,
+                  /*lineId*/ 0 /*ignored*/,
+                  0,
+                  nullptr);
     CHECK(lb.totalLogicalLines() == 1);
     CHECK_FALSE(lb.lastLineIsPartial());
 
@@ -119,11 +134,11 @@ TEST_CASE("LineBuffer: hard-line boundaries are independent")
 
 TEST_CASE("LineBuffer: max logical lines eviction")
 {
-    LineBuffer lb(3, /*maxCells*/0);
+    LineBuffer lb(3, /*maxCells*/ 0);
     for (int i = 1; i <= 5; ++i) {
         std::string s(1, static_cast<char>('A' + i - 1));
         auto r = row(s);
-        lb.appendHardLine(r.data(), 1, /*lineId*/static_cast<uint64_t>(i), 0, nullptr);
+        lb.appendHardLine(r.data(), 1, /*lineId*/ static_cast<uint64_t>(i), 0, nullptr);
     }
     CHECK(lb.totalLogicalLines() == 3);
     // Oldest 2 evicted; lines C, D, E remain (ids 3, 4, 5).
@@ -139,7 +154,7 @@ TEST_CASE("LineBuffer: max logical lines eviction")
 
 TEST_CASE("LineBuffer: max total cells eviction (backstop)")
 {
-    LineBuffer lb(/*maxLines*/100000, /*maxCells*/15);
+    LineBuffer lb(/*maxLines*/ 100000, /*maxCells*/ 15);
     auto r5 = row("AAAAA");
     for (int i = 1; i <= 4; ++i) {
         lb.appendHardLine(r5.data(), 5, static_cast<uint64_t>(i), 0, nullptr);
@@ -154,7 +169,10 @@ TEST_CASE("LineBuffer: eviction callback fires once per line")
 {
     LineBuffer lb(2, 0);
     std::vector<uint64_t> evicted;
-    lb.setOnLineIdEvicted([&](uint64_t id) { evicted.push_back(id); });
+    lb.setOnLineIdEvicted([&](uint64_t id)
+                          {
+                              evicted.push_back(id);
+                          });
     for (int i = 1; i <= 5; ++i) {
         auto r = row("X");
         lb.appendHardLine(r.data(), 1, static_cast<uint64_t>(i), 0, nullptr);
@@ -188,7 +206,7 @@ TEST_CASE("LineBuffer: popLastLine on partial line preserves partial flag")
 {
     LineBuffer lb;
     auto r = row("partial");
-    lb.appendLine(r.data(), 7, LineMeta::EolSoft, /*partial*/true, false, 1, 0, nullptr);
+    lb.appendLine(r.data(), 7, LineMeta::EolSoft, /*partial*/ true, false, 1, 0, nullptr);
     auto popped = lb.popLastLine();
     REQUIRE(popped.ok);
     CHECK(popped.wasPartial);
@@ -213,8 +231,8 @@ TEST_CASE("LineBuffer: textInRange joins lines with newlines")
     lb.appendHardLine(r3.data(), 3, 3, 0, nullptr);
     CHECK(lb.textInRange(0, 2) == "hello\nworld\nfoo");
     CHECK(lb.textInRange(1, 1) == "world");
-    CHECK(lb.textInRange(0, 1, /*startCol*/2) == "llo\nworld");
-    CHECK(lb.textInRange(0, 2, /*startCol*/0, /*endCol*/3) == "hello\nworld\nfoo");
+    CHECK(lb.textInRange(0, 1, /*startCol*/ 2) == "llo\nworld");
+    CHECK(lb.textInRange(0, 2, /*startCol*/ 0, /*endCol*/ 3) == "hello\nworld\nfoo");
     CHECK(lb.textInRange(0, 2, 0, 4) == "hello\nworld\nfoo");
 }
 
@@ -242,21 +260,20 @@ TEST_CASE("LineBuffer: extras carried with line and remapped on extension")
     // First row of soft-wrapped line: extra at col 2.
     std::unordered_map<int, CellExtra> extrasA;
     extrasA[2].hyperlinkId = 99;
-    auto r1 = row("AAAA");
-    lb.appendLine(r1.data(), 4, LineMeta::EolSoft, /*partial*/true, false, 1, 0, &extrasA);
+    auto r1                = row("AAAA");
+    lb.appendLine(r1.data(), 4, LineMeta::EolSoft, /*partial*/ true, false, 1, 0, &extrasA);
 
     // Second row continues, extra at col 1 (= col 5 in the joined line).
     std::unordered_map<int, CellExtra> extrasB;
     extrasB[1].hyperlinkId = 77;
-    auto r2 = row("BBBB");
-    lb.appendLine(r2.data(), 4, LineMeta::EolHard, /*partial*/false, /*extendsLast*/true,
-                  0, 0, &extrasB);
+    auto r2                = row("BBBB");
+    lb.appendLine(r2.data(), 4, LineMeta::EolHard, /*partial*/ false, /*extendsLast*/ true, 0, 0, &extrasB);
 
     CHECK(lb.totalLogicalLines() == 1);
-    const auto& m = lb.block(0).meta(0);
+    const auto &m = lb.block(0).meta(0);
     REQUIRE(m.extras.count(2));
     CHECK(m.extras.at(2).hyperlinkId == 99);
-    REQUIRE(m.extras.count(5));   // 4 (length of first row) + 1
+    REQUIRE(m.extras.count(5)); // 4 (length of first row) + 1
     CHECK(m.extras.at(5).hyperlinkId == 77);
 }
 
@@ -265,9 +282,9 @@ TEST_CASE("LineBuffer: invalidateWrapCaches clears MRU")
     LineBuffer lb;
     auto r = row("ABCDEFGH");
     lb.appendHardLine(r.data(), 8, 1, 0, nullptr);
-    CHECK(lb.numWrappedRows(4) == 2);  // populates cache
+    CHECK(lb.numWrappedRows(4) == 2); // populates cache
     lb.invalidateWrapCaches();
-    CHECK(lb.numWrappedRows(4) == 2);  // still correct
+    CHECK(lb.numWrappedRows(4) == 2); // still correct
 }
 
 TEST_CASE("LineBuffer: lineId monotonic resolution after partial eviction")
@@ -278,7 +295,7 @@ TEST_CASE("LineBuffer: lineId monotonic resolution after partial eviction")
         lb.appendHardLine(r.data(), 1, static_cast<uint64_t>(i), 0, nullptr);
     }
     CHECK(lb.totalLogicalLines() == 3);
-    CHECK(lb.logicalIndexOfLineId(7) == -1);  // very old, evicted
+    CHECK(lb.logicalIndexOfLineId(7) == -1); // very old, evicted
     CHECK(lb.logicalIndexOfLineId(8) == 0);
     CHECK(lb.logicalIndexOfLineId(9) == 1);
     CHECK(lb.logicalIndexOfLineId(10) == 2);

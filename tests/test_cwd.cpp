@@ -1,77 +1,113 @@
-#include <doctest/doctest.h>
 #include "MBConnection.h"
+#include <doctest/doctest.h>
 #include <glaze/glaze.hpp>
 #include <string>
 
 // Helper: extract pane CWD from stats JSON for pane at tabs[tabIdx].panes[paneIdx]
-static std::string paneCwd(const std::string& statsJson, int tabIdx, int paneIdx)
+static std::string paneCwd(const std::string &statsJson, int tabIdx, int paneIdx)
 {
     glz::generic j;
-    if (glz::read_json(j, statsJson)) return {};
-    auto* obj = std::get_if<glz::generic::object_t>(&j.data);
-    if (!obj) return {};
+    if (glz::read_json(j, statsJson)) {
+        return {};
+    }
+    auto *obj = std::get_if<glz::generic::object_t>(&j.data);
+    if (!obj) {
+        return {};
+    }
 
     auto tabsIt = obj->find("tabs");
-    if (tabsIt == obj->end()) return {};
-    auto* tabs = std::get_if<glz::generic::array_t>(&tabsIt->second.data);
-    if (!tabs || tabIdx >= static_cast<int>(tabs->size())) return {};
+    if (tabsIt == obj->end()) {
+        return {};
+    }
+    auto *tabs = std::get_if<glz::generic::array_t>(&tabsIt->second.data);
+    if (!tabs || tabIdx >= static_cast<int>(tabs->size())) {
+        return {};
+    }
 
-    auto* tabObj = std::get_if<glz::generic::object_t>(&(*tabs)[tabIdx].data);
-    if (!tabObj) return {};
+    auto *tabObj = std::get_if<glz::generic::object_t>(&(*tabs)[tabIdx].data);
+    if (!tabObj) {
+        return {};
+    }
 
     auto panesIt = tabObj->find("panes");
-    if (panesIt == tabObj->end()) return {};
-    auto* panes = std::get_if<glz::generic::array_t>(&panesIt->second.data);
-    if (!panes || paneIdx >= static_cast<int>(panes->size())) return {};
+    if (panesIt == tabObj->end()) {
+        return {};
+    }
+    auto *panes = std::get_if<glz::generic::array_t>(&panesIt->second.data);
+    if (!panes || paneIdx >= static_cast<int>(panes->size())) {
+        return {};
+    }
 
-    auto* paneObj = std::get_if<glz::generic::object_t>(&(*panes)[paneIdx].data);
-    if (!paneObj) return {};
+    auto *paneObj = std::get_if<glz::generic::object_t>(&(*panes)[paneIdx].data);
+    if (!paneObj) {
+        return {};
+    }
 
     auto cwdIt = paneObj->find("cwd");
-    if (cwdIt == paneObj->end()) return {};
-    auto* s = std::get_if<std::string>(&cwdIt->second.data);
-    return s ? *s : std::string{};
+    if (cwdIt == paneObj->end()) {
+        return {};
+    }
+    auto *s = std::get_if<std::string>(&cwdIt->second.data);
+    return s ? *s : std::string {};
 }
 
 // Helper: count tabs
-static int totalTabs(const std::string& statsJson)
+static int totalTabs(const std::string &statsJson)
 {
     glz::generic j;
-    if (glz::read_json(j, statsJson)) return 0;
-    auto* obj = std::get_if<glz::generic::object_t>(&j.data);
-    if (!obj) return 0;
+    if (glz::read_json(j, statsJson)) {
+        return 0;
+    }
+    auto *obj = std::get_if<glz::generic::object_t>(&j.data);
+    if (!obj) {
+        return 0;
+    }
 
     auto tabsIt = obj->find("tabs");
-    if (tabsIt == obj->end()) return 0;
-    auto* tabs = std::get_if<glz::generic::array_t>(&tabsIt->second.data);
+    if (tabsIt == obj->end()) {
+        return 0;
+    }
+    auto *tabs = std::get_if<glz::generic::array_t>(&tabsIt->second.data);
     return tabs ? static_cast<int>(tabs->size()) : 0;
 }
 
 // Helper: count panes in a specific tab
-static int panesInTab(const std::string& statsJson, int tabIdx)
+static int panesInTab(const std::string &statsJson, int tabIdx)
 {
     glz::generic j;
-    if (glz::read_json(j, statsJson)) return 0;
-    auto* obj = std::get_if<glz::generic::object_t>(&j.data);
-    if (!obj) return 0;
+    if (glz::read_json(j, statsJson)) {
+        return 0;
+    }
+    auto *obj = std::get_if<glz::generic::object_t>(&j.data);
+    if (!obj) {
+        return 0;
+    }
 
     auto tabsIt = obj->find("tabs");
-    if (tabsIt == obj->end()) return 0;
-    auto* tabs = std::get_if<glz::generic::array_t>(&tabsIt->second.data);
-    if (!tabs || tabIdx >= static_cast<int>(tabs->size())) return 0;
+    if (tabsIt == obj->end()) {
+        return 0;
+    }
+    auto *tabs = std::get_if<glz::generic::array_t>(&tabsIt->second.data);
+    if (!tabs || tabIdx >= static_cast<int>(tabs->size())) {
+        return 0;
+    }
 
-    auto* tabObj = std::get_if<glz::generic::object_t>(&(*tabs)[tabIdx].data);
-    if (!tabObj) return 0;
+    auto *tabObj = std::get_if<glz::generic::object_t>(&(*tabs)[tabIdx].data);
+    if (!tabObj) {
+        return 0;
+    }
 
     auto panesIt = tabObj->find("panes");
-    if (panesIt == tabObj->end()) return 0;
-    auto* panes = std::get_if<glz::generic::array_t>(&panesIt->second.data);
+    if (panesIt == tabObj->end()) {
+        return 0;
+    }
+    auto *panes = std::get_if<glz::generic::array_t>(&panesIt->second.data);
     return panes ? static_cast<int>(panes->size()) : 0;
 }
 
 TEST_CASE("cwd: OSC 7 sets pane CWD visible in stats" * doctest::test_suite("render"))
 {
-    auto& rt = MBConnection::shared();
+    auto &rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.reset();
@@ -88,7 +124,7 @@ TEST_CASE("cwd: OSC 7 sets pane CWD visible in stats" * doctest::test_suite("ren
 
 TEST_CASE("cwd: new tab inherits CWD from focused pane" * doctest::test_suite("render"))
 {
-    auto& rt = MBConnection::shared();
+    auto &rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.reset();
@@ -119,7 +155,7 @@ TEST_CASE("cwd: new tab inherits CWD from focused pane" * doctest::test_suite("r
 
 TEST_CASE("cwd: split pane inherits CWD from source pane" * doctest::test_suite("render"))
 {
-    auto& rt = MBConnection::shared();
+    auto &rt = MBConnection::shared();
     REQUIRE(rt.childPid() > 0);
 
     rt.reset();
@@ -130,7 +166,7 @@ TEST_CASE("cwd: split pane inherits CWD from source pane" * doctest::test_suite(
     rt.wait(200);
 
     // Split pane right
-    REQUIRE(rt.sendAction("split_pane", {"right"}));
+    REQUIRE(rt.sendAction("split_pane", { "right" }));
     rt.wait(1000);
 
     auto stats = rt.queryStats();

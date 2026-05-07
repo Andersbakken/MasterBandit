@@ -3,17 +3,15 @@
 
 #include <glaze/glaze.hpp>
 
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <signal.h>
-#include <unistd.h>
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <fstream>
-#include <chrono>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <thread>
-#include <algorithm>
-
-
+#include <unistd.h>
 
 // ============================================================================
 // WebSocket callback
@@ -24,69 +22,80 @@ static const struct lws_protocols sProtos[] = {
     LWS_PROTOCOL_LIST_TERM
 };
 
-int MBConnection::wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
-                           void* /*user*/, void* in, size_t len)
+int MBConnection::wsCallback(struct lws *wsi, enum lws_callback_reasons reason,
+                             void * /*user*/, void *in, size_t len)
 {
-    struct lws_context* ctx = lws_get_context(wsi);
-    MBConnection* self = static_cast<MBConnection*>(lws_context_user(ctx));
-    if (!self) return 0;
+    struct lws_context *ctx = lws_get_context(wsi);
+    MBConnection *self      = static_cast<MBConnection *>(lws_context_user(ctx));
+    if (!self) {
+        return 0;
+    }
 
     switch (reason) {
-    case LWS_CALLBACK_CLIENT_ESTABLISHED:
-        self->connected_ = true;
-        self->wsi_ = wsi;
-        if (self->txPending_)
-            lws_callback_on_writable(wsi);
-        break;
+        case LWS_CALLBACK_CLIENT_ESTABLISHED:
+            self->connected_ = true;
+            self->wsi_       = wsi;
+            if (self->txPending_) {
+                lws_callback_on_writable(wsi);
+            }
+            break;
 
-    case LWS_CALLBACK_CLIENT_WRITEABLE:
-        if (self->txPending_ && !self->pendingTx_.empty()) {
-            std::vector<unsigned char> buf(LWS_PRE + self->pendingTx_.size());
-            memcpy(buf.data() + LWS_PRE, self->pendingTx_.data(), self->pendingTx_.size());
-            lws_write(wsi, buf.data() + LWS_PRE, self->pendingTx_.size(), LWS_WRITE_TEXT);
-            self->pendingTx_.clear();
-            self->txPending_ = false;
+        case LWS_CALLBACK_CLIENT_WRITEABLE:
+            if (self->txPending_ && !self->pendingTx_.empty()) {
+                std::vector<unsigned char> buf(LWS_PRE + self->pendingTx_.size());
+                memcpy(buf.data() + LWS_PRE, self->pendingTx_.data(), self->pendingTx_.size());
+                lws_write(wsi, buf.data() + LWS_PRE, self->pendingTx_.size(), LWS_WRITE_TEXT);
+                self->pendingTx_.clear();
+                self->txPending_ = false;
+            }
+            break;
+
+        case LWS_CALLBACK_CLIENT_RECEIVE:
+            self->rxBuffer_.append(static_cast<const char *>(in), len);
+            if (lws_is_final_fragment(wsi)) {
+                self->lastResponse_ = std::move(self->rxBuffer_);
+                self->rxBuffer_.clear();
+                self->responseReady_ = true;
+            }
+            break;
+
+        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
+        case LWS_CALLBACK_CLIENT_CLOSED:
+        case LWS_CALLBACK_CLOSED_CLIENT_HTTP:
+            self->wsi_       = nullptr;
+            self->connected_ = false;
+            break;
+
+        case LWS_CALLBACK_ADD_POLL_FD: {
+            auto *pa = static_cast<struct lws_pollargs *>(in);
+            struct pollfd pfd { pa->fd, static_cast<short>(pa->events), 0 };
+            self->pollfds_.push_back(pfd);
+            break;
         }
-        break;
-
-    case LWS_CALLBACK_CLIENT_RECEIVE:
-        self->rxBuffer_.append(static_cast<const char*>(in), len);
-        if (lws_is_final_fragment(wsi)) {
-            self->lastResponse_ = std::move(self->rxBuffer_);
-            self->rxBuffer_.clear();
-            self->responseReady_ = true;
+        case LWS_CALLBACK_DEL_POLL_FD: {
+            auto *pa = static_cast<struct lws_pollargs *>(in);
+            auto it  = std::find_if(self->pollfds_.begin(), self->pollfds_.end(), [pa](const struct pollfd &p)
+                                   {
+                                       return p.fd == pa->fd;
+                                   });
+            if (it != self->pollfds_.end()) {
+                self->pollfds_.erase(it);
+            }
+            break;
         }
-        break;
+        case LWS_CALLBACK_CHANGE_MODE_POLL_FD: {
+            auto *pa = static_cast<struct lws_pollargs *>(in);
+            for (auto &p : self->pollfds_) {
+                if (p.fd == pa->fd) {
+                    p.events = static_cast<short>(pa->events);
+                    break;
+                }
+            }
+            break;
+        }
 
-    case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    case LWS_CALLBACK_CLIENT_CLOSED:
-    case LWS_CALLBACK_CLOSED_CLIENT_HTTP:
-        self->wsi_ = nullptr;
-        self->connected_ = false;
-        break;
-
-    case LWS_CALLBACK_ADD_POLL_FD: {
-        auto* pa = static_cast<struct lws_pollargs*>(in);
-        struct pollfd pfd{ pa->fd, static_cast<short>(pa->events), 0 };
-        self->pollfds_.push_back(pfd);
-        break;
-    }
-    case LWS_CALLBACK_DEL_POLL_FD: {
-        auto* pa = static_cast<struct lws_pollargs*>(in);
-        auto it = std::find_if(self->pollfds_.begin(), self->pollfds_.end(),
-            [pa](const struct pollfd& p) { return p.fd == pa->fd; });
-        if (it != self->pollfds_.end()) self->pollfds_.erase(it);
-        break;
-    }
-    case LWS_CALLBACK_CHANGE_MODE_POLL_FD: {
-        auto* pa = static_cast<struct lws_pollargs*>(in);
-        for (auto& p : self->pollfds_)
-            if (p.fd == pa->fd) { p.events = static_cast<short>(pa->events); break; }
-        break;
-    }
-
-    default:
-        break;
+        default:
+            break;
     }
     return 0;
 }
@@ -104,11 +113,13 @@ void MBConnection::pumpOnce()
     }
 
     int n = poll(pollfds_.data(), static_cast<nfds_t>(pollfds_.size()), 10);
-    if (n < 0 && errno == EINTR) return;
+    if (n < 0 && errno == EINTR) {
+        return;
+    }
 
-    for (auto& pfd : pollfds_) {
+    for (auto &pfd : pollfds_) {
         if (pfd.revents) {
-            struct lws_pollfd lpfd{ pfd.fd, pfd.events, pfd.revents };
+            struct lws_pollfd lpfd { pfd.fd, pfd.events, pfd.revents };
             lws_service_fd(ctx_, &lpfd);
             pfd.revents = 0;
         }
@@ -119,35 +130,54 @@ void MBConnection::pumpOnce()
 // Constructor / Destructor
 // ============================================================================
 
-MBConnection::MBConnection() : MBConnection(Options{}) {}
+MBConnection::MBConnection()
+    : MBConnection(Options {})
+{
+}
 
-MBConnection::MBConnection(const Options& opts)
+MBConnection::MBConnection(const Options &opts)
 {
     std::string fontPath = opts.fontPath.empty() ? MB_TEST_FONT : opts.fontPath;
     std::string mbBinary = MB_BINARY;
 
-    std::string colsStr = std::to_string(opts.cols);
-    std::string rowsStr = std::to_string(opts.rows);
+    std::string colsStr     = std::to_string(opts.cols);
+    std::string rowsStr     = std::to_string(opts.rows);
     std::string fontSizeStr = std::to_string(opts.fontSize);
 
     pid_ = fork();
     if (pid_ == 0) {
         // Child: exec mb --test — build args dynamically based on options
         std::vector<std::string> args = {
-            mbBinary, "--test",
-            "--font", fontPath,
-            "--cols", colsStr,
-            "--rows", rowsStr,
-            "--font-size", fontSizeStr,
+            mbBinary,
+            "--test",
+            "--font",
+            fontPath,
+            "--cols",
+            colsStr,
+            "--rows",
+            rowsStr,
+            "--font-size",
+            fontSizeStr,
         };
-        if (!opts.fallbackFontPath.empty()) { args.push_back("--fallback-font"); args.push_back(opts.fallbackFontPath); }
-        if (!opts.emojiFontPath.empty())    { args.push_back("--emoji-font");   args.push_back(opts.emojiFontPath); }
-        if (!opts.shell.empty())            { args.push_back("--shell");         args.push_back(opts.shell); }
+        if (!opts.fallbackFontPath.empty()) {
+            args.push_back("--fallback-font");
+            args.push_back(opts.fallbackFontPath);
+        }
+        if (!opts.emojiFontPath.empty()) {
+            args.push_back("--emoji-font");
+            args.push_back(opts.emojiFontPath);
+        }
+        if (!opts.shell.empty()) {
+            args.push_back("--shell");
+            args.push_back(opts.shell);
+        }
 
-        std::vector<const char*> argv;
-        for (const auto& a : args) argv.push_back(a.c_str());
+        std::vector<const char *> argv;
+        for (const auto &a : args) {
+            argv.push_back(a.c_str());
+        }
         argv.push_back(nullptr);
-        execv(mbBinary.c_str(), const_cast<char* const*>(argv.data()));
+        execv(mbBinary.c_str(), const_cast<char *const *>(argv.data()));
         _exit(127);
     }
 
@@ -185,49 +215,55 @@ bool MBConnection::connect(int timeoutMs)
                 if (ret == pid_) {
                     // Child exited — report how it died
                     if (WIFSIGNALED(status)) {
-                        fprintf(stderr, "mb --test child (pid %d) killed by signal %d\n",
-                                pid_, WTERMSIG(status));
+                        fprintf(stderr, "mb --test child (pid %d) killed by signal %d\n", pid_, WTERMSIG(status));
                     } else if (WIFEXITED(status)) {
-                        fprintf(stderr, "mb --test child (pid %d) exited with status %d\n",
-                                pid_, WEXITSTATUS(status));
+                        fprintf(stderr, "mb --test child (pid %d) exited with status %d\n", pid_, WEXITSTATUS(status));
                     }
                     pid_ = -1;
                     return false;
                 }
             }
             struct stat st;
-            if (stat(socketPath_.c_str(), &st) == 0) break;
+            if (stat(socketPath_.c_str(), &st) == 0) {
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         struct stat st;
-        if (stat(socketPath_.c_str(), &st) != 0) return false;
+        if (stat(socketPath_.c_str(), &st) != 0) {
+            return false;
+        }
     }
 
     struct lws_context_creation_info info = {};
-    info.options = 0;  // no libuv — driven by poll()
-    info.port = CONTEXT_PORT_NO_LISTEN;
-    info.protocols = sProtos;
-    info.user = this;
+    info.options                          = 0; // no libuv — driven by poll()
+    info.port                             = CONTEXT_PORT_NO_LISTEN;
+    info.protocols                        = sProtos;
+    info.user                             = this;
 
     lws_set_log_level(0, nullptr);
     ctx_ = lws_create_context(&info);
-    if (!ctx_) return false;
+    if (!ctx_) {
+        return false;
+    }
 
     // Connect to Unix socket
-    std::string unixAddr = "+" + socketPath_;
+    std::string unixAddr                  = "+" + socketPath_;
     struct lws_client_connect_info ccinfo = {};
-    ccinfo.context = ctx_;
-    ccinfo.address = unixAddr.c_str();
-    ccinfo.port = 0;
-    ccinfo.path = "/";
-    ccinfo.host = "localhost";
-    ccinfo.origin = "localhost";
-    ccinfo.protocol = "mb-debug";
-    ccinfo.local_protocol_name = "mb-debug";
-    ccinfo.ssl_connection = 0;
+    ccinfo.context                        = ctx_;
+    ccinfo.address                        = unixAddr.c_str();
+    ccinfo.port                           = 0;
+    ccinfo.path                           = "/";
+    ccinfo.host                           = "localhost";
+    ccinfo.origin                         = "localhost";
+    ccinfo.protocol                       = "mb-debug";
+    ccinfo.local_protocol_name            = "mb-debug";
+    ccinfo.ssl_connection                 = 0;
 
-    struct lws* wsi = lws_client_connect_via_info(&ccinfo);
-    if (!wsi) return false;
+    struct lws *wsi = lws_client_connect_via_info(&ccinfo);
+    if (!wsi) {
+        return false;
+    }
 
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (!connected_ && std::chrono::steady_clock::now() < deadline) {
@@ -241,9 +277,11 @@ bool MBConnection::connect(int timeoutMs)
 // Send request and wait for response
 // ============================================================================
 
-std::string MBConnection::sendRequest(const std::string& json, int timeoutMs)
+std::string MBConnection::sendRequest(const std::string &json, int timeoutMs)
 {
-    if (!connected_ || !wsi_) return {};
+    if (!connected_ || !wsi_) {
+        return {};
+    }
 
     responseReady_ = false;
     lastResponse_.clear();
@@ -260,41 +298,49 @@ std::string MBConnection::sendRequest(const std::string& json, int timeoutMs)
     if (!responseReady_ && pid_ > 0) {
         // Check if child crashed
         int status = 0;
-        pid_t r = waitpid(pid_, &status, WNOHANG);
-        if (r > 0) pid_ = -1;
+        pid_t r    = waitpid(pid_, &status, WNOHANG);
+        if (r > 0) {
+            pid_ = -1;
+        }
     }
-    return responseReady_ ? lastResponse_ : std::string{};
+    return responseReady_ ? lastResponse_ : std::string {};
 }
 
 // ============================================================================
 // Public API
 // ============================================================================
 
-bool MBConnection::sendAction(const std::string& action, const std::vector<std::string>& args, int timeoutMs)
+bool MBConnection::sendAction(const std::string &action, const std::vector<std::string> &args, int timeoutMs)
 {
     glz::generic::object_t req;
-    req["cmd"] = "action";
+    req["cmd"]    = "action";
     req["action"] = action;
-    req["id"] = static_cast<double>(nextId_++);
+    req["id"]     = static_cast<double>(nextId_++);
 
     if (!args.empty()) {
         glz::generic::array_t argsArr;
-        for (const auto& a : args) argsArr.emplace_back(a);
+        for (const auto &a : args) {
+            argsArr.emplace_back(a);
+        }
         req["args"] = std::move(argsArr);
     }
 
     std::string json;
     (void)glz::write_json(req, json);
     auto resp = sendRequest(json, timeoutMs);
-    if (resp.empty()) return false;
+    if (resp.empty()) {
+        return false;
+    }
 
     // Check "ok" field in response
     glz::generic j;
-    if (glz::read_json(j, resp)) return false;
-    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+    if (glz::read_json(j, resp)) {
+        return false;
+    }
+    if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
         auto it = obj->find("ok");
         if (it != obj->end()) {
-            if (auto* b = std::get_if<bool>(&it->second.data)) {
+            if (auto *b = std::get_if<bool>(&it->second.data)) {
                 return *b;
             }
         }
@@ -302,15 +348,15 @@ bool MBConnection::sendAction(const std::string& action, const std::vector<std::
     return false;
 }
 
-bool MBConnection::injectData(const std::string& data, int timeoutMs)
+bool MBConnection::injectData(const std::string &data, int timeoutMs)
 {
     // Base64-encode to avoid JSON control character issues
-    std::string b64 = base64::encode(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    std::string b64 = base64::encode(reinterpret_cast<const uint8_t *>(data.data()), data.size());
 
     glz::generic::object_t req;
-    req["cmd"] = "inject";
+    req["cmd"]  = "inject";
     req["data"] = b64;
-    req["id"] = static_cast<double>(nextId_++);
+    req["id"]   = static_cast<double>(nextId_++);
 
     std::string json;
     (void)glz::write_json(req, json);
@@ -322,7 +368,7 @@ std::string MBConnection::queryStats(int timeoutMs)
 {
     glz::generic::object_t req;
     req["cmd"] = "stats";
-    req["id"] = static_cast<double>(nextId_++);
+    req["id"]  = static_cast<double>(nextId_++);
 
     std::string json;
     (void)glz::write_json(req, json);
@@ -346,24 +392,21 @@ bool MBConnection::reset(int timeoutMs)
     return injectData("\033c", timeoutMs);
 }
 
-static std::string optionsFingerprint(const MBConnection::Options& o)
+static std::string optionsFingerprint(const MBConnection::Options &o)
 {
     // Canonicalize each field — empty strings get a sentinel so an empty
     // fontPath and a caller-supplied default font path don't alias. fontSize
     // is float-formatted to two decimals (sufficient for common values).
-    auto s = [](const std::string& v, const char* def) { return v.empty() ? def : v.c_str(); };
+    auto s = [](const std::string &v, const char *def)
+    {
+        return v.empty() ? def : v.c_str();
+    };
     char buf[512];
-    snprintf(buf, sizeof(buf), "%s|%s|%s|%s|%dx%d|%.2f",
-             s(o.fontPath, "<def>"),
-             s(o.fallbackFontPath, "<none>"),
-             s(o.emojiFontPath, "<none>"),
-             s(o.shell, "<def>"),
-             o.cols, o.rows,
-             static_cast<double>(o.fontSize));
+    snprintf(buf, sizeof(buf), "%s|%s|%s|%s|%dx%d|%.2f", s(o.fontPath, "<def>"), s(o.fallbackFontPath, "<none>"), s(o.emojiFontPath, "<none>"), s(o.shell, "<def>"), o.cols, o.rows, static_cast<double>(o.fontSize));
     return buf;
 }
 
-MBConnection& MBConnection::shared()
+MBConnection &MBConnection::shared()
 {
     Options o;
     o.cols = 40;
@@ -371,7 +414,7 @@ MBConnection& MBConnection::shared()
     return shared(o);
 }
 
-MBConnection& MBConnection::shared(const Options& opts)
+MBConnection &MBConnection::shared(const Options &opts)
 {
     // Cache of live connections, keyed by Options fingerprint. unique_ptr
     // storage because MBConnection is non-copyable; map destructor at
@@ -379,7 +422,7 @@ MBConnection& MBConnection::shared(const Options& opts)
     // ~MBConnection (SIGTERM + waitpid).
     static std::unordered_map<std::string, std::unique_ptr<MBConnection>> cache;
     auto key = optionsFingerprint(opts);
-    auto it = cache.find(key);
+    auto it  = cache.find(key);
     if (it == cache.end()) {
         auto inst = std::make_unique<MBConnection>(opts);
         if (!inst->connect()) {
@@ -392,12 +435,12 @@ MBConnection& MBConnection::shared(const Options& opts)
     return *it->second;
 }
 
-bool MBConnection::sendText(const std::string& text, int timeoutMs)
+bool MBConnection::sendText(const std::string &text, int timeoutMs)
 {
     glz::generic::object_t req;
-    req["cmd"] = "key";
+    req["cmd"]  = "key";
     req["text"] = text;
-    req["id"] = static_cast<double>(nextId_++);
+    req["id"]   = static_cast<double>(nextId_++);
 
     std::string json;
     (void)glz::write_json(req, json);
@@ -405,16 +448,18 @@ bool MBConnection::sendText(const std::string& text, int timeoutMs)
     return !resp.empty();
 }
 
-bool MBConnection::sendKey(const std::string& key, const std::vector<std::string>& mods, int timeoutMs)
+bool MBConnection::sendKey(const std::string &key, const std::vector<std::string> &mods, int timeoutMs)
 {
     glz::generic::object_t req;
     req["cmd"] = "key";
     req["key"] = key;
-    req["id"] = static_cast<double>(nextId_++);
+    req["id"]  = static_cast<double>(nextId_++);
 
     if (!mods.empty()) {
         glz::generic::array_t modsArr;
-        for (const auto& m : mods) modsArr.emplace_back(m);
+        for (const auto &m : mods) {
+            modsArr.emplace_back(m);
+        }
         req["mods"] = std::move(modsArr);
     }
 
@@ -424,41 +469,48 @@ bool MBConnection::sendKey(const std::string& key, const std::vector<std::string
     return !resp.empty();
 }
 
-std::vector<uint8_t> MBConnection::doScreenshot(const std::string& target,
-                                               int x, int y, int w, int h,
-                                               bool hasRect, int timeoutMs)
+std::vector<uint8_t> MBConnection::doScreenshot(const std::string &target,
+                                                int x, int y, int w, int h,
+                                                bool hasRect, int timeoutMs)
 {
     glz::generic::object_t req;
-    req["cmd"] = "screenshot";
+    req["cmd"]    = "screenshot";
     req["format"] = "png";
-    req["id"] = static_cast<double>(nextId_++);
+    req["id"]     = static_cast<double>(nextId_++);
 
-    if (!target.empty())
+    if (!target.empty()) {
         req["target"] = target;
+    }
 
     if (hasRect) {
         glz::generic::object_t rect;
-        rect["x"] = static_cast<double>(x);
-        rect["y"] = static_cast<double>(y);
-        rect["w"] = static_cast<double>(w);
-        rect["h"] = static_cast<double>(h);
+        rect["x"]   = static_cast<double>(x);
+        rect["y"]   = static_cast<double>(y);
+        rect["w"]   = static_cast<double>(w);
+        rect["h"]   = static_cast<double>(h);
         req["rect"] = std::move(rect);
     }
 
     std::string json;
     (void)glz::write_json(req, json);
     auto resp = sendRequest(json, timeoutMs);
-    if (resp.empty()) return {};
+    if (resp.empty()) {
+        return {};
+    }
 
     // Parse response and extract base64 data
     glz::generic j;
-    if (glz::read_json(j, resp)) return {};
+    if (glz::read_json(j, resp)) {
+        return {};
+    }
 
-    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+    if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
         auto it = obj->find("data");
         if (it != obj->end()) {
-            if (auto* s = std::get_if<std::string>(&it->second.data)) {
-                if (s->empty()) return {};
+            if (auto *s = std::get_if<std::string>(&it->second.data)) {
+                if (s->empty()) {
+                    return {};
+                }
                 return base64::decode(*s);
             }
         }
@@ -489,9 +541,9 @@ std::vector<uint8_t> MBConnection::screenshotPaneRect(int paneId, int x, int y, 
 std::string MBConnection::screenshotGridJson(int timeoutMs)
 {
     glz::generic::object_t req;
-    req["cmd"] = "screenshot";
+    req["cmd"]    = "screenshot";
     req["format"] = "grid";
-    req["id"] = static_cast<double>(nextId_++);
+    req["id"]     = static_cast<double>(nextId_++);
     std::string json;
     (void)glz::write_json(req, json);
     return sendRequest(json, timeoutMs);
@@ -504,11 +556,11 @@ std::string MBConnection::screenshotGridJson(int timeoutMs)
 // stb_image for decoding — STB_IMAGE_IMPLEMENTATION is defined in terminal/OSC.cpp
 #include <stb_image.h>
 
-int MBConnection::comparePng(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b)
+int MBConnection::comparePng(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b)
 {
     int wa, ha, ca, wb, hb, cb;
-    uint8_t* pixA = stbi_load_from_memory(a.data(), static_cast<int>(a.size()), &wa, &ha, &ca, 4);
-    uint8_t* pixB = stbi_load_from_memory(b.data(), static_cast<int>(b.size()), &wb, &hb, &cb, 4);
+    uint8_t *pixA = stbi_load_from_memory(a.data(), static_cast<int>(a.size()), &wa, &ha, &ca, 4);
+    uint8_t *pixB = stbi_load_from_memory(b.data(), static_cast<int>(b.size()), &wb, &hb, &cb, 4);
 
     if (!pixA || !pixB || wa != wb || ha != hb) {
         stbi_image_free(pixA);
@@ -516,11 +568,13 @@ int MBConnection::comparePng(const std::vector<uint8_t>& a, const std::vector<ui
         return 255; // max difference if sizes mismatch
     }
 
-    int maxDiff = 0;
+    int maxDiff  = 0;
     size_t total = static_cast<size_t>(wa) * ha * 4;
     for (size_t i = 0; i < total; i++) {
         int d = std::abs(static_cast<int>(pixA[i]) - static_cast<int>(pixB[i]));
-        if (d > maxDiff) maxDiff = d;
+        if (d > maxDiff) {
+            maxDiff = d;
+        }
     }
 
     stbi_image_free(pixA);
@@ -528,15 +582,16 @@ int MBConnection::comparePng(const std::vector<uint8_t>& a, const std::vector<ui
     return maxDiff;
 }
 
-bool MBConnection::matchesReference(const std::vector<uint8_t>& png, const std::string& refName, int tolerance)
+bool MBConnection::matchesReference(const std::vector<uint8_t> &png, const std::string &refName, int tolerance)
 {
     std::string name = refName;
-    if (name.size() < 4 || name.substr(name.size() - 4) != ".png")
+    if (name.size() < 4 || name.substr(name.size() - 4) != ".png") {
         name += ".png";
+    }
     std::string refPath = std::string(MB_REF_DIR) + "/" + name;
 
     // If MB_UPDATE_REFS=1, save the actual as the new reference
-    if (const char* env = getenv("MB_UPDATE_REFS")) {
+    if (const char *env = getenv("MB_UPDATE_REFS")) {
         if (std::string(env) == "1") {
             savePng(png, refPath);
             return true;
@@ -544,7 +599,9 @@ bool MBConnection::matchesReference(const std::vector<uint8_t>& png, const std::
     }
 
     auto ref = loadPng(refPath);
-    if (ref.empty()) return false;
+    if (ref.empty()) {
+        return false;
+    }
 
     bool ok = comparePng(png, ref) <= tolerance;
     if (!ok) {
@@ -558,11 +615,13 @@ bool MBConnection::matchesReference(const std::vector<uint8_t>& png, const std::
         // MasterBandit itself), emit both images inline so the diff is
         // visible in the test output. Silently harmless on terminals that
         // don't support the escape.
-        auto emitInline = [](const char* label, const std::vector<uint8_t>& data) {
-            if (data.empty()) return;
+        auto emitInline = [](const char *label, const std::vector<uint8_t> &data)
+        {
+            if (data.empty()) {
+                return;
+            }
             std::string b64 = base64::encode(data.data(), data.size());
-            fprintf(stderr, "  %s: \x1b]1337;File=inline=1;size=%zu:%s\x07\n",
-                    label, data.size(), b64.c_str());
+            fprintf(stderr, "  %s: \x1b]1337;File=inline=1;size=%zu:%s\x07\n", label, data.size(), b64.c_str());
         };
         emitInline("expected", ref);
         emitInline("actual  ", png);
@@ -570,19 +629,21 @@ bool MBConnection::matchesReference(const std::vector<uint8_t>& png, const std::
     return ok;
 }
 
-void MBConnection::savePng(const std::vector<uint8_t>& png, const std::string& path)
+void MBConnection::savePng(const std::vector<uint8_t> &png, const std::string &path)
 {
     std::ofstream f(path, std::ios::binary);
-    f.write(reinterpret_cast<const char*>(png.data()), png.size());
+    f.write(reinterpret_cast<const char *>(png.data()), png.size());
 }
 
-std::vector<uint8_t> MBConnection::loadPng(const std::string& path)
+std::vector<uint8_t> MBConnection::loadPng(const std::string &path)
 {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open()) return {};
+    if (!f.is_open()) {
+        return {};
+    }
     auto size = f.tellg();
     f.seekg(0);
     std::vector<uint8_t> data(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(data.data()), size);
+    f.read(reinterpret_cast<char *>(data.data()), size);
     return data;
 }

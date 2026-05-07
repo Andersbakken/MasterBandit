@@ -8,7 +8,8 @@
 namespace Script {
 
 // Individual permission bits
-enum Perm : uint32_t {
+enum Perm : uint32_t
+{
     None              = 0,
     // ui group. Bits 0 and 1 are reserved (never asserted) to preserve the
     // numeric stability of the remaining ui.* bits against existing on-disk
@@ -28,7 +29,7 @@ enum Perm : uint32_t {
     IoInject          = 1 << 6,
     // shell group
     ShellWrite        = 1 << 7,
-    ShellReadCommands = 1 << 16,  // read OSC 133 command records + subscribe to commandComplete
+    ShellReadCommands = 1 << 16, // read OSC 133 command records + subscribe to commandComplete
     // actions group
     ActionsInvoke     = 1 << 8,
     // tabs group
@@ -38,13 +39,13 @@ enum Perm : uint32_t {
     ScriptsLoad       = 1 << 11,
     ScriptsUnload     = 1 << 12,
     // fs group
-    FsRead            = 1 << 13,  // read from script dir and config dir
-    FsWrite           = 1 << 14,  // read+write ~/.config/MasterBandit/<scriptname>/
+    FsRead            = 1 << 13, // read from script dir and config dir
+    FsWrite           = 1 << 14, // read+write ~/.config/MasterBandit/<scriptname>/
     // net group
-    NetListenLocal    = 1 << 15,  // bind WebSocket server on 127.0.0.1 or unix socket
+    NetListenLocal    = 1 << 15, // bind WebSocket server on 127.0.0.1 or unix socket
     // clipboard group
-    ClipboardRead     = 1 << 17,  // read system clipboard / primary selection
-    ClipboardWrite    = 1 << 18,  // write system clipboard / primary selection
+    ClipboardRead     = 1 << 17, // read system clipboard / primary selection
+    ClipboardWrite    = 1 << 18, // write system clipboard / primary selection
     // pane query group
     // Read access to pane document content: selection, cursor, scrollback
     // text extraction (getTextFromRows / getLinksFromRows / linkAt /
@@ -92,17 +93,17 @@ enum Perm : uint32_t {
     // permission bits we might land mid-range. The "all" parse token
     // explicitly excludes this bit (see kPermNames) so a user
     // requesting "all" doesn't accidentally trip the elevation gate.
-    BuiltIn           = 1u << 31,
+    BuiltIn = 1u << 31,
 
     // Group masks
-    GroupUi      = UiPopupCreate | UiPopupDestroy,
-    GroupIo      = IoFilterInput | IoFilterOutput | IoInject,
-    GroupShell   = ShellWrite | ShellReadCommands,
-    GroupActions = ActionsInvoke,
-    GroupTabs    = TabsCreate | TabsClose,
-    GroupScripts = ScriptsLoad | ScriptsUnload,
-    GroupFs      = FsRead | FsWrite,
-    GroupNet     = NetListenLocal,
+    GroupUi        = UiPopupCreate | UiPopupDestroy,
+    GroupIo        = IoFilterInput | IoFilterOutput | IoInject,
+    GroupShell     = ShellWrite | ShellReadCommands,
+    GroupActions   = ActionsInvoke,
+    GroupTabs      = TabsCreate | TabsClose,
+    GroupScripts   = ScriptsLoad | ScriptsUnload,
+    GroupFs        = FsRead | FsWrite,
+    GroupNet       = NetListenLocal,
     GroupClipboard = ClipboardRead | ClipboardWrite,
     GroupLayout    = LayoutModify,
     GroupConfig    = ConfigModify,
@@ -114,45 +115,35 @@ enum Perm : uint32_t {
     // too. Deliberately EXCLUDES Perm::BuiltIn: that's an elevation
     // marker, not a permission, and parsing "all" must not trip the
     // builtin-elevation kill-on-attempt path.
-    All          = GroupUi | UiFocus
-                 | GroupIo
-                 | GroupShell
-                 | GroupActions
-                 | GroupTabs
-                 | GroupScripts
-                 | GroupFs
-                 | GroupNet
-                 | GroupClipboard
-                 | GroupLayout
-                 | GroupConfig
-                 | GroupProcess
-                 | PaneRead,
+    All = GroupUi | UiFocus | GroupIo | GroupShell | GroupActions | GroupTabs | GroupScripts | GroupFs | GroupNet | GroupClipboard | GroupLayout | GroupConfig | GroupProcess | PaneRead,
 };
 
 // Parse "ui,io,shell" or "ui,io.filter.input,shell" into a bitmask
-uint32_t parsePermissions(const std::string& permStr);
+uint32_t parsePermissions(const std::string &permStr);
 
 // Convert bitmask back to a comma-separated group string
 std::string permissionsToString(uint32_t perms);
 
 // Map an action name (e.g. "NewTab") to additional required permission bits.
 // Returns 0 if the action needs no extra permission beyond ActionsInvoke.
-uint32_t actionPermission(const std::string& actionName);
+uint32_t actionPermission(const std::string &actionName);
 
 // Compute SHA-256 hex digest of a string
-std::string sha256Hex(const std::string& content);
+std::string sha256Hex(const std::string &content);
 
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
 inline constexpr int kAllowlistVersion = 12;
 
 // Persistent allowlist/denylist for script permissions
-class Allowlist {
+class Allowlist
+{
 public:
-    void load(const std::string& configDir);
+    void load(const std::string &configDir);
     void save() const;
 
-    struct AllowEntry {
+    struct AllowEntry
+    {
         std::string path;
         std::string sha256;
         uint32_t permissions = 0;
@@ -161,16 +152,20 @@ public:
     };
 
     // Returns the allow entry if path+hash match; nullptr otherwise.
-    const AllowEntry* check(const std::string& path, const std::string& hash) const;
-    bool isDenied(const std::string& path, const std::string& hash) const;
+    const AllowEntry *check(const std::string &path, const std::string &hash) const;
+    bool isDenied(const std::string &path, const std::string &hash) const;
 
-    void allow(const std::string& path, const std::string& hash,
+    void allow(const std::string &path, const std::string &hash,
                uint32_t permissions,
-               const std::vector<std::pair<std::string, std::string>>& modules = {});
-    void deny(const std::string& path, const std::string& hash);
+               const std::vector<std::pair<std::string, std::string>> &modules = {});
+    void deny(const std::string &path, const std::string &hash);
 
 private:
-    struct DenyEntry { std::string path; std::string sha256; };
+    struct DenyEntry
+    {
+        std::string path;
+        std::string sha256;
+    };
 
     std::string filePath_;
     std::vector<AllowEntry> allowed_;

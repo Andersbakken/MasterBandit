@@ -1,99 +1,110 @@
 #pragma once
 
-#include <string>
-#include <vector>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
-#include <functional>
+#include <string>
+#include <vector>
 
 #include <eventloop/EventLoop.h>
-#include <libwebsockets.h>
 #include <glaze/glaze.hpp>
+#include <libwebsockets.h>
 
 class Terminal;
 
-class DebugIPC {
+class DebugIPC
+{
 public:
     using GridCallback     = std::function<std::string(int id)>;
     using StatsCallback    = std::function<std::string(int id)>;
-    using TerminalCallback = std::function<Terminal*()>;
-    using ActionCallback   = std::function<bool(const std::string& action, const std::vector<std::string>& args)>;
+    using TerminalCallback = std::function<Terminal *()>;
+    using ActionCallback   = std::function<bool(const std::string &action, const std::vector<std::string> &args)>;
 
-    DebugIPC(EventLoop* loop, TerminalCallback termCb, GridCallback gridCb,
+    DebugIPC(EventLoop *loop, TerminalCallback termCb, GridCallback gridCb,
              StatsCallback statsCb = {}, ActionCallback actionCb = {});
     ~DebugIPC();
 
     // Stop lws thread and destroy lws context.
     void closeHandles();
 
-    void broadcastLog(const std::string& msg);
-    const std::string& socketPath() const { return socketPath_; }
+    void broadcastLog(const std::string &msg);
+
+    const std::string &socketPath() const { return socketPath_; }
 
     // Called by TerminalWindow when a PNG readback completes
-    void onPngReady(const std::string& base64Png);
+    void onPngReady(const std::string &base64Png);
 
     // Returns true if a PNG screenshot was requested and readback hasn't started
     bool pngScreenshotPending() const { return pngPending_ && !pngReadbackInProgress_; }
+
     int pngScreenshotId() const { return pngId_; }
+
     void markReadbackInProgress() { pngReadbackInProgress_ = true; }
 
     // Target and cell-rect for targeted screenshots
-    const std::string& pngTarget() const { return pngTarget_; }
-    struct CellRect { int x = 0, y = 0, w = 0, h = 0; bool valid = false; };
-    const CellRect& pngCellRect() const { return pngCellRect_; }
+    const std::string &pngTarget() const { return pngTarget_; }
+
+    struct CellRect
+    {
+        int x = 0, y = 0, w = 0, h = 0;
+        bool valid = false;
+    };
+
+    const CellRect &pngCellRect() const { return pngCellRect_; }
 
     // Public because it's referenced from the static protocol table
-    static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
-                          void* user, void* in, size_t len);
+    static int wsCallback(struct lws *wsi, enum lws_callback_reasons reason,
+                          void *user, void *in, size_t len);
 
 private:
-    void handleMessage(struct lws* wsi, const std::string& msg);
-    void sendResponse(struct lws* wsi, const std::string& json);
+    void handleMessage(struct lws *wsi, const std::string &msg);
+    void sendResponse(struct lws *wsi, const std::string &json);
 
     // Command handlers
-    void cmdScreenshotPng(struct lws* wsi, int id, const glz::generic& j);
-    void cmdScreenshotGrid(struct lws* wsi, int id);
-    void cmdSendKey(struct lws* wsi, int id, const std::string& text,
-                    const std::string& key, const std::vector<std::string>& mods);
-    void cmdStats(struct lws* wsi, int id);
-    void cmdInject(struct lws* wsi, int id, const std::string& data);
-    void cmdFeed(struct lws* wsi, int id, const std::string& path, uint32_t repeat);
-    void cmdWaitIdle(struct lws* wsi, int id, uint64_t timeoutMs, uint64_t settleMs);
-    void cmdAction(struct lws* wsi, int id, const std::string& action,
-                   const std::vector<std::string>& args);
-    void cmdSubscribeLogs(struct lws* wsi, int id);
-    void cmdUnsubscribeLogs(struct lws* wsi, int id);
+    void cmdScreenshotPng(struct lws *wsi, int id, const glz::generic &j);
+    void cmdScreenshotGrid(struct lws *wsi, int id);
+    void cmdSendKey(struct lws *wsi, int id, const std::string &text,
+                    const std::string &key, const std::vector<std::string> &mods);
+    void cmdStats(struct lws *wsi, int id);
+    void cmdInject(struct lws *wsi, int id, const std::string &data);
+    void cmdFeed(struct lws *wsi, int id, const std::string &path, uint32_t repeat);
+    void cmdWaitIdle(struct lws *wsi, int id, uint64_t timeoutMs, uint64_t settleMs);
+    void cmdAction(struct lws *wsi, int id, const std::string &action,
+                   const std::vector<std::string> &args);
+    void cmdSubscribeLogs(struct lws *wsi, int id);
+    void cmdUnsubscribeLogs(struct lws *wsi, int id);
 
-    struct lws_context* ctx_ = nullptr;
+    struct lws_context *ctx_ = nullptr;
     std::string socketPath_;
     TerminalCallback termCb_;
     GridCallback gridCb_;
     StatsCallback statsCb_;
     ActionCallback actionCb_;
 
-    struct PerConnection {
+    struct PerConnection
+    {
         std::string rxBuffer;
         bool subscribedToLogs = false;
         std::vector<std::string> txQueue;
     };
 
     // Map from lws* to per-connection data
-    std::vector<std::pair<struct lws*, PerConnection>> connections_;
+    std::vector<std::pair<struct lws *, PerConnection>> connections_;
 
-    PerConnection* findConnection(struct lws* wsi);
-    PerConnection* addConnection(struct lws* wsi);
-    void removeConnection(struct lws* wsi);
+    PerConnection *findConnection(struct lws *wsi);
+    PerConnection *addConnection(struct lws *wsi);
+    void removeConnection(struct lws *wsi);
 
     // PNG screenshot state
-    bool pngPending_ = false;
+    bool pngPending_            = false;
     bool pngReadbackInProgress_ = false;
-    int pngId_ = 0;
-    struct lws* pngWsi_ = nullptr;
+    int pngId_                  = 0;
+    struct lws *pngWsi_         = nullptr;
     std::string pngTarget_;
     CellRect pngCellRect_;
 
-    EventLoop* loop_ = nullptr;
+    EventLoop *loop_ = nullptr;
 
     std::mutex logMutex_;
     std::deque<std::string> logQueue_;
@@ -101,16 +112,18 @@ private:
     // Called from within lws callbacks to drain log queue and notify writeable
     void drainLogQueue();
 
-    struct WaitIdleState {
-        struct lws* wsi = nullptr;
-        int id = 0;
-        uint64_t startUs = 0;
-        uint64_t timeoutUs = 0;
-        uint64_t settleUs = 0;
-        uint64_t framesAtStart = 0;
+    struct WaitIdleState
+    {
+        struct lws *wsi          = nullptr;
+        int id                   = 0;
+        uint64_t startUs         = 0;
+        uint64_t timeoutUs       = 0;
+        uint64_t settleUs        = 0;
+        uint64_t framesAtStart   = 0;
         EventLoop::TimerId timer = 0;
     };
-    void pollWaitIdle(const std::shared_ptr<WaitIdleState>& state);
+
+    void pollWaitIdle(const std::shared_ptr<WaitIdleState> &state);
 
     // Called when an lws-watched fd fires in the EventLoop
     void serviceFd(int fd, EventLoop::FdEvents fired);

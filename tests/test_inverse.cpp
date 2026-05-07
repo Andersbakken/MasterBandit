@@ -1,22 +1,24 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
 #include <algorithm>
+#include <doctest/doctest.h>
 
 // Simulates what resolveRow does for fg/bg with inverse applied.
-static std::pair<uint32_t, uint32_t> resolvedColors(const CellAttrs& a)
+static std::pair<uint32_t, uint32_t> resolvedColors(const CellAttrs &a)
 {
     uint32_t fg = a.packFgAsU32();
     uint32_t bg = a.packBgAsU32();
-    if (a.inverse()) std::swap(fg, bg);
-    return {fg, bg};
+    if (a.inverse()) {
+        std::swap(fg, bg);
+    }
+    return { fg, bg };
 }
 
 TEST_CASE("SGR inverse swaps fg and bg colors")
 {
     TestTerminal t;
-    t.csi("38;2;255;0;0m");   // fg = red
-    t.csi("48;2;0;0;255m");   // bg = blue
-    t.csi("7m");               // inverse on
+    t.csi("38;2;255;0;0m"); // fg = red
+    t.csi("48;2;0;0;255m"); // bg = blue
+    t.csi("7m");            // inverse on
     t.feed("A");
 
     auto [fg, bg] = resolvedColors(t.attrs(0, 0));
@@ -54,10 +56,10 @@ TEST_CASE("SGR inverse with default colors uses swapped defaults")
 TEST_CASE("SGR inverse off restores original colors")
 {
     TestTerminal t;
-    t.csi("38;2;255;0;0m");   // fg = red
-    t.csi("48;2;0;0;255m");   // bg = blue
-    t.csi("7m");               // inverse on
-    t.csi("27m");              // inverse off
+    t.csi("38;2;255;0;0m"); // fg = red
+    t.csi("48;2;0;0;255m"); // bg = blue
+    t.csi("7m");            // inverse on
+    t.csi("27m");           // inverse off
     t.feed("A");
 
     CHECK_FALSE(t.attrs(0, 0).inverse());

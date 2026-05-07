@@ -22,13 +22,14 @@
 // full renderFrame has completed since the entry was staged, so any frame
 // that could have been mid-flight at stamp time has ended and its local
 // references into frameState_ are out of scope.
-class Graveyard {
+class Graveyard
+{
 public:
-    Graveyard() = default;
+    Graveyard()  = default;
     ~Graveyard() = default;
 
-    Graveyard(const Graveyard&) = delete;
-    Graveyard& operator=(const Graveyard&) = delete;
+    Graveyard(const Graveyard &)            = delete;
+    Graveyard &operator=(const Graveyard &) = delete;
 
     // Take ownership of a unique_ptr; destroy after one render frame.
     // `ready` (optional) is consulted in addition to the frame-stamp
@@ -38,18 +39,23 @@ public:
     // returned.
     template <typename T>
     void defer(std::unique_ptr<T> ptr, uint64_t stamp,
-               std::function<bool()> ready = {}) {
-        if (!ptr) return;
-        std::shared_ptr<void> holder(ptr.release(), [](void* p) {
-            delete static_cast<T*>(p);
-        });
-        entries_.push_back({stamp, std::move(holder), std::move(ready)});
+               std::function<bool()> ready = {})
+    {
+        if (!ptr) {
+            return;
+        }
+        std::shared_ptr<void> holder(ptr.release(), [](void *p)
+                                     {
+                                         delete static_cast<T *>(p);
+                                     });
+        entries_.push_back({ stamp, std::move(holder), std::move(ready) });
     }
 
     // Take ownership of a value (moved into a heap allocation).
     template <typename T>
-    void deferValue(T&& val, uint64_t stamp) {
-        using U = std::decay_t<T>;
+    void deferValue(T &&val, uint64_t stamp)
+    {
+        using U  = std::decay_t<T>;
         auto ptr = std::make_unique<U>(std::forward<T>(val));
         defer(std::move(ptr), stamp);
     }
@@ -57,13 +63,18 @@ public:
     // Called on the main thread each tick. Frees entries whose stamp has
     // been surpassed by at least one completed renderFrame AND whose
     // optional `ready` predicate returns true.
-    void sweep(uint64_t completedFrames) {
-        auto it = std::remove_if(entries_.begin(), entries_.end(),
-            [completedFrames](const Entry& e) {
-                if (completedFrames <= e.stamp) return false;
-                if (e.ready && !e.ready()) return false;
-                return true;
-            });
+    void sweep(uint64_t completedFrames)
+    {
+        auto it = std::remove_if(entries_.begin(), entries_.end(), [completedFrames](const Entry &e)
+                                 {
+                                     if (completedFrames <= e.stamp) {
+                                         return false;
+                                     }
+                                     if (e.ready && !e.ready()) {
+                                         return false;
+                                     }
+                                     return true;
+                                 });
         entries_.erase(it, entries_.end());
     }
 
@@ -74,10 +85,12 @@ public:
     size_t size() const { return entries_.size(); }
 
 private:
-    struct Entry {
+    struct Entry
+    {
         uint64_t stamp;
         std::shared_ptr<void> holder;
         std::function<bool()> ready; // empty == always ready (only stamp gates)
     };
+
     std::vector<Entry> entries_;
 };

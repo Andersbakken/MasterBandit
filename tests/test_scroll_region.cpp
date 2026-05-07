@@ -1,5 +1,5 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 // Edge-case tests for IL/DL/scroll-region interaction with the
 // visible-grid / scrollback split.
@@ -18,8 +18,8 @@ TEST_CASE("scroll region: DECSTBM IL inside region preserves rows above" * docte
     t.csi("3;5r");
     // Move cursor into region, IL 1: insert a blank row at cursor, push
     // bottom of region out.
-    t.csi("4;1H");      // cursor at row 4 (= screen row 3)
-    t.csi("L");          // IL 1
+    t.csi("4;1H"); // cursor at row 4 (= screen row 3)
+    t.csi("L");    // IL 1
     // Rows 0..1 (above region) untouched.
     CHECK(t.rowText(0) == "AAAA");
     CHECK(t.rowText(1) == "BBBB");
@@ -39,17 +39,17 @@ TEST_CASE("scroll region: IL on a soft-wrapped chain only mutates visible row" *
     // soft-wrap accounting. Set up a soft-wrapped chain inside a scroll
     // region and IL one row.
     TestTerminal t(4, 5);
-    t.feed("ABCDEFGH");  // 8 chars autowraps: row0=ABCD row1=EFGH (continued)
+    t.feed("ABCDEFGH"); // 8 chars autowraps: row0=ABCD row1=EFGH (continued)
     // Verify pre-state.
     CHECK(t.rowText(0) == "ABCD");
     CHECK(t.rowText(1) == "EFGH");
     // Set scroll region rows 1..3 (screen rows 0..2).
     t.csi("1;3r");
-    t.csi("2;1H");       // cursor at row 2 (screen row 1)
-    t.csi("L");           // IL 1: insert blank above row 1 within region
-    CHECK(t.rowText(0) == "ABCD");  // top of region unchanged
-    CHECK(t.rowText(1) == "");      // newly inserted blank
-    CHECK(t.rowText(2) == "EFGH");  // shifted down
+    t.csi("2;1H");                 // cursor at row 2 (screen row 1)
+    t.csi("L");                    // IL 1: insert blank above row 1 within region
+    CHECK(t.rowText(0) == "ABCD"); // top of region unchanged
+    CHECK(t.rowText(1) == "");     // newly inserted blank
+    CHECK(t.rowText(2) == "EFGH"); // shifted down
     // Region scrolled the original row 2 (blank) out, row 3 still blank.
     CHECK(t.rowText(3) == "");
 }
@@ -58,9 +58,9 @@ TEST_CASE("scroll region: DL within region drops the right row" * doctest::test_
 {
     TestTerminal t(20, 6);
     t.feed("AAAA\r\nBBBB\r\nCCCC\r\nDDDD\r\nEEEE\r\nFFFF");
-    t.csi("3;5r");      // region rows 3..5 (screen 2..4)
-    t.csi("4;1H");      // cursor at screen row 3 (DDDD)
-    t.csi("M");          // DL 1
+    t.csi("3;5r"); // region rows 3..5 (screen 2..4)
+    t.csi("4;1H"); // cursor at screen row 3 (DDDD)
+    t.csi("M");    // DL 1
     // Rows above region untouched.
     CHECK(t.rowText(0) == "AAAA");
     CHECK(t.rowText(1) == "BBBB");
@@ -78,8 +78,8 @@ TEST_CASE("scroll region: full-region scroll feeds top row to scrollback" * doct
     // top into scrollback.
     TestTerminal t(10, 3);
     t.term.resetScrollback(100);
-    t.feed("XXX\r\nYYY\r\nZZZ");  // visible: XXX, YYY, ZZZ
-    t.feed("\r\n");                 // LF at bottom scrolls XXX out
+    t.feed("XXX\r\nYYY\r\nZZZ"); // visible: XXX, YYY, ZZZ
+    t.feed("\r\n");              // LF at bottom scrolls XXX out
     CHECK(t.term.document().scrollbackLogicalLines() == 1);
     CHECK(t.term.document().historyRow(0)[0].wc == U'X');
 }
@@ -94,8 +94,8 @@ TEST_CASE("scroll region: partial-region scroll does NOT feed scrollback" * doct
     int before = t.term.document().scrollbackLogicalLines();
     // Scroll region rows 2..4 (screen 1..3).
     t.csi("2;4r");
-    t.csi("4;1H");      // cursor at bottom of region
-    t.feed("\n");         // LF at bottom of region: in-region scroll only
+    t.csi("4;1H"); // cursor at bottom of region
+    t.feed("\n");  // LF at bottom of region: in-region scroll only
     int after = t.term.document().scrollbackLogicalLines();
     CHECK(before == after);
 }
@@ -105,9 +105,9 @@ TEST_CASE("ICH/DCH bounds stay within physical row" * doctest::test_suite("scrol
     // ICH/DCH operate within a single physical row; soft-wrap chain
     // continuation doesn't leak shifted cells across the row boundary.
     TestTerminal t(4, 3);
-    t.feed("ABCDEFGH");  // row 0: ABCD row 1: EFGH (continued)
-    t.csi("1;1H");       // cursor at (0, 0)
-    t.csi("2@");          // ICH 2: insert 2 blank cells at cursor
+    t.feed("ABCDEFGH"); // row 0: ABCD row 1: EFGH (continued)
+    t.csi("1;1H");      // cursor at (0, 0)
+    t.csi("2@");        // ICH 2: insert 2 blank cells at cursor
     // Row 0: 2 blanks + AB (cells C and D shift off the row, NOT into row 1).
     CHECK(t.rowText(0) == "  AB");
     // Row 1 unchanged.

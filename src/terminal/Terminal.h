@@ -1,19 +1,19 @@
 #pragma once
+#include "PtyMux.h"
 #include "Rect.h"
 #include "TerminalEmulator.h"
 #include "TerminalOptions.h"
 #include "Uuid.h"
-#include <eventloop/EventLoop.h>
-#include "PtyMux.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>  // FILE* (output capture)
+#include <cstdio> // FILE* (output capture)
+#include <eventloop/EventLoop.h>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <shared_mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -25,21 +25,23 @@
 
 class Terminal; // forward declare for PlatformCallbacks
 
-struct PlatformCallbacks {
-    std::function<void(Terminal*)> onTerminalExited;
+struct PlatformCallbacks
+{
+    std::function<void(Terminal *)> onTerminalExited;
     std::function<void()> quit;
     // Output filter: check shouldFilterOutput first (cheap, no copy),
     // then call filterOutput only if it returns true.
     std::function<bool()> shouldFilterOutput;
-    std::function<void(std::string& data)> filterOutput;
+    std::function<void(std::string &data)> filterOutput;
     // Input filter: same pattern.
     std::function<bool()> shouldFilterInput;
-    std::function<void(std::string& data)> filterInput;
+    std::function<void(std::string &data)> filterInput;
     // Headless input sink: receives keystrokes when no PTY exists (applet mode).
-    std::function<void(const char* data, size_t len)> onInput;
+    std::function<void(const char *data, size_t len)> onInput;
 };
 
-class Terminal : public TerminalEmulator {
+class Terminal : public TerminalEmulator
+{
 public:
     Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks);
     ~Terminal() override;
@@ -49,17 +51,24 @@ public:
     // that don't live in the tree have nil nodeId and key off their parent
     // plus popupId string.
     Uuid id() const { return mNodeId; }
+
     Uuid nodeId() const { return mNodeId; }
+
     void setNodeId(Uuid u) { mNodeId = u; }
 
     // --- PTY lifecycle ---
-    bool init(const TerminalOptions& options);
+    bool init(const TerminalOptions &options);
     // Initialize without a PTY or child process. For script-driven applets.
-    bool initHeadless(const TerminalOptions& options);
-    void setEventLoop(EventLoop* loop) { mEventLoop = loop; }
-    void setPtyMux(PtyMux* mux) { mPtyMux = mux; }
+    bool initHeadless(const TerminalOptions &options);
+
+    void setEventLoop(EventLoop *loop) { mEventLoop = loop; }
+
+    void setPtyMux(PtyMux *mux) { mPtyMux = mux; }
+
     int masterFD() const { return mMasterFD; }
+
     bool isHeadless() const { return mHeadless; }
+
     void readFromFD();
     // Synchronous parse on the calling thread. Used by tests and by
     // headless code paths that don't have a worker pool. Production
@@ -76,7 +85,7 @@ public:
     // Returns true iff a new task was submitted (caller can use this to
     // skip wakeups, etc.).
     using ParseSubmitFn = std::function<void(std::function<void()>)>;
-    bool queueParse(const ParseSubmitFn& submit);
+    bool queueParse(const ParseSubmitFn &submit);
 
     // Stored variant of queueParse: PtyMux thread invokes this directly
     // after readFromFD appends bytes, so parse-trigger doesn't go through
@@ -84,21 +93,25 @@ public:
     // worker pool. Headless terminals leave mParseSubmit empty and call
     // flushReadBuffer instead.
     void setParseSubmit(ParseSubmitFn fn) { mParseSubmit = std::move(fn); }
+
     bool queueParse() { return mParseSubmit ? queueParse(mParseSubmit) : false; }
 
     // True iff a parse task is queued or currently running on a worker.
     // Used by the graveyard to defer destruction until parsing finishes.
-    bool parseInFlight() const {
+    bool parseInFlight() const
+    {
         return mParseInFlight.load(std::memory_order_acquire) != 0;
     }
+
     void flushWriteQueue();
     // Paste: wraps in \x1b[200~/\x1b[201~ when DECSET 2004 is active on the
     // terminal. Use for real clipboard/selection pastes so the shell's paste
     // handling (quoting, auto-suggest suppression, etc.) takes effect.
-    void pasteText(const std::string& text);
+    void pasteText(const std::string &text);
+
     // Write: raw send to the PTY, no bracketing. Use for synthetic keystrokes,
     // OSC responses, or anything that isn't semantically a user paste.
-    void writeText(const std::string& text) { writeToPTY(text.data(), text.size()); }
+    void writeText(const std::string &text) { writeToPTY(text.data(), text.size()); }
 
     // Query the foreground process name via tcgetpgrp + platform process lookup
     std::string foregroundProcess() const;
@@ -106,11 +119,13 @@ public:
 
     // Deferred TIOCSWINSZ: set by resize(), consumed by flushPendingResize()
     bool hasResizePending() const { return mResizePending.load(std::memory_order_acquire); }
+
     void flushPendingResize();
 
     // --- Pixel rect (set by Engine::computeTabRects for panes) ---
-    void setRect(const Rect& r) { mRect = r; }
-    const Rect& rect() const { return mRect; }
+    void setRect(const Rect &r) { mRect = r; }
+
+    const Rect &rect() const { return mRect; }
 
     // Resize the terminal to fit current rect given font metrics
     void resizeToRect(float charW, float lineH,
@@ -119,46 +134,69 @@ public:
 
     // --- Cell-coordinate position (for popup children / embedded terminals) ---
     int cellX() const { return mCellX; }
+
     int cellY() const { return mCellY; }
+
     int cellW() const { return mCellW; }
+
     int cellH() const { return mCellH; }
-    void setCellPosition(int x, int y, int w, int h) {
-        mCellX = x; mCellY = y; mCellW = w; mCellH = h;
+
+    void setCellPosition(int x, int y, int w, int h)
+    {
+        mCellX = x;
+        mCellY = y;
+        mCellW = w;
+        mCellH = h;
     }
 
     // --- Popup string identifier (set on popup children) ---
-    const std::string& popupId() const { return mPopupId; }
-    void setPopupId(const std::string& id) { mPopupId = id; }
+    const std::string &popupId() const { return mPopupId; }
+
+    void setPopupId(const std::string &id) { mPopupId = id; }
 
     // --- Title, icon, progress, CWD ---
     // title/icon are pull-model: reads the emulator's XTWINOPS stack.
     // nullopt means "no OSC-set title" — callers decide the fallback.
     std::optional<std::string> title() const { return currentTitle(); }
-    std::optional<std::string> icon() const  { return currentIcon(); }
+
+    std::optional<std::string> icon() const { return currentIcon(); }
+
     int progressState() const { return mProgressState; }
+
     int progressPct() const { return mProgressPct; }
-    void setProgress(int state, int pct) { mProgressState = state; mProgressPct = pct; }
-    const std::string& cwd() const { return mCWD; }
-    void setCWD(const std::string& d) { mCWD = d; }
+
+    void setProgress(int state, int pct)
+    {
+        mProgressState = state;
+        mProgressPct   = pct;
+    }
+
+    const std::string &cwd() const { return mCWD; }
+
+    void setCWD(const std::string &d) { mCWD = d; }
 
     // --- Popup children ---
     // Create a headless child terminal at cell coordinates.
-    Terminal* createPopup(const std::string& id, int x, int y, int w, int h,
+    Terminal *createPopup(const std::string &id, int x, int y, int w, int h,
                           PlatformCallbacks pcbs);
     // Move a popup out for deferred destruction. Returns the moved Terminal
     // on success, or nullptr if not found.
-    std::unique_ptr<Terminal> extractPopup(const std::string& id);
-    bool resizePopup(const std::string& id, int x, int y, int w, int h);
-    Terminal* findPopup(const std::string& id);
-    const std::vector<std::unique_ptr<Terminal>>& popups() const { return mPopups; }
+    std::unique_ptr<Terminal> extractPopup(const std::string &id);
+    bool resizePopup(const std::string &id, int x, int y, int w, int h);
+    Terminal *findPopup(const std::string &id);
+
+    const std::vector<std::unique_ptr<Terminal>> &popups() const { return mPopups; }
 
     // True if (col, row) lies inside any popup child's cell rect.
     bool isCellCoveredByPopup(int col, int row) const;
 
     std::string focusedPopupId() const { return mFocusedPopupId; }
-    void setFocusedPopup(const std::string& id) { mFocusedPopupId = id; }
+
+    void setFocusedPopup(const std::string &id) { mFocusedPopupId = id; }
+
     void clearFocusedPopup() { mFocusedPopupId.clear(); }
-    Terminal* focusedPopup();
+
+    Terminal *focusedPopup();
 
     // --- Embedded terminals (document-anchored inline surfaces) ---
     // Headless sibling of popups but anchored to a stable logical-line id
@@ -172,28 +210,35 @@ public:
     // writes don't target the now-hidden anchor cells. Fails (returns nullptr)
     // when parent is on alt-screen, when `rows` <= 0, or when the cursor row
     // already has an embedded attached.
-    Terminal* createEmbedded(int rows, PlatformCallbacks pcbs);
+    Terminal *createEmbedded(int rows, PlatformCallbacks pcbs);
     // Move an embedded out for deferred destruction. Returns the moved
     // Terminal on success, or nullptr if no embedded is anchored at lineId.
     std::unique_ptr<Terminal> extractEmbedded(uint64_t lineId);
     // Resize an existing embedded. Only rows change; cols track parent cols.
     bool resizeEmbedded(uint64_t lineId, int rows);
-    Terminal* findEmbedded(uint64_t lineId);
+    Terminal *findEmbedded(uint64_t lineId);
 
     // Embedded-map iteration helpers. All acquire mMutex (which the
     // parse worker also holds during its apply phase). Use these
     // instead of exposing the map directly so callers can't forget
     // the lock.
     template <typename Fn>
-    void forEachEmbedded(Fn&& fn) const {
+    void forEachEmbedded(Fn &&fn) const
+    {
         std::lock_guard<std::recursive_mutex> _lk(mutex());
-        for (const auto& [lineId, em] : mEmbedded) fn(lineId, *em);
+        for (const auto &[lineId, em] : mEmbedded) {
+            fn(lineId, *em);
+        }
     }
-    bool hasEmbeddeds() const {
+
+    bool hasEmbeddeds() const
+    {
         std::lock_guard<std::recursive_mutex> _lk(mutex());
         return !mEmbedded.empty();
     }
-    size_t embeddedCount() const {
+
+    size_t embeddedCount() const
+    {
         std::lock_guard<std::recursive_mutex> _lk(mutex());
         return mEmbedded.size();
     }
@@ -202,19 +247,22 @@ public:
     // when the focused embedded's anchor evicts) and by main-thread
     // create/destroy/focus paths. Read on the per-tick render path.
     uint64_t focusedEmbeddedLineId() const { return mFocusedEmbeddedLineId.load(std::memory_order_acquire); }
+
     void setFocusedEmbeddedLineId(uint64_t id) { mFocusedEmbeddedLineId.store(id, std::memory_order_release); }
+
     void clearFocusedEmbedded() { mFocusedEmbeddedLineId.store(0, std::memory_order_release); }
-    Terminal* focusedEmbedded();
+
+    Terminal *focusedEmbedded();
 
     // Returns the focused popup's emulator if one exists, else the focused
     // embedded's emulator if any, else this.
-    TerminalEmulator* activeTerm();
+    TerminalEmulator *activeTerm();
 
     // Hook consumed by TerminalSnapshot::update() to build the visual-layout
     // segment list. Pushes (lineId, rowCount) for every embedded currently
     // attached to this Terminal. Alt-screen hides embeddeds so the list
     // stays empty there.
-    void collectEmbeddedAnchors(std::vector<EmbeddedAnchor>& out) const override;
+    void collectEmbeddedAnchors(std::vector<EmbeddedAnchor> &out) const override;
 
     // RIS hand-off: move every embedded onto the eviction queue so the
     // platform main-thread tick tears them down via the same render-shadow
@@ -232,9 +280,9 @@ public:
     // pixel offsets.
     bool liveSegmentHitTest(double cellRelX, double cellRelY,
                             float cellWidth, float lineHeight,
-                            uint64_t& outLineId,
-                            int& outRelCol, int& outRelRow,
-                            int& outRelPixelX, int& outRelPixelY) const;
+                            uint64_t &outLineId,
+                            int &outRelCol, int &outRelRow,
+                            int &outRelPixelX, int &outRelPixelY) const;
 
     // Set by platform; called when a popup or embedded emulator fires an event (triggers redraw)
     std::function<void()> onPopupEvent;
@@ -299,8 +347,14 @@ public:
     //               cursor-driven overwrites — modelling overwrites
     //               would require a full emulator and isn't worth it
     //               for a follow-along log).
-    enum class CaptureFormat { Raw, Asciicast, Text };
-    enum class CaptureStopReason {
+    enum class CaptureFormat
+    {
+        Raw,
+        Asciicast,
+        Text
+    };
+    enum class CaptureStopReason
+    {
         // External: script called .stop() or the owning instance was
         // unloaded. No "error" payload accompanies this.
         Explicit,
@@ -315,9 +369,10 @@ public:
     // stops. Fired from whichever thread observed the stop — platform
     // is responsible for hopping to main if it needs JS-thread context.
     // Set by Platform_Tabs.cpp at Terminal construction.
-    std::function<void(const std::string& path,
+    std::function<void(const std::string &path,
                        CaptureStopReason reason,
-                       const std::string& errorMessage)> onCaptureStopped;
+                       const std::string &errorMessage)>
+        onCaptureStopped;
 
     // Open a new output capture targeting `path`. Returns true on
     // success (file opened, capture registered), false if `path` is
@@ -327,24 +382,24 @@ public:
     // bytes ever arrive. cols/rows/title come from the live emulator
     // state at registration time. errorOut (if non-null) carries a
     // human-readable failure reason on `false` return.
-    bool addOutputCapture(const std::string& path,
+    bool addOutputCapture(const std::string &path,
                           CaptureFormat format,
-                          std::string* errorOut = nullptr);
+                          std::string *errorOut = nullptr);
 
     // Stop a previously-added capture. Idempotent — unknown paths or
     // already-stopped captures return false silently. Fires the
     // onCaptureStopped callback with reason=Explicit on success.
-    bool removeOutputCapture(const std::string& path);
+    bool removeOutputCapture(const std::string &path);
 
     // True iff a capture is currently registered for `path` on this
     // Terminal. Cheap — takes mCapturesMutex briefly.
-    bool hasOutputCapture(const std::string& path) const;
+    bool hasOutputCapture(const std::string &path) const;
 
 protected:
-    void writeToOutput(const char* data, size_t len) override;
+    void writeToOutput(const char *data, size_t len) override;
 
 private:
-    void writeToPTY(const char* data, size_t len);
+    void writeToPTY(const char *data, size_t len);
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
     Uuid mNodeId;
@@ -364,7 +419,7 @@ private:
     // that's hundreds of ioctl(2)s for no reason. Sample at most once
     // every kFgPollMinNs nanoseconds. Atomic so the parser worker and
     // the main thread don't race on the timestamp.
-    static constexpr int64_t kFgPollMinNs = 200'000'000;  // 200 ms
+    static constexpr int64_t kFgPollMinNs = 200'000'000; // 200 ms
     mutable std::atomic<int64_t> mLastFgPollNs { 0 };
     mutable std::shared_mutex mFgCacheMutex;
     mutable std::string mFgCache;
@@ -379,7 +434,12 @@ private:
     // schedule/cancel posts. Timer id touched only on main.
     std::atomic<bool> mDeferredFgScheduled { false };
     EventLoop::TimerId mDeferredFgTimerId { 0 };
-    enum class FgRefreshResult { Changed, Unchanged, RateLimited };
+    enum class FgRefreshResult
+    {
+        Changed,
+        Unchanged,
+        RateLimited
+    };
     bool fgPollDue() const noexcept;
     // Refresh the cached foreground process name + pgid if the rate
     // limiter allows. Returns Changed when callers should fire
@@ -396,11 +456,11 @@ private:
     // POLLOUT registration in writeToPTY, removed in flushWriteQueue
     // when the queue drains) and for post()-ing main-thread work from
     // worker / mux threads.
-    EventLoop* mEventLoop { nullptr };
+    EventLoop *mEventLoop { nullptr };
     // Dedicated PTY-read multiplexer. Owns its own thread; readFromFD
     // runs on that thread (NOT main). Headless terminals leave this
     // null and use flushReadBuffer directly.
-    PtyMux*    mPtyMux    { nullptr };
+    PtyMux *mPtyMux { nullptr };
     // Submission function bound to PlatformDawn's worker pool. Invoked
     // by the PtyMux callback after readFromFD appends bytes — moves the
     // parse-trigger off main entirely.
@@ -425,7 +485,7 @@ private:
     // TerminalEmulator::writeToOutput → Terminal::writeToPTY) —
     // pre-PtyMux these were also racing without synchronization
     // but it never showed because OSC writes are tiny + rare.
-    std::mutex        mWriteQueueMutex;
+    std::mutex mWriteQueueMutex;
     std::vector<char> mWriteQueue;
     // Bytes read from the PTY and not yet handed to a parse task.
     // Written from the PtyMux thread's read callback (readFromFD);
@@ -435,7 +495,7 @@ private:
     // so the mux thread can keep coalescing reads while the worker
     // parses.
     std::vector<char> mReadCoalesceBuffer;
-    std::mutex        mReadBufferMutex;
+    std::mutex mReadBufferMutex;
     // PTY read backpressure. When mReadCoalesceBuffer's size hits
     // kReadBufferHigh, readFromFD stops draining the kernel PTY
     // buffer and disarms POLLIN on the master fd. The kernel PTY
@@ -455,20 +515,22 @@ private:
     // resize) will see at most that wait. Smaller values reduce
     // worst-case latency further but pay more PTY-poll round-trips
     // and slightly hurt throughput on bursty workloads.
-    static constexpr size_t kReadBufferHigh = 64 * 1024;   // 64 KiB
-    static constexpr size_t kReadBufferLow  = 16 * 1024;   // 16 KiB
+    static constexpr size_t kReadBufferHigh = 64 * 1024; // 64 KiB
+    static constexpr size_t kReadBufferLow  = 16 * 1024; // 16 KiB
+
 public:
     // Called by the parse worker after each batch of injectData
     // completes. If the read backpressure paused PTY reads, check
     // whether the coalesce buffer has drained below the low-water
     // mark and re-arm POLLIN on the PtyMux poller if so.
     void maybeResumeRead();
+
 private:
     // Counts queued+running parse tasks for this Terminal. Always 0 or 1
     // in normal operation (queueParse is gated by this flag), but typed
     // as int so the graveyard can defer destruction while a worker still
     // references the Terminal.
-    std::atomic<int>  mParseInFlight { 0 };
+    std::atomic<int> mParseInFlight { 0 };
 
     // Pixel rect in the window
     Rect mRect;
@@ -515,27 +577,30 @@ private:
     // correctly. State machine is a small subset of the VT/xterm
     // parser — we recognise sequence kinds well enough to know
     // when they end, but throw all of them away.
-    enum class TextStripState {
-        Ground,        // normal text — pass printable / UTF-8 / LF / TAB
-        Esc,           // saw ESC (0x1b); next byte selects the kind
-        Csi,           // ESC [ ... <terminator 0x40-0x7E>
-        Osc,           // ESC ] ... <BEL or ESC \>
-        OscEsc,        // saw ESC inside OSC — next byte may be ST (\\)
-        Dcs,           // ESC P ... <ESC \>
-        DcsEsc,        // saw ESC inside DCS — next byte may be ST
-        Ss3,           // ESC O <single byte>
+    enum class TextStripState
+    {
+        Ground,          // normal text — pass printable / UTF-8 / LF / TAB
+        Esc,             // saw ESC (0x1b); next byte selects the kind
+        Csi,             // ESC [ ... <terminator 0x40-0x7E>
+        Osc,             // ESC ] ... <BEL or ESC \>
+        OscEsc,          // saw ESC inside OSC — next byte may be ST (\\)
+        Dcs,             // ESC P ... <ESC \>
+        DcsEsc,          // saw ESC inside DCS — next byte may be ST
+        Ss3,             // ESC O <single byte>
         EscIntermediate, // ESC followed by 0x20-0x2F (intermediate); next byte is final
-        SeenCr,        // saw CR; if next is LF emit only LF, else
-                       //   drop the CR and re-process this byte
+        SeenCr,          // saw CR; if next is LF emit only LF, else
+                         //   drop the CR and re-process this byte
     };
-    struct CaptureEntry {
+
+    struct CaptureEntry
+    {
         std::string path;
         CaptureFormat format;
         // FILE* over int fd: we want buffered writes (single fwrite per
         // chunk + per-write fflush in asciicast mode for crash safety
         // of the latest record). std::ofstream would do, but FILE* lets
         // us reach for fileno()+fsync() later without re-plumbing.
-        FILE* fp { nullptr };
+        FILE *fp { nullptr };
         // Per-capture mutex serialises writes from main + worker.
         // Held only across a single record write (fwrite + maybe
         // fflush), so contention windows are short.
@@ -553,12 +618,13 @@ private:
         // Text-format parser state. Untouched for Raw / Asciicast.
         TextStripState textState { TextStripState::Ground };
     };
+
     // Wrap each entry in a unique_ptr so the per-entry mutex has a
     // stable address even when the vector resizes. shared_ptr would
     // also work; unique_ptr suffices because the vector owns and
     // producers only ever borrow.
     std::vector<std::unique_ptr<CaptureEntry>> mCaptures; // protected by mCapturesMutex
-    mutable std::mutex                          mCapturesMutex;
+    mutable std::mutex mCapturesMutex;
 
 protected:
     // Producer-side tap. Snapshots the captures vector under the
@@ -570,7 +636,7 @@ protected:
     // others continue normally. Protected (not private) so test
     // subclasses can drive the tap synchronously without spinning up
     // a real PTY.
-    void deliverCapturedOutput(const char* data, size_t len);
+    void deliverCapturedOutput(const char *data, size_t len);
 
 private:
     // Stop a capture and close its file. Caller owns whether to
@@ -578,9 +644,9 @@ private:
     // populated errorMessage). MUST be called WITHOUT holding
     // entry->mu — closeOne grabs it. errorOut is the message that
     // will travel to onCaptureStopped on IoError.
-    void stopCaptureLocked(CaptureEntry* entry,
-                            CaptureStopReason reason,
-                            const std::string& errorMessage);
+    void stopCaptureLocked(CaptureEntry *entry,
+                           CaptureStopReason reason,
+                           const std::string &errorMessage);
 
     // Embeddeds that the eviction callback extracted from mEmbedded.
     // The callback fires while the parse worker holds mMutex (deep
@@ -589,33 +655,42 @@ private:
     // parse batch completes, at which point it can take mMutex
     // briefly without contending. mEvictedHasItems is a wait-free
     // poll so the per-tick check never has to lock.
-    struct EvictedEmbedded { uint64_t lineId; std::unique_ptr<Terminal> term; };
+    struct EvictedEmbedded
+    {
+        uint64_t lineId;
+        std::unique_ptr<Terminal> term;
+    };
+
     std::vector<EvictedEmbedded> mEvictedEmbeddeds; // protected by mMutex
-    std::atomic<bool>            mEvictedHasItems { false };
+    std::atomic<bool> mEvictedHasItems { false };
 
 public:
     // Called by Platform on each main-thread tick.  Moves
     // `fn(lineId, unique_ptr)` so Platform can graveyard-defer and
     // mirror into the render shadow copy. Takes mMutex.
     template <typename Fn>
-    void drainEvictedEmbeddeds(Fn&& fn) {
+    void drainEvictedEmbeddeds(Fn &&fn)
+    {
         std::vector<EvictedEmbedded> drained;
         {
             std::lock_guard<std::recursive_mutex> _lk(mutex());
             drained.swap(mEvictedEmbeddeds);
             mEvictedHasItems.store(false, std::memory_order_release);
         }
-        for (auto& e : drained) fn(e.lineId, std::move(e.term));
+        for (auto &e : drained) {
+            fn(e.lineId, std::move(e.term));
+        }
     }
+
     // True if there are evicted embeddeds waiting for the main thread
     // to graveyard them. Wait-free — main-thread tick polls this every
     // iteration, so it must never block on the parse worker's mMutex.
-    bool hasEvictedEmbeddeds() const {
+    bool hasEvictedEmbeddeds() const
+    {
         return mEvictedHasItems.load(std::memory_order_acquire);
     }
 
 private:
-
     // Disarm the PTY fd in the event loop and fire onTerminalExited (once).
     // Safe to call multiple times — the first call sets mExited.
     void markExited();

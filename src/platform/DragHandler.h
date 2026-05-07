@@ -18,7 +18,8 @@
 // (or when canceled). Subclasses may hold raw pointers to platform / terminal
 // objects whose lifetime is guaranteed to outlive the drag (only the press
 // path that constructs the drag controls when those become invalid).
-class DragHandler {
+class DragHandler
+{
 public:
     virtual ~DragHandler() = default;
 
@@ -39,16 +40,22 @@ public:
     // has moved this far from the press point. Caller (InputController) flips
     // started_ to true the first time the deadband is exceeded.
     bool started() const { return started_; }
+
     void setStarted(bool s) { started_ = s; }
 
     double originX() const { return originX_; }
+
     double originY() const { return originY_; }
 
     MouseButton button() const { return button_; }
 
 protected:
     DragHandler(double sx, double sy, MouseButton button)
-        : originX_(sx), originY_(sy), button_(button) {}
+        : originX_(sx)
+        , originY_(sy)
+        , button_(button)
+    {
+    }
 
 private:
     double originX_;

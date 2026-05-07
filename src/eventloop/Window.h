@@ -6,27 +6,30 @@
 #include <optional>
 #include <string>
 
-class Window {
+class Window
+{
 public:
     virtual ~Window() = default;
 
     // Lifecycle
-    virtual bool create(int width, int height, const std::string& title) = 0;
-    virtual void destroy() = 0;
-    virtual bool shouldClose() const = 0;
+    virtual bool create(int width, int height, const std::string &title) = 0;
+    virtual void destroy()                                               = 0;
+    virtual bool shouldClose() const                                     = 0;
 
     // Properties
-    virtual void setTitle(const std::string& title) = 0;
-    virtual void getFramebufferSize(int& w, int& h) const = 0;
-    virtual void getContentScale(float& x, float& y) const = 0;
-    virtual void getScreenSize(int& w, int& h) const { w = h = 0; }
+    virtual void setTitle(const std::string &title)        = 0;
+    virtual void getFramebufferSize(int &w, int &h) const  = 0;
+    virtual void getContentScale(float &x, float &y) const = 0;
+
+    virtual void getScreenSize(int &w, int &h) const { w = h = 0; }
 
     // Clipboard. Writes are sync `void` because they don't block the caller
     // (XCB sets a selection owner; Cocoa writes NSPasteboard immediately).
     // Reads are exclusively through requestSelection — see below.
-    virtual void setClipboard(const std::string& text) = 0;
+    virtual void setClipboard(const std::string &text) = 0;
+
     // X11 primary selection (drag-select / middle-click). No-op on non-X11.
-    virtual void setPrimarySelection(const std::string& text) { (void)text; }
+    virtual void setPrimarySelection(const std::string &text) { (void)text; }
 
     // Async selection read. The callback fires exactly once on the main thread
     // with the resolved text or std::nullopt (refused/timed-out/no-owner).
@@ -34,13 +37,26 @@ public:
     // the main thread; the Cocoa backend reads NSPasteboard inline and
     // invokes the callback synchronously since pasteboard reads are fast
     // and don't need an event-loop hop.
-    enum class SelectionSource { Clipboard, Primary };
-    using SelectionCallback = std::function<void(std::optional<std::string>)>;
+    enum class SelectionSource
+    {
+        Clipboard,
+        Primary
+    };
+    using SelectionCallback                                                  = std::function<void(std::optional<std::string>)>;
     virtual void requestSelection(SelectionSource src, SelectionCallback cb) = 0;
 
     // Key name for a given platform key code (for Kitty keyboard protocol)
-    virtual std::string keyName(int keycode) const { (void)keycode; return {}; }
-    virtual uint32_t shiftedKeyCodepoint(int keycode) const { (void)keycode; return 0; }
+    virtual std::string keyName(int keycode) const
+    {
+        (void)keycode;
+        return {};
+    }
+
+    virtual uint32_t shiftedKeyCodepoint(int keycode) const
+    {
+        (void)keycode;
+        return 0;
+    }
 
     // When true, the macOS backend skips NSTextInputClient processing for
     // Option+<letter> so the OS doesn't compose the "option character" (∫,
@@ -71,20 +87,22 @@ public:
     std::function<void()> onExpose;        // called when window content needs redraw
     std::function<void()> onLiveResizeEnd; // called when live resize settles
     // Mouse cursor style
-    enum class CursorStyle {
-        Arrow,        // CSS "default"
-        IBeam,        // CSS "text"
-        Pointer,      // CSS "pointer" (hand)
-        Crosshair,    // CSS "crosshair"
-        Wait,         // CSS "wait"
-        Help,         // CSS "help"
-        Move,         // CSS "move"
-        NotAllowed,   // CSS "not-allowed"
-        ResizeH,      // CSS "ew-resize" / e-/w-resize
-        ResizeV,      // CSS "ns-resize" / n-/s-resize
-        ResizeNESW,   // CSS "nesw-resize"
-        ResizeNWSE,   // CSS "nwse-resize"
+    enum class CursorStyle
+    {
+        Arrow,      // CSS "default"
+        IBeam,      // CSS "text"
+        Pointer,    // CSS "pointer" (hand)
+        Crosshair,  // CSS "crosshair"
+        Wait,       // CSS "wait"
+        Help,       // CSS "help"
+        Move,       // CSS "move"
+        NotAllowed, // CSS "not-allowed"
+        ResizeH,    // CSS "ew-resize" / e-/w-resize
+        ResizeV,    // CSS "ns-resize" / n-/s-resize
+        ResizeNESW, // CSS "nesw-resize"
+        ResizeNWSE, // CSS "nwse-resize"
     };
+
     virtual void setCursorStyle(CursorStyle) {}
 
     // Live resize state — true while user is actively dragging a window edge.

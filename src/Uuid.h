@@ -7,7 +7,8 @@
 // RFC 4122 UUID v4 (random), stored as two 64-bit halves for cheap hashing
 // and equality. Big-endian byte order when serialised: bytes 0..7 come from
 // `high` (MSB first), bytes 8..15 from `low`.
-struct Uuid {
+struct Uuid
+{
     uint64_t high = 0;
     uint64_t low  = 0;
 
@@ -23,11 +24,14 @@ struct Uuid {
     static Uuid fromString(std::string_view s);
 
     bool isNil() const { return high == 0 && low == 0; }
-    bool operator==(const Uuid&) const = default;
+
+    bool operator==(const Uuid &) const = default;
 };
 
-struct UuidHash {
-    size_t operator()(const Uuid& u) const noexcept {
+struct UuidHash
+{
+    size_t operator()(const Uuid &u) const noexcept
+    {
         return static_cast<size_t>(u.high ^ u.low);
     }
 };

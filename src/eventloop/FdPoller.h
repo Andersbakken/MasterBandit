@@ -24,7 +24,8 @@
 class FdPoller
 {
 public:
-    enum class Events : uint8_t {
+    enum class Events : uint8_t
+    {
         None      = 0,
         Readable  = 1,
         Writable  = 2,
@@ -44,7 +45,7 @@ public:
     virtual void update(int fd, Events events) = 0;
 
     // Shorthands. disable == update(fd, None); enable == update(fd, evs).
-    virtual void disable(int fd) = 0;
+    virtual void disable(int fd)               = 0;
     virtual void enable(int fd, Events events) = 0;
 
     // Unregister fd. Asynchronous: queues the removal as a pending op,

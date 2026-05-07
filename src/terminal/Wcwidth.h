@@ -9,23 +9,28 @@ inline bool isWidenedEmoji(char32_t cp);
 //   2 for East Asian wide/fullwidth characters
 //   1 for everything else (including box-drawing, Latin, etc.)
 //  -1 for non-printable control characters
-inline int wcwidth(char32_t cp) {
+inline int wcwidth(char32_t cp)
+{
     // C0/C1 control characters (except NUL)
-    if (cp == 0) return 0;
-    if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return -1;
+    if (cp == 0) {
+        return 0;
+    }
+    if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) {
+        return -1;
+    }
 
     // Combining characters (zero width)
     // Unicode General Category Mn, Mc, Me and certain special chars
-    if ((cp >= 0x0300 && cp <= 0x036f) ||   // Combining Diacriticals
-        (cp >= 0x0483 && cp <= 0x0489) ||   // Cyrillic combining
-        (cp >= 0x0591 && cp <= 0x05bd) ||   // Hebrew combining
+    if ((cp >= 0x0300 && cp <= 0x036f) || // Combining Diacriticals
+        (cp >= 0x0483 && cp <= 0x0489) || // Cyrillic combining
+        (cp >= 0x0591 && cp <= 0x05bd) || // Hebrew combining
         cp == 0x05bf ||
         (cp >= 0x05c1 && cp <= 0x05c2) ||
         (cp >= 0x05c4 && cp <= 0x05c5) ||
         cp == 0x05c7 ||
-        (cp >= 0x0600 && cp <= 0x0605) ||   // Arabic formatting
+        (cp >= 0x0600 && cp <= 0x0605) || // Arabic formatting
         (cp >= 0x0610 && cp <= 0x061a) ||
-        (cp >= 0x064b && cp <= 0x065f) ||   // Arabic combining
+        (cp >= 0x064b && cp <= 0x065f) || // Arabic combining
         cp == 0x0670 ||
         (cp >= 0x06d6 && cp <= 0x06dd) ||
         (cp >= 0x06df && cp <= 0x06e4) ||
@@ -126,7 +131,7 @@ inline int wcwidth(char32_t cp) {
         (cp >= 0x1085 && cp <= 0x1086) ||
         cp == 0x108d ||
         cp == 0x109d ||
-        (cp >= 0x1160 && cp <= 0x11ff) ||   // Hangul Jungseong/Jongseong
+        (cp >= 0x1160 && cp <= 0x11ff) || // Hangul Jungseong/Jongseong
         (cp >= 0x135d && cp <= 0x135f) ||
         (cp >= 0x1712 && cp <= 0x1714) ||
         (cp >= 0x1732 && cp <= 0x1734) ||
@@ -178,29 +183,29 @@ inline int wcwidth(char32_t cp) {
         (cp >= 0x1cf8 && cp <= 0x1cf9) ||
         (cp >= 0x1dc0 && cp <= 0x1df5) ||
         (cp >= 0x1dfb && cp <= 0x1dff) ||
-        (cp >= 0x200b && cp <= 0x200f) ||   // Zero-width space/joiners
-        (cp >= 0x202a && cp <= 0x202e) ||   // Bidi formatting
-        (cp >= 0x2060 && cp <= 0x2064) ||   // Word joiner etc
-        (cp >= 0x2066 && cp <= 0x206f) ||   // Bidi formatting
-        (cp >= 0x20d0 && cp <= 0x20f0) ||   // Combining for symbols
-        (cp >= 0xfe00 && cp <= 0xfe0f) ||   // Variation selectors
-        (cp >= 0xfe20 && cp <= 0xfe2f) ||   // Combining half marks
-        cp == 0xfeff ||                      // BOM / ZWNBSP
-        (cp >= 0xfff9 && cp <= 0xfffb) ||   // Interlinear annotation
+        (cp >= 0x200b && cp <= 0x200f) || // Zero-width space/joiners
+        (cp >= 0x202a && cp <= 0x202e) || // Bidi formatting
+        (cp >= 0x2060 && cp <= 0x2064) || // Word joiner etc
+        (cp >= 0x2066 && cp <= 0x206f) || // Bidi formatting
+        (cp >= 0x20d0 && cp <= 0x20f0) || // Combining for symbols
+        (cp >= 0xfe00 && cp <= 0xfe0f) || // Variation selectors
+        (cp >= 0xfe20 && cp <= 0xfe2f) || // Combining half marks
+        cp == 0xfeff ||                   // BOM / ZWNBSP
+        (cp >= 0xfff9 && cp <= 0xfffb) || // Interlinear annotation
         (cp >= 0x1d167 && cp <= 0x1d169) ||
         (cp >= 0x1d173 && cp <= 0x1d182) ||
         (cp >= 0x1d185 && cp <= 0x1d18b) ||
         (cp >= 0x1d1aa && cp <= 0x1d1ad) ||
         (cp >= 0xe0001 && cp <= 0xe0001) ||
         (cp >= 0xe0020 && cp <= 0xe007f) ||
-        (cp >= 0xe0100 && cp <= 0xe01ef))   // Variation selectors supplement
+        (cp >= 0xe0100 && cp <= 0xe01ef)) // Variation selectors supplement
     {
         return 0;
     }
 
     // East Asian Wide and Fullwidth characters
     if ((cp >= 0x1100 && cp <= 0x115f) ||   // Hangul Jamo
-        cp == 0x2329 || cp == 0x232a ||      // Angle brackets
+        cp == 0x2329 || cp == 0x232a ||     // Angle brackets
         (cp >= 0x2e80 && cp <= 0x303e) ||   // CJK Radicals..CJK Symbols
         (cp >= 0x3041 && cp <= 0x33bf) ||   // Hiragana..CJK Compatibility
         (cp >= 0x3400 && cp <= 0x4dbf) ||   // CJK Unified Extension A
@@ -214,8 +219,7 @@ inline int wcwidth(char32_t cp) {
         (cp >= 0xffe0 && cp <= 0xffe6) ||   // Fullwidth Signs
         (cp >= 0x20000 && cp <= 0x2fffd) || // CJK Extension B+
         (cp >= 0x30000 && cp <= 0x3fffd) || // CJK Extension G+
-        isWidenedEmoji(cp))
-    {
+        isWidenedEmoji(cp)) {
         return 2;
     }
 
@@ -224,37 +228,38 @@ inline int wcwidth(char32_t cp) {
 
 // Returns true for codepoints that widened to 2 cells in Unicode 9 (emoji presentation,
 // not East Asian Wide). These should prefer COLR/color font rendering.
-inline bool isWidenedEmoji(char32_t cp) {
+inline bool isWidenedEmoji(char32_t cp)
+{
     return cp == 0x231a || cp == 0x231b ||
-           (cp >= 0x23e9 && cp <= 0x23ec) ||
-           cp == 0x23f0 || cp == 0x23f3 ||
-           cp == 0x25fd || cp == 0x25fe ||
-           cp == 0x2614 || cp == 0x2615 ||
-           (cp >= 0x2648 && cp <= 0x2653) ||
-           cp == 0x267f ||
-           cp == 0x2693 ||
-           cp == 0x26a1 ||
-           cp == 0x26aa || cp == 0x26ab ||
-           cp == 0x26bd || cp == 0x26be ||
-           cp == 0x26c4 || cp == 0x26c5 ||
-           cp == 0x26ce || cp == 0x26d4 ||
-           cp == 0x26ea ||
-           cp == 0x26f2 || cp == 0x26f3 ||
-           cp == 0x26f5 || cp == 0x26fa ||
-           cp == 0x26fd ||
-           cp == 0x2705 ||
-           cp == 0x270a || cp == 0x270b ||
-           cp == 0x2728 ||
-           cp == 0x274c || cp == 0x274e ||
-           (cp >= 0x2753 && cp <= 0x2755) ||
-           cp == 0x2757 ||
-           (cp >= 0x2795 && cp <= 0x2797) ||
-           cp == 0x27b0 || cp == 0x27bf ||
-           cp == 0x2b1b || cp == 0x2b1c ||
-           cp == 0x2b50 || cp == 0x2b55 ||
-           (cp >= 0x1f300 && cp <= 0x1f64f) ||
-           (cp >= 0x1f680 && cp <= 0x1f6ff) ||
-           (cp >= 0x1f900 && cp <= 0x1f9ff) ||
-           (cp >= 0x1fa00 && cp <= 0x1fa6f) ||
-           (cp >= 0x1fa70 && cp <= 0x1faff);
+        (cp >= 0x23e9 && cp <= 0x23ec) ||
+        cp == 0x23f0 || cp == 0x23f3 ||
+        cp == 0x25fd || cp == 0x25fe ||
+        cp == 0x2614 || cp == 0x2615 ||
+        (cp >= 0x2648 && cp <= 0x2653) ||
+        cp == 0x267f ||
+        cp == 0x2693 ||
+        cp == 0x26a1 ||
+        cp == 0x26aa || cp == 0x26ab ||
+        cp == 0x26bd || cp == 0x26be ||
+        cp == 0x26c4 || cp == 0x26c5 ||
+        cp == 0x26ce || cp == 0x26d4 ||
+        cp == 0x26ea ||
+        cp == 0x26f2 || cp == 0x26f3 ||
+        cp == 0x26f5 || cp == 0x26fa ||
+        cp == 0x26fd ||
+        cp == 0x2705 ||
+        cp == 0x270a || cp == 0x270b ||
+        cp == 0x2728 ||
+        cp == 0x274c || cp == 0x274e ||
+        (cp >= 0x2753 && cp <= 0x2755) ||
+        cp == 0x2757 ||
+        (cp >= 0x2795 && cp <= 0x2797) ||
+        cp == 0x27b0 || cp == 0x27bf ||
+        cp == 0x2b1b || cp == 0x2b1c ||
+        cp == 0x2b50 || cp == 0x2b55 ||
+        (cp >= 0x1f300 && cp <= 0x1f64f) ||
+        (cp >= 0x1f680 && cp <= 0x1f6ff) ||
+        (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+        (cp >= 0x1fa00 && cp <= 0x1fa6f) ||
+        (cp >= 0x1fa70 && cp <= 0x1faff);
 }

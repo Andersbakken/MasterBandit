@@ -14,8 +14,8 @@
 
 #include <string>
 
-using Script::Perm;
 using Script::parsePermissions;
+using Script::Perm;
 using Script::permissionsToString;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -37,44 +37,44 @@ TEST_CASE("parsePermissions: every individual bit name resolves to its bit")
     // Names must match ScriptPermissions.cpp::kPermNames exactly.
     // Adding a bit and forgetting to register it here is a bug that
     // a TS-side d.ts update would otherwise silently mask.
-    CHECK(parsePermissions("ui.popup.create")  == Perm::UiPopupCreate);
+    CHECK(parsePermissions("ui.popup.create") == Perm::UiPopupCreate);
     CHECK(parsePermissions("ui.popup.destroy") == Perm::UiPopupDestroy);
-    CHECK(parsePermissions("ui.focus")         == Perm::UiFocus);
-    CHECK(parsePermissions("io.filter.input")  == Perm::IoFilterInput);
+    CHECK(parsePermissions("ui.focus") == Perm::UiFocus);
+    CHECK(parsePermissions("io.filter.input") == Perm::IoFilterInput);
     CHECK(parsePermissions("io.filter.output") == Perm::IoFilterOutput);
-    CHECK(parsePermissions("io.inject")        == Perm::IoInject);
-    CHECK(parsePermissions("shell.write")      == Perm::ShellWrite);
-    CHECK(parsePermissions("shell.commands")   == Perm::ShellReadCommands);
-    CHECK(parsePermissions("actions.invoke")   == Perm::ActionsInvoke);
-    CHECK(parsePermissions("tabs.create")      == Perm::TabsCreate);
-    CHECK(parsePermissions("tabs.close")       == Perm::TabsClose);
-    CHECK(parsePermissions("scripts.load")     == Perm::ScriptsLoad);
-    CHECK(parsePermissions("scripts.unload")   == Perm::ScriptsUnload);
-    CHECK(parsePermissions("fs.read")          == Perm::FsRead);
-    CHECK(parsePermissions("fs.write")         == Perm::FsWrite);
+    CHECK(parsePermissions("io.inject") == Perm::IoInject);
+    CHECK(parsePermissions("shell.write") == Perm::ShellWrite);
+    CHECK(parsePermissions("shell.commands") == Perm::ShellReadCommands);
+    CHECK(parsePermissions("actions.invoke") == Perm::ActionsInvoke);
+    CHECK(parsePermissions("tabs.create") == Perm::TabsCreate);
+    CHECK(parsePermissions("tabs.close") == Perm::TabsClose);
+    CHECK(parsePermissions("scripts.load") == Perm::ScriptsLoad);
+    CHECK(parsePermissions("scripts.unload") == Perm::ScriptsUnload);
+    CHECK(parsePermissions("fs.read") == Perm::FsRead);
+    CHECK(parsePermissions("fs.write") == Perm::FsWrite);
     CHECK(parsePermissions("net.listen.local") == Perm::NetListenLocal);
-    CHECK(parsePermissions("clipboard.read")   == Perm::ClipboardRead);
-    CHECK(parsePermissions("clipboard.write")  == Perm::ClipboardWrite);
-    CHECK(parsePermissions("pane.read")        == Perm::PaneRead);
-    CHECK(parsePermissions("layout.modify")    == Perm::LayoutModify);
-    CHECK(parsePermissions("config.modify")    == Perm::ConfigModify);
-    CHECK(parsePermissions("process.spawn")    == Perm::ProcessSpawn);
+    CHECK(parsePermissions("clipboard.read") == Perm::ClipboardRead);
+    CHECK(parsePermissions("clipboard.write") == Perm::ClipboardWrite);
+    CHECK(parsePermissions("pane.read") == Perm::PaneRead);
+    CHECK(parsePermissions("layout.modify") == Perm::LayoutModify);
+    CHECK(parsePermissions("config.modify") == Perm::ConfigModify);
+    CHECK(parsePermissions("process.spawn") == Perm::ProcessSpawn);
 }
 
 TEST_CASE("parsePermissions: group names expand to all member bits")
 {
-    CHECK(parsePermissions("ui")        == Perm::GroupUi);
-    CHECK(parsePermissions("io")        == Perm::GroupIo);
-    CHECK(parsePermissions("shell")     == Perm::GroupShell);
-    CHECK(parsePermissions("actions")   == Perm::GroupActions);
-    CHECK(parsePermissions("tabs")      == Perm::GroupTabs);
-    CHECK(parsePermissions("scripts")   == Perm::GroupScripts);
-    CHECK(parsePermissions("fs")        == Perm::GroupFs);
-    CHECK(parsePermissions("net")       == Perm::GroupNet);
+    CHECK(parsePermissions("ui") == Perm::GroupUi);
+    CHECK(parsePermissions("io") == Perm::GroupIo);
+    CHECK(parsePermissions("shell") == Perm::GroupShell);
+    CHECK(parsePermissions("actions") == Perm::GroupActions);
+    CHECK(parsePermissions("tabs") == Perm::GroupTabs);
+    CHECK(parsePermissions("scripts") == Perm::GroupScripts);
+    CHECK(parsePermissions("fs") == Perm::GroupFs);
+    CHECK(parsePermissions("net") == Perm::GroupNet);
     CHECK(parsePermissions("clipboard") == Perm::GroupClipboard);
-    CHECK(parsePermissions("layout")    == Perm::GroupLayout);
-    CHECK(parsePermissions("config")    == Perm::GroupConfig);
-    CHECK(parsePermissions("process")   == Perm::GroupProcess);
+    CHECK(parsePermissions("layout") == Perm::GroupLayout);
+    CHECK(parsePermissions("config") == Perm::GroupConfig);
+    CHECK(parsePermissions("process") == Perm::GroupProcess);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -84,8 +84,8 @@ TEST_CASE("parsePermissions: group names expand to all member bits")
 TEST_CASE("parsePermissions: comma-joined names OR together")
 {
     uint32_t got = parsePermissions("shell,fs.write,process.spawn");
-    CHECK((got & Perm::GroupShell)   == Perm::GroupShell);
-    CHECK((got & Perm::FsWrite)      == Perm::FsWrite);
+    CHECK((got & Perm::GroupShell) == Perm::GroupShell);
+    CHECK((got & Perm::FsWrite) == Perm::FsWrite);
     CHECK((got & Perm::ProcessSpawn) == Perm::ProcessSpawn);
     // No other bits should leak in.
     CHECK((got & ~(Perm::GroupShell | Perm::FsWrite | Perm::ProcessSpawn)) == 0u);
@@ -93,8 +93,7 @@ TEST_CASE("parsePermissions: comma-joined names OR together")
 
 TEST_CASE("parsePermissions: leading/trailing whitespace is stripped per token")
 {
-    CHECK(parsePermissions(" ui , fs.read ")
-          == (Perm::GroupUi | Perm::FsRead));
+    CHECK(parsePermissions(" ui , fs.read ") == (Perm::GroupUi | Perm::FsRead));
 }
 
 TEST_CASE("parsePermissions: empty tokens (`,,`) are tolerated")
@@ -108,7 +107,7 @@ TEST_CASE("parsePermissions: unknown tokens in a list don't poison the rest")
 {
     // The known names still resolve; the unknown ones contribute 0.
     uint32_t got = parsePermissions("fs.read,nope,ui");
-    CHECK((got & Perm::FsRead)  == Perm::FsRead);
+    CHECK((got & Perm::FsRead) == Perm::FsRead);
     CHECK((got & Perm::GroupUi) == Perm::GroupUi);
 }
 
@@ -119,9 +118,9 @@ TEST_CASE("parsePermissions: unknown tokens in a list don't poison the rest")
 TEST_CASE("permissionsToString: None and All have stable special-case strings")
 {
     CHECK(permissionsToString(Perm::None) == "none");
-    CHECK(permissionsToString(Perm::All)  == "all");
+    CHECK(permissionsToString(Perm::All) == "all");
     CHECK(parsePermissions("none") == 0u); // "none" is not in the table; round-trip
-                                            // through "" form covers the round-trip itself.
+                                           // through "" form covers the round-trip itself.
 }
 
 TEST_CASE("permissionsToString: prefers group names when fully covered")
@@ -149,27 +148,34 @@ TEST_CASE("Round-trip: parse → format → parse yields the same bits")
     // Pairs of (input string, expected re-parsed bits). The
     // intermediate format string varies (groups vs individual bits)
     // but the final bits must be invariant.
-    struct Case {
-        const char* input;
+    struct Case
+    {
+        const char *input;
         uint32_t bits;
     };
+
     Case cases[] = {
-        { "fs.read",                          Perm::FsRead },
-        { "fs",                               Perm::GroupFs },
-        { "shell,clipboard",                  Perm::GroupShell | Perm::GroupClipboard },
-        { "process.spawn,pane.read",          Perm::ProcessSpawn | Perm::PaneRead },
-        { "ui.focus,layout.modify",           Perm::UiFocus | Perm::LayoutModify },
-        { "process,fs",                       Perm::GroupProcess | Perm::GroupFs },
+        { "fs.read", Perm::FsRead },
+        { "fs", Perm::GroupFs },
+        { "shell,clipboard", Perm::GroupShell | Perm::GroupClipboard },
+        { "process.spawn,pane.read", Perm::ProcessSpawn | Perm::PaneRead },
+        { "ui.focus,layout.modify", Perm::UiFocus | Perm::LayoutModify },
+        { "process,fs", Perm::GroupProcess | Perm::GroupFs },
     };
-    for (const auto& c : cases) {
+    for (const auto &c : cases) {
         uint32_t parsed1 = parsePermissions(c.input);
         REQUIRE_MESSAGE(parsed1 == c.bits,
-                        "input='", c.input, "' bits mismatch");
+                        "input='",
+                        c.input,
+                        "' bits mismatch");
         std::string formatted = permissionsToString(parsed1);
-        uint32_t parsed2 = parsePermissions(formatted);
+        uint32_t parsed2      = parsePermissions(formatted);
         CHECK_MESSAGE(parsed2 == c.bits,
-                      "round-trip diverged for input='", c.input,
-                      "' formatted='", formatted, "'");
+                      "round-trip diverged for input='",
+                      c.input,
+                      "' formatted='",
+                      formatted,
+                      "'");
     }
 }
 
@@ -183,28 +189,28 @@ TEST_CASE("parsePermissions(\"all\") yields every real permission bit but not Bu
     CHECK(got == Perm::All);
     // Every individual bit in the kPermNames table (except the BuiltIn
     // marker) must be set.
-    CHECK((got & Perm::UiPopupCreate)    == Perm::UiPopupCreate);
-    CHECK((got & Perm::UiPopupDestroy)   == Perm::UiPopupDestroy);
-    CHECK((got & Perm::UiFocus)          == Perm::UiFocus);
-    CHECK((got & Perm::IoFilterInput)    == Perm::IoFilterInput);
-    CHECK((got & Perm::IoFilterOutput)   == Perm::IoFilterOutput);
-    CHECK((got & Perm::IoInject)         == Perm::IoInject);
-    CHECK((got & Perm::ShellWrite)       == Perm::ShellWrite);
-    CHECK((got & Perm::ShellReadCommands)== Perm::ShellReadCommands);
-    CHECK((got & Perm::ActionsInvoke)    == Perm::ActionsInvoke);
-    CHECK((got & Perm::TabsCreate)       == Perm::TabsCreate);
-    CHECK((got & Perm::TabsClose)        == Perm::TabsClose);
-    CHECK((got & Perm::ScriptsLoad)      == Perm::ScriptsLoad);
-    CHECK((got & Perm::ScriptsUnload)    == Perm::ScriptsUnload);
-    CHECK((got & Perm::FsRead)           == Perm::FsRead);
-    CHECK((got & Perm::FsWrite)          == Perm::FsWrite);
-    CHECK((got & Perm::NetListenLocal)   == Perm::NetListenLocal);
-    CHECK((got & Perm::ClipboardRead)    == Perm::ClipboardRead);
-    CHECK((got & Perm::ClipboardWrite)   == Perm::ClipboardWrite);
-    CHECK((got & Perm::PaneRead)         == Perm::PaneRead);
-    CHECK((got & Perm::LayoutModify)     == Perm::LayoutModify);
-    CHECK((got & Perm::ConfigModify)     == Perm::ConfigModify);
-    CHECK((got & Perm::ProcessSpawn)     == Perm::ProcessSpawn);
+    CHECK((got & Perm::UiPopupCreate) == Perm::UiPopupCreate);
+    CHECK((got & Perm::UiPopupDestroy) == Perm::UiPopupDestroy);
+    CHECK((got & Perm::UiFocus) == Perm::UiFocus);
+    CHECK((got & Perm::IoFilterInput) == Perm::IoFilterInput);
+    CHECK((got & Perm::IoFilterOutput) == Perm::IoFilterOutput);
+    CHECK((got & Perm::IoInject) == Perm::IoInject);
+    CHECK((got & Perm::ShellWrite) == Perm::ShellWrite);
+    CHECK((got & Perm::ShellReadCommands) == Perm::ShellReadCommands);
+    CHECK((got & Perm::ActionsInvoke) == Perm::ActionsInvoke);
+    CHECK((got & Perm::TabsCreate) == Perm::TabsCreate);
+    CHECK((got & Perm::TabsClose) == Perm::TabsClose);
+    CHECK((got & Perm::ScriptsLoad) == Perm::ScriptsLoad);
+    CHECK((got & Perm::ScriptsUnload) == Perm::ScriptsUnload);
+    CHECK((got & Perm::FsRead) == Perm::FsRead);
+    CHECK((got & Perm::FsWrite) == Perm::FsWrite);
+    CHECK((got & Perm::NetListenLocal) == Perm::NetListenLocal);
+    CHECK((got & Perm::ClipboardRead) == Perm::ClipboardRead);
+    CHECK((got & Perm::ClipboardWrite) == Perm::ClipboardWrite);
+    CHECK((got & Perm::PaneRead) == Perm::PaneRead);
+    CHECK((got & Perm::LayoutModify) == Perm::LayoutModify);
+    CHECK((got & Perm::ConfigModify) == Perm::ConfigModify);
+    CHECK((got & Perm::ProcessSpawn) == Perm::ProcessSpawn);
     // Crucially, the BuiltIn marker MUST NOT be set — that would let
     // a user script trip the elevation gate just by passing "all".
     CHECK((got & Perm::BuiltIn) == 0u);
@@ -214,7 +220,7 @@ TEST_CASE("parsePermissions(\"builtin\") yields All | BuiltIn")
 {
     uint32_t got = parsePermissions("builtin");
     CHECK((got & Perm::BuiltIn) == Perm::BuiltIn);
-    CHECK((got & Perm::All)     == Perm::All);
+    CHECK((got & Perm::All) == Perm::All);
     // "builtin" is exactly the union of those two — nothing else.
     CHECK(got == (Perm::All | Perm::BuiltIn));
 }
@@ -287,22 +293,17 @@ TEST_CASE("New bits don't collide with any prior bit")
     // Cheap sanity check: the bits we've added recently must not
     // overlap with anything else. Catches the "I copy-pasted a bit
     // number" class of bug where two enums share a position.
-    constexpr uint32_t kNewlyAdded = Perm::PaneRead
-                                   | Perm::ProcessSpawn
-                                   | Perm::UiFocus
-                                   | Perm::LayoutModify
-                                   | Perm::ConfigModify
-                                   | Perm::BuiltIn;
+    constexpr uint32_t kNewlyAdded = Perm::PaneRead | Perm::ProcessSpawn | Perm::UiFocus | Perm::LayoutModify | Perm::ConfigModify | Perm::BuiltIn;
     constexpr uint32_t kPreExisting =
-        Perm::UiPopupCreate    | Perm::UiPopupDestroy   |
-        Perm::IoFilterInput    | Perm::IoFilterOutput   |
-        Perm::IoInject         | Perm::ShellWrite       |
-        Perm::ShellReadCommands| Perm::ActionsInvoke    |
-        Perm::TabsCreate       | Perm::TabsClose        |
-        Perm::ScriptsLoad      | Perm::ScriptsUnload    |
-        Perm::FsRead           | Perm::FsWrite          |
-        Perm::NetListenLocal   |
-        Perm::ClipboardRead    | Perm::ClipboardWrite;
+        Perm::UiPopupCreate | Perm::UiPopupDestroy |
+        Perm::IoFilterInput | Perm::IoFilterOutput |
+        Perm::IoInject | Perm::ShellWrite |
+        Perm::ShellReadCommands | Perm::ActionsInvoke |
+        Perm::TabsCreate | Perm::TabsClose |
+        Perm::ScriptsLoad | Perm::ScriptsUnload |
+        Perm::FsRead | Perm::FsWrite |
+        Perm::NetListenLocal |
+        Perm::ClipboardRead | Perm::ClipboardWrite;
     // Disjoint: AND must be zero.
     static_assert((kNewlyAdded & kPreExisting) == 0u,
                   "permission bit collision: a recently-added bit overlaps "
@@ -315,17 +316,17 @@ TEST_CASE("New bits don't collide with any prior bit")
 
 TEST_CASE("actionPermission: structural-mutation actions require their bits")
 {
-    CHECK(Script::actionPermission("NewTab")     == Perm::TabsCreate);
-    CHECK(Script::actionPermission("SplitPane")  == Perm::TabsCreate);
-    CHECK(Script::actionPermission("CloseTab")   == Perm::TabsClose);
-    CHECK(Script::actionPermission("ClosePane")  == Perm::TabsClose);
+    CHECK(Script::actionPermission("NewTab") == Perm::TabsCreate);
+    CHECK(Script::actionPermission("SplitPane") == Perm::TabsCreate);
+    CHECK(Script::actionPermission("CloseTab") == Perm::TabsClose);
+    CHECK(Script::actionPermission("ClosePane") == Perm::TabsClose);
 }
 
 TEST_CASE("actionPermission: safe actions return 0 (no extra perm)")
 {
-    CHECK(Script::actionPermission("CopySelection")     == 0u);
-    CHECK(Script::actionPermission("ScrollUp")          == 0u);
-    CHECK(Script::actionPermission("ShowScrollback")    == 0u);
+    CHECK(Script::actionPermission("CopySelection") == 0u);
+    CHECK(Script::actionPermission("ScrollUp") == 0u);
+    CHECK(Script::actionPermission("ShowScrollback") == 0u);
     CHECK(Script::actionPermission("UnknownActionName") == 0u);
 }
 

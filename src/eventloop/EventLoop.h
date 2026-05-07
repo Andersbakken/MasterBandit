@@ -6,22 +6,24 @@
 #include <string>
 #include <vector>
 
-class EventLoop {
+class EventLoop
+{
 public:
     using TimerCb = std::function<void()>;
     using WatchCb = std::function<void()>;
     using TimerId = uint32_t;
 
-    enum class FdEvents : uint8_t {
-        Readable = 1,
-        Writable = 2,
+    enum class FdEvents : uint8_t
+    {
+        Readable  = 1,
+        Writable  = 2,
         ReadWrite = 3
     };
     using FdCb = std::function<void(FdEvents)>;
 
     virtual ~EventLoop() = default;
 
-    virtual void run() = 0;
+    virtual void run()  = 0;
     virtual void stop() = 0;
 
     // Safe to call from any context (callbacks, other threads)
@@ -41,13 +43,13 @@ public:
 
     // fd watching — one registration per fd, events can be updated
     virtual void watchFd(int fd, FdEvents events, FdCb cb) = 0;
-    virtual void updateFd(int fd, FdEvents events) = 0;
-    virtual void removeFd(int fd) = 0;
+    virtual void updateFd(int fd, FdEvents events)         = 0;
+    virtual void removeFd(int fd)                          = 0;
 
     // Timers — ms=0 fires on next iteration, repeat=false for one-shot
     virtual TimerId addTimer(uint64_t ms, bool repeat, TimerCb cb) = 0;
-    virtual void    removeTimer(TimerId id) = 0;
-    virtual void    restartTimer(TimerId id) = 0;
+    virtual void removeTimer(TimerId id)                           = 0;
+    virtual void restartTimer(TimerId id)                          = 0;
 
     // File watching. Multiple files may be watched simultaneously, but
     // only when they share a common parent directory — the underlying
@@ -57,8 +59,8 @@ public:
     // dropped on the epoll/kqueue backends). Callers that need broad
     // watching should track per-file state themselves and only register
     // a single dir watch.
-    virtual void addFileWatch(const std::string& path, WatchCb cb) = 0;
-    virtual void removeFileWatch() = 0;
+    virtual void addFileWatch(const std::string &path, WatchCb cb) = 0;
+    virtual void removeFileWatch()                                 = 0;
 
     // Called each iteration after waking, before sleeping again
     // Set by PlatformDawn to drive rendering
@@ -71,8 +73,8 @@ public:
     std::function<void()> onQuitRequested;
 
 private:
-    std::mutex                          postMu_;
-    std::vector<std::function<void()>>  posted_;
+    std::mutex postMu_;
+    std::vector<std::function<void()>> posted_;
 };
 
 inline EventLoop::FdEvents operator|(EventLoop::FdEvents a, EventLoop::FdEvents b)
@@ -102,5 +104,7 @@ inline void EventLoop::drainPosts()
         std::lock_guard<std::mutex> lk(postMu_);
         local.swap(posted_);
     }
-    for (auto& fn : local) fn();
+    for (auto &fn : local) {
+        fn();
+    }
 }

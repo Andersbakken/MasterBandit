@@ -1,5 +1,5 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 TEST_CASE("CUP - cursor position")
 {
@@ -60,11 +60,11 @@ TEST_CASE("save and restore cursor")
 {
     TestTerminal t;
     t.csi("5;10H");
-    t.esc("7");   // DECSC save
+    t.esc("7"); // DECSC save
     t.csi("1;1H");
     CHECK(t.term.cursorX() == 0);
     CHECK(t.term.cursorY() == 0);
-    t.esc("8");   // DECRC restore
+    t.esc("8"); // DECRC restore
     CHECK(t.term.cursorX() == 9);
     CHECK(t.term.cursorY() == 4);
 }

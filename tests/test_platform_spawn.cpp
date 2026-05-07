@@ -34,35 +34,42 @@ bool waitFor(std::chrono::milliseconds timeout, Pred pred)
 {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (pred()) return true;
+        if (pred()) {
+            return true;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return pred();
 }
 
 // Per-test scratch dir so concurrent test runs don't collide.
-struct ScratchDir {
+struct ScratchDir
+{
     fs::path dir;
-    ScratchDir() {
-        dir = fs::temp_directory_path()
-            / ("mb-spawn-test-" + std::to_string(::getpid())
-               + "-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+
+    ScratchDir()
+    {
+        dir = fs::temp_directory_path() / ("mb-spawn-test-" + std::to_string(::getpid()) + "-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
         fs::create_directories(dir);
     }
-    ~ScratchDir() {
+
+    ~ScratchDir()
+    {
         std::error_code ec;
         fs::remove_all(dir, ec);
     }
-    fs::path operator/(const char* name) const { return dir / name; }
+
+    fs::path operator/(const char *name) const { return dir / name; }
 };
 
 // /bin/sh is the most portable shell available on every CI image we
 // expect to run on. Tests that need shell execution use it via
 // `-c "..."`. If a stripped-down container lacks /bin/sh the tests
 // will be skipped (see DOCTEST_CHECK_RANGE / skip-on-missing).
-const char* kShellPath = "/bin/sh";
+const char *kShellPath = "/bin/sh";
 
-bool shellAvailable() {
+bool shellAvailable()
+{
     return ::access(kShellPath, X_OK) == 0;
 }
 
@@ -74,7 +81,7 @@ bool shellAvailable() {
 
 TEST_CASE("platformSpawnDetached: empty path returns 0 (pre-fork failure)")
 {
-    pid_t pid = platformSpawnDetached("", {}, ProcessSpawnOptions{});
+    pid_t pid = platformSpawnDetached("", {}, ProcessSpawnOptions {});
     CHECK(pid == 0);
 }
 
@@ -82,48 +89,51 @@ TEST_CASE("platformSpawnDetached: empty path returns 0 (pre-fork failure)")
 // Successful spawn — verify side effect lands on disk
 // ─────────────────────────────────────────────────────────────────────
 
-TEST_CASE("platformSpawnDetached: spawns shell that writes a sentinel file"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: spawns shell that writes a sentinel file" * doctest::skip(!shellAvailable()))
 {
     ScratchDir s;
-    auto sentinel = s / "sentinel";
+    auto sentinel   = s / "sentinel";
     std::string cmd = "echo hello > " + sentinel.string();
 
     ProcessSpawnOptions opts; // empty — inherit env, no cwd override
     pid_t pid = platformSpawnDetached(kShellPath,
-                                       {kShellPath, "-c", cmd}, opts);
+                                      { kShellPath, "-c", cmd },
+                                      opts);
     // pid > 0 confirms intermediate-child fork + reap succeeded. The
     // grandchild's exec / shell run is async; poll for the sentinel.
     REQUIRE(pid > 0);
     REQUIRE(waitFor(std::chrono::seconds(5),
-                    [&] { return fs::exists(sentinel); }));
+                    [&]
+                    {
+                        return fs::exists(sentinel);
+                    }));
 
     std::ifstream f(sentinel);
     std::string contents((std::istreambuf_iterator<char>(f)),
-                          std::istreambuf_iterator<char>());
+                         std::istreambuf_iterator<char>());
     CHECK(contents == "hello\n");
 }
 
-TEST_CASE("platformSpawnDetached: PATH lookup finds /bin/sh as bare basename"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: PATH lookup finds /bin/sh as bare basename" * doctest::skip(!shellAvailable()))
 {
     ScratchDir s;
-    auto sentinel = s / "path-lookup";
+    auto sentinel   = s / "path-lookup";
     std::string cmd = "touch " + sentinel.string();
 
-    pid_t pid = platformSpawnDetached("sh", {"sh", "-c", cmd},
-                                       ProcessSpawnOptions{});
+    pid_t pid = platformSpawnDetached("sh", { "sh", "-c", cmd }, ProcessSpawnOptions {});
     REQUIRE(pid > 0);
     REQUIRE(waitFor(std::chrono::seconds(5),
-                    [&] { return fs::exists(sentinel); }));
+                    [&]
+                    {
+                        return fs::exists(sentinel);
+                    }));
 }
 
 // ─────────────────────────────────────────────────────────────────────
 // cwd handling
 // ─────────────────────────────────────────────────────────────────────
 
-TEST_CASE("platformSpawnDetached: cwd makes the process start in that directory"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: cwd makes the process start in that directory" * doctest::skip(!shellAvailable()))
 {
     ScratchDir s;
     // Shell writes its $PWD to a relative file path. With cwd set to
@@ -133,12 +143,15 @@ TEST_CASE("platformSpawnDetached: cwd makes the process start in that directory"
     ProcessSpawnOptions opts;
     opts.cwd = s.dir.string();
 
-    pid_t pid = platformSpawnDetached(kShellPath, {kShellPath, "-c", cmd}, opts);
+    pid_t pid = platformSpawnDetached(kShellPath, { kShellPath, "-c", cmd }, opts);
     REQUIRE(pid > 0);
 
     auto out = s / "pwd.out";
     REQUIRE(waitFor(std::chrono::seconds(5),
-                    [&] { return fs::exists(out); }));
+                    [&]
+                    {
+                        return fs::exists(out);
+                    }));
 
     std::ifstream f(out);
     std::string pwd;
@@ -151,17 +164,16 @@ TEST_CASE("platformSpawnDetached: cwd makes the process start in that directory"
     CHECK(pwd == std::string(actualPath));
 }
 
-TEST_CASE("platformSpawnDetached: nonexistent cwd causes the spawn to fail silently"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: nonexistent cwd causes the spawn to fail silently" * doctest::skip(!shellAvailable()))
 {
     ScratchDir s;
     auto sentinel = s / "should-not-appear";
 
     ProcessSpawnOptions opts;
-    opts.cwd = (s.dir / "no-such-subdir").string();
+    opts.cwd  = (s.dir / "no-such-subdir").string();
     pid_t pid = platformSpawnDetached(
         kShellPath,
-        {kShellPath, "-c", "touch " + sentinel.string()},
+        { kShellPath, "-c", "touch " + sentinel.string() },
         opts);
     // Intermediate child still reaps cleanly — chdir failure happens
     // in the grandchild post-fork, which _exit(127)s. Parent doesn't
@@ -178,11 +190,10 @@ TEST_CASE("platformSpawnDetached: nonexistent cwd causes the spawn to fail silen
 // env handling
 // ─────────────────────────────────────────────────────────────────────
 
-TEST_CASE("platformSpawnDetached: env override is visible to the spawned process"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: env override is visible to the spawned process" * doctest::skip(!shellAvailable()))
 {
     ScratchDir s;
-    auto sentinel = s / "env.out";
+    auto sentinel   = s / "env.out";
     // Shell writes $MB_TEST_KEY to the sentinel. With no override,
     // $MB_TEST_KEY isn't set and the line is empty; with override,
     // it must equal our magic value.
@@ -192,40 +203,46 @@ TEST_CASE("platformSpawnDetached: env override is visible to the spawned process
     opts.env.emplace_back("MB_TEST_KEY", "value-from-test");
 
     pid_t pid = platformSpawnDetached(kShellPath,
-                                       {kShellPath, "-c", cmd}, opts);
+                                      { kShellPath, "-c", cmd },
+                                      opts);
     REQUIRE(pid > 0);
     REQUIRE(waitFor(std::chrono::seconds(5),
-                    [&] { return fs::exists(sentinel); }));
+                    [&]
+                    {
+                        return fs::exists(sentinel);
+                    }));
 
     std::ifstream f(sentinel);
     std::string val((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
+                    std::istreambuf_iterator<char>());
     CHECK(val == "value-from-test");
 }
 
-TEST_CASE("platformSpawnDetached: env merge replaces existing keys"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: env merge replaces existing keys" * doctest::skip(!shellAvailable()))
 {
     ScratchDir s;
-    auto sentinel = s / "env-replace.out";
+    auto sentinel   = s / "env-replace.out";
     std::string cmd = "printf '%s' \"${PATH}\" > " + sentinel.string();
 
     ProcessSpawnOptions opts;
     opts.env.emplace_back("PATH", "/spawn-test/replaced/path");
     pid_t pid = platformSpawnDetached(kShellPath,
-                                       {kShellPath, "-c", cmd}, opts);
+                                      { kShellPath, "-c", cmd },
+                                      opts);
     REQUIRE(pid > 0);
     REQUIRE(waitFor(std::chrono::seconds(5),
-                    [&] { return fs::exists(sentinel); }));
+                    [&]
+                    {
+                        return fs::exists(sentinel);
+                    }));
 
     std::ifstream f(sentinel);
     std::string val((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
+                    std::istreambuf_iterator<char>());
     CHECK(val == "/spawn-test/replaced/path");
 }
 
-TEST_CASE("platformSpawnDetached: inherited env is preserved when env is empty"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: inherited env is preserved when env is empty" * doctest::skip(!shellAvailable()))
 {
     // Set a marker in our own environment, spawn without overrides,
     // verify the child sees it. Use a unique key so concurrent runs
@@ -240,15 +257,18 @@ TEST_CASE("platformSpawnDetached: inherited env is preserved when env is empty"
         "printf '%s' \"${MB_SPAWN_INHERIT_TEST}\" > " + sentinel.string();
 
     pid_t pid = platformSpawnDetached(kShellPath,
-                                       {kShellPath, "-c", cmd},
-                                       ProcessSpawnOptions{});
+                                      { kShellPath, "-c", cmd },
+                                      ProcessSpawnOptions {});
     REQUIRE(pid > 0);
     REQUIRE(waitFor(std::chrono::seconds(5),
-                    [&] { return fs::exists(sentinel); }));
+                    [&]
+                    {
+                        return fs::exists(sentinel);
+                    }));
 
     std::ifstream f(sentinel);
     std::string val((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
+                    std::istreambuf_iterator<char>());
     CHECK(val == "inherited-value");
 
     ::unsetenv("MB_SPAWN_INHERIT_TEST");
@@ -270,8 +290,8 @@ TEST_CASE("platformSpawnDetached: missing binary still returns nonzero pid (inte
     // a fork that succeeded structurally even when exec will fail.
     pid_t pid = platformSpawnDetached(
         "/bin/no-such-binary-nope-nope",
-        {"/bin/no-such-binary-nope-nope"},
-        ProcessSpawnOptions{});
+        { "/bin/no-such-binary-nope-nope" },
+        ProcessSpawnOptions {});
     CHECK(pid > 0);
 
     // Best-effort check that the grandchild doesn't linger as a
@@ -295,8 +315,7 @@ TEST_CASE("platformSpawnDetached: missing binary still returns nonzero pid (inte
 // argv defaulting
 // ─────────────────────────────────────────────────────────────────────
 
-TEST_CASE("platformSpawnDetached: empty argv defaults argv[0] to path"
-          * doctest::skip(!shellAvailable()))
+TEST_CASE("platformSpawnDetached: empty argv defaults argv[0] to path" * doctest::skip(!shellAvailable()))
 {
     // /bin/true exits 0 with no argv. Verify it spawns successfully
     // when we pass an empty argv (the implementation defaults
@@ -304,13 +323,16 @@ TEST_CASE("platformSpawnDetached: empty argv defaults argv[0] to path"
     // spawn-and-check-it-ran is unobservable without a side effect;
     // chained command produces a sentinel as evidence.
     ScratchDir s;
-    auto sentinel = s / "argv-default.out";
+    auto sentinel   = s / "argv-default.out";
     std::string cmd = "touch " + sentinel.string() + " && exit 0";
 
     pid_t pid = platformSpawnDetached(kShellPath,
-                                       {kShellPath, "-c", cmd},
-                                       ProcessSpawnOptions{});
+                                      { kShellPath, "-c", cmd },
+                                      ProcessSpawnOptions {});
     REQUIRE(pid > 0);
     REQUIRE(waitFor(std::chrono::seconds(5),
-                    [&] { return fs::exists(sentinel); }));
+                    [&]
+                    {
+                        return fs::exists(sentinel);
+                    }));
 }

@@ -1,20 +1,23 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 // === Mode management tests ===
 
-TEST_CASE("kitty: initial flags are zero") {
+TEST_CASE("kitty: initial flags are zero")
+{
     TestTerminal t;
     CHECK(t.term.kittyFlags() == 0);
 }
 
-TEST_CASE("kitty: push flags") {
+TEST_CASE("kitty: push flags")
+{
     TestTerminal t;
     t.csi(">1u"); // push flags=1
     CHECK(t.term.kittyFlags() == 1);
 }
 
-TEST_CASE("kitty: push then query") {
+TEST_CASE("kitty: push then query")
+{
     TestTerminal t;
     t.csi(">3u"); // push flags=3
     t.clearOutput();
@@ -22,7 +25,8 @@ TEST_CASE("kitty: push then query") {
     CHECK(t.output() == "\x1b[?3u");
 }
 
-TEST_CASE("kitty: push multiple then pop") {
+TEST_CASE("kitty: push multiple then pop")
+{
     TestTerminal t;
     t.csi(">1u");
     t.csi(">5u");
@@ -33,35 +37,40 @@ TEST_CASE("kitty: push multiple then pop") {
     CHECK(t.term.kittyFlags() == 0);
 }
 
-TEST_CASE("kitty: pop more than stack depth") {
+TEST_CASE("kitty: pop more than stack depth")
+{
     TestTerminal t;
     t.csi(">3u");
     t.csi("<10u"); // pop 10, only 1 on stack
     CHECK(t.term.kittyFlags() == 0);
 }
 
-TEST_CASE("kitty: set flags replace") {
+TEST_CASE("kitty: set flags replace")
+{
     TestTerminal t;
     t.csi(">1u"); // push 1
     t.csi("=5u"); // set to 5 (replace)
     CHECK(t.term.kittyFlags() == 5);
 }
 
-TEST_CASE("kitty: set flags OR") {
+TEST_CASE("kitty: set flags OR")
+{
     TestTerminal t;
-    t.csi(">1u"); // push 1 (bit 0)
-    t.csi("=2;2u"); // OR in bit 1
+    t.csi(">1u");                    // push 1 (bit 0)
+    t.csi("=2;2u");                  // OR in bit 1
     CHECK(t.term.kittyFlags() == 3); // 1 | 2 = 3
 }
 
-TEST_CASE("kitty: set flags AND NOT") {
+TEST_CASE("kitty: set flags AND NOT")
+{
     TestTerminal t;
-    t.csi(">7u"); // push 7 (bits 0,1,2)
-    t.csi("=2;3u"); // clear bit 1
+    t.csi(">7u");                    // push 7 (bits 0,1,2)
+    t.csi("=2;3u");                  // clear bit 1
     CHECK(t.term.kittyFlags() == 5); // 7 & ~2 = 5
 }
 
-TEST_CASE("kitty: stack overflow limited to 8") {
+TEST_CASE("kitty: stack overflow limited to 8")
+{
     TestTerminal t;
     for (int i = 1; i <= 10; i++) {
         char buf[16];
@@ -72,7 +81,8 @@ TEST_CASE("kitty: stack overflow limited to 8") {
     CHECK(t.term.kittyFlags() != 0);
 }
 
-TEST_CASE("kitty: RIS resets flags") {
+TEST_CASE("kitty: RIS resets flags")
+{
     TestTerminal t;
     t.csi(">5u");
     CHECK(t.term.kittyFlags() == 5);
@@ -80,21 +90,23 @@ TEST_CASE("kitty: RIS resets flags") {
     CHECK(t.term.kittyFlags() == 0);
 }
 
-TEST_CASE("kitty: alt screen has independent stack") {
+TEST_CASE("kitty: alt screen has independent stack")
+{
     TestTerminal t;
     t.csi(">3u"); // push 3 on main
     CHECK(t.term.kittyFlags() == 3);
-    t.csi("?1049h"); // enter alt screen
+    t.csi("?1049h");                 // enter alt screen
     CHECK(t.term.kittyFlags() == 0); // alt stack is empty
-    t.csi(">7u"); // push 7 on alt
+    t.csi(">7u");                    // push 7 on alt
     CHECK(t.term.kittyFlags() == 7);
-    t.csi("?1049l"); // leave alt screen
+    t.csi("?1049l");                 // leave alt screen
     CHECK(t.term.kittyFlags() == 3); // main stack restored
 }
 
 // === Key encoding tests ===
 
-TEST_CASE("kitty: legacy mode sends plain text") {
+TEST_CASE("kitty: legacy mode sends plain text")
+{
     TestTerminal t;
     // No kitty flags — legacy mode
     t.clearOutput();
@@ -102,14 +114,16 @@ TEST_CASE("kitty: legacy mode sends plain text") {
     CHECK(t.output() == "a");
 }
 
-TEST_CASE("kitty: legacy mode drops release") {
+TEST_CASE("kitty: legacy mode drops release")
+{
     TestTerminal t;
     t.clearOutput();
     t.sendKey(Key_A, 0, KeyAction_Release, "a");
     CHECK(t.output().empty());
 }
 
-TEST_CASE("kitty: disambiguate plain a sends text") {
+TEST_CASE("kitty: disambiguate plain a sends text")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE
     t.clearOutput();
@@ -117,7 +131,8 @@ TEST_CASE("kitty: disambiguate plain a sends text") {
     CHECK(t.output() == "a");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+a sends CSI u") {
+TEST_CASE("kitty: disambiguate ctrl+a sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE
     t.clearOutput();
@@ -125,15 +140,17 @@ TEST_CASE("kitty: disambiguate ctrl+a sends CSI u") {
     CHECK(t.output() == "\x1b[97;5u"); // 97='a', mods=1+4=5
 }
 
-TEST_CASE("kitty: disambiguate escape sends CSI u") {
+TEST_CASE("kitty: disambiguate escape sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE
     t.clearOutput();
     t.sendKey(Key_Escape, 0, KeyAction_Press);
-    CHECK(t.output() == "\x1b");  // no mods, press → legacy form
+    CHECK(t.output() == "\x1b"); // no mods, press → legacy form
 }
 
-TEST_CASE("kitty: disambiguate shift+escape sends CSI u") {
+TEST_CASE("kitty: disambiguate shift+escape sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE
     t.clearOutput();
@@ -141,7 +158,8 @@ TEST_CASE("kitty: disambiguate shift+escape sends CSI u") {
     CHECK(t.output() == "\x1b[27;2u"); // 27=escape, mods=1+1=2
 }
 
-TEST_CASE("kitty: disambiguate enter sends legacy") {
+TEST_CASE("kitty: disambiguate enter sends legacy")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE
     t.clearOutput();
@@ -149,7 +167,8 @@ TEST_CASE("kitty: disambiguate enter sends legacy") {
     CHECK(t.output() == "\r");
 }
 
-TEST_CASE("kitty: disambiguate shift+enter sends CSI u") {
+TEST_CASE("kitty: disambiguate shift+enter sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE
     t.clearOutput();
@@ -157,7 +176,8 @@ TEST_CASE("kitty: disambiguate shift+enter sends CSI u") {
     CHECK(t.output() == "\x1b[13;2u");
 }
 
-TEST_CASE("kitty: disambiguate tab sends legacy") {
+TEST_CASE("kitty: disambiguate tab sends legacy")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -165,7 +185,8 @@ TEST_CASE("kitty: disambiguate tab sends legacy") {
     CHECK(t.output() == "\t");
 }
 
-TEST_CASE("kitty: disambiguate shift+tab sends CSI u") {
+TEST_CASE("kitty: disambiguate shift+tab sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -173,7 +194,8 @@ TEST_CASE("kitty: disambiguate shift+tab sends CSI u") {
     CHECK(t.output() == "\x1b[9;2u");
 }
 
-TEST_CASE("kitty: disambiguate backspace sends legacy") {
+TEST_CASE("kitty: disambiguate backspace sends legacy")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -181,7 +203,8 @@ TEST_CASE("kitty: disambiguate backspace sends legacy") {
     CHECK(t.output() == "\x7f");
 }
 
-TEST_CASE("kitty: disambiguate arrow up no mods sends legacy") {
+TEST_CASE("kitty: disambiguate arrow up no mods sends legacy")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -189,7 +212,8 @@ TEST_CASE("kitty: disambiguate arrow up no mods sends legacy") {
     CHECK(t.output() == "\x1b[A");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+arrow up sends CSI with mods") {
+TEST_CASE("kitty: disambiguate ctrl+arrow up sends CSI with mods")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -197,7 +221,8 @@ TEST_CASE("kitty: disambiguate ctrl+arrow up sends CSI with mods") {
     CHECK(t.output() == "\x1b[1;5A"); // 1;5A = ctrl modifier
 }
 
-TEST_CASE("kitty: disambiguate F5 no mods sends legacy tilde") {
+TEST_CASE("kitty: disambiguate F5 no mods sends legacy tilde")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -205,7 +230,8 @@ TEST_CASE("kitty: disambiguate F5 no mods sends legacy tilde") {
     CHECK(t.output() == "\x1b[15~");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+F5 sends tilde with mods") {
+TEST_CASE("kitty: disambiguate ctrl+F5 sends tilde with mods")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -213,7 +239,8 @@ TEST_CASE("kitty: disambiguate ctrl+F5 sends tilde with mods") {
     CHECK(t.output() == "\x1b[15;5~");
 }
 
-TEST_CASE("kitty: disambiguate release is dropped") {
+TEST_CASE("kitty: disambiguate release is dropped")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -221,7 +248,8 @@ TEST_CASE("kitty: disambiguate release is dropped") {
     CHECK(t.output().empty());
 }
 
-TEST_CASE("kitty: report event types release") {
+TEST_CASE("kitty: report event types release")
+{
     TestTerminal t;
     t.csi(">3u"); // DISAMBIGUATE | REPORT_EVENT_TYPES
     t.clearOutput();
@@ -229,7 +257,8 @@ TEST_CASE("kitty: report event types release") {
     CHECK(t.output() == "\x1b[97;1:3u"); // mods=1, event=3 (release)
 }
 
-TEST_CASE("kitty: report event types repeat") {
+TEST_CASE("kitty: report event types repeat")
+{
     TestTerminal t;
     t.csi(">3u");
     t.clearOutput();
@@ -237,7 +266,8 @@ TEST_CASE("kitty: report event types repeat") {
     CHECK(t.output() == "\x1b[97;1:2u"); // mods=1, event=2 (repeat)
 }
 
-TEST_CASE("kitty: report all keys enter") {
+TEST_CASE("kitty: report all keys enter")
+{
     TestTerminal t;
     t.csi(">8u"); // REPORT_ALL_KEYS (implies disambiguate)
     t.clearOutput();
@@ -245,7 +275,8 @@ TEST_CASE("kitty: report all keys enter") {
     CHECK(t.output() == "\x1b[13u");
 }
 
-TEST_CASE("kitty: report all keys tab") {
+TEST_CASE("kitty: report all keys tab")
+{
     TestTerminal t;
     t.csi(">8u");
     t.clearOutput();
@@ -253,7 +284,8 @@ TEST_CASE("kitty: report all keys tab") {
     CHECK(t.output() == "\x1b[9u");
 }
 
-TEST_CASE("kitty: report all keys backspace") {
+TEST_CASE("kitty: report all keys backspace")
+{
     TestTerminal t;
     t.csi(">8u");
     t.clearOutput();
@@ -261,7 +293,8 @@ TEST_CASE("kitty: report all keys backspace") {
     CHECK(t.output() == "\x1b[127u");
 }
 
-TEST_CASE("kitty: report all keys plain a") {
+TEST_CASE("kitty: report all keys plain a")
+{
     TestTerminal t;
     t.csi(">8u");
     t.clearOutput();
@@ -269,7 +302,8 @@ TEST_CASE("kitty: report all keys plain a") {
     CHECK(t.output() == "\x1b[97u");
 }
 
-TEST_CASE("kitty: report all keys ctrl+a") {
+TEST_CASE("kitty: report all keys ctrl+a")
+{
     TestTerminal t;
     t.csi(">8u");
     t.clearOutput();
@@ -277,7 +311,8 @@ TEST_CASE("kitty: report all keys ctrl+a") {
     CHECK(t.output() == "\x1b[97;5u");
 }
 
-TEST_CASE("kitty: report all keys ctrl+enter") {
+TEST_CASE("kitty: report all keys ctrl+enter")
+{
     TestTerminal t;
     t.csi(">8u");
     t.clearOutput();
@@ -285,7 +320,8 @@ TEST_CASE("kitty: report all keys ctrl+enter") {
     CHECK(t.output() == "\x1b[13;5u");
 }
 
-TEST_CASE("kitty: modifier key reported with report all keys") {
+TEST_CASE("kitty: modifier key reported with report all keys")
+{
     TestTerminal t;
     t.csi(">8u");
     t.clearOutput();
@@ -293,7 +329,8 @@ TEST_CASE("kitty: modifier key reported with report all keys") {
     CHECK(t.output() == "\x1b[57441;2u"); // left shift, shift mod
 }
 
-TEST_CASE("kitty: modifier key not reported without report all keys") {
+TEST_CASE("kitty: modifier key not reported without report all keys")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE only
     t.clearOutput();
@@ -301,7 +338,8 @@ TEST_CASE("kitty: modifier key not reported without report all keys") {
     CHECK(t.output().empty());
 }
 
-TEST_CASE("kitty: F1 no mods sends legacy") {
+TEST_CASE("kitty: F1 no mods sends legacy")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -309,7 +347,8 @@ TEST_CASE("kitty: F1 no mods sends legacy") {
     CHECK(t.output() == "\x1bOP");
 }
 
-TEST_CASE("kitty: shift+F1 sends CSI with mods") {
+TEST_CASE("kitty: shift+F1 sends CSI with mods")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -319,7 +358,8 @@ TEST_CASE("kitty: shift+F1 sends CSI with mods") {
 
 // === RIS full reset tests ===
 
-TEST_CASE("RIS resets cursor visibility") {
+TEST_CASE("RIS resets cursor visibility")
+{
     TestTerminal t;
     t.csi("?25l"); // hide cursor
     CHECK_FALSE(t.term.cursorVisible());
@@ -327,7 +367,8 @@ TEST_CASE("RIS resets cursor visibility") {
     CHECK(t.term.cursorVisible());
 }
 
-TEST_CASE("RIS resets cursor shape") {
+TEST_CASE("RIS resets cursor shape")
+{
     TestTerminal t;
     t.csi("4 q"); // steady underline
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyUnderline);
@@ -335,7 +376,8 @@ TEST_CASE("RIS resets cursor shape") {
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
 }
 
-TEST_CASE("RIS resets mouse modes") {
+TEST_CASE("RIS resets mouse modes")
+{
     TestTerminal t;
     t.csi("?1000h"); // enable mouse
     CHECK(t.term.mouseReportingActive());
@@ -343,7 +385,8 @@ TEST_CASE("RIS resets mouse modes") {
     CHECK_FALSE(t.term.mouseReportingActive());
 }
 
-TEST_CASE("RIS resets bracketed paste") {
+TEST_CASE("RIS resets bracketed paste")
+{
     TestTerminal t;
     t.csi("?2004h"); // enable bracketed paste
     CHECK(t.term.bracketedPaste());
@@ -351,7 +394,8 @@ TEST_CASE("RIS resets bracketed paste") {
     CHECK_FALSE(t.term.bracketedPaste());
 }
 
-TEST_CASE("RIS resets kitty keyboard flags") {
+TEST_CASE("RIS resets kitty keyboard flags")
+{
     TestTerminal t;
     t.csi(">5u");
     CHECK(t.term.kittyFlags() == 5);
@@ -359,15 +403,17 @@ TEST_CASE("RIS resets kitty keyboard flags") {
     CHECK(t.term.kittyFlags() == 0);
 }
 
-TEST_CASE("RIS exits alt screen") {
+TEST_CASE("RIS exits alt screen")
+{
     TestTerminal t;
     t.csi("?1049h"); // enter alt screen
-    t.esc("c"); // RIS
+    t.esc("c");      // RIS
     // Should be back on main screen with cursor visible
     CHECK(t.term.cursorVisible());
 }
 
-TEST_CASE("alt screen switch mid-injectData writes to correct grid") {
+TEST_CASE("alt screen switch mid-injectData writes to correct grid")
+{
     TestTerminal t;
     // Write 'A' on main screen
     t.feed("A");
@@ -389,7 +435,8 @@ TEST_CASE("alt screen switch mid-injectData writes to correct grid") {
 
 // === Ctrl+letter encoding (regression: was broken, text was empty) ===
 
-TEST_CASE("kitty: disambiguate ctrl+c sends CSI 99;5u") {
+TEST_CASE("kitty: disambiguate ctrl+c sends CSI 99;5u")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE
     t.clearOutput();
@@ -399,7 +446,8 @@ TEST_CASE("kitty: disambiguate ctrl+c sends CSI 99;5u") {
     CHECK(t.output() == "\x1b[99;5u");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+c with lowercase key sends CSI 99;5u") {
+TEST_CASE("kitty: disambiguate ctrl+c with lowercase key sends CSI 99;5u")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -408,7 +456,8 @@ TEST_CASE("kitty: disambiguate ctrl+c with lowercase key sends CSI 99;5u") {
     CHECK(t.output() == "\x1b[99;5u");
 }
 
-TEST_CASE("kitty: report_all_keys ctrl+c sends CSI 99;5u") {
+TEST_CASE("kitty: report_all_keys ctrl+c sends CSI 99;5u")
+{
     TestTerminal t;
     t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
     t.clearOutput();
@@ -418,7 +467,8 @@ TEST_CASE("kitty: report_all_keys ctrl+c sends CSI 99;5u") {
 
 // === shifted_key encoding ===
 
-TEST_CASE("kitty: report_alternate_key includes shifted_key for letter") {
+TEST_CASE("kitty: report_alternate_key includes shifted_key for letter")
+{
     TestTerminal t;
     t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
     t.clearOutput();
@@ -428,7 +478,8 @@ TEST_CASE("kitty: report_alternate_key includes shifted_key for letter") {
     CHECK(t.output() == "a");
 }
 
-TEST_CASE("kitty: report_alternate_key ctrl+a includes shifted_key") {
+TEST_CASE("kitty: report_alternate_key ctrl+a includes shifted_key")
+{
     TestTerminal t;
     t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
     t.clearOutput();
@@ -437,7 +488,8 @@ TEST_CASE("kitty: report_alternate_key ctrl+a includes shifted_key") {
     CHECK(t.output() == "\x1b[97:65;5u");
 }
 
-TEST_CASE("kitty: report_alternate_key shift+a includes shifted_key") {
+TEST_CASE("kitty: report_alternate_key shift+a includes shifted_key")
+{
     TestTerminal t;
     t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
     t.clearOutput();
@@ -446,7 +498,8 @@ TEST_CASE("kitty: report_alternate_key shift+a includes shifted_key") {
     CHECK(t.output() == "\x1b[97:65;2u");
 }
 
-TEST_CASE("kitty: report_alternate_key omits shifted_key when same as keycode") {
+TEST_CASE("kitty: report_alternate_key omits shifted_key when same as keycode")
+{
     TestTerminal t;
     t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
     t.clearOutput();
@@ -455,7 +508,8 @@ TEST_CASE("kitty: report_alternate_key omits shifted_key when same as keycode") 
     CHECK(t.output() == "\x1b[32;5u"); // no :shifted_key
 }
 
-TEST_CASE("kitty: without report_alternate_key omits shifted_key") {
+TEST_CASE("kitty: without report_alternate_key omits shifted_key")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE only
     t.clearOutput();
@@ -465,7 +519,8 @@ TEST_CASE("kitty: without report_alternate_key omits shifted_key") {
 
 // === Autorepeat ===
 
-TEST_CASE("kitty: disambiguate repeat sends same as press") {
+TEST_CASE("kitty: disambiguate repeat sends same as press")
+{
     TestTerminal t;
     t.csi(">1u"); // DISAMBIGUATE only
     t.clearOutput();
@@ -473,7 +528,8 @@ TEST_CASE("kitty: disambiguate repeat sends same as press") {
     CHECK(t.output() == "a"); // same as press — no event type suffix
 }
 
-TEST_CASE("kitty: report_event_types repeat includes event type") {
+TEST_CASE("kitty: report_event_types repeat includes event type")
+{
     TestTerminal t;
     t.csi(">3u"); // DISAMBIGUATE | REPORT_EVENT_TYPES
     t.clearOutput();
@@ -483,7 +539,8 @@ TEST_CASE("kitty: report_event_types repeat includes event type") {
 
 // === Comprehensive arrow key / functional key encoding ===
 
-TEST_CASE("kitty: disambiguate up arrow sends legacy CSI A") {
+TEST_CASE("kitty: disambiguate up arrow sends legacy CSI A")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -491,7 +548,8 @@ TEST_CASE("kitty: disambiguate up arrow sends legacy CSI A") {
     CHECK(t.output() == "\x1b[A");
 }
 
-TEST_CASE("kitty: disambiguate down arrow sends legacy CSI B") {
+TEST_CASE("kitty: disambiguate down arrow sends legacy CSI B")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -499,7 +557,8 @@ TEST_CASE("kitty: disambiguate down arrow sends legacy CSI B") {
     CHECK(t.output() == "\x1b[B");
 }
 
-TEST_CASE("kitty: disambiguate left arrow sends legacy CSI D") {
+TEST_CASE("kitty: disambiguate left arrow sends legacy CSI D")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -507,7 +566,8 @@ TEST_CASE("kitty: disambiguate left arrow sends legacy CSI D") {
     CHECK(t.output() == "\x1b[D");
 }
 
-TEST_CASE("kitty: disambiguate right arrow sends legacy CSI C") {
+TEST_CASE("kitty: disambiguate right arrow sends legacy CSI C")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -515,7 +575,8 @@ TEST_CASE("kitty: disambiguate right arrow sends legacy CSI C") {
     CHECK(t.output() == "\x1b[C");
 }
 
-TEST_CASE("kitty: disambiguate home sends legacy CSI H") {
+TEST_CASE("kitty: disambiguate home sends legacy CSI H")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -523,7 +584,8 @@ TEST_CASE("kitty: disambiguate home sends legacy CSI H") {
     CHECK(t.output() == "\x1b[H");
 }
 
-TEST_CASE("kitty: disambiguate end sends legacy CSI F") {
+TEST_CASE("kitty: disambiguate end sends legacy CSI F")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -531,7 +593,8 @@ TEST_CASE("kitty: disambiguate end sends legacy CSI F") {
     CHECK(t.output() == "\x1b[F");
 }
 
-TEST_CASE("kitty: disambiguate F1 sends legacy ESC O P") {
+TEST_CASE("kitty: disambiguate F1 sends legacy ESC O P")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -539,7 +602,8 @@ TEST_CASE("kitty: disambiguate F1 sends legacy ESC O P") {
     CHECK(t.output() == "\x1bOP");
 }
 
-TEST_CASE("kitty: disambiguate F5 sends legacy CSI 15~") {
+TEST_CASE("kitty: disambiguate F5 sends legacy CSI 15~")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -547,7 +611,8 @@ TEST_CASE("kitty: disambiguate F5 sends legacy CSI 15~") {
     CHECK(t.output() == "\x1b[15~");
 }
 
-TEST_CASE("kitty: disambiguate delete sends legacy CSI 3~") {
+TEST_CASE("kitty: disambiguate delete sends legacy CSI 3~")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -555,7 +620,8 @@ TEST_CASE("kitty: disambiguate delete sends legacy CSI 3~") {
     CHECK(t.output() == "\x1b[3~");
 }
 
-TEST_CASE("kitty: disambiguate insert sends legacy CSI 2~") {
+TEST_CASE("kitty: disambiguate insert sends legacy CSI 2~")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -563,7 +629,8 @@ TEST_CASE("kitty: disambiguate insert sends legacy CSI 2~") {
     CHECK(t.output() == "\x1b[2~");
 }
 
-TEST_CASE("kitty: disambiguate pageup sends legacy CSI 5~") {
+TEST_CASE("kitty: disambiguate pageup sends legacy CSI 5~")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -571,7 +638,8 @@ TEST_CASE("kitty: disambiguate pageup sends legacy CSI 5~") {
     CHECK(t.output() == "\x1b[5~");
 }
 
-TEST_CASE("kitty: disambiguate pagedown sends legacy CSI 6~") {
+TEST_CASE("kitty: disambiguate pagedown sends legacy CSI 6~")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -581,7 +649,8 @@ TEST_CASE("kitty: disambiguate pagedown sends legacy CSI 6~") {
 
 // === Arrow keys with modifiers ===
 
-TEST_CASE("kitty: disambiguate shift+up sends CSI 1;2A") {
+TEST_CASE("kitty: disambiguate shift+up sends CSI 1;2A")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -589,7 +658,8 @@ TEST_CASE("kitty: disambiguate shift+up sends CSI 1;2A") {
     CHECK(t.output() == "\x1b[1;2A");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+up sends CSI 1;5A") {
+TEST_CASE("kitty: disambiguate ctrl+up sends CSI 1;5A")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -597,7 +667,8 @@ TEST_CASE("kitty: disambiguate ctrl+up sends CSI 1;5A") {
     CHECK(t.output() == "\x1b[1;5A");
 }
 
-TEST_CASE("kitty: disambiguate alt+up sends CSI 1;3A") {
+TEST_CASE("kitty: disambiguate alt+up sends CSI 1;3A")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -605,7 +676,8 @@ TEST_CASE("kitty: disambiguate alt+up sends CSI 1;3A") {
     CHECK(t.output() == "\x1b[1;3A");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+shift+up sends CSI 1;6A") {
+TEST_CASE("kitty: disambiguate ctrl+shift+up sends CSI 1;6A")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -615,7 +687,8 @@ TEST_CASE("kitty: disambiguate ctrl+shift+up sends CSI 1;6A") {
 
 // === Functional keys with modifiers (tilde style) ===
 
-TEST_CASE("kitty: disambiguate shift+F5 sends CSI 15;2~") {
+TEST_CASE("kitty: disambiguate shift+F5 sends CSI 15;2~")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -623,7 +696,8 @@ TEST_CASE("kitty: disambiguate shift+F5 sends CSI 15;2~") {
     CHECK(t.output() == "\x1b[15;2~");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+delete sends CSI 3;5~") {
+TEST_CASE("kitty: disambiguate ctrl+delete sends CSI 3;5~")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -633,7 +707,8 @@ TEST_CASE("kitty: disambiguate ctrl+delete sends CSI 3;5~") {
 
 // === Special keys ===
 
-TEST_CASE("kitty: disambiguate escape no mods sends ESC") {
+TEST_CASE("kitty: disambiguate escape no mods sends ESC")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -641,7 +716,8 @@ TEST_CASE("kitty: disambiguate escape no mods sends ESC") {
     CHECK(t.output() == "\x1b");
 }
 
-TEST_CASE("kitty: disambiguate enter no mods sends CR") {
+TEST_CASE("kitty: disambiguate enter no mods sends CR")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -649,7 +725,8 @@ TEST_CASE("kitty: disambiguate enter no mods sends CR") {
     CHECK(t.output() == "\r");
 }
 
-TEST_CASE("kitty: disambiguate tab no mods sends TAB") {
+TEST_CASE("kitty: disambiguate tab no mods sends TAB")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -657,7 +734,8 @@ TEST_CASE("kitty: disambiguate tab no mods sends TAB") {
     CHECK(t.output() == "\t");
 }
 
-TEST_CASE("kitty: disambiguate backspace no mods sends DEL") {
+TEST_CASE("kitty: disambiguate backspace no mods sends DEL")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -665,7 +743,8 @@ TEST_CASE("kitty: disambiguate backspace no mods sends DEL") {
     CHECK(t.output() == "\x7f");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+enter sends CSI u") {
+TEST_CASE("kitty: disambiguate ctrl+enter sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -673,7 +752,8 @@ TEST_CASE("kitty: disambiguate ctrl+enter sends CSI u") {
     CHECK(t.output() == "\x1b[13;5u");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+tab sends CSI u") {
+TEST_CASE("kitty: disambiguate ctrl+tab sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -681,7 +761,8 @@ TEST_CASE("kitty: disambiguate ctrl+tab sends CSI u") {
     CHECK(t.output() == "\x1b[9;5u");
 }
 
-TEST_CASE("kitty: disambiguate ctrl+backspace sends CSI u") {
+TEST_CASE("kitty: disambiguate ctrl+backspace sends CSI u")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -691,7 +772,8 @@ TEST_CASE("kitty: disambiguate ctrl+backspace sends CSI u") {
 
 // === Release events ===
 
-TEST_CASE("kitty: disambiguate release is dropped") {
+TEST_CASE("kitty: disambiguate release is dropped")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -699,7 +781,8 @@ TEST_CASE("kitty: disambiguate release is dropped") {
     CHECK(t.output().empty());
 }
 
-TEST_CASE("kitty: report_events release sends CSI u with event type 3") {
+TEST_CASE("kitty: report_events release sends CSI u with event type 3")
+{
     TestTerminal t;
     t.csi(">3u"); // DISAMBIGUATE | REPORT_EVENT_TYPES
     t.clearOutput();
@@ -707,7 +790,8 @@ TEST_CASE("kitty: report_events release sends CSI u with event type 3") {
     CHECK(t.output() == "\x1b[97;1:3u");
 }
 
-TEST_CASE("kitty: report_events up arrow release sends legacy with event type") {
+TEST_CASE("kitty: report_events up arrow release sends legacy with event type")
+{
     TestTerminal t;
     t.csi(">3u"); // DISAMBIGUATE | REPORT_EVENT_TYPES
     t.clearOutput();
@@ -717,7 +801,8 @@ TEST_CASE("kitty: report_events up arrow release sends legacy with event type") 
 
 // === REPORT_ALL_KEYS mode ===
 
-TEST_CASE("kitty: report_all_keys plain a uses CSI u") {
+TEST_CASE("kitty: report_all_keys plain a uses CSI u")
+{
     TestTerminal t;
     t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
     t.clearOutput();
@@ -725,7 +810,8 @@ TEST_CASE("kitty: report_all_keys plain a uses CSI u") {
     CHECK(t.output() == "\x1b[97u");
 }
 
-TEST_CASE("kitty: report_all_keys up arrow uses CSI u") {
+TEST_CASE("kitty: report_all_keys up arrow uses CSI u")
+{
     TestTerminal t;
     t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
     t.clearOutput();
@@ -735,7 +821,8 @@ TEST_CASE("kitty: report_all_keys up arrow uses CSI u") {
 
 // === REPORT_TEXT mode ===
 
-TEST_CASE("kitty: report_text plain a includes text codepoint") {
+TEST_CASE("kitty: report_text plain a includes text codepoint")
+{
     TestTerminal t;
     t.csi(">17u"); // DISAMBIGUATE | REPORT_TEXT
     t.clearOutput();
@@ -744,7 +831,8 @@ TEST_CASE("kitty: report_text plain a includes text codepoint") {
     CHECK(t.output() == "a");
 }
 
-TEST_CASE("kitty: report_text ctrl+a includes text codepoint") {
+TEST_CASE("kitty: report_text ctrl+a includes text codepoint")
+{
     TestTerminal t;
     t.csi(">17u"); // DISAMBIGUATE | REPORT_TEXT
     t.clearOutput();
@@ -754,7 +842,8 @@ TEST_CASE("kitty: report_text ctrl+a includes text codepoint") {
 
 // === Arrow key repeat ===
 
-TEST_CASE("kitty: disambiguate up arrow repeat sends same as press") {
+TEST_CASE("kitty: disambiguate up arrow repeat sends same as press")
+{
     TestTerminal t;
     t.csi(">1u");
     t.clearOutput();
@@ -762,7 +851,8 @@ TEST_CASE("kitty: disambiguate up arrow repeat sends same as press") {
     CHECK(t.output() == "\x1b[A");
 }
 
-TEST_CASE("kitty: report_events up arrow repeat includes event type") {
+TEST_CASE("kitty: report_events up arrow repeat includes event type")
+{
     TestTerminal t;
     t.csi(">3u");
     t.clearOutput();

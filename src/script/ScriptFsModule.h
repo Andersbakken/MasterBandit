@@ -6,7 +6,7 @@
 
 #include <string>
 
-JSModuleDef* createFsNativeModule(JSContext* ctx, Script::Engine* eng);
+JSModuleDef *createFsNativeModule(JSContext *ctx, Script::Engine *eng);
 
 // Validate that `rawPath` is writable by `inst` under the same sandbox
 // rules as fs.writeFileSync: built-in scripts may write anywhere; user
@@ -19,12 +19,12 @@ JSModuleDef* createFsNativeModule(JSContext* ctx, Script::Engine* eng);
 // callers like pane.writeRangeToFile do their own gating). This helper
 // is shared so non-fs APIs that produce files can plug into the same
 // sandbox without duplicating the path logic.
-std::string scriptCheckWritePath(JSContext* ctx,
-                                  Script::Engine* eng,
-                                  Script::Engine::Instance* inst,
-                                  const std::string& rawPath);
+std::string scriptCheckWritePath(JSContext *ctx,
+                                 Script::Engine *eng,
+                                 Script::Engine::Instance *inst,
+                                 const std::string &rawPath);
 
 // Ensure the parent directory of `filePath` exists (recursive). Returns
 // false on failure (and logs via spdlog). Used by writers that
 // auto-create the destination directory.
-bool scriptEnsureParentDir(const std::string& filePath);
+bool scriptEnsureParentDir(const std::string &filePath);

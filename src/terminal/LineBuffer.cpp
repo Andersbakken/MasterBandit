@@ -9,18 +9,21 @@
 // LogicalLineBlock
 // =========================================================================
 
-LogicalLineBlock::LogicalLineBlock() {
+LogicalLineBlock::LogicalLineBlock()
+{
     cells_.reserve(kCellCapacity);
     cumulativeLengths_.reserve(64);
     meta_.reserve(64);
 }
 
-bool LogicalLineBlock::appendLine(const Cell* cells, int len,
+bool LogicalLineBlock::appendLine(const Cell *cells, int len,
                                   LineMeta::Eol eol, bool partial, bool extendsLast,
                                   uint64_t lineId, uint8_t flags,
-                                  const std::unordered_map<int, CellExtra>* extras)
+                                  const std::unordered_map<int, CellExtra> *extras)
 {
-    if (len < 0) return false;
+    if (len < 0) {
+        return false;
+    }
 
     // For "extend last partial line", the previous line's metadata is mutated
     // and cells are appended.
@@ -31,12 +34,16 @@ bool LogicalLineBlock::appendLine(const Cell* cells, int len,
             return false;
         }
         const int lastIdx = static_cast<int>(meta_.size()) - 1;
-        if (!meta_[lastIdx].isPartial) return false;
+        if (!meta_[lastIdx].isPartial) {
+            return false;
+        }
 
         // Capacity check: do we have room for `len` more cells?
         if (static_cast<int>(cells_.size()) + len > kCellCapacity && len > 0) {
             // Allow some overflow but not unbounded.
-            if (static_cast<int>(cells_.size()) + len > kCellCapacity * 2) return false;
+            if (static_cast<int>(cells_.size()) + len > kCellCapacity * 2) {
+                return false;
+            }
         }
         const int currentEnd = cumulativeLengths_[lastIdx];
         const int prevStart  = (lastIdx == firstValidLine_) ? bufferStartOffset_
@@ -48,17 +55,19 @@ bool LogicalLineBlock::appendLine(const Cell* cells, int len,
         }
         cumulativeLengths_[lastIdx] = static_cast<int>(cells_.size());
 
-        meta_[lastIdx].eol = eol;
+        meta_[lastIdx].eol       = eol;
         meta_[lastIdx].isPartial = partial;
         meta_[lastIdx].flags |= flags;
         if (extras) {
-            for (const auto& [col, ex] : *extras) {
-                if (col < 0 || col >= len) continue;
+            for (const auto &[col, ex] : *extras) {
+                if (col < 0 || col >= len) {
+                    continue;
+                }
                 meta_[lastIdx].extras[col + currentLen] = ex;
             }
         }
         meta_[lastIdx].cachedWidth = -1;
-        cachedWidth_ = -1;
+        cachedWidth_               = -1;
         return true;
     }
 
@@ -73,13 +82,15 @@ bool LogicalLineBlock::appendLine(const Cell* cells, int len,
     cumulativeLengths_.push_back(static_cast<int>(cells_.size()));
 
     LineMeta m;
-    m.flags = flags;
-    m.eol = eol;
+    m.flags     = flags;
+    m.eol       = eol;
     m.isPartial = partial;
-    m.lineId = lineId;
+    m.lineId    = lineId;
     if (extras) {
-        for (const auto& [col, ex] : *extras) {
-            if (col < 0 || col >= len) continue;
+        for (const auto &[col, ex] : *extras) {
+            if (col < 0 || col >= len) {
+                continue;
+            }
             m.extras[col] = ex;
         }
     }
@@ -88,32 +99,34 @@ bool LogicalLineBlock::appendLine(const Cell* cells, int len,
     return true;
 }
 
-const Cell* LogicalLineBlock::lineCells(int i) const
+const Cell *LogicalLineBlock::lineCells(int i) const
 {
-    const int abs = firstValidLine_ + i;
+    const int abs   = firstValidLine_ + i;
     const int start = lineStartOffset(abs);
     return cells_.data() + start;
 }
 
 int LogicalLineBlock::lineLength(int i) const
 {
-    const int abs = firstValidLine_ + i;
+    const int abs   = firstValidLine_ + i;
     const int start = lineStartOffset(abs);
-    const int end = cumulativeLengths_[abs];
+    const int end   = cumulativeLengths_[abs];
     return end - start;
 }
 
-LineMeta& LogicalLineBlock::mutableMeta(int i)
+LineMeta &LogicalLineBlock::mutableMeta(int i)
 {
-    cachedWidth_ = -1;
-    LineMeta& m = meta_[firstValidLine_ + i];
+    cachedWidth_  = -1;
+    LineMeta &m   = meta_[firstValidLine_ + i];
     m.cachedWidth = -1;
     return m;
 }
 
 bool LogicalLineBlock::lastIsPartial() const
 {
-    if (empty()) return false;
+    if (empty()) {
+        return false;
+    }
     return meta_.back().isPartial;
 }
 
@@ -124,30 +137,38 @@ bool LogicalLineBlock::lastIsPartial() const
 // cells at width W produces ⌈N / W⌉ rows, with at least 1.
 static int wrappedRowsFor(int len, int width)
 {
-    if (width <= 0) return 1;
-    if (len <= 0) return 1;
+    if (width <= 0) {
+        return 1;
+    }
+    if (len <= 0) {
+        return 1;
+    }
     return (len + width - 1) / width;
 }
 
 int LogicalLineBlock::numWrappedRowsForLine(int i, int width) const
 {
-    const LineMeta& m = meta(i);
-    if (m.cachedWidth == width) return m.cachedWrappedRows;
-    const int len = lineLength(i);
-    int rows = wrappedRowsFor(len, width);
-    m.cachedWidth = width;
+    const LineMeta &m = meta(i);
+    if (m.cachedWidth == width) {
+        return m.cachedWrappedRows;
+    }
+    const int len       = lineLength(i);
+    int rows            = wrappedRowsFor(len, width);
+    m.cachedWidth       = width;
     m.cachedWrappedRows = rows;
     return rows;
 }
 
 int LogicalLineBlock::numWrappedRows(int width) const
 {
-    if (cachedWidth_ == width) return cachedWrappedRows_;
+    if (cachedWidth_ == width) {
+        return cachedWrappedRows_;
+    }
     int total = 0;
     for (int i = 0; i < numLines(); ++i) {
         total += numWrappedRowsForLine(i, width);
     }
-    cachedWidth_ = width;
+    cachedWidth_       = width;
     cachedWrappedRows_ = total;
     return total;
 }
@@ -155,14 +176,18 @@ int LogicalLineBlock::numWrappedRows(int width) const
 void LogicalLineBlock::invalidateWrapCache()
 {
     cachedWidth_ = -1;
-    for (auto& m : meta_) m.cachedWidth = -1;
+    for (auto &m : meta_) {
+        m.cachedWidth = -1;
+    }
 }
 
 bool LogicalLineBlock::dropFront(int n)
 {
-    if (n <= 0) return empty();
+    if (n <= 0) {
+        return empty();
+    }
     const int avail = numLines();
-    n = std::min(n, avail);
+    n               = std::min(n, avail);
     firstValidLine_ += n;
     if (firstValidLine_ < static_cast<int>(meta_.size())) {
         bufferStartOffset_ = cumulativeLengths_[firstValidLine_ - 1];
@@ -171,7 +196,7 @@ bool LogicalLineBlock::dropFront(int n)
         cells_.clear();
         cumulativeLengths_.clear();
         meta_.clear();
-        firstValidLine_ = 0;
+        firstValidLine_    = 0;
         bufferStartOffset_ = 0;
     }
     cachedWidth_ = -1;
@@ -180,7 +205,9 @@ bool LogicalLineBlock::dropFront(int n)
 
 void LogicalLineBlock::dropLast()
 {
-    if (empty()) return;
+    if (empty()) {
+        return;
+    }
     meta_.pop_back();
     cumulativeLengths_.pop_back();
     if (cumulativeLengths_.empty()) {
@@ -199,12 +226,14 @@ void LogicalLineBlock::dropLast()
 LineBuffer::LineBuffer()
     : maxLogicalLines_(kDefaultMaxLogicalLines)
     , maxTotalCells_(kDefaultMaxTotalCells)
-{}
+{
+}
 
 LineBuffer::LineBuffer(int maxLogicalLines, int maxTotalCells)
     : maxLogicalLines_(maxLogicalLines)
     , maxTotalCells_(maxTotalCells)
-{}
+{
+}
 
 void LineBuffer::setMaxLogicalLines(int n)
 {
@@ -220,18 +249,17 @@ void LineBuffer::setMaxTotalCells(int n)
     invalidateSumCache();
 }
 
-void LineBuffer::appendLine(const Cell* cells, int len,
+void LineBuffer::appendLine(const Cell *cells, int len,
                             LineMeta::Eol eol, bool partial, bool extendsLast,
                             uint64_t lineId, uint8_t flags,
-                            const std::unordered_map<int, CellExtra>* extras)
+                            const std::unordered_map<int, CellExtra> *extras)
 {
     // Try to append to the last block. If it fails (capacity, or the
     // extendsLast precondition isn't met because the last line is in a
     // different block), open a new block.
     bool appended = false;
     if (!blocks_.empty()) {
-        appended = blocks_.back().appendLine(cells, len, eol, partial, extendsLast,
-                                             lineId, flags, extras);
+        appended = blocks_.back().appendLine(cells, len, eol, partial, extendsLast, lineId, flags, extras);
     }
     if (!appended) {
         if (extendsLast) {
@@ -248,15 +276,13 @@ void LineBuffer::appendLine(const Cell* cells, int len,
             // open a new block and append as a new line; the only thing we
             // need to preserve is the line ID and the wrap-context.
             blocks_.emplace_back();
-            const bool ok = blocks_.back().appendLine(cells, len, eol, partial, false,
-                                                     lineId, flags, extras);
+            const bool ok = blocks_.back().appendLine(cells, len, eol, partial, false, lineId, flags, extras);
             (void)ok;
             assert(ok);
             ++totalLines_;
         } else {
             blocks_.emplace_back();
-            const bool ok = blocks_.back().appendLine(cells, len, eol, partial, false,
-                                                     lineId, flags, extras);
+            const bool ok = blocks_.back().appendLine(cells, len, eol, partial, false, lineId, flags, extras);
             (void)ok;
             assert(ok);
             ++totalLines_;
@@ -272,10 +298,10 @@ void LineBuffer::appendLine(const Cell* cells, int len,
     // produce a new meta_ entry at internal index meta_.size()-1, which is
     // firstValidLine() + numLines() - 1 for the back block.
     if (!(appended && extendsLast)) {
-        const int blockIdx = static_cast<int>(blocks_.size()) - 1;
-        const auto& back = blocks_.back();
+        const int blockIdx    = static_cast<int>(blocks_.size()) - 1;
+        const auto &back      = blocks_.back();
         const int internalIdx = back.firstValidLine() + back.numLines() - 1;
-        lineIdIndex_[lineId] = LineLocation{
+        lineIdIndex_[lineId]  = LineLocation {
             firstBlockSeq_ + static_cast<uint64_t>(blockIdx),
             internalIdx
         };
@@ -286,34 +312,35 @@ void LineBuffer::appendLine(const Cell* cells, int len,
     invalidateSumCache();
 }
 
-void LineBuffer::appendHardLine(const Cell* cells, int len,
+void LineBuffer::appendHardLine(const Cell *cells, int len,
                                 uint64_t lineId, uint8_t flags,
-                                const std::unordered_map<int, CellExtra>* extras)
+                                const std::unordered_map<int, CellExtra> *extras)
 {
-    appendLine(cells, len, LineMeta::EolHard, /*partial*/false, /*extendsLast*/false,
-               lineId, flags, extras);
+    appendLine(cells, len, LineMeta::EolHard, /*partial*/ false, /*extendsLast*/ false, lineId, flags, extras);
 }
 
 LineBuffer::PoppedLine LineBuffer::popLastLine()
 {
     PoppedLine result;
-    if (blocks_.empty()) return result;
-    LogicalLineBlock& last = blocks_.back();
+    if (blocks_.empty()) {
+        return result;
+    }
+    LogicalLineBlock &last = blocks_.back();
     if (last.empty()) {
         blocks_.pop_back();
         return popLastLine();
     }
     const int idx = last.numLines() - 1;
-    const Cell* p = last.lineCells(idx);
+    const Cell *p = last.lineCells(idx);
     const int len = last.lineLength(idx);
     result.cells.assign(p, p + len);
-    const LineMeta& m = last.meta(idx);
-    result.eol = m.eol;
+    const LineMeta &m = last.meta(idx);
+    result.eol        = m.eol;
     result.wasPartial = m.isPartial;
-    result.lineId = m.lineId;
-    result.flags = m.flags;
-    result.extras = m.extras;
-    result.ok = true;
+    result.lineId     = m.lineId;
+    result.flags      = m.flags;
+    result.extras     = m.extras;
+    result.ok         = true;
 
     last.dropLast();
     totalCells_ -= len;
@@ -342,44 +369,53 @@ void LineBuffer::ensureSumCache(int width) const
         cachedBlockEndCum_[i] = total;
     }
     cachedTotalWrappedRows_ = total;
-    cachedSumWidth_ = width;
+    cachedSumWidth_         = width;
 }
 
 int LineBuffer::numWrappedRows(int width) const
 {
-    if (width <= 0) return 0;
+    if (width <= 0) {
+        return 0;
+    }
     ensureSumCache(width);
     return cachedTotalWrappedRows_;
 }
 
-bool LineBuffer::wrappedRowAt(int wrappedRow, int width, WrappedLineRef* out) const
+bool LineBuffer::wrappedRowAt(int wrappedRow, int width, WrappedLineRef *out) const
 {
-    if (wrappedRow < 0 || width <= 0) return false;
+    if (wrappedRow < 0 || width <= 0) {
+        return false;
+    }
     ensureSumCache(width);
-    if (wrappedRow >= cachedTotalWrappedRows_) return false;
+    if (wrappedRow >= cachedTotalWrappedRows_) {
+        return false;
+    }
 
     // Binary search: first block whose cumulative end > wrappedRow.
-    auto it = std::upper_bound(cachedBlockEndCum_.begin(),
-                               cachedBlockEndCum_.end(), wrappedRow);
-    const int bi = static_cast<int>(it - cachedBlockEndCum_.begin());
+    auto it           = std::upper_bound(cachedBlockEndCum_.begin(),
+                               cachedBlockEndCum_.end(),
+                               wrappedRow);
+    const int bi      = static_cast<int>(it - cachedBlockEndCum_.begin());
     const int prevCum = (bi == 0) ? 0 : cachedBlockEndCum_[bi - 1];
-    int localRem = wrappedRow - prevCum;
+    int localRem      = wrappedRow - prevCum;
 
-    const auto& b = blocks_[bi];
+    const auto &b = blocks_[bi];
     for (int li = 0; li < b.numLines(); ++li) {
         const int rows = b.numWrappedRowsForLine(li, width);
         if (localRem < rows) {
-            const int len = b.lineLength(li);
+            const int len       = b.lineLength(li);
             const int rowOffset = localRem * width;
-            int rowLen = std::min(width, len - rowOffset);
-            if (rowLen < 0) rowLen = 0;
-            out->blockIdx = bi;
-            out->lineInBlock = li;
-            out->rowOffset = rowOffset;
-            out->rowLength = rowLen;
+            int rowLen          = std::min(width, len - rowOffset);
+            if (rowLen < 0) {
+                rowLen = 0;
+            }
+            out->blockIdx         = bi;
+            out->lineInBlock      = li;
+            out->rowOffset        = rowOffset;
+            out->rowLength        = rowLen;
             out->isFirstRowOfLine = (localRem == 0);
             out->isLastRowOfLine  = (localRem == rows - 1);
-            out->eol = out->isLastRowOfLine ? b.meta(li).eol : LineMeta::EolSoft;
+            out->eol              = out->isLastRowOfLine ? b.meta(li).eol : LineMeta::EolSoft;
             return true;
         }
         localRem -= rows;
@@ -387,75 +423,98 @@ bool LineBuffer::wrappedRowAt(int wrappedRow, int width, WrappedLineRef* out) co
     return false;
 }
 
-const Cell* LineBuffer::cellsAt(const WrappedLineRef& ref) const
+const Cell *LineBuffer::cellsAt(const WrappedLineRef &ref) const
 {
     return blocks_[ref.blockIdx].lineCells(ref.lineInBlock) + ref.rowOffset;
 }
 
-const Cell* LineBuffer::wrappedRowCells(int wrappedRow, int width, int* outLen) const
+const Cell *LineBuffer::wrappedRowCells(int wrappedRow, int width, int *outLen) const
 {
     WrappedLineRef ref;
-    if (!wrappedRowAt(wrappedRow, width, &ref)) return nullptr;
-    if (outLen) *outLen = ref.rowLength;
+    if (!wrappedRowAt(wrappedRow, width, &ref)) {
+        return nullptr;
+    }
+    if (outLen) {
+        *outLen = ref.rowLength;
+    }
     return cellsAt(ref);
 }
 
 bool LineBuffer::lastLineIsPartial() const
 {
-    if (blocks_.empty()) return false;
+    if (blocks_.empty()) {
+        return false;
+    }
     return blocks_.back().lastIsPartial();
 }
 
 uint64_t LineBuffer::lineIdAtLogicalIndex(int idx) const
 {
     int blockIdx = 0, lineInBlock = 0;
-    if (!resolveLogicalIndex(idx, &blockIdx, &lineInBlock)) return 0;
+    if (!resolveLogicalIndex(idx, &blockIdx, &lineInBlock)) {
+        return 0;
+    }
     return blocks_[blockIdx].lineId(lineInBlock);
 }
 
 int LineBuffer::logicalIndexOfLineId(uint64_t id) const
 {
     auto loc = findLine(id);
-    if (!loc) return -1;
+    if (!loc) {
+        return -1;
+    }
     // Sum numLines() over preceding blocks. blockCount is small (typically
     // O(scrollback / 64)); per-block size is O(1) (vector::size). For real
     // performance-sensitive callers, prefer findLine + numWrappedRowsBeforeBlock.
     int base = 0;
-    for (int bi = 0; bi < loc->blockIdx; ++bi) base += blocks_[bi].numLines();
+    for (int bi = 0; bi < loc->blockIdx; ++bi) {
+        base += blocks_[bi].numLines();
+    }
     return base + loc->externalLineIdx;
 }
 
 std::optional<LineBuffer::FoundLine> LineBuffer::findLine(uint64_t id) const
 {
-    if (id == 0) return std::nullopt;
-    auto it = lineIdIndex_.find(id);
-    if (it == lineIdIndex_.end()) return std::nullopt;
-    const int blockIdx = static_cast<int>(it->second.blockSeq - firstBlockSeq_);
-    if (blockIdx < 0 || blockIdx >= static_cast<int>(blocks_.size()))
+    if (id == 0) {
         return std::nullopt;
-    const auto& b = blocks_[blockIdx];
+    }
+    auto it = lineIdIndex_.find(id);
+    if (it == lineIdIndex_.end()) {
+        return std::nullopt;
+    }
+    const int blockIdx = static_cast<int>(it->second.blockSeq - firstBlockSeq_);
+    if (blockIdx < 0 || blockIdx >= static_cast<int>(blocks_.size())) {
+        return std::nullopt;
+    }
+    const auto &b = blocks_[blockIdx];
     const int ext = it->second.internalLineIdx - b.firstValidLine();
-    if (ext < 0 || ext >= b.numLines()) return std::nullopt;
-    return FoundLine{blockIdx, ext};
+    if (ext < 0 || ext >= b.numLines()) {
+        return std::nullopt;
+    }
+    return FoundLine { blockIdx, ext };
 }
 
 int LineBuffer::numWrappedRowsBeforeBlock(int blockIdx, int width) const
 {
-    if (width <= 0 || blockIdx <= 0) return 0;
+    if (width <= 0 || blockIdx <= 0) {
+        return 0;
+    }
     ensureSumCache(width);
     const int last = std::min(blockIdx - 1,
                               static_cast<int>(cachedBlockEndCum_.size()) - 1);
     return last >= 0 ? cachedBlockEndCum_[last] : 0;
 }
 
-bool LineBuffer::resolveLogicalIndex(int idx, int* blockIdx, int* lineInBlock) const
+bool LineBuffer::resolveLogicalIndex(int idx, int *blockIdx, int *lineInBlock) const
 {
-    if (idx < 0) return false;
+    if (idx < 0) {
+        return false;
+    }
     int rem = idx;
     for (int bi = 0; bi < static_cast<int>(blocks_.size()); ++bi) {
         const int n = blocks_[bi].numLines();
         if (rem < n) {
-            *blockIdx = bi;
+            *blockIdx    = bi;
             *lineInBlock = rem;
             return true;
         }
@@ -467,16 +526,23 @@ bool LineBuffer::resolveLogicalIndex(int idx, int* blockIdx, int* lineInBlock) c
 std::string LineBuffer::lineText(int idx) const
 {
     int bi, li;
-    if (!resolveLogicalIndex(idx, &bi, &li)) return {};
-    const Cell* p = blocks_[bi].lineCells(li);
+    if (!resolveLogicalIndex(idx, &bi, &li)) {
+        return {};
+    }
+    const Cell *p = blocks_[bi].lineCells(li);
     const int len = blocks_[bi].lineLength(li);
     std::string out;
     out.reserve(len);
     int trim = len;
-    while (trim > 0 && p[trim - 1].wc == 0) --trim;
+    while (trim > 0 && p[trim - 1].wc == 0) {
+        --trim;
+    }
     for (int c = 0; c < trim; ++c) {
         char32_t cp = p[c].wc;
-        if (cp == 0) { out += ' '; continue; }
+        if (cp == 0) {
+            out += ' ';
+            continue;
+        }
         if (cp < 0x80) {
             out += static_cast<char>(cp);
         } else {
@@ -491,30 +557,48 @@ std::string LineBuffer::lineText(int idx) const
 std::string LineBuffer::textInRange(int startIdx, int endIdx,
                                     int startCol, int endCol) const
 {
-    if (startIdx < 0) startIdx = 0;
-    if (endIdx >= totalLines_) endIdx = totalLines_ - 1;
-    if (startIdx > endIdx) return {};
-    if (endCol < 0) endCol = std::numeric_limits<int>::max();
+    if (startIdx < 0) {
+        startIdx = 0;
+    }
+    if (endIdx >= totalLines_) {
+        endIdx = totalLines_ - 1;
+    }
+    if (startIdx > endIdx) {
+        return {};
+    }
+    if (endCol < 0) {
+        endCol = std::numeric_limits<int>::max();
+    }
     std::string out;
     for (int idx = startIdx; idx <= endIdx; ++idx) {
         int bi, li;
-        if (!resolveLogicalIndex(idx, &bi, &li)) continue;
-        const Cell* p = blocks_[bi].lineCells(li);
-        const int len = blocks_[bi].lineLength(li);
+        if (!resolveLogicalIndex(idx, &bi, &li)) {
+            continue;
+        }
+        const Cell *p  = blocks_[bi].lineCells(li);
+        const int len  = blocks_[bi].lineLength(li);
         const int from = (idx == startIdx) ? std::max(0, startCol) : 0;
-        int to = (idx == endIdx) ? std::min(len, endCol) : len;
-        while (to > from && p[to - 1].wc == 0) --to;
+        int to         = (idx == endIdx) ? std::min(len, endCol) : len;
+        while (to > from && p[to - 1].wc == 0) {
+            --to;
+        }
         for (int c = from; c < to; ++c) {
             char32_t cp = p[c].wc;
-            if (cp == 0) { out += ' '; continue; }
-            if (cp < 0x80) out += static_cast<char>(cp);
-            else {
+            if (cp == 0) {
+                out += ' ';
+                continue;
+            }
+            if (cp < 0x80) {
+                out += static_cast<char>(cp);
+            } else {
                 char buf[4];
                 int n = utf8::encode(cp, buf);
                 out.append(buf, n);
             }
         }
-        if (idx < endIdx) out += '\n';
+        if (idx < endIdx) {
+            out += '\n';
+        }
     }
     return out;
 }
@@ -533,29 +617,34 @@ void LineBuffer::clear()
 
 void LineBuffer::invalidateWrapCaches()
 {
-    for (auto& b : blocks_) b.invalidateWrapCache();
+    for (auto &b : blocks_) {
+        b.invalidateWrapCache();
+    }
     invalidateSumCache();
 }
 
 void LineBuffer::enforceLimits()
 {
     while ((maxLogicalLines_ > 0 && totalLines_ > maxLogicalLines_) ||
-           (maxTotalCells_   > 0 && totalCells_ > maxTotalCells_))
-    {
-        if (blocks_.empty()) break;
-        LogicalLineBlock& head = blocks_.front();
+           (maxTotalCells_ > 0 && totalCells_ > maxTotalCells_)) {
+        if (blocks_.empty()) {
+            break;
+        }
+        LogicalLineBlock &head = blocks_.front();
         if (head.empty()) {
             blocks_.pop_front();
             ++firstBlockSeq_;
             continue;
         }
         const uint64_t evictedId = head.lineId(0);
-        const int len = head.lineLength(0);
-        const bool blockEmpty = head.dropFront(1);
+        const int len            = head.lineLength(0);
+        const bool blockEmpty    = head.dropFront(1);
         totalLines_ -= 1;
         totalCells_ -= len;
         lineIdIndex_.erase(evictedId);
-        if (onLineIdEvicted_) onLineIdEvicted_(evictedId);
+        if (onLineIdEvicted_) {
+            onLineIdEvicted_(evictedId);
+        }
         if (blockEmpty) {
             blocks_.pop_front();
             // firstBlockSeq_ tracks blocks_.front()'s seq. Bump it so that
@@ -571,7 +660,7 @@ void LineBuffer::recomputeTotals()
 {
     totalLines_ = 0;
     totalCells_ = 0;
-    for (const auto& b : blocks_) {
+    for (const auto &b : blocks_) {
         totalLines_ += b.numLines();
         totalCells_ += b.cellsUsed();
     }

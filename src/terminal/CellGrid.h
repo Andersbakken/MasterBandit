@@ -5,7 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
-class CellGrid : public IGrid {
+class CellGrid : public IGrid
+{
 public:
     CellGrid();
     CellGrid(int cols, int rows);
@@ -13,12 +14,16 @@ public:
     void resize(int cols, int rows);
 
     int cols() const override { return cols_; }
+
     int rows() const override { return rows_; }
 
-    Cell& cell(int col, int row) override { return rowVec_[row]->cells[col]; }
-    const Cell& cell(int col, int row) const override { return rowVec_[row]->cells[col]; }
-    Cell* row(int row) override { return rowVec_[row]->cells.data(); }
-    const Cell* row(int row) const override { return rowVec_[row]->cells.data(); }
+    Cell &cell(int col, int row) override { return rowVec_[row]->cells[col]; }
+
+    const Cell &cell(int col, int row) const override { return rowVec_[row]->cells[col]; }
+
+    Cell *row(int row) override { return rowVec_[row]->cells.data(); }
+
+    const Cell *row(int row) const override { return rowVec_[row]->cells.data(); }
 
     void markRowDirty(int row) override;
     void markAllDirty() override;
@@ -34,13 +39,14 @@ public:
     void deleteChars(int row, int col, int count) override;
     void insertChars(int row, int col, int count) override;
 
-    const CellExtra* getExtra(int col, int row) const override;
-    CellExtra& ensureExtra(int col, int row) override;
+    const CellExtra *getExtra(int col, int row) const override;
+    CellExtra &ensureExtra(int col, int row) override;
     void clearExtra(int col, int row) override;
     void clearRowExtras(int row) override;
 
 private:
-    struct Row {
+    struct Row
+    {
         std::vector<Cell> cells;
         // Lazy: nullptr means "no extras on this row", which is the common
         // case. Allocated only when ensureExtra fires. Move/destroy of an
@@ -51,7 +57,7 @@ private:
     };
 
     static std::unique_ptr<Row> makeRow(int cols);
-    void clearRowInternal(Row& r, int startCol, int endCol);
+    void clearRowInternal(Row &r, int startCol, int endCol);
 
     int cols_ = 0, rows_ = 0;
     std::vector<std::unique_ptr<Row>> rowVec_;

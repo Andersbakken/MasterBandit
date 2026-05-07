@@ -13,17 +13,19 @@
 
 TEST_CASE("Uuid: canonical form has hyphens at positions 8/13/18/23")
 {
-    Uuid u = Uuid::generate();
+    Uuid u        = Uuid::generate();
     std::string s = u.toString();
     REQUIRE(s.size() == 36);
-    CHECK(s[8]  == '-');
+    CHECK(s[8] == '-');
     CHECK(s[13] == '-');
     CHECK(s[18] == '-');
     CHECK(s[23] == '-');
     // No other hyphens; every other char is lowercase hex.
     for (size_t i = 0; i < s.size(); ++i) {
-        if (i == 8 || i == 13 || i == 18 || i == 23) continue;
-        const char c = s[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            continue;
+        }
+        const char c     = s[i];
         const bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
         CHECK(isHex);
     }
@@ -32,7 +34,7 @@ TEST_CASE("Uuid: canonical form has hyphens at positions 8/13/18/23")
 TEST_CASE("Uuid: v4 variant bits are set (version 4, variant 10xx)")
 {
     for (int i = 0; i < 64; ++i) {
-        Uuid u = Uuid::generate();
+        Uuid u        = Uuid::generate();
         std::string s = u.toString();
         // Position 14 is the version nibble; must be '4'.
         CHECK(s[14] == '4');
@@ -57,7 +59,7 @@ TEST_CASE("Uuid: fromString accepts canonical hand-written form")
 {
     // Handcrafted valid v4 UUID (version 4, variant 'a').
     const std::string s = "12345678-90ab-4cde-a123-456789abcdef";
-    Uuid u = Uuid::fromString(s);
+    Uuid u              = Uuid::fromString(s);
     REQUIRE_FALSE(u.isNil());
     CHECK(u.toString() == s);
 }
@@ -66,7 +68,7 @@ TEST_CASE("Uuid: fromString accepts uppercase hex and normalizes to lowercase")
 {
     const std::string upper = "12345678-90AB-4CDE-A123-456789ABCDEF";
     const std::string lower = "12345678-90ab-4cde-a123-456789abcdef";
-    Uuid u = Uuid::fromString(upper);
+    Uuid u                  = Uuid::fromString(upper);
     REQUIRE_FALSE(u.isNil());
     CHECK(u.toString() == lower);
 }
@@ -90,7 +92,7 @@ TEST_CASE("Uuid: fromString rejects malformed inputs")
 
 TEST_CASE("Uuid: nil UUID round-trips as all zeros")
 {
-    Uuid nil{};
+    Uuid nil {};
     CHECK(nil.isNil());
     const std::string s = nil.toString();
     CHECK(s == "00000000-0000-0000-0000-000000000000");
@@ -102,7 +104,7 @@ TEST_CASE("Uuid: byte-order is big-endian (bytes 0..7 from high, 8..15 from low)
     // Construct a UUID with a known bit pattern and verify the textual form
     // matches big-endian expectations. high = 0x0123456789abcdef places
     // 01 23 45 67 89 ab cd ef into string positions 0..15 (skipping hyphens).
-    Uuid u{0x0123456789abcdefULL, 0xfedcba9876543210ULL};
+    Uuid u { 0x0123456789abcdefULL, 0xfedcba9876543210ULL };
     CHECK(u.toString() == "01234567-89ab-cdef-fedc-ba9876543210");
 }
 

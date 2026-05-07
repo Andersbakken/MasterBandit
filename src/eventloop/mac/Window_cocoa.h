@@ -15,28 +15,32 @@ using NSWindow = objc_object;
 using MBView   = objc_object;
 #endif
 
-class CocoaWindow : public Window {
+class CocoaWindow : public Window
+{
 public:
     CocoaWindow();
     ~CocoaWindow() override;
 
-    bool create(int width, int height, const std::string& title) override;
+    bool create(int width, int height, const std::string &title) override;
     void destroy() override;
+
     bool shouldClose() const override { return shouldClose_; }
+
     void raise() override;
 
-    void setTitle(const std::string& title) override;
-    void getFramebufferSize(int& w, int& h) const override;
-    void getContentScale(float& x, float& y) const override;
-    void getScreenSize(int& w, int& h) const override;
+    void setTitle(const std::string &title) override;
+    void getFramebufferSize(int &w, int &h) const override;
+    void getContentScale(float &x, float &y) const override;
+    void getScreenSize(int &w, int &h) const override;
 
-    void setClipboard(const std::string& text) override;
+    void setClipboard(const std::string &text) override;
     void requestSelection(SelectionSource src, SelectionCallback cb) override;
 
     std::string keyName(int keycode) const override;
     uint32_t shiftedKeyCodepoint(int keycode) const override;
 
     void setAltSendsEsc(bool v) override { altSendsEsc_ = v; }
+
     bool altSendsEsc() const { return altSendsEsc_; }
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
@@ -70,13 +74,13 @@ public:
     // Exposes the underlying NSWindow* for the macOS platform layer
     // (notification gating needs it for focus/occlusion queries). Returns
     // nullptr before create() / after destroy().
-    NSWindow* nsWindowRaw() const;
+    NSWindow *nsWindowRaw() const;
 
 private:
-    NSWindow*   nsWindow_   = nullptr;
-    MBView*     mbView_     = nullptr;
-    bool        shouldClose_ = false;
-    bool        altSendsEsc_ = true;
+    NSWindow *nsWindow_        = nullptr;
+    MBView *mbView_            = nullptr;
+    bool shouldClose_          = false;
+    bool altSendsEsc_          = true;
     // CFRunLoopTimer (not the EventLoop's kqueue-based timer) so the
     // debounce fires during AppKit's tracking-mode loop while the user
     // is dragging the window. The kqueue path can be starved by AppKit
@@ -84,5 +88,5 @@ private:
     // serviced directly by the run loop in commonModes (which includes
     // NSEventTrackingRunLoopMode), so the 100 ms idle gap actually wakes
     // us mid-drag the way XCB's epoll-driven timer does on Linux.
-    void*       resizeDebounceTimer_ = nullptr;  // CFRunLoopTimerRef
+    void *resizeDebounceTimer_ = nullptr; // CFRunLoopTimerRef
 };

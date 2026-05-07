@@ -15,19 +15,20 @@ class PlatformDawn;
 // reload (font metrics, colors, tints, keybindings routed through
 // InputController, tab-bar config, etc.) is read by multiple subsystems;
 // ConfigLoader only owns the debounce timer + file watch + parse trigger.
-class ConfigLoader {
+class ConfigLoader
+{
 public:
     ConfigLoader() = default;
     ~ConfigLoader();
 
-    ConfigLoader(const ConfigLoader&) = delete;
-    ConfigLoader& operator=(const ConfigLoader&) = delete;
+    ConfigLoader(const ConfigLoader &)            = delete;
+    ConfigLoader &operator=(const ConfigLoader &) = delete;
 
-    void setPlatform(PlatformDawn* p) { platform_ = p; }
+    void setPlatform(PlatformDawn *p) { platform_ = p; }
 
     // Install a file watcher on the config file. 300ms debounce before a
     // parse is triggered. Safe to call only after the event loop exists.
-    void installFileWatch(const std::string& path);
+    void installFileWatch(const std::string &path);
 
     // Parse the config file now and call platform_->applyConfig.
     void reloadNow();
@@ -37,7 +38,7 @@ public:
     void stop();
 
 private:
-    PlatformDawn* platform_ = nullptr;
+    PlatformDawn *platform_           = nullptr;
     EventLoop::TimerId debounceTimer_ = 0;
-    bool debounceActive_ = false;
+    bool debounceActive_              = false;
 };

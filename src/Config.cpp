@@ -1,48 +1,50 @@
 #include "Config.h"
-#include <glaze/toml.hpp>
-#include <spdlog/spdlog.h>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <glaze/toml.hpp>
+#include <spdlog/spdlog.h>
 #include <string>
 
-static std::filesystem::path configDir()  // internal
+static std::filesystem::path configDir() // internal
 {
     // XDG_CONFIG_HOME on Linux; on macOS fall back to ~/.config (same XDG convention)
-    const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");
+    const char *xdgConfig = std::getenv("XDG_CONFIG_HOME");
     std::filesystem::path base;
     if (xdgConfig && xdgConfig[0]) {
         base = xdgConfig;
     } else {
-        const char* home = std::getenv("HOME");
-        if (!home || !home[0]) return {};
+        const char *home = std::getenv("HOME");
+        if (!home || !home[0]) {
+            return {};
+        }
         base = std::filesystem::path(home) / ".config";
     }
     return base / "MasterBandit";
 }
 
-static std::filesystem::path configPath()  // internal
+static std::filesystem::path configPath() // internal
 {
     auto d = configDir();
-    return d.empty() ? std::filesystem::path{} : d / "config.toml";
+    return d.empty() ? std::filesystem::path {} : d / "config.toml";
 }
 
-static std::filesystem::path configJsPath()  // internal
+static std::filesystem::path configJsPath() // internal
 {
     auto d = configDir();
-    return d.empty() ? std::filesystem::path{} : d / "config.js";
+    return d.empty() ? std::filesystem::path {} : d / "config.js";
 }
 
 std::string configFilePath()
 {
     auto p = configPath();
-    return p.empty() ? std::string{} : p.string();
+    return p.empty() ? std::string {} : p.string();
 }
 
 std::string configJsFilePath()
 {
     auto p = configJsPath();
-    return p.empty() ? std::string{} : p.string();
+    return p.empty() ? std::string {} : p.string();
 }
 
 Config loadConfig()

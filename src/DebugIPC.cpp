@@ -1,18 +1,18 @@
 #include "DebugIPC.h"
+#include "Observability.h"
 #include "Terminal.h"
 #include "Utils.h"
-#include "Observability.h"
 
 #include <glaze/glaze.hpp>
 #include <spdlog/spdlog.h>
 
 #include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // Helpers for building JSON objects
-static std::string dumpObj(const glz::generic::object_t& obj)
+static std::string dumpObj(const glz::generic::object_t &obj)
 {
     std::string buf;
     (void)glz::write_json(obj, buf);
@@ -22,7 +22,7 @@ static std::string dumpObj(const glz::generic::object_t& obj)
 static std::string dumpObj(std::initializer_list<std::pair<std::string, glz::generic>> fields)
 {
     glz::generic::object_t obj;
-    for (auto& [k, v] : fields) {
+    for (auto &[k, v] : fields) {
         obj.emplace(k, v);
     }
     std::string buf;
@@ -31,12 +31,12 @@ static std::string dumpObj(std::initializer_list<std::pair<std::string, glz::gen
 }
 
 // Extract a string field from a json_t object, with default
-static std::string jsonStr(const glz::generic& j, const std::string& key, const std::string& def = "")
+static std::string jsonStr(const glz::generic &j, const std::string &key, const std::string &def = "")
 {
-    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+    if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
         auto it = obj->find(key);
         if (it != obj->end()) {
-            if (auto* s = std::get_if<std::string>(&it->second.data)) {
+            if (auto *s = std::get_if<std::string>(&it->second.data)) {
                 return *s;
             }
         }
@@ -45,12 +45,12 @@ static std::string jsonStr(const glz::generic& j, const std::string& key, const 
 }
 
 // Extract an int field from a json_t object, with default
-static int jsonInt(const glz::generic& j, const std::string& key, int def = 0)
+static int jsonInt(const glz::generic &j, const std::string &key, int def = 0)
 {
-    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+    if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
         auto it = obj->find(key);
         if (it != obj->end()) {
-            if (auto* d = std::get_if<double>(&it->second.data)) {
+            if (auto *d = std::get_if<double>(&it->second.data)) {
                 return static_cast<int>(*d);
             }
         }
@@ -62,21 +62,23 @@ static int jsonInt(const glz::generic& j, const std::string& key, int def = 0)
 // Per-connection helpers
 // ============================================================================
 
-DebugIPC::PerConnection* DebugIPC::findConnection(struct lws* wsi)
+DebugIPC::PerConnection *DebugIPC::findConnection(struct lws *wsi)
 {
-    for (auto& p : connections_) {
-        if (p.first == wsi) return &p.second;
+    for (auto &p : connections_) {
+        if (p.first == wsi) {
+            return &p.second;
+        }
     }
     return nullptr;
 }
 
-DebugIPC::PerConnection* DebugIPC::addConnection(struct lws* wsi)
+DebugIPC::PerConnection *DebugIPC::addConnection(struct lws *wsi)
 {
-    connections_.push_back({wsi, PerConnection{}});
+    connections_.push_back({ wsi, PerConnection {} });
     return &connections_.back().second;
 }
 
-void DebugIPC::removeConnection(struct lws* wsi)
+void DebugIPC::removeConnection(struct lws *wsi)
 {
     for (auto it = connections_.begin(); it != connections_.end(); ++it) {
         if (it->first == wsi) {
@@ -90,90 +92,115 @@ void DebugIPC::removeConnection(struct lws* wsi)
 // WebSocket callback
 // ============================================================================
 
-int DebugIPC::wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
-                         void* user, void* in, size_t len)
+int DebugIPC::wsCallback(struct lws *wsi, enum lws_callback_reasons reason,
+                         void *user, void *in, size_t len)
 {
-    struct lws_context* ctx = lws_get_context(wsi);
-    DebugIPC* self = static_cast<DebugIPC*>(lws_context_user(ctx));
-    if (!self) return 0;
+    struct lws_context *ctx = lws_get_context(wsi);
+    DebugIPC *self          = static_cast<DebugIPC *>(lws_context_user(ctx));
+    if (!self) {
+        return 0;
+    }
 
     switch (reason) {
-    case LWS_CALLBACK_ESTABLISHED: {
-        spdlog::debug("DebugIPC: client connected");
-        self->addConnection(wsi);
-        break;
-    }
-    case LWS_CALLBACK_CLOSED: {
-        spdlog::debug("DebugIPC: client disconnected");
-        if (self->pngWsi_ == wsi) {
-            self->pngPending_ = false;
-            self->pngWsi_ = nullptr;
+        case LWS_CALLBACK_ESTABLISHED: {
+            spdlog::debug("DebugIPC: client connected");
+            self->addConnection(wsi);
+            break;
         }
-        self->removeConnection(wsi);
-        break;
-    }
-    case LWS_CALLBACK_RECEIVE: {
-        auto* conn = self->findConnection(wsi);
-        if (!conn) break;
-        conn->rxBuffer.append(static_cast<const char*>(in), len);
-        if (lws_is_final_fragment(wsi)) {
-            self->handleMessage(wsi, conn->rxBuffer);
-            conn->rxBuffer.clear();
+        case LWS_CALLBACK_CLOSED: {
+            spdlog::debug("DebugIPC: client disconnected");
+            if (self->pngWsi_ == wsi) {
+                self->pngPending_ = false;
+                self->pngWsi_     = nullptr;
+            }
+            self->removeConnection(wsi);
+            break;
         }
-        break;
-    }
-    case LWS_CALLBACK_SERVER_WRITEABLE: {
-        auto* conn = self->findConnection(wsi);
-        if (!conn || conn->txQueue.empty()) break;
-        std::string& msg = conn->txQueue.front();
-        std::vector<unsigned char> buf(LWS_PRE + msg.size());
-        memcpy(buf.data() + LWS_PRE, msg.data(), msg.size());
-        lws_write(wsi, buf.data() + LWS_PRE, msg.size(), LWS_WRITE_TEXT);
-        conn->txQueue.erase(conn->txQueue.begin());
-        if (!conn->txQueue.empty()) {
-            lws_callback_on_writable(wsi);
+        case LWS_CALLBACK_RECEIVE: {
+            auto *conn = self->findConnection(wsi);
+            if (!conn) {
+                break;
+            }
+            conn->rxBuffer.append(static_cast<const char *>(in), len);
+            if (lws_is_final_fragment(wsi)) {
+                self->handleMessage(wsi, conn->rxBuffer);
+                conn->rxBuffer.clear();
+            }
+            break;
         }
-        break;
-    }
+        case LWS_CALLBACK_SERVER_WRITEABLE: {
+            auto *conn = self->findConnection(wsi);
+            if (!conn || conn->txQueue.empty()) {
+                break;
+            }
+            std::string &msg = conn->txQueue.front();
+            std::vector<unsigned char> buf(LWS_PRE + msg.size());
+            memcpy(buf.data() + LWS_PRE, msg.data(), msg.size());
+            lws_write(wsi, buf.data() + LWS_PRE, msg.size(), LWS_WRITE_TEXT);
+            conn->txQueue.erase(conn->txQueue.begin());
+            if (!conn->txQueue.empty()) {
+                lws_callback_on_writable(wsi);
+            }
+            break;
+        }
 
-    // Foreign event loop fd management
-    case LWS_CALLBACK_ADD_POLL_FD: {
-        if (!self->loop_) break;
-        auto* pa = static_cast<struct lws_pollargs*>(in);
-        EventLoop::FdEvents events = static_cast<EventLoop::FdEvents>(0);
-        if (pa->events & POLLIN)  events = events | EventLoop::FdEvents::Readable;
-        if (pa->events & POLLOUT) events = events | EventLoop::FdEvents::Writable;
-        if (!static_cast<uint8_t>(events)) events = EventLoop::FdEvents::Readable;
-        int fd = pa->fd;
-        self->loop_->watchFd(fd, events, [self, fd](EventLoop::FdEvents fired) {
-            self->serviceFd(fd, fired);
-        });
-        break;
-    }
-    case LWS_CALLBACK_DEL_POLL_FD: {
-        if (!self->loop_) break;
-        auto* pa = static_cast<struct lws_pollargs*>(in);
-        self->loop_->removeFd(pa->fd);
-        break;
-    }
-    case LWS_CALLBACK_CHANGE_MODE_POLL_FD: {
-        if (!self->loop_) break;
-        auto* pa = static_cast<struct lws_pollargs*>(in);
-        EventLoop::FdEvents events = static_cast<EventLoop::FdEvents>(0);
-        if (pa->events & POLLIN)  events = events | EventLoop::FdEvents::Readable;
-        if (pa->events & POLLOUT) events = events | EventLoop::FdEvents::Writable;
-        if (!static_cast<uint8_t>(events)) events = EventLoop::FdEvents::Readable;
-        self->loop_->updateFd(pa->fd, events);
-        break;
-    }
-    case LWS_CALLBACK_EVENT_WAIT_CANCELLED: {
-        // Fired when lws_cancel_service() is called (e.g. from broadcastLog)
-        self->drainLogQueue();
-        break;
-    }
+        // Foreign event loop fd management
+        case LWS_CALLBACK_ADD_POLL_FD: {
+            if (!self->loop_) {
+                break;
+            }
+            auto *pa                   = static_cast<struct lws_pollargs *>(in);
+            EventLoop::FdEvents events = static_cast<EventLoop::FdEvents>(0);
+            if (pa->events & POLLIN) {
+                events = events | EventLoop::FdEvents::Readable;
+            }
+            if (pa->events & POLLOUT) {
+                events = events | EventLoop::FdEvents::Writable;
+            }
+            if (!static_cast<uint8_t>(events)) {
+                events = EventLoop::FdEvents::Readable;
+            }
+            int fd = pa->fd;
+            self->loop_->watchFd(fd, events, [self, fd](EventLoop::FdEvents fired)
+                                 {
+                                     self->serviceFd(fd, fired);
+                                 });
+            break;
+        }
+        case LWS_CALLBACK_DEL_POLL_FD: {
+            if (!self->loop_) {
+                break;
+            }
+            auto *pa = static_cast<struct lws_pollargs *>(in);
+            self->loop_->removeFd(pa->fd);
+            break;
+        }
+        case LWS_CALLBACK_CHANGE_MODE_POLL_FD: {
+            if (!self->loop_) {
+                break;
+            }
+            auto *pa                   = static_cast<struct lws_pollargs *>(in);
+            EventLoop::FdEvents events = static_cast<EventLoop::FdEvents>(0);
+            if (pa->events & POLLIN) {
+                events = events | EventLoop::FdEvents::Readable;
+            }
+            if (pa->events & POLLOUT) {
+                events = events | EventLoop::FdEvents::Writable;
+            }
+            if (!static_cast<uint8_t>(events)) {
+                events = EventLoop::FdEvents::Readable;
+            }
+            self->loop_->updateFd(pa->fd, events);
+            break;
+        }
+        case LWS_CALLBACK_EVENT_WAIT_CANCELLED: {
+            // Fired when lws_cancel_service() is called (e.g. from broadcastLog)
+            self->drainLogQueue();
+            break;
+        }
 
-    default:
-        break;
+        default:
+            break;
     }
     return 0;
 }
@@ -187,7 +214,7 @@ static const struct lws_protocols sProtocols[] = {
     LWS_PROTOCOL_LIST_TERM
 };
 
-DebugIPC::DebugIPC(EventLoop* loop, TerminalCallback termCb, GridCallback gridCb,
+DebugIPC::DebugIPC(EventLoop *loop, TerminalCallback termCb, GridCallback gridCb,
                    StatsCallback statsCb, ActionCallback actionCb)
     : loop_(loop)
     , termCb_(std::move(termCb))
@@ -202,11 +229,11 @@ DebugIPC::DebugIPC(EventLoop* loop, TerminalCallback termCb, GridCallback gridCb
     struct lws_context_creation_info info = {};
     // LWS_SERVER_OPTION_UNIX_SOCK only — no libuv, no internal poll thread.
     // lws will call ADD/DEL/CHANGE_MODE_POLL_FD to register fds with our EventLoop.
-    info.options = LWS_SERVER_OPTION_UNIX_SOCK;
-    info.iface = socketPath_.c_str();
-    info.port = 0;
-    info.protocols = sProtocols;
-    info.user = this;
+    info.options                          = LWS_SERVER_OPTION_UNIX_SOCK;
+    info.iface                            = socketPath_.c_str();
+    info.port                             = 0;
+    info.protocols                        = sProtocols;
+    info.user                             = this;
 
     lws_set_log_level(0, nullptr);
     ctx_ = lws_create_context(&info);
@@ -233,9 +260,9 @@ void DebugIPC::drainLogQueue()
         std::lock_guard<std::mutex> lock(logMutex_);
         msgs.swap(logQueue_);
     }
-    for (const auto& msg : msgs) {
-        std::string payload = dumpObj({{"type", "log"}, {"msg", msg}});
-        for (auto& p : connections_) {
+    for (const auto &msg : msgs) {
+        std::string payload = dumpObj({ { "type", "log" }, { "msg", msg } });
+        for (auto &p : connections_) {
             if (p.second.subscribedToLogs) {
                 p.second.txQueue.push_back(payload);
                 lws_callback_on_writable(p.first);
@@ -246,12 +273,16 @@ void DebugIPC::drainLogQueue()
 
 void DebugIPC::serviceFd(int fd, EventLoop::FdEvents fired)
 {
-    struct lws_pollfd pfd{};
-    pfd.fd = fd;
+    struct lws_pollfd pfd {};
+    pfd.fd      = fd;
     pfd.events  = POLLIN | POLLOUT;
     pfd.revents = 0;
-    if (fired & EventLoop::FdEvents::Readable) pfd.revents |= POLLIN;
-    if (fired & EventLoop::FdEvents::Writable) pfd.revents |= POLLOUT;
+    if (fired & EventLoop::FdEvents::Readable) {
+        pfd.revents |= POLLIN;
+    }
+    if (fired & EventLoop::FdEvents::Writable) {
+        pfd.revents |= POLLOUT;
+    }
     lws_service_fd(ctx_, &pfd);
 }
 
@@ -267,17 +298,17 @@ DebugIPC::~DebugIPC()
 // Message handling
 // ============================================================================
 
-void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
+void DebugIPC::handleMessage(struct lws *wsi, const std::string &msg)
 {
     glz::generic j;
     auto ec = glz::read_json(j, msg);
     if (ec) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"msg", "invalid JSON"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "msg", "invalid JSON" } }));
         return;
     }
 
     std::string cmd = jsonStr(j, "cmd");
-    int id = jsonInt(j, "id");
+    int id          = jsonInt(j, "id");
 
     if (cmd == "screenshot") {
         std::string format = jsonStr(j, "format", "grid");
@@ -288,14 +319,14 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
         }
     } else if (cmd == "key") {
         std::string text = jsonStr(j, "text");
-        std::string key = jsonStr(j, "key");
+        std::string key  = jsonStr(j, "key");
         std::vector<std::string> mods;
-        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
             auto it = obj->find("mods");
             if (it != obj->end()) {
-                if (auto* arr = std::get_if<glz::generic::array_t>(&it->second.data)) {
-                    for (const auto& m : *arr) {
-                        if (auto* s = std::get_if<std::string>(&m.data)) {
+                if (auto *arr = std::get_if<glz::generic::array_t>(&it->second.data)) {
+                    for (const auto &m : *arr) {
+                        if (auto *s = std::get_if<std::string>(&m.data)) {
                             mods.push_back(*s);
                         }
                     }
@@ -308,12 +339,12 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
     } else if (cmd == "action") {
         std::string action = jsonStr(j, "action");
         std::vector<std::string> args;
-        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
             auto it = obj->find("args");
             if (it != obj->end()) {
-                if (auto* arr = std::get_if<glz::generic::array_t>(&it->second.data)) {
-                    for (const auto& a : *arr) {
-                        if (auto* s = std::get_if<std::string>(&a.data)) {
+                if (auto *arr = std::get_if<glz::generic::array_t>(&it->second.data)) {
+                    for (const auto &a : *arr) {
+                        if (auto *s = std::get_if<std::string>(&a.data)) {
                             args.push_back(*s);
                         }
                     }
@@ -326,11 +357,13 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
         cmdInject(wsi, id, data);
     } else if (cmd == "feed") {
         std::string path = jsonStr(j, "path");
-        uint32_t repeat = 1;
-        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        uint32_t repeat  = 1;
+        if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
             if (auto it = obj->find("repeat"); it != obj->end()) {
-                if (auto* n = std::get_if<double>(&it->second.data)) {
-                    if (*n >= 1.0) repeat = static_cast<uint32_t>(*n);
+                if (auto *n = std::get_if<double>(&it->second.data)) {
+                    if (*n >= 1.0) {
+                        repeat = static_cast<uint32_t>(*n);
+                    }
                 }
             }
         }
@@ -339,12 +372,16 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
         // timeout_ms default 10s, settle_ms default 200ms
         uint64_t timeoutMs = 10000;
         uint64_t settleMs  = 200;
-        if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
             if (auto it = obj->find("timeout_ms"); it != obj->end()) {
-                if (auto* n = std::get_if<double>(&it->second.data)) timeoutMs = static_cast<uint64_t>(*n);
+                if (auto *n = std::get_if<double>(&it->second.data)) {
+                    timeoutMs = static_cast<uint64_t>(*n);
+                }
             }
             if (auto it = obj->find("settle_ms"); it != obj->end()) {
-                if (auto* n = std::get_if<double>(&it->second.data)) settleMs = static_cast<uint64_t>(*n);
+                if (auto *n = std::get_if<double>(&it->second.data)) {
+                    settleMs = static_cast<uint64_t>(*n);
+                }
             }
         }
         cmdWaitIdle(wsi, id, timeoutMs, settleMs);
@@ -353,24 +390,26 @@ void DebugIPC::handleMessage(struct lws* wsi, const std::string& msg)
         if (channel == "logs") {
             cmdSubscribeLogs(wsi, id);
         } else {
-            sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "unknown channel"}}));
+            sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "unknown channel" } }));
         }
     } else if (cmd == "unsubscribe") {
         std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
             cmdUnsubscribeLogs(wsi, id);
         } else {
-            sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "unknown channel"}}));
+            sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "unknown channel" } }));
         }
     } else {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "unknown command: " + cmd}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "unknown command: " + cmd } }));
     }
 }
 
-void DebugIPC::sendResponse(struct lws* wsi, const std::string& jsonStr)
+void DebugIPC::sendResponse(struct lws *wsi, const std::string &jsonStr)
 {
-    auto* conn = findConnection(wsi);
-    if (!conn) return;
+    auto *conn = findConnection(wsi);
+    if (!conn) {
+        return;
+    }
     conn->txQueue.push_back(jsonStr);
     lws_callback_on_writable(wsi);
 }
@@ -379,12 +418,12 @@ void DebugIPC::sendResponse(struct lws* wsi, const std::string& jsonStr)
 // Command: screenshot (grid)
 // ============================================================================
 
-void DebugIPC::cmdScreenshotGrid(struct lws* wsi, int id)
+void DebugIPC::cmdScreenshotGrid(struct lws *wsi, int id)
 {
     if (gridCb_) {
         sendResponse(wsi, gridCb_(id));
     } else {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "grid screenshot not available"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "grid screenshot not available" } }));
     }
 }
 
@@ -392,49 +431,53 @@ void DebugIPC::cmdScreenshotGrid(struct lws* wsi, int id)
 // Command: screenshot (png)
 // ============================================================================
 
-void DebugIPC::cmdScreenshotPng(struct lws* wsi, int id, const glz::generic& j)
+void DebugIPC::cmdScreenshotPng(struct lws *wsi, int id, const glz::generic &j)
 {
     if (pngPending_) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "screenshot already pending"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "screenshot already pending" } }));
         return;
     }
 
-    pngPending_ = true;
-    pngId_ = id;
-    pngWsi_ = wsi;
-    pngTarget_ = jsonStr(j, "target");
+    pngPending_  = true;
+    pngId_       = id;
+    pngWsi_      = wsi;
+    pngTarget_   = jsonStr(j, "target");
     pngCellRect_ = {};
 
     // Parse optional cell rect: {"rect": {"x": 0, "y": 0, "w": 10, "h": 3}}
-    if (auto* obj = std::get_if<glz::generic::object_t>(&j.data)) {
+    if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
         auto it = obj->find("rect");
         if (it != obj->end()) {
-            pngCellRect_.x = jsonInt(it->second, "x");
-            pngCellRect_.y = jsonInt(it->second, "y");
-            pngCellRect_.w = jsonInt(it->second, "w");
-            pngCellRect_.h = jsonInt(it->second, "h");
+            pngCellRect_.x     = jsonInt(it->second, "x");
+            pngCellRect_.y     = jsonInt(it->second, "y");
+            pngCellRect_.w     = jsonInt(it->second, "w");
+            pngCellRect_.h     = jsonInt(it->second, "h");
             pngCellRect_.valid = (pngCellRect_.w > 0 && pngCellRect_.h > 0);
         }
     }
     // Readback happens in renderFrame() on next frame
 }
 
-void DebugIPC::onPngReady(const std::string& base64Png)
+void DebugIPC::onPngReady(const std::string &base64Png)
 {
-    if (!pngPending_ || !pngWsi_) return;
+    if (!pngPending_ || !pngWsi_) {
+        return;
+    }
 
     glz::generic::object_t resp;
-    resp["type"] = "screenshot";
+    resp["type"]   = "screenshot";
     resp["format"] = "png";
-    if (pngId_) resp["id"] = static_cast<double>(pngId_);
+    if (pngId_) {
+        resp["id"] = static_cast<double>(pngId_);
+    }
     resp["data"] = base64Png;
 
     sendResponse(pngWsi_, dumpObj(resp));
 
-    pngPending_ = false;
+    pngPending_            = false;
     pngReadbackInProgress_ = false;
-    pngWsi_ = nullptr;
-    pngId_ = 0;
+    pngWsi_                = nullptr;
+    pngId_                 = 0;
     pngTarget_.clear();
     pngCellRect_ = {};
 }
@@ -443,53 +486,107 @@ void DebugIPC::onPngReady(const std::string& base64Png)
 // Command: key
 // ============================================================================
 
-static Key nameToKey(const std::string& name)
+static Key nameToKey(const std::string &name)
 {
-    if (name == "Return" || name == "Enter") return Key_Return;
-    if (name == "Backspace") return Key_Backspace;
-    if (name == "Tab") return Key_Tab;
-    if (name == "Escape") return Key_Escape;
-    if (name == "Delete") return Key_Delete;
-    if (name == "Left") return Key_Left;
-    if (name == "Right") return Key_Right;
-    if (name == "Up") return Key_Up;
-    if (name == "Down") return Key_Down;
-    if (name == "Home") return Key_Home;
-    if (name == "End") return Key_End;
-    if (name == "PageUp") return Key_PageUp;
-    if (name == "PageDown") return Key_PageDown;
-    if (name == "Insert") return Key_Insert;
-    if (name == "F1") return Key_F1;
-    if (name == "F2") return Key_F2;
-    if (name == "F3") return Key_F3;
-    if (name == "F4") return Key_F4;
-    if (name == "F5") return Key_F5;
-    if (name == "F6") return Key_F6;
-    if (name == "F7") return Key_F7;
-    if (name == "F8") return Key_F8;
-    if (name == "F9") return Key_F9;
-    if (name == "F10") return Key_F10;
-    if (name == "F11") return Key_F11;
-    if (name == "F12") return Key_F12;
-    if (name == "Space") return Key_Space;
+    if (name == "Return" || name == "Enter") {
+        return Key_Return;
+    }
+    if (name == "Backspace") {
+        return Key_Backspace;
+    }
+    if (name == "Tab") {
+        return Key_Tab;
+    }
+    if (name == "Escape") {
+        return Key_Escape;
+    }
+    if (name == "Delete") {
+        return Key_Delete;
+    }
+    if (name == "Left") {
+        return Key_Left;
+    }
+    if (name == "Right") {
+        return Key_Right;
+    }
+    if (name == "Up") {
+        return Key_Up;
+    }
+    if (name == "Down") {
+        return Key_Down;
+    }
+    if (name == "Home") {
+        return Key_Home;
+    }
+    if (name == "End") {
+        return Key_End;
+    }
+    if (name == "PageUp") {
+        return Key_PageUp;
+    }
+    if (name == "PageDown") {
+        return Key_PageDown;
+    }
+    if (name == "Insert") {
+        return Key_Insert;
+    }
+    if (name == "F1") {
+        return Key_F1;
+    }
+    if (name == "F2") {
+        return Key_F2;
+    }
+    if (name == "F3") {
+        return Key_F3;
+    }
+    if (name == "F4") {
+        return Key_F4;
+    }
+    if (name == "F5") {
+        return Key_F5;
+    }
+    if (name == "F6") {
+        return Key_F6;
+    }
+    if (name == "F7") {
+        return Key_F7;
+    }
+    if (name == "F8") {
+        return Key_F8;
+    }
+    if (name == "F9") {
+        return Key_F9;
+    }
+    if (name == "F10") {
+        return Key_F10;
+    }
+    if (name == "F11") {
+        return Key_F11;
+    }
+    if (name == "F12") {
+        return Key_F12;
+    }
+    if (name == "Space") {
+        return Key_Space;
+    }
     return Key_unknown;
 }
 
-void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
-                          const std::string& key, const std::vector<std::string>& mods)
+void DebugIPC::cmdSendKey(struct lws *wsi, int id, const std::string &text,
+                          const std::string &key, const std::vector<std::string> &mods)
 {
-    Terminal* terminal = termCb_ ? termCb_() : nullptr;
+    Terminal *terminal = termCb_ ? termCb_() : nullptr;
     if (!terminal) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no active terminal"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "no active terminal" } }));
         return;
     }
 
     if (!text.empty()) {
         for (char c : text) {
             KeyEvent ev;
-            ev.key = Key_unknown;
-            ev.text = std::string(1, c);
-            ev.count = 1;
+            ev.key        = Key_unknown;
+            ev.text       = std::string(1, c);
+            ev.count      = 1;
             ev.autoRepeat = false;
             terminal->keyPressEvent(&ev);
         }
@@ -497,14 +594,16 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
         Key k = nameToKey(key);
         if (k == Key_unknown && key.size() == 1) {
             KeyEvent ev;
-            ev.key = Key_unknown;
-            ev.text = key;
-            ev.count = 1;
+            ev.key        = Key_unknown;
+            ev.text       = key;
+            ev.count      = 1;
             ev.autoRepeat = false;
 
             bool ctrl = false;
-            for (const auto& m : mods) {
-                if (m == "ctrl" || m == "control") ctrl = true;
+            for (const auto &m : mods) {
+                if (m == "ctrl" || m == "control") {
+                    ctrl = true;
+                }
             }
             if (ctrl && key[0] >= 'a' && key[0] <= 'z') {
                 ev.text = std::string(1, static_cast<char>(key[0] - 'a' + 1));
@@ -515,8 +614,8 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
             terminal->keyPressEvent(&ev);
         } else if (k != Key_unknown) {
             KeyEvent ev;
-            ev.key = k;
-            ev.count = 1;
+            ev.key        = k;
+            ev.count      = 1;
             ev.autoRepeat = false;
             terminal->keyPressEvent(&ev);
         }
@@ -524,7 +623,9 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
 
     glz::generic::object_t resp;
     resp["type"] = "ok";
-    if (id) resp["id"] = static_cast<double>(id);
+    if (id) {
+        resp["id"] = static_cast<double>(id);
+    }
     sendResponse(wsi, dumpObj(resp));
 }
 
@@ -532,12 +633,12 @@ void DebugIPC::cmdSendKey(struct lws* wsi, int id, const std::string& text,
 // Command: stats
 // ============================================================================
 
-void DebugIPC::cmdStats(struct lws* wsi, int id)
+void DebugIPC::cmdStats(struct lws *wsi, int id)
 {
     if (statsCb_) {
         sendResponse(wsi, statsCb_(id));
     } else {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "stats not available"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "stats not available" } }));
     }
 }
 
@@ -545,20 +646,22 @@ void DebugIPC::cmdStats(struct lws* wsi, int id)
 // Command: action
 // ============================================================================
 
-void DebugIPC::cmdAction(struct lws* wsi, int id, const std::string& action,
-                         const std::vector<std::string>& args)
+void DebugIPC::cmdAction(struct lws *wsi, int id, const std::string &action,
+                         const std::vector<std::string> &args)
 {
     if (!actionCb_) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "action dispatch not available"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "action dispatch not available" } }));
         return;
     }
 
     bool ok = actionCb_(action, args);
     glz::generic::object_t resp;
     resp["type"] = "action";
-    resp["id"] = static_cast<double>(id);
-    resp["ok"] = ok;
-    if (!ok) resp["msg"] = std::string("unknown action: " + action);
+    resp["id"]   = static_cast<double>(id);
+    resp["ok"]   = ok;
+    if (!ok) {
+        resp["msg"] = std::string("unknown action: " + action);
+    }
     sendResponse(wsi, dumpObj(resp));
 }
 
@@ -566,62 +669,62 @@ void DebugIPC::cmdAction(struct lws* wsi, int id, const std::string& action,
 // Command: inject
 // ============================================================================
 
-void DebugIPC::cmdInject(struct lws* wsi, int id, const std::string& data)
+void DebugIPC::cmdInject(struct lws *wsi, int id, const std::string &data)
 {
-    Terminal* terminal = termCb_ ? termCb_() : nullptr;
+    Terminal *terminal = termCb_ ? termCb_() : nullptr;
     if (!terminal) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no active terminal"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "no active terminal" } }));
         return;
     }
 
     // Data is base64-encoded to avoid JSON escaping issues with control characters
     auto decoded = base64::decode(data);
-    terminal->injectData(reinterpret_cast<const char*>(decoded.data()), decoded.size());
-    sendResponse(wsi, dumpObj({{"type", "ok"}, {"id", static_cast<double>(id)}}));
+    terminal->injectData(reinterpret_cast<const char *>(decoded.data()), decoded.size());
+    sendResponse(wsi, dumpObj({ { "type", "ok" }, { "id", static_cast<double>(id) } }));
 }
 
 // ============================================================================
 // Command: feed <path>
 // ============================================================================
 
-void DebugIPC::cmdFeed(struct lws* wsi, int id, const std::string& path, uint32_t repeat)
+void DebugIPC::cmdFeed(struct lws *wsi, int id, const std::string &path, uint32_t repeat)
 {
-    Terminal* terminal = termCb_ ? termCb_() : nullptr;
+    Terminal *terminal = termCb_ ? termCb_() : nullptr;
     if (!terminal) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no active terminal"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "no active terminal" } }));
         return;
     }
     if (path.empty()) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "missing path"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "missing path" } }));
         return;
     }
-    if (repeat == 0) repeat = 1;
+    if (repeat == 0) {
+        repeat = 1;
+    }
 
     int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)},
-                                    {"msg", std::string("open failed: ") + strerror(errno)}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", std::string("open failed: ") + strerror(errno) } }));
         return;
     }
-    struct stat st{};
+    struct stat st {};
     if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         ::close(fd);
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "not a regular file"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "not a regular file" } }));
         return;
     }
 
     const size_t size = static_cast<size_t>(st.st_size);
     if (size == 0) {
         ::close(fd);
-        sendResponse(wsi, dumpObj({{"type", "ok"}, {"id", static_cast<double>(id)}, {"bytes", 0.0}}));
+        sendResponse(wsi, dumpObj({ { "type", "ok" }, { "id", static_cast<double>(id) }, { "bytes", 0.0 } }));
         return;
     }
 
-    void* mapped = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    void *mapped = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
     ::close(fd);
     if (mapped == MAP_FAILED) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)},
-                                    {"msg", std::string("mmap failed: ") + strerror(errno)}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", std::string("mmap failed: ") + strerror(errno) } }));
         return;
     }
 
@@ -629,29 +732,31 @@ void DebugIPC::cmdFeed(struct lws* wsi, int id, const std::string& path, uint32_
     // on the first iteration.
     {
         volatile uint64_t sink = 0;
-        const auto* p = static_cast<const uint8_t*>(mapped);
-        for (size_t i = 0; i < size; i += 4096) sink += p[i];
+        const auto *p          = static_cast<const uint8_t *>(mapped);
+        for (size_t i = 0; i < size; i += 4096) {
+            sink += p[i];
+        }
         (void)sink;
     }
 
     const uint64_t t0 = obs::now_us();
     for (uint32_t r = 0; r < repeat; ++r) {
-        terminal->injectData(static_cast<const char*>(mapped), size);
+        terminal->injectData(static_cast<const char *>(mapped), size);
     }
     const uint64_t parseUs = obs::now_us() - t0;
     ::munmap(mapped, size);
 
     const uint64_t totalBytes = static_cast<uint64_t>(size) * repeat;
     glz::generic::object_t resp;
-    resp["type"] = "ok";
-    resp["id"] = static_cast<double>(id);
-    resp["bytes"] = static_cast<double>(totalBytes);
+    resp["type"]           = "ok";
+    resp["id"]             = static_cast<double>(id);
+    resp["bytes"]          = static_cast<double>(totalBytes);
     resp["bytes_per_iter"] = static_cast<double>(size);
-    resp["repeat"] = static_cast<double>(repeat);
-    resp["parse_us"] = static_cast<double>(parseUs);
-    resp["mb_per_sec"] = parseUs > 0
-        ? (static_cast<double>(totalBytes) / static_cast<double>(parseUs))  // bytes/us == MB/s
-        : 0.0;
+    resp["repeat"]         = static_cast<double>(repeat);
+    resp["parse_us"]       = static_cast<double>(parseUs);
+    resp["mb_per_sec"]     = parseUs > 0
+            ? (static_cast<double>(totalBytes) / static_cast<double>(parseUs)) // bytes/us == MB/s
+            : 0.0;
     sendResponse(wsi, dumpObj(resp));
 }
 
@@ -659,31 +764,32 @@ void DebugIPC::cmdFeed(struct lws* wsi, int id, const std::string& path, uint32_
 // Command: wait-idle
 // ============================================================================
 
-void DebugIPC::cmdWaitIdle(struct lws* wsi, int id, uint64_t timeoutMs, uint64_t settleMs)
+void DebugIPC::cmdWaitIdle(struct lws *wsi, int id, uint64_t timeoutMs, uint64_t settleMs)
 {
     if (!loop_) {
-        sendResponse(wsi, dumpObj({{"type", "error"}, {"id", static_cast<double>(id)}, {"msg", "no event loop"}}));
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "no event loop" } }));
         return;
     }
 
-    auto state = std::make_shared<WaitIdleState>();
-    state->wsi = wsi;
-    state->id = id;
-    state->startUs = obs::now_us();
-    state->timeoutUs = timeoutMs * 1000;
-    state->settleUs = settleMs * 1000;
+    auto state           = std::make_shared<WaitIdleState>();
+    state->wsi           = wsi;
+    state->id            = id;
+    state->startUs       = obs::now_us();
+    state->timeoutUs     = timeoutMs * 1000;
+    state->settleUs      = settleMs * 1000;
     state->framesAtStart = obs::frames_presented.load(std::memory_order_relaxed);
 
     // Poll every 25 ms. Cheap; plenty of granularity for benchmark use.
     // The lambda captures state by value, so the shared_ptr keeps the state
     // alive as long as the timer is registered. removeTimer destroys the
     // lambda, which drops the last strong ref.
-    state->timer = loop_->addTimer(25, true, [this, state]() {
-        pollWaitIdle(state);
-    });
+    state->timer = loop_->addTimer(25, true, [this, state]()
+                                   {
+                                       pollWaitIdle(state);
+                                   });
 }
 
-void DebugIPC::pollWaitIdle(const std::shared_ptr<WaitIdleState>& state)
+void DebugIPC::pollWaitIdle(const std::shared_ptr<WaitIdleState> &state)
 {
     // Connection dropped while we were waiting? Cancel silently.
     if (!findConnection(state->wsi)) {
@@ -691,10 +797,10 @@ void DebugIPC::pollWaitIdle(const std::shared_ptr<WaitIdleState>& state)
         return;
     }
 
-    const uint64_t now = obs::now_us();
-    const uint64_t lastParse = obs::last_parse_time_us.load(std::memory_order_acquire);
-    const uint64_t framesNow = obs::frames_presented.load(std::memory_order_relaxed);
-    const uint64_t bytesNow  = obs::bytes_parsed.load(std::memory_order_relaxed);
+    const uint64_t now               = obs::now_us();
+    const uint64_t lastParse         = obs::last_parse_time_us.load(std::memory_order_acquire);
+    const uint64_t framesNow         = obs::frames_presented.load(std::memory_order_relaxed);
+    const uint64_t bytesNow          = obs::bytes_parsed.load(std::memory_order_relaxed);
     const uint64_t framesAtLastParse = obs::frames_at_last_parse.load(std::memory_order_relaxed);
 
     // Idle predicate:
@@ -702,10 +808,10 @@ void DebugIPC::pollWaitIdle(const std::shared_ptr<WaitIdleState>& state)
     //   - Otherwise: last parse was >= settleUs ago AND a frame has been
     //     presented after the last parse.
     const bool noParseEver = (lastParse == 0);
-    const bool settled = noParseEver || (now - lastParse >= state->settleUs);
-    const bool framed  = noParseEver
-        ? (framesNow > state->framesAtStart)
-        : (framesNow > framesAtLastParse);
+    const bool settled     = noParseEver || (now - lastParse >= state->settleUs);
+    const bool framed      = noParseEver
+             ? (framesNow > state->framesAtStart)
+             : (framesNow > framesAtLastParse);
 
     bool done = false;
     bool idle = false;
@@ -717,14 +823,16 @@ void DebugIPC::pollWaitIdle(const std::shared_ptr<WaitIdleState>& state)
         idle = false;
     }
 
-    if (!done) return;
+    if (!done) {
+        return;
+    }
 
     glz::generic::object_t resp;
-    resp["type"] = "wait-idle";
-    resp["id"] = static_cast<double>(state->id);
-    resp["idle"] = idle;
-    resp["elapsed_us"] = static_cast<double>(now - state->startUs);
-    resp["bytes_parsed"] = static_cast<double>(bytesNow);
+    resp["type"]             = "wait-idle";
+    resp["id"]               = static_cast<double>(state->id);
+    resp["idle"]             = idle;
+    resp["elapsed_us"]       = static_cast<double>(now - state->startUs);
+    resp["bytes_parsed"]     = static_cast<double>(bytesNow);
     resp["frames_presented"] = static_cast<double>(framesNow);
     sendResponse(state->wsi, dumpObj(resp));
 
@@ -735,25 +843,33 @@ void DebugIPC::pollWaitIdle(const std::shared_ptr<WaitIdleState>& state)
 // Command: subscribe/unsubscribe logs
 // ============================================================================
 
-void DebugIPC::cmdSubscribeLogs(struct lws* wsi, int id)
+void DebugIPC::cmdSubscribeLogs(struct lws *wsi, int id)
 {
-    auto* conn = findConnection(wsi);
-    if (conn) conn->subscribedToLogs = true;
+    auto *conn = findConnection(wsi);
+    if (conn) {
+        conn->subscribedToLogs = true;
+    }
 
     glz::generic::object_t resp;
     resp["type"] = "ok";
-    if (id) resp["id"] = static_cast<double>(id);
+    if (id) {
+        resp["id"] = static_cast<double>(id);
+    }
     sendResponse(wsi, dumpObj(resp));
 }
 
-void DebugIPC::cmdUnsubscribeLogs(struct lws* wsi, int id)
+void DebugIPC::cmdUnsubscribeLogs(struct lws *wsi, int id)
 {
-    auto* conn = findConnection(wsi);
-    if (conn) conn->subscribedToLogs = false;
+    auto *conn = findConnection(wsi);
+    if (conn) {
+        conn->subscribedToLogs = false;
+    }
 
     glz::generic::object_t resp;
     resp["type"] = "ok";
-    if (id) resp["id"] = static_cast<double>(id);
+    if (id) {
+        resp["id"] = static_cast<double>(id);
+    }
     sendResponse(wsi, dumpObj(resp));
 }
 
@@ -761,7 +877,7 @@ void DebugIPC::cmdUnsubscribeLogs(struct lws* wsi, int id)
 // Log broadcasting (called from any thread)
 // ============================================================================
 
-void DebugIPC::broadcastLog(const std::string& msg)
+void DebugIPC::broadcastLog(const std::string &msg)
 {
     {
         std::lock_guard<std::mutex> lock(logMutex_);
@@ -769,5 +885,7 @@ void DebugIPC::broadcastLog(const std::string& msg)
     }
     // lws_cancel_service fires LWS_CALLBACK_EVENT_WAIT_CANCELLED on the next service call,
     // which drains the queue from within the lws callback context (main thread).
-    if (ctx_) lws_cancel_service(ctx_);
+    if (ctx_) {
+        lws_cancel_service(ctx_);
+    }
 }

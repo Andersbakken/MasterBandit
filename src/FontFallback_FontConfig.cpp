@@ -1,6 +1,6 @@
 #include "FontFallback.h"
-#include <spdlog/spdlog.h>
 #include <fstream>
+#include <spdlog/spdlog.h>
 
 #include <fontconfig/fontconfig.h>
 
@@ -10,28 +10,37 @@ static const int kMonoSpacings[] = { FC_MONO, FC_DUAL, FC_CHARCELL };
 
 // Use FcFontList (all matching fonts, database order) for monospace — same approach as WezTerm.
 // Use FcFontSort (best match first) for the any-font fallback pass.
-static std::string queryFontConfig(char32_t codepoint, bool monoOnly, const std::string& primaryFontPath)
+static std::string queryFontConfig(char32_t codepoint, bool monoOnly, const std::string &primaryFontPath)
 {
-    FcCharSet* cs = FcCharSetCreate();
-    if (!cs) return {};
+    FcCharSet *cs = FcCharSetCreate();
+    if (!cs) {
+        return {};
+    }
     FcCharSetAddChar(cs, static_cast<FcChar32>(codepoint));
 
-    auto tryList = [&](FcFontSet* fs) -> std::string {
-        if (!fs) return {};
+    auto tryList = [&](FcFontSet *fs) -> std::string
+    {
+        if (!fs) {
+            return {};
+        }
         std::string found;
         for (int i = 0; i < fs->nfont; ++i) {
-            FcPattern* font = fs->fonts[i];
-            FcChar8* filePath = nullptr;
-            if (FcPatternGetString(font, FC_FILE, 0, &filePath) != FcResultMatch || !filePath)
+            FcPattern *font   = fs->fonts[i];
+            FcChar8 *filePath = nullptr;
+            if (FcPatternGetString(font, FC_FILE, 0, &filePath) != FcResultMatch || !filePath) {
                 continue;
-            std::string candidatePath(reinterpret_cast<const char*>(filePath));
-            if (candidatePath == primaryFontPath)
+            }
+            std::string candidatePath(reinterpret_cast<const char *>(filePath));
+            if (candidatePath == primaryFontPath) {
                 continue;
-            FcCharSet* fontCs = nullptr;
-            if (FcPatternGetCharSet(font, FC_CHARSET, 0, &fontCs) != FcResultMatch || !fontCs)
+            }
+            FcCharSet *fontCs = nullptr;
+            if (FcPatternGetCharSet(font, FC_CHARSET, 0, &fontCs) != FcResultMatch || !fontCs) {
                 continue;
-            if (!FcCharSetHasChar(fontCs, static_cast<FcChar32>(codepoint)))
+            }
+            if (!FcCharSetHasChar(fontCs, static_cast<FcChar32>(codepoint))) {
                 continue;
+            }
             found = std::move(candidatePath);
             break;
         }
@@ -45,23 +54,25 @@ static std::string queryFontConfig(char32_t codepoint, bool monoOnly, const std:
         // List all fonts per spacing value (no charset filter — checked manually in tryList).
         // FcFontList returns fonts in database order without sort scoring bias.
         for (int spacing : kMonoSpacings) {
-            FcPattern* pat = FcPatternCreate();
+            FcPattern *pat = FcPatternCreate();
             FcPatternAddInteger(pat, FC_SPACING, spacing);
-            FcObjectSet* os = FcObjectSetBuild(FC_FILE, FC_CHARSET, FC_SPACING, nullptr);
-            FcFontSet* fs = FcFontList(nullptr, pat, os);
+            FcObjectSet *os = FcObjectSetBuild(FC_FILE, FC_CHARSET, FC_SPACING, nullptr);
+            FcFontSet *fs   = FcFontList(nullptr, pat, os);
             FcObjectSetDestroy(os);
             FcPatternDestroy(pat);
             found = tryList(fs);
-            if (!found.empty()) break;
+            if (!found.empty()) {
+                break;
+            }
         }
     } else {
         // Any font: use FcFontSort for best-match ordering
-        FcPattern* pat = FcPatternCreate();
+        FcPattern *pat = FcPatternCreate();
         FcPatternAddCharSet(pat, FC_CHARSET, cs);
         FcConfigSubstitute(nullptr, pat, FcMatchPattern);
         FcDefaultSubstitute(pat);
         FcResult result;
-        FcFontSet* fs = FcFontSort(nullptr, pat, FcTrue, nullptr, &result);
+        FcFontSet *fs = FcFontSort(nullptr, pat, FcTrue, nullptr, &result);
         FcPatternDestroy(pat);
         found = tryList(fs);
     }
@@ -72,37 +83,44 @@ static std::string queryFontConfig(char32_t codepoint, bool monoOnly, const std:
 
 static std::string queryEmojiFont(char32_t codepoint)
 {
-    FcCharSet* cs = FcCharSetCreate();
-    if (!cs) return {};
+    FcCharSet *cs = FcCharSetCreate();
+    if (!cs) {
+        return {};
+    }
     FcCharSetAddChar(cs, static_cast<FcChar32>(codepoint));
 
-    FcPattern* pat = FcPatternCreate();
+    FcPattern *pat = FcPatternCreate();
     FcPatternAddBool(pat, FC_COLOR, FcTrue);
     FcPatternAddCharSet(pat, FC_CHARSET, cs);
     FcConfigSubstitute(nullptr, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
     FcResult result;
-    FcFontSet* fs = FcFontSort(nullptr, pat, FcTrue, nullptr, &result);
+    FcFontSet *fs = FcFontSort(nullptr, pat, FcTrue, nullptr, &result);
     FcPatternDestroy(pat);
     FcCharSetDestroy(cs);
 
     std::string found;
     if (fs) {
         for (int i = 0; i < fs->nfont; ++i) {
-            FcPattern* font = fs->fonts[i];
-            FcChar8* filePath = nullptr;
-            if (FcPatternGetString(font, FC_FILE, 0, &filePath) != FcResultMatch || !filePath)
+            FcPattern *font   = fs->fonts[i];
+            FcChar8 *filePath = nullptr;
+            if (FcPatternGetString(font, FC_FILE, 0, &filePath) != FcResultMatch || !filePath) {
                 continue;
-            FcCharSet* fontCs = nullptr;
-            if (FcPatternGetCharSet(font, FC_CHARSET, 0, &fontCs) != FcResultMatch || !fontCs)
+            }
+            FcCharSet *fontCs = nullptr;
+            if (FcPatternGetCharSet(font, FC_CHARSET, 0, &fontCs) != FcResultMatch || !fontCs) {
                 continue;
-            if (!FcCharSetHasChar(fontCs, static_cast<FcChar32>(codepoint)))
+            }
+            if (!FcCharSetHasChar(fontCs, static_cast<FcChar32>(codepoint))) {
                 continue;
+            }
             // Verify it's actually a color font
             FcBool color = FcFalse;
             FcPatternGetBool(font, FC_COLOR, 0, &color);
-            if (!color) continue;
-            found = reinterpret_cast<const char*>(filePath);
+            if (!color) {
+                continue;
+            }
+            found = reinterpret_cast<const char *>(filePath);
             break;
         }
         FcFontSetDestroy(fs);
@@ -116,7 +134,9 @@ std::vector<uint8_t> FontFallback::fontDataForEmoji(char32_t codepoint)
 
     auto it = emojiCache_.find(codepoint);
     if (it != emojiCache_.end()) {
-        if (it->second < 0) return {};
+        if (it->second < 0) {
+            return {};
+        }
         return fallbackFonts_[it->second].data;
     }
 
@@ -140,25 +160,27 @@ std::vector<uint8_t> FontFallback::fontDataForEmoji(char32_t codepoint)
     auto size = file.tellg();
     file.seekg(0);
     std::vector<uint8_t> data(static_cast<size_t>(size));
-    file.read(reinterpret_cast<char*>(data.data()), size);
+    file.read(reinterpret_cast<char *>(data.data()), size);
 
     spdlog::info("FontFallback: loaded emoji font {} for U+{:04X}", path, static_cast<uint32_t>(codepoint));
 
     int idx = static_cast<int>(fallbackFonts_.size());
-    fallbackFonts_.push_back({path, std::move(data)});
-    pathToIndex_[path] = idx;
+    fallbackFonts_.push_back({ path, std::move(data) });
+    pathToIndex_[path]     = idx;
     emojiCache_[codepoint] = idx;
     return fallbackFonts_[idx].data;
 }
 
-std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& primaryFontPath, char32_t codepoint)
+std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string &primaryFontPath, char32_t codepoint)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Check cache first
     auto it = codepointCache_.find(codepoint);
     if (it != codepointCache_.end()) {
-        if (it->second < 0) return {};
+        if (it->second < 0) {
+            return {};
+        }
         return fallbackFonts_[it->second].data;
     }
 
@@ -166,8 +188,9 @@ std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& prima
     std::string fallbackPath = queryFontConfig(codepoint, true, primaryFontPath);
 
     // Pass 2: any font if no monospace covers it
-    if (fallbackPath.empty())
+    if (fallbackPath.empty()) {
         fallbackPath = queryFontConfig(codepoint, false, primaryFontPath);
+    }
 
     if (fallbackPath.empty()) {
         codepointCache_[codepoint] = -1;
@@ -191,12 +214,12 @@ std::vector<uint8_t> FontFallback::fontDataForCodepoint(const std::string& prima
     auto size = file.tellg();
     file.seekg(0);
     std::vector<uint8_t> data(static_cast<size_t>(size));
-    file.read(reinterpret_cast<char*>(data.data()), size);
+    file.read(reinterpret_cast<char *>(data.data()), size);
 
     spdlog::info("FontFallback: loaded {} for U+{:04X}", fallbackPath, static_cast<uint32_t>(codepoint));
 
     int idx = static_cast<int>(fallbackFonts_.size());
-    fallbackFonts_.push_back({fallbackPath, std::move(data)});
+    fallbackFonts_.push_back({ fallbackPath, std::move(data) });
     pathToIndex_[fallbackPath] = idx;
     codepointCache_[codepoint] = idx;
     return fallbackFonts_[idx].data;

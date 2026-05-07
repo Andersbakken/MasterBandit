@@ -1,11 +1,11 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 TEST_CASE("SGR reset")
 {
     TestTerminal t;
-    t.csi("1m");   // bold
-    t.csi("0m");   // reset
+    t.csi("1m"); // bold
+    t.csi("0m"); // reset
     t.feed("A");
     CHECK_FALSE(t.attrs(0, 0).bold());
 }
@@ -88,7 +88,7 @@ TEST_CASE("SGR 58 sets underline color")
     t.csi("58;2;255;0;128m"); // underline color: red+half-blue
     t.feed("A");
     CHECK(t.attrs(0, 0).underline());
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     CHECK(ex->underlineColor != 0);
 }
@@ -101,7 +101,7 @@ TEST_CASE("SGR 59 resets underline color")
     t.csi("59m");
     t.feed("A");
     // underlineColor should be 0 (use fg), or no CellExtra
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     CHECK((ex == nullptr || ex->underlineColor == 0));
 }
 
@@ -154,7 +154,7 @@ TEST_CASE("SGR bg 256-color")
 TEST_CASE("SGR attributes persist across cells")
 {
     TestTerminal t;
-    t.csi("1m");   // bold
+    t.csi("1m"); // bold
     t.feed("AB");
     CHECK(t.attrs(0, 0).bold());
     CHECK(t.attrs(1, 0).bold());
@@ -283,7 +283,7 @@ TEST_CASE("SGR 58:2::R:G:B colon underline color with empty colorspace")
     t.csi("4m");
     t.csi("58:2::255:100:100m");
     t.feed("A");
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     CHECK((ex->underlineColor & 0xFF) == 255);
     CHECK(((ex->underlineColor >> 8) & 0xFF) == 100);
@@ -296,7 +296,7 @@ TEST_CASE("SGR 58:2:R:G:B colon underline color without colorspace")
     t.csi("4m");
     t.csi("58:2:255:100:100m");
     t.feed("A");
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     CHECK((ex->underlineColor & 0xFF) == 255);
     CHECK(((ex->underlineColor >> 8) & 0xFF) == 100);
@@ -309,7 +309,7 @@ TEST_CASE("SGR 58:5:IDX colon 256-color underline")
     t.csi("4m");
     t.csi("58:5:214m");
     t.feed("A");
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     CHECK(ex->underlineColor != 0);
 }
@@ -322,7 +322,7 @@ TEST_CASE("SGR 4:3 + 58:2::R:G:B curly underline with colon color")
     t.feed("A");
     CHECK(t.attrs(0, 0).underline());
     CHECK(t.attrs(0, 0).underlineStyle() == 2); // curly
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     CHECK((ex->underlineColor & 0xFF) == 255);
     CHECK(((ex->underlineColor >> 8) & 0xFF) == 80);

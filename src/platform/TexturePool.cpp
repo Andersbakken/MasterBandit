@@ -1,8 +1,8 @@
 #include "TexturePool.h"
-#include <spdlog/spdlog.h>
 #include <algorithm>
+#include <spdlog/spdlog.h>
 
-void TexturePool::init(wgpu::Device& device, wgpu::TextureFormat format, size_t byteLimit)
+void TexturePool::init(wgpu::Device &device, wgpu::TextureFormat format, size_t byteLimit)
 {
     device_    = device.Get();
     format_    = format;
@@ -10,25 +10,28 @@ void TexturePool::init(wgpu::Device& device, wgpu::TextureFormat format, size_t 
 
     // Bytes per pixel for the supported formats
     switch (format) {
-    case wgpu::TextureFormat::RGBA8Unorm:
-    case wgpu::TextureFormat::BGRA8Unorm:
-        bytesPerPixel_ = 4; break;
-    default:
-        bytesPerPixel_ = 4; break;
+        case wgpu::TextureFormat::RGBA8Unorm:
+        case wgpu::TextureFormat::BGRA8Unorm:
+            bytesPerPixel_ = 4;
+            break;
+        default:
+            bytesPerPixel_ = 4;
+            break;
     }
 }
 
-PooledTexture* TexturePool::acquire(uint32_t w, uint32_t h)
+PooledTexture *TexturePool::acquire(uint32_t w, uint32_t h)
 {
     // Best fit: smallest free texture that fits, capped at 2x the requested
     // byte size to prevent reusing oversized textures indefinitely after a
     // shrink.
     const size_t maxBytes = static_cast<size_t>(w) * h * bytesPerPixel_ * 2;
-    PooledTexture* best = nullptr;
-    for (PooledTexture* t : free_) {
+    PooledTexture *best   = nullptr;
+    for (PooledTexture *t : free_) {
         if (t->width >= w && t->height >= h && t->sizeBytes <= maxBytes) {
-            if (!best || t->sizeBytes < best->sizeBytes)
+            if (!best || t->sizeBytes < best->sizeBytes) {
                 best = t;
+            }
         }
     }
 
@@ -41,9 +44,11 @@ PooledTexture* TexturePool::acquire(uint32_t w, uint32_t h)
     return allocate(w, h);
 }
 
-void TexturePool::release(PooledTexture* tex)
+void TexturePool::release(PooledTexture *tex)
 {
-    if (!tex) return;
+    if (!tex) {
+        return;
+    }
     free_.push_back(tex);
     freeBytes_ += tex->sizeBytes;
     evictToLimit();
@@ -59,19 +64,22 @@ void TexturePool::evictToLimit()
 {
     while (freeBytes_ > byteLimit_ && !free_.empty()) {
         // Evict the oldest entry (front = LRU)
-        PooledTexture* victim = free_.front();
+        PooledTexture *victim = free_.front();
         free_.erase(free_.begin());
         freeBytes_ -= victim->sizeBytes;
 
         spdlog::info("TexturePool: evicting {}x{} ({:.1f} KB), free pool {:.1f} KB / limit {:.1f} MB",
-                     victim->width, victim->height,
+                     victim->width,
+                     victim->height,
                      victim->sizeBytes / 1024.0,
                      freeBytes_ / 1024.0,
                      byteLimit_ / (1024.0 * 1024.0));
 
-        all_.erase(std::remove_if(all_.begin(), all_.end(),
-            [victim](const std::unique_ptr<PooledTexture>& p) { return p.get() == victim; }),
-            all_.end());
+        all_.erase(std::remove_if(all_.begin(), all_.end(), [victim](const std::unique_ptr<PooledTexture> &p)
+                                  {
+                                      return p.get() == victim;
+                                  }),
+                   all_.end());
     }
 }
 
@@ -82,27 +90,27 @@ void TexturePool::clear()
     all_.clear();
 }
 
-PooledTexture* TexturePool::allocate(uint32_t w, uint32_t h)
+PooledTexture *TexturePool::allocate(uint32_t w, uint32_t h)
 {
     WGPUTextureDescriptor desc = {};
     WGPUExtent3D size          = { w, h, 1 };
-    desc.size          = size;
-    desc.format        = static_cast<WGPUTextureFormat>(format_);
-    desc.usage         = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
-    desc.dimension     = WGPUTextureDimension_2D;
-    desc.mipLevelCount = 1;
-    desc.sampleCount   = 1;
+    desc.size                  = size;
+    desc.format                = static_cast<WGPUTextureFormat>(format_);
+    desc.usage                 = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+    desc.dimension             = WGPUTextureDimension_2D;
+    desc.mipLevelCount         = 1;
+    desc.sampleCount           = 1;
 
-    auto entry         = std::make_unique<PooledTexture>();
-    entry->texture     = wgpu::Texture::Acquire(wgpuDeviceCreateTexture(device_, &desc));
-    entry->view        = entry->texture.CreateView();
-    entry->width       = w;
-    entry->height      = h;
-    entry->sizeBytes   = static_cast<size_t>(w) * h * bytesPerPixel_;
+    auto entry       = std::make_unique<PooledTexture>();
+    entry->texture   = wgpu::Texture::Acquire(wgpuDeviceCreateTexture(device_, &desc));
+    entry->view      = entry->texture.CreateView();
+    entry->width     = w;
+    entry->height    = h;
+    entry->sizeBytes = static_cast<size_t>(w) * h * bytesPerPixel_;
 
     spdlog::debug("TexturePool: allocated {}x{} ({:.1f} KB)", w, h, entry->sizeBytes / 1024.0);
 
-    PooledTexture* ptr = entry.get();
+    PooledTexture *ptr = entry.get();
     all_.push_back(std::move(entry));
     return ptr;
 }
@@ -110,7 +118,8 @@ PooledTexture* TexturePool::allocate(uint32_t w, uint32_t h)
 TexturePool::Stats TexturePool::stats() const
 {
     size_t totalBytes = 0;
-    for (const auto& t : all_) totalBytes += t->sizeBytes;
-    return { all_.size(), all_.size() - free_.size(), free_.size(),
-             totalBytes, freeBytes_, byteLimit_ };
+    for (const auto &t : all_) {
+        totalBytes += t->sizeBytes;
+    }
+    return { all_.size(), all_.size() - free_.size(), free_.size(), totalBytes, freeBytes_, byteLimit_ };
 }

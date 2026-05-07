@@ -1,5 +1,5 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 // ── RIS - full reset ──────────────────────────────────────────────────────────
 
@@ -8,7 +8,7 @@ TEST_CASE("RIS resets cursor and clears screen")
     TestTerminal t;
     t.feed("Hello");
     t.csi("5;10H");
-    t.esc("c");  // RIS
+    t.esc("c"); // RIS
     CHECK(t.term.cursorX() == 0);
     CHECK(t.term.cursorY() == 0);
     CHECK(t.rowText(0) == "");
@@ -17,7 +17,7 @@ TEST_CASE("RIS resets cursor and clears screen")
 TEST_CASE("RIS resets SGR attributes")
 {
     TestTerminal t;
-    t.csi("1m");   // bold
+    t.csi("1m"); // bold
     t.esc("c");
     t.feed("A");
     CHECK_FALSE(t.attrs(0, 0).bold());
@@ -77,8 +77,8 @@ TEST_CASE("alt screen does not leak mode changes back to main")
     TestTerminal t;
     // Set a handful of modes on main. An app that enters alt must not be able
     // to leave these modified once it exits.
-    t.csi("?1000h");   // mouse reporting
-    t.csi("?2004h");   // bracketed paste
+    t.csi("?1000h"); // mouse reporting
+    t.csi("?2004h"); // bracketed paste
     REQUIRE(t.term.mouseReportingActive());
     REQUIRE(t.term.bracketedPaste());
 
@@ -101,14 +101,14 @@ TEST_CASE("alt screen isolates DECSC save slot")
     TestTerminal t;
     // DECSC on main at position (5, 3).
     t.csi("4;6H");
-    t.esc("7");  // DECSC
+    t.esc("7"); // DECSC
     t.csi("?1049h");
     // DECSC on alt at a different position.
     t.csi("10;20H");
-    t.esc("7");  // DECSC on alt — must not clobber main's save slot
+    t.esc("7"); // DECSC on alt — must not clobber main's save slot
     t.csi("?1049l");
     // DECRC on main should restore to (5, 3), not alt's saved position.
-    t.esc("8");  // DECRC
+    t.esc("8"); // DECRC
     CHECK(t.term.cursorX() == 5);
     CHECK(t.term.cursorY() == 3);
 }
@@ -116,17 +116,21 @@ TEST_CASE("alt screen isolates DECSC save slot")
 // Query a private DEC mode via DECRQM (CSI ? Pm $ p). Response is
 // CSI ? <mode> ; <state> $ y where state=1 means set, 2 means reset,
 // 0 means unknown. Returns 0/1/2/3/4 per DECRQM spec.
-static int queryMode(TestTerminal& t, int mode)
+static int queryMode(TestTerminal &t, int mode)
 {
     t.clearOutput();
     t.csi("?" + std::to_string(mode) + "$p");
-    const std::string& out = t.output();
-    std::string needle = "\x1b[?" + std::to_string(mode) + ";";
-    auto pos = out.find(needle);
-    if (pos == std::string::npos) return -1;
+    const std::string &out = t.output();
+    std::string needle     = "\x1b[?" + std::to_string(mode) + ";";
+    auto pos               = out.find(needle);
+    if (pos == std::string::npos) {
+        return -1;
+    }
     auto start = pos + needle.size();
-    auto end = out.find('$', start);
-    if (end == std::string::npos) return -1;
+    auto end   = out.find('$', start);
+    if (end == std::string::npos) {
+        return -1;
+    }
     return std::stoi(out.substr(start, end - start));
 }
 
@@ -136,9 +140,9 @@ TEST_CASE("alt screen isolates DECRQM-queryable modes")
     // Modes supported by DECRQM in this terminal: 1049, 2004, 2026, 2031.
     // 1049 is the screen itself — can't meaningfully test it here, so we
     // stick to the app-settable app-mode flags.
-    t.csi("?2004h");  // bracketed paste
-    t.csi("?2026h");  // synchronized output
-    t.csi("?2031h");  // color preference reporting
+    t.csi("?2004h"); // bracketed paste
+    t.csi("?2026h"); // synchronized output
+    t.csi("?2031h"); // color preference reporting
     REQUIRE(queryMode(t, 2004) == 1);
     REQUIRE(queryMode(t, 2026) == 1);
     REQUIRE(queryMode(t, 2031) == 1);
@@ -166,13 +170,13 @@ TEST_CASE("alt screen isolates cursor shape (DECSCUSR)")
     // Default is blinking block.
     REQUIRE(t.term.cursorShape() == TerminalEmulator::CursorBlock);
 
-    t.csi("2 q");  // DECSCUSR — steady block on main
+    t.csi("2 q"); // DECSCUSR — steady block on main
     REQUIRE(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
 
     t.csi("?1049h");
     // Alt starts with the configured default (still block here).
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
-    t.csi("5 q");  // steady bar on alt (vim-style)
+    t.csi("5 q"); // steady bar on alt (vim-style)
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBar);
 
     t.csi("?1049l");
@@ -205,10 +209,12 @@ TEST_CASE("RIS clears scrollback history")
 {
     TestTerminal t(80, 4);
     // Feed enough lines to push content into scrollback.
-    for (int i = 0; i < 20; ++i) t.feed("line\n");
+    for (int i = 0; i < 20; ++i) {
+        t.feed("line\n");
+    }
     REQUIRE(t.term.document().historySize() > 0);
 
-    t.esc("c");  // RIS
+    t.esc("c"); // RIS
 
     CHECK(t.term.document().historySize() == 0);
 }
@@ -299,16 +305,21 @@ TEST_CASE("mouse mode 1006 SGR format press/release")
     t.clearOutput();
 
     MouseEvent press;
-    press.x = 4; press.y = 2;
-    press.pixelX = 40; press.pixelY = 30;
-    press.button = LeftButton; press.buttons = LeftButton;
+    press.x       = 4;
+    press.y       = 2;
+    press.pixelX  = 40;
+    press.pixelY  = 30;
+    press.button  = LeftButton;
+    press.buttons = LeftButton;
     t.term.mousePressEvent(&press);
     CHECK(t.output() == "\x1b[<0;5;3M"); // 1-based: col 5, row 3
 
     t.clearOutput();
     MouseEvent release;
-    release.x = 4; release.y = 2;
-    release.pixelX = 40; release.pixelY = 30;
+    release.x      = 4;
+    release.y      = 2;
+    release.pixelX = 40;
+    release.pixelY = 30;
     release.button = LeftButton;
     t.term.mouseReleaseEvent(&release);
     CHECK(t.output() == "\x1b[<0;5;3m"); // lowercase m = release
@@ -324,16 +335,21 @@ TEST_CASE("mouse mode 1016 SGR-Pixel format press/release")
     t.clearOutput();
 
     MouseEvent press;
-    press.x = 4; press.y = 2;
-    press.pixelX = 40; press.pixelY = 30;
-    press.button = LeftButton; press.buttons = LeftButton;
+    press.x       = 4;
+    press.y       = 2;
+    press.pixelX  = 40;
+    press.pixelY  = 30;
+    press.button  = LeftButton;
+    press.buttons = LeftButton;
     t.term.mousePressEvent(&press);
     CHECK(t.output() == "\x1b[<0;41;31M"); // 1-based pixel: 41, 31
 
     t.clearOutput();
     MouseEvent release;
-    release.x = 4; release.y = 2;
-    release.pixelX = 40; release.pixelY = 30;
+    release.x      = 4;
+    release.y      = 2;
+    release.pixelX = 40;
+    release.pixelY = 30;
     release.button = LeftButton;
     t.term.mouseReleaseEvent(&release);
     CHECK(t.output() == "\x1b[<0;41;31m");
@@ -348,9 +364,12 @@ TEST_CASE("mouse mode 1016 falls back to 1006 when pixel coords unavailable")
     t.clearOutput();
 
     MouseEvent press;
-    press.x = 4; press.y = 2;
-    press.pixelX = -1; press.pixelY = -1; // no pixel info
-    press.button = LeftButton; press.buttons = LeftButton;
+    press.x       = 4;
+    press.y       = 2;
+    press.pixelX  = -1;
+    press.pixelY  = -1; // no pixel info
+    press.button  = LeftButton;
+    press.buttons = LeftButton;
     t.term.mousePressEvent(&press);
     CHECK(t.output() == "\x1b[<0;5;3M"); // cell coords, not pixel
 }
@@ -402,45 +421,54 @@ TEST_CASE("synchronized output mode set/reset")
 TEST_CASE("synchronized output: grid mutates live during hold")
 {
     TestTerminal t;
-    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+    auto inject = [&](std::string_view s)
+    {
+        t.term.injectData(s.data(), s.size());
+    };
 
     inject("Pre");
     REQUIRE(t.rowText(0) == "Pre");
 
-    inject("\x1b[?2026h");                    // begin sync
+    inject("\x1b[?2026h"); // begin sync
     inject("Hidden");
-    CHECK(t.rowText(0) == "PreHidden");       // grid sees the writes immediately
+    CHECK(t.rowText(0) == "PreHidden"); // grid sees the writes immediately
     inject("Stuff");
     CHECK(t.rowText(0) == "PreHiddenStuff");
 
-    inject("\x1b[?2026l");                    // end sync
+    inject("\x1b[?2026l"); // end sync
     CHECK(t.rowText(0) == "PreHiddenStuff");
 }
 
 TEST_CASE("synchronized output: Update event suppressed during hold, fires at close")
 {
     TestTerminal t;
-    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+    auto inject = [&](std::string_view s)
+    {
+        t.term.injectData(s.data(), s.size());
+    };
 
-    inject("Pre");                            // 1 Update
+    inject("Pre"); // 1 Update
     int baseline = t.updateEventCount;
     REQUIRE(baseline >= 1);
 
-    inject("\x1b[?2026h");                    // begin sync — no Update (mHold true at end of call)
+    inject("\x1b[?2026h"); // begin sync — no Update (mHold true at end of call)
     inject("A");
     inject("B");
     inject("C");
     // No Update events while mHold is held.
     CHECK(t.updateEventCount == baseline);
 
-    inject("\x1b[?2026l");                    // end sync — exactly one Update
+    inject("\x1b[?2026l"); // end sync — exactly one Update
     CHECK(t.updateEventCount == baseline + 1);
 }
 
 TEST_CASE("synchronized output: ordering preserved across hold")
 {
     TestTerminal t;
-    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+    auto inject = [&](std::string_view s)
+    {
+        t.term.injectData(s.data(), s.size());
+    };
 
     inject("\x1b[?2026h");
     inject("A");
@@ -453,14 +481,17 @@ TEST_CASE("synchronized output: ordering preserved across hold")
 TEST_CASE("synchronized output: RIS clears hold and resets")
 {
     TestTerminal t;
-    auto inject = [&](std::string_view s) { t.term.injectData(s.data(), s.size()); };
+    auto inject = [&](std::string_view s)
+    {
+        t.term.injectData(s.data(), s.size());
+    };
 
     inject("X");
     inject("\x1b[?2026h");
     inject("Y");
-    CHECK(t.rowText(0) == "XY");          // grid mutates live
+    CHECK(t.rowText(0) == "XY"); // grid mutates live
 
-    inject("\033c");                       // RIS — clears hold + full reset
+    inject("\033c"); // RIS — clears hold + full reset
     CHECK(t.rowText(0) == "");
     CHECK(t.term.cursorX() == 0);
     CHECK(t.term.cursorY() == 0);
@@ -524,8 +555,8 @@ TEST_CASE("DECSCUSR default is block")
 TEST_CASE("DECSCUSR 0 resets to block")
 {
     TestTerminal t;
-    t.csi("5 q");  // bar
-    t.csi("0 q");  // reset
+    t.csi("5 q"); // bar
+    t.csi("0 q"); // reset
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
 }
 
@@ -599,7 +630,7 @@ TEST_CASE("notifyColorPreference sends when mode 2031 is set")
     TestTerminal t;
     t.csi("?2031h");
     t.clearOutput();
-    t.term.notifyColorPreference(false);  // light mode
+    t.term.notifyColorPreference(false); // light mode
     CHECK(t.term.capturedOutput == "\x1b[?997;2n");
 }
 
@@ -659,11 +690,11 @@ TEST_CASE("CSI x with intermediate is not treated as DECREQTPARM")
 TEST_CASE("XTSAVE/XTRESTORE round-trips a single mode")
 {
     TestTerminal t;
-    t.csi("?25h");          // cursor visible
-    t.csi("?25s");          // save
-    t.csi("?25l");          // hide
+    t.csi("?25h"); // cursor visible
+    t.csi("?25s"); // save
+    t.csi("?25l"); // hide
     CHECK_FALSE(t.term.cursorVisible());
-    t.csi("?25r");          // restore
+    t.csi("?25r"); // restore
     CHECK(t.term.cursorVisible());
 }
 
@@ -672,12 +703,12 @@ TEST_CASE("XTSAVE/XTRESTORE round-trips multiple modes via list")
     TestTerminal t;
     t.csi("?25h");
     t.csi("?2004h");
-    t.csi("?25;2004s");     // save both
+    t.csi("?25;2004s"); // save both
     t.csi("?25l");
     t.csi("?2004l");
     CHECK_FALSE(t.term.cursorVisible());
     CHECK_FALSE(t.term.bracketedPaste());
-    t.csi("?25;2004r");     // restore both
+    t.csi("?25;2004r"); // restore both
     CHECK(t.term.cursorVisible());
     CHECK(t.term.bracketedPaste());
 }
@@ -687,10 +718,10 @@ TEST_CASE("XTSAVE with no parameters saves all known modes")
     TestTerminal t;
     t.csi("?25h");
     t.csi("?2004h");
-    t.csi("?s");            // save all
+    t.csi("?s"); // save all
     t.csi("?25l");
     t.csi("?2004l");
-    t.csi("?r");            // restore all
+    t.csi("?r"); // restore all
     CHECK(t.term.cursorVisible());
     CHECK(t.term.bracketedPaste());
 }
@@ -699,18 +730,18 @@ TEST_CASE("XTRESTORE without prior save is a no-op")
 {
     TestTerminal t;
     CHECK(t.term.cursorVisible());
-    t.csi("?25r");          // nothing was saved
+    t.csi("?25r"); // nothing was saved
     CHECK(t.term.cursorVisible());
 }
 
 TEST_CASE("XTSAVE captures false values too")
 {
     TestTerminal t;
-    t.csi("?25l");          // hide
-    t.csi("?25s");          // save (false)
-    t.csi("?25h");          // show
+    t.csi("?25l"); // hide
+    t.csi("?25s"); // save (false)
+    t.csi("?25h"); // show
     CHECK(t.term.cursorVisible());
-    t.csi("?25r");          // restore -> false
+    t.csi("?25r"); // restore -> false
     CHECK_FALSE(t.term.cursorVisible());
 }
 
@@ -756,7 +787,7 @@ TEST_CASE("CSI ?12h re-enables cursor blink")
 TEST_CASE("steady cursor shape blinks when mode 12 is on")
 {
     TestTerminal t;
-    t.csi("2 q");  // DECSCUSR steady block
+    t.csi("2 q"); // DECSCUSR steady block
     CHECK(t.term.cursorBlinkEnabled());
     // Mode 12 independently enables blinking even for steady shapes
     CHECK(t.term.cursorBlinking());
@@ -773,7 +804,7 @@ TEST_CASE("steady cursor shape does not blink when mode 12 is off")
 TEST_CASE("blinking cursor shape blinks regardless of mode 12")
 {
     TestTerminal t;
-    t.csi("5 q");    // DECSCUSR blinking bar
+    t.csi("5 q"); // DECSCUSR blinking bar
     CHECK(t.term.cursorBlinking());
     t.csi("?12l");
     // Blinking shape variant always blinks — mode 12 cannot suppress it
@@ -783,10 +814,10 @@ TEST_CASE("blinking cursor shape blinks regardless of mode 12")
 TEST_CASE("XTSAVE/XTRESTORE round-trips mode 12")
 {
     TestTerminal t;
-    t.csi("?12s");      // save (currently true)
-    t.csi("?12l");      // disable
+    t.csi("?12s"); // save (currently true)
+    t.csi("?12l"); // disable
     CHECK_FALSE(t.term.cursorBlinkEnabled());
-    t.csi("?12r");      // restore
+    t.csi("?12r"); // restore
     CHECK(t.term.cursorBlinkEnabled());
 }
 
@@ -801,12 +832,12 @@ TEST_CASE("RIS restores configured cursor defaults")
     CHECK_FALSE(t.term.cursorBlinkEnabled());
 
     // App changes cursor at runtime
-    t.csi("5 q");        // blinking bar
-    t.csi("?12h");       // blink on
+    t.csi("5 q");  // blinking bar
+    t.csi("?12h"); // blink on
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBar);
     CHECK(t.term.cursorBlinkEnabled());
 
-    t.esc("c");          // RIS
+    t.esc("c"); // RIS
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyUnderline);
     CHECK_FALSE(t.term.cursorBlinkEnabled());
 }
@@ -816,7 +847,9 @@ TEST_CASE("RIS restores configured cursor defaults")
 TEST_CASE("applyCursorConfig: block + blink → CursorBlock")
 {
     TestTerminal t;
-    CursorConfig cc; cc.shape = "block"; cc.blink = true;
+    CursorConfig cc;
+    cc.shape = "block";
+    cc.blink = true;
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
     CHECK(t.term.cursorBlinkEnabled());
@@ -825,7 +858,9 @@ TEST_CASE("applyCursorConfig: block + blink → CursorBlock")
 TEST_CASE("applyCursorConfig: block + no blink → CursorSteadyBlock")
 {
     TestTerminal t;
-    CursorConfig cc; cc.shape = "block"; cc.blink = false;
+    CursorConfig cc;
+    cc.shape = "block";
+    cc.blink = false;
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
     CHECK_FALSE(t.term.cursorBlinkEnabled());
@@ -834,7 +869,9 @@ TEST_CASE("applyCursorConfig: block + no blink → CursorSteadyBlock")
 TEST_CASE("applyCursorConfig: underline + blink → CursorUnderline")
 {
     TestTerminal t;
-    CursorConfig cc; cc.shape = "underline"; cc.blink = true;
+    CursorConfig cc;
+    cc.shape = "underline";
+    cc.blink = true;
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorUnderline);
 }
@@ -842,7 +879,9 @@ TEST_CASE("applyCursorConfig: underline + blink → CursorUnderline")
 TEST_CASE("applyCursorConfig: bar + no blink → CursorSteadyBar")
 {
     TestTerminal t;
-    CursorConfig cc; cc.shape = "bar"; cc.blink = false;
+    CursorConfig cc;
+    cc.shape = "bar";
+    cc.blink = false;
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBar);
 }
@@ -850,7 +889,9 @@ TEST_CASE("applyCursorConfig: bar + no blink → CursorSteadyBar")
 TEST_CASE("applyCursorConfig: unknown shape falls back to block")
 {
     TestTerminal t;
-    CursorConfig cc; cc.shape = "weird"; cc.blink = true;
+    CursorConfig cc;
+    cc.shape = "weird";
+    cc.blink = true;
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
 }
@@ -860,8 +901,8 @@ TEST_CASE("applyCursorConfig: unknown shape falls back to block")
 TEST_CASE("DECOM set: cursor homes to top of scroll region")
 {
     TestTerminal t(80, 24);
-    t.csi("5;15r");       // scroll region rows 5..15 (1-based)
-    t.csi("?6h");         // DECOM on
+    t.csi("5;15r"); // scroll region rows 5..15 (1-based)
+    t.csi("?6h");   // DECOM on
     CHECK(t.term.cursorX() == 0);
     CHECK(t.term.cursorY() == 4); // row 5 (1-based) = y=4
 }
@@ -869,12 +910,12 @@ TEST_CASE("DECOM set: cursor homes to top of scroll region")
 TEST_CASE("DECOM set: CUP is relative to scroll region")
 {
     TestTerminal t(80, 24);
-    t.csi("5;15r");       // region [5,15]
+    t.csi("5;15r"); // region [5,15]
     t.csi("?6h");
-    t.csi("1;1H");        // CUP to relative (1,1) → absolute (5,1)
+    t.csi("1;1H"); // CUP to relative (1,1) → absolute (5,1)
     CHECK(t.term.cursorY() == 4);
     CHECK(t.term.cursorX() == 0);
-    t.csi("3;10H");       // relative (3,10) → absolute (7,10)
+    t.csi("3;10H"); // relative (3,10) → absolute (7,10)
     CHECK(t.term.cursorY() == 6);
     CHECK(t.term.cursorX() == 9);
 }
@@ -884,7 +925,7 @@ TEST_CASE("DECOM set: CUP clamps inside scroll region")
     TestTerminal t(80, 24);
     t.csi("5;15r");
     t.csi("?6h");
-    t.csi("99;1H");       // way past bottom of region
+    t.csi("99;1H");                // way past bottom of region
     CHECK(t.term.cursorY() == 14); // clamped to scrollBottom-1
 }
 
@@ -893,7 +934,7 @@ TEST_CASE("DECOM set: VPA is relative to scroll region")
     TestTerminal t(80, 24);
     t.csi("5;15r");
     t.csi("?6h");
-    t.csi("3d");          // VPA to relative row 3 → absolute row 7
+    t.csi("3d"); // VPA to relative row 3 → absolute row 7
     CHECK(t.term.cursorY() == 6);
 }
 
@@ -902,16 +943,16 @@ TEST_CASE("DECOM reset: CUP is absolute again")
     TestTerminal t(80, 24);
     t.csi("5;15r");
     t.csi("?6h");
-    t.csi("?6l");         // DECOM off
+    t.csi("?6l");                 // DECOM off
     CHECK(t.term.cursorY() == 0); // cursor homes to absolute (0,0) on reset
-    t.csi("3;1H");        // absolute row 3
+    t.csi("3;1H");                // absolute row 3
     CHECK(t.term.cursorY() == 2);
 }
 
 TEST_CASE("DECOM off by default: CUP is absolute")
 {
     TestTerminal t(80, 24);
-    t.csi("5;15r");       // scroll region set, DECOM still off
+    t.csi("5;15r"); // scroll region set, DECOM still off
     t.csi("1;1H");
     CHECK(t.term.cursorY() == 0); // absolute home, not scroll-region home
 }
@@ -921,9 +962,9 @@ TEST_CASE("DECOM: cursor position report reports relative row")
     TestTerminal t(80, 24);
     t.csi("5;15r");
     t.csi("?6h");
-    t.csi("3;7H");        // relative (3,7) → absolute (7,7)
+    t.csi("3;7H"); // relative (3,7) → absolute (7,7)
     t.clearOutput();
-    t.csi("6n");          // DSR cursor position report
+    t.csi("6n"); // DSR cursor position report
     // Should report "\e[3;7R" (relative), not "\e[7;7R"
     CHECK(t.output() == "\x1b[3;7R");
 }
@@ -932,13 +973,13 @@ TEST_CASE("DECSC / DECRC saves and restores originMode")
 {
     TestTerminal t(80, 24);
     t.csi("5;15r");
-    t.csi("?6h");         // DECOM on
-    t.csi("3;5H");        // relative (3,5) → absolute (7,5)
-    t.esc("7");           // DECSC
-    t.csi("?6l");         // DECOM off
-    t.csi("1;1H");        // absolute home
+    t.csi("?6h");  // DECOM on
+    t.csi("3;5H"); // relative (3,5) → absolute (7,5)
+    t.esc("7");    // DECSC
+    t.csi("?6l");  // DECOM off
+    t.csi("1;1H"); // absolute home
     CHECK(t.term.cursorY() == 0);
-    t.esc("8");           // DECRC → originMode restored
+    t.esc("8"); // DECRC → originMode restored
     CHECK(t.term.cursorY() == 6);
     CHECK(t.term.cursorX() == 4);
     // Feed a CUP relative again to prove DECOM is active
@@ -951,9 +992,9 @@ TEST_CASE("RIS resets origin mode")
     TestTerminal t(80, 24);
     t.csi("5;15r");
     t.csi("?6h");
-    t.esc("c");           // RIS
-    t.csi("5;15r");       // re-establish scroll region (RIS clears it)
-    t.csi("1;1H");        // CUP (1,1) — absolute since DECOM is off
+    t.esc("c");     // RIS
+    t.csi("5;15r"); // re-establish scroll region (RIS clears it)
+    t.csi("1;1H");  // CUP (1,1) — absolute since DECOM is off
     CHECK(t.term.cursorY() == 0);
 }
 
@@ -962,9 +1003,9 @@ TEST_CASE("DECRQM reports mode 6 state")
     TestTerminal t(80, 24);
     t.clearOutput();
     t.csi("?6$p");
-    CHECK(t.output() == "\x1b[?6;2$y");   // reset
+    CHECK(t.output() == "\x1b[?6;2$y"); // reset
     t.csi("?6h");
     t.clearOutput();
     t.csi("?6$p");
-    CHECK(t.output() == "\x1b[?6;1$y");   // set
+    CHECK(t.output() == "\x1b[?6;1$y"); // set
 }

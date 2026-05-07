@@ -1,7 +1,7 @@
 #pragma once
 
-#include <EventLoop.h>
 #include "FdPoller_epoll.h"
+#include <EventLoop.h>
 
 #include <cstdint>
 #include <functional>
@@ -11,7 +11,8 @@
 #include <unordered_map>
 #include <vector>
 
-class EpollEventLoop : public EventLoop {
+class EpollEventLoop : public EventLoop
+{
 public:
     EpollEventLoop();
     ~EpollEventLoop() override;
@@ -25,10 +26,10 @@ public:
     void removeFd(int fd) override;
 
     TimerId addTimer(uint64_t ms, bool repeat, TimerCb cb) override;
-    void    removeTimer(TimerId id) override;
-    void    restartTimer(TimerId id) override;
+    void removeTimer(TimerId id) override;
+    void restartTimer(TimerId id) override;
 
-    void addFileWatch(const std::string& path, WatchCb cb) override;
+    void addFileWatch(const std::string &path, WatchCb cb) override;
     void removeFileWatch() override;
 
 private:
@@ -42,27 +43,29 @@ private:
     // Outer epoll: holds the wakeup eventfd, the timerfd, the
     // inotify fd, and the FdPoller's epoll fd as a sub-source.
     // Per-fd watches go through fdPoller_.
-    int epollFd_ = -1;
-    int wakeupFd_ = -1;   // eventfd
-    int timerFd_  = -1;   // timerfd_create(CLOCK_MONOTONIC)
+    int epollFd_   = -1;
+    int wakeupFd_  = -1; // eventfd
+    int timerFd_   = -1; // timerfd_create(CLOCK_MONOTONIC)
     int inotifyFd_ = -1;
-    int inotifyWd_ = -1;  // watch descriptor for config dir
+    int inotifyWd_ = -1;     // watch descriptor for config dir
     std::string inotifyDir_; // dir we're currently watching, "" if none
 
     std::unique_ptr<FdPollerEpoll> fdPoller_;
-    int innerPollerFd_ = -1;  // cached fdPoller_->nativeHandle()
+    int innerPollerFd_ = -1; // cached fdPoller_->nativeHandle()
 
     bool running_ = false;
 
-    struct Timer {
+    struct Timer
+    {
         TimerId id;
         uint64_t ms;
         bool repeat;
         TimerCb cb;
-        uint64_t nextFireNs;  // monotonic nanoseconds
+        uint64_t nextFireNs; // monotonic nanoseconds
 
-        bool operator>(const Timer& o) const { return nextFireNs > o.nextFireNs; }
+        bool operator>(const Timer &o) const { return nextFireNs > o.nextFireNs; }
     };
+
     // Min-heap by nextFireNs
     std::priority_queue<Timer, std::vector<Timer>, std::greater<Timer>> timers_;
     TimerId nextTimerId_ = 1;
@@ -72,7 +75,12 @@ private:
     // they share a parent directory; addFileWatch on a file in a
     // different parent than the existing watches drops the existing set
     // (previous behavior was the same — see EventLoop.h).
-    struct WatchEntry { std::string name; WatchCb cb; };
+    struct WatchEntry
+    {
+        std::string name;
+        WatchCb cb;
+    };
+
     std::vector<WatchEntry> fileWatches_;
 
     static uint64_t nowNs();

@@ -1,5 +1,5 @@
-#include <doctest/doctest.h>
 #include "Terminal.h"
+#include <doctest/doctest.h>
 
 // Spec tests for Terminal::isCellCoveredByPopup, the helper the renderer uses
 // to decide whether the main pane's cursor should be hidden. A popup that does
@@ -8,10 +8,12 @@
 
 // Helper: create a Terminal with popup children at given cell rects.
 // We use createPopup with dummy PlatformCallbacks (headless, no PTY).
-struct TestTerminalWithPopups {
+struct TestTerminalWithPopups
+{
     std::unique_ptr<Terminal> term;
 
-    TestTerminalWithPopups() {
+    TestTerminalWithPopups()
+    {
         PlatformCallbacks pcbs;
         TerminalCallbacks cbs;
         term = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
@@ -21,10 +23,15 @@ struct TestTerminalWithPopups {
         term->resize(80, 24);
     }
 
-    void addPopupRect(int x, int y, int w, int h) {
+    void addPopupRect(int x, int y, int w, int h)
+    {
         PlatformCallbacks pcbs;
         term->createPopup("popup_" + std::to_string(x) + "_" + std::to_string(y),
-                          x, y, w, h, std::move(pcbs));
+                          x,
+                          y,
+                          w,
+                          h,
+                          std::move(pcbs));
     }
 };
 
@@ -39,18 +46,18 @@ TEST_CASE("Terminal::isCellCoveredByPopup: no popups → never covered")
 TEST_CASE("Terminal::isCellCoveredByPopup: cell inside popup rect")
 {
     TestTerminalWithPopups tp;
-    tp.addPopupRect(10, 5, 20, 8);  // x=[10,30), y=[5,13)
+    tp.addPopupRect(10, 5, 20, 8); // x=[10,30), y=[5,13)
 
     // Interior points.
-    CHECK(tp.term->isCellCoveredByPopup(10, 5));      // top-left inclusive
-    CHECK(tp.term->isCellCoveredByPopup(20, 9));      // center
-    CHECK(tp.term->isCellCoveredByPopup(29, 12));     // bottom-right inclusive (exclusive bounds)
+    CHECK(tp.term->isCellCoveredByPopup(10, 5));  // top-left inclusive
+    CHECK(tp.term->isCellCoveredByPopup(20, 9));  // center
+    CHECK(tp.term->isCellCoveredByPopup(29, 12)); // bottom-right inclusive (exclusive bounds)
 }
 
 TEST_CASE("Terminal::isCellCoveredByPopup: cells outside popup rect")
 {
     TestTerminalWithPopups tp;
-    tp.addPopupRect(10, 5, 20, 8);  // x=[10,30), y=[5,13)
+    tp.addPopupRect(10, 5, 20, 8); // x=[10,30), y=[5,13)
 
     // Above.
     CHECK_FALSE(tp.term->isCellCoveredByPopup(15, 4));
@@ -71,8 +78,8 @@ TEST_CASE("Terminal::isCellCoveredByPopup: multiple popups — covered by any")
     tp.addPopupRect(0, 0, 10, 5);    // top-left box
     tp.addPopupRect(40, 20, 15, 10); // bottom-right box
 
-    CHECK(tp.term->isCellCoveredByPopup(5, 2));        // inside first
-    CHECK(tp.term->isCellCoveredByPopup(50, 25));      // inside second
+    CHECK(tp.term->isCellCoveredByPopup(5, 2));         // inside first
+    CHECK(tp.term->isCellCoveredByPopup(50, 25));       // inside second
     CHECK_FALSE(tp.term->isCellCoveredByPopup(20, 10)); // in the gap between them
     CHECK_FALSE(tp.term->isCellCoveredByPopup(10, 0));  // exactly on first box's right edge (exclusive)
 }
@@ -80,7 +87,7 @@ TEST_CASE("Terminal::isCellCoveredByPopup: multiple popups — covered by any")
 TEST_CASE("Terminal::isCellCoveredByPopup: rect edges are half-open [x, x+w)")
 {
     TestTerminalWithPopups tp;
-    tp.addPopupRect(5, 5, 3, 3);  // x=[5,8), y=[5,8)
+    tp.addPopupRect(5, 5, 3, 3); // x=[5,8), y=[5,8)
 
     CHECK(tp.term->isCellCoveredByPopup(5, 5));       // inclusive corner
     CHECK(tp.term->isCellCoveredByPopup(7, 7));       // last inclusive cell

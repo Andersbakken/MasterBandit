@@ -1,5 +1,5 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 TEST_CASE("OSC 0 sets window title")
 {
@@ -46,10 +46,10 @@ TEST_CASE("CSI 22t pushes title, CSI 23t pops and restores")
     TestTerminal t;
     t.osc("0;shell");
     CHECK(t.capturedTitle == "shell");
-    t.csi("22t");              // push "shell"
+    t.csi("22t"); // push "shell"
     t.osc("0;vim foo.txt");
     CHECK(t.capturedTitle == "vim foo.txt");
-    t.csi("23t");              // pop → "shell"
+    t.csi("23t"); // pop → "shell"
     CHECK(t.capturedTitle == "shell");
 }
 
@@ -85,14 +85,14 @@ TEST_CASE("Nested push/pop restores correctly")
 {
     TestTerminal t;
     t.osc("0;level0");
-    t.csi("22t");              // push level0
+    t.csi("22t"); // push level0
     t.osc("0;level1");
-    t.csi("22t");              // push level1
+    t.csi("22t"); // push level1
     t.osc("0;level2");
     CHECK(t.capturedTitle == "level2");
-    t.csi("23t");              // pop → level1
+    t.csi("23t"); // pop → level1
     CHECK(t.capturedTitle == "level1");
-    t.csi("23t");              // pop → level0
+    t.csi("23t"); // pop → level0
     CHECK(t.capturedTitle == "level0");
 }
 
@@ -100,14 +100,17 @@ TEST_CASE("Title stack caps at 10 entries")
 {
     TestTerminal t;
     t.osc("0;base");
-    for (int i = 0; i < 20; ++i)
+    for (int i = 0; i < 20; ++i) {
         t.csi("22t");
+    }
     // Should not have grown beyond 10; pop all and verify we get back to base
     int pops = 0;
     while (pops < 20) {
         t.csi("23t");
         ++pops;
-        if (t.capturedTitle.empty()) break;
+        if (t.capturedTitle.empty()) {
+            break;
+        }
     }
     // Should have popped at most 10 times before emptying
     CHECK(pops <= 10);
@@ -154,11 +157,11 @@ TEST_CASE("Icon push/pop is independent of title stack")
     TestTerminal t;
     t.osc("2;title-a");
     t.osc("1;icon-a");
-    t.csi("22;1t");           // push icon only
+    t.csi("22;1t"); // push icon only
     t.osc("1;icon-b");
     CHECK(t.capturedTitle == "title-a");
     CHECK(t.capturedIcon == "icon-b");
-    t.csi("23;1t");           // pop icon only
+    t.csi("23;1t"); // pop icon only
     CHECK(t.capturedTitle == "title-a");
     CHECK(t.capturedIcon == "icon-a");
 }
@@ -168,12 +171,12 @@ TEST_CASE("CSI 22t / 23t with no Ps pushes and pops both stacks")
     TestTerminal t;
     t.osc("2;title-a");
     t.osc("1;icon-a");
-    t.csi("22t");             // push both
+    t.csi("22t"); // push both
     t.osc("2;title-b");
     t.osc("1;icon-b");
     CHECK(t.capturedTitle == "title-b");
     CHECK(t.capturedIcon == "icon-b");
-    t.csi("23t");             // pop both
+    t.csi("23t"); // pop both
     CHECK(t.capturedTitle == "title-a");
     CHECK(t.capturedIcon == "icon-a");
 }
@@ -196,10 +199,10 @@ TEST_CASE("CSI 22;2t pushes only title, leaves icon untouched")
     TestTerminal t;
     t.osc("2;title-a");
     t.osc("1;icon-a");
-    t.csi("22;2t");           // push title only
+    t.csi("22;2t"); // push title only
     t.osc("2;title-b");
     t.osc("1;icon-b");
-    t.csi("23;2t");           // pop title only
+    t.csi("23;2t"); // pop title only
     CHECK(t.capturedTitle == "title-a");
     CHECK(t.capturedIcon == "icon-b");
 }
@@ -240,16 +243,16 @@ TEST_CASE("OSC 8 sets hyperlink on cells")
     t.osc("8;;");
 
     // Cells 0-4 should have hyperlink extras
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     CHECK(ex->hyperlinkId != 0);
 
-    const std::string* uri = t.term.hyperlinkURI(ex->hyperlinkId);
+    const std::string *uri = t.term.hyperlinkURI(ex->hyperlinkId);
     REQUIRE(uri != nullptr);
     CHECK(*uri == "https://example.com");
 
     // Cell 5 should not have a hyperlink
-    const CellExtra* ex5 = t.term.grid().getExtra(5, 0);
+    const CellExtra *ex5 = t.term.grid().getExtra(5, 0);
     CHECK((ex5 == nullptr || ex5->hyperlinkId == 0));
 }
 
@@ -261,11 +264,11 @@ TEST_CASE("OSC 8 clears active hyperlink")
     t.osc("8;;");
     t.feed("B");
 
-    const CellExtra* exA = t.term.grid().getExtra(0, 0);
+    const CellExtra *exA = t.term.grid().getExtra(0, 0);
     REQUIRE(exA != nullptr);
     CHECK(exA->hyperlinkId != 0);
 
-    const CellExtra* exB = t.term.grid().getExtra(1, 0);
+    const CellExtra *exB = t.term.grid().getExtra(1, 0);
     CHECK((exB == nullptr || exB->hyperlinkId == 0));
 }
 
@@ -280,8 +283,8 @@ TEST_CASE("OSC 8 with id= reuses same hyperlink entry")
     t.feed("B");
     t.osc("8;;");
 
-    const CellExtra* exA = t.term.grid().getExtra(0, 0);
-    const CellExtra* exB = t.term.grid().getExtra(2, 0);
+    const CellExtra *exA = t.term.grid().getExtra(0, 0);
+    const CellExtra *exB = t.term.grid().getExtra(2, 0);
     REQUIRE(exA != nullptr);
     REQUIRE(exB != nullptr);
     CHECK(exA->hyperlinkId == exB->hyperlinkId);
@@ -295,26 +298,26 @@ TEST_CASE("OSC 8 linkAt: hyperlink URI resolved from cell extra")
     t.osc("8;;");
     t.feed(" plain");
 
-    const auto& doc = t.term.document();
+    const auto &doc = t.term.document();
     // Row 0 is the only row, get its stable line ID
     uint64_t lineId = doc.lineIdForAbs(doc.historySize());
     (void)lineId;
 
     // Cell 0 (inside link) should resolve to the URL
-    const CellExtra* ex0 = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex0 = t.term.grid().getExtra(0, 0);
     REQUIRE(ex0 != nullptr);
     REQUIRE(ex0->hyperlinkId != 0);
-    const std::string* uri0 = t.term.hyperlinkURI(ex0->hyperlinkId);
+    const std::string *uri0 = t.term.hyperlinkURI(ex0->hyperlinkId);
     REQUIRE(uri0 != nullptr);
     CHECK(*uri0 == "https://example.com");
 
     // Cell 3 (last char of "link") should also have it
-    const CellExtra* ex3 = t.term.grid().getExtra(3, 0);
+    const CellExtra *ex3 = t.term.grid().getExtra(3, 0);
     REQUIRE(ex3 != nullptr);
     CHECK(ex3->hyperlinkId != 0);
 
     // Cell 5 (inside " plain") should not
-    const CellExtra* ex5 = t.term.grid().getExtra(5, 0);
+    const CellExtra *ex5 = t.term.grid().getExtra(5, 0);
     CHECK((ex5 == nullptr || ex5->hyperlinkId == 0));
 }
 
@@ -330,14 +333,14 @@ TEST_CASE("OSC 8 getLinksFromRows: multiple links on same row")
     t.osc("8;;");
 
     // Verify two distinct hyperlinks exist
-    const CellExtra* exA = t.term.grid().getExtra(0, 0);
-    const CellExtra* exB = t.term.grid().getExtra(3, 0);
+    const CellExtra *exA = t.term.grid().getExtra(0, 0);
+    const CellExtra *exB = t.term.grid().getExtra(3, 0);
     REQUIRE(exA != nullptr);
     REQUIRE(exB != nullptr);
     CHECK(exA->hyperlinkId != exB->hyperlinkId);
 
-    const std::string* uriA = t.term.hyperlinkURI(exA->hyperlinkId);
-    const std::string* uriB = t.term.hyperlinkURI(exB->hyperlinkId);
+    const std::string *uriA = t.term.hyperlinkURI(exA->hyperlinkId);
+    const std::string *uriB = t.term.hyperlinkURI(exB->hyperlinkId);
     REQUIRE(uriA != nullptr);
     REQUIRE(uriB != nullptr);
     CHECK(*uriA == "https://a.com");
@@ -345,7 +348,7 @@ TEST_CASE("OSC 8 getLinksFromRows: multiple links on same row")
 
     // Link A spans cols 0-1, link B spans cols 3-4
     // Verify gap at col 2 has no link
-    const CellExtra* exGap = t.term.grid().getExtra(2, 0);
+    const CellExtra *exGap = t.term.grid().getExtra(2, 0);
     CHECK((exGap == nullptr || exGap->hyperlinkId == 0));
 }
 
@@ -357,12 +360,12 @@ TEST_CASE("OSC 8 hyperlink spans multiple rows")
     t.osc("8;;");
 
     // Row 0 cells should have the link
-    const CellExtra* ex0 = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex0 = t.term.grid().getExtra(0, 0);
     REQUIRE(ex0 != nullptr);
     CHECK(ex0->hyperlinkId != 0);
 
     // Row 1 (wrapped portion) should also have the link
-    const CellExtra* ex1 = t.term.grid().getExtra(0, 1);
+    const CellExtra *ex1 = t.term.grid().getExtra(0, 1);
     REQUIRE(ex1 != nullptr);
     CHECK(ex1->hyperlinkId != 0);
     CHECK(ex0->hyperlinkId == ex1->hyperlinkId);
@@ -420,7 +423,7 @@ TEST_CASE("OSC 99 chunked: title then body with same id")
 {
     TestTerminal t;
     t.osc("99;i=7:d=0:p=title;The Title");
-    CHECK(t.capturedNotifyTitle.empty());          // buffered
+    CHECK(t.capturedNotifyTitle.empty()); // buffered
     t.osc("99;i=7:d=1:p=body;The Body");
     CHECK(t.capturedNotifyTitle == "The Title");
     CHECK(t.capturedNotifyBody == "The Body");
@@ -497,7 +500,7 @@ TEST_CASE("OSC 99 urgency resets to default after dispatch")
     TestTerminal t;
     t.osc("99;u=2;critical one");
     CHECK(t.capturedNotifyUrgency == 2);
-    t.capturedNotifyUrgency = 1;  // observer reset; emulator state should also have reset
+    t.capturedNotifyUrgency = 1; // observer reset; emulator state should also have reset
     t.osc("99;;normal one");
     CHECK(t.capturedNotifyUrgency == 1);
 }
@@ -508,7 +511,7 @@ TEST_CASE("OSC 99 urgency carries across chunks")
 {
     TestTerminal t;
     t.osc("99;i=7:d=0:u=2:p=title;Title");
-    CHECK(t.capturedNotifyUrgency == 1);  // not fired yet, observer untouched
+    CHECK(t.capturedNotifyUrgency == 1); // not fired yet, observer untouched
     t.osc("99;i=7:d=1:p=body;Body");
     CHECK(t.capturedNotifyUrgency == 2);
 }
@@ -574,7 +577,7 @@ TEST_CASE("OSC 99 c=1 carries across chunks")
 {
     TestTerminal t;
     t.osc("99;i=7:d=0:c=1:p=title;Title");
-    CHECK(t.capturedNotifyCloseResponse == false);  // not fired yet
+    CHECK(t.capturedNotifyCloseResponse == false); // not fired yet
     t.osc("99;i=7:d=1:p=body;Body");
     CHECK(t.capturedNotifyCloseResponse == true);
 }
@@ -701,7 +704,7 @@ TEST_CASE("OSC 99 a= carries across chunks")
 {
     TestTerminal t;
     t.osc("99;i=7:d=0:a=report,-focus:p=title;Title");
-    CHECK(t.capturedNotifyActionFocus == true);  // not fired yet
+    CHECK(t.capturedNotifyActionFocus == true); // not fired yet
     t.osc("99;i=7:d=1:p=body;Body");
     CHECK(t.capturedNotifyActionFocus == false);
     CHECK(t.capturedNotifyActionReport == true);
@@ -926,7 +929,7 @@ TEST_CASE("OSC 22 '>' pushes onto stack")
 TEST_CASE("OSC 22 '<' pops; popping empty stack is a no-op")
 {
     TestTerminal t;
-    t.osc("22;<");  // empty
+    t.osc("22;<"); // empty
     CHECK(t.term.currentPointerShape().empty());
     CHECK(t.pointerShapeCallCount == 0);
 }
@@ -992,7 +995,7 @@ TEST_CASE("OSC 22 query does not mutate state")
     int before = t.pointerShapeCallCount;
     t.osc("22;?text");
     CHECK(t.term.currentPointerShape() == "pointer");
-    CHECK(t.pointerShapeCallCount == before);  // no callback for queries
+    CHECK(t.pointerShapeCallCount == before); // no callback for queries
 }
 
 TEST_CASE("OSC 22 push beyond stack limit drops oldest")
@@ -1004,21 +1007,23 @@ TEST_CASE("OSC 22 push beyond stack limit drops oldest")
     }
     CHECK(t.term.currentPointerShape() == "shape16");
     // Pop 15 times; we should still see shape1 (shape0 was dropped).
-    for (int i = 0; i < 15; ++i) t.osc("22;<");
+    for (int i = 0; i < 15; ++i) {
+        t.osc("22;<");
+    }
     CHECK(t.term.currentPointerShape() == "shape1");
 }
 
 TEST_CASE("OSC 22 main and alt screens have separate stacks")
 {
     TestTerminal t;
-    t.osc("22;pointer");                // main stack: [pointer]
+    t.osc("22;pointer"); // main stack: [pointer]
     CHECK(t.term.currentPointerShape() == "pointer");
-    t.csi("?1049h");                    // enter alt screen
+    t.csi("?1049h"); // enter alt screen
     CHECK(t.term.currentPointerShape().empty());
-    CHECK(t.capturedPointerShape.empty());  // toggle fires callback with new top
-    t.osc("22;text");                   // alt stack: [text]
+    CHECK(t.capturedPointerShape.empty()); // toggle fires callback with new top
+    t.osc("22;text");                      // alt stack: [text]
     CHECK(t.term.currentPointerShape() == "text");
-    t.csi("?1049l");                    // back to main
+    t.csi("?1049l"); // back to main
     CHECK(t.term.currentPointerShape() == "pointer");
     CHECK(t.capturedPointerShape == "pointer");
 }
@@ -1029,9 +1034,9 @@ TEST_CASE("OSC 22 RIS clears both stacks")
     t.osc("22;pointer");
     t.csi("?1049h");
     t.osc("22;text");
-    t.esc("c");                         // RIS (also exits alt screen)
+    t.esc("c"); // RIS (also exits alt screen)
     CHECK(t.term.currentPointerShape().empty());
-    t.csi("?1049h");                    // alt again
+    t.csi("?1049h"); // alt again
     CHECK(t.term.currentPointerShape().empty());
 }
 
@@ -1041,7 +1046,7 @@ TEST_CASE("isKnownPointerShape recognises CSS and X11 names")
     CHECK(TE::isKnownPointerShape("pointer"));
     CHECK(TE::isKnownPointerShape("text"));
     CHECK(TE::isKnownPointerShape("nesw-resize"));
-    CHECK(TE::isKnownPointerShape("hand2"));        // X11 alias
+    CHECK(TE::isKnownPointerShape("hand2")); // X11 alias
     CHECK(TE::isKnownPointerShape("sb_h_double_arrow"));
     CHECK_FALSE(TE::isKnownPointerShape("not-a-cursor-name"));
     CHECK_FALSE(TE::isKnownPointerShape(""));
@@ -1052,7 +1057,7 @@ TEST_CASE("isKnownPointerShape recognises CSS and X11 names")
 TEST_CASE("OSC 52 c;<base64> writes to clipboard")
 {
     TestTerminal t;
-    t.osc("52;c;aGVsbG8=");          // base64("hello")
+    t.osc("52;c;aGVsbG8="); // base64("hello")
     CHECK(t.capturedClipboard == "hello");
 }
 
@@ -1076,7 +1081,7 @@ TEST_CASE("OSC 52 with empty data clears the clipboard")
 TEST_CASE("OSC 52 round-trip: write then query returns same content")
 {
     TestTerminal t;
-    t.osc("52;c;dGVzdGluZw==");      // base64("testing")
+    t.osc("52;c;dGVzdGluZw=="); // base64("testing")
     t.clipboardContent = t.capturedClipboard;
     t.clearOutput();
     t.osc("52;c;?");
@@ -1086,8 +1091,8 @@ TEST_CASE("OSC 52 round-trip: write then query returns same content")
 TEST_CASE("OSC 52 p;<base64> routes to primary, leaves clipboard alone")
 {
     TestTerminal t;
-    t.osc("52;p;aGVsbG8=");          // base64("hello")
-    CHECK(t.capturedPrimary   == "hello");
+    t.osc("52;p;aGVsbG8="); // base64("hello")
+    CHECK(t.capturedPrimary == "hello");
     CHECK(t.capturedClipboard == "");
 }
 
@@ -1095,7 +1100,7 @@ TEST_CASE("OSC 52 s;<base64> aliases primary (X11 selection convention)")
 {
     TestTerminal t;
     t.osc("52;s;aGVsbG8=");
-    CHECK(t.capturedPrimary   == "hello");
+    CHECK(t.capturedPrimary == "hello");
     CHECK(t.capturedClipboard == "");
 }
 
@@ -1104,20 +1109,20 @@ TEST_CASE("OSC 52 pc;<base64> sets both primary and clipboard")
     TestTerminal t;
     t.osc("52;pc;aGVsbG8=");
     CHECK(t.capturedClipboard == "hello");
-    CHECK(t.capturedPrimary   == "hello");
+    CHECK(t.capturedPrimary == "hello");
 }
 
 TEST_CASE("OSC 52 with no recognized destination defaults to clipboard")
 {
     TestTerminal t;
-    t.osc("52;q;aGVsbG8=");          // q = secondary, ignored → fall back
+    t.osc("52;q;aGVsbG8="); // q = secondary, ignored → fall back
     CHECK(t.capturedClipboard == "hello");
-    CHECK(t.capturedPrimary   == "");
+    CHECK(t.capturedPrimary == "");
 
     TestTerminal t2;
-    t2.osc("52;;aGVsbG8=");          // empty prefix
+    t2.osc("52;;aGVsbG8="); // empty prefix
     CHECK(t2.capturedClipboard == "hello");
-    CHECK(t2.capturedPrimary   == "");
+    CHECK(t2.capturedPrimary == "");
 }
 
 TEST_CASE("OSC 52 p;? queries primary and echoes destination in response")
@@ -1192,7 +1197,7 @@ TEST_CASE("XTGETTCAP returns 1+r for known capability (TN)")
     t.clearOutput();
     // Query "TN" (terminal name) — hex-encoded: "544E"
     t.dcs("+q544E");
-    const std::string& out = t.output();
+    const std::string &out = t.output();
     REQUIRE(out.size() >= 9);
     CHECK(out.substr(0, 5) == "\x1bP1+r");
     CHECK(out.substr(5, 4) == "544E");
@@ -1205,7 +1210,7 @@ TEST_CASE("XTGETTCAP returns 0+r for unknown capability")
     t.clearOutput();
     // "zzzz" — hex "7A7A7A7A"
     t.dcs("+q7A7A7A7A");
-    const std::string& out = t.output();
+    const std::string &out = t.output();
     REQUIRE(out.size() >= 7);
     CHECK(out.substr(0, 5) == "\x1bP0+r");
     CHECK(out.substr(out.size() - 2) == "\x1b\\");
@@ -1216,7 +1221,7 @@ TEST_CASE("XTGETTCAP handles multiple capabilities separated by ;")
     TestTerminal t;
     t.clearOutput();
     t.dcs("+q544E;7A7A7A7A");
-    const std::string& out = t.output();
+    const std::string &out = t.output();
     CHECK(out.find("\x1bP1+r") != std::string::npos);
     CHECK(out.find("\x1bP0+r") != std::string::npos);
 }

@@ -1,5 +1,5 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 // CJK character U+4E2D (中), UTF-8: 0xE4 0xB8 0xAD — wcwidth == 2
 static const std::string CJK_ZHONG = "\xe4\xb8\xad";
@@ -62,7 +62,7 @@ TEST_CASE("emoji wide character occupies two columns")
 // U+26A0 WARNING SIGN (narrow by default), UTF-8: 0xE2 0x9A 0xA0
 static const std::string WARNING_SIGN = "\xe2\x9a\xa0";
 // VS16 (U+FE0F, emoji presentation selector), UTF-8: 0xEF 0xB8 0x8F
-static const std::string VS16 = "\xef\xb8\x8f";
+static const std::string VS16         = "\xef\xb8\x8f";
 
 TEST_CASE("VS16: warning sign without selector stays narrow")
 {
@@ -88,7 +88,7 @@ TEST_CASE("VS16: combiningCps stored in cell extra")
 {
     TestTerminal t;
     t.feed(WARNING_SIGN + VS16);
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     REQUIRE(ex->combiningCps.size() == 1);
     CHECK(ex->combiningCps[0] == U'\ufe0f');
@@ -130,10 +130,10 @@ TEST_CASE("ZWJ emoji sequence stored as single grapheme cluster")
     CHECK(t.attrs(0, 0).wide());
     CHECK(t.attrs(1, 0).wideSpacer());
     // ZWJ + U+1F33E stored as combining codepoints
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     REQUIRE(ex->combiningCps.size() == 2);
-    CHECK(ex->combiningCps[0] == U'\u200d');  // ZWJ
+    CHECK(ex->combiningCps[0] == U'\u200d');     // ZWJ
     CHECK(ex->combiningCps[1] == U'\U0001f33e'); // 🌾
     // Cursor after the single cluster
     CHECK(t.term.cursorX() == 2);
@@ -145,7 +145,7 @@ TEST_CASE("ZWJ family emoji stored as single grapheme cluster")
     t.feed(FAMILY);
     CHECK(t.wc(0, 0) == U'\U0001f468');
     CHECK(t.attrs(0, 0).wide());
-    const CellExtra* ex = t.term.grid().getExtra(0, 0);
+    const CellExtra *ex = t.term.grid().getExtra(0, 0);
     REQUIRE(ex != nullptr);
     // ZWJ + 👩 + ZWJ + 👧 = 4 continuation codepoints
     REQUIRE(ex->combiningCps.size() == 4);

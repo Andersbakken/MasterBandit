@@ -1,6 +1,6 @@
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
 #include "Utils.h"
+#include <doctest/doctest.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -10,19 +10,26 @@
 
 namespace {
 
-struct ITermTerminal : TestTerminal {
+struct ITermTerminal : TestTerminal
+{
     float cellW { 10.0f };
     float cellH { 20.0f };
 
     ITermTerminal(int cols = 80, int rows = 24)
         : TestTerminal(cols, rows)
     {
-        auto& cbs = term.callbacks();
-        cbs.cellPixelWidth  = [this]() -> float { return cellW; };
-        cbs.cellPixelHeight = [this]() -> float { return cellH; };
+        auto &cbs          = term.callbacks();
+        cbs.cellPixelWidth = [this]() -> float
+        {
+            return cellW;
+        };
+        cbs.cellPixelHeight = [this]() -> float
+        {
+            return cellH;
+        };
     }
 
-    const CellExtra* extra(int col, int row) const
+    const CellExtra *extra(int col, int row) const
     {
         return term.grid().getExtra(col, row);
     }
@@ -34,12 +41,16 @@ std::vector<uint8_t> encodePng(int w, int h, uint8_t r, uint8_t g, uint8_t b, ui
 {
     std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
     for (size_t i = 0; i < rgba.size(); i += 4) {
-        rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = a;
+        rgba[i]     = r;
+        rgba[i + 1] = g;
+        rgba[i + 2] = b;
+        rgba[i + 3] = a;
     }
     std::vector<uint8_t> out;
-    auto writer = [](void* ctx, void* data, int len) {
-        auto* v = static_cast<std::vector<uint8_t>*>(ctx);
-        auto* p = static_cast<uint8_t*>(data);
+    auto writer = [](void *ctx, void *data, int len)
+    {
+        auto *v = static_cast<std::vector<uint8_t> *>(ctx);
+        auto *p = static_cast<uint8_t *>(data);
         v->insert(v->end(), p, p + len);
     };
     int ok = stbi_write_png_to_func(writer, &out, w, h, 4, rgba.data(), w * 4);
@@ -48,9 +59,9 @@ std::vector<uint8_t> encodePng(int w, int h, uint8_t r, uint8_t g, uint8_t b, ui
 }
 
 // Build the full OSC 1337 payload: ESC ] 1337 ; File=<params>:<b64> BEL.
-std::string osc1337(const std::string& params, const std::vector<uint8_t>& pngBytes)
+std::string osc1337(const std::string &params, const std::vector<uint8_t> &pngBytes)
 {
-    std::string b64 = base64::encode(pngBytes.data(), pngBytes.size());
+    std::string b64  = base64::encode(pngBytes.data(), pngBytes.size());
     std::string body = "1337;File=" + params + ":" + b64;
     return "\x1b]" + body + "\x07";
 }
@@ -67,8 +78,8 @@ TEST_CASE("OSC 1337: inline PNG registers an image")
     t.feed(osc1337("inline=1", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    auto it = t.term.imageRegistry().begin();
-    const auto& img = *it->second;
+    auto it         = t.term.imageRegistry().begin();
+    const auto &img = *it->second;
     CHECK(img.pixelWidth == 10);
     CHECK(img.pixelHeight == 20);
     // 10 px / 10 px-per-cell = 1 col; 20 px / 20 px-per-cell = 1 row.
@@ -92,7 +103,7 @@ TEST_CASE("OSC 1337: image is placed in the grid at the cursor")
     // 20x40 px at 10x20 px/cell ⇒ 2 cols × 2 rows.
     // Placement marks the start column of each row (column 5) with imageId.
     for (int r = 0; r < 2; ++r) {
-        const CellExtra* ex = t.extra(5, 3 + r);
+        const CellExtra *ex = t.extra(5, 3 + r);
         REQUIRE(ex != nullptr);
         CHECK(ex->imageId == id);
         CHECK(ex->imageStartCol == 5u);
@@ -109,7 +120,7 @@ TEST_CASE("OSC 1337: sub-cell image pixel dimensions still take at least one cel
     t.feed(osc1337("inline=1", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 1);
     CHECK(img.cellHeight == 1);
 }
@@ -123,7 +134,7 @@ TEST_CASE("OSC 1337: non-cell-aligned pixel dimensions round up")
     t.feed(osc1337("inline=1", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 2);
     CHECK(img.cellHeight == 2);
 }
@@ -139,7 +150,7 @@ TEST_CASE("OSC 1337: successive images get distinct ids")
     t.feed(osc1337("inline=1", png));
 
     CHECK(t.term.imageRegistry().size() == 2);
-    auto it = t.term.imageRegistry().begin();
+    auto it    = t.term.imageRegistry().begin();
     uint32_t a = it->first;
     ++it;
     uint32_t b = it->first;
@@ -172,7 +183,7 @@ TEST_CASE("OSC 1337: missing File= prefix is ignored")
 {
     ITermTerminal t(40, 20);
     // Send a payload that doesn't start with "File=" — emulator must bail early.
-    std::string b64 = base64::encode(reinterpret_cast<const uint8_t*>("x"), 1);
+    std::string b64 = base64::encode(reinterpret_cast<const uint8_t *>("x"), 1);
     t.feed("\x1b]1337;NotFile=inline=1:" + b64 + "\x07");
 
     CHECK(t.term.imageRegistry().empty());
@@ -208,7 +219,7 @@ TEST_CASE("OSC 1337: non-image base64 payload is ignored")
 TEST_CASE("OSC 1337: cell size of 0 rejects the image")
 {
     ITermTerminal t(40, 20);
-    t.cellW = 0.0f;  // simulate missing cell metrics
+    t.cellW  = 0.0f; // simulate missing cell metrics
     auto png = encodePng(10, 20, 255, 0, 0);
 
     t.feed(osc1337("inline=1", png));
@@ -221,9 +232,9 @@ TEST_CASE("OSC 1337: missing cell-size callback rejects the image")
     ITermTerminal t(40, 20);
     // Clear the callbacks a base TestTerminal doesn't set either — emulator
     // must check for null and not crash.
-    t.term.callbacks().cellPixelWidth = nullptr;
+    t.term.callbacks().cellPixelWidth  = nullptr;
     t.term.callbacks().cellPixelHeight = nullptr;
-    auto png = encodePng(10, 20, 255, 0, 0);
+    auto png                           = encodePng(10, 20, 255, 0, 0);
 
     t.feed(osc1337("inline=1", png));
 
@@ -292,7 +303,7 @@ TEST_CASE("OSC 1337: width in cells overrides natural size")
     t.feed(osc1337("inline=1;width=5", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 5);
     CHECK(img.cellHeight == 3);
 }
@@ -306,7 +317,7 @@ TEST_CASE("OSC 1337: width in pixels maps via cellPixelWidth")
     t.feed(osc1337("inline=1;width=50px", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 5);
 }
 
@@ -319,7 +330,7 @@ TEST_CASE("OSC 1337: width in percent is relative to terminal columns")
     t.feed(osc1337("inline=1;width=50%", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 20);
 }
 
@@ -332,7 +343,7 @@ TEST_CASE("OSC 1337: width=auto falls back to natural size")
     t.feed(osc1337("inline=1;width=auto", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 3);
     CHECK(img.cellHeight == 1);
 }
@@ -347,7 +358,7 @@ TEST_CASE("OSC 1337: height-only spec derives width from aspect")
     t.feed(osc1337("inline=1;height=4", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellHeight == 4);
     CHECK(img.cellWidth == 8);
 }
@@ -363,7 +374,7 @@ TEST_CASE("OSC 1337: preserveAspectRatio=0 stretches to exact box")
     t.feed(osc1337("inline=1;width=10;height=10;preserveAspectRatio=0", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 10);
     CHECK(img.cellHeight == 10);
 }
@@ -378,7 +389,7 @@ TEST_CASE("OSC 1337: preserveAspectRatio=1 fits inside the requested box")
     t.feed(osc1337("inline=1;width=10;height=10;preserveAspectRatio=1", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 10);
     CHECK(img.cellHeight == 5);
 }
@@ -393,7 +404,7 @@ TEST_CASE("OSC 1337: preserveAspectRatio default is on")
     t.feed(osc1337("inline=1;width=10;height=10", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 10);
     CHECK(img.cellHeight == 5);
 }
@@ -408,7 +419,7 @@ TEST_CASE("OSC 1337: aspect-constrained fit respects the tighter dimension")
     t.feed(osc1337("inline=1;width=4;height=10", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 4);
     CHECK(img.cellHeight == 2);
 }
@@ -424,7 +435,7 @@ TEST_CASE("OSC 1337: malformed width falls back to natural size")
     t.feed(osc1337("inline=1;width=garbage", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
+    const auto &img = *t.term.imageRegistry().begin()->second;
     CHECK(img.cellWidth == 3);
     CHECK(img.cellHeight == 1);
 }
@@ -437,8 +448,8 @@ TEST_CASE("OSC 1337: negative width falls back to natural size")
     t.feed(osc1337("inline=1;width=-5", png));
 
     REQUIRE(t.term.imageRegistry().size() == 1);
-    const auto& img = *t.term.imageRegistry().begin()->second;
-    CHECK(img.cellWidth == 3);  // fell back to natural
+    const auto &img = *t.term.imageRegistry().begin()->second;
+    CHECK(img.cellWidth == 3); // fell back to natural
 }
 
 // ── Unknown params are ignored (size=, type=, etc.) ────────────────────────

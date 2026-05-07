@@ -21,17 +21,23 @@ class PlatformDawn;
 //
 // All timer (de)registration happens on the main thread. Only
 // scheduleAnimationAt() is safe to call from the render thread.
-class AnimationScheduler {
+class AnimationScheduler
+{
 public:
-    explicit AnimationScheduler(PlatformDawn* platform) : platform_(platform) {}
+    explicit AnimationScheduler(PlatformDawn *platform)
+        : platform_(platform)
+    {
+    }
+
     ~AnimationScheduler();
 
-    AnimationScheduler(const AnimationScheduler&) = delete;
-    AnimationScheduler& operator=(const AnimationScheduler&) = delete;
+    AnimationScheduler(const AnimationScheduler &)            = delete;
+    AnimationScheduler &operator=(const AnimationScheduler &) = delete;
 
     // Cursor blink
     void applyBlinkConfig(int rateMs, int fps);
     void resetBlink();
+
     float blinkOpacity() const { return blinkOpacity_; }
 
     // Animation wakeup — scheduleAnimationAt may be called from any thread.
@@ -43,19 +49,19 @@ public:
     void stopAllTimers();
 
 private:
-    PlatformDawn* platform_;
-    EventLoop* eventLoop() const;
+    PlatformDawn *platform_;
+    EventLoop *eventLoop() const;
 
     // Blink
     EventLoop::TimerId blinkTimer_ = 0;
-    int blinkRate_ = 800;
-    int blinkFps_ = 10;
-    int blinkStep_ = 0;
-    int blinkTotalSteps_ = 0;
-    float blinkOpacity_ = 1.0f;
+    int blinkRate_                 = 800;
+    int blinkFps_                  = 10;
+    int blinkStep_                 = 0;
+    int blinkTotalSteps_           = 0;
+    float blinkOpacity_            = 1.0f;
 
     // Animation wakeup
     EventLoop::TimerId animTimer_ = 0;
-    uint64_t animDueAt_ = 0;
+    uint64_t animDueAt_           = 0;
     std::atomic<uint64_t> pendingAnimDueAt_ { 0 };
 };

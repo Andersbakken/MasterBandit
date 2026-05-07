@@ -1,7 +1,7 @@
 #include "TerminalEmulator.h"
 #include "Utf8.h"
-#include <spdlog/spdlog.h>
 #include <cstdio>
+#include <spdlog/spdlog.h>
 
 // `isModifierKey` lives in InputTypes.h so InputController.cpp can
 // share it (the platform-side resetViewport/resetBlink calls have
@@ -23,7 +23,9 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
     // typing or a bare modifier press we want to ignore.
     if (!isModifierKey(event->key)) {
         resetViewport();
-        if (hasSelection()) clearSelection();
+        if (hasSelection()) {
+            clearSelection();
+        }
     }
 
     spdlog::debug("keyPressEvent: key=0x{:x} text='{}' ({} bytes) count={} mods=0x{:x} action={}",
@@ -48,47 +50,49 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
     }
 
     // Legacy encoding: drop release events
-    if (event->action == KeyAction_Release) return;
+    if (event->action == KeyAction_Release) {
+        return;
+    }
 
     std::string text = event->text;
     if (text.empty()) {
         switch (event->key) {
-        case Key_Return:
-        case Key_Enter:    text = "\r"; break;
-        case Key_Backspace: text = "\x7f"; break;
-        case Key_Tab:      text = "\t"; break;
-        case Key_Escape:   text = "\x1b"; break;
-        case Key_Delete:   text = "\x1b[3~"; break;
-        case Key_Left:     text = mState->cursorKeyMode ? "\x1bOD" : "\x1b[D"; break;
-        case Key_Right:    text = mState->cursorKeyMode ? "\x1bOC" : "\x1b[C"; break;
-        case Key_Up:       text = mState->cursorKeyMode ? "\x1bOA" : "\x1b[A"; break;
-        case Key_Down:     text = mState->cursorKeyMode ? "\x1bOB" : "\x1b[B"; break;
-        case Key_Home:     text = mState->cursorKeyMode ? "\x1bOH" : "\x1b[H"; break;
-        case Key_End:      text = mState->cursorKeyMode ? "\x1bOF" : "\x1b[F"; break;
-        case Key_PageUp:   text = "\x1b[5~"; break;
-        case Key_PageDown: text = "\x1b[6~"; break;
-        case Key_Insert:   text = "\x1b[2~"; break;
-        case Key_F1:       text = "\x1bOP"; break;
-        case Key_F2:       text = "\x1bOQ"; break;
-        case Key_F3:       text = "\x1bOR"; break;
-        case Key_F4:       text = "\x1bOS"; break;
-        case Key_F5:       text = "\x1b[15~"; break;
-        case Key_F6:       text = "\x1b[17~"; break;
-        case Key_F7:       text = "\x1b[18~"; break;
-        case Key_F8:       text = "\x1b[19~"; break;
-        case Key_F9:       text = "\x1b[20~"; break;
-        case Key_F10:      text = "\x1b[21~"; break;
-        case Key_F11:      text = "\x1b[23~"; break;
-        case Key_F12:      text = "\x1b[24~"; break;
-        default:
-            break;
+            case Key_Return:
+            case Key_Enter: text = "\r"; break;
+            case Key_Backspace: text = "\x7f"; break;
+            case Key_Tab: text = "\t"; break;
+            case Key_Escape: text = "\x1b"; break;
+            case Key_Delete: text = "\x1b[3~"; break;
+            case Key_Left: text = mState->cursorKeyMode ? "\x1bOD" : "\x1b[D"; break;
+            case Key_Right: text = mState->cursorKeyMode ? "\x1bOC" : "\x1b[C"; break;
+            case Key_Up: text = mState->cursorKeyMode ? "\x1bOA" : "\x1b[A"; break;
+            case Key_Down: text = mState->cursorKeyMode ? "\x1bOB" : "\x1b[B"; break;
+            case Key_Home: text = mState->cursorKeyMode ? "\x1bOH" : "\x1b[H"; break;
+            case Key_End: text = mState->cursorKeyMode ? "\x1bOF" : "\x1b[F"; break;
+            case Key_PageUp: text = "\x1b[5~"; break;
+            case Key_PageDown: text = "\x1b[6~"; break;
+            case Key_Insert: text = "\x1b[2~"; break;
+            case Key_F1: text = "\x1bOP"; break;
+            case Key_F2: text = "\x1bOQ"; break;
+            case Key_F3: text = "\x1bOR"; break;
+            case Key_F4: text = "\x1bOS"; break;
+            case Key_F5: text = "\x1b[15~"; break;
+            case Key_F6: text = "\x1b[17~"; break;
+            case Key_F7: text = "\x1b[18~"; break;
+            case Key_F8: text = "\x1b[19~"; break;
+            case Key_F9: text = "\x1b[20~"; break;
+            case Key_F10: text = "\x1b[21~"; break;
+            case Key_F11: text = "\x1b[23~"; break;
+            case Key_F12: text = "\x1b[24~"; break;
+            default:
+                break;
         }
     }
     if (text.empty()) {
         spdlog::debug("keyPressEvent: no text to send for key=0x{:x}", static_cast<int>(event->key));
     }
     if (!text.empty() && event->count) {
-        for (size_t i=0; i<event->count; ++i) {
+        for (size_t i = 0; i < event->count; ++i) {
             writeToOutput(text.c_str(), text.size());
         }
     }
@@ -98,8 +102,8 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
 
 void TerminalEmulator::kittyPushFlags(uint8_t flags)
 {
-    auto* stack = mUsingAltScreen ? mKittyStackAlt : mKittyStackMain;
-    auto& depth = mUsingAltScreen ? mKittyStackDepthAlt : mKittyStackDepthMain;
+    auto *stack = mUsingAltScreen ? mKittyStackAlt : mKittyStackMain;
+    auto &depth = mUsingAltScreen ? mKittyStackDepthAlt : mKittyStackDepthMain;
     if (depth < KITTY_STACK_MAX) {
         stack[depth++] = flags;
     }
@@ -108,8 +112,8 @@ void TerminalEmulator::kittyPushFlags(uint8_t flags)
 
 void TerminalEmulator::kittyPopFlags(int count)
 {
-    auto* stack = mUsingAltScreen ? mKittyStackAlt : mKittyStackMain;
-    auto& depth = mUsingAltScreen ? mKittyStackDepthAlt : mKittyStackDepthMain;
+    auto *stack = mUsingAltScreen ? mKittyStackAlt : mKittyStackMain;
+    auto &depth = mUsingAltScreen ? mKittyStackDepthAlt : mKittyStackDepthMain;
     for (int i = 0; i < count && depth > 0; i++) {
         depth--;
     }
@@ -119,10 +123,10 @@ void TerminalEmulator::kittyPopFlags(int count)
 void TerminalEmulator::kittySetFlags(uint8_t flags, int mode)
 {
     switch (mode) {
-    case 1: mKittyFlags = flags; break;         // replace
-    case 2: mKittyFlags |= flags; break;        // OR
-    case 3: mKittyFlags &= ~flags; break;       // AND NOT
-    default: mKittyFlags = flags; break;
+        case 1: mKittyFlags = flags; break;   // replace
+        case 2: mKittyFlags |= flags; break;  // OR
+        case 3: mKittyFlags &= ~flags; break; // AND NOT
+        default: mKittyFlags = flags; break;
     }
 }
 
@@ -138,80 +142,80 @@ void TerminalEmulator::kittyQueryFlags()
 static uint32_t kittyFunctionalCode(Key k)
 {
     switch (k) {
-    case Key_Escape:    return 27;
-    case Key_Return:
-    case Key_Enter:     return 13;
-    case Key_Tab:       return 9;
-    case Key_Backspace: return 127;
-    case Key_Insert:    return 57348;
-    case Key_Delete:    return 57349;
-    case Key_Left:      return 57350;
-    case Key_Right:     return 57351;
-    case Key_Up:        return 57352;
-    case Key_Down:      return 57353;
-    case Key_PageUp:    return 57354;
-    case Key_PageDown:  return 57355;
-    case Key_Home:      return 57356;
-    case Key_End:       return 57357;
-    case Key_CapsLock:  return 57358;
-    case Key_ScrollLock: return 57359;
-    case Key_NumLock:   return 57360;
-    case Key_Print:     return 57361;
-    case Key_Pause:     return 57362;
-    case Key_Menu:      return 57363;
-    case Key_F1:        return 57364;
-    case Key_F2:        return 57365;
-    case Key_F3:        return 57366;
-    case Key_F4:        return 57367;
-    case Key_F5:        return 57368;
-    case Key_F6:        return 57369;
-    case Key_F7:        return 57370;
-    case Key_F8:        return 57371;
-    case Key_F9:        return 57372;
-    case Key_F10:       return 57373;
-    case Key_F11:       return 57374;
-    case Key_F12:       return 57375;
-    case Key_F13:       return 57376;
-    case Key_F14:       return 57377;
-    case Key_F15:       return 57378;
-    case Key_F16:       return 57379;
-    case Key_F17:       return 57380;
-    case Key_F18:       return 57381;
-    case Key_F19:       return 57382;
-    case Key_F20:       return 57383;
-    case Key_F21:       return 57384;
-    case Key_F22:       return 57385;
-    case Key_F23:       return 57386;
-    case Key_F24:       return 57387;
-    case Key_F25:       return 57388;
-    case Key_KP_0:      return 57399;
-    case Key_KP_1:      return 57400;
-    case Key_KP_2:      return 57401;
-    case Key_KP_3:      return 57402;
-    case Key_KP_4:      return 57403;
-    case Key_KP_5:      return 57404;
-    case Key_KP_6:      return 57405;
-    case Key_KP_7:      return 57406;
-    case Key_KP_8:      return 57407;
-    case Key_KP_9:      return 57408;
-    case Key_KP_Decimal:  return 57409;
-    case Key_KP_Divide:   return 57410;
-    case Key_KP_Multiply: return 57411;
-    case Key_KP_Subtract: return 57412;
-    case Key_KP_Add:      return 57413;
-    case Key_KP_Enter:    return 57414;
-    case Key_KP_Equal:    return 57415;
-    case Key_Shift_L:   return 57441;
-    case Key_Control_L: return 57442;
-    case Key_Alt_L:     return 57443;
-    case Key_Super_L:   return 57444;
-    case Key_Hyper_L:   return 57445;
-    case Key_Shift_R:   return 57447;
-    case Key_Control_R: return 57448;
-    case Key_Alt_R:     return 57449;
-    case Key_Super_R:   return 57450;
-    case Key_Hyper_R:   return 57451;
-    default:            return 0;
+        case Key_Escape: return 27;
+        case Key_Return:
+        case Key_Enter: return 13;
+        case Key_Tab: return 9;
+        case Key_Backspace: return 127;
+        case Key_Insert: return 57348;
+        case Key_Delete: return 57349;
+        case Key_Left: return 57350;
+        case Key_Right: return 57351;
+        case Key_Up: return 57352;
+        case Key_Down: return 57353;
+        case Key_PageUp: return 57354;
+        case Key_PageDown: return 57355;
+        case Key_Home: return 57356;
+        case Key_End: return 57357;
+        case Key_CapsLock: return 57358;
+        case Key_ScrollLock: return 57359;
+        case Key_NumLock: return 57360;
+        case Key_Print: return 57361;
+        case Key_Pause: return 57362;
+        case Key_Menu: return 57363;
+        case Key_F1: return 57364;
+        case Key_F2: return 57365;
+        case Key_F3: return 57366;
+        case Key_F4: return 57367;
+        case Key_F5: return 57368;
+        case Key_F6: return 57369;
+        case Key_F7: return 57370;
+        case Key_F8: return 57371;
+        case Key_F9: return 57372;
+        case Key_F10: return 57373;
+        case Key_F11: return 57374;
+        case Key_F12: return 57375;
+        case Key_F13: return 57376;
+        case Key_F14: return 57377;
+        case Key_F15: return 57378;
+        case Key_F16: return 57379;
+        case Key_F17: return 57380;
+        case Key_F18: return 57381;
+        case Key_F19: return 57382;
+        case Key_F20: return 57383;
+        case Key_F21: return 57384;
+        case Key_F22: return 57385;
+        case Key_F23: return 57386;
+        case Key_F24: return 57387;
+        case Key_F25: return 57388;
+        case Key_KP_0: return 57399;
+        case Key_KP_1: return 57400;
+        case Key_KP_2: return 57401;
+        case Key_KP_3: return 57402;
+        case Key_KP_4: return 57403;
+        case Key_KP_5: return 57404;
+        case Key_KP_6: return 57405;
+        case Key_KP_7: return 57406;
+        case Key_KP_8: return 57407;
+        case Key_KP_9: return 57408;
+        case Key_KP_Decimal: return 57409;
+        case Key_KP_Divide: return 57410;
+        case Key_KP_Multiply: return 57411;
+        case Key_KP_Subtract: return 57412;
+        case Key_KP_Add: return 57413;
+        case Key_KP_Enter: return 57414;
+        case Key_KP_Equal: return 57415;
+        case Key_Shift_L: return 57441;
+        case Key_Control_L: return 57442;
+        case Key_Alt_L: return 57443;
+        case Key_Super_L: return 57444;
+        case Key_Hyper_L: return 57445;
+        case Key_Shift_R: return 57447;
+        case Key_Control_R: return 57448;
+        case Key_Alt_R: return 57449;
+        case Key_Super_R: return 57450;
+        case Key_Hyper_R: return 57451;
+        default: return 0;
     }
 }
 
@@ -220,17 +224,17 @@ static uint32_t kittyFunctionalCode(Key k)
 static char kittyLegacyTrailer(Key k)
 {
     switch (k) {
-    case Key_Up:    return 'A';
-    case Key_Down:  return 'B';
-    case Key_Right: return 'C';
-    case Key_Left:  return 'D';
-    case Key_Home:  return 'H';
-    case Key_End:   return 'F';
-    case Key_F1:    return 'P';
-    case Key_F2:    return 'Q';
-    case Key_F3:    return 'R';
-    case Key_F4:    return 'S';
-    default:        return 0;
+        case Key_Up: return 'A';
+        case Key_Down: return 'B';
+        case Key_Right: return 'C';
+        case Key_Left: return 'D';
+        case Key_Home: return 'H';
+        case Key_End: return 'F';
+        case Key_F1: return 'P';
+        case Key_F2: return 'Q';
+        case Key_F3: return 'R';
+        case Key_F4: return 'S';
+        default: return 0;
     }
 }
 
@@ -238,47 +242,65 @@ static char kittyLegacyTrailer(Key k)
 static int kittyLegacyTildeNumber(Key k)
 {
     switch (k) {
-    case Key_Insert:   return 2;
-    case Key_Delete:   return 3;
-    case Key_PageUp:   return 5;
-    case Key_PageDown: return 6;
-    case Key_F5:       return 15;
-    case Key_F6:       return 17;
-    case Key_F7:       return 18;
-    case Key_F8:       return 19;
-    case Key_F9:       return 20;
-    case Key_F10:      return 21;
-    case Key_F11:      return 23;
-    case Key_F12:      return 24;
-    default:           return 0;
+        case Key_Insert: return 2;
+        case Key_Delete: return 3;
+        case Key_PageUp: return 5;
+        case Key_PageDown: return 6;
+        case Key_F5: return 15;
+        case Key_F6: return 17;
+        case Key_F7: return 18;
+        case Key_F8: return 19;
+        case Key_F9: return 20;
+        case Key_F10: return 21;
+        case Key_F11: return 23;
+        case Key_F12: return 24;
+        default: return 0;
     }
 }
 
-std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
+std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
 {
-    bool disambiguate = mKittyFlags & 0x01;
-    bool reportEvents = mKittyFlags & 0x02;
+    bool disambiguate    = mKittyFlags & 0x01;
+    bool reportEvents    = mKittyFlags & 0x02;
     bool reportAlternate = mKittyFlags & 0x04;
-    bool reportAllKeys = mKittyFlags & 0x08;
-    bool reportText = mKittyFlags & 0x10;
+    bool reportAllKeys   = mKittyFlags & 0x08;
+    bool reportText      = mKittyFlags & 0x10;
 
     // Drop release events unless REPORT_EVENT_TYPES is active.
     // Repeat events are always sent — without REPORT_EVENT_TYPES they are
     // encoded identically to press (no event type suffix).
-    if (ev.action == KeyAction_Release && !reportEvents) return {};
+    if (ev.action == KeyAction_Release && !reportEvents) {
+        return {};
+    }
 
     // Modifier-only keys: only report if REPORT_ALL_KEYS
-    if (isModifierKey(ev.key) && !reportAllKeys) return {};
+    if (isModifierKey(ev.key) && !reportAllKeys) {
+        return {};
+    }
 
     // Compute Kitty modifier wire value
     uint32_t kittyMods = 0;
-    if (ev.modifiers & ShiftModifier)    kittyMods |= 1;
-    if (ev.modifiers & AltModifier)      kittyMods |= 2;
-    if (ev.modifiers & CtrlModifier)     kittyMods |= 4;
-    if (ev.modifiers & MetaModifier)     kittyMods |= 8;
-    if (ev.modifiers & HyperModifier)    kittyMods |= 16;
-    if (ev.modifiers & CapsLockModifier) kittyMods |= 64;
-    if (ev.modifiers & NumLockModifier)  kittyMods |= 128;
+    if (ev.modifiers & ShiftModifier) {
+        kittyMods |= 1;
+    }
+    if (ev.modifiers & AltModifier) {
+        kittyMods |= 2;
+    }
+    if (ev.modifiers & CtrlModifier) {
+        kittyMods |= 4;
+    }
+    if (ev.modifiers & MetaModifier) {
+        kittyMods |= 8;
+    }
+    if (ev.modifiers & HyperModifier) {
+        kittyMods |= 16;
+    }
+    if (ev.modifiers & CapsLockModifier) {
+        kittyMods |= 64;
+    }
+    if (ev.modifiers & NumLockModifier) {
+        kittyMods |= 128;
+    }
     uint32_t wireMods = kittyMods + 1; // protocol adds 1
 
     // When REPORT_EVENT_TYPES is not set, treat repeat as press — the event
@@ -289,7 +311,7 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
 
     // Determine key code
     uint32_t funcCode = kittyFunctionalCode(ev.key);
-    uint32_t keyCode = 0;
+    uint32_t keyCode  = 0;
 
     if (funcCode != 0) {
         keyCode = funcCode;
@@ -302,7 +324,7 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     } else if (!ev.text.empty()) {
         // Use codepoint from text
         int consumed = 0;
-        keyCode = utf8::decode(ev.text.c_str(), static_cast<int>(ev.text.size()), consumed);
+        keyCode      = utf8::decode(ev.text.c_str(), static_cast<int>(ev.text.size()), consumed);
     } else {
         return {}; // Can't encode
     }
@@ -318,7 +340,7 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
         if (funcCode != 0) {
             // Functional keys: check if they have a legacy form
             char legacyTrailer = kittyLegacyTrailer(ev.key);
-            int tildeNum = kittyLegacyTildeNumber(ev.key);
+            int tildeNum       = kittyLegacyTildeNumber(ev.key);
 
             if (legacyTrailer) {
                 // Arrow keys, F1-F4, Home, End: use legacy CSI form with mods
@@ -327,10 +349,10 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
                     if (legacyTrailer == 'P' || legacyTrailer == 'Q' ||
                         legacyTrailer == 'R' || legacyTrailer == 'S') {
                         // F1-F4: ESC O X
-                        char buf[4] = {'\x1b', 'O', legacyTrailer, '\0'};
+                        char buf[4] = { '\x1b', 'O', legacyTrailer, '\0' };
                         return std::string(buf, 3);
                     }
-                    char buf[4] = {'\x1b', '[', legacyTrailer, '\0'};
+                    char buf[4] = { '\x1b', '[', legacyTrailer, '\0' };
                     return std::string(buf, 3);
                 }
                 // With modifiers: CSI 1;mods X
@@ -362,12 +384,12 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
                 } else {
                     // No modifiers, press: use legacy text
                     switch (ev.key) {
-                    case Key_Escape:    return "\x1b";
-                    case Key_Return:
-                    case Key_Enter:     return "\r";
-                    case Key_Tab:       return "\t";
-                    case Key_Backspace: return "\x7f";
-                    default: useCsiU = true; break;
+                        case Key_Escape: return "\x1b";
+                        case Key_Return:
+                        case Key_Enter: return "\r";
+                        case Key_Tab: return "\t";
+                        case Key_Backspace: return "\x7f";
+                        default: useCsiU = true; break;
                     }
                 }
             }
@@ -384,7 +406,7 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     }
 
     if (!useCsiU && !reportAllKeys) {
-        return ev.text.empty() ? std::string{} : ev.text;
+        return ev.text.empty() ? std::string {} : ev.text;
     }
 
     // Build CSI u sequence
@@ -392,9 +414,9 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     char buf[128];
     int len;
 
-    bool needMods = (wireMods > 1 || (reportEvents && eventType != 1));
+    bool needMods  = (wireMods > 1 || (reportEvents && eventType != 1));
     bool needEvent = (reportEvents && eventType != 1);
-    bool needText = (reportText && !ev.text.empty());
+    bool needText  = (reportText && !ev.text.empty());
 
     // Build key portion: keycode or keycode:shifted_key
     char keyPart[32];
@@ -407,11 +429,13 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent& ev) const
     if (needText) {
         // Build text as codepoints
         std::string textCps;
-        const char* p = ev.text.c_str();
-        const char* end = p + ev.text.size();
+        const char *p   = ev.text.c_str();
+        const char *end = p + ev.text.size();
         while (p < end) {
             uint32_t cp = utf8::decodeAdvance(p, end);
-            if (!textCps.empty()) textCps += ':';
+            if (!textCps.empty()) {
+                textCps += ':';
+            }
             char cpBuf[12];
             snprintf(cpBuf, sizeof(cpBuf), "%u", cp);
             textCps += cpBuf;

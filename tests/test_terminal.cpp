@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-#include <doctest/doctest.h>
 #include "TestTerminal.h"
+#include <doctest/doctest.h>
 
 TEST_CASE("basic text output")
 {
@@ -46,8 +46,8 @@ TEST_CASE("erase in line - to end")
 {
     TestTerminal t;
     t.feed("Hello World");
-    t.csi("5G");   // move to col 5 (1-based) → col index 4
-    t.csi("0K");   // erase to end of line
+    t.csi("5G"); // move to col 5 (1-based) → col index 4
+    t.csi("0K"); // erase to end of line
     CHECK(t.rowText(0) == "Hell");
 }
 
@@ -102,7 +102,7 @@ TEST_CASE("LF does not reset column")
 TEST_CASE("deferred wrap: cursor stays at last column until next char")
 {
     TestTerminal t(5, 3); // 5 columns
-    t.feed("ABCDE"); // fill entire row
+    t.feed("ABCDE");      // fill entire row
     // Cursor should be at col 4 (last column) with wrap pending
     CHECK(t.term.cursorX() == 4);
     CHECK(t.term.cursorY() == 0);
@@ -117,7 +117,7 @@ TEST_CASE("deferred wrap: CR clears pending wrap")
 {
     TestTerminal t(5, 3);
     t.feed("ABCDE"); // wrap pending
-    t.feed("\r");     // CR clears wrap, cursor to col 0
+    t.feed("\r");    // CR clears wrap, cursor to col 0
     CHECK(t.term.cursorX() == 0);
     CHECK(t.term.cursorY() == 0);
 }
@@ -125,8 +125,8 @@ TEST_CASE("deferred wrap: CR clears pending wrap")
 TEST_CASE("deferred wrap: cursor movement clears pending wrap")
 {
     TestTerminal t(5, 3);
-    t.feed("ABCDE");  // wrap pending
-    t.csi("D");       // CUB 1 — should clear wrap, move left
+    t.feed("ABCDE");              // wrap pending
+    t.csi("D");                   // CUB 1 — should clear wrap, move left
     CHECK(t.term.cursorY() == 0); // no wrap happened
 }
 
@@ -224,8 +224,8 @@ TEST_CASE("insert mode: shifts existing text right")
 {
     TestTerminal t(10, 3);
     t.feed("ABCDE");
-    t.csi("1G");  // cursor to col 0
-    t.csi("4h");  // SM 4 — insert mode on
+    t.csi("1G"); // cursor to col 0
+    t.csi("4h"); // SM 4 — insert mode on
     t.feed("XY");
     CHECK(t.rowText(0) == "XYABCDE");
 }
@@ -234,7 +234,7 @@ TEST_CASE("insert mode off: overwrites (default)")
 {
     TestTerminal t(10, 3);
     t.feed("ABCDE");
-    t.csi("1G");  // cursor to col 0
+    t.csi("1G"); // cursor to col 0
     t.feed("XY");
     CHECK(t.rowText(0) == "XYCDE");
 }

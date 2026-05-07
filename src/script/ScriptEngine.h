@@ -6,10 +6,10 @@
 
 #include <quickjs.h>
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <atomic>
 #include <memory>
 #include <optional>
 #include <set>
@@ -32,29 +32,30 @@ using InstanceId = uint64_t;
 // Panes are identified by their LayoutTree node Uuid. The old integer paneId
 // (monotonic counter that bridged render/input/script surfaces) is gone —
 // nothing outside the Terminal itself uses it.
-using PaneId = Uuid;
+using PaneId     = Uuid;
 // Tabs are identified by their subtreeRoot Uuid — the direct child of
 // `Engine::layoutRootStack_` whose subtree IS the tab. Round-trips through
 // `mb.layout.activateTab(uuid)` / `closeTab(uuid)` / `node(uuid)`. There is
 // no separate TabBar-relative or positional identity; the visible "1 / 2"
 // numbering is render-time decoration only.
-using TabId = Uuid;
+using TabId      = Uuid;
 
 // OSC 133 command record as surfaced to scripts — shared between AppCallbacks
 // (for pane.commands / pane.selectedCommand queries) and
 // Engine::notifyCommandComplete (for the event payload). Kept at namespace
 // scope so forward declarations work.
-struct CommandInfo {
+struct CommandInfo
+{
     uint64_t id = 0;
     std::string cwd;
     std::optional<int> exitCode;
-    uint64_t startMs = 0;
-    uint64_t endMs = 0;
+    uint64_t startMs            = 0;
+    uint64_t endMs              = 0;
     // Stable logical-line IDs for lazy text extraction.
-    uint64_t promptStartLineId = 0;
+    uint64_t promptStartLineId  = 0;
     uint64_t commandStartLineId = 0;
-    uint64_t outputStartLineId = 0;
-    uint64_t outputEndLineId = 0;
+    uint64_t outputStartLineId  = 0;
+    uint64_t outputEndLineId    = 0;
     // Volatile abs rows at query time (for JS position properties).
     int promptStartAbsRow = -1, promptStartCol = -1;
     int commandStartAbsRow = -1, commandStartCol = -1;
@@ -62,7 +63,8 @@ struct CommandInfo {
     int outputEndAbsRow = -1, outputEndCol = -1;
 };
 
-struct AppCallbacks {
+struct AppCallbacks
+{
     // Request a render frame. The JS-side Terminal base class calls this
     // after inject / other mutators so changes become visible without
     // triple-dispatching through kind-specific callbacks.
@@ -84,37 +86,52 @@ struct AppCallbacks {
     // a concurrent TOML reload — both go through the same applyConfig
     // entry under the render-thread mutex; whichever lands later
     // overwrites the earlier one. Not persisted to disk.
-    std::function<std::string(const std::string& json)> applyConfigJson;
+    std::function<std::string(const std::string &json)> applyConfigJson;
     // Write to PTY master fd (shell stdin) — raw bytes, no bracketing.
-    std::function<void(PaneId, const std::string&)> writePaneToShell;
+    std::function<void(PaneId, const std::string &)> writePaneToShell;
     // Paste to PTY master fd — wraps in \x1b[200~/\x1b[201~ when the terminal
     // currently has DECSET 2004 active (bracketed paste mode). Use for
     // content the user is pasting from elsewhere.
-    std::function<void(PaneId, const std::string&)> pastePaneText;
+    std::function<void(PaneId, const std::string &)> pastePaneText;
     // Check if a PTY exists
     std::function<bool(PaneId)> paneHasPty;
     // Check if there is an active tab
     std::function<bool()> hasActiveTab;
     // Invoke an action by name
-    std::function<bool(const std::string&, const std::vector<std::string>&)> invokeAction;
+    std::function<bool(const std::string &, const std::vector<std::string> &)> invokeAction;
+
     // Query pane info
-    struct PaneInfo {
-        int cols; int rows; std::string title; std::string cwd;
-        bool hasPty; bool focused; std::string focusedPopupId; std::string foregroundProcess;
-        bool hasSelection = false;
-        uint64_t selectionStartLineId = 0; int selectionStartCol = 0;
-        uint64_t selectionEndLineId = 0;   int selectionEndCol = 0;
-        uint64_t cursorLineId = 0; int cursorCol = 0;
-        uint64_t oldestLineId = 0; uint64_t newestLineId = 0;
-        bool mouseInPane = false;
-        int mouseCellX = 0; int mouseCellY = 0;
-        int mousePixelX = 0; int mousePixelY = 0;
+    struct PaneInfo
+    {
+        int cols;
+        int rows;
+        std::string title;
+        std::string cwd;
+        bool hasPty;
+        bool focused;
+        std::string focusedPopupId;
+        std::string foregroundProcess;
+        bool hasSelection             = false;
+        uint64_t selectionStartLineId = 0;
+        int selectionStartCol         = 0;
+        uint64_t selectionEndLineId   = 0;
+        int selectionEndCol           = 0;
+        uint64_t cursorLineId         = 0;
+        int cursorCol                 = 0;
+        uint64_t oldestLineId         = 0;
+        uint64_t newestLineId         = 0;
+        bool mouseInPane              = false;
+        int mouseCellX                = 0;
+        int mouseCellY                = 0;
+        int mousePixelX               = 0;
+        int mousePixelY               = 0;
         std::optional<uint64_t> selectedCommandId;
         // UUID string of this pane's Terminal node in the shared LayoutTree.
         // Empty when the Terminal isn't attached to a tree node (shouldn't
         // happen in production but stays empty safely).
         std::string nodeId;
     };
+
     std::function<PaneInfo(PaneId)> paneInfo;
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
     // entries (0 = all). Used by pane.commands / pane.selectedCommand JS properties.
@@ -127,17 +144,20 @@ struct AppCallbacks {
     // startCol/endCol bound which columns are included on the first/last row;
     // pass 0 and INT_MAX (or std::numeric_limits<int>::max()) for full rows.
     std::function<std::string(PaneId, uint64_t startRowId, int startCol,
-                              uint64_t endRowId, int endCol)> paneGetText;
+                              uint64_t endRowId, int endCol)>
+        paneGetText;
     // Returns the stable row ID for a screen row, or nullopt if out of range.
     // Resolve the logical-line id for a screen row position.
     std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneLineIdAt;
+
     // Query tab/pane structure. `id` IS the tab's subtreeRoot Uuid (same
     // value as `nodeId` would have been under the old int alias); the
     // separate `nodeId` string field is kept as a convenience for scripts
     // that need the UUID rendered without round-tripping through
     // Uuid::toString. `active` is true on the one tab whose subtreeRoot is
     // the root Stack's activeChild.
-    struct TabInfo {
+    struct TabInfo
+    {
         TabId id;
         bool active;
         std::vector<PaneId> panes;
@@ -146,6 +166,7 @@ struct AppCallbacks {
         // representation (transient state during destruction).
         std::string nodeId;
     };
+
     std::function<std::vector<TabInfo>()> tabs;
     // Close a tab by its subtreeRoot Uuid.
     std::function<void(Uuid)> closeTab;
@@ -162,7 +183,12 @@ struct AppCallbacks {
     // JS-facing primitives. Each maps 1:1 to a PlatformDawn method; they're
     // wired through AppCallbacks so ScriptLayoutBindings stays decoupled
     // from the platform layer.
-    struct NewPane { std::string nodeId; bool ok; };
+    struct NewPane
+    {
+        std::string nodeId;
+        bool ok;
+    };
+
     // Empty-tab variant. Returns the new tab's subtreeRoot Uuid (nil on
     // failure).
     std::function<Uuid()> createEmptyTab;
@@ -174,48 +200,69 @@ struct AppCallbacks {
     std::function<bool(Uuid)> removeNode;
     // Spawn a Terminal inside the Layout that owns `parentContainerNodeId`;
     // append the new Terminal node as the container's last child.
-    std::function<NewPane(const std::string& parentContainerNodeId,
-                          const std::string& cwd)> createTerminalInContainer;
+    std::function<NewPane(const std::string &parentContainerNodeId,
+                          const std::string &cwd)>
+        createTerminalInContainer;
     // Wrap `existingPaneNodeId` in a new Container and spawn a Terminal as
     // the sibling. `dir` is "horizontal" or "vertical". `cwd` is the
     // explicit caller-supplied working directory; if empty, the C++ side
     // falls back to paneProcessCWD(existingPane) (OSC 7 → /proc).
-    std::function<NewPane(const std::string& existingPaneNodeId,
-                          const std::string& dir,
+    std::function<NewPane(const std::string &existingPaneNodeId,
+                          const std::string &dir,
                           bool newIsFirst,
-                          const std::string& cwd)> splitPaneByNodeId;
+                          const std::string &cwd)>
+        splitPaneByNodeId;
     // Apply a Stack zoom override. `stackNodeId` is the Stack whose rect
     // should be redirected; `targetOrEmpty == ""` clears the override.
     // Wraps LayoutTree::setStackZoom and then triggers a resize cascade
     // for the enclosing tab so terminals pick up the new rect.
-    std::function<bool(const std::string& stackNodeId,
-                       const std::string& targetNodeIdOrEmpty)> setStackZoom;
+    std::function<bool(const std::string &stackNodeId,
+                       const std::string &targetNodeIdOrEmpty)>
+        setStackZoom;
     // Move the boundary of `paneNodeId`'s slot by `amount` cells in `dir`.
     // `dir` is one of "left"/"right"/"up"/"down"; positive cells grow the
     // pane in that direction. Resolves pane → pixel delta via font metrics
     // native-side.
-    std::function<bool(const std::string& paneNodeId,
-                       const std::string& dir, int amount)> adjustPaneSize;
+    std::function<bool(const std::string &paneNodeId,
+                       const std::string &dir, int amount)>
+        adjustPaneSize;
+
     // Query popups on a pane.
-    struct PopupInfo { std::string id; int x; int y; int w; int h; bool focused; };
+    struct PopupInfo
+    {
+        std::string id;
+        int x;
+        int y;
+        int w;
+        int h;
+        bool focused;
+    };
+
     std::function<std::vector<PopupInfo>(PaneId)> panePopups;
     // Create a popup on a pane. Returns false on failure.
-    std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h,
-                       std::function<void(const char*, size_t)> onInput)> createPopup;
+    std::function<bool(PaneId, const std::string &id, int x, int y, int w, int h,
+                       std::function<void(const char *, size_t)> onInput)>
+        createPopup;
     // Destroy a popup on a pane.
-    std::function<void(PaneId, const std::string& id)> destroyPopup;
+    std::function<void(PaneId, const std::string &id)> destroyPopup;
     // Resize/move a popup on a pane.
-    std::function<bool(PaneId, const std::string& id, int x, int y, int w, int h)> resizePopup;
+    std::function<bool(PaneId, const std::string &id, int x, int y, int w, int h)> resizePopup;
     // Set the pane's focused popup (and clear focused embedded). Empty id
     // clears popup focus. Returns false on unknown popup or pane.
-    std::function<bool(PaneId, const std::string& id)> setFocusedPopup;
+    std::function<bool(PaneId, const std::string &id)> setFocusedPopup;
     // Set the pane's focused embedded by anchor lineId. 0 clears embedded
     // focus. Returns false on unknown lineId or pane.
     std::function<bool(PaneId, uint64_t lineId)> setFocusedEmbedded;
 
     // --- Embedded terminals (document-anchored inline surfaces) ---
     // Query embeddeds on a pane.
-    struct EmbeddedInfo { uint64_t lineId; int rows; bool focused; };
+    struct EmbeddedInfo
+    {
+        uint64_t lineId;
+        int rows;
+        bool focused;
+    };
+
     std::function<std::vector<EmbeddedInfo>(PaneId)> paneEmbeddeds;
     // Create an embedded terminal on a pane at the pane's current cursor row.
     // Returns the anchor lineId on success, 0 on failure (alt-screen, rows<=0,
@@ -233,17 +280,23 @@ struct AppCallbacks {
     // callback fires on the main thread once the selection request resolves
     // (or with empty text on timeout / no owner). Setters are sync void
     // because writing is unilateral and never blocks meaningfully.
-    std::function<void(const std::string& source,
-                        std::function<void(std::string)> done)> getClipboard;
-    std::function<void(const std::string& source, const std::string& text)> setClipboard;
+    std::function<void(const std::string &source,
+                       std::function<void(std::string)> done)>
+        getClipboard;
+    std::function<void(const std::string &source, const std::string &text)> setClipboard;
     // URL at a cell position (returns empty string if none).
     std::function<std::string(PaneId, uint64_t lineId, int col)> paneUrlAt;
+
     // Hyperlinks within a logical-line range.
-    struct LinkInfo {
+    struct LinkInfo
+    {
         std::string url;
-        uint64_t startLineId; int startCol;
-        uint64_t endLineId;   int endCol;
+        uint64_t startLineId;
+        int startCol;
+        uint64_t endLineId;
+        int endCol;
     };
+
     std::function<std::vector<LinkInfo>(PaneId, uint64_t startLineId, uint64_t endLineId, int limit)> paneGetLinksFromRows;
 
     // Launch an external (non-PTY) process detached from mb. Wraps
@@ -255,37 +308,44 @@ struct AppCallbacks {
     // grandchild's exec succeeded — see platformSpawnDetached's docs.
     // The v1 detached API has no exit-code or pid-of-grandchild
     // observability; tracked spawns are a follow-up.
-    struct ProcessSpawnReq {
+    struct ProcessSpawnReq
+    {
         std::string path;
         std::vector<std::string> argv;
-        std::string cwd; // empty == inherit
+        std::string cwd;                                      // empty == inherit
         std::vector<std::pair<std::string, std::string>> env; // empty == inherit
     };
-    std::function<pid_t(const ProcessSpawnReq&)> spawnProcess;
+
+    std::function<pid_t(const ProcessSpawnReq &)> spawnProcess;
 };
 
-class Engine {
+class Engine
+{
 public:
     Engine();
     ~Engine();
 
-    Engine(const Engine&) = delete;
-    Engine& operator=(const Engine&) = delete;
+    Engine(const Engine &)            = delete;
+    Engine &operator=(const Engine &) = delete;
 
     void setCallbacks(AppCallbacks cbs);
-    void setLoop(EventLoop* loop) { loop_ = loop; }
-    EventLoop* loop() const { return loop_; }
+
+    void setLoop(EventLoop *loop) { loop_ = loop; }
+
+    EventLoop *loop() const { return loop_; }
 
     // Set config directory for allowlist persistence
-    void setConfigDir(const std::string& dir);
+    void setConfigDir(const std::string &dir);
 
     // Set the directory containing built-in JS modules (mb:tui, etc.)
-    void setBuiltinModulesDir(const std::string& dir) { builtinModulesDir_ = dir; }
-    const std::string& builtinModulesDir() const { return builtinModulesDir_; }
-    const std::string& configDir() const { return configDir_; }
+    void setBuiltinModulesDir(const std::string &dir) { builtinModulesDir_ = dir; }
+
+    const std::string &builtinModulesDir() const { return builtinModulesDir_; }
+
+    const std::string &configDir() const { return configDir_; }
 
     // Load a built-in script (fully trusted, all permissions)
-    InstanceId loadController(const std::string& path);
+    InstanceId loadController(const std::string &path);
 
     // Re-evaluate an existing instance's source from `path` on its
     // existing JSContext. Used by config.js hot-reload: timers,
@@ -296,10 +356,17 @@ public:
     // `mb.registerAction` from the same instance is a no-op).
     // Returns true on successful eval; false if the file is unreadable
     // or the script throws.
-    bool reevalInstance(InstanceId id, const std::string& path);
+    bool reevalInstance(InstanceId id, const std::string &path);
 
-    struct LoadResult {
-        enum class Status { Loaded, Pending, Denied, Error };
+    struct LoadResult
+    {
+        enum class Status
+        {
+            Loaded,
+            Pending,
+            Denied,
+            Error
+        };
         Status status = Status::Error;
         InstanceId id = 0;
         std::string error;
@@ -319,20 +386,20 @@ public:
     // JS boundary by jsMbLoadScript — only built-in callers may
     // request it; user-script attempts terminate the calling context
     // before reaching this method.
-    LoadResult loadScript(const std::string& path, uint32_t requestedPerms);
+    LoadResult loadScript(const std::string &path, uint32_t requestedPerms);
 
     void unload(InstanceId id);
 
     // Called by JS (applet-loader) when user responds to permission prompt.
     // Returns the outcome so the caller can inform the originating channel
     // (e.g. applet-loader writes the shell ack after the user picks).
-    LoadResult approveScript(const std::string& path, char response);
+    LoadResult approveScript(const std::string &path, char response);
 
     // Custom XTGETTCAP capabilities registered by scripts.
     // Returns nullopt if the name is not registered.
-    std::optional<std::string> lookupCustomTcap(const std::string& name) const;
-    void registerTcap(const std::string& name, const std::string& value);
-    void unregisterTcap(const std::string& name);
+    std::optional<std::string> lookupCustomTcap(const std::string &name) const;
+    void registerTcap(const std::string &name, const std::string &value);
+    void unregisterTcap(const std::string &name);
 
     // --- Synchronous filters (called from PTY read / input path) ---
     // filterPaneOutput is called from the parse worker thread; the
@@ -342,8 +409,8 @@ public:
     // returns a stable atomic-bool pointer the worker reads
     // wait-free (avoids the per-batch cost of an unordered_map lookup
     // on the main thread).
-    bool filterPaneOutput(PaneId pane, std::string& data);
-    bool filterPaneInput(PaneId pane, std::string& data);
+    bool filterPaneOutput(PaneId pane, std::string &data);
+    bool filterPaneInput(PaneId pane, std::string &data);
 
     bool hasPaneOutputFilters(PaneId pane) const;
     bool hasPaneInputFilters(PaneId pane) const;
@@ -358,7 +425,7 @@ public:
     std::shared_ptr<std::atomic<bool>> inputFilterFlag(PaneId pane);
 
     // --- Async events (enqueued as microtasks) ---
-    void notifyAction(const std::string& actionName);
+    void notifyAction(const std::string &actionName);
     // Fired from PlatformDawn::applyConfig after a successful hot-reload.
     // No payload — listeners re-read whatever they care about via the
     // relevant `mb.*` getters (e.g. `mb.tabBarPosition`).
@@ -385,13 +452,13 @@ public:
     // payload is {paneId, paneNodeId}.
     void notifyTerminalExited(PaneId pane, Uuid nodeId = {});
     void notifyPaneResized(PaneId pane, int cols, int rows);
-    void notifyOSC(PaneId pane, int oscNum, const std::string& payload);
-    void notifyForegroundProcessChanged(PaneId pane, const std::string& processName);
+    void notifyOSC(PaneId pane, int oscNum, const std::string &payload);
+    void notifyForegroundProcessChanged(PaneId pane, const std::string &processName);
     void notifyPaneFocusChanged(PaneId pane, bool focused);
-    void notifyFocusedPopupChanged(PaneId pane, const std::string& popupId);
+    void notifyFocusedPopupChanged(PaneId pane, const std::string &popupId);
     void notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, int pixelY);
 
-    void notifyCommandComplete(PaneId pane, const CommandInfo& rec);
+    void notifyCommandComplete(PaneId pane, const CommandInfo &rec);
     // Fires when a pane's OSC 133 selected command changes (via click,
     // keyboard nav, Escape, or script API). Payload is the new command
     // id, or null when cleared.
@@ -411,51 +478,52 @@ public:
     // populated for io-error and empty for explicit. Posts to JS
     // listeners attached to the corresponding MbOutputCapture handle.
     void notifyCaptureStopped(PaneId pane,
-                              const std::string& path,
-                              const std::string& reason,
-                              const std::string& errorMessage);
+                              const std::string &path,
+                              const std::string &reason,
+                              const std::string &errorMessage);
 
     // Deliver input to listeners on registered objects across all contexts.
-    void deliverInput(const char* registryName, uint32_t key, const char* data, size_t len);
+    void deliverInput(const char *registryName, uint32_t key, const char *data, size_t len);
     // Deliver input to popup listeners (keyed by "paneId:popupId" string).
-    void deliverPopupInput(const std::string& regKey, const char* data, size_t len);
+    void deliverPopupInput(const std::string &regKey, const char *data, size_t len);
 
     // Deliver input to embedded-terminal listeners (keyed by
     // "paneId:lineId" string). Mirrors deliverPopupInput.
-    void deliverEmbeddedInput(const std::string& regKey, const char* data, size_t len);
+    void deliverEmbeddedInput(const std::string &regKey, const char *data, size_t len);
     // Fire the "destroyed" event on an embedded terminal's registered
     // listeners. Called when the anchor row evicts or close() is called.
-    void deliverEmbeddedDestroyed(const std::string& regKey);
+    void deliverEmbeddedDestroyed(const std::string &regKey);
 
     // Deliver mouse events to JS listeners.
-    void deliverPopupMouseEvent(PaneId pane, const std::string& popupId,
-                                 const std::string& type, int cellX, int cellY,
-                                 int pixelX, int pixelY, int button);
-    void deliverPaneMouseEvent(PaneId pane, const std::string& type,
-                                int cellX, int cellY, int pixelX, int pixelY, int button);
+    void deliverPopupMouseEvent(PaneId pane, const std::string &popupId,
+                                const std::string &type, int cellX, int cellY,
+                                int pixelX, int pixelY, int button);
+    void deliverPaneMouseEvent(PaneId pane, const std::string &type,
+                               int cellX, int cellY, int pixelX, int pixelY, int button);
     // Embedded mouse events. `type` is "press" / "release" / "move" (press
     // and release gated on the `ui` group when the applet registers the
     // listener; move is also gated on `ui`).
     void deliverEmbeddedMouseEvent(PaneId pane, uint64_t lineId,
-                                    const std::string& type, int cellX, int cellY,
-                                    int pixelX, int pixelY, int button);
+                                   const std::string &type, int cellX, int cellY,
+                                   int pixelX, int pixelY, int button);
 
     // Mousemove fanout. Reads `__evt_mousemove` on the registered object.
-    void deliverPopupMouseMove(PaneId pane, const std::string& popupId,
-                                int cellX, int cellY, int pixelX, int pixelY);
+    void deliverPopupMouseMove(PaneId pane, const std::string &popupId,
+                               int cellX, int cellY, int pixelX, int pixelY);
     void deliverEmbeddedMouseMove(PaneId pane, uint64_t lineId,
-                                   int cellX, int cellY, int pixelX, int pixelY);
+                                  int cellX, int cellY, int pixelX, int pixelY);
 
     // Resized event. Fires on popup.resize({x,y,w,h}) and embedded.resize(rows).
     // Reads `__evt_resized` on the registered object. Payload: (cols, rows).
-    void deliverPopupResized(PaneId pane, const std::string& popupId, int cols, int rows);
+    void deliverPopupResized(PaneId pane, const std::string &popupId, int cols, int rows);
     void deliverEmbeddedResized(PaneId pane, uint64_t lineId, int cols, int rows);
 
     // Run pending JS jobs. Call from main loop.
     void executePendingJobs();
 
     // C callback trampoline access
-    const AppCallbacks& callbacks() const { return callbacks_; }
+    const AppCallbacks &callbacks() const { return callbacks_; }
+
     void addPaneOutputFilter(PaneId pane, InstanceId instId);
     void addPaneInputFilter(PaneId pane, InstanceId instId);
     void addPaneMouseMoveListener(PaneId pane, InstanceId instId);
@@ -463,29 +531,44 @@ public:
     uint32_t nextTimer() { return nextTimerId_++; }
 
     // JS timer registry (setTimeout/setInterval → EventLoop::TimerId)
-    struct JsTimer {
-        JSContext*         ctx;
-        JSValue            callback;
+    struct JsTimer
+    {
+        JSContext *ctx;
+        JSValue callback;
         EventLoop::TimerId loopId;
-        bool               interval;
-        uint64_t           ms;
+        bool interval;
+        uint64_t ms;
     };
-    std::unordered_map<uint32_t, JsTimer>& jsTimers() { return jsTimers_; }
 
-    struct Instance {
+    std::unordered_map<uint32_t, JsTimer> &jsTimers() { return jsTimers_; }
+
+    struct Instance
+    {
         InstanceId id;
-        JSContext* ctx;
+        JSContext *ctx;
         std::string path;
         std::string contentHash;
         uint32_t permissions = Perm::All;
-        bool builtIn = false;
+        bool builtIn         = false;
         std::string ns; // namespace set via mb.setNamespace()
 
         // Resources owned by this instance (cleaned up on unload)
-        struct PopupRef { PaneId pane; std::string popupId; };
+        struct PopupRef
+        {
+            PaneId pane;
+            std::string popupId;
+        };
+
         std::vector<PopupRef> ownedPopups;
-        struct EmbeddedRef { PaneId pane; uint64_t lineId; };
+
+        struct EmbeddedRef
+        {
+            PaneId pane;
+            uint64_t lineId;
+        };
+
         std::vector<EmbeddedRef> ownedEmbeddeds;
+
         // (paneId, capture-file-path) for each pane.captureOutputToFile()
         // call this instance made. On unload we walk these and call
         // Terminal::removeOutputCapture for each, freeing the FILE*
@@ -493,19 +576,25 @@ public:
         // Path is the sandbox-validated value, matching what
         // addOutputCapture was given — the unload sweep can re-key
         // off it without needing to re-validate.
-        struct OutputCaptureRef { PaneId pane; std::string path; };
+        struct OutputCaptureRef
+        {
+            PaneId pane;
+            std::string path;
+        };
+
         std::vector<OutputCaptureRef> ownedOutputCaptures;
         std::vector<PaneId> paneOutputFilters; // panes with output filters from this instance
         std::vector<PaneId> paneInputFilters;
         std::vector<PaneId> paneMouseMoveListeners;
     };
-    Instance* findInstanceByCtx(JSContext* ctx);
-    Instance* findInstance(InstanceId id);
+
+    Instance *findInstanceByCtx(JSContext *ctx);
+    Instance *findInstance(InstanceId id);
 
     // Script action registration
-    bool setNamespace(InstanceId id, const std::string& ns);
-    bool registerAction(InstanceId id, const std::string& name);
-    bool isActionRegistered(const std::string& fullName) const;
+    bool setNamespace(InstanceId id, const std::string &ns);
+    bool registerAction(InstanceId id, const std::string &name);
+    bool isActionRegistered(const std::string &fullName) const;
     // Returns the registered action names ("namespace.action" form). The
     // owning instance id is tracked internally for cleanup-on-unload but
     // intentionally not exposed; callers that need it can use
@@ -516,16 +605,16 @@ public:
     // Unlike addEventListener/notifyAction, which observe, a handler *owns* the
     // action: at most one handler per name; registration replaces the prior.
     // Native dispatch calls invokeActionHandler instead of running a built-in.
-    bool registerActionHandler(InstanceId id, const std::string& name, JSValue fn);
-    bool unregisterActionHandler(const std::string& name);
+    bool registerActionHandler(InstanceId id, const std::string &name, JSValue fn);
+    bool unregisterActionHandler(const std::string &name);
     // Returns true if a handler was found and called (regardless of whether
     // the handler threw). Returns false if no handler is registered — the
     // caller (Platform_Actions) logs an error in that case.
     // `buildArgs` is invoked with the handler's own JSContext so native
     // callers don't need to know which context owns the handler. It should
     // return an owning JSValue that the engine passes as the single arg.
-    bool invokeActionHandler(const std::string& name,
-                             const std::function<JSValue(JSContext*)>& buildArgs);
+    bool invokeActionHandler(const std::string &name,
+                             const std::function<JSValue(JSContext *)> &buildArgs);
 
     // --- UI layout tree ---
     // Shared, window-level LayoutTree — the `mb.layout` JS surface and the
@@ -533,8 +622,9 @@ public:
     // Container subtree inside it; those subtrees are parented under
     // `layoutRootStack()`, which represents the set of tabs (one tab = one
     // child of the Stack, activeChild = active tab).
-    ::LayoutTree&       layoutTree()       { return *layoutTree_; }
-    const ::LayoutTree& layoutTree() const { return *layoutTree_; }
+    ::LayoutTree &layoutTree() { return *layoutTree_; }
+
+    const ::LayoutTree &layoutTree() const { return *layoutTree_; }
 
     // Remove a subtree under `scopeRoot`. Guard: refuses if any descendant
     // Terminal is still live in the engine's terminal map (caller must kill
@@ -550,8 +640,8 @@ public:
     // root. The tree's dirty_ flag + cached key (fb/cell dims) short-circuit
     // repeated recomputation: we only run computeRects when the tree has
     // been mutated or the window/font metrics changed.
-    const std::unordered_map<Uuid, Rect, UuidHash>&
-        rootRects(uint32_t fbW, uint32_t fbH, int cellW, int cellH);
+    const std::unordered_map<Uuid, Rect, UuidHash> &
+    rootRects(uint32_t fbW, uint32_t fbH, int cellW, int cellH);
 
     // Root Stack holding each Tab's Layout subtree as a direct child.
     // Established in the Engine constructor and set as the tree's root.
@@ -564,8 +654,8 @@ public:
     // Stack's child order (slot order), not creation order.
     std::vector<Uuid> tabSubtreeRoots() const;
     Uuid activeTabSubtreeRoot() const;
-    int  activeTabIndex() const; // -1 if no active tab / empty
-    int  tabCount() const;
+    int activeTabIndex() const; // -1 if no active tab / empty
+    int tabCount() const;
     // Return the tab subtreeRoot that contains `nodeId`, or nil if none.
     // Walks up nodeId's parent chain checking each against rootStack's
     // direct children.
@@ -575,7 +665,7 @@ public:
     // Tabs are identified by their subtreeRoot Uuid (a direct child of
     // layoutRootStack_ in the shared tree). Icon lives here, keyed by that
     // Uuid. Title lives on the tree node's `label`.
-    const std::string& tabIcon(Uuid subtreeRoot) const;
+    const std::string &tabIcon(Uuid subtreeRoot) const;
     void eraseTabIcon(Uuid subtreeRoot);
     // Drop the per-tab last-focus memory when a tab is destroyed. Stale
     // entries are also lazy-ignored at read time (see rememberedFocusInSubtree),
@@ -590,25 +680,31 @@ public:
     // One node is "zoomed" at a time. Both may be nil. Tab switches update
     // these through setFocusedTerminal / setZoomedNode.
     Uuid focusedTerminalNodeId() const { return focusedTerminalNodeId_; }
+
     // Out-of-line: also updates lastFocusedInTab_ when u resolves to a pane
     // inside a known tab subtree. Clearing focus (u = {}) deliberately does
     // not touch the memory so that transitional clears during pane removal
     // or tab close preserve the "what was focused here" answer.
     void setFocusedTerminalNodeId(Uuid u);
+
     // Convenience: resolve the focused Uuid through the terminal map. Null
     // if no pane is focused or the focused Uuid points at a killed Terminal
     // (the tree node may still exist briefly between killTerminal and the
     // JS-driven removeNode).
-    ::Terminal* focusedTerminal() {
+    ::Terminal *focusedTerminal()
+    {
         return focusedTerminalNodeId_.isNil() ? nullptr : terminal(focusedTerminalNodeId_);
     }
+
     // NOTE: zoom state moved onto StackData::zoomTarget in the LayoutTree.
     // Engine no longer tracks a global zoom node; JS sets it directly via
     // LayoutTree::setStackZoom (bound as mb.layout.setStackZoom).
 
     // --- Global layout params (used to be per-Layout) ---
     int dividerPixels() const { return dividerPixels_; }
+
     void setDividerPixels(int px) { dividerPixels_ = px < 0 ? 0 : px; }
+
     // Tab-bar geometry is derived from the tree: the `TabBar` node occupies
     // its slot in the root Container; Engine::primaryTabBarNode locates the
     // first such node so renderers and input can query its rect from a
@@ -625,11 +721,17 @@ public:
     // Find the first node (BFS from root) whose label exactly equals
     // `label`. Returns nil if none. Empty `label` always returns nil so
     // unlabeled nodes (the default) cannot be matched by accident.
-    Uuid findNodeByLabel(const std::string& label) const;
+    Uuid findNodeByLabel(const std::string &label) const;
 
     uint32_t lastFbWidth() const { return lastFbW_; }
+
     uint32_t lastFbHeight() const { return lastFbH_; }
-    void setLastFramebuffer(uint32_t w, uint32_t h) { lastFbW_ = w; lastFbH_ = h; }
+
+    void setLastFramebuffer(uint32_t w, uint32_t h)
+    {
+        lastFbW_ = w;
+        lastFbH_ = h;
+    }
 
     // Cell metrics used by the per-tab helpers (nodeRectInSubtree,
     // tabDividersWithOwnerPanes, resizeTabPaneEdge) to convert ChildSlot
@@ -638,8 +740,11 @@ public:
     // to 1 so callers that never touch computeTabRects still get the old
     // pixel-equivalent behaviour.
     int lastCellW() const { return lastCellW_; }
+
     int lastCellH() const { return lastCellH_; }
-    void setLastCellMetrics(int cellW, int cellH) {
+
+    void setLastCellMetrics(int cellW, int cellH)
+    {
         lastCellW_ = cellW > 0 ? cellW : 1;
         lastCellH_ = cellH > 0 ? cellH : 1;
     }
@@ -652,12 +757,13 @@ public:
     // Defined in ScriptEngine_Terminals.cpp — a standalone TU that sees
     // Terminal.h but doesn't drag in ScriptEngine.cpp's quickjs /
     // libwebsockets dependencies. Both mb and mb-tests link it.
-    ::Terminal*                 terminal(Uuid nodeId);
-    const ::Terminal*           terminal(Uuid nodeId) const;
-    ::Terminal*                 insertTerminal(Uuid nodeId, std::unique_ptr<::Terminal> t);
+    ::Terminal *terminal(Uuid nodeId);
+    const ::Terminal *terminal(Uuid nodeId) const;
+    ::Terminal *insertTerminal(Uuid nodeId, std::unique_ptr<::Terminal> t);
     std::unique_ptr<::Terminal> extractTerminal(Uuid nodeId);
-    const std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash>&
-                                terminals() const { return terminals_; }
+
+    const std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> &
+    terminals() const { return terminals_; }
 
     // --- Per-tab helpers (keyed by tab subtreeRoot Uuid) -----------------
     // Every call validates that `subtreeRoot` is a direct child of
@@ -669,7 +775,7 @@ public:
     // Reads the tab's JS-set label (via mb.layout.setLabel). Pane-driven
     // title now comes from the pane's emulator title stack, pulled live by
     // the tab-bar renderer — this getter only surfaces script overrides.
-    const std::string& tabTitle(Uuid subtreeRoot) const;
+    const std::string &tabTitle(Uuid subtreeRoot) const;
 
     // Create a fresh tab subtree (Stack + content Container) attached as an
     // orphan. Caller attaches it under layoutRootStack_.
@@ -682,10 +788,10 @@ public:
                        Uuid newChildNodeId, bool newIsFirst);
 
     // Pane queries (scoped to subtreeRoot).
-    ::Terminal* paneInSubtree(Uuid subtreeRoot, Uuid nodeId);
+    ::Terminal *paneInSubtree(Uuid subtreeRoot, Uuid nodeId);
     bool hasPaneSlotInSubtree(Uuid subtreeRoot, Uuid nodeId) const;
-    std::vector<::Terminal*> panesInSubtree(Uuid subtreeRoot) const;
-    std::vector<::Terminal*> activePanesInSubtree(Uuid subtreeRoot) const;
+    std::vector<::Terminal *> panesInSubtree(Uuid subtreeRoot) const;
+    std::vector<::Terminal *> activePanesInSubtree(Uuid subtreeRoot) const;
     Rect nodeRectInSubtree(Uuid subtreeRoot, Uuid nodeId) const;
     Uuid paneAtPixelInSubtree(Uuid subtreeRoot, int px, int py) const;
 
@@ -701,7 +807,7 @@ public:
 
     // Focus scoped to a tab.
     Uuid focusedPaneInSubtree(Uuid subtreeRoot) const;
-    ::Terminal* focusedTerminalInSubtree(Uuid subtreeRoot);
+    ::Terminal *focusedTerminalInSubtree(Uuid subtreeRoot);
 
     // Per-tab last-focused pane (maintained by setFocusedTerminalNodeId).
     // Returns the remembered pane's Uuid if still in the subtree, else nil.
@@ -709,7 +815,7 @@ public:
     // want this tab's own notion of "active pane" (e.g. tab-bar progress
     // glyph, tab-switch focus restore).
     Uuid rememberedFocusInSubtree(Uuid subtreeRoot) const;
-    ::Terminal* rememberedFocusTerminalInSubtree(Uuid subtreeRoot);
+    ::Terminal *rememberedFocusTerminalInSubtree(Uuid subtreeRoot);
 
     // Tab-bar rect + tab rect computation.
     Rect tabBarRect(uint32_t windowW, uint32_t windowH);
@@ -717,7 +823,7 @@ public:
                          int cellW, int cellH);
     std::vector<Rect> tabDividerRects(Uuid subtreeRoot, int dividerPixels) const;
     std::vector<std::pair<Uuid, Rect>>
-        tabDividersWithOwnerPanes(Uuid subtreeRoot, int dividerPixels) const;
+    tabDividersWithOwnerPanes(Uuid subtreeRoot, int dividerPixels) const;
     bool resizeTabPaneEdge(Uuid subtreeRoot, Uuid nodeId,
                            SplitDir axis, int pixelDelta);
 
@@ -726,34 +832,49 @@ public:
     // outermost guard destructs, deferred cleanups run and dead entries
     // are swept.
     bool iterating() const { return iterDepth_ > 0; }
-    void deferCleanup(std::function<void(Engine*)> fn) { deferredCleanups_.push_back(std::move(fn)); }
 
-    struct IterGuard {
-        Engine* eng;
-        IterGuard(Engine* e) : eng(e) { ++eng->iterDepth_; }
-        ~IterGuard() {
+    void deferCleanup(std::function<void(Engine *)> fn) { deferredCleanups_.push_back(std::move(fn)); }
+
+    struct IterGuard
+    {
+        Engine *eng;
+
+        IterGuard(Engine *e)
+            : eng(e)
+        {
+            ++eng->iterDepth_;
+        }
+
+        ~IterGuard()
+        {
             if (--eng->iterDepth_ == 0) {
                 // Run registered cleanups
                 auto fns = std::move(eng->deferredCleanups_);
                 eng->deferredCleanups_.clear();
-                for (auto& fn : fns) fn(eng);
+                for (auto &fn : fns) {
+                    fn(eng);
+                }
                 // Sweep dead instances (ctx nulled by deferred unload)
-                std::erase_if(eng->instances_, [](const Instance& i) { return !i.ctx; });
+                std::erase_if(eng->instances_, [](const Instance &i)
+                              {
+                                  return !i.ctx;
+                              });
             }
         }
-        IterGuard(const IterGuard&) = delete;
-        IterGuard& operator=(const IterGuard&) = delete;
+
+        IterGuard(const IterGuard &)            = delete;
+        IterGuard &operator=(const IterGuard &) = delete;
     };
 
 private:
-    JSRuntime* rt_ = nullptr;
-    EventLoop* loop_ = nullptr;
+    JSRuntime *rt_   = nullptr;
+    EventLoop *loop_ = nullptr;
     std::unique_ptr<::LayoutTree> layoutTree_;
-    Uuid                          layoutRootStack_;
+    Uuid layoutRootStack_;
     std::deque<Instance> instances_; // deque for pointer stability
-    int iterDepth_ = 0; // >0 while iterating instances_ and calling JS
-    std::vector<std::function<void(Engine*)>> deferredCleanups_;
-    InstanceId nextId_ = 1;
+    int iterDepth_ = 0;              // >0 while iterating instances_ and calling JS
+    std::vector<std::function<void(Engine *)>> deferredCleanups_;
+    InstanceId nextId_    = 1;
     uint32_t nextTimerId_ = 1;
     AppCallbacks callbacks_;
     std::string builtinModulesDir_;
@@ -762,7 +883,8 @@ private:
     Allowlist allowlist_;
     std::string configDir_;
 
-    struct PendingScript {
+    struct PendingScript
+    {
         std::string path;
         std::string content;
         std::string hash;
@@ -770,6 +892,7 @@ private:
         std::string popupId;
         PaneId promptPaneId;
     };
+
     std::unordered_map<std::string, PendingScript> pendingScripts_;
 
     // "namespace.action" → owning InstanceId. Re-registering the same
@@ -788,11 +911,13 @@ private:
     std::unordered_map<std::string, std::string> customTcaps_;
     mutable std::shared_mutex customTcapsMutex_;
 
-    struct ActionHandler {
+    struct ActionHandler
+    {
         InstanceId id;
-        JSContext* ctx;
-        JSValue    fn; // owning ref; freed on replace / unregister / unload
+        JSContext *ctx;
+        JSValue fn; // owning ref; freed on replace / unregister / unload
     };
+
     std::unordered_map<std::string, ActionHandler> actionHandlers_;
 
     std::unordered_map<uint32_t, JsTimer> jsTimers_;
@@ -811,31 +936,31 @@ private:
     std::unordered_map<PaneId, std::shared_ptr<std::atomic<bool>>, UuidHash>
         paneInputFilterFlag_;
 
-    JSContext* createContext();
-    void setupGlobals(JSContext* ctx, InstanceId id);
+    JSContext *createContext();
+    void setupGlobals(JSContext *ctx, InstanceId id);
 
-    InstanceId loadScriptInternal(const std::string& path, const std::string& content,
-                                   uint32_t permissions);
-    void notifyPermissionRequired(const std::string& path, const std::string& permissions,
-                                   const std::string& hash);
+    InstanceId loadScriptInternal(const std::string &path, const std::string &content,
+                                  uint32_t permissions);
+    void notifyPermissionRequired(const std::string &path, const std::string &permissions,
+                                  const std::string &hash);
 
     // Fan out a mousemove event to the `__evt_mousemove` array stored on the
     // JS object registered under `registryName[key]`. Shared by popup and
     // embedded mousemove delivery paths.
-    void deliverMousemoveToRegistry(const char* registryName,
-                                     const std::string& key,
-                                     int cellX, int cellY, int pixelX, int pixelY);
+    void deliverMousemoveToRegistry(const char *registryName,
+                                    const std::string &key,
+                                    int cellX, int cellY, int pixelX, int pixelY);
 
     // Fan out a resized event to the `__evt_resized` array on the object at
     // `registryName[key]`. Listeners receive `(cols, rows)`.
-    void deliverResizedToRegistry(const char* registryName,
-                                   const std::string& key, int cols, int rows);
+    void deliverResizedToRegistry(const char *registryName,
+                                  const std::string &key, int cols, int rows);
 
-    void deliverMouseToRegistry(const char* registryName, const std::string& key,
-                                 const std::string& type, int cellX, int cellY,
-                                 int pixelX, int pixelY, int button);
+    void deliverMouseToRegistry(const char *registryName, const std::string &key,
+                                const std::string &type, int cellX, int cellY,
+                                int pixelX, int pixelY, int button);
 
-    bool runPaneFilters(PaneId pane, const char* filterProp, std::string& data);
+    bool runPaneFilters(PaneId pane, const char *filterProp, std::string &data);
 
     void cleanupPane(PaneId pane);
     void cleanupTab(TabId tab);
@@ -846,11 +971,11 @@ private:
     // during destruction, so the tab-level containers have to go first,
     // then terminals_, then layoutTree_.
     std::unordered_map<Uuid, std::unique_ptr<::Terminal>, UuidHash> terminals_;
-    std::unordered_map<Uuid, std::string,                 UuidHash> tabIcons_;
+    std::unordered_map<Uuid, std::string, UuidHash> tabIcons_;
     // tab subtreeRoot → last pane Uuid that was focused inside that tab.
     // Maintained by setFocusedTerminalNodeId; cleaned up by eraseLastFocusedInTab
     // when a tab is destroyed. Lazy-validated on read against the tree.
-    std::unordered_map<Uuid, Uuid,                        UuidHash> lastFocusedInTab_;
+    std::unordered_map<Uuid, Uuid, UuidHash> lastFocusedInTab_;
 
     // Engine-wide focus. Zoom lives on StackData::zoomTarget (tree-side),
     // not on the engine.
@@ -858,10 +983,10 @@ private:
 
     // Global layout params. Used by Tab's computeRects and divider helpers.
     int dividerPixels_ = 1;
-    uint32_t lastFbW_ = 0;
-    uint32_t lastFbH_ = 0;
-    int lastCellW_ = 1;
-    int lastCellH_ = 1;
+    uint32_t lastFbW_  = 0;
+    uint32_t lastFbH_  = 0;
+    int lastCellW_     = 1;
+    int lastCellH_     = 1;
 
     // --- Root-rects cache (see rootRects()) ----------------------------------
     // Populated on demand by rootRects(). Key: (fbW, fbH, cellW, cellH) and
@@ -871,8 +996,8 @@ private:
     // the cache correctly.
     std::unordered_map<Uuid, Rect, UuidHash> rootRectsCache_;
     uint64_t rootRectsKeyFb_       = 0; // (fbW << 32) | fbH
-    int      rootRectsKeyCellW_    = 0;
-    int      rootRectsKeyCellH_    = 0;
+    int rootRectsKeyCellW_         = 0;
+    int rootRectsKeyCellH_         = 0;
     uint64_t rootRectsKeyRevision_ = 0; // 0 = "no cache yet"
 };
 

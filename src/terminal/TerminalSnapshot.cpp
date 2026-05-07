@@ -8,27 +8,35 @@
 #include <cstring>
 #include <span>
 
-const TerminalSnapshot::Segment* TerminalSnapshot::segmentAtPixelY(int y, float cellH) const
+const TerminalSnapshot::Segment *TerminalSnapshot::segmentAtPixelY(int y, float cellH) const
 {
-    if (cellH <= 0.0f || segments.empty()) return nullptr;
+    if (cellH <= 0.0f || segments.empty()) {
+        return nullptr;
+    }
     // Smooth scroll shifts all segments up by topPixelSubY; adjust y into
     // segment-local space by adding that offset.
     int adjY = y + topPixelSubY;
-    if (adjY < 0) return nullptr;
-    for (const auto& seg : segments) {
+    if (adjY < 0) {
+        return nullptr;
+    }
+    for (const auto &seg : segments) {
         int startPx = static_cast<int>(static_cast<float>(seg.cellYStart) * cellH);
         int endPx   = static_cast<int>(static_cast<float>(seg.cellYStart + seg.rowCount) * cellH);
-        if (adjY >= startPx && adjY < endPx) return &seg;
+        if (adjY >= startPx && adjY < endPx) {
+            return &seg;
+        }
     }
     return nullptr;
 }
 
 bool TerminalSnapshot::isCellSelected(int col, int absRow) const
 {
-    if (!selection.active && !selection.valid) return false;
+    if (!selection.active && !selection.valid) {
+        return false;
+    }
 
     int r0 = selection.startAbsRow, c0 = selection.startCol;
-    int r1 = selection.endAbsRow,   c1 = selection.endCol;
+    int r1 = selection.endAbsRow, c1 = selection.endCol;
 
     if (selection.mode == TerminalEmulator::SelectionMode::Rectangle) {
         int minR = std::min(r0, r1), maxR = std::max(r0, r1);
@@ -41,14 +49,22 @@ bool TerminalSnapshot::isCellSelected(int col, int absRow) const
         std::swap(c0, c1);
     }
 
-    if (absRow < r0 || absRow > r1) return false;
-    if (absRow == r0 && absRow == r1) return col >= c0 && col <= c1;
-    if (absRow == r0) return col >= c0;
-    if (absRow == r1) return col <= c1;
+    if (absRow < r0 || absRow > r1) {
+        return false;
+    }
+    if (absRow == r0 && absRow == r1) {
+        return col >= c0 && col <= c1;
+    }
+    if (absRow == r0) {
+        return col >= c0;
+    }
+    if (absRow == r1) {
+        return col <= c1;
+    }
     return true;
 }
 
-bool TerminalSnapshot::update(TerminalEmulator& term)
+bool TerminalSnapshot::update(TerminalEmulator &term)
 {
     std::lock_guard<std::recursive_mutex> _lk(term.mutex());
 
@@ -62,15 +78,15 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     // window in which to capture, and the held texture would lag the
     // grid by entire screens. See TerminalEmulator::injectData.
     const bool wasSyncActive = syncOutputActive;
-    syncOutputActive = term.syncOutputActive();
+    syncOutputActive         = term.syncOutputActive();
     // Sync just ended: force a full re-copy this tick so the renderer
     // repaints with the post-sync state even though the per-row dirty
     // bits may have been consumed during the prior in-sync ticks.
     const bool syncJustEnded = wasSyncActive && !syncOutputActive;
 
-    const int newRows = term.height();
-    const int newCols = term.width();
-    const int newOffset = term.viewportOffset();
+    const int newRows    = term.height();
+    const int newCols    = term.width();
+    const int newOffset  = term.viewportOffset();
     const int newHistory = term.document().historySize();
 
     const bool structuralChange =
@@ -78,17 +94,17 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
         newRows != lastRows_ || newCols != lastCols_ ||
         newOffset != lastViewportOffset_ || newHistory != lastHistorySize_;
 
-    rows = newRows;
-    cols = newCols;
+    rows           = newRows;
+    cols           = newCols;
     viewportOffset = newOffset;
-    historySize = newHistory;
+    historySize    = newHistory;
 
-    cursorX = term.cursorX();
-    cursorY = term.cursorY();
-    cursorShape = term.cursorShape();
-    cursorVisible = term.cursorVisible();
+    cursorX        = term.cursorX();
+    cursorY        = term.cursorY();
+    cursorShape    = term.cursorShape();
+    cursorVisible  = term.cursorVisible();
     cursorBlinking = term.cursorBlinking();
-    defaults = term.defaultColors();
+    defaults       = term.defaultColors();
 
     // Selection: resolve line-id anchors to abs rows under the lock so the
     // renderer reads stable rendering coordinates. Empty when an anchor has
@@ -96,7 +112,7 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     if (auto resOpt = term.resolveSelection()) {
         selection = *resOpt;
     } else {
-        selection = TerminalEmulator::ResolvedSelection{};
+        selection = TerminalEmulator::ResolvedSelection {};
     }
 
     // OSC 133 selected command region. Resolve line ids to current absolute
@@ -104,9 +120,11 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     // pruneCommandRing, so a stale id won't reach us here normally.
     selectedCommand.reset();
     if (auto idOpt = term.selectedCommandId(); idOpt && !term.usingAltScreen()) {
-        const Document& dref = term.document();
-        for (const auto& r : term.commands()) {
-            if (r.id != *idOpt) continue;
+        const Document &dref = term.document();
+        for (const auto &r : term.commands()) {
+            if (r.id != *idOpt) {
+                continue;
+            }
             int startAbs = dref.firstAbsOfLine(r.promptStartLineId);
             int endAbs;
             int endCol;
@@ -127,7 +145,7 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
                 endCol = term.cursorX();
             }
             if (startAbs >= 0 && endAbs >= 0) {
-                selectedCommand = SelectedCommandRegion{
+                selectedCommand = SelectedCommandRegion {
                     startAbs,
                     std::max(0, r.promptStartCol),
                     endAbs,
@@ -143,35 +161,39 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     rowDirty.assign(static_cast<size_t>(rows), 0);
     rowExtras.resize(static_cast<size_t>(rows));
 
-    IGrid& grid = term.grid();
-    const Document& doc = term.document();
-    const bool onAltScreen = (&grid != static_cast<const IGrid*>(&doc));
+    IGrid &grid            = term.grid();
+    const Document &doc    = term.document();
+    const bool onAltScreen = (&grid != static_cast<const IGrid *>(&doc));
 
     for (int r = 0; r < rows; ++r) {
         const bool rowIsDirty = structuralChange || grid.isRowDirty(r);
-        if (!rowIsDirty) continue;
+        if (!rowIsDirty) {
+            continue;
+        }
 
-        Cell* dst = cells.data() + static_cast<size_t>(r) * static_cast<size_t>(cols);
-        std::span<Cell> dstSpan{dst, static_cast<size_t>(cols)};
+        Cell *dst = cells.data() + static_cast<size_t>(r) * static_cast<size_t>(cols);
+        std::span<Cell> dstSpan { dst, static_cast<size_t>(cols) };
         if (!term.copyViewportRow(r, dstSpan)) {
             std::memset(dst, 0, sizeof(Cell) * static_cast<size_t>(cols));
         }
 
-        RowExtras& re = rowExtras[static_cast<size_t>(r)];
+        RowExtras &re = rowExtras[static_cast<size_t>(r)];
         re.entries.clear();
         if (onAltScreen) {
             for (int c = 0; c < cols; ++c) {
-                if (const CellExtra* ex = grid.getExtra(c, r)) {
+                if (const CellExtra *ex = grid.getExtra(c, r)) {
                     re.entries.emplace_back(c, *ex);
                 }
             }
-        } else if (const auto* exMap = doc.viewportExtras(r, viewportOffset)) {
+        } else if (const auto *exMap = doc.viewportExtras(r, viewportOffset)) {
             re.entries.reserve(exMap->size());
-            for (const auto& kv : *exMap) {
+            for (const auto &kv : *exMap) {
                 re.entries.emplace_back(kv.first, kv.second);
             }
-            std::sort(re.entries.begin(), re.entries.end(),
-                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            std::sort(re.entries.begin(), re.entries.end(), [](const auto &a, const auto &b)
+                      {
+                          return a.first < b.first;
+                      });
         }
 
         rowDirty[static_cast<size_t>(r)] = 1;
@@ -186,46 +208,57 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     // any images with active animations (scheduling the next wake-up needs
     // their gap/frameShownAt even when off-screen).
     images.clear();
-    const auto& liveRegistry = term.imageRegistry();
-    auto captureView = [&](uint32_t imageId) {
-        if (images.count(imageId)) return;
+    const auto &liveRegistry = term.imageRegistry();
+    auto captureView         = [&](uint32_t imageId)
+    {
+        if (images.count(imageId)) {
+            return;
+        }
         auto it = liveRegistry.find(imageId);
-        if (it == liveRegistry.end() || !it->second) return;
-        const auto& img = *it->second;
+        if (it == liveRegistry.end() || !it->second) {
+            return;
+        }
+        const auto &img = *it->second;
         ImageView view;
-        view.entry = it->second;  // shared_ptr copy — keeps image alive past parser delete
-        view.pixelWidth  = img.pixelWidth;
-        view.pixelHeight = img.pixelHeight;
-        view.cellWidth   = img.cellWidth;
-        view.cellHeight  = img.cellHeight;
-        view.cropX = img.cropX; view.cropY = img.cropY;
-        view.cropW = img.cropW; view.cropH = img.cropH;
-        view.currentFrameIndex = img.currentFrameIndex;
-        view.totalFrames = 1u + static_cast<uint32_t>(img.extraFrames.size());
-        view.frameGeneration = img.frameGeneration;
-        view.currentFrameGap = img.currentFrameGap();
-        view.frameShownAt = img.frameShownAt;
-        view.hasAnimation = img.hasAnimation();
-        const auto& frame = img.currentFrameRGBA();
-        view.currentFrameRGBA = frame.data();
+        view.entry                = it->second; // shared_ptr copy — keeps image alive past parser delete
+        view.pixelWidth           = img.pixelWidth;
+        view.pixelHeight          = img.pixelHeight;
+        view.cellWidth            = img.cellWidth;
+        view.cellHeight           = img.cellHeight;
+        view.cropX                = img.cropX;
+        view.cropY                = img.cropY;
+        view.cropW                = img.cropW;
+        view.cropH                = img.cropH;
+        view.currentFrameIndex    = img.currentFrameIndex;
+        view.totalFrames          = 1u + static_cast<uint32_t>(img.extraFrames.size());
+        view.frameGeneration      = img.frameGeneration;
+        view.currentFrameGap      = img.currentFrameGap();
+        view.frameShownAt         = img.frameShownAt;
+        view.hasAnimation         = img.hasAnimation();
+        const auto &frame         = img.currentFrameRGBA();
+        view.currentFrameRGBA     = frame.data();
         view.currentFrameRGBASize = frame.size();
-        view.placements = img.placements;  // copy — render iteration must not race with parser mutations
+        view.placements           = img.placements; // copy — render iteration must not race with parser mutations
         images.emplace(imageId, std::move(view));
     };
-    for (const auto& re : rowExtras) {
-        for (const auto& [col, ex] : re.entries) {
+    for (const auto &re : rowExtras) {
+        for (const auto &[col, ex] : re.entries) {
             (void)col;
-            if (ex.imageId) captureView(ex.imageId);
+            if (ex.imageId) {
+                captureView(ex.imageId);
+            }
         }
     }
-    for (const auto& [id, imgPtr] : liveRegistry) {
-        if (imgPtr && imgPtr->hasAnimation()) captureView(id);
+    for (const auto &[id, imgPtr] : liveRegistry) {
+        if (imgPtr && imgPtr->hasAnimation()) {
+            captureView(id);
+        }
     }
 
-    lastRows_ = rows;
-    lastCols_ = cols;
+    lastRows_           = rows;
+    lastCols_           = cols;
     lastViewportOffset_ = viewportOffset;
-    lastHistorySize_ = historySize;
+    lastHistorySize_    = historySize;
 
     // ---- Visual-layout segment list ----
     //
@@ -241,12 +274,12 @@ bool TerminalSnapshot::update(TerminalEmulator& term)
     // Derived for the segment list (and any consumer that wants the anchor
     // line id without touching Document). Emulator owns the integer offset;
     // line id follows.
-    topLineId = doc.lineIdForAbs(origin);
-    topPixelSubY = 0; // smooth / sub-cell scroll is out of scope for v1
+    topLineId        = doc.lineIdForAbs(origin);
+    topPixelSubY     = 0; // smooth / sub-cell scroll is out of scope for v1
 
     auto viewAnchors = TerminalEmulator::collectVisibleAnchors(term, viewportOffset, rows);
 
-    int cellY = 0;
+    int cellY        = 0;
     size_t anchorIdx = 0;
     for (int viewRow = 0; viewRow < rows; ++viewRow) {
         int absRow = origin + viewRow;

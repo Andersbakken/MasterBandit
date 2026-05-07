@@ -1,12 +1,11 @@
-#include "PlatformDawn.h"
 #include "Config.h"
+#include "PlatformDawn.h"
 #include "PlatformUtils.h"
 #include "Resources.h"
+#include <filesystem>
 #include <glaze/glaze.hpp>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
-#include <filesystem>
-
 
 int PlatformDawn::exec()
 {
@@ -20,21 +19,32 @@ int PlatformDawn::exec()
     // Here we finish setup: debugIPC, scripts, PTY polls, file watcher, onTick.
 
     if (hasFlag(FlagHeadless) || hasFlag(FlagIPC)) {
-        debugIPC_ = std::make_unique<DebugIPC>(eventLoop_.get(),
-            [this]() -> Terminal* { return activeTerm(); },
-            [this](int id) {
-                auto t = activeTab();
-                if (!t) return std::string{};
-                Terminal* pane = scriptEngine_.focusedTerminalInSubtree(*t);
-                return pane ? gridToJson(pane->id()) : std::string{};
-            },
-            [this](int id) { return statsJson(id); },
-            [this](const std::string& action, const std::vector<std::string>& args) -> bool {
-                auto parsed = parseAction(action, args);
-                if (!parsed) return false;
-                dispatchAction(*parsed);
-                return true;
-            });
+        debugIPC_ = std::make_unique<DebugIPC>(eventLoop_.get(), [this]() -> Terminal *
+                                               {
+                                                   return activeTerm();
+                                               },
+                                               [this](int id)
+                                               {
+                                                   auto t = activeTab();
+                                                   if (!t) {
+                                                       return std::string {};
+                                                   }
+                                                   Terminal *pane = scriptEngine_.focusedTerminalInSubtree(*t);
+                                                   return pane ? gridToJson(pane->id()) : std::string {};
+                                               },
+                                               [this](int id)
+                                               {
+                                                   return statsJson(id);
+                                               },
+                                               [this](const std::string &action, const std::vector<std::string> &args) -> bool
+                                               {
+                                                   auto parsed = parseAction(action, args);
+                                                   if (!parsed) {
+                                                       return false;
+                                                   }
+                                                   dispatchAction(*parsed);
+                                                   return true;
+                                               });
         if (debugSink_) {
             debugSink_->setIPC(debugIPC_.get());
         }
@@ -45,11 +55,16 @@ int PlatformDawn::exec()
     // Set up script engine callbacks
     {
         Script::AppCallbacks scbs;
-        scbs.requestRedraw = [this]() { setNeedsRedraw(); };
-        scbs.fontCellSize = [this]() -> std::pair<float, float> {
+        scbs.requestRedraw = [this]()
+        {
+            setNeedsRedraw();
+        };
+        scbs.fontCellSize = [this]() -> std::pair<float, float>
+        {
             return { charWidth_, lineHeight_ };
         };
-        scbs.configJson = [this]() -> std::string {
+        scbs.configJson = [this]() -> std::string
+        {
             std::string buf;
             (void)glz::write_json(lastConfig_, buf);
             return buf;
@@ -61,7 +76,8 @@ int PlatformDawn::exec()
         // throw if parsing fails. Uses default glaze opts to match the
         // TOML loader: unknown keys are silently ignored, same as a typo
         // in config.toml. Type errors (wrong shape) still surface here.
-        scbs.applyConfigJson = [this](const std::string& json) -> std::string {
+        scbs.applyConfigJson = [this](const std::string &json) -> std::string
+        {
             Config draft;
             auto err = glz::read_json(draft, json);
             if (err) {
@@ -70,119 +86,153 @@ int PlatformDawn::exec()
             applyConfig(draft);
             return {};
         };
-        scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string& data) {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) p->writeText(data);
+        scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string &data)
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
+                p->writeText(data);
+            }
         };
-        scbs.pastePaneText = [this](Script::PaneId paneId, const std::string& data) {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) p->pasteText(data);
+        scbs.pastePaneText = [this](Script::PaneId paneId, const std::string &data)
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
+                p->pasteText(data);
+            }
         };
-        scbs.paneHasPty = [this](Script::PaneId paneId) -> bool {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) return p->masterFD() >= 0;
+        scbs.paneHasPty = [this](Script::PaneId paneId) -> bool
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
+                return p->masterFD() >= 0;
+            }
             return false;
         };
-        scbs.hasActiveTab = [this]() -> bool {
+        scbs.hasActiveTab = [this]() -> bool
+        {
             return activeTab().has_value();
         };
-        scbs.invokeAction = [this](const std::string& action, const std::vector<std::string>& args) -> bool {
+        scbs.invokeAction = [this](const std::string &action, const std::vector<std::string> &args) -> bool
+        {
             auto parsed = parseAction(action, args);
-            if (!parsed) return false;
+            if (!parsed) {
+                return false;
+            }
             dispatchAction(*parsed);
             return true;
         };
-        scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
-                    // Reads cursor / document / selection / title — all
-                    // mutated by the parse worker. Lock for a consistent
-                    // snapshot. One-off (driven by JS getter), brief
-                    // block on the worker's current batch is acceptable.
-                    std::lock_guard<std::recursive_mutex> _lk(p->mutex());
-                    bool isFocused = scriptEngine_.focusedTerminalNodeId() == paneId;
-                    // PaneInfo.title is a plain string for JS; collapse
-                    // the optional here (nullopt → "").
-                    // pane.cwd in JS prefers OSC 7 (set by the shell);
-                    // when the shell doesn't emit OSC 7, fall back to
-                    // tcgetpgrp + /proc/<pgid>/cwd (Linux) /
-                    // proc_pidpath (macOS) so JS gets a meaningful value
-                    // regardless of shell config. paneProcessCWD does
-                    // exactly that ordering.
-                    Script::AppCallbacks::PaneInfo info {
-                        p->width(), p->height(),
-                        p->title().value_or(std::string{}),
-                        paneProcessCWD(p),
-                        p->masterFD() >= 0,
-                        isFocused, p->focusedPopupId(),
-                        p->foregroundProcess()
-                    };
-                    if (!p->nodeId().isNil())
-                        info.nodeId = p->nodeId().toString();
-                    {
-                        const auto& doc = p->document();
-                        int absRow = doc.historySize() + p->cursorY();
-                        info.cursorLineId = doc.lineIdForAbs(absRow);
-                        info.cursorCol    = p->cursorX();
-                        info.oldestLineId = doc.lineIdForAbs(0);
-                        int total = doc.historySize() + p->height();
-                        info.newestLineId = doc.lineIdForAbs(total - 1);
-                        if (auto resOpt = p->resolveSelection(); resOpt && resOpt->valid && !resOpt->active) {
-                            const auto& res = *resOpt;
-                            int r0 = res.startAbsRow, c0 = res.startCol;
-                            int r1 = res.endAbsRow,   c1 = res.endCol;
-                            if (r0 > r1 || (r0 == r1 && c0 > c1)) {
-                                std::swap(r0, r1); std::swap(c0, c1);
-                            }
-                            info.hasSelection = true;
-                            info.selectionStartLineId = doc.lineIdForAbs(r0);
-                            info.selectionStartCol    = c0;
-                            info.selectionEndLineId   = doc.lineIdForAbs(r1);
-                            info.selectionEndCol      = c1 + 1; // exclusive
+        scbs.paneInfo = [this](Script::PaneId paneId) -> Script::AppCallbacks::PaneInfo
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
+                // Reads cursor / document / selection / title — all
+                // mutated by the parse worker. Lock for a consistent
+                // snapshot. One-off (driven by JS getter), brief
+                // block on the worker's current batch is acceptable.
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
+                bool isFocused = scriptEngine_.focusedTerminalNodeId() == paneId;
+                // PaneInfo.title is a plain string for JS; collapse
+                // the optional here (nullopt → "").
+                // pane.cwd in JS prefers OSC 7 (set by the shell);
+                // when the shell doesn't emit OSC 7, fall back to
+                // tcgetpgrp + /proc/<pgid>/cwd (Linux) /
+                // proc_pidpath (macOS) so JS gets a meaningful value
+                // regardless of shell config. paneProcessCWD does
+                // exactly that ordering.
+                Script::AppCallbacks::PaneInfo info {
+                    p->width(),
+                    p->height(),
+                    p->title().value_or(std::string {}),
+                    paneProcessCWD(p),
+                    p->masterFD() >= 0,
+                    isFocused,
+                    p->focusedPopupId(),
+                    p->foregroundProcess()
+                };
+                if (!p->nodeId().isNil()) {
+                    info.nodeId = p->nodeId().toString();
+                }
+                {
+                    const auto &doc   = p->document();
+                    int absRow        = doc.historySize() + p->cursorY();
+                    info.cursorLineId = doc.lineIdForAbs(absRow);
+                    info.cursorCol    = p->cursorX();
+                    info.oldestLineId = doc.lineIdForAbs(0);
+                    int total         = doc.historySize() + p->height();
+                    info.newestLineId = doc.lineIdForAbs(total - 1);
+                    if (auto resOpt = p->resolveSelection(); resOpt && resOpt->valid && !resOpt->active) {
+                        const auto &res = *resOpt;
+                        int r0 = res.startAbsRow, c0 = res.startCol;
+                        int r1 = res.endAbsRow, c1 = res.endCol;
+                        if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+                            std::swap(r0, r1);
+                            std::swap(c0, c1);
                         }
-                        info.selectedCommandId = p->selectedCommandId();
+                        info.hasSelection         = true;
+                        info.selectionStartLineId = doc.lineIdForAbs(r0);
+                        info.selectionStartCol    = c0;
+                        info.selectionEndLineId   = doc.lineIdForAbs(r1);
+                        info.selectionEndCol      = c1 + 1; // exclusive
                     }
-                    // Mouse position relative to this pane
-                    if (inputController_) {
-                        Rect pr = p->rect();
-                        double sx = inputController_->lastCursorX() * contentScaleX_;
-                        double sy = inputController_->lastCursorY() * contentScaleY_;
-                        double relX = sx - pr.x;
-                        double relY = sy - pr.y;
-                        if (relX >= 0 && relX < pr.w && relY >= 0 && relY < pr.h) {
-                            info.mouseInPane = true;
-                            info.mouseCellX  = static_cast<int>(relX / charWidth_);
-                            info.mouseCellY  = static_cast<int>(relY / lineHeight_);
-                            info.mousePixelX = static_cast<int>(relX);
-                            info.mousePixelY = static_cast<int>(relY);
-                        }
+                    info.selectedCommandId = p->selectedCommandId();
+                }
+                // Mouse position relative to this pane
+                if (inputController_) {
+                    Rect pr     = p->rect();
+                    double sx   = inputController_->lastCursorX() * contentScaleX_;
+                    double sy   = inputController_->lastCursorY() * contentScaleY_;
+                    double relX = sx - pr.x;
+                    double relY = sy - pr.y;
+                    if (relX >= 0 && relX < pr.w && relY >= 0 && relY < pr.h) {
+                        info.mouseInPane = true;
+                        info.mouseCellX  = static_cast<int>(relX / charWidth_);
+                        info.mouseCellY  = static_cast<int>(relY / lineHeight_);
+                        info.mousePixelX = static_cast<int>(relX);
+                        info.mousePixelY = static_cast<int>(relY);
                     }
-                    return info;
+                }
+                return info;
             }
             return {};
         };
-        scbs.paneCommands = [this](Script::PaneId paneId, int limit) -> std::vector<Script::CommandInfo> {
+        scbs.paneCommands = [this](Script::PaneId paneId, int limit) -> std::vector<Script::CommandInfo>
+        {
             std::vector<Script::CommandInfo> result;
-            Terminal* te = scriptEngine_.terminal(paneId);
-            if (!te) return result;
+            Terminal *te = scriptEngine_.terminal(paneId);
+            if (!te) {
+                return result;
+            }
             // ring (commands log) and document line-id index are
             // parse-mutated — lock for the duration of the walk.
             std::lock_guard<std::recursive_mutex> _lk(te->mutex());
-            const auto& ring = te->commands();
-            const auto& doc  = te->document();
+            const auto &ring = te->commands();
+            const auto &doc  = te->document();
             // Walk backwards collecting completed records — this avoids the
             // bug where an in-flight record at the ring's tail would be the
             // "slice window" and then get filtered out, producing an empty
             // list even though earlier completed records exist.
             for (auto it = ring.rbegin(); it != ring.rend(); ++it) {
-                if (!it->complete) continue;
-                if (limit > 0 && result.size() >= static_cast<size_t>(limit)) break;
-                const auto& r = *it;
-                Script::CommandInfo info{
-                    r.id, r.cwd, r.exitCode,
-                    r.startMs, r.endMs,
-                    r.promptStartLineId, r.commandStartLineId,
-                    r.outputStartLineId, r.outputEndLineId,
-                    doc.firstAbsOfLine(r.promptStartLineId),  r.promptStartCol,
-                    doc.firstAbsOfLine(r.commandStartLineId), r.commandStartCol,
-                    doc.firstAbsOfLine(r.outputStartLineId),  r.outputStartCol,
-                    doc.lastAbsOfLine(r.outputEndLineId),     r.outputEndCol
+                if (!it->complete) {
+                    continue;
+                }
+                if (limit > 0 && result.size() >= static_cast<size_t>(limit)) {
+                    break;
+                }
+                const auto &r = *it;
+                Script::CommandInfo info {
+                    r.id,
+                    r.cwd,
+                    r.exitCode,
+                    r.startMs,
+                    r.endMs,
+                    r.promptStartLineId,
+                    r.commandStartLineId,
+                    r.outputStartLineId,
+                    r.outputEndLineId,
+                    doc.firstAbsOfLine(r.promptStartLineId),
+                    r.promptStartCol,
+                    doc.firstAbsOfLine(r.commandStartLineId),
+                    r.commandStartCol,
+                    doc.firstAbsOfLine(r.outputStartLineId),
+                    r.outputStartCol,
+                    doc.lastAbsOfLine(r.outputEndLineId),
+                    r.outputEndCol
                 };
                 result.push_back(std::move(info));
             }
@@ -190,8 +240,9 @@ int PlatformDawn::exec()
             std::reverse(result.begin(), result.end());
             return result;
         };
-        scbs.paneSetSelectedCommand = [this](Script::PaneId paneId, std::optional<uint64_t> id) -> bool {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+        scbs.paneSetSelectedCommand = [this](Script::PaneId paneId, std::optional<uint64_t> id) -> bool
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
                 // setSelectedCommand + the post-condition read need to
                 // be atomic against the parser (which may evict the
                 // selected command via alt-screen or RIS between the
@@ -202,151 +253,197 @@ int PlatformDawn::exec()
             }
             return false;
         };
-        scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startLineId, int startCol,
-                                  uint64_t endLineId, int endCol) -> std::string {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+        scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startLineId, int startCol, uint64_t endLineId, int endCol) -> std::string
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
                 std::lock_guard<std::recursive_mutex> _lk(p->mutex());
                 return p->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
             }
             return {};
         };
-        scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t> {
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+        scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t>
+        {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
                 std::lock_guard<std::recursive_mutex> _lk(p->mutex());
-                const auto& doc = p->document();
-                if (screenRow < 0 || screenRow >= doc.rows()) return std::nullopt;
+                const auto &doc = p->document();
+                if (screenRow < 0 || screenRow >= doc.rows()) {
+                    return std::nullopt;
+                }
                 int abs = doc.historySize() + screenRow;
                 return doc.lineIdForAbs(abs);
             }
             return std::nullopt;
         };
-        scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo> {
+        scbs.tabs = [this]() -> std::vector<Script::AppCallbacks::TabInfo>
+        {
             std::vector<Script::AppCallbacks::TabInfo> result;
             Uuid activeSub = scriptEngine_.activeTabSubtreeRoot();
             for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
                 Script::AppCallbacks::TabInfo ti;
-                ti.id = sub;
-                ti.active = (sub == activeSub);
+                ti.id          = sub;
+                ti.active      = (sub == activeSub);
                 ti.focusedPane = scriptEngine_.focusedPaneInSubtree(sub);
-                for (Terminal* p : scriptEngine_.panesInSubtree(sub))
+                for (Terminal *p : scriptEngine_.panesInSubtree(sub)) {
                     ti.panes.push_back(p->nodeId());
-                if (!sub.isNil()) ti.nodeId = sub.toString();
+                }
+                if (!sub.isNil()) {
+                    ti.nodeId = sub.toString();
+                }
                 result.push_back(std::move(ti));
             }
             return result;
         };
-        scbs.closeTab = [this](Uuid sub) {
+        scbs.closeTab = [this](Uuid sub)
+        {
             closeTab(sub);
         };
-        scbs.createEmptyTab = [this]() -> Uuid {
+        scbs.createEmptyTab = [this]() -> Uuid
+        {
             return createEmptyTab();
         };
-        scbs.activateTab = [this](Uuid sub) {
+        scbs.activateTab = [this](Uuid sub)
+        {
             activateTabByUuid(sub);
             tabBarDirty_ = true;
         };
-        scbs.focusPane = [this](Uuid nodeId) {
+        scbs.focusPane = [this](Uuid nodeId)
+        {
             return focusPaneById(nodeId);
         };
-        scbs.removeNode = [this](Uuid nodeId) {
+        scbs.removeNode = [this](Uuid nodeId)
+        {
             return removeNode(nodeId);
         };
-        scbs.killTerminalByNodeId = [this](Uuid nodeId) {
+        scbs.killTerminalByNodeId = [this](Uuid nodeId)
+        {
             std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
             return killTerminal(nodeId);
         };
-        scbs.quit = [this]() { quit(); };
-        scbs.createTerminalInContainer = [this](const std::string& parentNodeId,
-                                                 const std::string& cwd)
-                -> Script::AppCallbacks::NewPane {
+        scbs.quit = [this]()
+        {
+            quit();
+        };
+        scbs.createTerminalInContainer = [this](const std::string &parentNodeId,
+                                                const std::string &cwd)
+            -> Script::AppCallbacks::NewPane
+        {
             Uuid p = Uuid::fromString(parentNodeId);
-            if (p.isNil()) return {{}, false};
+            if (p.isNil()) {
+                return { {}, false };
+            }
             Uuid n;
             bool ok = createTerminalInContainer(p, cwd, &n);
-            return {n.isNil() ? std::string{} : n.toString(), ok};
+            return { n.isNil() ? std::string {} : n.toString(), ok };
         };
-        scbs.splitPaneByNodeId = [this](const std::string& existingNodeId,
-                                         const std::string& dir,
-                                         bool newIsFirst,
-                                         const std::string& cwd)
-                -> Script::AppCallbacks::NewPane {
+        scbs.splitPaneByNodeId = [this](const std::string &existingNodeId,
+                                        const std::string &dir,
+                                        bool newIsFirst,
+                                        const std::string &cwd)
+            -> Script::AppCallbacks::NewPane
+        {
             Uuid p = Uuid::fromString(existingNodeId);
-            if (p.isNil()) return {{}, false};
+            if (p.isNil()) {
+                return { {}, false };
+            }
             SplitDir d = (dir == "vertical" || dir == "v")
-                ? SplitDir::Vertical : SplitDir::Horizontal;
+                ? SplitDir::Vertical
+                : SplitDir::Horizontal;
             Uuid n;
-            bool ok = splitPaneByNodeId(p, d, /*ratio=*/0.5f,
-                                        newIsFirst, cwd, &n);
-            return {n.isNil() ? std::string{} : n.toString(), ok};
+            bool ok = splitPaneByNodeId(p, d, /*ratio=*/0.5f, newIsFirst, cwd, &n);
+            return { n.isNil() ? std::string {} : n.toString(), ok };
         };
-        scbs.adjustPaneSize = [this](const std::string& paneNodeId,
-                                      const std::string& dir, int amount) -> bool {
+        scbs.adjustPaneSize = [this](const std::string &paneNodeId,
+                                     const std::string &dir,
+                                     int amount) -> bool
+        {
             Uuid u = Uuid::fromString(paneNodeId);
-            if (u.isNil()) return false;
+            if (u.isNil()) {
+                return false;
+            }
             auto tab = findTabForPane(u);
-            if (!tab) return false;
+            if (!tab) {
+                return false;
+            }
             SplitDir axis;
             int pixelDelta;
             if (dir == "left") {
-                axis = SplitDir::Horizontal;
+                axis       = SplitDir::Horizontal;
                 pixelDelta = -static_cast<int>(amount * charWidth_);
             } else if (dir == "right") {
-                axis = SplitDir::Horizontal;
+                axis       = SplitDir::Horizontal;
                 pixelDelta = static_cast<int>(amount * charWidth_);
             } else if (dir == "up") {
-                axis = SplitDir::Vertical;
+                axis       = SplitDir::Vertical;
                 pixelDelta = -static_cast<int>(amount * lineHeight_);
             } else if (dir == "down") {
-                axis = SplitDir::Vertical;
+                axis       = SplitDir::Vertical;
                 pixelDelta = static_cast<int>(amount * lineHeight_);
             } else {
                 return false;
             }
-            if (!scriptEngine_.resizeTabPaneEdge(*tab, u, axis, pixelDelta)) return false;
+            if (!scriptEngine_.resizeTabPaneEdge(*tab, u, axis, pixelDelta)) {
+                return false;
+            }
             resizeAllPanesInTab(*tab);
             return true;
         };
-        scbs.setStackZoom = [this](const std::string& stackNodeIdStr,
-                                    const std::string& targetNodeIdOrEmpty) -> bool {
+        scbs.setStackZoom = [this](const std::string &stackNodeIdStr,
+                                   const std::string &targetNodeIdOrEmpty) -> bool
+        {
             Uuid stackId = Uuid::fromString(stackNodeIdStr);
-            if (stackId.isNil()) return false;
+            if (stackId.isNil()) {
+                return false;
+            }
             Uuid targetId;
             if (!targetNodeIdOrEmpty.empty()) {
                 targetId = Uuid::fromString(targetNodeIdOrEmpty);
-                if (targetId.isNil()) return false;
+                if (targetId.isNil()) {
+                    return false;
+                }
             }
-            LayoutTree& tree = scriptEngine_.layoutTree();
-            if (!tree.setStackZoom(stackId, targetId)) return false;
+            LayoutTree &tree = scriptEngine_.layoutTree();
+            if (!tree.setStackZoom(stackId, targetId)) {
+                return false;
+            }
             // Trigger resize cascade on the enclosing tab so terminals pick
             // up the new rects (shrunk siblings, zoom target expanded).
-            if (auto tab = findTabForNode(stackId)) resizeAllPanesInTab(*tab);
+            if (auto tab = findTabForNode(stackId)) {
+                resizeAllPanesInTab(*tab);
+            }
             return true;
         };
-        scbs.panePopups = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::PopupInfo> {
+        scbs.panePopups = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::PopupInfo>
+        {
             std::vector<Script::AppCallbacks::PopupInfo> result;
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
-                const std::string& focusedId = p->focusedPopupId();
-                for (const auto& popup : p->popups()) {
-                    result.push_back({popup->popupId(), popup->cellX(), popup->cellY(),
-                                      popup->cellW(), popup->cellH(),
-                                      popup->popupId() == focusedId});
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
+                const std::string &focusedId = p->focusedPopupId();
+                for (const auto &popup : p->popups()) {
+                    result.push_back({ popup->popupId(), popup->cellX(), popup->cellY(), popup->cellW(), popup->cellH(), popup->popupId() == focusedId });
                 }
             }
             return result;
         };
-        scbs.createPopup = [this](Script::PaneId paneId, const std::string& popupId,
-                                   int x, int y, int w, int h,
-                                   std::function<void(const char*, size_t)> onInput) -> bool {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p) return false;
+        scbs.createPopup = [this](Script::PaneId paneId, const std::string &popupId, int x, int y, int w, int h, std::function<void(const char *, size_t)> onInput) -> bool
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return false;
+            }
             PlatformCallbacks pcbs;
-            pcbs.onTerminalExited = [](Terminal*) {};
-            pcbs.quit = [this]() { quit(); };
+            pcbs.onTerminalExited = [](Terminal *)
+            {
+            };
+            pcbs.quit = [this]()
+            {
+                quit();
+            };
             pcbs.onInput = std::move(onInput);
-            if (!p->createPopup(popupId, x, y, w, h, std::move(pcbs))) return false;
+            if (!p->createPopup(popupId, x, y, w, h, std::move(pcbs))) {
+                return false;
+            }
             // Queue popup render state creation
             renderThread_->pending().structuralOps.push_back(
-                PendingMutations::CreatePopupState{paneId, popupId, w, h});
+                PendingMutations::CreatePopupState { paneId, popupId, w, h });
             // Dirty all popup render states for this pane on any content
             // change. Fires from inside injectData (parse worker thread)
             // when an OSC handler updates the popup, so the
@@ -354,20 +451,25 @@ int PlatformDawn::exec()
             // thread — otherwise we'd race the main thread's read of
             // pending() in applyPendingMutations. setNeedsRedraw() is
             // atomic-only and safe here.
-            p->onPopupEvent = [this, paneId]() {
+            p->onPopupEvent = [this, paneId]()
+            {
                 setNeedsRedraw();
-                eventLoop_->post([this, paneId] {
-                    renderThread_->pending().dirtyPanes.insert(paneId);
-                });
+                eventLoop_->post([this, paneId]
+                                 {
+                                     renderThread_->pending().dirtyPanes.insert(paneId);
+                                 });
             };
             // Dirty parent pane so the popup composite entry is added
             renderThread_->pending().dirtyPanes.insert(paneId);
             setNeedsRedraw();
             return true;
         };
-        scbs.destroyPopup = [this](Script::PaneId paneId, const std::string& popupId) {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p) return;
+        scbs.destroyPopup = [this](Script::PaneId paneId, const std::string &popupId)
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return;
+            }
             bool wasPopupFocused = (p->focusedPopupId() == popupId);
 
             // Extract the popup and stage it into the graveyard under
@@ -380,29 +482,40 @@ int PlatformDawn::exec()
             {
                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 extracted = p->extractPopup(popupId);
-                if (!extracted) return;
+                if (!extracted) {
+                    return;
+                }
                 // Mirror the removal into the shadow copy so the next
                 // snapshot doesn't hand the render thread a pointer
                 // into the extracted (graveyard-bound) Terminal.
-                for (auto& rpi : renderThread_->renderState().panes) {
-                    if (rpi.id != paneId) continue;
-                    auto& popups = rpi.popups;
-                    popups.erase(std::remove_if(popups.begin(), popups.end(),
-                        [&popupId](const RenderPanePopupInfo& pi) { return pi.id == popupId; }),
-                        popups.end());
-                    if (rpi.focusedPopupId == popupId) rpi.focusedPopupId.clear();
+                for (auto &rpi : renderThread_->renderState().panes) {
+                    if (rpi.id != paneId) {
+                        continue;
+                    }
+                    auto &popups = rpi.popups;
+                    popups.erase(std::remove_if(popups.begin(), popups.end(), [&popupId](const RenderPanePopupInfo &pi)
+                                                {
+                                                    return pi.id == popupId;
+                                                }),
+                                 popups.end());
+                    if (rpi.focusedPopupId == popupId) {
+                        rpi.focusedPopupId.clear();
+                    }
                     break;
                 }
                 stamp = renderThread_->completedFrames();
             }
             {
-                Terminal* raw = extracted.get();
-                graveyard_.defer(std::move(extracted), stamp,
-                    [raw]() { return !raw->parseInFlight(); });
+                Terminal *raw = extracted.get();
+                graveyard_.defer(std::move(extracted), stamp, [raw]()
+                                 {
+                                     return !raw->parseInFlight();
+                                 });
             }
 
-            if (wasPopupFocused && p->popups().empty())
+            if (wasPopupFocused && p->popups().empty()) {
                 p->focusEvent(true);
+            }
             // Fire JS-level notify so listeners (e.g. default-ui's per-pane
             // focus stack) can react to destruction-driven focus clears.
             // Reuses the existing focusedPopupChanged("") signal — which
@@ -410,8 +523,9 @@ int PlatformDawn::exec()
             // transitions, so listeners must inspect pane.popups to tell
             // destruction from manual unfocus. TODO: consider a dedicated
             // popupDestroyed event for precise semantics.
-            if (wasPopupFocused)
+            if (wasPopupFocused) {
                 scriptEngine_.notifyFocusedPopupChanged(paneId, "");
+            }
             // grid() is parse-mutated; markAllDirty races with parser
             // unless we hold mMutex.
             {
@@ -420,21 +534,23 @@ int PlatformDawn::exec()
             }
             std::string key = popupStateKey(paneId, popupId);
             renderThread_->pending().structuralOps.push_back(
-                PendingMutations::DestroyPopupState{paneId, popupId});
+                PendingMutations::DestroyPopupState { paneId, popupId });
             renderThread_->pending().releasePopupTextures.push_back(key);
             renderThread_->pending().dirtyPanes.insert(paneId);
             setNeedsRedraw();
         };
-        scbs.resizePopup = [this](Script::PaneId paneId, const std::string& popupId,
-                                   int x, int y, int w, int h) -> bool {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p || !p->resizePopup(popupId, x, y, w, h)) return false;
+        scbs.resizePopup = [this](Script::PaneId paneId, const std::string &popupId, int x, int y, int w, int h) -> bool
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p || !p->resizePopup(popupId, x, y, w, h)) {
+                return false;
+            }
             {
                 std::lock_guard<std::recursive_mutex> _lk(p->mutex());
                 p->grid().markAllDirty();
             }
             renderThread_->pending().structuralOps.push_back(
-                PendingMutations::ResizePopupState{paneId, popupId, w, h});
+                PendingMutations::ResizePopupState { paneId, popupId, w, h });
             std::string key = popupStateKey(paneId, popupId);
             renderThread_->pending().releasePopupTextures.push_back(key);
             scriptEngine_.deliverPopupResized(paneId, popupId, w, h);
@@ -446,15 +562,20 @@ int PlatformDawn::exec()
         // a popup clears the embedded slot, switching to an embedded clears
         // the popup slot. focusEvent(false) tells the parent's terminal it
         // is no longer the focused recipient.
-        scbs.setFocusedPopup = [this](Script::PaneId paneId, const std::string& popupId) -> bool {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p) return false;
+        scbs.setFocusedPopup = [this](Script::PaneId paneId, const std::string &popupId) -> bool
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return false;
+            }
             if (popupId.empty()) {
                 p->clearFocusedPopup();
                 p->focusEvent(true);
                 scriptEngine_.notifyFocusedPopupChanged(paneId, "");
             } else {
-                if (!p->findPopup(popupId)) return false;
+                if (!p->findPopup(popupId)) {
+                    return false;
+                }
                 p->clearFocusedEmbedded();
                 p->setFocusedPopup(popupId);
                 p->focusEvent(false);
@@ -464,9 +585,12 @@ int PlatformDawn::exec()
             setNeedsRedraw();
             return true;
         };
-        scbs.setFocusedEmbedded = [this](Script::PaneId paneId, uint64_t lineId) -> bool {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p) return false;
+        scbs.setFocusedEmbedded = [this](Script::PaneId paneId, uint64_t lineId) -> bool
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return false;
+            }
             if (lineId == 0) {
                 p->clearFocusedEmbedded();
                 p->focusEvent(true);
@@ -474,10 +598,15 @@ int PlatformDawn::exec()
             } else {
                 // Validate the lineId is an actual embedded anchor.
                 bool found = false;
-                p->forEachEmbedded([&](uint64_t id, Terminal&) {
-                    if (id == lineId) found = true;
-                });
-                if (!found) return false;
+                p->forEachEmbedded([&](uint64_t id, Terminal &)
+                                   {
+                                       if (id == lineId) {
+                                           found = true;
+                                       }
+                                   });
+                if (!found) {
+                    return false;
+                }
                 p->clearFocusedPopup();
                 p->setFocusedEmbeddedLineId(lineId);
                 p->focusEvent(false);
@@ -487,19 +616,24 @@ int PlatformDawn::exec()
             setNeedsRedraw();
             return true;
         };
-        scbs.paneEmbeddeds = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::EmbeddedInfo> {
+        scbs.paneEmbeddeds = [this](Script::PaneId paneId) -> std::vector<Script::AppCallbacks::EmbeddedInfo>
+        {
             std::vector<Script::AppCallbacks::EmbeddedInfo> result;
-            if (Terminal* p = scriptEngine_.terminal(paneId)) {
+            if (Terminal *p = scriptEngine_.terminal(paneId)) {
                 const uint64_t focused = p->focusedEmbeddedLineId();
-                p->forEachEmbedded([&result, focused](uint64_t lineId, Terminal& em) {
-                    result.push_back({lineId, em.height(), lineId == focused});
-                });
+                p->forEachEmbedded([&result, focused](uint64_t lineId, Terminal &em)
+                                   {
+                                       result.push_back({ lineId, em.height(), lineId == focused });
+                                   });
             }
             return result;
         };
-        scbs.createEmbedded = [this](Script::PaneId paneId, int rows) -> uint64_t {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p) return 0;
+        scbs.createEmbedded = [this](Script::PaneId paneId, int rows) -> uint64_t
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return 0;
+            }
             // Resolve anchor lineId from current cursor position BEFORE the
             // call, because createEmbedded advances the cursor internally.
             // The document's lineIdForAbs on the cursor's absolute row is the
@@ -512,29 +646,42 @@ int PlatformDawn::exec()
                 anchorLineId = p->document().lineIdForAbs(
                     p->document().historySize() + p->cursorY());
             }
-            if (anchorLineId == 0) return 0;
+            if (anchorLineId == 0) {
+                return 0;
+            }
 
             PlatformCallbacks pcbs;
-            pcbs.onTerminalExited = [](Terminal*) {};
-            pcbs.quit = [this]() { quit(); };
+            pcbs.onTerminalExited = [](Terminal *)
+            {
+            };
+            pcbs.quit = [this]()
+            {
+                quit();
+            };
             // When the user types into a focused embedded, its headless
             // Terminal emits bytes via writeToOutput → onInput. Route to the
             // JS "input" listeners registered under "paneId:lineId" — same
             // regKey-based fanout as deliverEmbeddedDestroyed.
             std::string regKey = paneId.toString() + ":" + std::to_string(anchorLineId);
-            pcbs.onInput = [this, regKey](const char* data, size_t len) {
+            pcbs.onInput       = [this, regKey](const char *data, size_t len)
+            {
                 scriptEngine_.deliverEmbeddedInput(regKey, data, len);
                 scriptEngine_.executePendingJobs();
             };
 
-            Terminal* em = p->createEmbedded(rows, std::move(pcbs));
-            if (!em) return 0;
+            Terminal *em = p->createEmbedded(rows, std::move(pcbs));
+            if (!em) {
+                return 0;
+            }
             setNeedsRedraw();
             return anchorLineId;
         };
-        scbs.destroyEmbedded = [this](Script::PaneId paneId, uint64_t lineId) {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p) return;
+        scbs.destroyEmbedded = [this](Script::PaneId paneId, uint64_t lineId)
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return;
+            }
 
             // Mirror the popup-destruction pattern: under the render mutex,
             // extract the embedded from the live parent, remove it from the
@@ -548,34 +695,47 @@ int PlatformDawn::exec()
             {
                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 extracted = p->extractEmbedded(lineId);
-                if (!extracted) return;
-                for (auto& rpi : renderThread_->renderState().panes) {
-                    if (rpi.id != paneId) continue;
-                    auto& embs = rpi.embeddeds;
-                    embs.erase(std::remove_if(embs.begin(), embs.end(),
-                        [lineId](const RenderPaneEmbeddedInfo& ei) { return ei.lineId == lineId; }),
-                        embs.end());
-                    if (rpi.focusedEmbeddedLineId == lineId) rpi.focusedEmbeddedLineId = 0;
+                if (!extracted) {
+                    return;
+                }
+                for (auto &rpi : renderThread_->renderState().panes) {
+                    if (rpi.id != paneId) {
+                        continue;
+                    }
+                    auto &embs = rpi.embeddeds;
+                    embs.erase(std::remove_if(embs.begin(), embs.end(), [lineId](const RenderPaneEmbeddedInfo &ei)
+                                              {
+                                                  return ei.lineId == lineId;
+                                              }),
+                               embs.end());
+                    if (rpi.focusedEmbeddedLineId == lineId) {
+                        rpi.focusedEmbeddedLineId = 0;
+                    }
                     break;
                 }
                 stamp = renderThread_->completedFrames();
             }
             {
-                Terminal* raw = extracted.get();
-                graveyard_.defer(std::move(extracted), stamp,
-                    [raw]() { return !raw->parseInFlight(); });
+                Terminal *raw = extracted.get();
+                graveyard_.defer(std::move(extracted), stamp, [raw]()
+                                 {
+                                     return !raw->parseInFlight();
+                                 });
             }
 
             renderThread_->pending().structuralOps.push_back(
-                PendingMutations::DestroyEmbeddedState{paneId, lineId});
+                PendingMutations::DestroyEmbeddedState { paneId, lineId });
             renderThread_->pending().releaseEmbeddedTextures.push_back(
                 paneId.toString() + ":" + std::to_string(lineId));
             renderThread_->pending().dirtyPanes.insert(paneId);
             setNeedsRedraw();
         };
-        scbs.resizeEmbedded = [this](Script::PaneId paneId, uint64_t lineId, int rows) -> bool {
-            Terminal* p = scriptEngine_.terminal(paneId);
-            if (!p) return false;
+        scbs.resizeEmbedded = [this](Script::PaneId paneId, uint64_t lineId, int rows) -> bool
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return false;
+            }
             bool ok = p->resizeEmbedded(lineId, rows);
             if (ok) {
                 // Parent-cascade resize (pane cols change) isn't wired yet;
@@ -586,29 +746,38 @@ int PlatformDawn::exec()
             }
             return ok;
         };
-        scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string {
-            Terminal* te = scriptEngine_.terminal(paneId);
-            if (!te) return {};
+        scbs.paneUrlAt = [this](Script::PaneId paneId, uint64_t lineId, int col) -> std::string
+        {
+            Terminal *te = scriptEngine_.terminal(paneId);
+            if (!te) {
+                return {};
+            }
             // Document + hyperlink registry are parse-mutated.
             std::lock_guard<std::recursive_mutex> _lk(te->mutex());
-            const auto& doc = te->document();
-            int abs = doc.firstAbsOfLine(lineId);
-            if (abs < 0) return {};
-            int screenRow = abs - doc.historySize();
+            const auto &doc = te->document();
+            int abs         = doc.firstAbsOfLine(lineId);
+            if (abs < 0) {
+                return {};
+            }
+            int screenRow       = abs - doc.historySize();
             // getExtra works on screen rows; for history rows we need historyExtras
-            const CellExtra* ex = nullptr;
+            const CellExtra *ex = nullptr;
             if (screenRow >= 0 && screenRow < te->height()) {
                 ex = doc.getExtra(col, screenRow);
             } else if (abs < doc.historySize()) {
-                auto* extras = doc.historyExtras(abs);
+                auto *extras = doc.historyExtras(abs);
                 if (extras) {
                     auto it = extras->find(col);
-                    if (it != extras->end()) ex = &it->second;
+                    if (it != extras->end()) {
+                        ex = &it->second;
+                    }
                 }
             }
             if (ex && ex->hyperlinkId) {
-                const std::string* uri = te->hyperlinkURI(ex->hyperlinkId);
-                if (uri) return *uri;
+                const std::string *uri = te->hyperlinkURI(ex->hyperlinkId);
+                if (uri) {
+                    return *uri;
+                }
             }
             return {};
         };
@@ -616,47 +785,63 @@ int PlatformDawn::exec()
             -> std::vector<Script::AppCallbacks::LinkInfo>
         {
             std::vector<Script::AppCallbacks::LinkInfo> result;
-            Terminal* te = scriptEngine_.terminal(paneId);
+            Terminal *te = scriptEngine_.terminal(paneId);
             if (te) {
                 {
                     std::lock_guard<std::recursive_mutex> _lk(te->mutex());
-                    const auto& doc = te->document();
-                    int startAbs = doc.firstAbsOfLine(startLineId);
-                    int endAbs   = doc.lastAbsOfLine(endLineId);
-                    if (startAbs < 0) return result;
-                    if (endAbs < 0) endAbs = doc.historySize() + te->height() - 1;
+                    const auto &doc = te->document();
+                    int startAbs    = doc.firstAbsOfLine(startLineId);
+                    int endAbs      = doc.lastAbsOfLine(endLineId);
+                    if (startAbs < 0) {
+                        return result;
+                    }
+                    if (endAbs < 0) {
+                        endAbs = doc.historySize() + te->height() - 1;
+                    }
 
-                    int histSize = doc.historySize();
-                    int cols = te->width();
+                    int histSize        = doc.historySize();
+                    int cols            = te->width();
                     uint32_t prevLinkId = 0;
 
                     for (int abs = startAbs; abs <= endAbs; ++abs) {
-                        const std::unordered_map<int, CellExtra>* extras = nullptr;
-                        int screenRow = abs - histSize;
-                        if (screenRow >= 0 && screenRow < te->height())
+                        const std::unordered_map<int, CellExtra> *extras = nullptr;
+                        int screenRow                                    = abs - histSize;
+                        if (screenRow >= 0 && screenRow < te->height()) {
                             extras = doc.viewportExtras(screenRow, 0);
-                        else if (abs < histSize)
+                        } else if (abs < histSize) {
                             extras = doc.historyExtras(abs);
-                        if (!extras) { prevLinkId = 0; continue; }
+                        }
+                        if (!extras) {
+                            prevLinkId = 0;
+                            continue;
+                        }
 
                         for (int col = 0; col < cols; ++col) {
-                            auto it = extras->find(col);
+                            auto it         = extras->find(col);
                             uint32_t linkId = (it != extras->end()) ? it->second.hyperlinkId : 0;
-                            if (linkId == 0) { prevLinkId = 0; continue; }
+                            if (linkId == 0) {
+                                prevLinkId = 0;
+                                continue;
+                            }
                             if (linkId == prevLinkId) {
                                 // Extend current link span
                                 if (!result.empty()) {
                                     result.back().endLineId = doc.lineIdForAbs(abs);
-                                    result.back().endCol = col + 1;
+                                    result.back().endCol    = col + 1;
                                 }
                                 continue;
                             }
                             // New link
-                            const std::string* uri = te->hyperlinkURI(linkId);
-                            if (!uri) { prevLinkId = 0; continue; }
-                            result.push_back({*uri, doc.lineIdForAbs(abs), col, doc.lineIdForAbs(abs), col + 1});
+                            const std::string *uri = te->hyperlinkURI(linkId);
+                            if (!uri) {
+                                prevLinkId = 0;
+                                continue;
+                            }
+                            result.push_back({ *uri, doc.lineIdForAbs(abs), col, doc.lineIdForAbs(abs), col + 1 });
                             prevLinkId = linkId;
-                            if (limit > 0 && static_cast<int>(result.size()) >= limit) return result;
+                            if (limit > 0 && static_cast<int>(result.size()) >= limit) {
+                                return result;
+                            }
                         }
                         prevLinkId = 0; // reset across rows
                     }
@@ -665,20 +850,32 @@ int PlatformDawn::exec()
             }
             return result;
         };
-        scbs.getClipboard = [this](const std::string& source,
-                                    std::function<void(std::string)> done) {
-            if (!window_) { done({}); return; }
+        scbs.getClipboard = [this](const std::string &source,
+                                   std::function<void(std::string)>
+                                       done)
+        {
+            if (!window_) {
+                done({});
+                return;
+            }
             auto src = (source == "primary") ? Window::SelectionSource::Primary
-                                              : Window::SelectionSource::Clipboard;
+                                             : Window::SelectionSource::Clipboard;
             window_->requestSelection(src,
-                [done = std::move(done)](std::optional<std::string> text) {
-                    done(text.value_or(std::string{}));
-                });
+                                      [done = std::move(done)](std::optional<std::string> text)
+                                      {
+                                          done(text.value_or(std::string {}));
+                                      });
         };
-        scbs.setClipboard = [this](const std::string& source, const std::string& text) {
-            if (!window_) return;
-            if (source == "primary") window_->setPrimarySelection(text);
-            else window_->setClipboard(text);
+        scbs.setClipboard = [this](const std::string &source, const std::string &text)
+        {
+            if (!window_) {
+                return;
+            }
+            if (source == "primary") {
+                window_->setPrimarySelection(text);
+            } else {
+                window_->setClipboard(text);
+            }
         };
         // Process spawn — direct passthrough to platformSpawnDetached.
         // Doesn't touch any PlatformDawn member state, so capturing
@@ -686,7 +883,8 @@ int PlatformDawn::exec()
         // closure (vs. taking the function-pointer's address directly)
         // so future hooks (e.g. metrics, allowlist enforcement at the
         // platform layer) can land here without re-plumbing the signature.
-        scbs.spawnProcess = [](const Script::AppCallbacks::ProcessSpawnReq& req) -> pid_t {
+        scbs.spawnProcess = [](const Script::AppCallbacks::ProcessSpawnReq &req) -> pid_t
+        {
             ProcessSpawnOptions opts;
             opts.cwd = req.cwd;
             opts.env = req.env;
@@ -697,28 +895,31 @@ int PlatformDawn::exec()
 
     // Hook action dispatcher to notify script engine
     if (actionRouter_) {
-        actionRouter_->listeners().addListener([this](Action::TypeIndex idx, const Action::Any& action) {
-            if (auto* sa = std::get_if<Action::ScriptAction>(&action)) {
-                scriptEngine_.notifyAction(sa->name);
-            } else {
-                scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
-            }
-        });
+        actionRouter_->listeners().addListener([this](Action::TypeIndex idx, const Action::Any &action)
+                                               {
+                                                   if (auto *sa = std::get_if<Action::ScriptAction>(&action)) {
+                                                       scriptEngine_.notifyAction(sa->name);
+                                                   } else {
+                                                       scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
+                                                   }
+                                               });
     }
 
     // Set up script engine config dir
     {
-        const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");
+        const char *xdgConfig = std::getenv("XDG_CONFIG_HOME");
         std::string configDir;
         if (xdgConfig && xdgConfig[0]) {
             configDir = std::string(xdgConfig) + "/MasterBandit";
         } else {
-            const char* home = std::getenv("HOME");
-            if (home && home[0])
+            const char *home = std::getenv("HOME");
+            if (home && home[0]) {
                 configDir = std::string(home) + "/.config/MasterBandit";
+            }
         }
-        if (!configDir.empty())
+        if (!configDir.empty()) {
             scriptEngine_.setConfigDir(configDir);
+        }
     }
 
     // Load built-in scripts. default-ui.js is mandatory — it owns the
@@ -763,41 +964,46 @@ int PlatformDawn::exec()
                     spdlog::warn("Config: failed to load JS config '{}'", jsPath);
                 } else {
                     spdlog::info("Config: loaded JS config '{}' (id={})",
-                                 jsPath, configJsInstanceId_);
+                                 jsPath,
+                                 configJsInstanceId_);
                 }
             }
-            eventLoop_->addFileWatch(jsPath, [this, jsPath]() {
-                if (configJsDebounceActive_)
-                    eventLoop_->removeTimer(configJsDebounceTimer_);
-                configJsDebounceTimer_ = eventLoop_->addTimer(300, false, [this, jsPath]() {
-                    configJsDebounceActive_ = false;
-                    if (!std::filesystem::exists(jsPath)) {
-                        // File was deleted between the watch event and
-                        // the debounce expiry; ignore. Existing patches
-                        // already applied to lastConfig_ remain in
-                        // effect until the user restarts or re-creates
-                        // the file. (Unloading the instance to roll
-                        // back the patches would surprise scripts with
-                        // registered listeners; we don't.)
-                        return;
-                    }
-                    if (configJsInstanceId_ == 0) {
-                        // Either the file didn't exist at startup, or
-                        // initial load failed (syntax error etc). Fresh
-                        // load now.
-                        configJsInstanceId_ = scriptEngine_.loadController(jsPath);
-                        if (configJsInstanceId_) {
-                            spdlog::info("Config: loaded JS config '{}' on file-watch (id={})",
-                                         jsPath, configJsInstanceId_);
-                        } else {
-                            spdlog::warn("Config: failed to load JS config '{}'", jsPath);
-                        }
-                    } else {
-                        scriptEngine_.reevalInstance(configJsInstanceId_, jsPath);
-                    }
-                });
-                configJsDebounceActive_ = true;
-            });
+            eventLoop_->addFileWatch(jsPath, [this, jsPath]()
+                                     {
+                                         if (configJsDebounceActive_) {
+                                             eventLoop_->removeTimer(configJsDebounceTimer_);
+                                         }
+                                         configJsDebounceTimer_  = eventLoop_->addTimer(300, false, [this, jsPath]()
+                                                                                       {
+                                                                                           configJsDebounceActive_ = false;
+                                                                                           if (!std::filesystem::exists(jsPath)) {
+                                                                                               // File was deleted between the watch event and
+                                                                                               // the debounce expiry; ignore. Existing patches
+                                                                                               // already applied to lastConfig_ remain in
+                                                                                               // effect until the user restarts or re-creates
+                                                                                               // the file. (Unloading the instance to roll
+                                                                                               // back the patches would surprise scripts with
+                                                                                               // registered listeners; we don't.)
+                                                                                               return;
+                                                                                           }
+                                                                                           if (configJsInstanceId_ == 0) {
+                                                                                               // Either the file didn't exist at startup, or
+                                                                                               // initial load failed (syntax error etc). Fresh
+                                                                                               // load now.
+                                                                                               configJsInstanceId_ = scriptEngine_.loadController(jsPath);
+                                                                                               if (configJsInstanceId_) {
+                                                                                                   spdlog::info("Config: loaded JS config '{}' on file-watch (id={})",
+                                                                                                                jsPath,
+                                                                                                                configJsInstanceId_);
+                                                                                               } else {
+                                                                                                   spdlog::warn("Config: failed to load JS config '{}'", jsPath);
+                                                                                               }
+                                                                                           } else {
+                                                                                               scriptEngine_.reevalInstance(configJsInstanceId_, jsPath);
+                                                                                           }
+                                                                                       });
+                                         configJsDebounceActive_ = true;
+                                     });
         }
     }
 
@@ -808,13 +1014,16 @@ int PlatformDawn::exec()
         // hand off to it — the handler is responsible for calling mb.quit()
         // when the user confirms. With no listener, quit immediately so a
         // broken JS engine can't trap the user.
-        eventLoop_->onQuitRequested = [this]() {
-            if (scriptEngine_.hasQuitListeners())
+        eventLoop_->onQuitRequested = [this]()
+        {
+            if (scriptEngine_.hasQuitListeners()) {
                 scriptEngine_.fireQuitRequested();
-            else
+            } else {
                 quit();
+            }
         };
-        eventLoop_->onTick = [this]() {
+        eventLoop_->onTick = [this]()
+        {
             if (shouldClose()) {
                 eventLoop_->stop();
                 return;
@@ -831,10 +1040,15 @@ int PlatformDawn::exec()
                 // Advance progress animations
                 bool hasAnim = false;
                 for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
-                    for (Terminal* panePtr : scriptEngine_.panesInSubtree(sub)) {
-                        if (panePtr->progressState() == 3) { hasAnim = true; break; }
+                    for (Terminal *panePtr : scriptEngine_.panesInSubtree(sub)) {
+                        if (panePtr->progressState() == 3) {
+                            hasAnim = true;
+                            break;
+                        }
                     }
-                    if (hasAnim) break;
+                    if (hasAnim) {
+                        break;
+                    }
                 }
                 if (hasAnim) {
                     setNeedsRedraw();
@@ -856,7 +1070,7 @@ int PlatformDawn::exec()
             // flush in early-tear-down paths where the render engine
             // (and its worker pool) isn't up.
             if (!renderEngine_) {
-                for (auto& [fd, term] : ptyPolls()) {
+                for (auto &[fd, term] : ptyPolls()) {
                     term->flushReadBuffer();
                 }
             }
@@ -868,32 +1082,43 @@ int PlatformDawn::exec()
             // released, we can go through the same render-mutex + graveyard
             // path used by destroyEmbedded.
             for (Uuid sub : scriptEngine_.tabSubtreeRoots()) {
-                for (Terminal* pane : scriptEngine_.panesInSubtree(sub)) {
-                    if (!pane->hasEvictedEmbeddeds()) continue;
+                for (Terminal *pane : scriptEngine_.panesInSubtree(sub)) {
+                    if (!pane->hasEvictedEmbeddeds()) {
+                        continue;
+                    }
                     Uuid paneId = pane->nodeId();
                     pane->drainEvictedEmbeddeds(
-                        [&, this, paneId](uint64_t lineId, std::unique_ptr<Terminal> em) {
+                        [&, this, paneId](uint64_t lineId, std::unique_ptr<Terminal> em)
+                        {
                             uint64_t stamp = 0;
                             {
                                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
-                                for (auto& rpi : renderThread_->renderState().panes) {
-                                    if (rpi.id != paneId) continue;
-                                    auto& embs = rpi.embeddeds;
-                                    embs.erase(std::remove_if(embs.begin(), embs.end(),
-                                        [lineId](const RenderPaneEmbeddedInfo& ei) { return ei.lineId == lineId; }),
-                                        embs.end());
-                                    if (rpi.focusedEmbeddedLineId == lineId) rpi.focusedEmbeddedLineId = 0;
+                                for (auto &rpi : renderThread_->renderState().panes) {
+                                    if (rpi.id != paneId) {
+                                        continue;
+                                    }
+                                    auto &embs = rpi.embeddeds;
+                                    embs.erase(std::remove_if(embs.begin(), embs.end(), [lineId](const RenderPaneEmbeddedInfo &ei)
+                                                              {
+                                                                  return ei.lineId == lineId;
+                                                              }),
+                                               embs.end());
+                                    if (rpi.focusedEmbeddedLineId == lineId) {
+                                        rpi.focusedEmbeddedLineId = 0;
+                                    }
                                     break;
                                 }
                                 stamp = renderThread_->completedFrames();
                             }
                             {
-                                Terminal* raw = em.get();
-                                graveyard_.defer(std::move(em), stamp,
-                                    [raw]() { return !raw->parseInFlight(); });
+                                Terminal *raw = em.get();
+                                graveyard_.defer(std::move(em), stamp, [raw]()
+                                                 {
+                                                     return !raw->parseInFlight();
+                                                 });
                             }
                             renderThread_->pending().structuralOps.push_back(
-                                PendingMutations::DestroyEmbeddedState{paneId, lineId});
+                                PendingMutations::DestroyEmbeddedState { paneId, lineId });
                             renderThread_->pending().releaseEmbeddedTextures.push_back(
                                 paneId.toString() + ":" + std::to_string(lineId));
                             renderThread_->pending().dirtyPanes.insert(paneId);
@@ -907,7 +1132,7 @@ int PlatformDawn::exec()
             }
 
             // Drain deferred callbacks.
-            eventLoop_->drainPosts();                   // title / icon / cwd / progress / etc.
+            eventLoop_->drainPosts(); // title / icon / cwd / progress / etc.
             scriptEngine_.executePendingJobs();
 
             // Apply all accumulated mutations to the shadow render state in
@@ -922,28 +1147,30 @@ int PlatformDawn::exec()
             // at stage time has advanced the counter by now; its
             // frameState_ references are out of scope and the held
             // Terminals can safely run their destructors.
-            if (renderThread_)
+            if (renderThread_) {
                 graveyard_.sweep(renderThread_->completedFrames());
+            }
 
             // Flush any pending TIOCSWINSZ on the main thread so the render
             // thread never mutates terminal state.
             if (!window_ || !window_->inLiveResize()) {
-                for (auto& [fd, term] : ptyPolls())
+                for (auto &[fd, term] : ptyPolls()) {
                     term->flushPendingResize();
+                }
             }
 
             // Render thread may have requested an animation wakeup — wire
             // the event-loop timer on the main thread.
-            if (animScheduler_) animScheduler_->applyPendingAnimation();
-
-
+            if (animScheduler_) {
+                animScheduler_->applyPendingAnimation();
+            }
 
             // device_.Tick() is called from the render thread (see
             // renderThreadMain). Calling it here while the render thread
             // is mid-encode triggers a Metal assertion:
             //   "encodeSignalEvent:value: with uncommitted encoder".
 
-            bool redraw = renderEngine_ && renderEngine_->needsRedraw();
+            bool redraw    = renderEngine_ && renderEngine_->needsRedraw();
             int pendingCbs = renderEngine_ ? renderEngine_->pendingGpuCallbacks() : 0;
             if (redraw ||
                 (debugIPC_ && debugIPC_->pngScreenshotPending()) ||
@@ -953,40 +1180,54 @@ int PlatformDawn::exec()
 
             // If something during this tick requested another frame (e.g. animation),
             // ensure the event loop doesn't sleep.
-            if (redraw || pendingCbs > 0)
+            if (redraw || pendingCbs > 0) {
                 eventLoop_->wakeup();
+            }
         };
     }
 
     // Start cursor blink timer from current options (default 500ms).
     if (animScheduler_) {
-        const auto& cur = terminalOptions().cursor;
+        const auto &cur = terminalOptions().cursor;
         animScheduler_->applyBlinkConfig(cur.blink_rate, cur.blink_fps);
     }
 
-    if (eventLoop_) eventLoop_->run();
+    if (eventLoop_) {
+        eventLoop_->run();
+    }
 
-    if (debugSink_) debugSink_->setIPC(nullptr);
+    if (debugSink_) {
+        debugSink_->setIPC(nullptr);
+    }
 
     // Cleanup
     std::vector<int> fds;
-    for (auto& [fd, _] : ptyPolls()) fds.push_back(fd);
-    for (int fd : fds) removePtyPoll(fd);
+    for (auto &[fd, _] : ptyPolls()) {
+        fds.push_back(fd);
+    }
+    for (int fd : fds) {
+        removePtyPoll(fd);
+    }
 
-    if (configLoader_) configLoader_->stop();
+    if (configLoader_) {
+        configLoader_->stop();
+    }
     if (configJsDebounceActive_) {
         eventLoop_->removeTimer(configJsDebounceTimer_);
         configJsDebounceActive_ = false;
     }
-    if (animScheduler_) animScheduler_->stopAllTimers();
+    if (animScheduler_) {
+        animScheduler_->stopAllTimers();
+    }
     eventLoop_->removeFileWatch();
 
-    if (debugIPC_) debugIPC_->closeHandles();
+    if (debugIPC_) {
+        debugIPC_->closeHandles();
+    }
     debugIPC_.reset();
 
     return exitStatus_;
 }
-
 
 void PlatformDawn::quit(int status)
 {
@@ -996,8 +1237,9 @@ void PlatformDawn::quit(int status)
     }
 }
 
-
 void PlatformDawn::setNeedsRedraw()
 {
-    if (renderEngine_) renderEngine_->setNeedsRedraw();
+    if (renderEngine_) {
+        renderEngine_->setNeedsRedraw();
+    }
 }

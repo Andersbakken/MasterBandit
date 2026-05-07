@@ -1,6 +1,7 @@
 #pragma once
 
 #include <CellGrid.h>
+#include <Decoration.h>
 #include <Document.h>
 #include <InputTypes.h>
 #include <ParserAction.h>
@@ -582,6 +583,28 @@ public:
     bool isCellSelected(int col, int absRow) const;
     std::string selectedText() const;
 
+    // Decoration overlay (see Decoration.h). Single source of truth for
+    // selection / OSC 133 command region / OSC 8 hyperlink underlines / JS-
+    // driven highlights. Live storage anchors are line-id+cellOffset; the
+    // snapshot mirror resolves to abs rows. Mutations under `mMutex`.
+    //
+    // For Selection / CommandRegion / Hyperlink kinds the storage is owned
+    // by the relevant lifecycle (selection methods, setSelectedCommand, OSC
+    // parser); JS callers must use the User kind. clearDecorations(tag) for
+    // a system kind is a no-op (tag is empty for those).
+    uint64_t addDecoration(Decoration spec);
+    bool removeDecoration(uint64_t id);
+    // Remove all User decorations matching `tag`. Empty `tag` clears every
+    // User decoration (system kinds untouched). Returns count removed.
+    size_t clearUserDecorations(std::string_view tag = {});
+
+    const std::vector<Decoration> &decorations() const { return mDecorations; }
+
+    // Resolve a single decoration to abs-row coordinates. Returns empty
+    // when an anchor has evicted past the archive cap. Used by the snapshot
+    // mirror.
+    std::optional<ResolvedDecoration> resolveDecoration(const Decoration &dec) const;
+
     // Image registry
     struct ImageEntry
     {
@@ -1120,6 +1143,12 @@ private:
     bool mPendingSelXRightHalf { false };
 
     Selection mSelection;
+
+    // Decoration overlay store. Mutated under mMutex; snapshot mirror copies
+    // under the same lock. Order is insertion (zPriority is consulted at
+    // render-time composition, not in storage).
+    std::vector<Decoration> mDecorations;
+    uint64_t mNextDecorationId { 1 };
 
     // Image registry
     std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>> mImageRegistry;

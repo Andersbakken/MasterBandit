@@ -29,41 +29,6 @@ const TerminalSnapshot::Segment *TerminalSnapshot::segmentAtPixelY(int y, float 
     return nullptr;
 }
 
-bool TerminalSnapshot::isCellSelected(int col, int absRow) const
-{
-    if (!selection.active && !selection.valid) {
-        return false;
-    }
-
-    int r0 = selection.startAbsRow, c0 = selection.startCol;
-    int r1 = selection.endAbsRow, c1 = selection.endCol;
-
-    if (selection.mode == TerminalEmulator::SelectionMode::Rectangle) {
-        int minR = std::min(r0, r1), maxR = std::max(r0, r1);
-        int minC = std::min(c0, c1), maxC = std::max(c0, c1);
-        return absRow >= minR && absRow <= maxR && col >= minC && col <= maxC;
-    }
-
-    if (r0 > r1 || (r0 == r1 && c0 > c1)) {
-        std::swap(r0, r1);
-        std::swap(c0, c1);
-    }
-
-    if (absRow < r0 || absRow > r1) {
-        return false;
-    }
-    if (absRow == r0 && absRow == r1) {
-        return col >= c0 && col <= c1;
-    }
-    if (absRow == r0) {
-        return col >= c0;
-    }
-    if (absRow == r1) {
-        return col <= c1;
-    }
-    return true;
-}
-
 bool TerminalSnapshot::update(TerminalEmulator &term)
 {
     std::lock_guard<std::recursive_mutex> _lk(term.mutex());
@@ -106,55 +71,12 @@ bool TerminalSnapshot::update(TerminalEmulator &term)
     cursorBlinking = term.cursorBlinking();
     defaults       = term.defaultColors();
 
-    // Selection: resolve line-id anchors to abs rows under the lock so the
-    // renderer reads stable rendering coordinates. Empty when an anchor has
-    // evicted past the archive cap.
-    if (auto resOpt = term.resolveSelection()) {
-        selection = *resOpt;
-    } else {
-        selection = TerminalEmulator::ResolvedSelection {};
-    }
-
-    // OSC 133 selected command region. Resolve line ids to current absolute
-    // rows under the mutex; a pruned command id clears to nullopt inside
-    // pruneCommandRing, so a stale id won't reach us here normally.
-    selectedCommand.reset();
-    if (auto idOpt = term.selectedCommandId(); idOpt && !term.usingAltScreen()) {
-        const Document &dref = term.document();
-        for (const auto &r : term.commands()) {
-            if (r.id != *idOpt) {
-                continue;
-            }
-            int startAbs = dref.firstAbsOfLine(r.promptStartLineId);
-            int endAbs;
-            int endCol;
-            if (r.complete) {
-                // lastAbsOfLine gives the last dst row stamped with this line
-                // id — handles soft-wrap where one src spans multiple rows.
-                endAbs = dref.lastAbsOfLine(r.outputEndLineId);
-                endCol = r.outputEndCol;
-                // Shells typically emit D in precmd, i.e. at col 0 of the next
-                // prompt row, so outputEndLineId points one row past the
-                // actual last output line. Roll it back when that's the case.
-                if (endCol == 0 && endAbs > startAbs) {
-                    endAbs -= 1;
-                    endCol = term.width();
-                }
-            } else {
-                endAbs = newHistory + term.cursorY();
-                endCol = term.cursorX();
-            }
-            if (startAbs >= 0 && endAbs >= 0) {
-                selectedCommand = SelectedCommandRegion {
-                    startAbs,
-                    std::max(0, r.promptStartCol),
-                    endAbs,
-                    endCol,
-                };
-            }
-            break;
-        }
-    }
+    // Selection / OSC 133 command region used to be populated as separate
+    // snapshot fields here. Both now flow through the resolved decoration
+    // list built later in this function (see the "Decorations" block);
+    // kept the parser-side state on TerminalEmulator (mSelection,
+    // mSelectedCommandId) but the snapshot mirror only carries the unified
+    // decoration view.
 
     const size_t cellCount = static_cast<size_t>(rows) * static_cast<size_t>(cols);
     cells.resize(cellCount);
@@ -301,6 +223,206 @@ bool TerminalSnapshot::update(TerminalEmulator &term)
             seg.rowCount = 1;
             segments.push_back(seg);
             cellY += 1;
+        }
+    }
+
+    // ---- Decorations ----
+    //
+    // Single resolved overlay list: User decorations from term.decorations()
+    // (line-id-anchored, persistent), plus system-kind decorations DERIVED
+    // here at snapshot time:
+    //   - Selection      — from term.resolveSelection()
+    //   - CommandRegion  — from term.selectedCommandId() + commandRecord
+    //                       (populated below in the same code path that fills
+    //                       `selectedCommand`; see the appendDerived block)
+    //   - Hyperlink      — from CellExtra.hyperlinkId runs in visible rows
+    //
+    // Per-row buckets index into `decorations` and only list entries whose
+    // resolved row range covers `segments[r].absRow`.
+    decorations.clear();
+    decorationsByViewRow.assign(static_cast<size_t>(rows), {});
+    auto pushDecoration = [&](ResolvedDecoration r)
+    {
+        int minR        = std::min(r.startAbsRow, r.endAbsRow);
+        int maxR        = std::max(r.startAbsRow, r.endAbsRow);
+        bool anyOverlap = false;
+        for (const auto &seg : segments) {
+            if (seg.absRow >= minR && seg.absRow <= maxR) {
+                anyOverlap = true;
+                break;
+            }
+        }
+        if (!anyOverlap) {
+            return;
+        }
+        int idx = static_cast<int>(decorations.size());
+        decorations.push_back(std::move(r));
+        for (size_t i = 0; i < segments.size(); ++i) {
+            int absRow = segments[i].absRow;
+            if (absRow >= minR && absRow <= maxR) {
+                decorationsByViewRow[i].push_back(idx);
+            }
+        }
+    };
+
+    // User-kind decorations from live storage.
+    {
+        const auto &live = term.decorations();
+        for (const auto &dec : live) {
+            auto resolved = term.resolveDecoration(dec);
+            if (!resolved) {
+                continue;
+            }
+            pushDecoration(std::move(*resolved));
+        }
+    }
+
+    // CommandRegion — derived from term.selectedCommandId() + the matching
+    // CommandRecord. Carries the region only; renderer reads
+    // kind=CommandRegion from the decoration list and feeds outline color /
+    // dim factor from frameState_ config (so live-reload of those config
+    // values doesn't require touching this code path). Suppressed on alt
+    // screen.
+    if (auto idOpt = term.selectedCommandId(); idOpt && !term.usingAltScreen()) {
+        const Document &dref = term.document();
+        for (const auto &r : term.commands()) {
+            if (r.id != *idOpt) {
+                continue;
+            }
+            int startAbs = dref.firstAbsOfLine(r.promptStartLineId);
+            int endAbs;
+            int endCol;
+            if (r.complete) {
+                // lastAbsOfLine gives the last dst row stamped with this
+                // line id — handles soft-wrap where one src spans multiple
+                // rows.
+                endAbs = dref.lastAbsOfLine(r.outputEndLineId);
+                endCol = r.outputEndCol;
+                // Shells typically emit D in precmd, i.e. at col 0 of the
+                // next prompt row, so outputEndLineId points one row past
+                // the actual last output line. Roll it back when that's
+                // the case.
+                if (endCol == 0 && endAbs > startAbs) {
+                    endAbs -= 1;
+                    endCol = term.width();
+                }
+            } else {
+                endAbs = newHistory + term.cursorY();
+                endCol = term.cursorX();
+            }
+            if (startAbs >= 0 && endAbs >= 0) {
+                ResolvedDecoration d;
+                d.kind        = DecorationKind::CommandRegion;
+                d.startAbsRow = startAbs;
+                d.startCol    = std::max(0, r.promptStartCol);
+                d.endAbsRow   = endAbs;
+                d.endCol      = endCol;
+                d.shape       = DecorationShape::Range;
+                pushDecoration(std::move(d));
+            }
+            break;
+        }
+    }
+
+    // Hyperlink — derive from CellExtra.hyperlinkId runs in visible rows.
+    // One decoration per consecutive run of identical nonzero hyperlinkId
+    // within a single view row; underline style 3 (dotted), color 0 (use
+    // cell fg). Composition is first-writer-wins for underline, so cells
+    // already SGR-underlined keep their original style+color.
+    for (size_t r = 0; r < rowExtras.size(); ++r) {
+        const auto &re = rowExtras[r];
+        if (re.entries.empty()) {
+            continue;
+        }
+        int absRow      = segments[r].absRow;
+        uint32_t runId  = 0;
+        int runStartCol = 0;
+        int runEndCol   = -1;
+        auto flushRun   = [&]()
+        {
+            if (runId == 0) {
+                return;
+            }
+            ResolvedDecoration d;
+            d.kind            = DecorationKind::Hyperlink;
+            d.startAbsRow     = absRow;
+            d.endAbsRow       = absRow;
+            d.startCol        = runStartCol;
+            d.endCol          = runEndCol;
+            d.shape           = DecorationShape::Range;
+            d.style.underline = UnderlineSpec { 3, 0 };
+            pushDecoration(std::move(d));
+            runId = 0;
+        };
+        for (const auto &kv : re.entries) {
+            int col             = kv.first;
+            const CellExtra &ex = kv.second;
+            uint32_t hid        = ex.hyperlinkId;
+            if (hid == 0) {
+                flushRun();
+                continue;
+            }
+            if (runId == hid && col == runEndCol + 1) {
+                runEndCol = col;
+            } else {
+                flushRun();
+                runId       = hid;
+                runStartCol = col;
+                runEndCol   = col;
+            }
+        }
+        flushRun();
+    }
+
+    // Selection — derived from the live selection. Constants match the
+    // legacy hardcoded selection colors (formerly in RenderEngine.cpp); the
+    // composition pass paints them last (highest priority by kind), so any
+    // user/hyperlink/command-region decoration underneath is overwritten on
+    // selected cells.
+    if (auto resOpt = term.resolveSelection()) {
+        ResolvedDecoration r;
+        r.kind        = DecorationKind::Selection;
+        r.startAbsRow = resOpt->startAbsRow;
+        r.startCol    = resOpt->startCol;
+        r.endAbsRow   = resOpt->endAbsRow;
+        r.endCol      = resOpt->endCol;
+        r.shape       = resOpt->mode == TerminalEmulator::SelectionMode::Rectangle
+                  ? DecorationShape::Rectangle
+                  : DecorationShape::Range;
+        r.style.fg    = 0xFFFFFFFFu;
+        r.style.bg    = 0xFF664422u;
+        pushDecoration(std::move(r));
+    }
+
+    // Decoration content hash — drives renderer change-detection without a
+    // per-pane snapshot copy. FNV-1a over the fields that affect paint:
+    // (kind, abs ranges, shape, present-style flags + values).
+    {
+        decorationsHash = 0xcbf29ce484222325ULL;
+        auto mix        = [&](uint64_t v)
+        {
+            decorationsHash ^= v;
+            decorationsHash *= 0x100000001b3ULL;
+        };
+        for (const auto &d : decorations) {
+            mix(static_cast<uint64_t>(d.kind));
+            mix(static_cast<uint64_t>(d.shape));
+            mix(static_cast<uint64_t>(d.startAbsRow));
+            mix(static_cast<uint64_t>(d.startCol));
+            mix(static_cast<uint64_t>(d.endAbsRow));
+            mix(static_cast<uint64_t>(d.endCol));
+            mix(d.style.fg.value_or(0));
+            mix(d.style.bg.value_or(0));
+            if (d.style.underline) {
+                mix(0x100u | static_cast<uint64_t>(d.style.underline->style) | (static_cast<uint64_t>(d.style.underline->color) << 8));
+            }
+            if (d.style.strikethrough) {
+                mix(0x200u | static_cast<uint64_t>(*d.style.strikethrough));
+            }
+            if (d.style.dimOthers) {
+                mix(0x400u | static_cast<uint64_t>(*d.style.dimOthers * 1000.0f));
+            }
+            mix(static_cast<uint64_t>(d.zPriority));
         }
     }
 

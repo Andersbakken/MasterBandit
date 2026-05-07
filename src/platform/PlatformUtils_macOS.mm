@@ -1,6 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <UserNotifications/UserNotifications.h>
-#include "PlatformDawn.h" // declarations for platform* free functions
+#include "PlatformFunctions.h" // declarations for platform* free functions
 #include <atomic>
 #include <cstdint>
 #include <deque>

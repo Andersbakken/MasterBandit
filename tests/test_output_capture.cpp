@@ -22,11 +22,9 @@
 #include <thread>
 #include <vector>
 
-#ifdef __linux__
 #include <fcntl.h>
 #include <limits.h>
 #include <unistd.h>
-#endif
 
 namespace fs = std::filesystem;
 

@@ -2026,8 +2026,227 @@ static JSValue jsTerminalGetProp(JSContext *ctx, JSValueConst this_val, int magi
     return JS_UNDEFINED;
 }
 
+// terminal.addDecoration(spec) → id (number)
+//
+// spec: {
+//   startRowId: number, startCol: number,
+//   endRowId:   number, endCol:   number,
+//   style?: { fg?, bg?, underline?: { style, color? }, strikethrough?: bool },
+//   tag?: string,         // for grouping; reserved tags rejected
+//   zPriority?: number,   // composition order tie-breaker among User entries
+//   shape?: "range" | "rectangle",
+// }
+//
+// `style.outline` and `style.dimOthers` are intentionally unsupported on
+// User decorations: outline + multiplicative dim are uniform-driven render
+// primitives currently dedicated to the OSC 133 command region.
+static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    if (argc < 1 || !JS_IsObject(argv[0])) {
+        return JS_ThrowTypeError(ctx, "addDecoration requires (spec)");
+    }
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    }
+    Decoration d;
+    d.kind = DecorationKind::User;
+
+    auto readInt64 = [&](const char *name, int64_t &out) -> bool
+    {
+        JSValue v = JS_GetPropertyStr(ctx, argv[0], name);
+        if (JS_IsUndefined(v) || JS_IsNull(v)) {
+            JS_FreeValue(ctx, v);
+            return false;
+        }
+        int64_t n = 0;
+        int rc    = JS_ToInt64(ctx, &n, v);
+        JS_FreeValue(ctx, v);
+        if (rc < 0) {
+            return false;
+        }
+        out = n;
+        return true;
+    };
+    auto readInt32 = [&](const char *name, int32_t &out) -> bool
+    {
+        JSValue v = JS_GetPropertyStr(ctx, argv[0], name);
+        if (JS_IsUndefined(v) || JS_IsNull(v)) {
+            JS_FreeValue(ctx, v);
+            return false;
+        }
+        int32_t n = 0;
+        int rc    = JS_ToInt32(ctx, &n, v);
+        JS_FreeValue(ctx, v);
+        if (rc < 0) {
+            return false;
+        }
+        out = n;
+        return true;
+    };
+
+    int64_t s = 0, e = 0;
+    int32_t sc = 0, ec = 0;
+    if (!readInt64("startRowId", s) || !readInt64("endRowId", e) ||
+        !readInt32("startCol", sc) || !readInt32("endCol", ec)) {
+        return JS_ThrowTypeError(ctx, "addDecoration: startRowId/endRowId/startCol/endCol required");
+    }
+    d.startLineId     = static_cast<uint64_t>(s);
+    d.endLineId       = static_cast<uint64_t>(e);
+    d.startCellOffset = sc;
+    d.endCellOffset   = ec;
+
+    int32_t z = 0;
+    if (readInt32("zPriority", z)) {
+        d.zPriority = z;
+    }
+
+    JSValue shapeV = JS_GetPropertyStr(ctx, argv[0], "shape");
+    if (JS_IsString(shapeV)) {
+        const char *sv = JS_ToCString(ctx, shapeV);
+        if (sv) {
+            if (std::string(sv) == "rectangle") {
+                d.shape = DecorationShape::Rectangle;
+            }
+            JS_FreeCString(ctx, sv);
+        }
+    }
+    JS_FreeValue(ctx, shapeV);
+
+    JSValue tagV = JS_GetPropertyStr(ctx, argv[0], "tag");
+    if (JS_IsString(tagV)) {
+        const char *tv = JS_ToCString(ctx, tagV);
+        if (tv) {
+            std::string t(tv);
+            JS_FreeCString(ctx, tv);
+            // Reserved tags are owned by the system kinds. User code can
+            // create entries with these tags but they remain User-kind, so
+            // they don't impersonate selection / hyperlink / command-region
+            // composition. Still surface a clear error to keep applet code
+            // honest.
+            if (t == "selection" || t == "command-region" || t == "hyperlink") {
+                JS_FreeValue(ctx, tagV);
+                return JS_ThrowTypeError(ctx, "addDecoration: tag is reserved");
+            }
+            d.tag = std::move(t);
+        }
+    }
+    JS_FreeValue(ctx, tagV);
+
+    JSValue styleV = JS_GetPropertyStr(ctx, argv[0], "style");
+    if (JS_IsObject(styleV)) {
+        auto readU32 = [&](const char *name, std::optional<uint32_t> &out)
+        {
+            JSValue v = JS_GetPropertyStr(ctx, styleV, name);
+            if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+                uint32_t n = 0;
+                if (JS_ToUint32(ctx, &n, v) >= 0) {
+                    out = n;
+                }
+            }
+            JS_FreeValue(ctx, v);
+        };
+        readU32("fg", d.style.fg);
+        readU32("bg", d.style.bg);
+
+        JSValue ulV = JS_GetPropertyStr(ctx, styleV, "underline");
+        if (JS_IsObject(ulV)) {
+            UnderlineSpec us;
+            JSValue stV = JS_GetPropertyStr(ctx, ulV, "style");
+            if (!JS_IsUndefined(stV)) {
+                uint32_t n = 0;
+                if (JS_ToUint32(ctx, &n, stV) >= 0) {
+                    us.style = static_cast<uint8_t>(n & 0x3u);
+                }
+            }
+            JS_FreeValue(ctx, stV);
+            JSValue cV = JS_GetPropertyStr(ctx, ulV, "color");
+            if (!JS_IsUndefined(cV)) {
+                uint32_t n = 0;
+                if (JS_ToUint32(ctx, &n, cV) >= 0) {
+                    us.color = n;
+                }
+            }
+            JS_FreeValue(ctx, cV);
+            d.style.underline = us;
+        }
+        JS_FreeValue(ctx, ulV);
+
+        JSValue stV = JS_GetPropertyStr(ctx, styleV, "strikethrough");
+        if (JS_IsBool(stV)) {
+            d.style.strikethrough = JS_ToBool(ctx, stV) ? true : false;
+        }
+        JS_FreeValue(ctx, stV);
+    }
+    JS_FreeValue(ctx, styleV);
+
+    uint64_t id = emu->addDecoration(std::move(d));
+    if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
+        cb();
+    }
+    return JS_NewInt64(ctx, static_cast<int64_t>(id));
+}
+
+// terminal.removeDecoration(id) → boolean
+static JSValue jsTerminalRemoveDecoration(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "removeDecoration requires (id)");
+    }
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    }
+    int64_t id = 0;
+    if (JS_ToInt64(ctx, &id, argv[0]) < 0) {
+        return JS_EXCEPTION;
+    }
+    bool removed = emu->removeDecoration(static_cast<uint64_t>(id));
+    if (removed) {
+        if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
+            cb();
+        }
+    }
+    return JS_NewBool(ctx, removed);
+}
+
+// terminal.clearDecorations(tag?) → number (count cleared)
+static JSValue jsTerminalClearDecorations(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    }
+    std::string_view tag;
+    std::string holder;
+    if (argc >= 1 && JS_IsString(argv[0])) {
+        const char *tv = JS_ToCString(ctx, argv[0]);
+        if (tv) {
+            holder = tv;
+            tag    = holder;
+            JS_FreeCString(ctx, tv);
+        }
+    }
+    size_t n = emu->clearUserDecorations(tag);
+    if (n > 0) {
+        if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
+            cb();
+        }
+    }
+    return JS_NewInt32(ctx, static_cast<int32_t>(n));
+}
+
 static const JSCFunctionListEntry jsTerminalProto[] = {
     JS_CFUNC_DEF("inject", 1, jsTerminalInject),
+    JS_CFUNC_DEF("addDecoration", 1, jsTerminalAddDecoration),
+    JS_CFUNC_DEF("removeDecoration", 1, jsTerminalRemoveDecoration),
+    JS_CFUNC_DEF("clearDecorations", 0, jsTerminalClearDecorations),
     JS_CGETSET_MAGIC_DEF("cols", jsTerminalGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("rows", jsTerminalGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("cursor", jsTerminalGetProp, nullptr, 2),

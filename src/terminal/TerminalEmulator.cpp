@@ -662,8 +662,8 @@ void TerminalEmulator::selectCommandOutputForRecord(const CommandRecord *rec)
         endCol = rec->outputEndCol;
         // Shells typically emit D in precmd, i.e. at col 0 of the next prompt
         // row, so outputEndLineId points one row past the actual last output
-        // line. Roll it back when that's the case. Same fixup as
-        // TerminalSnapshot's SelectedCommandRegion.
+        // line. Roll it back when that's the case. Same fixup as the
+        // CommandRegion derivation in TerminalSnapshot::update().
         if (endCol == 0 && endAbs > startAbs) {
             endAbs -= 1;
             endCol = mWidth;
@@ -747,6 +747,81 @@ void TerminalEmulator::setSelectedCommand(std::optional<uint64_t> commandId)
         mCallbacks.event(this, static_cast<int>(CommandSelectionChanged), nullptr);
     }
     publishAndFireEvent(static_cast<int>(Update));
+}
+
+uint64_t TerminalEmulator::addDecoration(Decoration spec)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    spec.id = mNextDecorationId++;
+    mDecorations.push_back(std::move(spec));
+    return mDecorations.back().id;
+}
+
+bool TerminalEmulator::removeDecoration(uint64_t id)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    for (auto it = mDecorations.begin(); it != mDecorations.end(); ++it) {
+        if (it->id == id) {
+            mDecorations.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t TerminalEmulator::clearUserDecorations(std::string_view tag)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    size_t before = mDecorations.size();
+    mDecorations.erase(
+        std::remove_if(mDecorations.begin(), mDecorations.end(), [&](const Decoration &d)
+                       {
+                           if (d.kind != DecorationKind::User) {
+                               return false;
+                           }
+                           return tag.empty() ? true : (d.tag == tag);
+                       }),
+        mDecorations.end());
+    return before - mDecorations.size();
+}
+
+std::optional<ResolvedDecoration>
+TerminalEmulator::resolveDecoration(const Decoration &dec) const
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    int startFirst = mDocument.firstAbsOfLine(dec.startLineId);
+    int endFirst   = mDocument.firstAbsOfLine(dec.endLineId);
+    if (startFirst < 0 || endFirst < 0) {
+        return std::nullopt;
+    }
+    int w            = std::max(1, mWidth);
+    // Cell-position semantics: start/endCellOffset are inclusive cell indices
+    // within their logical line. Maps to row = firstAbs + off/w, col = off%w,
+    // clamped to lastAbsOfLine.
+    auto resolveCell = [&](uint64_t id, int firstAbs, int off, int &outRow, int &outCol)
+    {
+        if (off < 0) {
+            off = 0;
+        }
+        int row     = firstAbs + off / w;
+        int col     = off % w;
+        int lastAbs = mDocument.lastAbsOfLine(id);
+        if (lastAbs >= 0 && row > lastAbs) {
+            row = lastAbs;
+            col = w - 1;
+        }
+        outRow = row;
+        outCol = col;
+    };
+    ResolvedDecoration r;
+    resolveCell(dec.startLineId, startFirst, dec.startCellOffset, r.startAbsRow, r.startCol);
+    resolveCell(dec.endLineId, endFirst, dec.endCellOffset, r.endAbsRow, r.endCol);
+    r.id        = dec.id;
+    r.kind      = dec.kind;
+    r.shape     = dec.shape;
+    r.style     = dec.style;
+    r.zPriority = dec.zPriority;
+    return r;
 }
 
 void TerminalEmulator::markCommandInput(int absRow, int col)

@@ -409,6 +409,60 @@ interface MbTerminal {
 
     /** Emit data into the terminal emulator (as if the PTY wrote it). Requires `io.inject`. */
     inject(data: string): void;
+
+    /**
+     * Add a presentation overlay anchored to logical-line ids. Survives
+     * scroll, autowrap reflow, and scrollback eviction (until the anchor
+     * line evicts past the archive cap). Returns an opaque id usable with
+     * `removeDecoration`. Requires `pane.read`.
+     *
+     * Composition order against other overlays: User decorations paint on
+     * top of cell SGR, below hyperlink underlines, the OSC 133 command
+     * region, and selection. fg / bg / strikethrough are last-writer-wins
+     * within User decorations (insertion order, broken by `zPriority`).
+     * Underline is first-writer-wins and never overrides a cell's own SGR
+     * underline.
+     *
+     * `tag` groups User decorations for `clearDecorations(tag)`. The
+     * reserved tags `"selection"`, `"command-region"`, `"hyperlink"` are
+     * rejected (system kinds own them).
+     *
+     * `style.outline` and `style.dimOthers` are intentionally not exposed:
+     * those are uniform-driven render primitives currently dedicated to
+     * the OSC 133 command region.
+     */
+    addDecoration(spec: {
+        startRowId: number;
+        startCol: number;
+        endRowId: number;
+        endCol: number;
+        style?: {
+            /** Packed RGBA8 (0xAABBGGRR — alpha in MSB). */
+            fg?: number;
+            /** Packed RGBA8 (0xAABBGGRR — alpha in MSB). */
+            bg?: number;
+            underline?: {
+                /** 0=straight, 1=double, 2=curly, 3=dotted */
+                style: number;
+                /** Packed RGBA8; omit / 0 = use cell fg. */
+                color?: number;
+            };
+            strikethrough?: boolean;
+        };
+        tag?: string;
+        zPriority?: number;
+        shape?: "range" | "rectangle";
+    }): number;
+
+    /** Remove a decoration by id. Returns true iff it existed. */
+    removeDecoration(id: number): boolean;
+
+    /**
+     * Remove User decorations. With no arg or empty tag, clears every
+     * User decoration; system kinds (selection / command-region /
+     * hyperlink) are never touched. Returns the count cleared.
+     */
+    clearDecorations(tag?: string): number;
 }
 
 declare const Terminal: MbTerminal;

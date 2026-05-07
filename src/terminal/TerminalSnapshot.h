@@ -1,6 +1,7 @@
 #pragma once
 
 #include <CellTypes.h>
+#include <Decoration.h>
 #include <TerminalEmulator.h>
 #include <cstdint>
 #include <memory>
@@ -106,27 +107,20 @@ struct TerminalSnapshot
 
     std::vector<RowExtras> rowExtras;
 
-    // Selection — resolved to current abs rows under the Terminal mutex in
-    // update() (live `Selection` is line-id-anchored and survives reflow).
-    // Renderer reads abs-row fields directly, no Terminal call-back needed.
-    // Empty when there's no selection or when an anchor evicted past the
-    // archive cap.
-    TerminalEmulator::ResolvedSelection selection {};
-    bool isCellSelected(int col, int absRow) const;
-
-    // OSC 133 command highlight. Populated when a CommandRecord is selected
-    // via Cmd+Click or keyboard nav. Resolved to absolute rows at snapshot
-    // time; renderer converts to viewport-relative using historySize and
-    // viewportOffset (same math as isCellSelected). Cleared on alt screen.
-    struct SelectedCommandRegion
-    {
-        int startAbsRow;
-        int startCol;
-        int endAbsRow;
-        int endCol;
-    };
-
-    std::optional<SelectedCommandRegion> selectedCommand;
+    // Decorations resolved to abs-row coordinates under the term mutex in
+    // update(). Entries whose anchors evicted past the archive cap are
+    // dropped. The renderer applies these on top of cell SGR; composition
+    // order is documented in Decoration.h.
+    std::vector<ResolvedDecoration> decorations;
+    // Per-view-row buckets of indices into `decorations`. Bucket size is
+    // `rows` (one entry per visible row, matching `segments`). Each bucket
+    // lists every decoration whose abs-row range covers `segments[r].absRow`.
+    // Render iterates only the bucket for the row being painted.
+    std::vector<std::vector<int>> decorationsByViewRow;
+    // Content hash of `decorations` — drives per-pane change-detection in
+    // the renderer (no per-pane vector copy needed). Mixes kind, abs ranges,
+    // shape, and present-style flags+values.
+    uint64_t decorationsHash { 0 };
 
     // Per-image view for rendering and animation scheduling. Populated from
     // TerminalEmulator::imageRegistry() during update() with the subset of

@@ -235,9 +235,11 @@ struct PaneRenderPrivate
     // because the visible abs rows don't change — so we correctly SKIP
     // invalidating the per-row shape caches in that case, unlike the
     // legacy `viewportOffset`-based heuristic which over-invalidated.
-    uint64_t lastTopLineId = 0;
-    TerminalEmulator::ResolvedSelection lastSelection {};
-    std::optional<TerminalSnapshot::SelectedCommandRegion> lastSelectedCommand;
+    uint64_t lastTopLineId           = 0;
+    // Decoration overlay change-detection — drives selection / command-region
+    // / hyperlink / user-decoration repaint. Single hash collapses what used
+    // to be lastSelection + lastSelectedCommand comparisons.
+    uint64_t lastDecorationsHash     = 0;
     uint32_t lastCommandOutlineColor = 0;
 
     struct RowGlyphCache

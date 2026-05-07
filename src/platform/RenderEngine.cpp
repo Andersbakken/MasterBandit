@@ -350,24 +350,22 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
             fg         = (r / 2) | ((g / 2) << 8) | ((b / 2) << 16) | (a << 24);
         }
 
+        // Underline / strikethrough come from cell SGR only here. OSC 8
+        // hyperlink underlines are emitted as Hyperlink-kind decorations
+        // by the snapshot mirror and composed in the decoration apply pass
+        // below; that pass writes underline_info only when no SGR underline
+        // is set, preserving cell-SGR style + color whenever both apply.
         uint32_t ulInfo = 0;
-        {
+        if (cell.attrs.underline()) {
+            uint8_t style          = cell.attrs.underlineStyle();
+            ulInfo                 = static_cast<uint32_t>(style + 1);
             const CellExtra *extra = findExtra(col);
-            bool hasUnderline      = cell.attrs.underline();
-            bool isHyperlink       = extra && extra->hyperlinkId;
-            if (!hasUnderline && isHyperlink) {
-                hasUnderline = true;
+            if (extra && extra->underlineColor) {
+                ulInfo |= (extra->underlineColor & 0x00FFFFFF) << 8;
             }
-            if (hasUnderline) {
-                uint8_t style = cell.attrs.underline() ? cell.attrs.underlineStyle() : 3;
-                ulInfo        = static_cast<uint32_t>(style + 1);
-                if (extra && extra->underlineColor) {
-                    ulInfo |= (extra->underlineColor & 0x00FFFFFF) << 8;
-                }
-            }
-            if (cell.attrs.strikethrough()) {
-                ulInfo |= 0x08u; // bit 3: strikethrough
-            }
+        }
+        if (cell.attrs.strikethrough()) {
+            ulInfo |= 0x08u; // bit 3: strikethrough
         }
 
         rc.glyph_offset   = 0;
@@ -1352,29 +1350,25 @@ void RenderEngine::renderFrame()
             }
         }
 
-        const auto &ls = rs.lastSelection;
-        const auto &cs = snap.selection;
-        bool selectionChanged =
-            ls.startCol != cs.startCol || ls.startAbsRow != cs.startAbsRow ||
-            ls.endCol != cs.endCol || ls.endAbsRow != cs.endAbsRow ||
-            ls.active != cs.active || ls.valid != cs.valid ||
-            ls.mode != cs.mode;
-        rs.lastSelection = cs;
+        // Decoration overlay change-detection — selection, command-region,
+        // hyperlink, user decorations all flow through the snapshot's
+        // resolved decoration list; the per-frame content hash collapses
+        // what used to be lastSelection + lastSelectedCommand comparisons.
+        bool decorationsChanged = rs.lastDecorationsHash != snap.decorationsHash;
+        rs.lastDecorationsHash  = snap.decorationsHash;
 
-        bool commandSelectionChanged =
-            rs.lastSelectedCommand.has_value() != snap.selectedCommand.has_value() ||
-            (rs.lastSelectedCommand && snap.selectedCommand &&
-             (rs.lastSelectedCommand->startAbsRow != snap.selectedCommand->startAbsRow ||
-              rs.lastSelectedCommand->endAbsRow != snap.selectedCommand->endAbsRow ||
-              rs.lastSelectedCommand->startCol != snap.selectedCommand->startCol ||
-              rs.lastSelectedCommand->endCol != snap.selectedCommand->endCol));
-        rs.lastSelectedCommand = snap.selectedCommand;
-
-        // If the outline color in config changed (via live reload) and this
-        // pane currently has a selection, we need to re-render to repaint
-        // the outline with the new color.
+        // Outline color is config-driven (frameState_) rather than carried
+        // on the decoration. Live-reload of the color must still trigger a
+        // re-render whenever a CommandRegion decoration is currently active.
+        bool hasCommandRegion = false;
+        for (const auto &d : snap.decorations) {
+            if (d.kind == DecorationKind::CommandRegion) {
+                hasCommandRegion = true;
+                break;
+            }
+        }
         bool outlineColorChanged =
-            snap.selectedCommand.has_value() &&
+            hasCommandRegion &&
             rs.lastCommandOutlineColor != frameState_.commandOutlineColor;
         rs.lastCommandOutlineColor = frameState_.commandOutlineColor;
 
@@ -1385,7 +1379,7 @@ void RenderEngine::renderFrame()
         bool needsRender = rs.dirty || anyRowDirty || cursorMoved ||
             (target.isFocused && cursorBlinkChanged) ||
             animationAdvanced ||
-            selectionChanged || commandSelectionChanged ||
+            decorationsChanged ||
             outlineColorChanged || popupFocusChanged ||
             !rs.heldTexture;
 
@@ -1413,7 +1407,7 @@ void RenderEngine::renderFrame()
                 rs.rowShapingCache.resize(snap.rows);
             }
 
-            if (viewportShifted || selectionChanged || (rs.dirty && !anyRowDirty)) {
+            if (viewportShifted || decorationsChanged || (rs.dirty && !anyRowDirty)) {
                 for (int row = 0; row < snap.rows; ++row) {
                     allWorkItems.push_back((static_cast<uint32_t>(ti) << 16) | static_cast<uint32_t>(row));
                 }
@@ -1492,17 +1486,110 @@ void RenderEngine::renderFrame()
             }
             rs.totalGlyphs = static_cast<uint32_t>(rs.glyphBuffer.size());
 
-            bool selectionVisible = snap.selection.valid || snap.selection.active;
-            if (selectionVisible) {
+            // Decoration overlay pass — applies to cell fg/bg/underline/
+            // strikethrough on top of the Pass 1 SGR. Composition order (low
+            // → high): User (zPriority asc, then insertion) → Hyperlink →
+            // CommandRegion → Selection. fg/bg/strikethrough are last-
+            // writer-wins (so Selection always covers); underline is first-
+            // writer-wins among decorations and never overrides a cell-SGR
+            // underline already in `underline_info`.
+            if (!snap.decorations.empty()) {
+                std::vector<int> orderedBucket;
                 for (int row = 0; row < snap.rows; ++row) {
-                    // segments is always sized == snap.rows (built by
-                    // TerminalSnapshot::update).
-                    int absRow = snap.segments[row].absRow;
-                    for (int col = 0; col < snap.cols; ++col) {
-                        if (snap.isCellSelected(col, absRow)) {
-                            int idx                        = row * snap.cols + col;
-                            rs.resolvedCells[idx].bg_color = 0xFF664422;
-                            rs.resolvedCells[idx].fg_color = 0xFFFFFFFF;
+                    const auto &bucket = snap.decorationsByViewRow[static_cast<size_t>(row)];
+                    if (bucket.empty()) {
+                        continue;
+                    }
+                    orderedBucket = bucket;
+                    auto kindRank = [](DecorationKind k)
+                    {
+                        switch (k) {
+                            case DecorationKind::User: return 0;
+                            case DecorationKind::Hyperlink: return 1;
+                            case DecorationKind::CommandRegion: return 2;
+                            case DecorationKind::Selection: return 3;
+                        }
+                        return 0;
+                    };
+                    std::stable_sort(orderedBucket.begin(), orderedBucket.end(), [&](int a, int b)
+                                     {
+                                         const auto &da = snap.decorations[a];
+                                         const auto &db = snap.decorations[b];
+                                         int ra         = kindRank(da.kind);
+                                         int rb         = kindRank(db.kind);
+                                         if (ra != rb) {
+                                             return ra < rb;
+                                         }
+                                         if (da.kind == DecorationKind::User && da.zPriority != db.zPriority) {
+                                             return da.zPriority < db.zPriority;
+                                         }
+                                         return false; // preserve insertion (stable_sort)
+                                     });
+
+                    int absRow  = snap.segments[static_cast<size_t>(row)].absRow;
+                    int baseIdx = row * snap.cols;
+                    for (int idx : orderedBucket) {
+                        const auto &d = snap.decorations[static_cast<size_t>(idx)];
+                        int colStart = 0, colEnd = -1;
+                        if (d.shape == DecorationShape::Rectangle) {
+                            colStart = std::min(d.startCol, d.endCol);
+                            colEnd   = std::max(d.startCol, d.endCol);
+                        } else {
+                            int sR = d.startAbsRow, sC = d.startCol;
+                            int eR = d.endAbsRow, eC = d.endCol;
+                            if (sR > eR || (sR == eR && sC > eC)) {
+                                std::swap(sR, eR);
+                                std::swap(sC, eC);
+                            }
+                            if (absRow == sR && absRow == eR) {
+                                colStart = sC;
+                                colEnd   = eC;
+                            } else if (absRow == sR) {
+                                colStart = sC;
+                                colEnd   = snap.cols - 1;
+                            } else if (absRow == eR) {
+                                colStart = 0;
+                                colEnd   = eC;
+                            } else if (absRow > sR && absRow < eR) {
+                                colStart = 0;
+                                colEnd   = snap.cols - 1;
+                            } else {
+                                continue;
+                            }
+                        }
+                        if (colStart < 0) {
+                            colStart = 0;
+                        }
+                        if (colEnd >= snap.cols) {
+                            colEnd = snap.cols - 1;
+                        }
+                        if (colStart > colEnd) {
+                            continue;
+                        }
+
+                        for (int col = colStart; col <= colEnd; ++col) {
+                            ResolvedCell &rc = rs.resolvedCells[baseIdx + col];
+                            if (d.style.fg) {
+                                rc.fg_color = *d.style.fg;
+                            }
+                            if (d.style.bg) {
+                                rc.bg_color = *d.style.bg;
+                            }
+                            if (d.style.underline && (rc.underline_info & 0x07u) == 0) {
+                                uint8_t style     = d.style.underline->style;
+                                uint32_t color    = d.style.underline->color;
+                                rc.underline_info = (rc.underline_info & ~0x07u) | static_cast<uint32_t>((style + 1) & 0x07u);
+                                if (color) {
+                                    rc.underline_info = (rc.underline_info & 0x000000FFu) | ((color & 0x00FFFFFFu) << 8);
+                                }
+                            }
+                            if (d.style.strikethrough) {
+                                if (*d.style.strikethrough) {
+                                    rc.underline_info |= 0x08u;
+                                } else {
+                                    rc.underline_info &= ~0x08u;
+                                }
+                            }
                         }
                     }
                 }
@@ -1687,18 +1774,27 @@ void RenderEngine::renderFrame()
                 return static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | (static_cast<uint32_t>(0xFFu) << 24);
             };
 
-            // OSC 133 command outline — pass row range + edge flags. Rows
-            // are viewport-relative; out-of-view edges are dropped via flags
-            // so the outline stays visible even if partially scrolled away.
-            params.selection_start_row     = 0;
-            params.selection_end_row       = 0;
-            params.selection_outline_flags = 0;
-            params.selection_outline_color = 0;
-            if (snap.selectedCommand) {
-                // Segment 0 carries the absRow at viewport top.
+            // OSC 133 command outline — region from the CommandRegion-kind
+            // entry in the resolved decoration list; outline color from
+            // frameState_ (config-driven, kept off the snapshot so live-
+            // reload doesn't have to walk it). Out-of-view edges are
+            // dropped via flags so the outline stays visible even if
+            // partially scrolled away.
+            params.selection_start_row              = 0;
+            params.selection_end_row                = 0;
+            params.selection_outline_flags          = 0;
+            params.selection_outline_color          = 0;
+            const ResolvedDecoration *commandRegion = nullptr;
+            for (const auto &d : snap.decorations) {
+                if (d.kind == DecorationKind::CommandRegion) {
+                    commandRegion = &d;
+                    break;
+                }
+            }
+            if (commandRegion) {
                 int origin    = snap.segments.front().absRow;
-                int startView = snap.selectedCommand->startAbsRow - origin;
-                int endView   = snap.selectedCommand->endAbsRow - origin;
+                int startView = commandRegion->startAbsRow - origin;
+                int endView   = commandRegion->endAbsRow - origin;
                 if (endView >= 0 && startView < snap.rows) {
                     int clampedStart = std::max(0, startView);
                     int clampedEnd   = std::min(snap.rows - 1, endView);
@@ -1802,15 +1898,17 @@ void RenderEngine::renderFrame()
             const float *tint = isFocused ? frameState_.activeTint : frameState_.inactiveTint;
 
             // OSC 133 dim: non-selected rows get rgb multiplied by commandDimFactor.
-            // yMin/yMax are fragment-pixel Y bounds matching the clamped selection
-            // range; anything outside is dimmed. If the selection is entirely off
+            // yMin/yMax are fragment-pixel Y bounds matching the clamped command
+            // region; anything outside is dimmed. If the region is entirely off
             // the viewport, collapse the interval so every fragment is dimmed.
+            // Region comes from the CommandRegion-kind decoration looked up
+            // earlier into `commandRegion`; dim factor is config-driven.
             Renderer::DimParams dim;
-            if (snap.selectedCommand) {
+            if (commandRegion) {
                 dim.factor    = frameState_.commandDimFactor;
                 int origin    = snap.segments.front().absRow;
-                int startView = snap.selectedCommand->startAbsRow - origin;
-                int endView   = snap.selectedCommand->endAbsRow - origin;
+                int startView = commandRegion->startAbsRow - origin;
+                int endView   = commandRegion->endAbsRow - origin;
                 if (endView < 0 || startView >= snap.rows) {
                     dim.yMin = 0.0f;
                     dim.yMax = 0.0f; // pos.y >= 0 always dims

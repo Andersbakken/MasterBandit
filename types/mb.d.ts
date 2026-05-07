@@ -326,8 +326,12 @@ interface MbMatch {
 }
 
 interface MbMouseEvent {
-    /** `"press"` | `"release"` (and possibly `"move"` for future use). */
-    type: "press" | "release";
+    /**
+     * `"press"` / `"release"` for button events, `"move"` for cursor
+     * motion (only delivered to subscribers that opted in via the `ui`
+     * permission), `"wheel"` for scroll-wheel notches.
+     */
+    type: "press" | "release" | "move" | "wheel";
     /** Cell column (0-based). */
     cellX: number;
     /** Cell row (0-based). */
@@ -338,6 +342,13 @@ interface MbMouseEvent {
     pixelY: number;
     /** 0=left, 1=middle, 2=right, 3=wheel-up, 4=wheel-down (xterm convention). */
     button: number;
+    /**
+     * Wheel delta in scroll-line units. Non-zero only for `type ==
+     * "wheel"`; positive = scroll content up (toward older scrollback),
+     * negative = scroll content down. Magnitude is platform-supplied
+     * (commonly ±1 per notch).
+     */
+    delta: number;
 }
 
 // ============================================================================

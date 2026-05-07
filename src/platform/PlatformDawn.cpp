@@ -742,37 +742,165 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
                 if (dy == 0) {
                     return;
                 }
-                // If the active terminal has mouse reporting, send wheel
-                // events to the application instead of scrolling the viewport.
+                // Wheel scroll routes to the pane / popup / embedded UNDER
+                // THE CURSOR, not to the focused element. Cursor is the
+                // source of truth for a positional gesture; using focus
+                // would mean a focused popup that doesn't scroll
+                // intercepts wheel events meant for the parent pane.
+                //
+                // Priority: popup > embedded > pane. For each target:
+                //   1. If VT mouse reporting is active, forward
+                //      WheelUp/WheelDown so the in-app pager (less, vim,
+                //      htop) reads the wheel.
+                //   2. Deliver a JS mouse event with type="wheel" so
+                //      applets can react (popup applets that want to
+                //      implement scrollable lists, etc.).
+                //   3. For the pane case ONLY, fall through to
+                //      scrollViewport (the default scrollback gesture).
+                //      Popups/embeddeds don't have a scrollback notion,
+                //      so JS-only is the ceiling there.
                 std::lock_guard<std::recursive_mutex> plk(renderThread_->mutex());
                 auto tab = activeTab();
-                if (tab) {
-                    Terminal *fp           = scriptEngine_.focusedTerminalInSubtree(*tab);
-                    TerminalEmulator *term = fp;
-                    if (term && term->mouseReportingActive()) {
-                        Rect pr            = fp ? fp->rect() : Rect { 0, 0, static_cast<int>(fbWidth_), static_cast<int>(fbHeight_) };
-                        double lastCursorX = inputController_ ? inputController_->lastCursorX() : 0.0;
-                        double lastCursorY = inputController_ ? inputController_->lastCursorY() : 0.0;
-                        uint32_t lastMods  = inputController_ ? inputController_->lastMods() : 0u;
-                        double relX        = lastCursorX - pr.x;
-                        double relY        = lastCursorY - pr.y;
+                if (!tab) {
+                    return;
+                }
+                double lastCursorX = inputController_ ? inputController_->lastCursorX() : 0.0;
+                double lastCursorY = inputController_ ? inputController_->lastCursorY() : 0.0;
+                uint32_t lastMods  = inputController_ ? inputController_->lastMods() : 0u;
+                int sx             = static_cast<int>(lastCursorX);
+                int sy             = static_cast<int>(lastCursorY);
+
+                Uuid hoveredPaneId = scriptEngine_.paneAtPixelInSubtree(*tab, sx, sy);
+                Terminal *hp       = hoveredPaneId.isNil() ? nullptr : scriptEngine_.paneInSubtree(*tab, hoveredPaneId);
+                if (!hp) {
+                    return;
+                }
+                const Rect &pr = hp->rect();
+                double relX    = lastCursorX - pr.x - padLeft_;
+                double relY    = lastCursorY - pr.y - padTop_;
+                int cellCol    = static_cast<int>(relX / charWidth_);
+                int cellRow    = static_cast<int>(relY / lineHeight_);
+
+                // Wheel direction for VT reports + JS event field.
+                int wheelButton = (dy > 0) ? static_cast<int>(WheelUp) : static_cast<int>(WheelDown);
+                // delta in lines: dy is platform-supplied (commonly ±1
+                // per notch); preserve sign so JS scripts can implement
+                // smooth scrolling later if dy carries fractional values.
+                int delta       = static_cast<int>(dy);
+                if (delta == 0) {
+                    delta = (dy > 0) ? 1 : -1;
+                }
+
+                // 1. Popup hit-test (cell coordinates relative to the pane).
+                Terminal *targetPopup = nullptr;
+                int popupRelCol = 0, popupRelRow = 0, popupRelPxX = 0, popupRelPxY = 0;
+                std::string popupIdHit;
+                for (const auto &popup : hp->popups()) {
+                    if (cellCol >= popup->cellX() && cellCol < popup->cellX() + popup->cellW() &&
+                        cellRow >= popup->cellY() && cellRow < popup->cellY() + popup->cellH()) {
+                        targetPopup = popup.get();
+                        popupRelCol = cellCol - popup->cellX();
+                        popupRelRow = cellRow - popup->cellY();
+                        popupRelPxX = static_cast<int>(relX) - popup->cellX() * static_cast<int>(charWidth_);
+                        popupRelPxY = static_cast<int>(relY) - popup->cellY() * static_cast<int>(lineHeight_);
+                        popupIdHit  = popup->popupId();
+                        break;
+                    }
+                }
+                if (targetPopup) {
+                    if (targetPopup->mouseReportingActive()) {
                         MouseEvent mev;
-                        mev.x         = static_cast<int>(relX / charWidth_);
-                        mev.y         = static_cast<int>(relY / lineHeight_);
-                        mev.globalX   = static_cast<int>(lastCursorX);
-                        mev.globalY   = static_cast<int>(lastCursorY);
-                        mev.pixelX    = static_cast<int>(relX);
-                        mev.pixelY    = static_cast<int>(relY);
+                        mev.x         = popupRelCol;
+                        mev.y         = popupRelRow;
+                        mev.globalX   = sx;
+                        mev.globalY   = sy;
+                        mev.pixelX    = popupRelPxX;
+                        mev.pixelY    = popupRelPxY;
                         mev.button    = (dy > 0) ? WheelUp : WheelDown;
                         mev.modifiers = lastMods;
-                        term->mousePressEvent(&mev);
+                        targetPopup->mousePressEvent(&mev);
+                    }
+                    scriptEngine_.deliverPopupMouseEvent(
+                        hp->id(),
+                        popupIdHit,
+                        "wheel",
+                        popupRelCol,
+                        popupRelRow,
+                        popupRelPxX,
+                        popupRelPxY,
+                        wheelButton,
+                        delta);
+                    scriptEngine_.executePendingJobs();
+                    return;
+                }
+
+                // 2. Embedded hit-test. Skipped on alt-screen (embeddeds
+                // are hidden) or when the pane has no embeddeds.
+                if (!hp->usingAltScreen() && hp->hasEmbeddeds()) {
+                    uint64_t hitLineId = 0;
+                    int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
+                    if (hp->liveSegmentHitTest(relX, relY, static_cast<float>(charWidth_), lineHeight_, hitLineId, emRelCol, emRelRow, emRelPx, emRelPy)) {
+                        if (Terminal *em = hp->findEmbedded(hitLineId)) {
+                            if (em->mouseReportingActive()) {
+                                MouseEvent mev;
+                                mev.x         = emRelCol;
+                                mev.y         = emRelRow;
+                                mev.globalX   = sx;
+                                mev.globalY   = sy;
+                                mev.pixelX    = emRelPx;
+                                mev.pixelY    = emRelPy;
+                                mev.button    = (dy > 0) ? WheelUp : WheelDown;
+                                mev.modifiers = lastMods;
+                                em->mousePressEvent(&mev);
+                            }
+                        }
+                        scriptEngine_.deliverEmbeddedMouseEvent(
+                            hp->id(),
+                            hitLineId,
+                            "wheel",
+                            emRelCol,
+                            emRelRow,
+                            emRelPx,
+                            emRelPy,
+                            wheelButton,
+                            delta);
+                        scriptEngine_.executePendingJobs();
                         return;
                     }
                 }
+
+                // 3. Pane fallback. VT mouse reporting forwards the
+                // wheel; otherwise scroll the pane's viewport. JS pane
+                // mouse listeners also see the wheel event regardless of
+                // which path consumes it (non-consuming).
+                scriptEngine_.deliverPaneMouseEvent(
+                    hp->id(),
+                    "wheel",
+                    cellCol,
+                    cellRow,
+                    static_cast<int>(relX),
+                    static_cast<int>(relY),
+                    wheelButton,
+                    delta);
+                scriptEngine_.executePendingJobs();
+
+                if (hp->mouseReportingActive()) {
+                    MouseEvent mev;
+                    mev.x         = cellCol;
+                    mev.y         = cellRow;
+                    mev.globalX   = sx;
+                    mev.globalY   = sy;
+                    mev.pixelX    = static_cast<int>(relX);
+                    mev.pixelY    = static_cast<int>(relY);
+                    mev.button    = (dy > 0) ? WheelUp : WheelDown;
+                    mev.modifiers = lastMods;
+                    hp->mousePressEvent(&mev);
+                    return;
+                }
                 if (dy > 0) {
-                    dispatchAction(Action::ScrollUp {});
-                } else if (dy < 0) {
-                    dispatchAction(Action::ScrollDown {});
+                    hp->scrollViewport(Action::ScrollUp {}.lines);
+                } else {
+                    hp->scrollViewport(-Action::ScrollDown {}.lines);
                 }
             };
             window_->onExpose = [this]()

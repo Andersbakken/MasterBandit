@@ -5663,7 +5663,7 @@ void Engine::deliverEmbeddedDestroyed(const std::string &regKey)
 
 void Engine::deliverPopupMouseEvent(PaneId pane, const std::string &popupId,
                                     const std::string &type, int cellX, int cellY,
-                                    int pixelX, int pixelY, int button)
+                                    int pixelX, int pixelY, int button, int delta)
 {
     IterGuard guard(this);
     std::string regKey = pane.toString() + ":" + popupId;
@@ -5688,7 +5688,7 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string &popupId,
                 JS_ToInt32(inst.ctx, &arrLen, lenVal);
                 JS_FreeValue(inst.ctx, lenVal);
 
-                // Build event object: {type, cellX, cellY, pixelX, pixelY, button}
+                // Build event object: {type, cellX, cellY, pixelX, pixelY, button, delta}
                 JSValue ev = JS_NewObject(inst.ctx);
                 JS_SetPropertyStr(inst.ctx, ev, "type", JS_NewString(inst.ctx, type.c_str()));
                 JS_SetPropertyStr(inst.ctx, ev, "cellX", JS_NewInt32(inst.ctx, cellX));
@@ -5696,6 +5696,7 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string &popupId,
                 JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
                 JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
                 JS_SetPropertyStr(inst.ctx, ev, "button", JS_NewInt32(inst.ctx, button));
+                JS_SetPropertyStr(inst.ctx, ev, "delta", JS_NewInt32(inst.ctx, delta));
 
                 for (int32_t i = 0; i < arrLen; ++i) {
                     JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
@@ -5725,7 +5726,7 @@ void Engine::deliverPopupMouseEvent(PaneId pane, const std::string &popupId,
 
 void Engine::deliverMouseToRegistry(const char *registryName,
                                     const std::string &key, const std::string &type,
-                                    int cellX, int cellY, int pixelX, int pixelY, int button)
+                                    int cellX, int cellY, int pixelX, int pixelY, int button, int delta)
 {
     IterGuard guard(this);
     for (auto &inst : instances_) {
@@ -5755,6 +5756,7 @@ void Engine::deliverMouseToRegistry(const char *registryName,
                 JS_SetPropertyStr(inst.ctx, ev, "pixelX", JS_NewInt32(inst.ctx, pixelX));
                 JS_SetPropertyStr(inst.ctx, ev, "pixelY", JS_NewInt32(inst.ctx, pixelY));
                 JS_SetPropertyStr(inst.ctx, ev, "button", JS_NewInt32(inst.ctx, button));
+                JS_SetPropertyStr(inst.ctx, ev, "delta", JS_NewInt32(inst.ctx, delta));
 
                 for (int32_t i = 0; i < arrLen; ++i) {
                     JSValue fn = JS_GetPropertyUint32(inst.ctx, arr, i);
@@ -5785,7 +5787,7 @@ void Engine::deliverMouseToRegistry(const char *registryName,
 void Engine::deliverEmbeddedMouseEvent(PaneId pane, uint64_t lineId,
                                        const std::string &type,
                                        int cellX, int cellY, int pixelX, int pixelY,
-                                       int button)
+                                       int button, int delta)
 {
     deliverMouseToRegistry("__embedded_registry",
                            pane.toString() + ":" + std::to_string(lineId),
@@ -5794,7 +5796,8 @@ void Engine::deliverEmbeddedMouseEvent(PaneId pane, uint64_t lineId,
                            cellY,
                            pixelX,
                            pixelY,
-                           button);
+                           button,
+                           delta);
 }
 
 void Engine::deliverMousemoveToRegistry(const char *regName,
@@ -5944,9 +5947,9 @@ void Engine::deliverEmbeddedResized(PaneId pane, uint64_t lineId, int cols, int 
 }
 
 void Engine::deliverPaneMouseEvent(PaneId pane, const std::string &type,
-                                   int cellX, int cellY, int pixelX, int pixelY, int button)
+                                   int cellX, int cellY, int pixelX, int pixelY, int button, int delta)
 {
-    deliverMouseToRegistry("__pane_registry", pane.toString(), type, cellX, cellY, pixelX, pixelY, button);
+    deliverMouseToRegistry("__pane_registry", pane.toString(), type, cellX, cellY, pixelX, pixelY, button, delta);
 }
 
 void Engine::executePendingJobs()

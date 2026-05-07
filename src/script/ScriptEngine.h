@@ -523,17 +523,27 @@ public:
     void deliverEmbeddedDestroyed(const std::string &regKey);
 
     // Deliver mouse events to JS listeners.
+    //
+    // `type` is one of "press" / "release" / "move" / "wheel". The `delta`
+    // field is non-zero only for wheel events: positive = scroll content
+    // up (away from user, toward older scrollback), negative = scroll
+    // content down. For non-wheel events callers should pass 0.
+    //
+    // The `button` field carries the xterm-style button code: 0=left,
+    // 1=middle, 2=right for press/release; for wheel events callers
+    // typically pass the wheel button (3=up, 4=down) — JS scripts can
+    // inspect either `delta` or `button` to detect direction.
     void deliverPopupMouseEvent(PaneId pane, const std::string &popupId,
                                 const std::string &type, int cellX, int cellY,
-                                int pixelX, int pixelY, int button);
+                                int pixelX, int pixelY, int button, int delta = 0);
     void deliverPaneMouseEvent(PaneId pane, const std::string &type,
-                               int cellX, int cellY, int pixelX, int pixelY, int button);
-    // Embedded mouse events. `type` is "press" / "release" / "move" (press
-    // and release gated on the `ui` group when the applet registers the
-    // listener; move is also gated on `ui`).
+                               int cellX, int cellY, int pixelX, int pixelY, int button, int delta = 0);
+    // Embedded mouse events. `type` is "press" / "release" / "move" /
+    // "wheel" (press/release/wheel gated on the `ui` group when the
+    // applet registers the listener; move is also gated on `ui`).
     void deliverEmbeddedMouseEvent(PaneId pane, uint64_t lineId,
                                    const std::string &type, int cellX, int cellY,
-                                   int pixelX, int pixelY, int button);
+                                   int pixelX, int pixelY, int button, int delta = 0);
 
     // Mousemove fanout. Reads `__evt_mousemove` on the registered object.
     void deliverPopupMouseMove(PaneId pane, const std::string &popupId,
@@ -986,7 +996,7 @@ private:
 
     void deliverMouseToRegistry(const char *registryName, const std::string &key,
                                 const std::string &type, int cellX, int cellY,
-                                int pixelX, int pixelY, int button);
+                                int pixelX, int pixelY, int button, int delta = 0);
 
     bool runPaneFilters(PaneId pane, const char *filterProp, std::string &data);
 

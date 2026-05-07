@@ -41,6 +41,12 @@
 
 static Key keysymToKey(xkb_keysym_t sym)
 {
+    // Bindings store the canonical (uppercase) form for ASCII letters —
+    // Key_A..Z = 0x41..0x5A, no Key_a..z. Shift is reported separately in
+    // the modifier mask, so normalize lowercase here. Without this, e.g.
+    // ctrl+e fails to match (xkb returns 'e' = 0x65, outside Key_A..Z).
+    if (sym >= 'a' && sym <= 'z')
+        sym = sym - 'a' + 'A';
     // Latin-1 and ASCII printable range maps directly
     if (sym >= 0x20 && sym <= 0x7e)
         return static_cast<Key>(sym);
@@ -136,6 +142,23 @@ static Key keysymToKey(xkb_keysym_t sym)
     case XKB_KEY_Multi_key:    return Key_Multi_key;
     default:                   return Key_unknown;
     }
+}
+
+// Resolve a keycode to its level-0 (unmodified base) keysym for the active
+// layout group. Bindings are matched against physical-key identity, not the
+// character produced by current modifiers — using the post-mod keysym (e.g.
+// what `xkb_state_key_get_one_sym` returns) breaks ctrl+alt+letter chords on
+// any layout where Ctrl+Alt selects a higher level (AltGr / Mode_switch).
+static xkb_keysym_t baseKeysymForKeycode(xkb_state* state,
+                                          xkb_keymap* keymap,
+                                          xkb_keycode_t keycode)
+{
+    if (!state || !keymap) return XKB_KEY_NoSymbol;
+    xkb_layout_index_t group = xkb_state_key_get_layout(state, keycode);
+    const xkb_keysym_t* syms = nullptr;
+    int nsyms = xkb_keymap_key_get_syms_by_level(keymap, keycode, group, 0, &syms);
+    if (nsyms < 1 || !syms) return XKB_KEY_NoSymbol;
+    return syms[0];
 }
 
 static uint32_t xkbStateToModifiers(xkb_state* state)
@@ -771,12 +794,12 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t* ev, bool isRepeat)
     // get a post-event mod mask — needed by InputController so Ctrl-hover
     // can flip the cursor to the link-pointer shape without waiting for
     // a subsequent key event — we apply the key to our local xkb state
-    // ourselves after syncing. The keysym lookup runs first so it sees
-    // the pre-event state (matters for Shift-modified character lookup).
+    // ourselves after syncing. Binding identity uses the level-0 base
+    // keysym (independent of mods); the modifier-aware codepoint for PTY
+    // emit comes from `xkb_state_key_get_utf32` further down.
     updateXKBStateFromCore(ev->state);
 
-    xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
-    Key k = keysymToKey(sym);
+    Key k = keysymToKey(baseKeysymForKeycode(xkbState_, xkbKeymap_, keycode));
 
     xkb_state_update_key(xkbState_, keycode, XKB_KEY_DOWN);
 
@@ -806,8 +829,7 @@ void XCBWindow::handleKeyRelease(xcb_key_release_event_t* ev)
     // sees Ctrl drop on key-up rather than at the next event.
     updateXKBStateFromCore(ev->state);
 
-    xkb_keysym_t sym = xkb_state_key_get_one_sym(xkbState_, keycode);
-    Key k = keysymToKey(sym);
+    Key k = keysymToKey(baseKeysymForKeycode(xkbState_, xkbKeymap_, keycode));
 
     xkb_state_update_key(xkbState_, keycode, XKB_KEY_UP);
 

@@ -3,6 +3,7 @@
 #include "Observability.h"
 #include "ParserAction.h"
 #include "TerminalSnapshot.h"
+#include "UrlDetector.h"
 #include "Utf8.h"
 #include "Utils.h"
 #include "Wcwidth.h"
@@ -1044,10 +1045,134 @@ void TerminalEmulator::advanceCursorToNewLine()
 void TerminalEmulator::lineFeed()
 {
     // LF: move cursor down one line, column unchanged. Scroll if at bottom of scroll region.
+    //
+    // Run URL detection on the line we're about to leave BEFORE the
+    // cursor advances. The line is still on the visible grid at this
+    // point (scrollUpInRegion hasn't fired yet). `scanLogicalLineForUrls`
+    // is a no-op on alt screen; for main-screen output it stamps
+    // hyperlinkId on cells matching `https?://`, `file://`, `ssh://`.
+    // Soft-wrapped lines (where the line we're leaving is a continuation)
+    // get the full logical line scanned in one pass.
+    if (!mUsingAltScreen && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+        uint64_t lineId = mDocument.lineIdForAbs(mDocument.historySize() + mState->cursorY);
+        if (lineId != 0) {
+            scanLogicalLineForUrls(lineId);
+        }
+    }
     mState->cursorY++;
     if (mState->cursorY >= mState->scrollBottom) {
         mState->cursorY = mState->scrollBottom - 1;
         scrollUpInRegion(1);
+    }
+}
+
+void TerminalEmulator::scanLogicalLineForUrls(uint64_t lineId)
+{
+    if (mUsingAltScreen) {
+        return;
+    }
+    int firstAbs = mDocument.firstAbsOfLine(lineId);
+    int lastAbs  = mDocument.lastAbsOfLine(lineId);
+    if (firstAbs < 0 || lastAbs < 0) {
+        return;
+    }
+    int hist         = mDocument.historySize();
+    // Only the visible-grid portion is mutable through `mDocument` /
+    // `CellGrid` here. If the line straddles into scrollback (a long
+    // soft-wrapped line whose top rows already evicted), the scrollback
+    // portion is on `LineBuffer`, which we don't mutate from this path —
+    // accept that URLs entirely or partially in the scrollback portion
+    // of a straddling line aren't auto-detected. Rare in practice.
+    int visibleFirst = std::max(firstAbs, hist);
+    if (visibleFirst > lastAbs) {
+        return;
+    }
+
+    // Build a flat UTF-8 buffer of the visible portion, plus a
+    // byte→cell-offset map. Mirrors `Document::appendCellsToLineBuf`'s
+    // contract: cell offsets are cumulative within the LOGICAL line
+    // (so `firstAbs * mWidth` is the implicit zero), and each byte of a
+    // multi-byte UTF-8 codepoint shares the offset of the cell it came
+    // from. Wide-glyph trailing cells (`wc == 0`) are encoded as a
+    // single space so the byte index doesn't desync with cell index.
+    std::string text;
+    std::vector<int> byteToOffset;
+    int rowsCovered = (lastAbs - visibleFirst + 1);
+    text.reserve(rowsCovered * mWidth);
+    byteToOffset.reserve(text.capacity());
+    for (int r = visibleFirst; r <= lastAbs; ++r) {
+        int screenRow = r - hist;
+        Cell *cells   = mDocument.row(screenRow);
+        // Only trim trailing nulls on the LAST visible row. Middle rows
+        // of a soft-wrapped line are full-width by definition; trimming
+        // there would lose the cell-position relationship (next row's
+        // cells live at offset += mWidth).
+        int rowLen    = mWidth;
+        if (r == lastAbs) {
+            while (rowLen > 0 && cells[rowLen - 1].wc == 0) {
+                --rowLen;
+            }
+        }
+        int baseOff = (r - firstAbs) * mWidth;
+        for (int c = 0; c < rowLen; ++c) {
+            int off     = baseOff + c;
+            char32_t cp = cells[c].wc;
+            if (cp == 0) {
+                text += ' ';
+                byteToOffset.push_back(off);
+            } else if (cp < 0x80) {
+                text += static_cast<char>(cp);
+                byteToOffset.push_back(off);
+            } else {
+                char buf[4];
+                int n = utf8::encode(cp, buf);
+                for (int k = 0; k < n; ++k) {
+                    text += buf[k];
+                    byteToOffset.push_back(off);
+                }
+            }
+        }
+    }
+
+    auto matches = UrlDetector::instance().findUrls(text);
+    if (matches.empty()) {
+        return;
+    }
+    for (const auto &m : matches) {
+        if (m.byteEnd == 0 || m.byteEnd > byteToOffset.size() ||
+            m.byteStart >= byteToOffset.size()) {
+            continue;
+        }
+        int startCellOff = byteToOffset[m.byteStart];
+        int endCellOff   = byteToOffset[m.byteEnd - 1] + 1; // exclusive
+        std::string uri  = text.substr(m.byteStart, m.byteEnd - m.byteStart);
+
+        uint32_t hid            = mNextHyperlinkId++;
+        mHyperlinkRegistry[hid] = { std::move(uri), {} };
+
+        int prevDirtyRow = -1;
+        for (int off = startCellOff; off < endCellOff; ++off) {
+            int r = firstAbs + off / mWidth;
+            int c = off % mWidth;
+            if (r < hist) {
+                continue; // scrollback — see comment above
+            }
+            int screenRow = r - hist;
+            if (screenRow < 0 || screenRow >= mHeight || c < 0 || c >= mWidth) {
+                continue;
+            }
+            CellExtra &ex = mDocument.ensureExtra(c, screenRow);
+            // OSC 8 wins: if a cell already carries an explicit
+            // hyperlinkId (set by `\e]8;;<uri>\e\\` ranges in the
+            // input), don't overwrite it.
+            if (ex.hyperlinkId == 0) {
+                ex.hyperlinkId = hid;
+            }
+            if (screenRow != prevDirtyRow) {
+                mDocument.markRowDirty(screenRow);
+                prevDirtyRow = screenRow;
+            }
+        }
     }
 }
 

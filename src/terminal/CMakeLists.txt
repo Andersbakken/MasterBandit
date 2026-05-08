@@ -13,6 +13,7 @@ add_library(terminal OBJECT
     LineBuffer.cpp
     TerminalSnapshot.cpp
     PtyMux.cpp
+    UrlDetector.cpp
 )
 
 target_include_directories(terminal PUBLIC

@@ -1175,7 +1175,12 @@ private:
     std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>> mImageRegistry;
     uint32_t mNextImageId { 1 };
 
-    // Hyperlink registry (OSC 8)
+    // Hyperlink registry — used for both OSC 8 explicit hyperlinks and
+    // auto-detected URLs (`UrlDetector` in `scanLogicalLineForUrls`). The
+    // entry's `id` is the OSC 8 user-supplied tag (empty for auto-detected
+    // URLs). Cells reference entries via `CellExtra::hyperlinkId`. OSC 8
+    // wins over auto-detection: `scanLogicalLineForUrls` only stamps cells
+    // whose `hyperlinkId` is currently 0.
     struct HyperlinkEntry
     {
         std::string uri;
@@ -1185,6 +1190,14 @@ private:
     std::unordered_map<uint32_t, HyperlinkEntry> mHyperlinkRegistry;
     uint32_t mNextHyperlinkId { 1 };
     uint32_t mActiveHyperlinkId { 0 }; // 0 = no active hyperlink
+
+    // Scan the logical line that owns `lineId` for URLs (https?://, file://,
+    // ssh://) and stamp `CellExtra::hyperlinkId` on matched cells, allocating
+    // new entries in `mHyperlinkRegistry`. No-op on alt screen. Skips cells
+    // that already have a nonzero hyperlinkId so explicit OSC 8 entries win.
+    // Called from `lineFeed()` so the typical newline-terminated tool output
+    // gets linkified as it streams. Caller must hold `mMutex`.
+    void scanLogicalLineForUrls(uint64_t lineId);
 
     // Title stack (XTWINOPS CSI 22/23 t + OSC 0/2)
     // Stack top is always the current title. Empty = no title set.

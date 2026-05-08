@@ -500,6 +500,40 @@ interface MbTerminal {
      * hyperlink) are never touched. Returns the count cleared.
      */
     clearDecorations(tag?: string): number;
+
+    /**
+     * Begin a decoration batch. Each `addDecoration` / `clearDecorations`
+     * call on the returned batch queues an op without touching the
+     * underlying terminal; `submit()` applies the whole queue atomically
+     * (one snapshot publish for the entire batch) and returns the ids
+     * assigned to the queued Add ops in queue order.
+     *
+     * Use this when a script mutation would otherwise produce a burst of
+     * individual `addDecoration` / `clearDecorations` calls — every one
+     * of those publishes a snapshot, and the render thread can sample
+     * mid-burst and paint with incomplete state (visible as a
+     * blank-frame flicker between the clear and the re-add).
+     */
+    createDecorationBatch(): MbDecorationBatch;
+}
+
+/**
+ * Atomic decoration mutation. Created by `Terminal.createDecorationBatch()`.
+ * `addDecoration` and `clearDecorations` queue ops; they DO NOT mutate the
+ * terminal. `submit()` applies all queued ops in order under a single lock
+ * acquisition with at most one snapshot publish at the end.
+ *
+ * Calling any method after `submit()` throws.
+ */
+interface MbDecorationBatch {
+    /** Queue an Add op. Spec is the same as `Terminal.addDecoration`. Returns the batch (chainable). */
+    addDecoration(spec: Parameters<MbTerminal["addDecoration"]>[0]): MbDecorationBatch;
+
+    /** Queue a Clear op. Tag semantics match `Terminal.clearDecorations`. Returns the batch. */
+    clearDecorations(tag?: string): MbDecorationBatch;
+
+    /** Apply all queued ops atomically. Returns the ids assigned to Add ops in queue order. */
+    submit(): number[];
 }
 
 declare const Terminal: MbTerminal;

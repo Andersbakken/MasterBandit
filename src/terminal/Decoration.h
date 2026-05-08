@@ -97,6 +97,22 @@ struct Decoration
     uint32_t hyperlinkId { 0 }; // Hyperlink kind only; click-target identity
 };
 
+// One queued operation in a decoration batch (see
+// TerminalEmulator::applyDecorationBatch). `Add` carries a Decoration spec
+// (its `id` is filled in during apply); `Clear` carries a tag to clear, or
+// empty for "all User decorations".
+struct DecorationBatchOp
+{
+    enum class Kind : uint8_t
+    {
+        Add   = 0,
+        Clear = 1,
+    };
+    Kind kind { Kind::Add };
+    Decoration spec;      // valid when kind == Add
+    std::string clearTag; // valid when kind == Clear; empty = all User
+};
+
 // Snapshot mirror: anchors resolved to current absolute rows under the term
 // mutex. Render thread reads without locking. Empty when an anchor has
 // evicted past the archive cap.

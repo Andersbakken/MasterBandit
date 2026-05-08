@@ -827,6 +827,41 @@ size_t TerminalEmulator::clearUserDecorations(std::string_view tag)
     return cleared;
 }
 
+std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<DecorationBatchOp> ops)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    std::vector<uint64_t> ids;
+    ids.reserve(ops.size());
+    bool changed = false;
+    for (auto &op : ops) {
+        if (op.kind == DecorationBatchOp::Kind::Clear) {
+            const std::string &tag = op.clearTag;
+            size_t before          = mDecorations.size();
+            mDecorations.erase(
+                std::remove_if(mDecorations.begin(), mDecorations.end(), [&](const Decoration &d)
+                               {
+                                   if (d.kind != DecorationKind::User) {
+                                       return false;
+                                   }
+                                   return tag.empty() ? true : (d.tag == tag);
+                               }),
+                mDecorations.end());
+            if (mDecorations.size() != before) {
+                changed = true;
+            }
+        } else {
+            op.spec.id = mNextDecorationId++;
+            mDecorations.push_back(std::move(op.spec));
+            ids.push_back(mDecorations.back().id);
+            changed = true;
+        }
+    }
+    if (changed) {
+        buildAndPublishSnapshotLocked();
+    }
+    return ids;
+}
+
 std::optional<ResolvedDecoration>
 TerminalEmulator::resolveDecoration(const Decoration &dec) const
 {

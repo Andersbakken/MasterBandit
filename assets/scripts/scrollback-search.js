@@ -47,32 +47,40 @@ const theme = createTheme({
 
 let ui = null;
 
-// Clear-and-recompute the decoration set. Replaces the bulk "search"
-// decorations and the single "current-match" decoration in one pass.
-function paintDecorations(pane, matches, currentIdx) {
-    pane.clearDecorations("search");
-    pane.clearDecorations("current-match");
-    if (!matches || matches.length === 0) return;
-
-    const cap = Math.min(matches.length, MAX_DECORATIONS);
-    for (let i = 0; i < cap; i++) {
-        const m = matches[i];
-        // The active match gets the "current-match" tag with higher
-        // zPriority so it composites on top of the bulk highlight when
-        // they overlap (they always do for the active hit, since both
-        // are added). Bulk matches use zPriority 0; current uses 10.
-        if (i === currentIdx) continue; // skip; emitted below as "current-match"
-        pane.addDecoration({
-            startRowId: m.startRowId, startCol: m.startCol,
-            endRowId:   m.endRowId,   endCol:   m.endCol,
-            style:      { fg: HIGHLIGHT_FG, bg: HIGHLIGHT_BG },
-            tag:        "search",
-            zPriority:  0,
-        });
+// Repaint the bulk highlight set ("search" tag). All matches get this
+// tag — including the active one. The active match also gets a separate
+// "current-match" decoration (higher zPriority) so it composites on top.
+// Atomic via createDecorationBatch: a single snapshot publish replaces
+// the previous "search" set, so the renderer never samples a partial
+// state between clear-and-readd.
+function paintBulk(pane, matches) {
+    const batch = pane.createDecorationBatch();
+    batch.clearDecorations("search");
+    if (matches && matches.length > 0) {
+        const cap = Math.min(matches.length, MAX_DECORATIONS);
+        for (let i = 0; i < cap; i++) {
+            const m = matches[i];
+            batch.addDecoration({
+                startRowId: m.startRowId, startCol: m.startCol,
+                endRowId:   m.endRowId,   endCol:   m.endCol,
+                style:      { fg: HIGHLIGHT_FG, bg: HIGHLIGHT_BG },
+                tag:        "search",
+                zPriority:  0,
+            });
+        }
     }
-    if (currentIdx >= 0 && currentIdx < matches.length) {
+    batch.submit();
+}
+
+// Repaint just the active match ("current-match" tag). One clear + at
+// most one add, also atomic. Stepping with n / N hits this path only —
+// the bulk set is untouched, which is the whole point of the split.
+function paintCurrent(pane, matches, currentIdx) {
+    const batch = pane.createDecorationBatch();
+    batch.clearDecorations("current-match");
+    if (matches && currentIdx >= 0 && currentIdx < matches.length) {
         const m = matches[currentIdx];
-        pane.addDecoration({
+        batch.addDecoration({
             startRowId: m.startRowId, startCol: m.startCol,
             endRowId:   m.endRowId,   endCol:   m.endCol,
             style:      { fg: CURRENT_FG, bg: CURRENT_BG },
@@ -80,6 +88,7 @@ function paintDecorations(pane, matches, currentIdx) {
             zPriority:  10,
         });
     }
+    batch.submit();
 }
 
 mb.addEventListener("action", "search.open", () => {
@@ -176,19 +185,27 @@ mb.addEventListener("action", "search.open", () => {
         current.value = pickInitialIndex(ms);
     });
 
-    // Repaint whenever matches or current change. Running both as the same
-    // effect collapses the redraw burst when current advances inside a
-    // changing match set.
+    // Bulk repaint — depends on `matches` only. A pure cursor step (n / N)
+    // doesn't change the match set, so this effect doesn't re-fire and the
+    // 600 yellow highlights stay in place.
     effect(() => {
         const ms = matches.value;
+        if (!alive) return;
+        paintBulk(pane, ms);
+    });
+
+    // Current-match repaint + scroll — depends on `matches` and `current`.
+    // On a cursor step this is the only effect that runs: one clear + one
+    // add for the orange decoration, one snapshot publish.
+    effect(() => {
+        const ms  = matches.value;
         const cur = current.value;
         if (!alive) return;
-        paintDecorations(pane, ms, ms.length > 0 ? cur : -1);
+        paintCurrent(pane, ms, ms.length > 0 ? cur : -1);
         if (ms.length > 0 && cur < ms.length) {
-            const m = ms[cur];
             // Bring the current match on screen; scrollToRow is a no-op if
             // already visible.
-            pane.scrollToRow(m.startRowId);
+            pane.scrollToRow(ms[cur].startRowId);
         }
     });
 

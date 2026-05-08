@@ -392,3 +392,154 @@ TEST_CASE("scrollToRow: idempotent when already at row")
     bool second = t.term.scrollToRow(matches[0].startLineId);
     CHECK_FALSE(second); // no change → returns false
 }
+
+namespace {
+
+// Build an Add op with a one-line, one-cell range at (lineId, col).
+DecorationBatchOp addOp(uint64_t lineId, int col, std::string tag)
+{
+    DecorationBatchOp op;
+    op.kind                 = DecorationBatchOp::Kind::Add;
+    op.spec.kind            = DecorationKind::User;
+    op.spec.startLineId     = lineId;
+    op.spec.endLineId       = lineId;
+    op.spec.startCellOffset = col;
+    op.spec.endCellOffset   = col;
+    op.spec.tag             = std::move(tag);
+    return op;
+}
+
+DecorationBatchOp clearOp(std::string tag)
+{
+    DecorationBatchOp op;
+    op.kind     = DecorationBatchOp::Kind::Clear;
+    op.clearTag = std::move(tag);
+    return op;
+}
+
+} // namespace
+
+TEST_CASE("applyDecorationBatch: empty batch is a no-op")
+{
+    TestTerminal t(40, 5);
+    t.feed("hello world");
+    auto m = doc(t).findText("o", {});
+    REQUIRE(m.size() >= 1);
+
+    auto ids = t.term.applyDecorationBatch({});
+    CHECK(ids.empty());
+    CHECK(t.term.decorations().empty());
+}
+
+TEST_CASE("applyDecorationBatch: returns ids in queue order, ids match stored decorations")
+{
+    TestTerminal t(40, 5);
+    t.feed("aaaaa");
+    auto m = doc(t).findText("a", {});
+    REQUIRE(m.size() >= 3);
+
+    std::vector<DecorationBatchOp> ops;
+    ops.push_back(addOp(m[0].startLineId, m[0].startCol, "search"));
+    ops.push_back(addOp(m[1].startLineId, m[1].startCol, "search"));
+    ops.push_back(addOp(m[2].startLineId, m[2].startCol, "current-match"));
+
+    auto ids = t.term.applyDecorationBatch(std::move(ops));
+    REQUIRE(ids.size() == 3);
+    CHECK(ids[0] != 0);
+    CHECK(ids[1] != ids[0]);
+    CHECK(ids[2] != ids[1]);
+
+    const auto &decs = t.term.decorations();
+    REQUIRE(decs.size() == 3);
+    // Insertion order preserved.
+    CHECK(decs[0].id == ids[0]);
+    CHECK(decs[1].id == ids[1]);
+    CHECK(decs[2].id == ids[2]);
+    CHECK(decs[2].tag == "current-match");
+}
+
+TEST_CASE("applyDecorationBatch: clear-then-add atomically replaces a tag set")
+{
+    TestTerminal t(40, 5);
+    t.feed("xxxxx");
+    auto m = doc(t).findText("x", {});
+    REQUIRE(m.size() >= 5);
+
+    // Pre-populate with 3 "search" decorations.
+    {
+        std::vector<DecorationBatchOp> seed;
+        for (int i = 0; i < 3; ++i) {
+            seed.push_back(addOp(m[i].startLineId, m[i].startCol, "search"));
+        }
+        t.term.applyDecorationBatch(std::move(seed));
+    }
+    REQUIRE(t.term.decorations().size() == 3);
+
+    // Now clear "search" + add 2 fresh "search" decorations + 1 "other"
+    // in a single batch — the prior 3 should be gone and the new 3 visible.
+    std::vector<DecorationBatchOp> batch;
+    batch.push_back(clearOp("search"));
+    batch.push_back(addOp(m[3].startLineId, m[3].startCol, "search"));
+    batch.push_back(addOp(m[4].startLineId, m[4].startCol, "search"));
+    batch.push_back(addOp(m[0].startLineId, m[0].startCol, "other"));
+    auto ids = t.term.applyDecorationBatch(std::move(batch));
+    CHECK(ids.size() == 3); // 3 Add ops
+
+    const auto &decs = t.term.decorations();
+    REQUIRE(decs.size() == 3);
+    int searchCount = 0, otherCount = 0;
+    for (const auto &d : decs) {
+        if (d.tag == "search") {
+            ++searchCount;
+        } else if (d.tag == "other") {
+            ++otherCount;
+        }
+    }
+    CHECK(searchCount == 2);
+    CHECK(otherCount == 1);
+}
+
+TEST_CASE("applyDecorationBatch: clear is tag-scoped")
+{
+    TestTerminal t(40, 5);
+    t.feed("aaaaa");
+    auto m = doc(t).findText("a", {});
+    REQUIRE(m.size() >= 3);
+
+    std::vector<DecorationBatchOp> seed;
+    seed.push_back(addOp(m[0].startLineId, m[0].startCol, "search"));
+    seed.push_back(addOp(m[1].startLineId, m[1].startCol, "search"));
+    seed.push_back(addOp(m[2].startLineId, m[2].startCol, "current-match"));
+    t.term.applyDecorationBatch(std::move(seed));
+    REQUIRE(t.term.decorations().size() == 3);
+
+    // Clearing "search" leaves "current-match" intact.
+    std::vector<DecorationBatchOp> batch;
+    batch.push_back(clearOp("search"));
+    t.term.applyDecorationBatch(std::move(batch));
+
+    const auto &decs = t.term.decorations();
+    REQUIRE(decs.size() == 1);
+    CHECK(decs[0].tag == "current-match");
+}
+
+TEST_CASE("applyDecorationBatch: empty clearTag clears all User decorations")
+{
+    TestTerminal t(40, 5);
+    t.feed("aaaaa");
+    auto m = doc(t).findText("a", {});
+    REQUIRE(m.size() >= 3);
+
+    std::vector<DecorationBatchOp> seed;
+    seed.push_back(addOp(m[0].startLineId, m[0].startCol, "search"));
+    seed.push_back(addOp(m[1].startLineId, m[1].startCol, "current-match"));
+    seed.push_back(addOp(m[2].startLineId, m[2].startCol, "other"));
+    t.term.applyDecorationBatch(std::move(seed));
+    REQUIRE(t.term.decorations().size() == 3);
+
+    std::vector<DecorationBatchOp> batch;
+    batch.push_back(clearOp("")); // empty tag = clear all User
+    t.term.applyDecorationBatch(std::move(batch));
+
+    CHECK(t.term.decorations().empty());
+}

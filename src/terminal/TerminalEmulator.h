@@ -606,6 +606,19 @@ public:
     // User decoration (system kinds untouched). Returns count removed.
     size_t clearUserDecorations(std::string_view tag = {});
 
+    // Apply a queued sequence of Add / Clear ops atomically: one mMutex
+    // acquisition, at most one snapshot publish at the end. Add-op ids are
+    // returned in the order they appear in `ops` (Clear ops contribute
+    // nothing). System-kind decorations are never affected by Clear ops,
+    // regardless of tag.
+    //
+    // Use this when a script mutation would otherwise produce a burst of
+    // individual addDecoration / clearDecorations calls — every one of
+    // those publishes a snapshot, and the render thread can sample
+    // mid-burst and paint with incomplete state (visible as a blank-frame
+    // flicker between the clear and the re-add).
+    std::vector<uint64_t> applyDecorationBatch(std::vector<DecorationBatchOp> ops);
+
     const std::vector<Decoration> &decorations() const { return mDecorations; }
 
     // Resolve a single decoration to abs-row coordinates. Returns empty

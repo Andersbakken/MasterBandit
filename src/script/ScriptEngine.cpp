@@ -2130,37 +2130,24 @@ static JSValue jsTerminalGetProp(JSContext *ctx, JSValueConst this_val, int magi
     return JS_UNDEFINED;
 }
 
-// terminal.addDecoration(spec) → id (number)
-//
-// spec: {
-//   startRowId: number, startCol: number,
-//   endRowId:   number, endCol:   number,
-//   style?: { fg?, bg?, underline?: { style, color? }, strikethrough?: bool },
-//   tag?: string,         // for grouping; reserved tags rejected
-//   zPriority?: number,   // composition order tie-breaker among User entries
-//   shape?: "range" | "rectangle",
-// }
-//
-// `style.outline` and `style.dimOthers` are intentionally unsupported on
-// User decorations: outline + multiplicative dim are uniform-driven render
-// primitives currently dedicated to the OSC 133 command region.
-static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
-                                       int argc, JSValueConst *argv)
+// Parse a JS spec object into a Decoration. On error, throws via
+// JS_ThrowTypeError and returns false. Caller-context label (`who`) is
+// included in error messages so applet authors can tell `addDecoration`
+// failures from `batch.addDecoration` failures. The returned decoration's
+// `id` is left at 0 — assigned by TerminalEmulator on insert.
+static bool parseDecorationSpec(JSContext *ctx, JSValueConst specVal,
+                                Decoration &d, const char *who)
 {
-    REQUIRE_PERM(ctx, PaneRead);
-    if (argc < 1 || !JS_IsObject(argv[0])) {
-        return JS_ThrowTypeError(ctx, "addDecoration requires (spec)");
+    if (!JS_IsObject(specVal)) {
+        JS_ThrowTypeError(ctx, "%s requires (spec)", who);
+        return false;
     }
-    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
-    if (!emu) {
-        return JS_ThrowTypeError(ctx, "terminal is destroyed");
-    }
-    Decoration d;
+    d      = Decoration {};
     d.kind = DecorationKind::User;
 
     auto readInt64 = [&](const char *name, int64_t &out) -> bool
     {
-        JSValue v = JS_GetPropertyStr(ctx, argv[0], name);
+        JSValue v = JS_GetPropertyStr(ctx, specVal, name);
         if (JS_IsUndefined(v) || JS_IsNull(v)) {
             JS_FreeValue(ctx, v);
             return false;
@@ -2176,7 +2163,7 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
     };
     auto readInt32 = [&](const char *name, int32_t &out) -> bool
     {
-        JSValue v = JS_GetPropertyStr(ctx, argv[0], name);
+        JSValue v = JS_GetPropertyStr(ctx, specVal, name);
         if (JS_IsUndefined(v) || JS_IsNull(v)) {
             JS_FreeValue(ctx, v);
             return false;
@@ -2195,7 +2182,8 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
     int32_t sc = 0, ec = 0;
     if (!readInt64("startRowId", s) || !readInt64("endRowId", e) ||
         !readInt32("startCol", sc) || !readInt32("endCol", ec)) {
-        return JS_ThrowTypeError(ctx, "addDecoration: startRowId/endRowId/startCol/endCol required");
+        JS_ThrowTypeError(ctx, "%s: startRowId/endRowId/startCol/endCol required", who);
+        return false;
     }
     d.startLineId     = static_cast<uint64_t>(s);
     d.endLineId       = static_cast<uint64_t>(e);
@@ -2212,7 +2200,8 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
     // silently-stored phantom decoration the renderer can never display
     // would just leak into the snapshot.
     if (s == e && ec <= sc) {
-        return JS_ThrowTypeError(ctx, "addDecoration: endCol must be > startCol on a single-line range");
+        JS_ThrowTypeError(ctx, "%s: endCol must be > startCol on a single-line range", who);
+        return false;
     }
     // For multi-line ranges, ec == 0 means "stop at col 0 of endRowId",
     // i.e. the final row contributes nothing. The inclusive primitive
@@ -2226,7 +2215,7 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
         d.zPriority = z;
     }
 
-    JSValue shapeV = JS_GetPropertyStr(ctx, argv[0], "shape");
+    JSValue shapeV = JS_GetPropertyStr(ctx, specVal, "shape");
     if (JS_IsString(shapeV)) {
         const char *sv = JS_ToCString(ctx, shapeV);
         if (sv) {
@@ -2238,7 +2227,7 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
     }
     JS_FreeValue(ctx, shapeV);
 
-    JSValue tagV = JS_GetPropertyStr(ctx, argv[0], "tag");
+    JSValue tagV = JS_GetPropertyStr(ctx, specVal, "tag");
     if (JS_IsString(tagV)) {
         const char *tv = JS_ToCString(ctx, tagV);
         if (tv) {
@@ -2251,14 +2240,15 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
             // honest.
             if (t == "selection" || t == "command-region" || t == "hyperlink") {
                 JS_FreeValue(ctx, tagV);
-                return JS_ThrowTypeError(ctx, "addDecoration: tag is reserved");
+                JS_ThrowTypeError(ctx, "%s: tag is reserved", who);
+                return false;
             }
             d.tag = std::move(t);
         }
     }
     JS_FreeValue(ctx, tagV);
 
-    JSValue styleV = JS_GetPropertyStr(ctx, argv[0], "style");
+    JSValue styleV = JS_GetPropertyStr(ctx, specVal, "style");
     if (JS_IsObject(styleV)) {
         auto readU32 = [&](const char *name, std::optional<uint32_t> &out)
         {
@@ -2304,7 +2294,43 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, stV);
     }
     JS_FreeValue(ctx, styleV);
+    return true;
+}
 
+// terminal.addDecoration(spec) → id (number)
+//
+// spec: {
+//   startRowId: number, startCol: number,
+//   endRowId:   number, endCol:   number,
+//   style?: { fg?, bg?, underline?: { style, color? }, strikethrough?: bool },
+//   tag?: string,         // for grouping; reserved tags rejected
+//   zPriority?: number,   // composition order tie-breaker among User entries
+//   shape?: "range" | "rectangle",
+// }
+//
+// `style.outline` and `style.dimOthers` are intentionally unsupported on
+// User decorations: outline + multiplicative dim are uniform-driven render
+// primitives currently dedicated to the OSC 133 command region.
+//
+// For bursts of mutations (e.g. clearing and re-adding hundreds of
+// highlights every keystroke), prefer `createDecorationBatch()` — every
+// addDecoration / clearDecorations call publishes a fresh snapshot, which
+// the render thread can sample mid-burst.
+static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "addDecoration requires (spec)");
+    }
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    }
+    Decoration d;
+    if (!parseDecorationSpec(ctx, argv[0], d, "addDecoration")) {
+        return JS_EXCEPTION;
+    }
     uint64_t id = emu->addDecoration(std::move(d));
     if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
         cb();
@@ -2365,11 +2391,145 @@ static JSValue jsTerminalClearDecorations(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, static_cast<int32_t>(n));
 }
 
+// ============================================================================
+// DecorationBatch JS class — accumulates Add / Clear ops, applies them
+// atomically on submit() via TerminalEmulator::applyDecorationBatch (one
+// snapshot publish for the whole batch).
+// ============================================================================
+
+static JSClassID jsDecorationBatchClassId;
+
+struct JsDecorationBatchData
+{
+    // Duped reference to the terminal-shaped JS object (Pane / Popup /
+    // EmbeddedTerminal) that created this batch. Resolved at submit() time
+    // so a destroyed terminal surfaces as a clean throw, not a UAF.
+    JSValue ownerRef;
+    std::vector<DecorationBatchOp> ops;
+    bool submitted { false };
+};
+
+static void jsDecorationBatchFinalize(JSRuntime *rt, JSValue val)
+{
+    auto *d = static_cast<JsDecorationBatchData *>(JS_GetOpaque(val, jsDecorationBatchClassId));
+    if (d) {
+        JS_FreeValueRT(rt, d->ownerRef);
+        delete d;
+    }
+}
+
+static JSClassDef jsDecorationBatchClassDef = { "DecorationBatch", jsDecorationBatchFinalize };
+
+static JsDecorationBatchData *jsDecorationBatchGet(JSValueConst val)
+{
+    return static_cast<JsDecorationBatchData *>(JS_GetOpaque(val, jsDecorationBatchClassId));
+}
+
+// batch.addDecoration(spec) — queues an Add op. Returns the batch (chainable).
+static JSValue jsDecorationBatchAdd(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    auto *d = jsDecorationBatchGet(this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "not a DecorationBatch");
+    }
+    if (d->submitted) {
+        return JS_ThrowTypeError(ctx, "DecorationBatch already submitted");
+    }
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "addDecoration requires (spec)");
+    }
+    DecorationBatchOp op;
+    op.kind = DecorationBatchOp::Kind::Add;
+    if (!parseDecorationSpec(ctx, argv[0], op.spec, "batch.addDecoration")) {
+        return JS_EXCEPTION;
+    }
+    d->ops.push_back(std::move(op));
+    return JS_DupValue(ctx, this_val);
+}
+
+// batch.clearDecorations(tag?) — queues a Clear op. Returns the batch.
+static JSValue jsDecorationBatchClear(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    auto *d = jsDecorationBatchGet(this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "not a DecorationBatch");
+    }
+    if (d->submitted) {
+        return JS_ThrowTypeError(ctx, "DecorationBatch already submitted");
+    }
+    DecorationBatchOp op;
+    op.kind = DecorationBatchOp::Kind::Clear;
+    if (argc >= 1 && JS_IsString(argv[0])) {
+        const char *tv = JS_ToCString(ctx, argv[0]);
+        if (tv) {
+            op.clearTag = tv;
+            JS_FreeCString(ctx, tv);
+        }
+    }
+    d->ops.push_back(std::move(op));
+    return JS_DupValue(ctx, this_val);
+}
+
+// batch.submit() — applies queued ops atomically. Returns an array of
+// ids assigned to Add ops (in queue order). Throws if already submitted
+// or the owning terminal is gone.
+static JSValue jsDecorationBatchSubmit(JSContext *ctx, JSValueConst this_val,
+                                       int, JSValueConst *)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    auto *d = jsDecorationBatchGet(this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "not a DecorationBatch");
+    }
+    if (d->submitted) {
+        return JS_ThrowTypeError(ctx, "DecorationBatch already submitted");
+    }
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, d->ownerRef);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    }
+    d->submitted              = true;
+    std::vector<uint64_t> ids = emu->applyDecorationBatch(std::move(d->ops));
+    if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
+        cb();
+    }
+    JSValue arr = JS_NewArray(ctx);
+    for (size_t i = 0; i < ids.size(); ++i) {
+        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), JS_NewInt64(ctx, static_cast<int64_t>(ids[i])));
+    }
+    return arr;
+}
+
+static const JSCFunctionListEntry jsDecorationBatchProto[] = {
+    JS_CFUNC_DEF("addDecoration", 1, jsDecorationBatchAdd),
+    JS_CFUNC_DEF("clearDecorations", 0, jsDecorationBatchClear),
+    JS_CFUNC_DEF("submit", 0, jsDecorationBatchSubmit),
+};
+
+// terminal.createDecorationBatch() → DecorationBatch
+static JSValue jsTerminalCreateDecorationBatch(JSContext *ctx, JSValueConst this_val,
+                                               int, JSValueConst *)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, this_val);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "terminal is destroyed");
+    }
+    JSValue obj = JS_NewObjectClass(ctx, jsDecorationBatchClassId);
+    auto *d     = new JsDecorationBatchData;
+    d->ownerRef = JS_DupValue(ctx, this_val);
+    JS_SetOpaque(obj, d);
+    return obj;
+}
+
 static const JSCFunctionListEntry jsTerminalProto[] = {
     JS_CFUNC_DEF("inject", 1, jsTerminalInject),
     JS_CFUNC_DEF("addDecoration", 1, jsTerminalAddDecoration),
     JS_CFUNC_DEF("removeDecoration", 1, jsTerminalRemoveDecoration),
     JS_CFUNC_DEF("clearDecorations", 0, jsTerminalClearDecorations),
+    JS_CFUNC_DEF("createDecorationBatch", 0, jsTerminalCreateDecorationBatch),
     JS_CGETSET_MAGIC_DEF("cols", jsTerminalGetProp, nullptr, 0),
     JS_CGETSET_MAGIC_DEF("rows", jsTerminalGetProp, nullptr, 1),
     JS_CGETSET_MAGIC_DEF("cursor", jsTerminalGetProp, nullptr, 2),
@@ -3469,6 +3629,9 @@ Engine::Engine()
 
     JS_NewClassID(rt_, &jsOutputCaptureClassId);
     JS_NewClass(rt_, jsOutputCaptureClassId, &jsOutputCaptureClassDef);
+
+    JS_NewClassID(rt_, &jsDecorationBatchClassId);
+    JS_NewClass(rt_, jsDecorationBatchClassId, &jsDecorationBatchClassDef);
 }
 
 Engine::~Engine()
@@ -3570,6 +3733,11 @@ JSContext *Engine::createContext()
     JSValue captureProto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, captureProto, jsOutputCaptureProto, sizeof(jsOutputCaptureProto) / sizeof(jsOutputCaptureProto[0]));
     JS_SetClassProto(ctx, jsOutputCaptureClassId, captureProto);
+
+    // DecorationBatch is also a flat handle.
+    JSValue batchProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, batchProto, jsDecorationBatchProto, sizeof(jsDecorationBatchProto) / sizeof(jsDecorationBatchProto[0]));
+    JS_SetClassProto(ctx, jsDecorationBatchClassId, batchProto);
 
     // Timer globals
     JSValue global = JS_GetGlobalObject(ctx);

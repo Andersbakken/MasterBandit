@@ -188,6 +188,16 @@ static uint32_t kittyFunctionalCode(Key k)
         case Key_F23: return 57386;
         case Key_F24: return 57387;
         case Key_F25: return 57388;
+        case Key_F26: return 57389;
+        case Key_F27: return 57390;
+        case Key_F28: return 57391;
+        case Key_F29: return 57392;
+        case Key_F30: return 57393;
+        case Key_F31: return 57394;
+        case Key_F32: return 57395;
+        case Key_F33: return 57396;
+        case Key_F34: return 57397;
+        case Key_F35: return 57398;
         case Key_KP_0: return 57399;
         case Key_KP_1: return 57400;
         case Key_KP_2: return 57401;
@@ -205,16 +215,48 @@ static uint32_t kittyFunctionalCode(Key k)
         case Key_KP_Add: return 57413;
         case Key_KP_Enter: return 57414;
         case Key_KP_Equal: return 57415;
+        case Key_KP_Separator: return 57416;
+        case Key_KP_Left: return 57417;
+        case Key_KP_Right: return 57418;
+        case Key_KP_Up: return 57419;
+        case Key_KP_Down: return 57420;
+        case Key_KP_PageUp: return 57421;
+        case Key_KP_PageDown: return 57422;
+        case Key_KP_Home: return 57423;
+        case Key_KP_End: return 57424;
+        case Key_KP_Insert: return 57425;
+        case Key_KP_Delete: return 57426;
+        case Key_KP_Begin: return 57427;
+        // Media keys (kitty 57428–57440)
+        case Key_MediaPlay: return 57428;
+        case Key_MediaPause: return 57429;
+        case Key_MediaTogglePlayPause: return 57430;
+        case Key_MediaReverse: return 57431;
+        case Key_MediaStop: return 57432;
+        case Key_MediaFastForward: return 57433;
+        case Key_MediaRewind: return 57434;
+        case Key_MediaNext: return 57435;
+        case Key_MediaPrevious: return 57436;
+        case Key_MediaRecord: return 57437;
+        case Key_VolumeDown: return 57438;
+        case Key_VolumeUp: return 57439;
+        case Key_VolumeMute: return 57440;
+        // Modifier-only keys (kitty 57441–57452)
         case Key_Shift_L: return 57441;
         case Key_Control_L: return 57442;
         case Key_Alt_L: return 57443;
         case Key_Super_L: return 57444;
         case Key_Hyper_L: return 57445;
+        case Key_Meta_L: return 57446;
         case Key_Shift_R: return 57447;
         case Key_Control_R: return 57448;
         case Key_Alt_R: return 57449;
         case Key_Super_R: return 57450;
         case Key_Hyper_R: return 57451;
+        case Key_Meta_R: return 57452;
+        // ISO level shifts (kitty 57453–57454)
+        case Key_AltGr: return 57453;            // ISO_Level3_Shift
+        case Key_ISO_Level5_Shift: return 57454;
         default: return 0;
     }
 }
@@ -309,22 +351,27 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
         ? static_cast<uint32_t>(KeyAction_Press)
         : static_cast<uint32_t>(ev.action);
 
-    // Determine key code
+    // Determine key code. Per kitty (key_encoding.c via xkb_glfw.c:949 —
+    // `glfw_ev.key = ... ?: xkb_state_key_get_utf32(...)`) the keycode is
+    // the *current layout's* codepoint for the keystroke, not the physical
+    // PC-101 position. So when text is available it wins over the
+    // `Key_A → 'a'` shortcut: a Russian-layout user pressing the physical
+    // A key produces text="ф" (U+0444), which becomes keyCode=1092. The
+    // base_layout_key field carries 'a' separately.
     uint32_t funcCode = kittyFunctionalCode(ev.key);
     uint32_t keyCode  = 0;
 
     if (funcCode != 0) {
         keyCode = funcCode;
+    } else if (!ev.text.empty()) {
+        int consumed = 0;
+        keyCode      = utf8::decode(ev.text.c_str(), static_cast<int>(ev.text.size()), consumed);
     } else if (ev.key >= Key_A && ev.key <= Key_Z) {
         keyCode = static_cast<uint32_t>(ev.key - Key_A + 'a'); // lowercase
     } else if (ev.key >= Key_0 && ev.key <= Key_9) {
         keyCode = static_cast<uint32_t>(ev.key);
     } else if (ev.key == Key_Space) {
         keyCode = ' ';
-    } else if (!ev.text.empty()) {
-        // Use codepoint from text
-        int consumed = 0;
-        keyCode      = utf8::decode(ev.text.c_str(), static_cast<int>(ev.text.size()), consumed);
     } else {
         return {}; // Can't encode
     }
@@ -418,10 +465,24 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
     bool needEvent = (reportEvents && eventType != 1);
     bool needText  = (reportText && !ev.text.empty());
 
-    // Build key portion: keycode or keycode:shifted_key
-    char keyPart[32];
-    if (reportAlternate && ev.shiftedKey != 0 && ev.shiftedKey != keyCode) {
+    // Build key portion: keycode[:shifted_key[:base_layout_key]] per
+    // kitty's `serialize` (key_encoding.c:65-77). The `add_alternates`
+    // gate fires when reportAlternate is set AND either
+    //   (a) shifted_key is meaningful AND shift is currently held, OR
+    //   (b) base_layout_key is set and differs from keycode.
+    // When firing, the leading ':' is always emitted; the shifted_key
+    // sub-field is emitted only when shift is held (otherwise empty —
+    // i.e. the spec's `keycode::base_layout_key` form is reachable).
+    char keyPart[64];
+    bool shiftHeld          = (ev.modifiers & ShiftModifier) != 0;
+    bool emitShifted        = reportAlternate && shiftHeld && ev.shiftedKey != 0 && ev.shiftedKey != keyCode;
+    bool emitBaseLayout     = reportAlternate && ev.baseLayoutKey != 0 && ev.baseLayoutKey != keyCode;
+    if (emitShifted && emitBaseLayout) {
+        snprintf(keyPart, sizeof(keyPart), "%u:%u:%u", keyCode, ev.shiftedKey, ev.baseLayoutKey);
+    } else if (emitShifted) {
         snprintf(keyPart, sizeof(keyPart), "%u:%u", keyCode, ev.shiftedKey);
+    } else if (emitBaseLayout) {
+        snprintf(keyPart, sizeof(keyPart), "%u::%u", keyCode, ev.baseLayoutKey);
     } else {
         snprintf(keyPart, sizeof(keyPart), "%u", keyCode);
     }

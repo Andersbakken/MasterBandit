@@ -1478,7 +1478,7 @@ void PlatformDawn::applyConfig(const Config &config)
         inputController_->setKeySequenceTimeoutMs(config.key_sequence_timeout_ms);
     }
     if (window_) {
-        window_->setAltSendsEsc(config.alt_sends_esc);
+        window_->setMacosOptionAsAlt(Window::parseMacosOptionAsAlt(config.macos_option_as_alt));
     }
 
     platformSetNotificationsShowWhenForeground(config.notifications.show_when_foreground);

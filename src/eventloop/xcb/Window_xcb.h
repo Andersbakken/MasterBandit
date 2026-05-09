@@ -37,6 +37,7 @@ public:
 
     std::string keyName(int keycode) const override;
     uint32_t shiftedKeyCodepoint(int keycode) const override;
+    uint32_t baseLayoutKeyCodepoint(int keycode) const override;
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
     void setCursorStyle(CursorStyle shape) override;
@@ -95,6 +96,14 @@ private:
     xkb_state *xkbState_   = nullptr;
     int32_t xkbDeviceId_   = -1;
     uint8_t xkbEventBase_  = 0; // XKB extension first event code
+
+    // Default-rules keymap, built once at startup from empty xkb_rule_names
+    // (resolves to XKB_DEFAULT_LAYOUT — typically "us"). Used solely for
+    // baseLayoutKeyCodepoint() — it lets us look up what a keycode would
+    // produce under the system's default layout regardless of the user's
+    // current layout, mirroring kitty's `default_keymap` (xkb_glfw.c:594).
+    xkb_keymap *xkbDefaultKeymap_ = nullptr;
+    xkb_state *xkbDefaultState_   = nullptr;
 
     // XKB mod indices (for mapping X11 ev->state to xkb mod mask)
     struct

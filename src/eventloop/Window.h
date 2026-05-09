@@ -58,12 +58,46 @@ public:
         return 0;
     }
 
-    // When true, the macOS backend skips NSTextInputClient processing for
-    // Option+<letter> so the OS doesn't compose the "option character" (∫,
-    // ƒ, etc.) — the terminal will send ESC+<letter> via the legacy key
-    // path instead. No-op on platforms where Alt+letter already reaches
-    // onChar as a plain character (Linux/XCB).
-    virtual void setAltSendsEsc(bool v) { (void)v; }
+    // Codepoint this physical key would produce under the system default
+    // (typically US ANSI) layout, regardless of the user's current layout.
+    // Used to fill the kitty keyboard protocol's `base_layout_key` /
+    // alternate_key field so non-US-layout users can still match physical
+    // key shortcuts. Returns 0 if unavailable or identical to the
+    // current-layout codepoint (encoder elides redundant emission).
+    virtual uint32_t baseLayoutKeyCodepoint(int keycode) const
+    {
+        (void)keycode;
+        return 0;
+    }
+
+    // Mirrors kitty's `macos_option_as_alt`. Selects which side(s) of the
+    // Option key bypass macOS's Unicode composition (NSTextInputClient) so
+    // the keystroke reaches the terminal as a real Alt modifier. The
+    // bypassed side(s) cause the platform layer to OR `OptionAsAltModifier`
+    // into the dispatched mods, which InputController gates ESC-prefix
+    // emission on. Sides not bypassed go through normal macOS composition
+    // (Option+E → dead key for accent, Option+B → ∫, etc.). No-op on
+    // non-macOS platforms (Alt is unambiguous on X11/Wayland).
+    enum class MacosOptionAsAlt : uint8_t
+    {
+        None,
+        Left,
+        Right,
+        Both
+    };
+
+    virtual void setMacosOptionAsAlt(MacosOptionAsAlt v) { (void)v; }
+
+    // Parse the config string. Recognized: "none"/"no"/"false" → None,
+    // "left" → Left, "right" → Right, "both"/"yes"/"true" → Both. Unknown
+    // values fall back to Left (the default).
+    static MacosOptionAsAlt parseMacosOptionAsAlt(const std::string &s)
+    {
+        if (s == "none" || s == "no" || s == "false") return MacosOptionAsAlt::None;
+        if (s == "right") return MacosOptionAsAlt::Right;
+        if (s == "both" || s == "yes" || s == "true") return MacosOptionAsAlt::Both;
+        return MacosOptionAsAlt::Left;
+    }
 
     // WebGPU surface
     virtual wgpu::Surface createWgpuSurface(wgpu::Instance instance) = 0;

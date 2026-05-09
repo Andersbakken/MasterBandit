@@ -35,13 +35,17 @@ enum Key
     Key_NumLock    = 0x01000025,
     Key_ScrollLock = 0x01000026,
 
-    // Left/right modifier keys (Kitty keyboard protocol)
-    Key_Shift_L      = 0x01000070,
-    Key_Shift_R      = 0x01000071,
-    Key_Control_L    = 0x01000072,
-    Key_Control_R    = 0x01000073,
-    Key_Alt_L        = 0x01000074,
-    Key_Alt_R        = 0x01000075,
+    // Left/right modifier keys (Kitty keyboard protocol).
+    // NOTE: 0x01000070-0x0100007F is reserved for the Volume/Bass/Treble
+    // block further down (Key_VolumeDown..Key_TrebleDown), so the L/R
+    // modifier values must stay in this 0x27-0x2F slot to avoid the
+    // duplicate-case-value collision that bit us once already.
+    Key_Shift_L      = 0x01000027,
+    Key_Shift_R      = 0x01000028,
+    Key_Control_L    = 0x01000029,
+    Key_Control_R    = 0x0100002a,
+    Key_Alt_L        = 0x0100002b,
+    Key_Alt_R        = 0x0100002c,
     // Key_Super_L/R and Key_Hyper_L/R already defined below
     Key_F1           = 0x01000030, // function keys
     Key_F2           = 0x01000031,
@@ -355,6 +359,11 @@ enum Key
     Key_MediaRecord            = 0x01000084,
     Key_MediaPause             = 0x1000085,
     Key_MediaTogglePlayPause   = 0x1000086,
+    // Kitty protocol exposes these as distinct codes (57431/57433/57434);
+    // X11 has XF86AudioForward / XF86AudioRewind (no Reverse keysym).
+    Key_MediaReverse     = 0x01000087,
+    Key_MediaFastForward = 0x01000088,
+    Key_MediaRewind      = 0x01000089,
     Key_HomePage               = 0x01000090,
     Key_Favorites              = 0x01000091,
     Key_Search                 = 0x01000092,
@@ -551,8 +560,34 @@ enum Key
     Key_KP_Multiply = 0x0120000c,
     Key_KP_Subtract = 0x0120000d,
     Key_KP_Add      = 0x0120000e,
-    Key_KP_Enter    = 0x0120000f,
-    Key_KP_Equal    = 0x01200010,
+    Key_KP_Enter     = 0x0120000f,
+    Key_KP_Equal     = 0x01200010,
+    Key_KP_Separator = 0x01200011,
+    // Keypad navigation (Linux/XKB has distinct keysyms; macOS shares
+    // virtual keycodes with main nav cluster, so these only ever fire on
+    // X11/Wayland — Cocoa main-nav keys arrive as Key_Left/Right/etc.).
+    Key_KP_Left     = 0x01200012,
+    Key_KP_Right    = 0x01200013,
+    Key_KP_Up       = 0x01200014,
+    Key_KP_Down     = 0x01200015,
+    Key_KP_PageUp   = 0x01200016,
+    Key_KP_PageDown = 0x01200017,
+    Key_KP_Home     = 0x01200018,
+    Key_KP_End      = 0x01200019,
+    Key_KP_Insert   = 0x0120001a,
+    Key_KP_Delete   = 0x0120001b,
+    Key_KP_Begin    = 0x0120001c,
+
+    // Real X11 Meta_L/Meta_R — distinct from Cmd/Super (which MB's
+    // MetaModifier represents in `Modifier`). Practically nonexistent on
+    // modern hardware but kitty's protocol reserves codes 57446/57452 for
+    // them under flag 0x8 (REPORT_ALL_KEYS).
+    Key_Meta_L = 0x01200020,
+    Key_Meta_R = 0x01200021,
+
+    // ISO_Level5_Shift — used by some non-US layouts. ISO_Level3_Shift
+    // already has Key_AltGr above (0x01001103).
+    Key_ISO_Level5_Shift = 0x01200022,
 
     Key_unknown = 0x01ffffff
 };
@@ -577,7 +612,19 @@ enum Modifier
     HyperModifier    = 0x10,
     CapsLockModifier = 0x20,
     NumLockModifier  = 0x40,
+    // Set by the platform layer alongside AltModifier when this specific Alt
+    // keystroke should be treated as a real Alt modifier (not OS-level Unicode
+    // composition). On macOS, gated by `macos_option_as_alt` and the held
+    // Option side. On Linux, always set when AltModifier is set. Read by
+    // InputController to gate ESC-prefix emission; stripped before binding
+    // match via kBindingModMask below.
+    OptionAsAltModifier = 0x80,
 };
+
+// Modifier bits that participate in keybinding match. OptionAsAltModifier is
+// an internal signal for the ESC-prefix path and must not affect which
+// binding fires.
+inline constexpr uint32_t kBindingModMask = ~static_cast<uint32_t>(OptionAsAltModifier);
 
 // Mouse binding system enums
 enum class MouseButton : uint8_t
@@ -661,7 +708,8 @@ struct KeyEvent
 {
     Key key { Key_unknown };
     std::string text;
-    uint32_t shiftedKey { 0 }; // Kitty protocol: Unicode codepoint of shifted variant (e.g. 'C' for 'c')
+    uint32_t shiftedKey { 0 };     // Kitty protocol: Unicode codepoint of shifted variant (e.g. 'C' for 'c') in the *current* layout
+    uint32_t baseLayoutKey { 0 };  // Kitty protocol "alternate_key" / spec "base_layout_key": codepoint in the system default (typically US ANSI) layout. Used by non-US users to match physical-key shortcuts.
     size_t count { 1 };
     bool autoRepeat { false };
     uint32_t modifiers { 0 };
@@ -698,6 +746,10 @@ inline bool isModifierKey(Key k)
         case Key_Super_R:
         case Key_Hyper_L:
         case Key_Hyper_R:
+        case Key_Meta_L:
+        case Key_Meta_R:
+        case Key_AltGr:              // ISO_Level3_Shift — modifier-only key on non-US layouts
+        case Key_ISO_Level5_Shift:
         case Key_CapsLock:
         case Key_NumLock:
             return true;

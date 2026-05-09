@@ -478,24 +478,42 @@ TEST_CASE("kitty: report_alternate_key includes shifted_key for letter")
     CHECK(t.output() == "a");
 }
 
-TEST_CASE("kitty: report_alternate_key ctrl+a includes shifted_key")
+TEST_CASE("kitty: report_alternate_key ctrl+a omits shifted_key when shift is not held")
 {
     TestTerminal t;
     t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
     t.clearOutput();
-    // keyCode=97 ('a'), shifted_key=65 ('A'), mods=5 (ctrl+1)
+    // Per kitty spec (key_encoding.c:56), shifted_key is only emitted when
+    // shift is currently held — ctrl+a without shift carries no shift bit,
+    // so the alternates field is suppressed.
     t.sendKey(Key_A, CtrlModifier, KeyAction_Press, "a", 'A');
-    CHECK(t.output() == "\x1b[97:65;5u");
+    CHECK(t.output() == "\x1b[97;5u");
 }
 
-TEST_CASE("kitty: report_alternate_key shift+a includes shifted_key")
+TEST_CASE("kitty: report_alternate_key shift+a — shifted_key elided when same as keyCode")
 {
     TestTerminal t;
     t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
     t.clearOutput();
-    // Shift+a: keyCode=97 ('a'), shifted_key=65 ('A'), mods=2 (shift+1)
-    t.sendKey(Key_A, ShiftModifier, KeyAction_Press, "A", 'A');
-    CHECK(t.output() == "\x1b[97:65;2u");
+    // Per kitty (xkb_glfw.c:935 `has_shifted_key = shifted_xkb_sym != xkb_sym`),
+    // when shift is held the resolved keysym IS the shifted form, so
+    // shifted_xkb_sym (level 1) equals the current sym and has_shifted_key
+    // is false. Caller follows: shifted_key field is 0 here, not 'A'.
+    t.sendKey(Key_A, ShiftModifier, KeyAction_Press, "A", /*shifted=*/0);
+    CHECK(t.output() == "\x1b[65;2u");
+}
+
+TEST_CASE("kitty: report_alternate_key shift+a — emits shifted only when level-1 differs")
+{
+    TestTerminal t;
+    t.csi(">5u");
+    t.clearOutput();
+    // Synthetic: a key whose level-1 keysym is genuinely distinct from
+    // the shifted-state keysym (rare in practice — Caps interactions or
+    // multi-level layouts). When the platform DOES report a distinct
+    // shifted_key while shift is held, the alternates field fires.
+    t.sendKey(Key_A, ShiftModifier, KeyAction_Press, "A", /*shifted=*/0x10A); // synthetic
+    CHECK(t.output() == "\x1b[65:266;2u");
 }
 
 TEST_CASE("kitty: report_alternate_key omits shifted_key when same as keycode")
@@ -858,4 +876,243 @@ TEST_CASE("kitty: report_events up arrow repeat includes event type")
     t.clearOutput();
     t.sendKey(Key_Up, 0, KeyAction_Repeat);
     CHECK(t.output() == "\x1b[1;1:2A");
+}
+
+// === Extended functional key codes (F26–F35, kitty 57389–57398) ===
+
+TEST_CASE("kitty: F26 maps to 57389 under REPORT_ALL_KEYS")
+{
+    TestTerminal t;
+    t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
+    t.clearOutput();
+    t.sendKey(Key_F26, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57389u");
+}
+
+TEST_CASE("kitty: F26 with disambiguate-only also uses CSI u (no legacy form)")
+{
+    TestTerminal t;
+    t.csi(">1u"); // DISAMBIGUATE only
+    t.clearOutput();
+    // F26-F35 have no legacy CSI/SS3 form (kittyLegacyTrailer + TildeNum
+    // only cover F1-F12), so they MUST emit as CSI u even without
+    // REPORT_ALL_KEYS — otherwise the keystroke would be dropped.
+    t.sendKey(Key_F26, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57389u");
+}
+
+TEST_CASE("kitty: F35 maps to 57398")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_F35, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57398u");
+}
+
+// === Keypad navigation (kitty 57417–57427) ===
+
+TEST_CASE("kitty: KP_Left maps to 57417")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_KP_Left, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57417u");
+}
+
+TEST_CASE("kitty: KP_Begin maps to 57427")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_KP_Begin, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57427u");
+}
+
+TEST_CASE("kitty: KP_Separator maps to 57416")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_KP_Separator, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57416u");
+}
+
+// === Media keys (kitty 57428–57440) ===
+
+TEST_CASE("kitty: MediaPlay maps to 57428")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_MediaPlay, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57428u");
+}
+
+TEST_CASE("kitty: MediaTogglePlayPause maps to 57430")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_MediaTogglePlayPause, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57430u");
+}
+
+TEST_CASE("kitty: VolumeMute maps to 57440")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_VolumeMute, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57440u");
+}
+
+// === Modifier-only Meta_L/R (kitty 57446 / 57452) ===
+
+TEST_CASE("kitty: Meta_L modifier-only maps to 57446 under flag 0x8")
+{
+    TestTerminal t;
+    t.csi(">9u"); // DISAMBIGUATE | REPORT_ALL_KEYS
+    t.clearOutput();
+    t.sendKey(Key_Meta_L, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57446u");
+}
+
+TEST_CASE("kitty: Meta_R modifier-only maps to 57452 under flag 0x8")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_Meta_R, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57452u");
+}
+
+TEST_CASE("kitty: Meta_L not reported without REPORT_ALL_KEYS")
+{
+    TestTerminal t;
+    t.csi(">1u"); // DISAMBIGUATE only
+    t.clearOutput();
+    t.sendKey(Key_Meta_L, 0, KeyAction_Press);
+    CHECK(t.output().empty());
+}
+
+// === ISO level shifts (kitty 57453 / 57454) ===
+
+TEST_CASE("kitty: AltGr (ISO_Level3_Shift) maps to 57453 under flag 0x8")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_AltGr, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57453u");
+}
+
+TEST_CASE("kitty: ISO_Level5_Shift maps to 57454 under flag 0x8")
+{
+    TestTerminal t;
+    t.csi(">9u");
+    t.clearOutput();
+    t.sendKey(Key_ISO_Level5_Shift, 0, KeyAction_Press);
+    CHECK(t.output() == "\x1b[57454u");
+}
+
+// === base_layout_key (third colon field) ===
+
+TEST_CASE("kitty: report_alternate_key emits base_layout_key when layout differs")
+{
+    TestTerminal t;
+    t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEY
+    t.clearOutput();
+    // User on Russian layout pressing physical 'a' position: current
+    // layout produces 'ф' (U+0444 = 1092), shifted = 'Ф' (1060), base
+    // (US) layout = 'a' (97). Without shift, only base_layout_key is
+    // emitted as the third field; the second (shifted) stays empty.
+    KeyEvent ev;
+    ev.key           = Key_A;
+    ev.modifiers     = CtrlModifier;
+    ev.action        = KeyAction_Press;
+    ev.text          = "ф";
+    ev.shiftedKey    = 1060; // 'Ф'
+    ev.baseLayoutKey = 97;   // 'a'
+    ev.count         = 1;
+    t.term.keyPressEvent(&ev);
+    // keyCode is the codepoint from text: 'ф' = 1092. Expected:
+    // \x1b[1092::97;5u  (ctrl=4 +1=5, shifted suppressed because no shift)
+    CHECK(t.output() == "\x1b[1092::97;5u");
+}
+
+TEST_CASE("kitty: report_alternate_key emits shifted+base_layout when shift held")
+{
+    TestTerminal t;
+    t.csi(">5u");
+    t.clearOutput();
+    // Shift+ф on Russian layout: keyCode='Ф' (1060 since text is shifted),
+    // shifted_key='Ф' (1060), base_layout='a' (97). When key==shifted the
+    // shifted-emission gate elides the redundant middle field.
+    KeyEvent ev;
+    ev.key           = Key_A;
+    ev.modifiers     = ShiftModifier;
+    ev.action        = KeyAction_Press;
+    ev.text          = "Ф";
+    ev.shiftedKey    = 1060;
+    ev.baseLayoutKey = 97;
+    ev.count         = 1;
+    t.term.keyPressEvent(&ev);
+    // Format: keycode=1060, shifted suppressed (== keyCode), then ::97
+    CHECK(t.output() == "\x1b[1060::97;2u");
+}
+
+TEST_CASE("kitty: report_alternate_key emits all three fields when distinct")
+{
+    TestTerminal t;
+    t.csi(">5u");
+    t.clearOutput();
+    // Synthetic case: keycode=200, shifted=300, base=97, shift held.
+    KeyEvent ev;
+    ev.key           = Key_A;
+    ev.modifiers     = ShiftModifier;
+    ev.action        = KeyAction_Press;
+    ev.text          = "\xC3\x88"; // U+00C8 (any char ≠ 'a')
+    ev.shiftedKey    = 300;
+    ev.baseLayoutKey = 97;
+    ev.count         = 1;
+    t.term.keyPressEvent(&ev);
+    // keycode = U+00C8 = 200. Three fields all present.
+    CHECK(t.output() == "\x1b[200:300:97;2u");
+}
+
+TEST_CASE("kitty: base_layout_key elided when same as keycode")
+{
+    TestTerminal t;
+    t.csi(">5u");
+    t.clearOutput();
+    // US-layout user: key matches base_layout_key, no third field.
+    KeyEvent ev;
+    ev.key           = Key_A;
+    ev.modifiers     = CtrlModifier;
+    ev.action        = KeyAction_Press;
+    ev.text          = "a";
+    ev.shiftedKey    = 65;
+    ev.baseLayoutKey = 97; // same as keycode
+    ev.count         = 1;
+    t.term.keyPressEvent(&ev);
+    CHECK(t.output() == "\x1b[97;5u");
+}
+
+TEST_CASE("kitty: without report_alternate_key suppresses base_layout_key")
+{
+    TestTerminal t;
+    t.csi(">1u"); // DISAMBIGUATE only
+    t.clearOutput();
+    KeyEvent ev;
+    ev.key           = Key_A;
+    ev.modifiers     = CtrlModifier;
+    ev.action        = KeyAction_Press;
+    ev.text          = "ф";
+    ev.shiftedKey    = 1060;
+    ev.baseLayoutKey = 97;
+    ev.count         = 1;
+    t.term.keyPressEvent(&ev);
+    CHECK(t.output() == "\x1b[1092;5u"); // no alternates field
 }

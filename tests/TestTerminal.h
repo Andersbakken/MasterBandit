@@ -224,16 +224,18 @@ struct TestTerminal
     void sendKey(Key key, uint32_t mods = 0,
                  KeyAction action        = KeyAction_Press,
                  const std::string &text = "",
-                 uint32_t shiftedKey     = 0)
+                 uint32_t shiftedKey     = 0,
+                 uint32_t baseLayoutKey  = 0)
     {
         KeyEvent ev;
-        ev.key        = key;
-        ev.modifiers  = mods;
-        ev.action     = action;
-        ev.text       = text;
-        ev.shiftedKey = shiftedKey;
-        ev.count      = 1;
-        ev.autoRepeat = (action == KeyAction_Repeat);
+        ev.key           = key;
+        ev.modifiers     = mods;
+        ev.action        = action;
+        ev.text          = text;
+        ev.shiftedKey    = shiftedKey;
+        ev.baseLayoutKey = baseLayoutKey;
+        ev.count         = 1;
+        ev.autoRepeat    = (action == KeyAction_Repeat);
         term.keyPressEvent(&ev);
     }
 };

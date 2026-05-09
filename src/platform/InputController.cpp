@@ -128,9 +128,11 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     Key k = static_cast<Key>(key);
     spdlog::debug("onKey: key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
 
-    // Bindings only on press/repeat (NOT release)
+    // Bindings only on press/repeat (NOT release). Mask off
+    // OptionAsAltModifier — it's an internal signal for the ESC-prefix
+    // path, not a user-facing modifier in keybinding strings.
     if (action != static_cast<int>(KeyAction_Release)) {
-        auto result = sequenceMatcher_.advance({ k, lastMods_ }, bindings_);
+        auto result = sequenceMatcher_.advance({ k, lastMods_ & kBindingModMask }, bindings_);
         if (result.result == SequenceMatcher::Result::Match) {
             pendingSequenceKeys_.clear();
             cancelSequenceTimeout();
@@ -234,9 +236,10 @@ void InputController::onKey(int key, int scancode, int action, int mods)
                 ev.text = name;
             }
         }
-        // Populate shifted_key for report_alternate_key mode
+        // Populate shifted_key + base_layout_key for report_alternate_key mode
         if (window) {
-            ev.shiftedKey = window->shiftedKeyCodepoint(scancode);
+            ev.shiftedKey     = window->shiftedKeyCodepoint(scancode);
+            ev.baseLayoutKey  = window->baseLayoutKeyCodepoint(scancode);
         }
         term->keyPressEvent(&ev);
         return;
@@ -264,8 +267,11 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     // base character regardless of current modifier state, so Dvorak etc.
     // stay correct. The duplicate onChar (from the OS text path on Linux, or
     // from a non-skipped interpretKeyEvents on macOS) is dropped by the
-    // AltModifier guard in onChar below.
-    if (altSendsEsc_ && (lastMods_ & AltModifier) && !(lastMods_ & CtrlModifier) &&
+    // OptionAsAltModifier guard in onChar below. Gating on OptionAsAltModifier
+    // (set by the platform layer when this Option side is configured as Alt)
+    // rather than AltModifier means the right-Option-as-compose case still
+    // delivers macOS-composed characters via onChar untouched.
+    if (altSendsEsc_ && (lastMods_ & OptionAsAltModifier) && !(lastMods_ & CtrlModifier) &&
         window && key < 0x01000000 && k != Key_unknown) {
         std::string base = window->keyName(scancode);
         if (!base.empty() && static_cast<unsigned char>(base[0]) >= 0x20) {
@@ -307,11 +313,15 @@ void InputController::onChar(uint32_t codepoint)
         return;
     }
 
-    // When alt_sends_esc is on and Alt is held, onKey has already emitted
-    // ESC+<base-char>. The OS text path still fires onChar (Linux always;
-    // macOS only when skip-IME in Window_cocoa didn't catch it). Drop it
-    // so the shell doesn't see the character twice.
-    if (altSendsEsc_ && (lastMods_ & AltModifier) && !(lastMods_ & CtrlModifier)) {
+    // When alt_sends_esc is on and this Option side is configured as Alt,
+    // onKey has already emitted ESC+<base-char>. The OS text path still
+    // fires onChar (Linux always; macOS only when skip-IME in Window_cocoa
+    // didn't catch it). Drop it so the shell doesn't see the character
+    // twice. Crucially: if the side is NOT configured as Alt, we want the
+    // composed character to flow through (e.g. right-Option=compose for
+    // typing accents), so the gate must check OptionAsAltModifier — not
+    // bare AltModifier.
+    if (altSendsEsc_ && (lastMods_ & OptionAsAltModifier) && !(lastMods_ & CtrlModifier)) {
         return;
     }
 
@@ -684,7 +694,7 @@ void InputController::onMouseButton(int button, int action, int mods)
     // 7. Build MouseStroke and match
     MouseStroke stroke;
     stroke.button = mb;
-    stroke.mods   = lastMods_;
+    stroke.mods   = lastMods_ & kBindingModMask;
     stroke.event  = clickResult.type;
     stroke.mode   = mode;
     stroke.region = region;
@@ -1136,7 +1146,7 @@ void InputController::onCursorPos(double x, double y)
 
             MouseStroke stroke;
             stroke.button = dragResult->button;
-            stroke.mods   = lastMods_;
+            stroke.mods   = lastMods_ & kBindingModMask;
             stroke.event  = MouseEventType::Drag;
             stroke.mode   = mode;
             stroke.region = region;
@@ -1319,7 +1329,7 @@ bool InputController::wouldOpenHyperlinkAt(double sx, double sy)
 
     MouseStroke stroke;
     stroke.button = MouseButton::Left;
-    stroke.mods   = lastMods_;
+    stroke.mods   = lastMods_ & kBindingModMask;
     stroke.event  = MouseEventType::Click;
     stroke.mode   = term->mouseReportingActive() ? MouseMode::Grabbed : MouseMode::Ungrabbed;
     stroke.region = MouseRegion::Pane;
@@ -1408,7 +1418,8 @@ void InputController::replayPendingSequenceKey(const PendingKey &p)
             }
         }
         if (window) {
-            ev.shiftedKey = window->shiftedKeyCodepoint(p.scancode);
+            ev.shiftedKey    = window->shiftedKeyCodepoint(p.scancode);
+            ev.baseLayoutKey = window->baseLayoutKeyCodepoint(p.scancode);
         }
         term->keyPressEvent(&ev);
         return;
@@ -1422,8 +1433,9 @@ void InputController::replayPendingSequenceKey(const PendingKey &p)
         return;
     }
 
-    // Legacy: alt+printable with altSendsEsc
-    if (altSendsEsc_ && (p.mods & AltModifier) && !(p.mods & CtrlModifier) &&
+    // Legacy: alt+printable with altSendsEsc. Gate on OptionAsAltModifier
+    // so the per-side macos_option_as_alt config carries through replay.
+    if (altSendsEsc_ && (p.mods & OptionAsAltModifier) && !(p.mods & CtrlModifier) &&
         window && p.key < 0x01000000 && k != Key_unknown) {
         std::string base = window->keyName(p.scancode);
         if (!base.empty() && static_cast<unsigned char>(base[0]) >= 0x20) {

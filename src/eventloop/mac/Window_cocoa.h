@@ -38,10 +38,11 @@ public:
 
     std::string keyName(int keycode) const override;
     uint32_t shiftedKeyCodepoint(int keycode) const override;
+    uint32_t baseLayoutKeyCodepoint(int keycode) const override;
 
-    void setAltSendsEsc(bool v) override { altSendsEsc_ = v; }
+    void setMacosOptionAsAlt(MacosOptionAsAlt v) override { macosOptionAsAlt_ = v; }
 
-    bool altSendsEsc() const { return altSendsEsc_; }
+    MacosOptionAsAlt macosOptionAsAlt() const { return macosOptionAsAlt_; }
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
     void setCursorStyle(CursorStyle shape) override;
@@ -80,7 +81,7 @@ private:
     NSWindow *nsWindow_        = nullptr;
     MBView *mbView_            = nullptr;
     bool shouldClose_          = false;
-    bool altSendsEsc_          = true;
+    MacosOptionAsAlt macosOptionAsAlt_ = MacosOptionAsAlt::Both;
     // CFRunLoopTimer (not the EventLoop's kqueue-based timer) so the
     // debounce fires during AppKit's tracking-mode loop while the user
     // is dragging the window. The kqueue path can be starved by AppKit

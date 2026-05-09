@@ -141,8 +141,36 @@ static Key keysymToKey(xkb_keysym_t sym)
         case XKB_KEY_KP_Subtract: return Key_KP_Subtract;
         case XKB_KEY_KP_Add: return Key_KP_Add;
         case XKB_KEY_KP_Equal: return Key_KP_Equal;
+        case XKB_KEY_KP_Separator: return Key_KP_Separator;
+        case XKB_KEY_KP_Left: return Key_KP_Left;
+        case XKB_KEY_KP_Right: return Key_KP_Right;
+        case XKB_KEY_KP_Up: return Key_KP_Up;
+        case XKB_KEY_KP_Down: return Key_KP_Down;
+        case XKB_KEY_KP_Page_Up: return Key_KP_PageUp;
+        case XKB_KEY_KP_Page_Down: return Key_KP_PageDown;
+        case XKB_KEY_KP_Home: return Key_KP_Home;
+        case XKB_KEY_KP_End: return Key_KP_End;
+        case XKB_KEY_KP_Insert: return Key_KP_Insert;
+        case XKB_KEY_KP_Delete: return Key_KP_Delete;
+        case XKB_KEY_KP_Begin: return Key_KP_Begin;
+        case XKB_KEY_Meta_L: return Key_Meta_L;
+        case XKB_KEY_Meta_R: return Key_Meta_R;
+        case XKB_KEY_ISO_Level3_Shift: return Key_AltGr;
+        case XKB_KEY_ISO_Level5_Shift: return Key_ISO_Level5_Shift;
         case XKB_KEY_Mode_switch: return Key_Mode_switch;
         case XKB_KEY_Multi_key: return Key_Multi_key;
+        // Media keys (XF86 keysyms) — kitty protocol codes 57428–57440.
+        case XKB_KEY_XF86AudioPlay: return Key_MediaPlay;
+        case XKB_KEY_XF86AudioPause: return Key_MediaPause;
+        case XKB_KEY_XF86AudioStop: return Key_MediaStop;
+        case XKB_KEY_XF86AudioPrev: return Key_MediaPrevious;
+        case XKB_KEY_XF86AudioNext: return Key_MediaNext;
+        case XKB_KEY_XF86AudioRecord: return Key_MediaRecord;
+        case XKB_KEY_XF86AudioForward: return Key_MediaFastForward;
+        case XKB_KEY_XF86AudioRewind: return Key_MediaRewind;
+        case XKB_KEY_XF86AudioLowerVolume: return Key_VolumeDown;
+        case XKB_KEY_XF86AudioRaiseVolume: return Key_VolumeUp;
+        case XKB_KEY_XF86AudioMute: return Key_VolumeMute;
         default: return Key_unknown;
     }
 }
@@ -178,7 +206,10 @@ static uint32_t xkbStateToModifiers(xkb_state *state)
         m |= CtrlModifier;
     }
     if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0) {
-        m |= AltModifier;
+        // No OS-level Unicode composition layer here, so Alt is always Alt
+        // — pair AltModifier with OptionAsAltModifier so InputController's
+        // ESC-prefix gate behaves identically to pre-split.
+        m |= AltModifier | OptionAsAltModifier;
     }
     if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0) {
         m |= MetaModifier;
@@ -535,6 +566,25 @@ bool XCBWindow::create(int width, int height, const std::string &title)
         return false;
     }
 
+    // Default-rules keymap for kitty `base_layout_key`. Built once from
+    // empty xkb_rule_names so XKB resolves to the system default
+    // (XKB_DEFAULT_LAYOUT, typically "us"). Failure is non-fatal — we just
+    // skip emitting the third CSI u field. Mirrors kitty xkb_glfw.c:594.
+    {
+        xkb_rule_names defaultRules = {};
+        xkbDefaultKeymap_ = xkb_keymap_new_from_names(xkbCtx_, &defaultRules, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        if (xkbDefaultKeymap_) {
+            xkbDefaultState_ = xkb_state_new(xkbDefaultKeymap_);
+            if (!xkbDefaultState_) {
+                spdlog::warn("XCBWindow: xkb_state_new(default) failed; base_layout_key disabled");
+                xkb_keymap_unref(xkbDefaultKeymap_);
+                xkbDefaultKeymap_ = nullptr;
+            }
+        } else {
+            spdlog::warn("XCBWindow: default keymap unavailable; base_layout_key disabled");
+        }
+    }
+
     // Subscribe to XKB state change events for modifier tracking.
     if (xkbEventBase_) {
         xcb_xkb_select_events(conn_,
@@ -595,6 +645,14 @@ void XCBWindow::destroy()
     if (xkbKeymap_) {
         xkb_keymap_unref(xkbKeymap_);
         xkbKeymap_ = nullptr;
+    }
+    if (xkbDefaultState_) {
+        xkb_state_unref(xkbDefaultState_);
+        xkbDefaultState_ = nullptr;
+    }
+    if (xkbDefaultKeymap_) {
+        xkb_keymap_unref(xkbDefaultKeymap_);
+        xkbDefaultKeymap_ = nullptr;
     }
     if (xkbCtx_) {
         xkb_context_unref(xkbCtx_);
@@ -1360,6 +1418,25 @@ uint32_t XCBWindow::shiftedKeyCodepoint(int keycode) const
     xkb_layout_index_t group = xkb_state_key_get_layout(xkbState_, static_cast<xkb_keycode_t>(keycode));
     const xkb_keysym_t *syms = nullptr;
     int nsyms                = xkb_keymap_key_get_syms_by_level(xkbKeymap_, static_cast<xkb_keycode_t>(keycode), group, 1, &syms);
+    if (nsyms < 1 || !syms) {
+        return 0;
+    }
+    uint32_t cp = xkb_keysym_to_utf32(syms[0]);
+    if (cp < 0x20 || cp == 0x7f) {
+        return 0;
+    }
+    return cp;
+}
+
+uint32_t XCBWindow::baseLayoutKeyCodepoint(int keycode) const
+{
+    if (!xkbDefaultKeymap_ || !xkbDefaultState_) {
+        return 0;
+    }
+    // Layout 0, level 0 of the default-rules keymap → the unshifted
+    // codepoint in the system base layout (kitty's "alternate_key").
+    const xkb_keysym_t *syms = nullptr;
+    int nsyms                = xkb_keymap_key_get_syms_by_level(xkbDefaultKeymap_, static_cast<xkb_keycode_t>(keycode), 0, 0, &syms);
     if (nsyms < 1 || !syms) {
         return 0;
     }

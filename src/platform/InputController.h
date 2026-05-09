@@ -54,10 +54,13 @@ public:
 
     void resetSequenceMatcher() { sequenceMatcher_.reset(); }
 
-    // When true (xterm default), Alt+<printable> in legacy keyboard mode sends
-    // ESC-prefix + the layout-correct base char instead of whatever the OS's
-    // text input system would compose (on macOS this saves e.g. Alt+B from
-    // producing "∫" when the user actually wants readline word-nav).
+    // When true (xterm default), Alt+<printable> in legacy keyboard mode
+    // sends ESC-prefix + the layout-correct base char. Gated on
+    // OptionAsAltModifier (set by the platform layer when the keystroke
+    // is configured as a real Alt — see Window::MacosOptionAsAlt and the
+    // X11 path that always pairs it with AltModifier), so per-side
+    // option-as-alt config naturally narrows which keystrokes get the
+    // ESC-prefix treatment.
     void setAltSendsEsc(bool v) { altSendsEsc_ = v; }
 
     // Multi-key sequence idle timeout in ms (0 disables). When a binding is

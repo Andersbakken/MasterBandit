@@ -134,6 +134,31 @@ static Key macKeyToKey(unsigned short keyCode)
     }
 }
 
+// Match kitty's NSLeftAlternateKeyMask / NSRightAlternateKeyMask: the lower
+// device-specific bits (0x20 for left, 0x40 for right) ride alongside the
+// generic NSEventModifierFlagOption bit.
+#define kMBLeftOptionMask  (0x000020 | NSEventModifierFlagOption)
+#define kMBRightOptionMask (0x000040 | NSEventModifierFlagOption)
+
+// True if the current Option keypress should be treated as a real Alt
+// modifier (bypass macOS Unicode composition). Cmd held disables: macOS
+// doesn't compose under Cmd anyway, and we want Cmd-bindings to fire on
+// either Option side regardless of config.
+static bool optionConfiguredAsAlt(NSEventModifierFlags flags, Window::MacosOptionAsAlt cfg)
+{
+    if ((flags & NSEventModifierFlagOption) == 0) return false;
+    if ((flags & NSEventModifierFlagCommand) != 0) return false;
+    const bool leftHeld  = (flags & kMBLeftOptionMask) == kMBLeftOptionMask;
+    const bool rightHeld = (flags & kMBRightOptionMask) == kMBRightOptionMask;
+    switch (cfg) {
+    case Window::MacosOptionAsAlt::None:  return false;
+    case Window::MacosOptionAsAlt::Left:  return leftHeld;
+    case Window::MacosOptionAsAlt::Right: return rightHeld;
+    case Window::MacosOptionAsAlt::Both:  return true;
+    }
+    return false;
+}
+
 static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 {
     unsigned int m = 0;
@@ -282,20 +307,22 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 // ---------- keyboard ----------
 
 - (void)keyDown:(NSEvent*)event {
-    // When Option is held without Cmd and the terminal wants Alt+letter to
-    // send ESC-prefix (xterm convention / readline word-nav), skip
-    // NSTextInputClient. That prevents the OS from composing Option+B into
-    // "∫" and reaching insertText:, which would race with the explicit
-    // dispatchKey that follows and leak one composed character per press.
-    BOOL optHeld = (event.modifierFlags & NSEventModifierFlagOption) != 0;
-    BOOL cmdHeld = (event.modifierFlags & NSEventModifierFlagCommand) != 0;
-    BOOL skipIME = optHeld && !cmdHeld && _cppWindow->altSendsEsc();
-    if (!skipIME) {
+    // Skip NSTextInputClient when this Option keypress is configured as a
+    // real Alt modifier (per `macos_option_as_alt`). That prevents macOS
+    // from composing Option+B into "∫" and reaching insertText:, which
+    // would race with the explicit dispatchKey that follows and leak one
+    // composed character per press. When false (no side, or this side
+    // unconfigured, or Cmd is held), we let composition run as normal —
+    // the user gets accents / Unicode input.
+    const bool optAsAlt = optionConfiguredAsAlt(event.modifierFlags,
+                                                _cppWindow->macosOptionAsAlt());
+    if (!optAsAlt) {
         [self interpretKeyEvents:@[event]];  // drives NSTextInputClient for IME
     }
 
     Key k = macKeyToKey(event.keyCode);
     unsigned int mods = nsModsToModifiers(event.modifierFlags);
+    if (optAsAlt) mods |= OptionAsAltModifier;
     KeyAction action = event.isARepeat ? KeyAction_Repeat : KeyAction_Press;
     _cppWindow->dispatchKey(static_cast<int>(k),
                              static_cast<int>(event.keyCode),
@@ -306,6 +333,9 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
 - (void)keyUp:(NSEvent*)event {
     Key k = macKeyToKey(event.keyCode);
     unsigned int mods = nsModsToModifiers(event.modifierFlags);
+    if (optionConfiguredAsAlt(event.modifierFlags, _cppWindow->macosOptionAsAlt())) {
+        mods |= OptionAsAltModifier;
+    }
     _cppWindow->dispatchKey(static_cast<int>(k),
                              static_cast<int>(event.keyCode),
                              static_cast<int>(KeyAction_Release),
@@ -316,6 +346,9 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     // Modifier-only key events
     Key k = macKeyToKey(event.keyCode);
     unsigned int mods = nsModsToModifiers(event.modifierFlags);
+    if (optionConfiguredAsAlt(event.modifierFlags, _cppWindow->macosOptionAsAlt())) {
+        mods |= OptionAsAltModifier;
+    }
     // Determine press vs release by checking if the modifier bit is now set
     bool pressed = (mods != 0);
     _cppWindow->dispatchKey(static_cast<int>(k),
@@ -679,6 +712,42 @@ uint32_t CocoaWindow::shiftedKeyCodepoint(int keycode) const
     CFRelease(source);
     if (len == 0) return 0;
     // Convert UTF-16 to codepoint
+    uint32_t cp = chars[0];
+    if (len >= 2 && (chars[0] & 0xFC00) == 0xD800 && (chars[1] & 0xFC00) == 0xDC00) {
+        cp = 0x10000 + ((static_cast<uint32_t>(chars[0] & 0x03FF) << 10) | (chars[1] & 0x03FF));
+    }
+    if (cp < 0x20 || cp == 0x7f) return 0;
+    return cp;
+}
+
+// Returns the codepoint this physical keycode would produce under the
+// system's ASCII-capable (i.e. typically US ANSI) keyboard layout. Used to
+// fill the kitty protocol's `base_layout_key` field so non-Latin layout
+// users (Russian, Greek, Arabic, …) can still match physical-key shortcuts
+// in apps that opt into the alternate-key flag.
+uint32_t CocoaWindow::baseLayoutKeyCodepoint(int keycode) const
+{
+    // TISCopyCurrentASCIICapableKeyboardLayoutInputSource returns the most
+    // recently used ASCII-capable layout — for users on Cyrillic/CJK
+    // layouts macOS still tracks an underlying ASCII layout (typically the
+    // first ASCII-capable layout, often US). This is the same approach
+    // kitty's glfw cocoa_window.m uses.
+    TISInputSourceRef source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+    if (!source) return 0;
+    CFDataRef layoutData = static_cast<CFDataRef>(
+        TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+    if (!layoutData) { CFRelease(source); return 0; }
+
+    const UCKeyboardLayout* layout =
+        reinterpret_cast<const UCKeyboardLayout*>(CFDataGetBytePtr(layoutData));
+    UInt32 deadKeyState = 0;
+    UniChar chars[8];
+    UniCharCount len = 0;
+    UCKeyTranslate(layout, static_cast<UInt16>(keycode),
+                    kUCKeyActionDisplay, 0, LMGetKbdType(),
+                    kUCKeyTranslateNoDeadKeysBit, &deadKeyState, 8, &len, chars);
+    CFRelease(source);
+    if (len == 0) return 0;
     uint32_t cp = chars[0];
     if (len >= 2 && (chars[0] & 0xFC00) == 0xD800 && (chars[1] & 0xFC00) == 0xDC00) {
         cp = 0x10000 + ((static_cast<uint32_t>(chars[0] & 0x03FF) << 10) | (chars[1] & 0x03FF));

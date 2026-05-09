@@ -204,6 +204,16 @@ struct Config
     std::string command_outline_color = "#aaccff";      // OSC 133 command highlight outline
     float command_dim_factor          = 0.7f;           // OSC 133: 1.0 = off (identity), 0.7 = dim non-selected rows to 70%
     bool alt_sends_esc                = true;           // Alt+<printable> sends ESC-prefix (xterm convention) instead of the composed character
+    // macOS-only: which Option key(s) bypass Unicode composition and behave
+    // as a real Alt modifier. "none" / "left" / "right" / "both" (also
+    // accepts "yes"/"true" → both, "no"/"false" → none). Mirrors kitty's
+    // option of the same name. Default "left" means left-Option drives
+    // shell shortcuts (readline M-b / M-f, etc.) while right-Option keeps
+    // macOS Unicode composition (Option+E → ´ dead key). Independent of
+    // `alt_sends_esc` — this controls *whether* a given Option keystroke
+    // is treated as Alt; alt_sends_esc controls *what bytes* such a
+    // keystroke produces.
+    std::string macos_option_as_alt   = "left";
     bool command_navigation_wrap      = true;           // Cmd+Up at oldest wraps to newest; Cmd+Down at newest wraps to oldest
     int key_sequence_timeout_ms       = 0;              // Multi-key binding timeout in ms (0 = disabled). Aborts an in-progress sequence after idle.
     // Reported color preference for mode 2031 / DSR-997. "auto" (default)
@@ -242,6 +252,7 @@ struct Config
             "command_outline_color", &T::command_outline_color,
             "command_dim_factor", &T::command_dim_factor,
             "alt_sends_esc", &T::alt_sends_esc,
+            "macos_option_as_alt", &T::macos_option_as_alt,
             "command_navigation_wrap", &T::command_navigation_wrap,
             "key_sequence_timeout_ms", &T::key_sequence_timeout_ms,
             "color_scheme", &T::color_scheme,

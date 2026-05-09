@@ -32,6 +32,10 @@ struct ResolvedCellGPU {
     bg_color: u32,        // packed RGBA8 (0 = transparent/default)
     underline_info: u32,  // bits 0-2: style (0=none 1=straight 2=double 3=curly 4=dotted)
                           // bits 8-31: color packed RGB8 (0 = use fg_color)
+    bg_inflate: u32,      // packed (i16 X) | ((i16 Y) << 16); positive = inflate,
+                          // negative = deflate, 0 = cell-aligned. Non-zero routes
+                          // the bg quad to inflated_rect_verts (drawn in a second
+                          // pass over regular rects).
 };
 
 struct GlyphEntryGPU {
@@ -117,9 +121,22 @@ fn tri_aa_d0(v0x: f32, v0y: f32, v1x: f32, v1y: f32, v2x: f32, v2y: f32,
 @group(0) @binding(4) var<storage, read_write> counters: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read> glyphs: array<GlyphEntryGPU>;
 @group(0) @binding(6) var<storage, read> box_drawing_table: array<u32>;
+@group(0) @binding(7) var<storage, read_write> inflated_rect_verts: array<RectVertexStorage>;
 // counters layout (also indirect draw args):
-// [0] text_vertexCount  [1] text_instanceCount(=1)  [2] text_firstVertex(=0)  [3] text_firstInstance(=0)
-// [4] rect_vertexCount  [5] rect_instanceCount(=1)  [6] rect_firstVertex(=0)  [7] rect_firstInstance(=0)
+// [0]  text_vertexCount        [1]  text_instanceCount(=1)        [2]  text_firstVertex        [3]  text_firstInstance
+// [4]  rect_vertexCount        [5]  rect_instanceCount(=1)        [6]  rect_firstVertex        [7]  rect_firstInstance
+// [8]  inflated_vertexCount    [9]  inflated_instanceCount(=1)   [10] inflated_firstVertex     [11] inflated_firstInstance
+
+// Sign-extend a 16-bit field stored in the low or high half of a u32.
+fn unpack_i16(v: u32, high: bool) -> i32 {
+    var bits: u32;
+    if (high) { bits = v >> 16u; } else { bits = v & 0xFFFFu; }
+    // Sign-extend: bit 15 set → propagate ones to upper bits.
+    if ((bits & 0x8000u) != 0u) {
+        bits = bits | 0xFFFF0000u;
+    }
+    return bitcast<i32>(bits);
+}
 
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -136,26 +153,49 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let base_x = f32(col) * params.cell_width + params.pane_origin_x;
     let base_y = f32(row) * params.cell_height + params.pane_origin_y;
 
-    // Background rect
+    // Background rect — cells with non-zero bg_inflate (either sign) go
+    // to inflated_rect_verts (drawn in a second pass after rect_verts so
+    // they composite over neighbouring cells' bg). Cells with inflate==0
+    // go to the regular buffer. A cell with non-zero inflate does NOT
+    // also emit to the regular buffer, so deflated rects don't have a
+    // full-size rect drawn beneath them.
     if (cell.bg_color != 0u) {
-        let base_idx = atomicAdd(&counters[4], 6u);
-
         let r = f32(cell.bg_color & 0xFFu) / 255.0;
         let g = f32((cell.bg_color >> 8u) & 0xFFu) / 255.0;
         let b = f32((cell.bg_color >> 16u) & 0xFFu) / 255.0;
         let a = f32((cell.bg_color >> 24u) & 0xFFu) / 255.0;
 
-        let x0 = base_x;
-        let y0 = base_y;
-        let x1 = base_x + params.cell_width;
-        let y1 = base_y + params.cell_height;
-
-        rect_verts[base_idx + 0u] = RV(x0, y0, r, g, b, a);
-        rect_verts[base_idx + 1u] = RV(x1, y0, r, g, b, a);
-        rect_verts[base_idx + 2u] = RV(x0, y1, r, g, b, a);
-        rect_verts[base_idx + 3u] = RV(x1, y0, r, g, b, a);
-        rect_verts[base_idx + 4u] = RV(x1, y1, r, g, b, a);
-        rect_verts[base_idx + 5u] = RV(x0, y1, r, g, b, a);
+        if (cell.bg_inflate == 0u) {
+            let base_idx = atomicAdd(&counters[4], 6u);
+            let x0 = base_x;
+            let y0 = base_y;
+            let x1 = base_x + params.cell_width;
+            let y1 = base_y + params.cell_height;
+            rect_verts[base_idx + 0u] = RV(x0, y0, r, g, b, a);
+            rect_verts[base_idx + 1u] = RV(x1, y0, r, g, b, a);
+            rect_verts[base_idx + 2u] = RV(x0, y1, r, g, b, a);
+            rect_verts[base_idx + 3u] = RV(x1, y0, r, g, b, a);
+            rect_verts[base_idx + 4u] = RV(x1, y1, r, g, b, a);
+            rect_verts[base_idx + 5u] = RV(x0, y1, r, g, b, a);
+        } else {
+            let ix = f32(unpack_i16(cell.bg_inflate, false));
+            let iy = f32(unpack_i16(cell.bg_inflate, true));
+            let x0 = base_x - ix;
+            let y0 = base_y - iy;
+            let x1 = base_x + params.cell_width + ix;
+            let y1 = base_y + params.cell_height + iy;
+            // Skip degenerate / inverted rects (deflate larger than the
+            // cell collapses x0 > x1).
+            if (x1 > x0 && y1 > y0) {
+                let base_idx = atomicAdd(&counters[8], 6u);
+                inflated_rect_verts[base_idx + 0u] = RV(x0, y0, r, g, b, a);
+                inflated_rect_verts[base_idx + 1u] = RV(x1, y0, r, g, b, a);
+                inflated_rect_verts[base_idx + 2u] = RV(x0, y1, r, g, b, a);
+                inflated_rect_verts[base_idx + 3u] = RV(x1, y0, r, g, b, a);
+                inflated_rect_verts[base_idx + 4u] = RV(x1, y1, r, g, b, a);
+                inflated_rect_verts[base_idx + 5u] = RV(x0, y1, r, g, b, a);
+            }
+        }
     }
 
     // Cursor

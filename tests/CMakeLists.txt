@@ -47,6 +47,7 @@ set(TEST_SOURCES
     test_pty_mux.cpp
     test_findtext.cpp
     test_url_detection.cpp
+    test_animation.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp

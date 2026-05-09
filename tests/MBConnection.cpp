@@ -348,6 +348,68 @@ bool MBConnection::sendAction(const std::string &action, const std::vector<std::
     return false;
 }
 
+static bool readOkResp(const std::string &resp)
+{
+    if (resp.empty()) {
+        return false;
+    }
+    glz::generic j;
+    if (glz::read_json(j, resp)) {
+        return false;
+    }
+    if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        if (auto it = obj->find("type"); it != obj->end()) {
+            if (auto *s = std::get_if<std::string>(&it->second.data)) {
+                return *s == "ok";
+            }
+        }
+    }
+    return false;
+}
+
+bool MBConnection::animSetMono(uint64_t ms, int timeoutMs)
+{
+    glz::generic::object_t req;
+    req["cmd"] = "anim";
+    req["op"]  = "setMono";
+    req["ms"]  = static_cast<double>(ms);
+    req["id"]  = static_cast<double>(nextId_++);
+    std::string json;
+    (void)glz::write_json(req, json);
+    return readOkResp(sendRequest(json, timeoutMs));
+}
+
+bool MBConnection::animAdd(const AnimAddSpec &spec, int timeoutMs)
+{
+    glz::generic::object_t req;
+    req["cmd"]        = "anim";
+    req["op"]         = "add";
+    req["startCol"]   = static_cast<double>(spec.startCol);
+    req["endCol"]     = static_cast<double>(spec.endCol);
+    req["bg"]         = static_cast<double>(spec.bg);
+    req["prop"]       = spec.prop;
+    req["startValue"] = static_cast<double>(spec.startValue);
+    req["endValue"]   = static_cast<double>(spec.endValue);
+    req["startMs"]    = static_cast<double>(spec.startMs);
+    req["durationMs"] = static_cast<double>(spec.durationMs);
+    req["ease"]       = spec.ease;
+    req["id"]         = static_cast<double>(nextId_++);
+    std::string json;
+    (void)glz::write_json(req, json);
+    return readOkResp(sendRequest(json, timeoutMs));
+}
+
+bool MBConnection::animClear(int timeoutMs)
+{
+    glz::generic::object_t req;
+    req["cmd"] = "anim";
+    req["op"]  = "clear";
+    req["id"]  = static_cast<double>(nextId_++);
+    std::string json;
+    (void)glz::write_json(req, json);
+    return readOkResp(sendRequest(json, timeoutMs));
+}
+
 bool MBConnection::injectData(const std::string &data, int timeoutMs)
 {
     // Base64-encode to avoid JSON control character issues

@@ -75,6 +75,30 @@ function paintBulk(pane, matches) {
 // Repaint just the active match ("current-match" tag). One clear + at
 // most one add, also atomic. Stepping with n / N hits this path only —
 // the bulk set is untouched, which is the whole point of the split.
+//
+// After re-adding, fire a quick "pulse" animation: the bg rect expands
+// outward by PULSE_PX, then contracts back to the cell rect. Visually
+// flags the cursor's new location without touching the bulk yellow set.
+// The animation is fire-and-forget; if the current-match is replaced
+// mid-pulse (the user keeps stepping), the prior decoration is cleared
+// and its in-flight animations auto-cancel, so the new handle starts a
+// fresh pulse from 0 inflate.
+const PULSE_PX        = 4;
+const PULSE_EXPAND_MS = 110;
+const PULSE_RETURN_MS = 180;
+
+async function pulseHandle(handle) {
+    try {
+        // Expand on both axes in parallel; await one — they have the same
+        // duration and share a fate (cancellation, completion).
+        handle.animate("bgInflateY", { endValue: PULSE_PX, durationMs: PULSE_EXPAND_MS, ease: "easeOut" });
+        const result = await handle.animate("bgInflateX", { endValue: PULSE_PX, durationMs: PULSE_EXPAND_MS, ease: "easeOut" }).onEnd();
+        if (result !== "completed") return; // decoration was cleared mid-expand
+        handle.animate("bgInflateY", { endValue: 0, durationMs: PULSE_RETURN_MS, ease: "easeIn" });
+        handle.animate("bgInflateX", { endValue: 0, durationMs: PULSE_RETURN_MS, ease: "easeIn" });
+    } catch (_) {}
+}
+
 function paintCurrent(pane, matches, currentIdx) {
     const batch = pane.createDecorationBatch();
     batch.clearDecorations("current-match");
@@ -88,7 +112,10 @@ function paintCurrent(pane, matches, currentIdx) {
             zPriority:  10,
         });
     }
-    batch.submit();
+    const handles = batch.submit();
+    if (handles.length > 0) {
+        pulseHandle(handles[0]);
+    }
 }
 
 mb.addEventListener("action", "search.open", () => {

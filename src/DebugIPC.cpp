@@ -58,6 +58,21 @@ static int jsonInt(const glz::generic &j, const std::string &key, int def = 0)
     return def;
 }
 
+// 64-bit signed variant. JSON's number primitive is f64, so payloads
+// over 2^53 lose precision; the test commands stay well below that.
+static int64_t jsonI64(const glz::generic &j, const std::string &key, int64_t def = 0)
+{
+    if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
+        auto it = obj->find(key);
+        if (it != obj->end()) {
+            if (auto *d = std::get_if<double>(&it->second.data)) {
+                return static_cast<int64_t>(*d);
+            }
+        }
+    }
+    return def;
+}
+
 // ============================================================================
 // Per-connection helpers
 // ============================================================================
@@ -385,6 +400,8 @@ void DebugIPC::handleMessage(struct lws *wsi, const std::string &msg)
             }
         }
         cmdWaitIdle(wsi, id, timeoutMs, settleMs);
+    } else if (cmd == "anim") {
+        cmdAnim(wsi, id, j);
     } else if (cmd == "subscribe") {
         std::string channel = jsonStr(j, "channel");
         if (channel == "logs") {
@@ -668,6 +685,139 @@ void DebugIPC::cmdAction(struct lws *wsi, int id, const std::string &action,
 // ============================================================================
 // Command: inject
 // ============================================================================
+
+// ============================================================================
+// Command: anim — direct animation control for tests. Operates on the
+// active terminal's emulator-level animation registry without going
+// through JS (no completion timer is armed; the animation runs until
+// cancelled or its decoration is removed).
+//
+// Subcommands:
+//   { cmd:"anim", op:"setMono", ms:N }
+//     Pin TerminalEmulator::mono() to N ms (or 0 = restore wall clock).
+//
+//   { cmd:"anim", op:"add", startCol:S, endCol:E, bg:B,
+//                  prop:"bg|fg|underlineColor|bgInflateX|bgInflateY",
+//                  startValue:S, endValue:E,
+//                  startMs:M, durationMs:D,
+//                  ease:"linear|easeIn|easeOut|easeInOut|easeInOutCubic" }
+//     Add a User decoration on row 0 of the active terminal with bg=B
+//     and start an animation on `prop` according to the supplied
+//     descriptor.
+//
+//   { cmd:"anim", op:"clear" }
+//     Drop all User decorations tagged "test-anim" and any animations
+//     attached to them, and restore wall-clock mono().
+// ============================================================================
+
+void DebugIPC::cmdAnim(struct lws *wsi, int id, const glz::generic &j)
+{
+    Terminal *terminal = termCb_ ? termCb_() : nullptr;
+    if (!terminal) {
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "no active terminal" } }));
+        return;
+    }
+    std::string op = jsonStr(j, "op");
+
+    if (op == "setMono") {
+        int64_t ms = jsonI64(j, "ms");
+        TerminalEmulator::setMonoForTest(static_cast<uint64_t>(ms));
+        sendResponse(wsi, dumpObj({ { "type", "ok" }, { "id", static_cast<double>(id) } }));
+        return;
+    }
+
+    if (op == "clear") {
+        terminal->clearUserDecorations("test-anim");
+        TerminalEmulator::setMonoForTest(0);
+        sendResponse(wsi, dumpObj({ { "type", "ok" }, { "id", static_cast<double>(id) } }));
+        return;
+    }
+
+    if (op == "add") {
+        // Parse the spec.
+        int startCol           = jsonInt(j, "startCol");
+        int endCol             = jsonInt(j, "endCol");
+        int64_t bg             = jsonI64(j, "bg");
+        std::string propStr    = jsonStr(j, "prop");
+        int64_t startValue     = jsonI64(j, "startValue");
+        int64_t endValue       = jsonI64(j, "endValue");
+        int64_t startMs        = jsonI64(j, "startMs");
+        int64_t durationMs     = jsonI64(j, "durationMs");
+        std::string easeStr    = jsonStr(j, "ease", "linear");
+
+        AnimProp prop;
+        if (propStr == "bg")
+            prop = AnimProp::Bg;
+        else if (propStr == "fg")
+            prop = AnimProp::Fg;
+        else if (propStr == "underlineColor")
+            prop = AnimProp::UnderlineColor;
+        else if (propStr == "bgInflateX")
+            prop = AnimProp::BgInflateX;
+        else if (propStr == "bgInflateY")
+            prop = AnimProp::BgInflateY;
+        else {
+            sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "anim.add: unknown prop" } }));
+            return;
+        }
+
+        Ease ease;
+        if (easeStr == "linear")
+            ease = Ease::Linear;
+        else if (easeStr == "easeIn")
+            ease = Ease::EaseIn;
+        else if (easeStr == "easeOut")
+            ease = Ease::EaseOut;
+        else if (easeStr == "easeInOut")
+            ease = Ease::EaseInOut;
+        else if (easeStr == "easeInOutCubic")
+            ease = Ease::EaseInOutCubic;
+        else {
+            sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "anim.add: unknown ease" } }));
+            return;
+        }
+
+        // Anchor on row 0 of the visible grid. lineIdForAbs requires the
+        // emulator to have lineIds assigned for the visible rows; mb
+        // assigns them eagerly so this is fine in headless mode.
+        uint64_t lineId = terminal->document().lineIdForAbs(0);
+        if (lineId == 0) {
+            sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "anim.add: no row 0 lineId" } }));
+            return;
+        }
+
+        Decoration dec;
+        dec.kind            = DecorationKind::User;
+        dec.startLineId     = lineId;
+        dec.startCellOffset = startCol;
+        dec.endLineId       = lineId;
+        dec.endCellOffset   = (endCol > startCol) ? (endCol - 1) : startCol;
+        dec.tag             = "test-anim";
+        dec.zPriority       = 100;
+        dec.style.bg        = static_cast<uint32_t>(bg & 0xFFFFFFFFu);
+        uint64_t decId      = terminal->addDecoration(std::move(dec));
+
+        // We give every test animation a unique handleId. There's no JS
+        // observer, so the value is just a key in the registry.
+        static std::atomic<uint64_t> sNextTestHandleId { 1 };
+        Animation a;
+        a.handleId        = sNextTestHandleId.fetch_add(1);
+        a.kind            = AnimTargetKind::Decoration;
+        a.targetId        = decId;
+        a.prop            = prop;
+        a.desc.startMs    = static_cast<uint64_t>(startMs);
+        a.desc.durationMs = static_cast<uint64_t>(durationMs);
+        a.desc.startValue = startValue;
+        a.desc.endValue   = endValue;
+        a.desc.ease       = ease;
+        terminal->startAnimation(std::move(a));
+
+        sendResponse(wsi, dumpObj({ { "type", "ok" }, { "id", static_cast<double>(id) } }));
+        return;
+    }
+
+    sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "anim: unknown op" } }));
+}
 
 void DebugIPC::cmdInject(struct lws *wsi, int id, const std::string &data)
 {

@@ -485,13 +485,20 @@ interface MbTerminal {
                 color?: number;
             };
             strikethrough?: boolean;
+            /** Per-side bg rect expansion in pixels. Default 0. */
+            bgInflateX?: number;
+            bgInflateY?: number;
         };
         tag?: string;
         zPriority?: number;
         shape?: "range" | "rectangle";
-    }): number;
+    }): MbDecorationHandle;
 
-    /** Remove a decoration by id. Returns true iff it existed. */
+    /**
+     * Remove a decoration. Accepts either the numeric id (legacy) or a
+     * DecorationHandle's id. Prefer `decorationHandle.remove()`. Returns
+     * true iff a decoration was actually removed.
+     */
     removeDecoration(id: number): boolean;
 
     /**
@@ -532,8 +539,76 @@ interface MbDecorationBatch {
     /** Queue a Clear op. Tag semantics match `Terminal.clearDecorations`. Returns the batch. */
     clearDecorations(tag?: string): MbDecorationBatch;
 
-    /** Apply all queued ops atomically. Returns the ids assigned to Add ops in queue order. */
-    submit(): number[];
+    /** Apply all queued ops atomically. Returns DecorationHandles for Add ops in queue order. */
+    submit(): MbDecorationHandle[];
+}
+
+/**
+ * Animatable decoration property names. Color values are packed RGBA8
+ * (0xAABBGGRR); inflate values are pixel ints.
+ *
+ * `underlineColor` requires `style.underline` to be set on the decoration —
+ * if there's no underline, the animation registers and runs but produces
+ * no visible effect.
+ */
+type MbDecorationProp = "bg" | "fg" | "underlineColor" | "bgInflateX" | "bgInflateY";
+
+/** Built-in easing curves for `mb.startAnimation`. */
+type MbEase = "linear" | "easeIn" | "easeOut" | "easeInOut" | "easeInOutCubic";
+
+/**
+ * Parameters for an "ease" animation — the only animation type in v1.
+ * `startValue` is optional; when omitted, the animation starts from the
+ * property's current sampled value at registration time (clean handoff
+ * from a prior animation, no snap).
+ */
+interface MbEaseAnimParams {
+    type?: "ease";
+    startValue?: number;
+    endValue: number;
+    durationMs: number;
+    ease?: MbEase;
+}
+
+/**
+ * Handle to a registered decoration. Returned by `addDecoration` and
+ * `decorationBatch.submit()`. Holds the underlying numeric id and offers
+ * convenience methods for removal and animation registration.
+ */
+interface MbDecorationHandle {
+    readonly id: number;
+    /** Remove this decoration. Active animations are auto-cancelled. */
+    remove(): boolean;
+    /**
+     * Register an animation on `prop`. Equivalent to
+     * `mb.startAnimation(this, prop, params)` but reads more naturally
+     * at the call site.
+     */
+    animate(prop: MbDecorationProp, params: MbEaseAnimParams): MbAnimationHandle;
+}
+
+/**
+ * Handle to a running (or settled) animation. Returned by
+ * `mb.startAnimation` / `decorationHandle.animate`. Animations are
+ * fire-and-forget — the handle can be discarded; the animation continues
+ * to run and finalize. Hold the handle only when you need to cancel mid-
+ * flight or await completion via `onEnd`.
+ */
+interface MbAnimationHandle {
+    /**
+     * Cancel the animation. `"stop"` (default) freezes at the currently
+     * sampled value; `"snap-to-end"` jumps to `endValue` (and the `onEnd`
+     * promise resolves `"completed"` rather than `"cancelled"`). No-op
+     * if the animation has already settled.
+     */
+    cancel(mode?: "stop" | "snap-to-end"): void;
+    /**
+     * Promise that resolves when the animation finishes. Resolves
+     * `"completed"` for natural completion or `cancel("snap-to-end")`,
+     * `"cancelled"` for `cancel()` or target destruction. Repeated calls
+     * return the same promise.
+     */
+    onEnd(): Promise<"completed" | "cancelled">;
 }
 
 declare const Terminal: MbTerminal;
@@ -1318,6 +1393,17 @@ interface MbGlobal {
      * @param source `"clipboard"` (default) or `"primary"` (X11 primary selection).
      */
     setClipboard(text: string, source?: "clipboard" | "primary"): void;
+
+    /**
+     * Begin an animation on a property of `target`. v1 only accepts a
+     * `MbDecorationHandle` as `target`; future revisions may extend this to
+     * panes, popups, etc. Equivalent to `target.animate(prop, params)`.
+     *
+     * The returned handle can be cancelled, awaited via `onEnd()`, or
+     * discarded — animations are fire-and-forget.
+     */
+    startAnimation(target: MbDecorationHandle, prop: MbDecorationProp,
+                   params: MbEaseAnimParams): MbAnimationHandle;
 
     // --- External process management ---
     /**

@@ -74,6 +74,13 @@ private:
                    const std::vector<std::string> &args);
     void cmdSubscribeLogs(struct lws *wsi, int id);
     void cmdUnsubscribeLogs(struct lws *wsi, int id);
+    // Test-only animation control. Bypasses the JS handle / completion-
+    // timer lifecycle and operates directly on the active terminal's
+    // animation registry; no JS round-trip means tests can pin mono()
+    // and sample at deterministic instants without any time-based
+    // wakeups firing in the background. Available because IPC itself is
+    // gated to --headless / --ipc.
+    void cmdAnim(struct lws *wsi, int id, const glz::generic &j);
 
     struct lws_context *ctx_ = nullptr;
     std::string socketPath_;

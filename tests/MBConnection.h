@@ -80,6 +80,31 @@ public:
     // Reset terminal state (sends RIS) for reuse between tests
     bool reset(int timeoutMs = 2000);
 
+    // Animation test helpers — direct (no JS), enabled because the IPC
+    // is gated to --headless / --ipc.
+
+    // Pin TerminalEmulator::mono() to `ms` (or 0 = restore wall-clock).
+    bool animSetMono(uint64_t ms, int timeoutMs = 2000);
+
+    // Add a User decoration on row 0 with `bg` and start an animation
+    // on `prop` with the given descriptor. Tag is "test-anim".
+    struct AnimAddSpec
+    {
+        int startCol;
+        int endCol;       // exclusive
+        uint32_t bg;      // packed RGBA8 (0xAABBGGRR)
+        std::string prop; // "bg" | "fg" | "underlineColor" | "bgInflateX" | "bgInflateY"
+        int64_t startValue;
+        int64_t endValue;
+        uint64_t startMs;
+        uint64_t durationMs;
+        std::string ease  = "linear";
+    };
+    bool animAdd(const AnimAddSpec &spec, int timeoutMs = 2000);
+
+    // Remove every "test-anim" decoration and restore wall-clock mono.
+    bool animClear(int timeoutMs = 2000);
+
     const std::string &socketPath() const { return socketPath_; }
 
     pid_t childPid() const { return pid_; }

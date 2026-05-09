@@ -117,6 +117,12 @@ struct TerminalSnapshot
     // lists every decoration whose abs-row range covers `segments[r].absRow`.
     // Render iterates only the bucket for the row being painted.
     std::vector<std::vector<int>> decorationsByViewRow;
+    // Flat copy of the emulator's animation registry. The renderer walks
+    // this once per frame to apply sampled values to the target objects'
+    // resolved style fields and to compute reschedule wakeups — there is
+    // no per-decoration "does this have animations?" check; the list IS
+    // the registry.
+    std::vector<Animation> animations;
     // Content hash of `decorations` — drives per-pane change-detection in
     // the renderer (no per-pane vector copy needed). Mixes kind, abs ranges,
     // shape, and present-style flags+values.

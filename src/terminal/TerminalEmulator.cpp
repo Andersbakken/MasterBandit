@@ -795,12 +795,32 @@ uint64_t TerminalEmulator::addDecoration(Decoration spec)
     return id;
 }
 
-bool TerminalEmulator::removeDecoration(uint64_t id)
+// Drain any animations targeting `decorationId` from the registry,
+// appending their handleIds to `out` when non-null. Caller must hold
+// mMutex.
+static void drainAnimsForDecoration(std::unordered_map<uint64_t, Animation> &table,
+                                    uint64_t                                 decorationId,
+                                    std::vector<uint64_t>                   *out)
+{
+    for (auto it = table.begin(); it != table.end();) {
+        if (it->second.kind == AnimTargetKind::Decoration && it->second.targetId == decorationId) {
+            if (out) {
+                out->push_back(it->second.handleId);
+            }
+            it = table.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool TerminalEmulator::removeDecoration(uint64_t id, std::vector<uint64_t> *cancelledAnimHandlesOut)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     for (auto it = mDecorations.begin(); it != mDecorations.end(); ++it) {
         if (it->id == id) {
             mDecorations.erase(it);
+            drainAnimsForDecoration(mAnimations, id, cancelledAnimHandlesOut);
             buildAndPublishSnapshotLocked();
             return true;
         }
@@ -808,7 +828,8 @@ bool TerminalEmulator::removeDecoration(uint64_t id)
     return false;
 }
 
-size_t TerminalEmulator::clearUserDecorations(std::string_view tag)
+size_t TerminalEmulator::clearUserDecorations(std::string_view       tag,
+                                              std::vector<uint64_t> *cancelledAnimHandlesOut)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     size_t before = mDecorations.size();
@@ -818,7 +839,12 @@ size_t TerminalEmulator::clearUserDecorations(std::string_view tag)
                            if (d.kind != DecorationKind::User) {
                                return false;
                            }
-                           return tag.empty() ? true : (d.tag == tag);
+                           bool match = tag.empty() ? true : (d.tag == tag);
+                           if (match) {
+                               drainAnimsForDecoration(mAnimations, d.id,
+                                                       cancelledAnimHandlesOut);
+                           }
+                           return match;
                        }),
         mDecorations.end());
     size_t cleared = before - mDecorations.size();
@@ -828,7 +854,8 @@ size_t TerminalEmulator::clearUserDecorations(std::string_view tag)
     return cleared;
 }
 
-std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<DecorationBatchOp> ops)
+std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<DecorationBatchOp> ops,
+                                                             std::vector<uint64_t>         *cancelledAnimHandlesOut)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     std::vector<uint64_t> ids;
@@ -844,7 +871,12 @@ std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<Decorat
                                    if (d.kind != DecorationKind::User) {
                                        return false;
                                    }
-                                   return tag.empty() ? true : (d.tag == tag);
+                                   bool match = tag.empty() ? true : (d.tag == tag);
+                                   if (match) {
+                                       drainAnimsForDecoration(mAnimations, d.id,
+                                                               cancelledAnimHandlesOut);
+                                   }
+                                   return match;
                                }),
                 mDecorations.end());
             if (mDecorations.size() != before) {
@@ -861,6 +893,80 @@ std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<Decorat
         buildAndPublishSnapshotLocked();
     }
     return ids;
+}
+
+// Apply `value` to the appropriate static field on `targetId` for prop
+// `prop`. v1 only handles AnimTargetKind::Decoration; future kinds
+// branch on `kind` here. Caller holds mMutex.
+void TerminalEmulator::applyAnimResultToTarget(AnimTargetKind kind, uint64_t targetId,
+                                               AnimProp prop, int64_t value)
+{
+    switch (kind) {
+        case AnimTargetKind::Decoration:
+            for (auto &dec : mDecorations) {
+                if (dec.id == targetId) {
+                    applyAnimValueToStyle(dec.style, prop, value);
+                    return;
+                }
+            }
+            return;
+    }
+}
+
+uint64_t TerminalEmulator::startAnimation(Animation a)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    // Replace any existing animation on the same (kind, targetId, prop)
+    // slot. The replaced one's handleId is returned so the JS layer can
+    // resolve its onEnd promise as cancelled.
+    uint64_t prior = 0;
+    for (auto it = mAnimations.begin(); it != mAnimations.end(); ++it) {
+        if (it->second.kind == a.kind && it->second.targetId == a.targetId &&
+            it->second.prop == a.prop) {
+            prior = it->second.handleId;
+            mAnimations.erase(it);
+            break;
+        }
+    }
+    mAnimations.emplace(a.handleId, std::move(a));
+    buildAndPublishSnapshotLocked();
+    return prior;
+}
+
+bool TerminalEmulator::finishAnimation(uint64_t handleId)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    auto it = mAnimations.find(handleId);
+    if (it == mAnimations.end()) {
+        return false;
+    }
+    Animation a = it->second;
+    mAnimations.erase(it);
+    applyAnimResultToTarget(a.kind, a.targetId, a.prop, a.desc.endValue);
+    buildAndPublishSnapshotLocked();
+    return true;
+}
+
+bool TerminalEmulator::cancelAnimation(uint64_t handleId, bool snapToEnd, uint64_t nowMs)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    auto it = mAnimations.find(handleId);
+    if (it == mAnimations.end()) {
+        return false;
+    }
+    Animation a = it->second;
+    mAnimations.erase(it);
+    int64_t finalValue;
+    if (snapToEnd) {
+        finalValue = a.desc.endValue;
+    } else if (isColorAnimProp(a.prop)) {
+        finalValue = static_cast<int64_t>(sampleAnimColor(a.desc, nowMs));
+    } else {
+        finalValue = static_cast<int64_t>(sampleAnimScalar(a.desc, nowMs));
+    }
+    applyAnimResultToTarget(a.kind, a.targetId, a.prop, finalValue);
+    buildAndPublishSnapshotLocked();
+    return true;
 }
 
 std::optional<ResolvedDecoration>

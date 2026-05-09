@@ -2130,6 +2130,10 @@ static JSValue jsTerminalGetProp(JSContext *ctx, JSValueConst this_val, int magi
     return JS_UNDEFINED;
 }
 
+// Forward decls for handle construction — full definitions follow the
+// existing Decoration{...} entry points.
+static JSValue jsDecorationHandleNew(JSContext *ctx, JSValueConst owner, uint64_t decorationId);
+
 // Parse a JS spec object into a Decoration. On error, throws via
 // JS_ThrowTypeError and returns false. Caller-context label (`who`) is
 // included in error messages so applet authors can tell `addDecoration`
@@ -2292,6 +2296,20 @@ static bool parseDecorationSpec(JSContext *ctx, JSValueConst specVal,
             d.style.strikethrough = JS_ToBool(ctx, stV) ? true : false;
         }
         JS_FreeValue(ctx, stV);
+
+        auto readI32 = [&](const char *name, int32_t &out)
+        {
+            JSValue v = JS_GetPropertyStr(ctx, styleV, name);
+            if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+                int32_t n = 0;
+                if (JS_ToInt32(ctx, &n, v) >= 0) {
+                    out = n;
+                }
+            }
+            JS_FreeValue(ctx, v);
+        };
+        readI32("bgInflateX", d.style.bgInflateX);
+        readI32("bgInflateY", d.style.bgInflateY);
     }
     JS_FreeValue(ctx, styleV);
     return true;
@@ -2335,7 +2353,7 @@ static JSValue jsTerminalAddDecoration(JSContext *ctx, JSValueConst this_val,
     if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
         cb();
     }
-    return JS_NewInt64(ctx, static_cast<int64_t>(id));
+    return jsDecorationHandleNew(ctx, this_val, id);
 }
 
 // terminal.removeDecoration(id) → boolean
@@ -2354,10 +2372,17 @@ static JSValue jsTerminalRemoveDecoration(JSContext *ctx, JSValueConst this_val,
     if (JS_ToInt64(ctx, &id, argv[0]) < 0) {
         return JS_EXCEPTION;
     }
-    bool removed = emu->removeDecoration(static_cast<uint64_t>(id));
-    if (removed) {
-        if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
-            cb();
+    std::vector<uint64_t> cancelled;
+    bool removed = emu->removeDecoration(static_cast<uint64_t>(id), &cancelled);
+    if (Engine *eng = engineFromCtx(ctx)) {
+        uint64_t nowMs = TerminalEmulator::mono();
+        for (uint64_t hid : cancelled) {
+            eng->settleDecorationAnimation(hid, "cancelled", /*snapToEnd=*/false, nowMs);
+        }
+        if (removed) {
+            if (auto &cb = eng->callbacks().requestRedraw) {
+                cb();
+            }
         }
     }
     return JS_NewBool(ctx, removed);
@@ -2382,10 +2407,17 @@ static JSValue jsTerminalClearDecorations(JSContext *ctx, JSValueConst this_val,
             JS_FreeCString(ctx, tv);
         }
     }
-    size_t n = emu->clearUserDecorations(tag);
-    if (n > 0) {
-        if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
-            cb();
+    std::vector<uint64_t> cancelled;
+    size_t n = emu->clearUserDecorations(tag, &cancelled);
+    if (Engine *eng = engineFromCtx(ctx)) {
+        uint64_t nowMs = TerminalEmulator::mono();
+        for (uint64_t hid : cancelled) {
+            eng->settleDecorationAnimation(hid, "cancelled", /*snapToEnd=*/false, nowMs);
+        }
+        if (n > 0) {
+            if (auto &cb = eng->callbacks().requestRedraw) {
+                cb();
+            }
         }
     }
     return JS_NewInt32(ctx, static_cast<int32_t>(n));
@@ -2490,14 +2522,23 @@ static JSValue jsDecorationBatchSubmit(JSContext *ctx, JSValueConst this_val,
     if (!emu) {
         return JS_ThrowTypeError(ctx, "terminal is destroyed");
     }
-    d->submitted              = true;
-    std::vector<uint64_t> ids = emu->applyDecorationBatch(std::move(d->ops));
-    if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
-        cb();
+    d->submitted = true;
+    std::vector<uint64_t> cancelled;
+    std::vector<uint64_t> ids = emu->applyDecorationBatch(std::move(d->ops), &cancelled);
+    Engine *eng               = engineFromCtx(ctx);
+    if (eng) {
+        uint64_t nowMs = TerminalEmulator::mono();
+        for (uint64_t hid : cancelled) {
+            eng->settleDecorationAnimation(hid, "cancelled", /*snapToEnd=*/false, nowMs);
+        }
+        if (auto &cb = eng->callbacks().requestRedraw) {
+            cb();
+        }
     }
     JSValue arr = JS_NewArray(ctx);
     for (size_t i = 0; i < ids.size(); ++i) {
-        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), JS_NewInt64(ctx, static_cast<int64_t>(ids[i])));
+        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i),
+                             jsDecorationHandleNew(ctx, d->ownerRef, ids[i]));
     }
     return arr;
 }
@@ -2522,6 +2563,594 @@ static JSValue jsTerminalCreateDecorationBatch(JSContext *ctx, JSValueConst this
     d->ownerRef = JS_DupValue(ctx, this_val);
     JS_SetOpaque(obj, d);
     return obj;
+}
+
+// ============================================================================
+// DecorationHandle JS class — opaque wrapper returned by addDecoration() and
+// batch.submit(). Carries enough state to re-resolve the owning terminal at
+// method-call time and route mutations (id, remove, animate).
+// ============================================================================
+
+static JSClassID jsDecorationHandleClassId;
+
+struct JsDecorationHandleData
+{
+    JSValue ownerRef; // duped Pane/Popup/Embedded JS value
+    uint64_t decorationId;
+};
+
+static void jsDecorationHandleFinalize(JSRuntime *rt, JSValue val)
+{
+    auto *d = static_cast<JsDecorationHandleData *>(JS_GetOpaque(val, jsDecorationHandleClassId));
+    if (d) {
+        JS_FreeValueRT(rt, d->ownerRef);
+        delete d;
+    }
+}
+
+static JSClassDef jsDecorationHandleClassDef = { "DecorationHandle", jsDecorationHandleFinalize };
+
+static JSValue jsDecorationHandleNew(JSContext *ctx, JSValueConst owner, uint64_t decorationId)
+{
+    JSValue obj = JS_NewObjectClass(ctx, jsDecorationHandleClassId);
+    auto *d     = new JsDecorationHandleData;
+    d->ownerRef = JS_DupValue(ctx, owner);
+    d->decorationId = decorationId;
+    JS_SetOpaque(obj, d);
+    return obj;
+}
+
+static JsDecorationHandleData *jsDecorationHandleGet(JSValueConst val)
+{
+    return static_cast<JsDecorationHandleData *>(JS_GetOpaque(val, jsDecorationHandleClassId));
+}
+
+// ============================================================================
+// AnimationHandle JS class — returned by mb.startAnimation /
+// DecorationHandle.animate. Methods: cancel(mode?), onEnd().
+// ============================================================================
+
+static JSClassID jsAnimationHandleClassId;
+
+struct JsAnimationHandleData
+{
+    JSContext *ctx { nullptr };
+    // ownerRef survives even if the handle's lifecycle entry has been
+    // dropped — kept so settleDecorationAnimation can still find the
+    // owning emulator to write the final value, and so the JS-facing
+    // identity is stable.
+    JSValue ownerRef { JS_UNDEFINED };
+    uint64_t handleId { 0 };
+    // Settled state — set by Engine::settleDecorationAnimation. After
+    // settle, the engine drops the lifecycle entry; subsequent .onEnd()
+    // calls return a fresh resolved promise based on `outcome`.
+    bool settled { false };
+    std::string outcome; // "completed" | "cancelled"
+    // Cached promise + resolver for .onEnd(). Created lazily on first
+    // call. Resolver is consumed and cleared on settle.
+    JSValue promise { JS_UNDEFINED };
+    JSValue resolveFn { JS_UNDEFINED };
+};
+
+static void jsAnimationHandleFinalize(JSRuntime *rt, JSValue val)
+{
+    auto *d = static_cast<JsAnimationHandleData *>(JS_GetOpaque(val, jsAnimationHandleClassId));
+    if (!d) {
+        return;
+    }
+    // Detach lifecycle's back-pointer so a later settle won't write into
+    // freed memory. The animation continues — the timer is still armed and
+    // will finalize the emulator-side descriptor on schedule.
+    Engine *eng = static_cast<Engine *>(JS_GetRuntimeOpaque(rt));
+    if (eng) {
+        auto it = eng->animLifecycles().find(d->handleId);
+        if (it != eng->animLifecycles().end()) {
+            it->second.handleData = nullptr;
+        }
+    }
+    JS_FreeValueRT(rt, d->ownerRef);
+    if (!JS_IsUndefined(d->resolveFn)) {
+        JS_FreeValueRT(rt, d->resolveFn);
+    }
+    if (!JS_IsUndefined(d->promise)) {
+        JS_FreeValueRT(rt, d->promise);
+    }
+    delete d;
+}
+
+static JSClassDef jsAnimationHandleClassDef = { "AnimationHandle", jsAnimationHandleFinalize };
+
+static JsAnimationHandleData *jsAnimationHandleGet(JSValueConst val)
+{
+    return static_cast<JsAnimationHandleData *>(JS_GetOpaque(val, jsAnimationHandleClassId));
+}
+
+// === Animation parameter parsing ===
+
+static bool parseAnimPropString(std::string_view s, AnimProp &out)
+{
+    if (s == "bg") {
+        out = AnimProp::Bg;
+        return true;
+    }
+    if (s == "fg") {
+        out = AnimProp::Fg;
+        return true;
+    }
+    if (s == "underlineColor") {
+        out = AnimProp::UnderlineColor;
+        return true;
+    }
+    if (s == "bgInflateX") {
+        out = AnimProp::BgInflateX;
+        return true;
+    }
+    if (s == "bgInflateY") {
+        out = AnimProp::BgInflateY;
+        return true;
+    }
+    return false;
+}
+
+static bool parseEaseString(std::string_view s, Ease &out)
+{
+    if (s == "linear") {
+        out = Ease::Linear;
+        return true;
+    }
+    if (s == "easeIn") {
+        out = Ease::EaseIn;
+        return true;
+    }
+    if (s == "easeOut") {
+        out = Ease::EaseOut;
+        return true;
+    }
+    if (s == "easeInOut") {
+        out = Ease::EaseInOut;
+        return true;
+    }
+    if (s == "easeInOutCubic") {
+        out = Ease::EaseInOutCubic;
+        return true;
+    }
+    return false;
+}
+
+// Sample the current value of a property on a (possibly running)
+// decoration. Used as the default startValue when a new animation is
+// installed and the params object didn't provide one explicitly. For
+// color props returns 0 if no static value and no active animation.
+static int64_t currentDecorationValue(TerminalEmulator *emu, uint64_t decorationId,
+                                      AnimProp prop, uint64_t nowMs)
+{
+    if (!emu) {
+        return 0;
+    }
+    // Check active animation first; if so, sample at nowMs.
+    for (const auto &[_, a] : emu->animations()) {
+        if (a.kind != AnimTargetKind::Decoration || a.targetId != decorationId || a.prop != prop) {
+            continue;
+        }
+        if (isColorAnimProp(prop)) {
+            return static_cast<int64_t>(sampleAnimColor(a.desc, nowMs));
+        }
+        return static_cast<int64_t>(sampleAnimScalar(a.desc, nowMs));
+    }
+    // Fall back to the decoration's static style.
+    for (const auto &dec : emu->decorations()) {
+        if (dec.id != decorationId) {
+            continue;
+        }
+        switch (prop) {
+            case AnimProp::Bg:
+                return static_cast<int64_t>(dec.style.bg.value_or(0));
+            case AnimProp::Fg:
+                return static_cast<int64_t>(dec.style.fg.value_or(0));
+            case AnimProp::UnderlineColor:
+                return dec.style.underline ? static_cast<int64_t>(dec.style.underline->color) : 0;
+            case AnimProp::BgInflateX:
+                return static_cast<int64_t>(dec.style.bgInflateX);
+            case AnimProp::BgInflateY:
+                return static_cast<int64_t>(dec.style.bgInflateY);
+            case AnimProp::Count:
+                return 0;
+        }
+    }
+    return 0;
+}
+
+// Build a JS AnimationHandle and register the lifecycle. Caller must have
+// already validated `prop`, `params`, and target. Returns a fresh JS object
+// or JS_EXCEPTION on failure.
+static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
+                                            TerminalEmulator *emu, uint64_t decorationId,
+                                            AnimProp prop, JSValueConst paramsObj)
+{
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng || !eng->loop()) {
+        return JS_ThrowInternalError(ctx, "engine not initialized");
+    }
+
+    // type: default "ease". Anything else throws (v1 only supports the
+    // ease type; future "js"/"spring"/etc. extend here).
+    JSValue typeV = JS_GetPropertyStr(ctx, paramsObj, "type");
+    if (!JS_IsUndefined(typeV) && !JS_IsNull(typeV)) {
+        const char *t = JS_ToCString(ctx, typeV);
+        if (t) {
+            std::string ts(t);
+            JS_FreeCString(ctx, t);
+            if (ts != "ease") {
+                JS_FreeValue(ctx, typeV);
+                return JS_ThrowTypeError(ctx, "startAnimation: unsupported type '%s' (v1: only 'ease')", ts.c_str());
+            }
+        }
+    }
+    JS_FreeValue(ctx, typeV);
+
+    // durationMs (required, > 0).
+    int64_t durationMs = 0;
+    {
+        JSValue v = JS_GetPropertyStr(ctx, paramsObj, "durationMs");
+        if (JS_IsUndefined(v) || JS_IsNull(v)) {
+            JS_FreeValue(ctx, v);
+            return JS_ThrowTypeError(ctx, "startAnimation: durationMs is required");
+        }
+        if (JS_ToInt64(ctx, &durationMs, v) < 0) {
+            JS_FreeValue(ctx, v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, v);
+        if (durationMs <= 0) {
+            return JS_ThrowTypeError(ctx, "startAnimation: durationMs must be > 0");
+        }
+    }
+
+    // endValue (required). For color props, parsed as uint32 RGBA8;
+    // for scalar props, parsed as int.
+    int64_t endValue = 0;
+    {
+        JSValue v = JS_GetPropertyStr(ctx, paramsObj, "endValue");
+        if (JS_IsUndefined(v) || JS_IsNull(v)) {
+            JS_FreeValue(ctx, v);
+            return JS_ThrowTypeError(ctx, "startAnimation: endValue is required");
+        }
+        if (isColorAnimProp(prop)) {
+            uint32_t u = 0;
+            if (JS_ToUint32(ctx, &u, v) < 0) {
+                JS_FreeValue(ctx, v);
+                return JS_EXCEPTION;
+            }
+            endValue = static_cast<int64_t>(u);
+        } else {
+            if (JS_ToInt64(ctx, &endValue, v) < 0) {
+                JS_FreeValue(ctx, v);
+                return JS_EXCEPTION;
+            }
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    // startValue (optional; default = current sampled value).
+    uint64_t nowMs = TerminalEmulator::mono();
+    int64_t startValue;
+    {
+        JSValue v = JS_GetPropertyStr(ctx, paramsObj, "startValue");
+        if (JS_IsUndefined(v) || JS_IsNull(v)) {
+            startValue = currentDecorationValue(emu, decorationId, prop, nowMs);
+        } else if (isColorAnimProp(prop)) {
+            uint32_t u = 0;
+            if (JS_ToUint32(ctx, &u, v) < 0) {
+                JS_FreeValue(ctx, v);
+                return JS_EXCEPTION;
+            }
+            startValue = static_cast<int64_t>(u);
+        } else {
+            if (JS_ToInt64(ctx, &startValue, v) < 0) {
+                JS_FreeValue(ctx, v);
+                return JS_EXCEPTION;
+            }
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    // ease (optional; default linear). String-only in v1.
+    Ease ease = Ease::Linear;
+    {
+        JSValue v = JS_GetPropertyStr(ctx, paramsObj, "ease");
+        if (JS_IsString(v)) {
+            const char *s = JS_ToCString(ctx, v);
+            if (s) {
+                if (!parseEaseString(s, ease)) {
+                    std::string bad = s;
+                    JS_FreeCString(ctx, s);
+                    JS_FreeValue(ctx, v);
+                    return JS_ThrowTypeError(ctx, "startAnimation: unknown ease '%s'", bad.c_str());
+                }
+                JS_FreeCString(ctx, s);
+            }
+        } else if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+            JS_FreeValue(ctx, v);
+            return JS_ThrowTypeError(ctx, "startAnimation: ease must be a string");
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    // Allocate handleId, build the Animation entry, install it.
+    uint64_t handleId = eng->nextAnimHandleId();
+    Animation a;
+    a.handleId        = handleId;
+    a.kind            = AnimTargetKind::Decoration;
+    a.targetId        = decorationId;
+    a.prop            = prop;
+    a.desc.startMs    = nowMs;
+    a.desc.durationMs = static_cast<uint64_t>(durationMs);
+    a.desc.startValue = startValue;
+    a.desc.endValue   = endValue;
+    a.desc.ease       = ease;
+
+    uint64_t priorHandleId = emu->startAnimation(a);
+
+    // Create the JS handle wrapper and register the lifecycle.
+    JSValue handleObj = JS_NewObjectClass(ctx, jsAnimationHandleClassId);
+    auto *hd          = new JsAnimationHandleData;
+    hd->ctx           = ctx;
+    hd->ownerRef      = JS_DupValue(ctx, owner);
+    hd->handleId      = handleId;
+    JS_SetOpaque(handleObj, hd);
+
+    Engine::DecorationAnimLifecycle lc;
+    lc.handleId   = handleId;
+    lc.handleData = hd;
+    lc.handleCtx  = ctx;
+    lc.handleRef  = JS_DupValue(ctx, handleObj);
+    auto inserted = eng->animLifecycles().emplace(handleId, std::move(lc));
+
+    // Arm the completion timer. On fire: settle as "completed".
+    EventLoop *loop        = eng->loop();
+    EventLoop::TimerId tid = loop->addTimer(static_cast<uint64_t>(durationMs), false,
+                                            [eng, handleId]()
+                                            {
+                                                eng->settleDecorationAnimation(handleId, "completed",
+                                                                               /*snapToEnd=*/true,
+                                                                               TerminalEmulator::mono());
+                                            });
+    inserted.first->second.timerId = tid;
+
+    // If startAnimation replaced a prior animation on the same target/prop
+    // slot, settle the prior handle's lifecycle as "cancelled" — the
+    // prior emulator entry is already gone (it was erased in the same
+    // call), so settle just resolves the prior promise + drops the
+    // lifecycle.
+    if (priorHandleId != 0 && priorHandleId != handleId) {
+        eng->settleDecorationAnimation(priorHandleId, "cancelled",
+                                       /*snapToEnd=*/false, nowMs);
+    }
+
+    if (auto &cb = eng->callbacks().requestRedraw) {
+        cb();
+    }
+
+    return handleObj;
+}
+
+// AnimationHandle.cancel(mode?) — mode is "stop" (default) or "snap-to-end".
+static JSValue jsAnimationHandleCancel(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    auto *hd = jsAnimationHandleGet(this_val);
+    if (!hd) {
+        return JS_ThrowTypeError(ctx, "not an AnimationHandle");
+    }
+    if (hd->settled) {
+        return JS_UNDEFINED;
+    }
+    bool snapToEnd = false;
+    if (argc >= 1 && JS_IsString(argv[0])) {
+        const char *s = JS_ToCString(ctx, argv[0]);
+        if (s) {
+            std::string mode = s;
+            JS_FreeCString(ctx, s);
+            if (mode == "snap-to-end") {
+                snapToEnd = true;
+            } else if (mode != "stop") {
+                return JS_ThrowTypeError(ctx, "cancel: mode must be 'stop' or 'snap-to-end'");
+            }
+        }
+    }
+    Engine *eng = engineFromCtx(ctx);
+    if (!eng) {
+        return JS_ThrowInternalError(ctx, "engine gone");
+    }
+    const char *outcome = snapToEnd ? "completed" : "cancelled";
+    eng->settleDecorationAnimation(hd->handleId, outcome, snapToEnd,
+                                   TerminalEmulator::mono());
+    return JS_UNDEFINED;
+}
+
+// AnimationHandle.onEnd() — returns a Promise that resolves with
+// "completed" or "cancelled". Called more than once returns the same
+// (cached) promise.
+static JSValue jsAnimationHandleOnEnd(JSContext *ctx, JSValueConst this_val,
+                                      int /*argc*/, JSValueConst * /*argv*/)
+{
+    auto *hd = jsAnimationHandleGet(this_val);
+    if (!hd) {
+        return JS_ThrowTypeError(ctx, "not an AnimationHandle");
+    }
+    if (!JS_IsUndefined(hd->promise)) {
+        return JS_DupValue(ctx, hd->promise);
+    }
+    if (hd->settled) {
+        // Already settled — return a fresh resolved promise.
+        JSValue resolving[2];
+        JSValue p = JS_NewPromiseCapability(ctx, resolving);
+        JSValue arg = JS_NewString(ctx, hd->outcome.c_str());
+        JSValue r = JS_Call(ctx, resolving[0], JS_UNDEFINED, 1, &arg);
+        JS_FreeValue(ctx, r);
+        JS_FreeValue(ctx, arg);
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        hd->promise = JS_DupValue(ctx, p);
+        return p;
+    }
+    // Pending — capture resolve so settle can fire.
+    JSValue resolving[2];
+    JSValue p = JS_NewPromiseCapability(ctx, resolving);
+    hd->resolveFn = resolving[0];
+    JS_FreeValue(ctx, resolving[1]); // reject — unused
+    hd->promise = JS_DupValue(ctx, p);
+    return p;
+}
+
+static const JSCFunctionListEntry jsAnimationHandleProto[] = {
+    JS_CFUNC_DEF("cancel", 1, jsAnimationHandleCancel),
+    JS_CFUNC_DEF("onEnd", 0, jsAnimationHandleOnEnd),
+};
+
+// DecorationHandle.id getter
+static JSValue jsDecorationHandleGetId(JSContext *ctx, JSValueConst this_val)
+{
+    auto *d = jsDecorationHandleGet(this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "not a DecorationHandle");
+    }
+    return JS_NewInt64(ctx, static_cast<int64_t>(d->decorationId));
+}
+
+// DecorationHandle.remove() — drops the underlying decoration and cancels
+// any animations on it.
+static JSValue jsDecorationHandleRemove(JSContext *ctx, JSValueConst this_val,
+                                        int /*argc*/, JSValueConst * /*argv*/)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    auto *d = jsDecorationHandleGet(this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "not a DecorationHandle");
+    }
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, d->ownerRef);
+    if (!emu) {
+        return JS_NewBool(ctx, false);
+    }
+    Engine *eng = engineFromCtx(ctx);
+    std::vector<uint64_t> cancelled;
+    bool ok = emu->removeDecoration(d->decorationId, &cancelled);
+    if (eng) {
+        uint64_t nowMs = TerminalEmulator::mono();
+        for (uint64_t hid : cancelled) {
+            eng->settleDecorationAnimation(hid, "cancelled", /*snapToEnd=*/false, nowMs);
+        }
+        if (ok) {
+            if (auto &cb = eng->callbacks().requestRedraw) {
+                cb();
+            }
+        }
+    }
+    return JS_NewBool(ctx, ok);
+}
+
+// DecorationHandle.animate(propString, params) — sugar for
+// mb.startAnimation(this, propString, params).
+static JSValue jsDecorationHandleAnimate(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "animate requires (propString, params)");
+    }
+    auto *d = jsDecorationHandleGet(this_val);
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "not a DecorationHandle");
+    }
+    if (!JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "animate: propString must be a string");
+    }
+    if (!JS_IsObject(argv[1])) {
+        return JS_ThrowTypeError(ctx, "animate: params must be an object");
+    }
+    AnimProp prop;
+    {
+        const char *s = JS_ToCString(ctx, argv[0]);
+        if (!s) {
+            return JS_EXCEPTION;
+        }
+        std::string ps(s);
+        JS_FreeCString(ctx, s);
+        if (!parseAnimPropString(ps, prop)) {
+            return JS_ThrowTypeError(ctx, "animate: unknown property '%s'", ps.c_str());
+        }
+    }
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, d->ownerRef);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "decoration's owner is destroyed");
+    }
+    return startDecorationAnimationImpl(ctx, d->ownerRef, emu, d->decorationId, prop, argv[1]);
+}
+
+static const JSCFunctionListEntry jsDecorationHandleProto[] = {
+    JS_CGETSET_DEF("id", jsDecorationHandleGetId, nullptr),
+    JS_CFUNC_DEF("remove", 0, jsDecorationHandleRemove),
+    JS_CFUNC_DEF("animate", 2, jsDecorationHandleAnimate),
+};
+
+// mb._setMonoForTest(ms) — internal. Overrides TerminalEmulator::mono()
+// process-wide so animation render tests can pin the clock at specific
+// points in an animation's timeline. Pass 0 to restore wall-clock.
+// Underscore-prefixed because it is test-only and not part of the
+// public applet API.
+static JSValue jsMbSetMonoForTest(JSContext *ctx, JSValueConst /*this_val*/,
+                                  int argc, JSValueConst *argv)
+{
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "_setMonoForTest requires (ms)");
+    }
+    int64_t ms = 0;
+    if (JS_ToInt64(ctx, &ms, argv[0]) < 0) {
+        return JS_EXCEPTION;
+    }
+    TerminalEmulator::setMonoForTest(static_cast<uint64_t>(ms));
+    if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
+        cb();
+    }
+    return JS_UNDEFINED;
+}
+
+// mb.startAnimation(handle, propString, params) — equivalent to
+// handle.animate(propString, params). v1 only accepts DecorationHandle.
+static JSValue jsMbStartAnimation(JSContext *ctx, JSValueConst /*this_val*/,
+                                  int argc, JSValueConst *argv)
+{
+    REQUIRE_PERM(ctx, PaneRead);
+    if (argc < 3) {
+        return JS_ThrowTypeError(ctx, "startAnimation requires (target, propString, params)");
+    }
+    auto *d = static_cast<JsDecorationHandleData *>(JS_GetOpaque(argv[0], jsDecorationHandleClassId));
+    if (!d) {
+        return JS_ThrowTypeError(ctx, "startAnimation: target must be a DecorationHandle (v1)");
+    }
+    if (!JS_IsString(argv[1])) {
+        return JS_ThrowTypeError(ctx, "startAnimation: propString must be a string");
+    }
+    if (!JS_IsObject(argv[2])) {
+        return JS_ThrowTypeError(ctx, "startAnimation: params must be an object");
+    }
+    AnimProp prop;
+    {
+        const char *s = JS_ToCString(ctx, argv[1]);
+        if (!s) {
+            return JS_EXCEPTION;
+        }
+        std::string ps(s);
+        JS_FreeCString(ctx, s);
+        if (!parseAnimPropString(ps, prop)) {
+            return JS_ThrowTypeError(ctx, "startAnimation: unknown property '%s'", ps.c_str());
+        }
+    }
+    TerminalEmulator *emu = resolveEmulatorFromVal(ctx, d->ownerRef);
+    if (!emu) {
+        return JS_ThrowTypeError(ctx, "decoration's owner is destroyed");
+    }
+    return startDecorationAnimationImpl(ctx, d->ownerRef, emu, d->decorationId, prop, argv[2]);
 }
 
 static const JSCFunctionListEntry jsTerminalProto[] = {
@@ -3632,6 +4261,12 @@ Engine::Engine()
 
     JS_NewClassID(rt_, &jsDecorationBatchClassId);
     JS_NewClass(rt_, jsDecorationBatchClassId, &jsDecorationBatchClassDef);
+
+    JS_NewClassID(rt_, &jsDecorationHandleClassId);
+    JS_NewClass(rt_, jsDecorationHandleClassId, &jsDecorationHandleClassDef);
+
+    JS_NewClassID(rt_, &jsAnimationHandleClassId);
+    JS_NewClass(rt_, jsAnimationHandleClassId, &jsAnimationHandleClassDef);
 }
 
 Engine::~Engine()
@@ -3660,6 +4295,21 @@ Engine::~Engine()
         JS_FreeValue(t.ctx, t.callback);
     }
     jsTimers_.clear();
+    // Drop any in-flight decoration animation completion timers — their
+    // callbacks capture `this`, so leaving them armed past Engine
+    // destruction would fire on freed memory. Release the strong refs
+    // we hold to each JS handle so the runtime's final GC sees correct
+    // refcounts.
+    for (auto &[_, lc] : animLifecycles_) {
+        if (lc.timerId != 0 && loop_) {
+            loop_->removeTimer(lc.timerId);
+        }
+        if (!JS_IsUndefined(lc.handleRef) && lc.handleCtx) {
+            JS_FreeValue(lc.handleCtx, lc.handleRef);
+            lc.handleRef = JS_UNDEFINED;
+        }
+    }
+    animLifecycles_.clear();
     for (auto &[_, h] : actionHandlers_) {
         JS_FreeValue(h.ctx, h.fn);
     }
@@ -3680,6 +4330,95 @@ Engine::~Engine()
 // symbols. Destruction of terminals_ is still anchored here via the
 // out-of-line ~Engine() since ScriptEngine.cpp includes Terminal.h, so
 // unique_ptr<Terminal>::~unique_ptr instantiates against the complete type.
+
+void Engine::settleDecorationAnimation(uint64_t handleId, const char *outcome,
+                                       bool snapToEnd, uint64_t nowMs)
+{
+    auto it = animLifecycles_.find(handleId);
+    if (it == animLifecycles_.end()) {
+        return;
+    }
+    DecorationAnimLifecycle lc = std::move(it->second);
+    animLifecycles_.erase(it);
+
+    if (lc.timerId != 0 && loop_) {
+        loop_->removeTimer(lc.timerId);
+    }
+
+    // Find the owning emulator. We try the JS handle's ownerRef first; if
+    // the JS handle was GCed (handleData == nullptr) we walk every known
+    // terminal looking for the animation. With ~few terminals this is
+    // cheap.
+    JsAnimationHandleData *hd = lc.handleData;
+    JSContext *ctx            = hd ? hd->ctx : nullptr;
+    TerminalEmulator *emu     = nullptr;
+    if (hd) {
+        emu = resolveEmulatorFromVal(ctx, hd->ownerRef);
+    }
+    if (!emu) {
+        for (auto &[_, term] : terminals_) {
+            if (!term) {
+                continue;
+            }
+            TerminalEmulator *cand = term.get();
+            if (cand->animations().count(handleId) != 0) {
+                emu = cand;
+                break;
+            }
+            for (auto &p : term->popups()) {
+                TerminalEmulator *pe = p.get();
+                if (pe && pe->animations().count(handleId) != 0) {
+                    emu = pe;
+                    break;
+                }
+            }
+            if (emu) {
+                break;
+            }
+        }
+    }
+
+    if (emu) {
+        if (snapToEnd) {
+            emu->finishAnimation(handleId);
+        } else {
+            emu->cancelAnimation(handleId, /*snapToEnd=*/false, nowMs);
+        }
+    }
+
+    // Resolve the JS promise if the handle is still alive and observers
+    // requested one via .onEnd(). Done while `hd` is still valid — i.e.
+    // BEFORE we release the lifecycle's strong ref. JS_FreeValue on the
+    // handle below may drop the refcount to zero and run the finalizer
+    // synchronously, freeing `hd`; doing the resolve after that would be
+    // a use-after-free.
+    if (hd) {
+        hd->settled = true;
+        hd->outcome = outcome;
+        if (!JS_IsUndefined(hd->resolveFn)) {
+            JSValue arg = JS_NewString(ctx, outcome);
+            JSValue r   = JS_Call(ctx, hd->resolveFn, JS_UNDEFINED, 1, &arg);
+            JS_FreeValue(ctx, r);
+            JS_FreeValue(ctx, arg);
+            JS_FreeValue(ctx, hd->resolveFn);
+            hd->resolveFn = JS_UNDEFINED;
+        }
+    }
+
+    if (emu) {
+        if (auto &cb = callbacks_.requestRedraw) {
+            cb();
+        }
+    }
+
+    // Release the strong ref last — once dropped, the JS handle's refcount
+    // may hit zero and the finalizer can run synchronously, freeing `hd`.
+    // No code below uses `hd`.
+    if (!JS_IsUndefined(lc.handleRef) && lc.handleCtx) {
+        JS_FreeValue(lc.handleCtx, lc.handleRef);
+        lc.handleRef = JS_UNDEFINED;
+    }
+}
 
 void Engine::setCallbacks(AppCallbacks cbs)
 {
@@ -3738,6 +4477,17 @@ JSContext *Engine::createContext()
     JSValue batchProto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, batchProto, jsDecorationBatchProto, sizeof(jsDecorationBatchProto) / sizeof(jsDecorationBatchProto[0]));
     JS_SetClassProto(ctx, jsDecorationBatchClassId, batchProto);
+
+    // DecorationHandle / AnimationHandle prototypes.
+    JSValue decorationHandleProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, decorationHandleProto, jsDecorationHandleProto,
+                               sizeof(jsDecorationHandleProto) / sizeof(jsDecorationHandleProto[0]));
+    JS_SetClassProto(ctx, jsDecorationHandleClassId, decorationHandleProto);
+
+    JSValue animationHandleProto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, animationHandleProto, jsAnimationHandleProto,
+                               sizeof(jsAnimationHandleProto) / sizeof(jsAnimationHandleProto[0]));
+    JS_SetClassProto(ctx, jsAnimationHandleClassId, animationHandleProto);
 
     // Timer globals
     JSValue global = JS_GetGlobalObject(ctx);
@@ -4330,6 +5080,8 @@ void Engine::setupGlobals(JSContext *ctx, InstanceId id)
     JS_SetPropertyStr(ctx, mb, "unregisterTcap", JS_NewCFunction(ctx, jsMbUnregisterTcap, "unregisterTcap", 1));
     JS_SetPropertyStr(ctx, mb, "getClipboard", JS_NewCFunction(ctx, jsMbGetClipboard, "getClipboard", 0));
     JS_SetPropertyStr(ctx, mb, "setClipboard", JS_NewCFunction(ctx, jsMbSetClipboard, "setClipboard", 1));
+    JS_SetPropertyStr(ctx, mb, "startAnimation", JS_NewCFunction(ctx, jsMbStartAnimation, "startAnimation", 3));
+    JS_SetPropertyStr(ctx, mb, "_setMonoForTest", JS_NewCFunction(ctx, jsMbSetMonoForTest, "_setMonoForTest", 1));
 
     // mb.process — namespace for external process management. v1 has
     // exactly one method (spawn); the namespace exists to give us

@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <dawn/webgpu_cpp.h>
 
-// CPU-resolved cell data uploaded to GPU for the compute shader (20 bytes)
+// CPU-resolved cell data uploaded to GPU for the compute shader (24 bytes)
 // Glyph rendering data is stored separately in GlyphEntry buffer.
 struct ResolvedCell
 {
@@ -15,9 +15,20 @@ struct ResolvedCell
     uint32_t underline_info; // bits 0-2: style (0=none, 1=straight, 2=double, 3=curly, 4=dotted)
                              // bit 3: strikethrough
                              // bits 8-31: color packed RGB8 (0 = use fg_color)
+    // Per-side bg rect adjustment in pixels, packed as two i16 halves:
+    // low 16 bits = X (signed), high 16 bits = Y (signed). Positive
+    // values inflate (expand outward); negative values deflate (shrink).
+    // 0 means cell-aligned bg — the default — emitted to the regular
+    // rect buffer. Any non-zero value (either sign) routes the bg quad
+    // to the inflated-rect buffer instead, drawn in a second pass after
+    // the regular rect pass so it paints over neighbouring cells' bg.
+    // The cell does NOT emit to the regular buffer when inflate is non-
+    // zero, so a deflated rect doesn't have a full-size rect drawn
+    // beneath it.
+    uint32_t bg_inflate;
 };
 
-static_assert(sizeof(ResolvedCell) == 20);
+static_assert(sizeof(ResolvedCell) == 24);
 
 // Per-glyph data in a separate storage buffer (32 bytes)
 // Multiple glyphs may map to one cell (combining marks, decomposed characters).
@@ -94,6 +105,10 @@ struct ComputeState
     wgpu::Buffer glyphBuffer;
     wgpu::Buffer computeTextVertBuffer;
     wgpu::Buffer computeRectVertBuffer;
+    // Inflated-bg rect verts. Cells whose bg_inflate is non-zero (either
+    // sign) emit their bg quad here instead of computeRectVertBuffer;
+    // drawn in a second rect pass after the regular rect pass.
+    wgpu::Buffer computeInflatedRectVertBuffer;
     wgpu::Buffer indirectBuffer;
     wgpu::Buffer computeParamsBuffer;
     wgpu::BindGroup bindGroup;

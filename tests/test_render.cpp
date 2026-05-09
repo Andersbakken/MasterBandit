@@ -887,3 +887,179 @@ TEST_CASE("render: kitty graphics two-color checkerboard" * doctest::test_suite(
     REQUIRE(!png.empty());
     CHECK(rt.matchesReference(png, "kitty_checkerboard"));
 }
+
+// ============================================================================
+// Animation render tests
+//
+// These use the IPC `anim` command to drive the animation system
+// directly (no JS, no completion timer). The test pins mono() at
+// specific instants inside a long-duration descriptor, then captures
+// screenshots at each instant. With both startMs and now coming from
+// the same controlled clock, sample values are deterministic across
+// runs.
+//
+// Generate references on first run:
+//   MB_UPDATE_REFS=1 ./build/bin/mb-tests "[render]"
+// ============================================================================
+
+namespace {
+// Long enough that the background completion timer (wall-clock) can't
+// fire during a test's screenshot pass. mono() is overridden so the
+// renderer's sampling is independent of this.
+constexpr uint64_t kAnimDurationMs = 60000;
+constexpr uint64_t kAnimStartMs    = 1'000'000;
+} // namespace
+
+TEST_CASE("render: anim bg color lerps deterministically" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols  = 40;
+    opts.rows  = 5;
+    auto &rt   = MBConnection::shared(opts);
+    rt.reset();
+    rt.wait(300);
+
+    // Cleanup any leftover state from a prior test, then put the
+    // animation slot in a known shape: red→blue, linear, anchored on
+    // cells [0..8) of row 0.
+    rt.animClear();
+    rt.wait(50);
+
+    MBConnection::AnimAddSpec spec;
+    spec.startCol   = 0;
+    spec.endCol     = 8;
+    spec.bg         = 0xFF0000FFu; // red (alpha=FF, BGR=0000FF)
+    spec.prop       = "bg";
+    spec.startValue = 0xFF0000FFu;
+    spec.endValue   = 0xFFFF0000u; // blue (alpha=FF, BGR=FF0000)
+    spec.startMs    = kAnimStartMs;
+    spec.durationMs = kAnimDurationMs;
+    spec.ease       = "linear";
+    REQUIRE(rt.animAdd(spec));
+
+    // t=0 — bg should be the start value (red).
+    REQUIRE(rt.animSetMono(kAnimStartMs));
+    rt.wait(100);
+    auto pngStart = rt.screenshotPaneRect(0, 0, 0, 8, 1);
+    REQUIRE(!pngStart.empty());
+    CHECK(rt.matchesReference(pngStart, "anim_bg_t0"));
+
+    // t=0.5 — linear-RGB midpoint.
+    REQUIRE(rt.animSetMono(kAnimStartMs + kAnimDurationMs / 2));
+    rt.wait(100);
+    auto pngMid = rt.screenshotPaneRect(0, 0, 0, 8, 1);
+    REQUIRE(!pngMid.empty());
+    CHECK(rt.matchesReference(pngMid, "anim_bg_t50"));
+
+    // t=1 — bg should be the end value (blue).
+    REQUIRE(rt.animSetMono(kAnimStartMs + kAnimDurationMs));
+    rt.wait(100);
+    auto pngEnd = rt.screenshotPaneRect(0, 0, 0, 8, 1);
+    REQUIRE(!pngEnd.empty());
+    CHECK(rt.matchesReference(pngEnd, "anim_bg_t100"));
+
+    // Sanity: the three frames are not byte-identical (bg color
+    // genuinely changed each time).
+    CHECK(MBConnection::comparePng(pngStart, pngMid) > 5);
+    CHECK(MBConnection::comparePng(pngMid, pngEnd) > 5);
+    CHECK(MBConnection::comparePng(pngStart, pngEnd) > 5);
+
+    rt.animClear();
+}
+
+TEST_CASE("render: anim bgInflateX expands the bg rect" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols  = 40;
+    opts.rows  = 5;
+    auto &rt   = MBConnection::shared(opts);
+    rt.reset();
+    rt.wait(300);
+
+    rt.animClear();
+    rt.wait(50);
+
+    // Constant green background, inflate X from 0 to 8 px.
+    MBConnection::AnimAddSpec spec;
+    spec.startCol   = 4;
+    spec.endCol     = 8;
+    spec.bg         = 0xFF00FF00u; // green
+    spec.prop       = "bgInflateX";
+    spec.startValue = 0;
+    spec.endValue   = 8;
+    spec.startMs    = kAnimStartMs;
+    spec.durationMs = kAnimDurationMs;
+    spec.ease       = "linear";
+    REQUIRE(rt.animAdd(spec));
+
+    // t=0 — no inflation: bg confined to cells [4..8).
+    REQUIRE(rt.animSetMono(kAnimStartMs));
+    rt.wait(100);
+    auto pngBefore = rt.screenshotPaneRect(0, 0, 0, 16, 1);
+    REQUIRE(!pngBefore.empty());
+    CHECK(rt.matchesReference(pngBefore, "anim_inflateX_t0"));
+
+    // t=1 — bg expanded by 8 px each side: leaks into [3] and [8].
+    REQUIRE(rt.animSetMono(kAnimStartMs + kAnimDurationMs));
+    rt.wait(100);
+    auto pngAfter = rt.screenshotPaneRect(0, 0, 0, 16, 1);
+    REQUIRE(!pngAfter.empty());
+    CHECK(rt.matchesReference(pngAfter, "anim_inflateX_t100"));
+
+    // Sanity: the inflated frame's green-pixel area is strictly larger
+    // than the non-inflated frame's. comparePng returns max channel diff;
+    // here it should be substantial because the cells just outside the
+    // decoration's range went from black to green.
+    CHECK(MBConnection::comparePng(pngBefore, pngAfter) > 50);
+
+    rt.animClear();
+}
+
+TEST_CASE("render: anim bgInflate negative deflates the bg rect" * doctest::test_suite("render"))
+{
+    MBConnection::Options opts;
+    opts.shell = "/bin/cat";
+    opts.cols  = 40;
+    opts.rows  = 5;
+    auto &rt   = MBConnection::shared(opts);
+    rt.reset();
+    rt.wait(300);
+
+    rt.animClear();
+    rt.wait(50);
+
+    // Cyan, deflate Y from 0 to -4 px (rect shrinks vertically). With the
+    // shader's "any non-zero inflate routes to the second pass" rule, the
+    // cell does NOT also emit a full-size rect — so the deflated rect
+    // doesn't have a full-cell rect drawn beneath it.
+    MBConnection::AnimAddSpec spec;
+    spec.startCol   = 0;
+    spec.endCol     = 4;
+    spec.bg         = 0xFFFFFF00u; // cyan
+    spec.prop       = "bgInflateY";
+    spec.startValue = 0;
+    spec.endValue   = -4;
+    spec.startMs    = kAnimStartMs;
+    spec.durationMs = kAnimDurationMs;
+    spec.ease       = "linear";
+    REQUIRE(rt.animAdd(spec));
+
+    REQUIRE(rt.animSetMono(kAnimStartMs));
+    rt.wait(100);
+    auto pngStart = rt.screenshotPaneRect(0, 0, 0, 4, 1);
+    REQUIRE(!pngStart.empty());
+    CHECK(rt.matchesReference(pngStart, "anim_deflateY_t0"));
+
+    REQUIRE(rt.animSetMono(kAnimStartMs + kAnimDurationMs));
+    rt.wait(100);
+    auto pngEnd = rt.screenshotPaneRect(0, 0, 0, 4, 1);
+    REQUIRE(!pngEnd.empty());
+    CHECK(rt.matchesReference(pngEnd, "anim_deflateY_t100"));
+
+    // Sanity: deflated frame has visibly less cyan area than the start.
+    CHECK(MBConnection::comparePng(pngStart, pngEnd) > 10);
+
+    rt.animClear();
+}

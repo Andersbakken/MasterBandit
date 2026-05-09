@@ -394,6 +394,19 @@ bool TerminalSnapshot::update(TerminalEmulator &term)
         pushDecoration(std::move(r));
     }
 
+    // Animation registry — flat copy. Render thread walks this each frame
+    // to (a) sample the descriptors and write the results into the
+    // matching target's resolved style fields and (b) decide whether to
+    // reschedule another wake.
+    {
+        animations.clear();
+        const auto &live = term.animations();
+        animations.reserve(live.size());
+        for (const auto &[_, a] : live) {
+            animations.push_back(a);
+        }
+    }
+
     // Decoration content hash — drives renderer change-detection without a
     // per-pane snapshot copy. FNV-1a over the fields that affect paint:
     // (kind, abs ranges, shape, present-style flags + values).
@@ -422,7 +435,20 @@ bool TerminalSnapshot::update(TerminalEmulator &term)
             if (d.style.dimOthers) {
                 mix(0x400u | static_cast<uint64_t>(*d.style.dimOthers * 1000.0f));
             }
+            mix(static_cast<uint64_t>(d.style.bgInflateX));
+            mix(static_cast<uint64_t>(d.style.bgInflateY));
             mix(static_cast<uint64_t>(d.zPriority));
+        }
+        // Animation registry — hash by handleId / target identity, not by
+        // sampled value. Sampled values change every frame; mixing them
+        // would force a full re-shape on every tick and defeat the cache.
+        // Per-frame redraws while animations are live are driven by the
+        // renderer's reschedule path, not this hash.
+        for (const auto &a : animations) {
+            mix(0x800u | static_cast<uint64_t>(a.kind));
+            mix(a.targetId);
+            mix(static_cast<uint64_t>(a.prop));
+            mix(a.handleId);
         }
     }
 

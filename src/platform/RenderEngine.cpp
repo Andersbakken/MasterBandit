@@ -373,6 +373,7 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
         rc.fg_color       = fg;
         rc.bg_color       = bg;
         rc.underline_info = ulInfo;
+        rc.bg_inflate     = 0;
     }
 
     // Pass 2: Build runs and shape
@@ -711,6 +712,7 @@ void RenderEngine::renderTabBar()
         rc.fg_color       = tbc.fgColor;
         rc.bg_color       = tbc.bgColor;
         rc.underline_info = 0;
+        rc.bg_inflate     = 0;
 
         if (tbc.ch.empty()) {
             continue;
@@ -1326,6 +1328,59 @@ void RenderEngine::renderFrame()
             }
         }
 
+        // Animation registry — walk the flat list once. For each entry,
+        // sample the descriptor at `now` and apply the result to the
+        // target's resolved style. After this pass the per-cell draw
+        // path uses style as-is, no per-cell animation lookup. Also
+        // mark target rows dirty (per-row cache invalidation) and
+        // request another frame if any animation is still in-flight.
+        if (!rs.snapshot.animations.empty()) {
+            uint64_t nowMs    = TerminalEmulator::mono();
+            bool anyInFlight  = false;
+            // Build a small id→index map of decorations for O(1) lookup
+            // when applying. With low decoration counts a linear scan is
+            // also fine; this avoids it without measurable cost.
+            std::unordered_map<uint64_t, int> decIdx;
+            decIdx.reserve(rs.snapshot.decorations.size());
+            for (size_t i = 0; i < rs.snapshot.decorations.size(); ++i) {
+                decIdx[rs.snapshot.decorations[i].id] = static_cast<int>(i);
+            }
+            for (const auto &a : rs.snapshot.animations) {
+                if (nowMs < a.desc.startMs + a.desc.durationMs) {
+                    anyInFlight = true;
+                }
+                if (a.kind != AnimTargetKind::Decoration) {
+                    continue;
+                }
+                auto it = decIdx.find(a.targetId);
+                if (it == decIdx.end()) {
+                    continue;
+                }
+                ResolvedDecoration &d = rs.snapshot.decorations[static_cast<size_t>(it->second)];
+                int64_t sampled       = isColorAnimProp(a.prop)
+                          ? static_cast<int64_t>(sampleAnimColor(a.desc, nowMs))
+                          : static_cast<int64_t>(sampleAnimScalar(a.desc, nowMs));
+                applyAnimValueToStyle(d.style, a.prop, sampled);
+                // Mark every visible row this decoration covers as dirty
+                // so per-row shape caches re-evaluate next frame while
+                // the animation is in flight.
+                int minR = std::min(d.startAbsRow, d.endAbsRow);
+                int maxR = std::max(d.startAbsRow, d.endAbsRow);
+                for (size_t vr = 0; vr < rs.snapshot.segments.size(); ++vr) {
+                    int absRow = rs.snapshot.segments[vr].absRow;
+                    if (absRow >= minR && absRow <= maxR && vr < rs.snapshot.rowDirty.size()) {
+                        rs.snapshot.rowDirty[vr] = 1;
+                    }
+                }
+            }
+            if (anyInFlight) {
+                anyRunningAnimation = true;
+                if (nowMs < nextAnimationDueAt) {
+                    nextAnimationDueAt = nowMs;
+                }
+            }
+        }
+
         bool cursorMoved     = (snap.cursorX != rs.lastCursorX || snap.cursorY != rs.lastCursorY ||
                             snap.cursorVisible != rs.lastCursorVisible);
         rs.lastCursorX       = snap.cursorX;
@@ -1567,6 +1622,17 @@ void RenderEngine::renderFrame()
                             continue;
                         }
 
+                        // Pack bgInflateX/Y as two i16 halves into a u32.
+                        // The shader unpacks via unpack_i16(); see
+                        // ComputeTypes.h::ResolvedCell::bg_inflate.
+                        uint32_t inflatePacked = 0;
+                        if (d.style.bgInflateX != 0 || d.style.bgInflateY != 0) {
+                            int32_t ix             = std::clamp(d.style.bgInflateX, -32768, 32767);
+                            int32_t iy             = std::clamp(d.style.bgInflateY, -32768, 32767);
+                            inflatePacked          = (static_cast<uint32_t>(ix) & 0xFFFFu) |
+                                ((static_cast<uint32_t>(iy) & 0xFFFFu) << 16);
+                        }
+
                         for (int col = colStart; col <= colEnd; ++col) {
                             ResolvedCell &rc = rs.resolvedCells[baseIdx + col];
                             if (d.style.fg) {
@@ -1589,6 +1655,9 @@ void RenderEngine::renderFrame()
                                 } else {
                                     rc.underline_info &= ~0x08u;
                                 }
+                            }
+                            if (inflatePacked != 0) {
+                                rc.bg_inflate = inflatePacked;
                             }
                         }
                     }

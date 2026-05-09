@@ -601,10 +601,17 @@ public:
     // parser); JS callers must use the User kind. clearDecorations(tag) for
     // a system kind is a no-op (tag is empty for those).
     uint64_t addDecoration(Decoration spec);
-    bool removeDecoration(uint64_t id);
+    // `cancelledAnimHandlesOut`, if non-null, is appended with the handleIds
+    // of any in-flight animations on the removed decoration; the JS layer
+    // uses these to resolve the corresponding .onEnd() promises as
+    // "cancelled". Pass nullptr if the caller has no observers.
+    bool removeDecoration(uint64_t id, std::vector<uint64_t> *cancelledAnimHandlesOut = nullptr);
     // Remove all User decorations matching `tag`. Empty `tag` clears every
     // User decoration (system kinds untouched). Returns count removed.
-    size_t clearUserDecorations(std::string_view tag = {});
+    // `cancelledAnimHandlesOut` aggregates handleIds across every removed
+    // decoration (same semantics as removeDecoration).
+    size_t clearUserDecorations(std::string_view tag                    = {},
+                                std::vector<uint64_t> *cancelledAnimHandlesOut = nullptr);
 
     // Apply a queued sequence of Add / Clear ops atomically: one mMutex
     // acquisition, at most one snapshot publish at the end. Add-op ids are
@@ -617,7 +624,8 @@ public:
     // those publishes a snapshot, and the render thread can sample
     // mid-burst and paint with incomplete state (visible as a blank-frame
     // flicker between the clear and the re-add).
-    std::vector<uint64_t> applyDecorationBatch(std::vector<DecorationBatchOp> ops);
+    std::vector<uint64_t> applyDecorationBatch(std::vector<DecorationBatchOp> ops,
+                                               std::vector<uint64_t>         *cancelledAnimHandlesOut = nullptr);
 
     const std::vector<Decoration> &decorations() const { return mDecorations; }
 
@@ -625,6 +633,50 @@ public:
     // when an anchor has evicted past the archive cap. Used by the snapshot
     // mirror.
     std::optional<ResolvedDecoration> resolveDecoration(const Decoration &dec) const;
+
+    // --- Animation registry ---
+    //
+    // Flat list of in-flight animations. Each entry points at its target
+    // (currently always a decoration; extending the animation system is
+    // adding AnimTargetKind variants and per-target sample/finalize
+    // routing). The map is keyed by handleId for O(1) cancel/finish; the
+    // snapshot copies the values into a vector for cache-friendly
+    // iteration in the renderer.
+    //
+    // Lifecycle (start / arm completion timer / resolve .onEnd promise)
+    // is owned by ScriptEngine. The emulator is just the data store —
+    // it doesn't tick or advance these descriptors; the renderer samples
+    // them at draw time.
+    const std::unordered_map<uint64_t, Animation> &animations() const { return mAnimations; }
+
+    // Install a new animation. If another animation already targets the
+    // same (kind, targetId, prop) slot, returns its handleId (so the JS
+    // layer can resolve that prior animation's onEnd as "cancelled") and
+    // erases it from the registry; returns 0 if no replacement happened.
+    uint64_t startAnimation(Animation a);
+
+    // Finalize an animation by handleId: writes endValue into the
+    // appropriate static field on the targeted object, removes the
+    // animation entry. No-op (returns false) if the entry no longer
+    // exists.
+    bool finishAnimation(uint64_t handleId);
+
+    // Cancel an animation. snapToEnd=true behaves like finishAnimation
+    // (writes endValue); false samples at `nowMs` and writes that.
+    bool cancelAnimation(uint64_t handleId, bool snapToEnd, uint64_t nowMs);
+
+    // Test-only override for the monotonic clock — when set, mono() returns
+    // this value instead of the wall clock. Used by the renderer's sample
+    // path and any caller that uses mono() for animation timing. Pass 0 to
+    // restore wall-clock behavior. Persistent until cleared.
+    static void setMonoForTest(uint64_t t) { sMonoOverride = t; }
+
+private:
+    // Internal helper: write a sampled / endValue result into the static
+    // field of whatever the animation's target is. Routes by AnimTargetKind.
+    void applyAnimResultToTarget(AnimTargetKind kind, uint64_t targetId, AnimProp prop, int64_t value);
+
+public:
 
     // Image registry
     struct ImageEntry
@@ -1170,6 +1222,16 @@ private:
     // render-time composition, not in storage).
     std::vector<Decoration> mDecorations;
     uint64_t mNextDecorationId { 1 };
+
+    // Animation registry — see animations() and start/finish/cancelAnimation.
+    // Cleaned up alongside affected decorations in removeDecoration /
+    // clearUserDecorations / applyDecorationBatch.
+    std::unordered_map<uint64_t, Animation> mAnimations;
+
+    // Process-wide test override for mono(). 0 = use wall clock. Static
+    // because every emulator should see the same simulated time when a
+    // test sets it.
+    static inline std::atomic<uint64_t> sMonoOverride { 0 };
 
     // Image registry
     std::unordered_map<uint32_t, std::shared_ptr<ImageEntry>> mImageRegistry;

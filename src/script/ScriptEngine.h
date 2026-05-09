@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Decoration.h"
 #include "LayoutTree.h"
 #include "ScriptPermissions.h"
 #include "Uuid.h"
@@ -27,6 +28,11 @@ struct JSContext;
 class Terminal;
 
 namespace Script {
+
+// Forward-declared so Engine can hold raw back-pointers to the per-
+// animation JS handle data (defined in ScriptEngine.cpp) without
+// dragging the full QuickJS-bound layout into this header.
+struct JsAnimationHandleData;
 
 using InstanceId = uint64_t;
 // Panes are identified by their LayoutTree node Uuid. The old integer paneId
@@ -580,6 +586,42 @@ public:
 
     std::unordered_map<uint32_t, JsTimer> &jsTimers() { return jsTimers_; }
 
+    // --- Animation lifecycles ---
+    //
+    // Engine-side bookkeeping for each in-flight animation, keyed by
+    // handleId. Owns the EventLoop completion timer and the back-pointer
+    // to the JS handle (which holds the .onEnd promise resolver). JS
+    // handle finalize nulls `handleData` so settle won't write into
+    // freed memory, but leaves the timer armed so the emulator's
+    // animation entry still gets finalized regardless of GC.
+    struct DecorationAnimLifecycle
+    {
+        uint64_t handleId { 0 };
+        EventLoop::TimerId timerId { 0 };
+        JsAnimationHandleData *handleData { nullptr };
+        // Strong ref to the JS AnimationHandle object. Held so a
+        // fire-and-forget caller (e.g. `handle.animate(...).onEnd()`) that
+        // drops the intermediate handle reference doesn't have its handle
+        // GC'd before the completion timer fires — the JS handle owns the
+        // promise's resolveFn, and freeing it leaves the awaiter
+        // suspended forever. Released on settle, which makes the JS
+        // handle GC-eligible normally.
+        JSContext *handleCtx { nullptr };
+        JSValue handleRef { JS_UNDEFINED };
+    };
+
+    uint64_t nextAnimHandleId() { return nextAnimHandleId_++; }
+
+    std::unordered_map<uint64_t, DecorationAnimLifecycle> &animLifecycles() { return animLifecycles_; }
+
+    // Settle an animation by handleId: writes endValue (or sampled-at-
+    // now) into the target's static field via the emulator's animation
+    // API, resolves any .onEnd() promise as `outcome`, and drops the
+    // lifecycle entry. Idempotent — safe to call from both the timer
+    // callback and an explicit cancel.
+    void settleDecorationAnimation(uint64_t handleId, const char *outcome,
+                                   bool snapToEnd, uint64_t nowMs);
+
     struct Instance
     {
         InstanceId id;
@@ -959,6 +1001,9 @@ private:
     std::unordered_map<std::string, ActionHandler> actionHandlers_;
 
     std::unordered_map<uint32_t, JsTimer> jsTimers_;
+
+    uint64_t nextAnimHandleId_ { 1 };
+    std::unordered_map<uint64_t, DecorationAnimLifecycle> animLifecycles_;
 
     std::unordered_map<PaneId, int, UuidHash> paneOutputFilterCount_;
     std::unordered_map<PaneId, int, UuidHash> paneInputFilterCount_;

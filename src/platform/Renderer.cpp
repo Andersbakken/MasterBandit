@@ -472,14 +472,21 @@ void Renderer::initComputePipeline(wgpu::Device &device, wgpu::Queue &queue, con
     entry6.visibility                 = wgpu::ShaderStage::Compute;
     entry6.buffer.type                = wgpu::BufferBindingType::ReadOnlyStorage;
 
-    wgpu::BindGroupLayoutEntry allEntries[7];
+    // b7: inflated rect vertices (read-write storage)
+    wgpu::BindGroupLayoutEntry entry7 = {};
+    entry7.binding                    = 7;
+    entry7.visibility                 = wgpu::ShaderStage::Compute;
+    entry7.buffer.type                = wgpu::BufferBindingType::Storage;
+
+    wgpu::BindGroupLayoutEntry allEntries[8];
     for (int i = 0; i < 6; i++) {
         allEntries[i] = entries[i];
     }
     allEntries[6] = entry6;
+    allEntries[7] = entry7;
 
     wgpu::BindGroupLayoutDescriptor bglDesc = {};
-    bglDesc.entryCount                      = 7;
+    bglDesc.entryCount                      = 8;
     bglDesc.entries                         = allEntries;
     computeBindGroupLayout_                 = device.CreateBindGroupLayout(&bglDesc);
 
@@ -1037,7 +1044,11 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
 
     queue.WriteBuffer(computeState->computeParamsBuffer, 0, &params, sizeof(params));
 
-    uint32_t indirectInit[8] = { 0, 1, 0, 0, 0, 1, 0, 0 };
+    uint32_t indirectInit[12] = {
+        0, 1, 0, 0, // text:    vertexCount, instanceCount, firstVertex, firstInstance
+        0, 1, 0, 0, // rect:    "
+        0, 1, 0, 0, // inflated rect: "
+    };
     queue.WriteBuffer(computeState->indirectBuffer, 0, indirectInit, sizeof(indirectInit));
 
     // Compute pass — generates vertex data
@@ -1052,7 +1063,14 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
         computePass.End();
     }
 
-    // Clear pass
+    // Use full pane viewport (including padding) so NDC maps correctly.
+    float contentW = params.viewport_w;
+    float contentH = params.viewport_h;
+
+    // Rect pass — clears the pane texture (loadOp=Clear, no separate
+    // clear pass needed) and draws cell-aligned bg rects + cursor + box-
+    // drawing rectangles. Inflated bg rects go in the next pass so they
+    // composite on top of regular bg.
     {
         wgpu::RenderPassColorAttachment att = {};
         att.view                            = target;
@@ -1062,14 +1080,19 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
         wgpu::RenderPassDescriptor rpDesc   = {};
         rpDesc.colorAttachmentCount         = 1;
         rpDesc.colorAttachments             = &att;
-        encoder.BeginRenderPass(&rpDesc).End();
+        wgpu::RenderPassEncoder pass        = encoder.BeginRenderPass(&rpDesc);
+        pass.SetViewport(0.0f, 0.0f, contentW, contentH, 0.0f, 1.0f);
+        pass.SetPipeline(rectPipeline_);
+        pass.SetBindGroup(0, rectBindGroup_);
+        pass.SetVertexBuffer(0, computeState->computeRectVertBuffer);
+        pass.DrawIndirect(computeState->indirectBuffer, 16);
+        pass.End();
     }
 
-    // Use full pane viewport (including padding) so NDC maps correctly.
-    float contentW = params.viewport_w;
-    float contentH = params.viewport_h;
-
-    // Rect pass
+    // Inflated rect pass — drawn after regular rects so inflated /
+    // deflated bg rects composite on top of cell-aligned bg from
+    // neighbouring cells. Same pipeline as the rect pass; just a
+    // different vertex buffer + indirect-args offset.
     {
         wgpu::RenderPassColorAttachment att = {};
         att.view                            = target;
@@ -1082,8 +1105,8 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
         pass.SetViewport(0.0f, 0.0f, contentW, contentH, 0.0f, 1.0f);
         pass.SetPipeline(rectPipeline_);
         pass.SetBindGroup(0, rectBindGroup_);
-        pass.SetVertexBuffer(0, computeState->computeRectVertBuffer);
-        pass.DrawIndirect(computeState->indirectBuffer, 16);
+        pass.SetVertexBuffer(0, computeState->computeInflatedRectVertBuffer);
+        pass.DrawIndirect(computeState->indirectBuffer, 32);
         pass.End();
     }
 

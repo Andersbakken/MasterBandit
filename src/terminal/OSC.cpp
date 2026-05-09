@@ -48,6 +48,9 @@ static inline bool gettime(timeval *time)
 
 uint64_t TerminalEmulator::mono()
 {
+    if (uint64_t t = sMonoOverride.load(std::memory_order_acquire); t != 0) {
+        return t;
+    }
     timeval time;
     if (gettime(&time)) {
         return (time.tv_sec * static_cast<uint64_t>(1000)) + (time.tv_usec / static_cast<uint64_t>(1000));

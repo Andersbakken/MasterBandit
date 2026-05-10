@@ -76,6 +76,16 @@ void ComputeStatePool::clear()
     all_.clear();
 }
 
+static size_t computeStateBytes(const ComputeState *state)
+{
+    return static_cast<size_t>(state->maxCells) * sizeof(ResolvedCell) +
+        static_cast<size_t>(state->maxGlyphs) * sizeof(GlyphEntry) +
+        static_cast<size_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE +
+        static_cast<size_t>(state->maxRectVertices) * RECT_VERTEX_SIZE +
+        static_cast<size_t>(state->maxInflatedRectVertices) * RECT_VERTEX_SIZE +
+        48 + 256;
+}
+
 void ComputeStatePool::ensureGlyphCapacity(ComputeState *state, uint32_t glyphCount)
 {
     if (!state || !device_) {
@@ -111,14 +121,42 @@ void ComputeStatePool::ensureGlyphCapacity(ComputeState *state, uint32_t glyphCo
 
     if (needRebuild) {
         rebuildBindGroup(state);
-        // Recompute sizeBytes
-        state->sizeBytes =
-            static_cast<size_t>(state->maxCells) * sizeof(ResolvedCell) +
-            static_cast<size_t>(state->maxGlyphs) * sizeof(GlyphEntry) +
-            static_cast<size_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE +
-            (static_cast<size_t>(state->maxCells) * 54 + 48) * RECT_VERTEX_SIZE +
-            static_cast<size_t>(state->maxCells) * 6 * RECT_VERTEX_SIZE +
-            48 + 256;
+        state->sizeBytes = computeStateBytes(state);
+    }
+}
+
+void ComputeStatePool::ensureRectCapacity(ComputeState *state, uint32_t rectVerts, uint32_t inflatedVerts)
+{
+    if (!state || !device_) {
+        return;
+    }
+
+    bool needRebuild = false;
+    wgpu::Device device(device_);
+
+    if (rectVerts > state->maxRectVertices) {
+        uint32_t newMax              = rectVerts + rectVerts / 4;
+        wgpu::BufferDescriptor desc  = {};
+        desc.size                    = static_cast<uint64_t>(newMax) * RECT_VERTEX_SIZE;
+        desc.usage                   = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
+        state->computeRectVertBuffer = device.CreateBuffer(&desc);
+        state->maxRectVertices       = newMax;
+        needRebuild                  = true;
+    }
+
+    if (inflatedVerts > state->maxInflatedRectVertices) {
+        uint32_t newMax                      = inflatedVerts + inflatedVerts / 4;
+        wgpu::BufferDescriptor desc          = {};
+        desc.size                            = static_cast<uint64_t>(newMax) * RECT_VERTEX_SIZE;
+        desc.usage                           = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
+        state->computeInflatedRectVertBuffer = device.CreateBuffer(&desc);
+        state->maxInflatedRectVertices       = newMax;
+        needRebuild                          = true;
+    }
+
+    if (needRebuild) {
+        rebuildBindGroup(state);
+        state->sizeBytes = computeStateBytes(state);
     }
 }
 
@@ -138,7 +176,7 @@ void ComputeStatePool::rebuildBindGroup(ComputeState *state)
     bgEntries[2].size                 = static_cast<uint64_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE;
     bgEntries[3].binding              = 3;
     bgEntries[3].buffer               = state->computeRectVertBuffer;
-    bgEntries[3].size                 = (static_cast<uint64_t>(state->maxCells) * 54 + 24) * RECT_VERTEX_SIZE;
+    bgEntries[3].size                 = static_cast<uint64_t>(state->maxRectVertices) * RECT_VERTEX_SIZE;
     bgEntries[4].binding              = 4;
     bgEntries[4].buffer               = state->indirectBuffer;
     bgEntries[4].size                 = 48;
@@ -150,7 +188,7 @@ void ComputeStatePool::rebuildBindGroup(ComputeState *state)
     bgEntries[6].size                 = ProceduralGlyph::kTableSize * sizeof(uint32_t);
     bgEntries[7].binding              = 7;
     bgEntries[7].buffer               = state->computeInflatedRectVertBuffer;
-    bgEntries[7].size                 = static_cast<uint64_t>(state->maxCells) * 6 * RECT_VERTEX_SIZE;
+    bgEntries[7].size                 = static_cast<uint64_t>(state->maxInflatedRectVertices) * RECT_VERTEX_SIZE;
 
     wgpu::BindGroupDescriptor bgDesc = {};
     bgDesc.layout                    = wgpu::BindGroupLayout(bindGroupLayout_);
@@ -188,22 +226,27 @@ ComputeState *ComputeStatePool::allocate(uint32_t cells)
         state->computeTextVertBuffer = device.CreateBuffer(&desc);
         state->maxTextVertices       = initTextVerts;
     }
-    // Rect vertex buffer: backgrounds (6/cell) + procedural glyphs (up to 48/cell for braille/octant)
-    // + cursor (24) + OSC 133 selection outline (24).
+    // Rect vertex buffer: initial sizing assumes no procedural glyphs — backgrounds
+    // (6/cell) + cursor (24) + selection outline (24). ensureRectCapacity grows
+    // this on demand when procedural glyphs / underlines / strikethrough actually
+    // appear, with the shader bounds-checking every write.
+    uint32_t initialRectVerts = cells * 6 + 48;
     {
         wgpu::BufferDescriptor desc  = {};
-        desc.size                    = (static_cast<uint64_t>(cells) * 54 + 48) * RECT_VERTEX_SIZE;
+        desc.size                    = static_cast<uint64_t>(initialRectVerts) * RECT_VERTEX_SIZE;
         desc.usage                   = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
         state->computeRectVertBuffer = device.CreateBuffer(&desc);
+        state->maxRectVertices       = initialRectVerts;
     }
-    // Inflated-bg rect vertex buffer — sized for the worst case where every
-    // cell has a non-zero bg_inflate (6 verts per cell). In practice almost
-    // all cells have inflate == 0 and emit nothing here.
+    // Inflated-bg rect vertex buffer — start at one cell's worth (6 verts) and
+    // grow on demand. Most frames have zero inflated-bg cells.
+    uint32_t initialInflatedVerts = 6;
     {
         wgpu::BufferDescriptor desc          = {};
-        desc.size                            = static_cast<uint64_t>(cells) * 6 * RECT_VERTEX_SIZE;
+        desc.size                            = static_cast<uint64_t>(initialInflatedVerts) * RECT_VERTEX_SIZE;
         desc.usage                           = wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex;
         state->computeInflatedRectVertBuffer = device.CreateBuffer(&desc);
+        state->maxInflatedRectVertices       = initialInflatedVerts;
     }
     // Indirect buffer — 12 u32s now: text args [0..3], rect args [4..7],
     // inflated-rect args [8..11].
@@ -223,13 +266,7 @@ ComputeState *ComputeStatePool::allocate(uint32_t cells)
 
     state->maxCells  = cells;
     state->maxGlyphs = cells; // initial 1:1 estimate
-    state->sizeBytes =
-        static_cast<size_t>(cells) * sizeof(ResolvedCell) +
-        static_cast<size_t>(cells) * sizeof(GlyphEntry) +
-        static_cast<size_t>(state->maxTextVertices) * SLUG_VERTEX_SIZE +
-        (static_cast<size_t>(cells) * 54 + 48) * RECT_VERTEX_SIZE +
-        static_cast<size_t>(cells) * 6 * RECT_VERTEX_SIZE + // inflated rect buf
-        48 + 256;                                           // indirect + params
+    state->sizeBytes = computeStateBytes(state.get());
 
     rebuildBindGroup(state.get());
 

@@ -49,6 +49,19 @@ For targeted runs use the doctest filters:
 grep -a -E 'Status:|FAIL|assertions:' /tmp/run.out
 ```
 
+`mb-tests` with no filter runs every doctest suite in the binary,
+including the `[render]` suite (`tests/test_render.cpp`). That suite
+exercises the full WebGPU pipeline — compute shader, indirect draw,
+screenshot capture — and diffs against reference PNGs in
+`tests/reference/`. Do **not** describe a no-filter run as
+"non-GPU" or claim the compute / shader path is unexercised: it is.
+
+To regenerate reference PNGs after an intentional visual change:
+
+```sh
+MB_UPDATE_REFS=1 ./build/bin/mb-tests "[render]" > /tmp/refs.out 2>&1
+```
+
 ## 3. Keep `TODO.md` in sync
 
 `TODO.md` at the repo root tracks open work and shipped features as

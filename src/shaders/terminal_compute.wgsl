@@ -18,7 +18,9 @@ struct TerminalParams {
     cursor_text_color: u32, // packed RGBA8 — glyph color used at the cursor cell
                             // when cursor_type == 1 so the glyph stays legible on top
                             // of the solid block. Ignored for other cursor types.
-    max_text_vertices: u32, // safety cap for text vertex emission
+    max_text_vertices: u32,          // safety cap for text vertex emission
+    max_rect_vertices: u32,          // safety cap for rect_verts emission
+    max_inflated_rect_vertices: u32, // safety cap for inflated_rect_verts emission
     selection_start_row: u32,
     selection_end_row: u32,
     selection_outline_flags: u32, // bit 0=top, bit 1=bottom; left/right always drawn when color!=0
@@ -167,16 +169,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
         if (cell.bg_inflate == 0u) {
             let base_idx = atomicAdd(&counters[4], 6u);
-            let x0 = base_x;
-            let y0 = base_y;
-            let x1 = base_x + params.cell_width;
-            let y1 = base_y + params.cell_height;
-            rect_verts[base_idx + 0u] = RV(x0, y0, r, g, b, a);
-            rect_verts[base_idx + 1u] = RV(x1, y0, r, g, b, a);
-            rect_verts[base_idx + 2u] = RV(x0, y1, r, g, b, a);
-            rect_verts[base_idx + 3u] = RV(x1, y0, r, g, b, a);
-            rect_verts[base_idx + 4u] = RV(x1, y1, r, g, b, a);
-            rect_verts[base_idx + 5u] = RV(x0, y1, r, g, b, a);
+            if (base_idx + 6u <= params.max_rect_vertices) {
+                let x0 = base_x;
+                let y0 = base_y;
+                let x1 = base_x + params.cell_width;
+                let y1 = base_y + params.cell_height;
+                rect_verts[base_idx + 0u] = RV(x0, y0, r, g, b, a);
+                rect_verts[base_idx + 1u] = RV(x1, y0, r, g, b, a);
+                rect_verts[base_idx + 2u] = RV(x0, y1, r, g, b, a);
+                rect_verts[base_idx + 3u] = RV(x1, y0, r, g, b, a);
+                rect_verts[base_idx + 4u] = RV(x1, y1, r, g, b, a);
+                rect_verts[base_idx + 5u] = RV(x0, y1, r, g, b, a);
+            }
         } else {
             let ix = f32(unpack_i16(cell.bg_inflate, false));
             let iy = f32(unpack_i16(cell.bg_inflate, true));
@@ -188,12 +192,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // cell collapses x0 > x1).
             if (x1 > x0 && y1 > y0) {
                 let base_idx = atomicAdd(&counters[8], 6u);
-                inflated_rect_verts[base_idx + 0u] = RV(x0, y0, r, g, b, a);
-                inflated_rect_verts[base_idx + 1u] = RV(x1, y0, r, g, b, a);
-                inflated_rect_verts[base_idx + 2u] = RV(x0, y1, r, g, b, a);
-                inflated_rect_verts[base_idx + 3u] = RV(x1, y0, r, g, b, a);
-                inflated_rect_verts[base_idx + 4u] = RV(x1, y1, r, g, b, a);
-                inflated_rect_verts[base_idx + 5u] = RV(x0, y1, r, g, b, a);
+                if (base_idx + 6u <= params.max_inflated_rect_vertices) {
+                    inflated_rect_verts[base_idx + 0u] = RV(x0, y0, r, g, b, a);
+                    inflated_rect_verts[base_idx + 1u] = RV(x1, y0, r, g, b, a);
+                    inflated_rect_verts[base_idx + 2u] = RV(x0, y1, r, g, b, a);
+                    inflated_rect_verts[base_idx + 3u] = RV(x1, y0, r, g, b, a);
+                    inflated_rect_verts[base_idx + 4u] = RV(x1, y1, r, g, b, a);
+                    inflated_rect_verts[base_idx + 5u] = RV(x0, y1, r, g, b, a);
+                }
             }
         }
     }
@@ -215,61 +221,69 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         if (params.cursor_type == 1u) {
             // Solid block cursor
             let base_idx = atomicAdd(&counters[4], 6u);
-            rect_verts[base_idx + 0u] = RV(x0, y0, cr, cg, cb, ca);
-            rect_verts[base_idx + 1u] = RV(x1, y0, cr, cg, cb, ca);
-            rect_verts[base_idx + 2u] = RV(x0, y1, cr, cg, cb, ca);
-            rect_verts[base_idx + 3u] = RV(x1, y0, cr, cg, cb, ca);
-            rect_verts[base_idx + 4u] = RV(x1, y1, cr, cg, cb, ca);
-            rect_verts[base_idx + 5u] = RV(x0, y1, cr, cg, cb, ca);
+            if (base_idx + 6u <= params.max_rect_vertices) {
+                rect_verts[base_idx + 0u] = RV(x0, y0, cr, cg, cb, ca);
+                rect_verts[base_idx + 1u] = RV(x1, y0, cr, cg, cb, ca);
+                rect_verts[base_idx + 2u] = RV(x0, y1, cr, cg, cb, ca);
+                rect_verts[base_idx + 3u] = RV(x1, y0, cr, cg, cb, ca);
+                rect_verts[base_idx + 4u] = RV(x1, y1, cr, cg, cb, ca);
+                rect_verts[base_idx + 5u] = RV(x0, y1, cr, cg, cb, ca);
+            }
         } else if (params.cursor_type == 2u) {
             // Hollow block cursor: 4 thin border rects
             let base_idx = atomicAdd(&counters[4], 24u);
-            // Top
-            rect_verts[base_idx +  0u] = RV(x0,   y0,   cr, cg, cb, ca);
-            rect_verts[base_idx +  1u] = RV(x1,   y0,   cr, cg, cb, ca);
-            rect_verts[base_idx +  2u] = RV(x0,   y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx +  3u] = RV(x1,   y0,   cr, cg, cb, ca);
-            rect_verts[base_idx +  4u] = RV(x1,   y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx +  5u] = RV(x0,   y0+t, cr, cg, cb, ca);
-            // Bottom
-            rect_verts[base_idx +  6u] = RV(x0,   y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx +  7u] = RV(x1,   y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx +  8u] = RV(x0,   y1,   cr, cg, cb, ca);
-            rect_verts[base_idx +  9u] = RV(x1,   y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 10u] = RV(x1,   y1,   cr, cg, cb, ca);
-            rect_verts[base_idx + 11u] = RV(x0,   y1,   cr, cg, cb, ca);
-            // Left
-            rect_verts[base_idx + 12u] = RV(x0,   y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx + 13u] = RV(x0+t, y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx + 14u] = RV(x0,   y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 15u] = RV(x0+t, y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx + 16u] = RV(x0+t, y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 17u] = RV(x0,   y1-t, cr, cg, cb, ca);
-            // Right
-            rect_verts[base_idx + 18u] = RV(x1-t, y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx + 19u] = RV(x1,   y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx + 20u] = RV(x1-t, y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 21u] = RV(x1,   y0+t, cr, cg, cb, ca);
-            rect_verts[base_idx + 22u] = RV(x1,   y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 23u] = RV(x1-t, y1-t, cr, cg, cb, ca);
+            if (base_idx + 24u <= params.max_rect_vertices) {
+                // Top
+                rect_verts[base_idx +  0u] = RV(x0,   y0,   cr, cg, cb, ca);
+                rect_verts[base_idx +  1u] = RV(x1,   y0,   cr, cg, cb, ca);
+                rect_verts[base_idx +  2u] = RV(x0,   y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx +  3u] = RV(x1,   y0,   cr, cg, cb, ca);
+                rect_verts[base_idx +  4u] = RV(x1,   y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx +  5u] = RV(x0,   y0+t, cr, cg, cb, ca);
+                // Bottom
+                rect_verts[base_idx +  6u] = RV(x0,   y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx +  7u] = RV(x1,   y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx +  8u] = RV(x0,   y1,   cr, cg, cb, ca);
+                rect_verts[base_idx +  9u] = RV(x1,   y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 10u] = RV(x1,   y1,   cr, cg, cb, ca);
+                rect_verts[base_idx + 11u] = RV(x0,   y1,   cr, cg, cb, ca);
+                // Left
+                rect_verts[base_idx + 12u] = RV(x0,   y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx + 13u] = RV(x0+t, y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx + 14u] = RV(x0,   y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 15u] = RV(x0+t, y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx + 16u] = RV(x0+t, y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 17u] = RV(x0,   y1-t, cr, cg, cb, ca);
+                // Right
+                rect_verts[base_idx + 18u] = RV(x1-t, y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx + 19u] = RV(x1,   y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx + 20u] = RV(x1-t, y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 21u] = RV(x1,   y0+t, cr, cg, cb, ca);
+                rect_verts[base_idx + 22u] = RV(x1,   y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 23u] = RV(x1-t, y1-t, cr, cg, cb, ca);
+            }
         } else if (params.cursor_type == 3u) {
             // Underline cursor: thin rect at bottom of cell
             let base_idx = atomicAdd(&counters[4], 6u);
-            rect_verts[base_idx + 0u] = RV(x0, y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 1u] = RV(x1, y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 2u] = RV(x0, y1,   cr, cg, cb, ca);
-            rect_verts[base_idx + 3u] = RV(x1, y1-t, cr, cg, cb, ca);
-            rect_verts[base_idx + 4u] = RV(x1, y1,   cr, cg, cb, ca);
-            rect_verts[base_idx + 5u] = RV(x0, y1,   cr, cg, cb, ca);
+            if (base_idx + 6u <= params.max_rect_vertices) {
+                rect_verts[base_idx + 0u] = RV(x0, y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 1u] = RV(x1, y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 2u] = RV(x0, y1,   cr, cg, cb, ca);
+                rect_verts[base_idx + 3u] = RV(x1, y1-t, cr, cg, cb, ca);
+                rect_verts[base_idx + 4u] = RV(x1, y1,   cr, cg, cb, ca);
+                rect_verts[base_idx + 5u] = RV(x0, y1,   cr, cg, cb, ca);
+            }
         } else if (params.cursor_type == 4u) {
             // Bar cursor: thin rect at left of cell
             let base_idx = atomicAdd(&counters[4], 6u);
-            rect_verts[base_idx + 0u] = RV(x0,   y0, cr, cg, cb, ca);
-            rect_verts[base_idx + 1u] = RV(x0+t, y0, cr, cg, cb, ca);
-            rect_verts[base_idx + 2u] = RV(x0,   y1, cr, cg, cb, ca);
-            rect_verts[base_idx + 3u] = RV(x0+t, y0, cr, cg, cb, ca);
-            rect_verts[base_idx + 4u] = RV(x0+t, y1, cr, cg, cb, ca);
-            rect_verts[base_idx + 5u] = RV(x0,   y1, cr, cg, cb, ca);
+            if (base_idx + 6u <= params.max_rect_vertices) {
+                rect_verts[base_idx + 0u] = RV(x0,   y0, cr, cg, cb, ca);
+                rect_verts[base_idx + 1u] = RV(x0+t, y0, cr, cg, cb, ca);
+                rect_verts[base_idx + 2u] = RV(x0,   y1, cr, cg, cb, ca);
+                rect_verts[base_idx + 3u] = RV(x0+t, y0, cr, cg, cb, ca);
+                rect_verts[base_idx + 4u] = RV(x0+t, y1, cr, cg, cb, ca);
+                rect_verts[base_idx + 5u] = RV(x0,   y1, cr, cg, cb, ca);
+            }
         }
     }
 
@@ -305,44 +319,52 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
         if (has_top) {
             let b = obase + oi * 6u;
-            rect_verts[b + 0u] = RV(ox0, oy0,      or_r, or_g, or_b, or_a);
-            rect_verts[b + 1u] = RV(ox1, oy0,      or_r, or_g, or_b, or_a);
-            rect_verts[b + 2u] = RV(ox0, oy0 + ot, or_r, or_g, or_b, or_a);
-            rect_verts[b + 3u] = RV(ox1, oy0,      or_r, or_g, or_b, or_a);
-            rect_verts[b + 4u] = RV(ox1, oy0 + ot, or_r, or_g, or_b, or_a);
-            rect_verts[b + 5u] = RV(ox0, oy0 + ot, or_r, or_g, or_b, or_a);
+            if (b + 6u <= params.max_rect_vertices) {
+                rect_verts[b + 0u] = RV(ox0, oy0,      or_r, or_g, or_b, or_a);
+                rect_verts[b + 1u] = RV(ox1, oy0,      or_r, or_g, or_b, or_a);
+                rect_verts[b + 2u] = RV(ox0, oy0 + ot, or_r, or_g, or_b, or_a);
+                rect_verts[b + 3u] = RV(ox1, oy0,      or_r, or_g, or_b, or_a);
+                rect_verts[b + 4u] = RV(ox1, oy0 + ot, or_r, or_g, or_b, or_a);
+                rect_verts[b + 5u] = RV(ox0, oy0 + ot, or_r, or_g, or_b, or_a);
+            }
             oi += 1u;
         }
         if (has_bottom) {
             let b = obase + oi * 6u;
-            rect_verts[b + 0u] = RV(ox0, oy1 - ot, or_r, or_g, or_b, or_a);
-            rect_verts[b + 1u] = RV(ox1, oy1 - ot, or_r, or_g, or_b, or_a);
-            rect_verts[b + 2u] = RV(ox0, oy1,      or_r, or_g, or_b, or_a);
-            rect_verts[b + 3u] = RV(ox1, oy1 - ot, or_r, or_g, or_b, or_a);
-            rect_verts[b + 4u] = RV(ox1, oy1,      or_r, or_g, or_b, or_a);
-            rect_verts[b + 5u] = RV(ox0, oy1,      or_r, or_g, or_b, or_a);
+            if (b + 6u <= params.max_rect_vertices) {
+                rect_verts[b + 0u] = RV(ox0, oy1 - ot, or_r, or_g, or_b, or_a);
+                rect_verts[b + 1u] = RV(ox1, oy1 - ot, or_r, or_g, or_b, or_a);
+                rect_verts[b + 2u] = RV(ox0, oy1,      or_r, or_g, or_b, or_a);
+                rect_verts[b + 3u] = RV(ox1, oy1 - ot, or_r, or_g, or_b, or_a);
+                rect_verts[b + 4u] = RV(ox1, oy1,      or_r, or_g, or_b, or_a);
+                rect_verts[b + 5u] = RV(ox0, oy1,      or_r, or_g, or_b, or_a);
+            }
             oi += 1u;
         }
         // Left edge
         {
             let b = obase + oi * 6u;
-            rect_verts[b + 0u] = RV(ox0,      oy0, or_r, or_g, or_b, or_a);
-            rect_verts[b + 1u] = RV(ox0 + ot, oy0, or_r, or_g, or_b, or_a);
-            rect_verts[b + 2u] = RV(ox0,      oy1, or_r, or_g, or_b, or_a);
-            rect_verts[b + 3u] = RV(ox0 + ot, oy0, or_r, or_g, or_b, or_a);
-            rect_verts[b + 4u] = RV(ox0 + ot, oy1, or_r, or_g, or_b, or_a);
-            rect_verts[b + 5u] = RV(ox0,      oy1, or_r, or_g, or_b, or_a);
+            if (b + 6u <= params.max_rect_vertices) {
+                rect_verts[b + 0u] = RV(ox0,      oy0, or_r, or_g, or_b, or_a);
+                rect_verts[b + 1u] = RV(ox0 + ot, oy0, or_r, or_g, or_b, or_a);
+                rect_verts[b + 2u] = RV(ox0,      oy1, or_r, or_g, or_b, or_a);
+                rect_verts[b + 3u] = RV(ox0 + ot, oy0, or_r, or_g, or_b, or_a);
+                rect_verts[b + 4u] = RV(ox0 + ot, oy1, or_r, or_g, or_b, or_a);
+                rect_verts[b + 5u] = RV(ox0,      oy1, or_r, or_g, or_b, or_a);
+            }
             oi += 1u;
         }
         // Right edge
         {
             let b = obase + oi * 6u;
-            rect_verts[b + 0u] = RV(ox1 - ot, oy0, or_r, or_g, or_b, or_a);
-            rect_verts[b + 1u] = RV(ox1,      oy0, or_r, or_g, or_b, or_a);
-            rect_verts[b + 2u] = RV(ox1 - ot, oy1, or_r, or_g, or_b, or_a);
-            rect_verts[b + 3u] = RV(ox1,      oy0, or_r, or_g, or_b, or_a);
-            rect_verts[b + 4u] = RV(ox1,      oy1, or_r, or_g, or_b, or_a);
-            rect_verts[b + 5u] = RV(ox1 - ot, oy1, or_r, or_g, or_b, or_a);
+            if (b + 6u <= params.max_rect_vertices) {
+                rect_verts[b + 0u] = RV(ox1 - ot, oy0, or_r, or_g, or_b, or_a);
+                rect_verts[b + 1u] = RV(ox1,      oy0, or_r, or_g, or_b, or_a);
+                rect_verts[b + 2u] = RV(ox1 - ot, oy1, or_r, or_g, or_b, or_a);
+                rect_verts[b + 3u] = RV(ox1,      oy0, or_r, or_g, or_b, or_a);
+                rect_verts[b + 4u] = RV(ox1,      oy1, or_r, or_g, or_b, or_a);
+                rect_verts[b + 5u] = RV(ox1 - ot, oy1, or_r, or_g, or_b, or_a);
+            }
         }
     }
 
@@ -386,12 +408,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 let px1 = base_x + cw * f32(rx1) / 8.0;
                 let py1 = base_y + ch * f32(ry1) / 8.0;
                 let ri = atomicAdd(&counters[4], 6u);
-                rect_verts[ri + 0u] = RV(px0, py0, fg_r, fg_g, fg_b, fg_a);
-                rect_verts[ri + 1u] = RV(px1, py0, fg_r, fg_g, fg_b, fg_a);
-                rect_verts[ri + 2u] = RV(px0, py1, fg_r, fg_g, fg_b, fg_a);
-                rect_verts[ri + 3u] = RV(px1, py0, fg_r, fg_g, fg_b, fg_a);
-                rect_verts[ri + 4u] = RV(px1, py1, fg_r, fg_g, fg_b, fg_a);
-                rect_verts[ri + 5u] = RV(px0, py1, fg_r, fg_g, fg_b, fg_a);
+                if (ri + 6u <= params.max_rect_vertices) {
+                    rect_verts[ri + 0u] = RV(px0, py0, fg_r, fg_g, fg_b, fg_a);
+                    rect_verts[ri + 1u] = RV(px1, py0, fg_r, fg_g, fg_b, fg_a);
+                    rect_verts[ri + 2u] = RV(px0, py1, fg_r, fg_g, fg_b, fg_a);
+                    rect_verts[ri + 3u] = RV(px1, py0, fg_r, fg_g, fg_b, fg_a);
+                    rect_verts[ri + 4u] = RV(px1, py1, fg_r, fg_g, fg_b, fg_a);
+                    rect_verts[ri + 5u] = RV(px0, py1, fg_r, fg_g, fg_b, fg_a);
+                }
             } else if (entry_type == 2u) {
                 // Quadrant: 4-bit mask (UL=1, UR=2, LL=4, LR=8)
                 let mask = (entry >> 4u) & 0x0Fu;
@@ -412,42 +436,50 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 var qi = 0u;
                 if ((mask & 1u) != 0u) { // UL
                     let b = ri + qi * 6u;
-                    rect_verts[b+0u] = RV(left, top, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(mx,   top, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(left, my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+3u] = RV(mx,   top, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+4u] = RV(mx,   my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+5u] = RV(left, my,  fg_r, fg_g, fg_b, fg_a);
+                    if (b + 6u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(left, top, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(mx,   top, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(left, my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+3u] = RV(mx,   top, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+4u] = RV(mx,   my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+5u] = RV(left, my,  fg_r, fg_g, fg_b, fg_a);
+                    }
                     qi += 1u;
                 }
                 if ((mask & 2u) != 0u) { // UR
                     let b = ri + qi * 6u;
-                    rect_verts[b+0u] = RV(mx,    top, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(right, top, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(mx,    my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+3u] = RV(right, top, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+4u] = RV(right, my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+5u] = RV(mx,    my,  fg_r, fg_g, fg_b, fg_a);
+                    if (b + 6u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(mx,    top, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(right, top, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(mx,    my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+3u] = RV(right, top, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+4u] = RV(right, my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+5u] = RV(mx,    my,  fg_r, fg_g, fg_b, fg_a);
+                    }
                     qi += 1u;
                 }
                 if ((mask & 4u) != 0u) { // LL
                     let b = ri + qi * 6u;
-                    rect_verts[b+0u] = RV(left, my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(mx,   my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(left, bot, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+3u] = RV(mx,   my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+4u] = RV(mx,   bot, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+5u] = RV(left, bot, fg_r, fg_g, fg_b, fg_a);
+                    if (b + 6u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(left, my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(mx,   my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(left, bot, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+3u] = RV(mx,   my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+4u] = RV(mx,   bot, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+5u] = RV(left, bot, fg_r, fg_g, fg_b, fg_a);
+                    }
                     qi += 1u;
                 }
                 if ((mask & 8u) != 0u) { // LR
                     let b = ri + qi * 6u;
-                    rect_verts[b+0u] = RV(mx,    my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(right, my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(mx,    bot, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+3u] = RV(right, my,  fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+4u] = RV(right, bot, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+5u] = RV(mx,    bot, fg_r, fg_g, fg_b, fg_a);
+                    if (b + 6u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(mx,    my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(right, my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(mx,    bot, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+3u] = RV(right, my,  fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+4u] = RV(right, bot, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+5u] = RV(mx,    bot, fg_r, fg_g, fg_b, fg_a);
+                    }
                     qi += 1u;
                 }
             } else if (entry_type == 3u) {
@@ -462,12 +494,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 let y0 = base_y;
                 let x1 = base_x + cw;
                 let y1 = base_y + ch;
-                rect_verts[ri+0u] = RV(x0, y0, fg_r, fg_g, fg_b, fg_a * alpha);
-                rect_verts[ri+1u] = RV(x1, y0, fg_r, fg_g, fg_b, fg_a * alpha);
-                rect_verts[ri+2u] = RV(x0, y1, fg_r, fg_g, fg_b, fg_a * alpha);
-                rect_verts[ri+3u] = RV(x1, y0, fg_r, fg_g, fg_b, fg_a * alpha);
-                rect_verts[ri+4u] = RV(x1, y1, fg_r, fg_g, fg_b, fg_a * alpha);
-                rect_verts[ri+5u] = RV(x0, y1, fg_r, fg_g, fg_b, fg_a * alpha);
+                if (ri + 6u <= params.max_rect_vertices) {
+                    rect_verts[ri+0u] = RV(x0, y0, fg_r, fg_g, fg_b, fg_a * alpha);
+                    rect_verts[ri+1u] = RV(x1, y0, fg_r, fg_g, fg_b, fg_a * alpha);
+                    rect_verts[ri+2u] = RV(x0, y1, fg_r, fg_g, fg_b, fg_a * alpha);
+                    rect_verts[ri+3u] = RV(x1, y0, fg_r, fg_g, fg_b, fg_a * alpha);
+                    rect_verts[ri+4u] = RV(x1, y1, fg_r, fg_g, fg_b, fg_a * alpha);
+                    rect_verts[ri+5u] = RV(x0, y1, fg_r, fg_g, fg_b, fg_a * alpha);
+                }
             } else if (entry_type == 4u) {
                 // Box drawing line: centered lines connecting edges
                 let left_w  = (entry >> 4u)  & 0x03u;
@@ -499,12 +533,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                         let hy0 = cy - ht * 0.5;
                         let hy1 = cy + ht * 0.5;
                         let b = ri + si * 6u;
-                        rect_verts[b+0u] = RV(hx0, hy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+1u] = RV(hx1, hy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+2u] = RV(hx0, hy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+3u] = RV(hx1, hy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+4u] = RV(hx1, hy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+5u] = RV(hx0, hy1, fg_r, fg_g, fg_b, fg_a);
+                        if (b + 6u <= params.max_rect_vertices) {
+                            rect_verts[b+0u] = RV(hx0, hy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+1u] = RV(hx1, hy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+2u] = RV(hx0, hy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+3u] = RV(hx1, hy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+4u] = RV(hx1, hy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+5u] = RV(hx0, hy1, fg_r, fg_g, fg_b, fg_a);
+                        }
                         si += 1u;
                     } else {
                         let gap = 2.0;
@@ -513,20 +549,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                         let hy0b = cy + gap;
                         let hy1b = cy + gap + 1.0;
                         let b1 = ri + si * 6u;
-                        rect_verts[b1+0u] = RV(hx0, hy0a, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+1u] = RV(hx1, hy0a, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+2u] = RV(hx0, hy1a, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+3u] = RV(hx1, hy0a, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+4u] = RV(hx1, hy1a, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+5u] = RV(hx0, hy1a, fg_r, fg_g, fg_b, fg_a);
+                        if (b1 + 6u <= params.max_rect_vertices) {
+                            rect_verts[b1+0u] = RV(hx0, hy0a, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+1u] = RV(hx1, hy0a, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+2u] = RV(hx0, hy1a, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+3u] = RV(hx1, hy0a, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+4u] = RV(hx1, hy1a, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+5u] = RV(hx0, hy1a, fg_r, fg_g, fg_b, fg_a);
+                        }
                         si += 1u;
                         let b2 = ri + si * 6u;
-                        rect_verts[b2+0u] = RV(hx0, hy0b, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+1u] = RV(hx1, hy0b, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+2u] = RV(hx0, hy1b, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+3u] = RV(hx1, hy0b, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+4u] = RV(hx1, hy1b, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+5u] = RV(hx0, hy1b, fg_r, fg_g, fg_b, fg_a);
+                        if (b2 + 6u <= params.max_rect_vertices) {
+                            rect_verts[b2+0u] = RV(hx0, hy0b, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+1u] = RV(hx1, hy0b, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+2u] = RV(hx0, hy1b, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+3u] = RV(hx1, hy0b, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+4u] = RV(hx1, hy1b, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+5u] = RV(hx0, hy1b, fg_r, fg_g, fg_b, fg_a);
+                        }
                         si += 1u;
                     }
                 }
@@ -539,12 +579,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                         let vx0 = cx - vt * 0.5;
                         let vx1 = cx + vt * 0.5;
                         let b = ri + si * 6u;
-                        rect_verts[b+0u] = RV(vx0, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+1u] = RV(vx1, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+2u] = RV(vx0, vy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+3u] = RV(vx1, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+4u] = RV(vx1, vy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+5u] = RV(vx0, vy1, fg_r, fg_g, fg_b, fg_a);
+                        if (b + 6u <= params.max_rect_vertices) {
+                            rect_verts[b+0u] = RV(vx0, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+1u] = RV(vx1, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+2u] = RV(vx0, vy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+3u] = RV(vx1, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+4u] = RV(vx1, vy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+5u] = RV(vx0, vy1, fg_r, fg_g, fg_b, fg_a);
+                        }
                         si += 1u;
                     } else {
                         let gap = 2.0;
@@ -553,20 +595,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                         let vx0b = cx + gap;
                         let vx1b = cx + gap + 1.0;
                         let b1 = ri + si * 6u;
-                        rect_verts[b1+0u] = RV(vx0a, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+1u] = RV(vx1a, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+2u] = RV(vx0a, vy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+3u] = RV(vx1a, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+4u] = RV(vx1a, vy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b1+5u] = RV(vx0a, vy1, fg_r, fg_g, fg_b, fg_a);
+                        if (b1 + 6u <= params.max_rect_vertices) {
+                            rect_verts[b1+0u] = RV(vx0a, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+1u] = RV(vx1a, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+2u] = RV(vx0a, vy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+3u] = RV(vx1a, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+4u] = RV(vx1a, vy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b1+5u] = RV(vx0a, vy1, fg_r, fg_g, fg_b, fg_a);
+                        }
                         si += 1u;
                         let b2 = ri + si * 6u;
-                        rect_verts[b2+0u] = RV(vx0b, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+1u] = RV(vx1b, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+2u] = RV(vx0b, vy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+3u] = RV(vx1b, vy0, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+4u] = RV(vx1b, vy1, fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b2+5u] = RV(vx0b, vy1, fg_r, fg_g, fg_b, fg_a);
+                        if (b2 + 6u <= params.max_rect_vertices) {
+                            rect_verts[b2+0u] = RV(vx0b, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+1u] = RV(vx1b, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+2u] = RV(vx0b, vy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+3u] = RV(vx1b, vy0, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+4u] = RV(vx1b, vy1, fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b2+5u] = RV(vx0b, vy1, fg_r, fg_g, fg_b, fg_a);
+                        }
                         si += 1u;
                     }
                 }
@@ -603,12 +649,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     let dx0 = cx_dot - dot_w; let dx1 = cx_dot + dot_w;
                     let dy0 = cy_dot - dot_h; let dy1 = cy_dot + dot_h;
                     let b = ri + di * 6u;
-                    rect_verts[b+0u] = RV(dx0, dy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(dx1, dy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(dx0, dy1, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+3u] = RV(dx1, dy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+4u] = RV(dx1, dy1, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+5u] = RV(dx0, dy1, fg_r, fg_g, fg_b, fg_a);
+                    if (b + 6u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(dx0, dy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(dx1, dy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(dx0, dy1, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+3u] = RV(dx1, dy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+4u] = RV(dx1, dy1, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+5u] = RV(dx0, dy1, fg_r, fg_g, fg_b, fg_a);
+                    }
                     di += 1u;
                 }
             } else if (entry_type == 6u) {
@@ -635,12 +683,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     let sy0 = base_y + f32(row) * th;
                     let sy1 = sy0 + th;
                     let b = ri + ci * 6u;
-                    rect_verts[b+0u] = RV(sx0, sy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(sx1, sy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(sx0, sy1, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+3u] = RV(sx1, sy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+4u] = RV(sx1, sy1, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+5u] = RV(sx0, sy1, fg_r, fg_g, fg_b, fg_a);
+                    if (b + 6u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(sx0, sy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(sx1, sy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(sx0, sy1, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+3u] = RV(sx1, sy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+4u] = RV(sx1, sy1, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+5u] = RV(sx0, sy1, fg_r, fg_g, fg_b, fg_a);
+                    }
                     ci += 1u;
                 }
             } else if (entry_type == 7u) {
@@ -667,12 +717,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     let oy0 = base_y + f32(row) * qh;
                     let oy1 = oy0 + qh;
                     let b = ri + ci * 6u;
-                    rect_verts[b+0u] = RV(ox0, oy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(ox1, oy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(ox0, oy1, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+3u] = RV(ox1, oy0, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+4u] = RV(ox1, oy1, fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+5u] = RV(ox0, oy1, fg_r, fg_g, fg_b, fg_a);
+                    if (b + 6u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(ox0, oy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(ox1, oy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(ox0, oy1, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+3u] = RV(ox1, oy0, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+4u] = RV(ox1, oy1, fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+5u] = RV(ox0, oy1, fg_r, fg_g, fg_b, fg_a);
+                    }
                     ci += 1u;
                 }
             } else if (entry_type == 8u) {
@@ -693,49 +745,57 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     let e0 = tri_aa_d0(left, top, right, mid_y, left, bot, left, top, right, mid_y);
                     let e1 = tri_aa_d0(left, top, right, mid_y, left, bot, right, mid_y, left, bot);
                     let ri = atomicAdd(&counters[4], 3u);
-                    rect_verts[ri+0u] = RV_AA(left,  top,   fg_r, fg_g, fg_b, fg_a, e0.x, e1.x);
-                    rect_verts[ri+1u] = RV_AA(right, mid_y, fg_r, fg_g, fg_b, fg_a, e0.y, e1.y);
-                    rect_verts[ri+2u] = RV_AA(left,  bot,   fg_r, fg_g, fg_b, fg_a, e0.z, e1.z);
+                    if (ri + 3u <= params.max_rect_vertices) {
+                        rect_verts[ri+0u] = RV_AA(left,  top,   fg_r, fg_g, fg_b, fg_a, e0.x, e1.x);
+                        rect_verts[ri+1u] = RV_AA(right, mid_y, fg_r, fg_g, fg_b, fg_a, e0.y, e1.y);
+                        rect_verts[ri+2u] = RV_AA(left,  bot,   fg_r, fg_g, fg_b, fg_a, e0.z, e1.z);
+                    }
                 } else if (shape_id == 1u) {
                     // E0B1: Right thin chevron — two thin triangles
                     let t = 1.5;
                     let ri = atomicAdd(&counters[4], 6u);
-                    // Top line: (left,top)→(right,mid_y)→(left,top+t)
-                    let te0 = tri_aa_d0(left, top, right, mid_y, left, top+t, left, top, right, mid_y);
-                    let te1 = tri_aa_d0(left, top, right, mid_y, left, top+t, left, top+t, right, mid_y);
-                    rect_verts[ri+0u] = RV_AA(left,  top,     fg_r, fg_g, fg_b, fg_a, te0.x, te1.x);
-                    rect_verts[ri+1u] = RV_AA(right, mid_y,   fg_r, fg_g, fg_b, fg_a, te0.y, te1.y);
-                    rect_verts[ri+2u] = RV_AA(left,  top + t, fg_r, fg_g, fg_b, fg_a, te0.z, te1.z);
-                    // Bottom line: (left,bot)→(right,mid_y)→(left,bot-t)
-                    let be0 = tri_aa_d0(left, bot, right, mid_y, left, bot-t, left, bot, right, mid_y);
-                    let be1 = tri_aa_d0(left, bot, right, mid_y, left, bot-t, left, bot-t, right, mid_y);
-                    rect_verts[ri+3u] = RV_AA(left,  bot,     fg_r, fg_g, fg_b, fg_a, be0.x, be1.x);
-                    rect_verts[ri+4u] = RV_AA(right, mid_y,   fg_r, fg_g, fg_b, fg_a, be0.y, be1.y);
-                    rect_verts[ri+5u] = RV_AA(left,  bot - t, fg_r, fg_g, fg_b, fg_a, be0.z, be1.z);
+                    if (ri + 6u <= params.max_rect_vertices) {
+                        // Top line: (left,top)→(right,mid_y)→(left,top+t)
+                        let te0 = tri_aa_d0(left, top, right, mid_y, left, top+t, left, top, right, mid_y);
+                        let te1 = tri_aa_d0(left, top, right, mid_y, left, top+t, left, top+t, right, mid_y);
+                        rect_verts[ri+0u] = RV_AA(left,  top,     fg_r, fg_g, fg_b, fg_a, te0.x, te1.x);
+                        rect_verts[ri+1u] = RV_AA(right, mid_y,   fg_r, fg_g, fg_b, fg_a, te0.y, te1.y);
+                        rect_verts[ri+2u] = RV_AA(left,  top + t, fg_r, fg_g, fg_b, fg_a, te0.z, te1.z);
+                        // Bottom line: (left,bot)→(right,mid_y)→(left,bot-t)
+                        let be0 = tri_aa_d0(left, bot, right, mid_y, left, bot-t, left, bot, right, mid_y);
+                        let be1 = tri_aa_d0(left, bot, right, mid_y, left, bot-t, left, bot-t, right, mid_y);
+                        rect_verts[ri+3u] = RV_AA(left,  bot,     fg_r, fg_g, fg_b, fg_a, be0.x, be1.x);
+                        rect_verts[ri+4u] = RV_AA(right, mid_y,   fg_r, fg_g, fg_b, fg_a, be0.y, be1.y);
+                        rect_verts[ri+5u] = RV_AA(left,  bot - t, fg_r, fg_g, fg_b, fg_a, be0.z, be1.z);
+                    }
                 } else if (shape_id == 2u) {
                     // E0B2: Left solid triangle: (right,top)→(right,bot)→(left,mid_y)
                     let e0 = tri_aa_d0(right, top, right, bot, left, mid_y, right, top, left, mid_y);
                     let e1 = tri_aa_d0(right, top, right, bot, left, mid_y, left, mid_y, right, bot);
                     let ri = atomicAdd(&counters[4], 3u);
-                    rect_verts[ri+0u] = RV_AA(right, top,   fg_r, fg_g, fg_b, fg_a, e0.x, e1.x);
-                    rect_verts[ri+1u] = RV_AA(right, bot,   fg_r, fg_g, fg_b, fg_a, e0.y, e1.y);
-                    rect_verts[ri+2u] = RV_AA(left,  mid_y, fg_r, fg_g, fg_b, fg_a, e0.z, e1.z);
+                    if (ri + 3u <= params.max_rect_vertices) {
+                        rect_verts[ri+0u] = RV_AA(right, top,   fg_r, fg_g, fg_b, fg_a, e0.x, e1.x);
+                        rect_verts[ri+1u] = RV_AA(right, bot,   fg_r, fg_g, fg_b, fg_a, e0.y, e1.y);
+                        rect_verts[ri+2u] = RV_AA(left,  mid_y, fg_r, fg_g, fg_b, fg_a, e0.z, e1.z);
+                    }
                 } else if (shape_id == 3u) {
                     // E0B3: Left thin chevron
                     let t = 1.5;
                     let ri = atomicAdd(&counters[4], 6u);
-                    // Top line: (right,top)→(left,mid_y)→(right,top+t)
-                    let te0 = tri_aa_d0(right, top, left, mid_y, right, top+t, right, top, left, mid_y);
-                    let te1 = tri_aa_d0(right, top, left, mid_y, right, top+t, right, top+t, left, mid_y);
-                    rect_verts[ri+0u] = RV_AA(right, top,     fg_r, fg_g, fg_b, fg_a, te0.x, te1.x);
-                    rect_verts[ri+1u] = RV_AA(left,  mid_y,   fg_r, fg_g, fg_b, fg_a, te0.y, te1.y);
-                    rect_verts[ri+2u] = RV_AA(right, top + t, fg_r, fg_g, fg_b, fg_a, te0.z, te1.z);
-                    // Bottom line: (right,bot)→(left,mid_y)→(right,bot-t)
-                    let be0 = tri_aa_d0(right, bot, left, mid_y, right, bot-t, right, bot, left, mid_y);
-                    let be1 = tri_aa_d0(right, bot, left, mid_y, right, bot-t, right, bot-t, left, mid_y);
-                    rect_verts[ri+3u] = RV_AA(right, bot,     fg_r, fg_g, fg_b, fg_a, be0.x, be1.x);
-                    rect_verts[ri+4u] = RV_AA(left,  mid_y,   fg_r, fg_g, fg_b, fg_a, be0.y, be1.y);
-                    rect_verts[ri+5u] = RV_AA(right, bot - t, fg_r, fg_g, fg_b, fg_a, be0.z, be1.z);
+                    if (ri + 6u <= params.max_rect_vertices) {
+                        // Top line: (right,top)→(left,mid_y)→(right,top+t)
+                        let te0 = tri_aa_d0(right, top, left, mid_y, right, top+t, right, top, left, mid_y);
+                        let te1 = tri_aa_d0(right, top, left, mid_y, right, top+t, right, top+t, left, mid_y);
+                        rect_verts[ri+0u] = RV_AA(right, top,     fg_r, fg_g, fg_b, fg_a, te0.x, te1.x);
+                        rect_verts[ri+1u] = RV_AA(left,  mid_y,   fg_r, fg_g, fg_b, fg_a, te0.y, te1.y);
+                        rect_verts[ri+2u] = RV_AA(right, top + t, fg_r, fg_g, fg_b, fg_a, te0.z, te1.z);
+                        // Bottom line: (right,bot)→(left,mid_y)→(right,bot-t)
+                        let be0 = tri_aa_d0(right, bot, left, mid_y, right, bot-t, right, bot, left, mid_y);
+                        let be1 = tri_aa_d0(right, bot, left, mid_y, right, bot-t, right, bot-t, left, mid_y);
+                        rect_verts[ri+3u] = RV_AA(right, bot,     fg_r, fg_g, fg_b, fg_a, be0.x, be1.x);
+                        rect_verts[ri+4u] = RV_AA(left,  mid_y,   fg_r, fg_g, fg_b, fg_a, be0.y, be1.y);
+                        rect_verts[ri+5u] = RV_AA(right, bot - t, fg_r, fg_g, fg_b, fg_a, be0.z, be1.z);
+                    }
                 } else if (shape_id == 5u) {
                     // E0B5: Right thin semi-circle (tessellated arc)
                     let segs = 16u;
@@ -748,9 +808,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                         let a0 = -1.5707963 + f32(s) * 3.1415927 / f32(segs);
                         let a1 = -1.5707963 + f32(s + 1u) * 3.1415927 / f32(segs);
                         let b = ri + s * 3u;
-                        rect_verts[b+0u] = RV(cx_arc + rx * cos(a0), cy_arc + ry * sin(a0), fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+1u] = RV(cx_arc + rx * cos(a1), cy_arc + ry * sin(a1), fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+2u] = RV(cx_arc, cy_arc, fg_r, fg_g, fg_b, fg_a);
+                        if (b + 3u <= params.max_rect_vertices) {
+                            rect_verts[b+0u] = RV(cx_arc + rx * cos(a0), cy_arc + ry * sin(a0), fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+1u] = RV(cx_arc + rx * cos(a1), cy_arc + ry * sin(a1), fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+2u] = RV(cx_arc, cy_arc, fg_r, fg_g, fg_b, fg_a);
+                        }
                     }
                 } else if (shape_id == 7u) {
                     // E0B7: Left thin semi-circle (tessellated arc)
@@ -764,102 +826,120 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                         let a0 = 1.5707963 + f32(s) * 3.1415927 / f32(segs);
                         let a1 = 1.5707963 + f32(s + 1u) * 3.1415927 / f32(segs);
                         let b = ri + s * 3u;
-                        rect_verts[b+0u] = RV(cx_arc + rx * cos(a0), cy_arc + ry * sin(a0), fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+1u] = RV(cx_arc + rx * cos(a1), cy_arc + ry * sin(a1), fg_r, fg_g, fg_b, fg_a);
-                        rect_verts[b+2u] = RV(cx_arc, cy_arc, fg_r, fg_g, fg_b, fg_a);
+                        if (b + 3u <= params.max_rect_vertices) {
+                            rect_verts[b+0u] = RV(cx_arc + rx * cos(a0), cy_arc + ry * sin(a0), fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+1u] = RV(cx_arc + rx * cos(a1), cy_arc + ry * sin(a1), fg_r, fg_g, fg_b, fg_a);
+                            rect_verts[b+2u] = RV(cx_arc, cy_arc, fg_r, fg_g, fg_b, fg_a);
+                        }
                     }
                 } else if (shape_id == 8u) {
                     // E0B8: Lower-left triangle ◣ (left,top)→(left,bot)→(right,bot)
                     let e0 = tri_aa_d0(left, top, left, bot, right, bot, left, top, right, bot);
                     let ri = atomicAdd(&counters[4], 3u);
-                    rect_verts[ri+0u] = RV_AA(left,  top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
-                    rect_verts[ri+1u] = RV_AA(left,  bot, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
-                    rect_verts[ri+2u] = RV_AA(right, bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    if (ri + 3u <= params.max_rect_vertices) {
+                        rect_verts[ri+0u] = RV_AA(left,  top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
+                        rect_verts[ri+1u] = RV_AA(left,  bot, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
+                        rect_verts[ri+2u] = RV_AA(right, bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    }
                 } else if (shape_id == 9u) {
                     // E0B9: Thin backslash diagonal
                     let t = 1.5;
                     let ri = atomicAdd(&counters[4], 6u);
-                    // Triangle 1: (left,top)→(left+t,top)→(right,bot)
-                    let t1e0 = tri_aa_d0(left, top, left+t, top, right, bot, left, top, right, bot);
-                    let t1e1 = tri_aa_d0(left, top, left+t, top, right, bot, left+t, top, right, bot);
-                    rect_verts[ri+0u] = RV_AA(left,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
-                    rect_verts[ri+1u] = RV_AA(left+t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
-                    rect_verts[ri+2u] = RV_AA(right,  bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
-                    // Triangle 2: (left+t,top)→(right,bot-t)→(right,bot)
-                    let t2e0 = tri_aa_d0(left+t, top, right, bot-t, right, bot, left+t, top, right, bot-t);
-                    let t2e1 = tri_aa_d0(left+t, top, right, bot-t, right, bot, right, bot, left, top);
-                    rect_verts[ri+3u] = RV_AA(left+t, top,   fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
-                    rect_verts[ri+4u] = RV_AA(right,  bot-t, fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
-                    rect_verts[ri+5u] = RV_AA(right,  bot,   fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    if (ri + 6u <= params.max_rect_vertices) {
+                        // Triangle 1: (left,top)→(left+t,top)→(right,bot)
+                        let t1e0 = tri_aa_d0(left, top, left+t, top, right, bot, left, top, right, bot);
+                        let t1e1 = tri_aa_d0(left, top, left+t, top, right, bot, left+t, top, right, bot);
+                        rect_verts[ri+0u] = RV_AA(left,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
+                        rect_verts[ri+1u] = RV_AA(left+t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
+                        rect_verts[ri+2u] = RV_AA(right,  bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
+                        // Triangle 2: (left+t,top)→(right,bot-t)→(right,bot)
+                        let t2e0 = tri_aa_d0(left+t, top, right, bot-t, right, bot, left+t, top, right, bot-t);
+                        let t2e1 = tri_aa_d0(left+t, top, right, bot-t, right, bot, right, bot, left, top);
+                        rect_verts[ri+3u] = RV_AA(left+t, top,   fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
+                        rect_verts[ri+4u] = RV_AA(right,  bot-t, fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
+                        rect_verts[ri+5u] = RV_AA(right,  bot,   fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    }
                 } else if (shape_id == 10u) {
                     // E0BA: Lower-right triangle ◢ (right,top)→(left,bot)→(right,bot)
                     let e0 = tri_aa_d0(right, top, left, bot, right, bot, right, top, left, bot);
                     let ri = atomicAdd(&counters[4], 3u);
-                    rect_verts[ri+0u] = RV_AA(right, top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
-                    rect_verts[ri+1u] = RV_AA(left,  bot, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
-                    rect_verts[ri+2u] = RV_AA(right, bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    if (ri + 3u <= params.max_rect_vertices) {
+                        rect_verts[ri+0u] = RV_AA(right, top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
+                        rect_verts[ri+1u] = RV_AA(left,  bot, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
+                        rect_verts[ri+2u] = RV_AA(right, bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    }
                 } else if (shape_id == 11u) {
                     // E0BB: Thin forward slash diagonal
                     let t = 1.5;
                     let ri = atomicAdd(&counters[4], 6u);
-                    // Triangle 1: (right,top)→(right-t,top)→(left,bot)
-                    let t1e0 = tri_aa_d0(right, top, right-t, top, left, bot, right, top, left, bot);
-                    let t1e1 = tri_aa_d0(right, top, right-t, top, left, bot, right-t, top, left, bot);
-                    rect_verts[ri+0u] = RV_AA(right,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
-                    rect_verts[ri+1u] = RV_AA(right-t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
-                    rect_verts[ri+2u] = RV_AA(left,    bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
-                    // Triangle 2: (right-t,top)→(left,bot-t)→(left,bot)
-                    let t2e0 = tri_aa_d0(right-t, top, left, bot-t, left, bot, right-t, top, left, bot-t);
-                    let t2e1 = tri_aa_d0(right-t, top, left, bot-t, left, bot, left, bot, right, top);
-                    rect_verts[ri+3u] = RV_AA(right-t, top,   fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
-                    rect_verts[ri+4u] = RV_AA(left,    bot-t, fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
-                    rect_verts[ri+5u] = RV_AA(left,    bot,   fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    if (ri + 6u <= params.max_rect_vertices) {
+                        // Triangle 1: (right,top)→(right-t,top)→(left,bot)
+                        let t1e0 = tri_aa_d0(right, top, right-t, top, left, bot, right, top, left, bot);
+                        let t1e1 = tri_aa_d0(right, top, right-t, top, left, bot, right-t, top, left, bot);
+                        rect_verts[ri+0u] = RV_AA(right,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
+                        rect_verts[ri+1u] = RV_AA(right-t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
+                        rect_verts[ri+2u] = RV_AA(left,    bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
+                        // Triangle 2: (right-t,top)→(left,bot-t)→(left,bot)
+                        let t2e0 = tri_aa_d0(right-t, top, left, bot-t, left, bot, right-t, top, left, bot-t);
+                        let t2e1 = tri_aa_d0(right-t, top, left, bot-t, left, bot, left, bot, right, top);
+                        rect_verts[ri+3u] = RV_AA(right-t, top,   fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
+                        rect_verts[ri+4u] = RV_AA(left,    bot-t, fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
+                        rect_verts[ri+5u] = RV_AA(left,    bot,   fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    }
                 } else if (shape_id == 12u) {
                     // E0BC: Upper-left triangle ◤ (left,top)→(right,top)→(left,bot)
                     let e0 = tri_aa_d0(left, top, right, top, left, bot, right, top, left, bot);
                     let ri = atomicAdd(&counters[4], 3u);
-                    rect_verts[ri+0u] = RV_AA(left,  top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
-                    rect_verts[ri+1u] = RV_AA(right, top, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
-                    rect_verts[ri+2u] = RV_AA(left,  bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    if (ri + 3u <= params.max_rect_vertices) {
+                        rect_verts[ri+0u] = RV_AA(left,  top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
+                        rect_verts[ri+1u] = RV_AA(right, top, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
+                        rect_verts[ri+2u] = RV_AA(left,  bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    }
                 } else if (shape_id == 13u) {
                     // E0BD: Thin forward slash (upper)
                     let t = 1.5;
                     let ri = atomicAdd(&counters[4], 6u);
-                    // Triangle 1: (right,top)→(right-t,top)→(left,bot)
-                    let t1e0 = tri_aa_d0(right, top, right-t, top, left, bot, right, top, left, bot);
-                    let t1e1 = tri_aa_d0(right, top, right-t, top, left, bot, right-t, top, left, bot);
-                    rect_verts[ri+0u] = RV_AA(right,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
-                    rect_verts[ri+1u] = RV_AA(right-t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
-                    rect_verts[ri+2u] = RV_AA(left,    bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
-                    // Triangle 2: (right-t,top)→(left+t,bot)→(left,bot)
-                    let t2e0 = tri_aa_d0(right-t, top, left+t, bot, left, bot, right-t, top, left+t, bot);
-                    let t2e1 = tri_aa_d0(right-t, top, left+t, bot, left, bot, left, bot, right, top);
-                    rect_verts[ri+3u] = RV_AA(right-t, top,   fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
-                    rect_verts[ri+4u] = RV_AA(left+t,  bot,   fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
-                    rect_verts[ri+5u] = RV_AA(left,    bot,   fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    if (ri + 6u <= params.max_rect_vertices) {
+                        // Triangle 1: (right,top)→(right-t,top)→(left,bot)
+                        let t1e0 = tri_aa_d0(right, top, right-t, top, left, bot, right, top, left, bot);
+                        let t1e1 = tri_aa_d0(right, top, right-t, top, left, bot, right-t, top, left, bot);
+                        rect_verts[ri+0u] = RV_AA(right,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
+                        rect_verts[ri+1u] = RV_AA(right-t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
+                        rect_verts[ri+2u] = RV_AA(left,    bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
+                        // Triangle 2: (right-t,top)→(left+t,bot)→(left,bot)
+                        let t2e0 = tri_aa_d0(right-t, top, left+t, bot, left, bot, right-t, top, left+t, bot);
+                        let t2e1 = tri_aa_d0(right-t, top, left+t, bot, left, bot, left, bot, right, top);
+                        rect_verts[ri+3u] = RV_AA(right-t, top,   fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
+                        rect_verts[ri+4u] = RV_AA(left+t,  bot,   fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
+                        rect_verts[ri+5u] = RV_AA(left,    bot,   fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    }
                 } else if (shape_id == 14u) {
                     // E0BE: Upper-right triangle ◥ (left,top)→(right,top)→(right,bot)
                     let e0 = tri_aa_d0(left, top, right, top, right, bot, left, top, right, bot);
                     let ri = atomicAdd(&counters[4], 3u);
-                    rect_verts[ri+0u] = RV_AA(left,  top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
-                    rect_verts[ri+1u] = RV_AA(right, top, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
-                    rect_verts[ri+2u] = RV_AA(right, bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    if (ri + 3u <= params.max_rect_vertices) {
+                        rect_verts[ri+0u] = RV_AA(left,  top, fg_r, fg_g, fg_b, fg_a, e0.x, NO_AA);
+                        rect_verts[ri+1u] = RV_AA(right, top, fg_r, fg_g, fg_b, fg_a, e0.y, NO_AA);
+                        rect_verts[ri+2u] = RV_AA(right, bot, fg_r, fg_g, fg_b, fg_a, e0.z, NO_AA);
+                    }
                 } else if (shape_id == 15u) {
                     // E0BF: Thin backslash (upper)
                     let t = 1.5;
                     let ri = atomicAdd(&counters[4], 6u);
-                    // Triangle 1: (left,top)→(left+t,top)→(right,bot)
-                    let t1e0 = tri_aa_d0(left, top, left+t, top, right, bot, left, top, right, bot);
-                    let t1e1 = tri_aa_d0(left, top, left+t, top, right, bot, left+t, top, right, bot);
-                    rect_verts[ri+0u] = RV_AA(left,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
-                    rect_verts[ri+1u] = RV_AA(left+t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
-                    rect_verts[ri+2u] = RV_AA(right,  bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
-                    // Triangle 2: (left+t,top)→(right-t,bot)→(right,bot)
-                    let t2e0 = tri_aa_d0(left+t, top, right-t, bot, right, bot, left+t, top, right-t, bot);
-                    let t2e1 = tri_aa_d0(left+t, top, right-t, bot, right, bot, right, bot, left, top);
-                    rect_verts[ri+3u] = RV_AA(left+t,  top, fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
-                    rect_verts[ri+4u] = RV_AA(right-t, bot, fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
-                    rect_verts[ri+5u] = RV_AA(right,   bot, fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    if (ri + 6u <= params.max_rect_vertices) {
+                        // Triangle 1: (left,top)→(left+t,top)→(right,bot)
+                        let t1e0 = tri_aa_d0(left, top, left+t, top, right, bot, left, top, right, bot);
+                        let t1e1 = tri_aa_d0(left, top, left+t, top, right, bot, left+t, top, right, bot);
+                        rect_verts[ri+0u] = RV_AA(left,   top, fg_r, fg_g, fg_b, fg_a, t1e0.x, t1e1.x);
+                        rect_verts[ri+1u] = RV_AA(left+t, top, fg_r, fg_g, fg_b, fg_a, t1e0.y, t1e1.y);
+                        rect_verts[ri+2u] = RV_AA(right,  bot, fg_r, fg_g, fg_b, fg_a, t1e0.z, t1e1.z);
+                        // Triangle 2: (left+t,top)→(right-t,bot)→(right,bot)
+                        let t2e0 = tri_aa_d0(left+t, top, right-t, bot, right, bot, left+t, top, right-t, bot);
+                        let t2e1 = tri_aa_d0(left+t, top, right-t, bot, right, bot, right, bot, left, top);
+                        rect_verts[ri+3u] = RV_AA(left+t,  top, fg_r, fg_g, fg_b, fg_a, t2e0.x, t2e1.x);
+                        rect_verts[ri+4u] = RV_AA(right-t, bot, fg_r, fg_g, fg_b, fg_a, t2e0.y, t2e1.y);
+                        rect_verts[ri+5u] = RV_AA(right,   bot, fg_r, fg_g, fg_b, fg_a, t2e0.z, t2e1.z);
+                    }
                 }
                 // E0C0-E0D4 (shape_id 16-36): not yet implemented
             } else if (entry_type == 9u) {
@@ -961,9 +1041,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 }
 
                 let ri = atomicAdd(&counters[4], 3u);
-                rect_verts[ri+0u] = RV_AA(v0x, v0y, fg_r, fg_g, fg_b, fg_a, dd0.x, dd1.x);
-                rect_verts[ri+1u] = RV_AA(v1x, v1y, fg_r, fg_g, fg_b, fg_a, dd0.y, dd1.y);
-                rect_verts[ri+2u] = RV_AA(v2x, v2y, fg_r, fg_g, fg_b, fg_a, dd0.z, dd1.z);
+                if (ri + 3u <= params.max_rect_vertices) {
+                    rect_verts[ri+0u] = RV_AA(v0x, v0y, fg_r, fg_g, fg_b, fg_a, dd0.x, dd1.x);
+                    rect_verts[ri+1u] = RV_AA(v1x, v1y, fg_r, fg_g, fg_b, fg_a, dd0.y, dd1.y);
+                    rect_verts[ri+2u] = RV_AA(v2x, v2y, fg_r, fg_g, fg_b, fg_a, dd0.z, dd1.z);
+                }
             } else if (entry_type == 10u) {
                 // Slug semi-circle: rendered via Slug/bezier pipeline
                 // TODO: emit text vertices with generated atlas data
@@ -983,9 +1065,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     let a0 = start_angle + f32(s) * 3.1415927 / f32(segs);
                     let a1 = start_angle + f32(s + 1u) * 3.1415927 / f32(segs);
                     let b = ri + s * 3u;
-                    rect_verts[b+0u] = RV(cx_arc + cw * sign * cos(a0), mid_y + ch * 0.5 * sin(a0), fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+1u] = RV(cx_arc + cw * sign * cos(a1), mid_y + ch * 0.5 * sin(a1), fg_r, fg_g, fg_b, fg_a);
-                    rect_verts[b+2u] = RV(cx_arc, mid_y, fg_r, fg_g, fg_b, fg_a);
+                    if (b + 3u <= params.max_rect_vertices) {
+                        rect_verts[b+0u] = RV(cx_arc + cw * sign * cos(a0), mid_y + ch * 0.5 * sin(a0), fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+1u] = RV(cx_arc + cw * sign * cos(a1), mid_y + ch * 0.5 * sin(a1), fg_r, fg_g, fg_b, fg_a);
+                        rect_verts[b+2u] = RV(cx_arc, mid_y, fg_r, fg_g, fg_b, fg_a);
+                    }
                 }
             }
             continue;
@@ -1041,12 +1125,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let st_t = 1.0; // strikethrough thickness
         let st_y = base_y + params.cell_height * 0.5; // vertical center
         let base_idx = atomicAdd(&counters[4], 6u);
-        rect_verts[base_idx + 0u] = RV(base_x, st_y, sr, sg, sb, sa);
-        rect_verts[base_idx + 1u] = RV(base_x + params.cell_width, st_y, sr, sg, sb, sa);
-        rect_verts[base_idx + 2u] = RV(base_x, st_y + st_t, sr, sg, sb, sa);
-        rect_verts[base_idx + 3u] = RV(base_x + params.cell_width, st_y, sr, sg, sb, sa);
-        rect_verts[base_idx + 4u] = RV(base_x + params.cell_width, st_y + st_t, sr, sg, sb, sa);
-        rect_verts[base_idx + 5u] = RV(base_x, st_y + st_t, sr, sg, sb, sa);
+        if (base_idx + 6u <= params.max_rect_vertices) {
+            rect_verts[base_idx + 0u] = RV(base_x, st_y, sr, sg, sb, sa);
+            rect_verts[base_idx + 1u] = RV(base_x + params.cell_width, st_y, sr, sg, sb, sa);
+            rect_verts[base_idx + 2u] = RV(base_x, st_y + st_t, sr, sg, sb, sa);
+            rect_verts[base_idx + 3u] = RV(base_x + params.cell_width, st_y, sr, sg, sb, sa);
+            rect_verts[base_idx + 4u] = RV(base_x + params.cell_width, st_y + st_t, sr, sg, sb, sa);
+            rect_verts[base_idx + 5u] = RV(base_x, st_y + st_t, sr, sg, sb, sa);
+        }
     }
 
     // Underline rendering
@@ -1073,30 +1159,34 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         if (ul_style == 1u) {
             // Straight underline
             let base_idx = atomicAdd(&counters[4], 6u);
-            rect_verts[base_idx + 0u] = RV(base_x, ul_y, ur, ug, ub, ua);
-            rect_verts[base_idx + 1u] = RV(base_x + params.cell_width, ul_y, ur, ug, ub, ua);
-            rect_verts[base_idx + 2u] = RV(base_x, ul_y + ul_t, ur, ug, ub, ua);
-            rect_verts[base_idx + 3u] = RV(base_x + params.cell_width, ul_y, ur, ug, ub, ua);
-            rect_verts[base_idx + 4u] = RV(base_x + params.cell_width, ul_y + ul_t, ur, ug, ub, ua);
-            rect_verts[base_idx + 5u] = RV(base_x, ul_y + ul_t, ur, ug, ub, ua);
+            if (base_idx + 6u <= params.max_rect_vertices) {
+                rect_verts[base_idx + 0u] = RV(base_x, ul_y, ur, ug, ub, ua);
+                rect_verts[base_idx + 1u] = RV(base_x + params.cell_width, ul_y, ur, ug, ub, ua);
+                rect_verts[base_idx + 2u] = RV(base_x, ul_y + ul_t, ur, ug, ub, ua);
+                rect_verts[base_idx + 3u] = RV(base_x + params.cell_width, ul_y, ur, ug, ub, ua);
+                rect_verts[base_idx + 4u] = RV(base_x + params.cell_width, ul_y + ul_t, ur, ug, ub, ua);
+                rect_verts[base_idx + 5u] = RV(base_x, ul_y + ul_t, ur, ug, ub, ua);
+            }
         } else if (ul_style == 2u) {
             // Double underline: two thin lines
             let gap = 2.0;
             let base_idx = atomicAdd(&counters[4], 12u);
-            // Top line
-            rect_verts[base_idx + 0u] = RV(base_x, ul_y - gap, ur, ug, ub, ua);
-            rect_verts[base_idx + 1u] = RV(base_x + params.cell_width, ul_y - gap, ur, ug, ub, ua);
-            rect_verts[base_idx + 2u] = RV(base_x, ul_y - gap + 1.0, ur, ug, ub, ua);
-            rect_verts[base_idx + 3u] = RV(base_x + params.cell_width, ul_y - gap, ur, ug, ub, ua);
-            rect_verts[base_idx + 4u] = RV(base_x + params.cell_width, ul_y - gap + 1.0, ur, ug, ub, ua);
-            rect_verts[base_idx + 5u] = RV(base_x, ul_y - gap + 1.0, ur, ug, ub, ua);
-            // Bottom line
-            rect_verts[base_idx + 6u] = RV(base_x, ul_y + 1.0, ur, ug, ub, ua);
-            rect_verts[base_idx + 7u] = RV(base_x + params.cell_width, ul_y + 1.0, ur, ug, ub, ua);
-            rect_verts[base_idx + 8u] = RV(base_x, ul_y + 2.0, ur, ug, ub, ua);
-            rect_verts[base_idx + 9u] = RV(base_x + params.cell_width, ul_y + 1.0, ur, ug, ub, ua);
-            rect_verts[base_idx + 10u] = RV(base_x + params.cell_width, ul_y + 2.0, ur, ug, ub, ua);
-            rect_verts[base_idx + 11u] = RV(base_x, ul_y + 2.0, ur, ug, ub, ua);
+            if (base_idx + 12u <= params.max_rect_vertices) {
+                // Top line
+                rect_verts[base_idx + 0u] = RV(base_x, ul_y - gap, ur, ug, ub, ua);
+                rect_verts[base_idx + 1u] = RV(base_x + params.cell_width, ul_y - gap, ur, ug, ub, ua);
+                rect_verts[base_idx + 2u] = RV(base_x, ul_y - gap + 1.0, ur, ug, ub, ua);
+                rect_verts[base_idx + 3u] = RV(base_x + params.cell_width, ul_y - gap, ur, ug, ub, ua);
+                rect_verts[base_idx + 4u] = RV(base_x + params.cell_width, ul_y - gap + 1.0, ur, ug, ub, ua);
+                rect_verts[base_idx + 5u] = RV(base_x, ul_y - gap + 1.0, ur, ug, ub, ua);
+                // Bottom line
+                rect_verts[base_idx + 6u] = RV(base_x, ul_y + 1.0, ur, ug, ub, ua);
+                rect_verts[base_idx + 7u] = RV(base_x + params.cell_width, ul_y + 1.0, ur, ug, ub, ua);
+                rect_verts[base_idx + 8u] = RV(base_x, ul_y + 2.0, ur, ug, ub, ua);
+                rect_verts[base_idx + 9u] = RV(base_x + params.cell_width, ul_y + 1.0, ur, ug, ub, ua);
+                rect_verts[base_idx + 10u] = RV(base_x + params.cell_width, ul_y + 2.0, ur, ug, ub, ua);
+                rect_verts[base_idx + 11u] = RV(base_x, ul_y + 2.0, ur, ug, ub, ua);
+            }
         } else if (ul_style == 3u) {
             // Curly underline: approximate with 4 small rects in a wave
             let segments = 4u;
@@ -1116,12 +1206,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     sy1 = ul_y + amplitude;
                 }
                 let si = base_idx + s * 6u;
-                rect_verts[si + 0u] = RV(sx0, sy0, ur, ug, ub, ua);
-                rect_verts[si + 1u] = RV(sx1, sy0, ur, ug, ub, ua);
-                rect_verts[si + 2u] = RV(sx0, sy1, ur, ug, ub, ua);
-                rect_verts[si + 3u] = RV(sx1, sy0, ur, ug, ub, ua);
-                rect_verts[si + 4u] = RV(sx1, sy1, ur, ug, ub, ua);
-                rect_verts[si + 5u] = RV(sx0, sy1, ur, ug, ub, ua);
+                if (si + 6u <= params.max_rect_vertices) {
+                    rect_verts[si + 0u] = RV(sx0, sy0, ur, ug, ub, ua);
+                    rect_verts[si + 1u] = RV(sx1, sy0, ur, ug, ub, ua);
+                    rect_verts[si + 2u] = RV(sx0, sy1, ur, ug, ub, ua);
+                    rect_verts[si + 3u] = RV(sx1, sy0, ur, ug, ub, ua);
+                    rect_verts[si + 4u] = RV(sx1, sy1, ur, ug, ub, ua);
+                    rect_verts[si + 5u] = RV(sx0, sy1, ur, ug, ub, ua);
+                }
             }
         } else {
             // Dotted (style 4): dashed segments
@@ -1132,12 +1224,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 let sx0 = base_x + f32(s * 2u) * seg_w;
                 let sx1 = sx0 + seg_w;
                 let si = base_idx + s * 6u;
-                rect_verts[si + 0u] = RV(sx0, ul_y, ur, ug, ub, ua);
-                rect_verts[si + 1u] = RV(sx1, ul_y, ur, ug, ub, ua);
-                rect_verts[si + 2u] = RV(sx0, ul_y + ul_t, ur, ug, ub, ua);
-                rect_verts[si + 3u] = RV(sx1, ul_y, ur, ug, ub, ua);
-                rect_verts[si + 4u] = RV(sx1, ul_y + ul_t, ur, ug, ub, ua);
-                rect_verts[si + 5u] = RV(sx0, ul_y + ul_t, ur, ug, ub, ua);
+                if (si + 6u <= params.max_rect_vertices) {
+                    rect_verts[si + 0u] = RV(sx0, ul_y, ur, ug, ub, ua);
+                    rect_verts[si + 1u] = RV(sx1, ul_y, ur, ug, ub, ua);
+                    rect_verts[si + 2u] = RV(sx0, ul_y + ul_t, ur, ug, ub, ua);
+                    rect_verts[si + 3u] = RV(sx1, ul_y, ur, ug, ub, ua);
+                    rect_verts[si + 4u] = RV(sx1, ul_y + ul_t, ur, ug, ub, ua);
+                    rect_verts[si + 5u] = RV(sx0, ul_y + ul_t, ur, ug, ub, ua);
+                }
             }
         }
     }

@@ -768,6 +768,25 @@ void RenderEngine::renderTabBar()
     ComputeState *cs      = renderer_.computePool().acquire(static_cast<uint32_t>(cols));
     uint32_t tbGlyphCount = std::max(static_cast<uint32_t>(tabBarGlyphs.size()), 1u);
     renderer_.computePool().ensureGlyphCapacity(cs, tbGlyphCount);
+
+    // Tab bar emits no cursor / selection / underline / strikethrough — only
+    // bg quads + procedural glyphs. The +48 slack covers the unused cursor /
+    // selection budget at no real cost.
+    uint32_t tbBgEmit = 0;
+    for (const ResolvedCell &rc : cells) {
+        if (rc.bg_color != 0 && rc.bg_inflate == 0) {
+            ++tbBgEmit;
+        }
+    }
+    uint32_t tbProcCount = 0;
+    for (const GlyphEntry &ge : tabBarGlyphs) {
+        if (ge.atlas_offset & 0x80000000u) {
+            ++tbProcCount;
+        }
+    }
+    uint32_t tbRectVerts = tbBgEmit * 6 + tbProcCount * 48 + 48;
+    renderer_.computePool().ensureRectCapacity(cs, tbRectVerts, 6u);
+
     renderer_.uploadResolvedCells(queue_, cs, cells.data(), static_cast<uint32_t>(cols));
     if (!tabBarGlyphs.empty()) {
         renderer_.uploadGlyphs(queue_, cs, tabBarGlyphs.data(), static_cast<uint32_t>(tabBarGlyphs.size()));
@@ -782,9 +801,11 @@ void RenderEngine::renderTabBar()
     params.viewport_h            = static_cast<float>(tbRect.h);
     params.font_ascender         = font->ascender * scale;
     params.font_size             = frameState_.tabBarFontSize;
-    params.pane_origin_x         = 0.0f;
-    params.pane_origin_y         = 0.0f;
-    params.max_text_vertices     = cs->maxTextVertices;
+    params.pane_origin_x              = 0.0f;
+    params.pane_origin_y              = 0.0f;
+    params.max_text_vertices          = cs->maxTextVertices;
+    params.max_rect_vertices          = cs->maxRectVertices;
+    params.max_inflated_rect_vertices = cs->maxInflatedRectVertices;
 
     PooledTexture *newTexture = texturePool_.acquire(
         static_cast<uint32_t>(tbRect.w),
@@ -1672,6 +1693,42 @@ void RenderEngine::renderFrame()
             uint32_t glyphCount = std::max(rs.totalGlyphs, 1u);
             renderer_.computePool().ensureGlyphCapacity(cs, glyphCount);
 
+            // Count what the compute shader will actually emit to rect_verts
+            // and inflated_rect_verts. Bounds are tight upper limits — see
+            // terminal_compute.wgsl emission sites. Worst per-cell rect cost
+            // tops out at: bg(6) + strike(6) + underline curly(24); each
+            // procedural glyph adds up to 48 (braille / octant / arc).
+            uint32_t bgEmitCount   = 0;
+            uint32_t inflatedCount = 0;
+            uint32_t strikeCount   = 0;
+            uint32_t ulCount       = 0;
+            for (uint32_t i = 0; i < totalCells; ++i) {
+                const ResolvedCell &rc = rs.resolvedCells[i];
+                if (rc.bg_color != 0) {
+                    if (rc.bg_inflate == 0) {
+                        ++bgEmitCount;
+                    } else {
+                        ++inflatedCount;
+                    }
+                }
+                if (rc.underline_info & 0x08u) {
+                    ++strikeCount;
+                }
+                if (rc.underline_info & 0x07u) {
+                    ++ulCount;
+                }
+            }
+            uint32_t procGlyphCount = 0;
+            for (const GlyphEntry &ge : rs.glyphBuffer) {
+                if (ge.atlas_offset & 0x80000000u) {
+                    ++procGlyphCount;
+                }
+            }
+            uint32_t neededRectVerts =
+                bgEmitCount * 6 + strikeCount * 6 + ulCount * 24 + procGlyphCount * 48 + 48;
+            uint32_t neededInflatedVerts = std::max(inflatedCount * 6, 6u);
+            renderer_.computePool().ensureRectCapacity(cs, neededRectVerts, neededInflatedVerts);
+
             renderer_.uploadResolvedCells(queue_, cs, rs.resolvedCells.data(), totalCells);
             renderer_.uploadGlyphs(queue_, cs, rs.glyphBuffer.data(), rs.totalGlyphs);
 
@@ -1821,9 +1878,11 @@ void RenderEngine::renderFrame()
             params.viewport_h            = static_cast<float>(paneRect.h);
             params.font_ascender         = font->ascender * scale;
             params.font_size             = frameState_.fontSize;
-            params.pane_origin_x         = target.pixelOriginX;
-            params.pane_origin_y         = target.pixelOriginY;
-            params.max_text_vertices     = cs->maxTextVertices;
+            params.pane_origin_x              = target.pixelOriginX;
+            params.pane_origin_y              = target.pixelOriginY;
+            params.max_text_vertices          = cs->maxTextVertices;
+            params.max_rect_vertices          = cs->maxRectVertices;
+            params.max_inflated_rect_vertices = cs->maxInflatedRectVertices;
 
             auto packCursorColor = [&](const TerminalEmulator::DefaultColors &dc, bool applyBlink)
             {

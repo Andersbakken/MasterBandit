@@ -28,6 +28,13 @@ public:
     // Grows buffers and rebuilds bind group if needed. Buffers only grow, never shrink.
     void ensureGlyphCapacity(ComputeState *state, uint32_t glyphCount);
 
+    // Ensure rect_verts / inflated_rect_verts buffers fit the requested counts.
+    // Counts are upper bounds derived from CPU-side counters of bg/strike/underline/
+    // procedural-glyph cells; the shader bounds-checks every write against the
+    // resulting maxRectVertices / maxInflatedRectVertices fields, so a too-small
+    // bound here drops rects rather than corrupting GPU memory.
+    void ensureRectCapacity(ComputeState *state, uint32_t rectVerts, uint32_t inflatedVerts);
+
     // Destroy all states. Call before the WebGPU device is released.
     void clear();
 

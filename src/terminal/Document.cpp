@@ -59,10 +59,18 @@ int Document::screenRowToPhysical(int screenRow) const
 
 void Document::clearPhysicalRow(int physical)
 {
-    // Cell is trivially copyable; memset is well-defined to value-initialize
-    // the contiguous bytes and avoids per-cell branch overhead in the
-    // scrolling hot path (one full-region scrollUp per LF).
-    std::memset(rowPtr(physical), 0, static_cast<size_t>(cols_) * sizeof(Cell));
+    Cell *r = rowPtr(physical);
+    if (eraseBlankIsTrivial()) {
+        // Cell is trivially copyable; memset is well-defined to value-initialize
+        // the contiguous bytes and avoids per-cell branch overhead in the
+        // scrolling hot path (one full-region scrollUp per LF).
+        std::memset(r, 0, static_cast<size_t>(cols_) * sizeof(Cell));
+    } else {
+        // BCE: fill with current SGR bg.
+        for (int c = 0; c < cols_; ++c) {
+            r[c] = eraseBlank_;
+        }
+    }
     if (!ringExtras_[physical].empty()) {
         ringExtras_[physical].clear();
     }
@@ -331,7 +339,7 @@ void Document::clearRow(int screenRow)
     int phys = screenRowToPhysical(screenRow);
     Cell *r  = rowPtr(phys);
     for (int c = 0; c < cols_; ++c) {
-        r[c] = Cell {};
+        r[c] = eraseBlank_;
     }
     ringExtras_[phys].clear();
     rowFlags_[phys] = 0;
@@ -348,7 +356,7 @@ void Document::clearRow(int screenRow, int startCol, int endCol)
     int phys = screenRowToPhysical(screenRow);
     Cell *r  = rowPtr(phys);
     for (int c = startCol; c < endCol; ++c) {
-        r[c] = Cell {};
+        r[c] = eraseBlank_;
     }
     if (startCol == 0 && endCol == cols_) {
         ringExtras_[phys].clear();
@@ -490,7 +498,7 @@ void Document::deleteChars(int screenRow, int col, int count)
         std::memmove(&r[col], &r[col + count], remaining * sizeof(Cell));
     }
     for (int c = cols_ - count; c < cols_; ++c) {
-        r[c] = Cell {};
+        r[c] = eraseBlank_;
     }
     int phys = screenRowToPhysical(screenRow);
     auto &ex = ringExtras_[phys];
@@ -520,7 +528,7 @@ void Document::insertChars(int screenRow, int col, int count)
         std::memmove(&r[col + count], &r[col], remaining * sizeof(Cell));
     }
     for (int c = col; c < col + count; ++c) {
-        r[c] = Cell {};
+        r[c] = eraseBlank_;
     }
     int phys = screenRowToPhysical(screenRow);
     auto &ex = ringExtras_[phys];

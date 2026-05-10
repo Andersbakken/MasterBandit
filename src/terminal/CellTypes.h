@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
@@ -219,6 +221,25 @@ struct Cell
 };
 
 static_assert(sizeof(Cell) == 12);
+
+// IGrid::eraseBlankIsTrivial() and the memset fast path in
+// Document::clearPhysicalRow assume that a default-constructed Cell is
+// bytewise-zero. If a future member gets a non-zero default initializer,
+// this assert fires and both sites must change in lockstep.
+static_assert(std::is_trivially_copyable_v<Cell>);
+static_assert(
+    []() constexpr {
+        Cell c {};
+        auto bytes = std::bit_cast<std::array<unsigned char, sizeof(Cell)>>(c);
+        for (auto b : bytes) {
+            if (b != 0) {
+                return false;
+            }
+        }
+        return true;
+    }(),
+    "Cell{} must be all-zero bytes — IGrid::eraseBlankIsTrivial() and the memset "
+    "fast path in Document::clearPhysicalRow rely on this invariant");
 
 struct CellExtra
 {

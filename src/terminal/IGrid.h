@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CellTypes.h"
+#include <cstring>
 
 class IGrid
 {
@@ -40,4 +41,29 @@ public:
     // is a no-op so grid implementations that don't track this metadata
     // (e.g. CellGrid) don't need to opt in.
     virtual void markRowHasWide(int row) { (void)row; }
+
+    // BCE (back-color erase). The emulator sets this to a Cell carrying the
+    // current SGR background after every SGR change; erase ops (clearRow,
+    // scrollUp/Down's revealed rows, deleteChars/insertChars's trailing fills)
+    // fill cells from this template instead of a default-constructed Cell.
+    // Default value is Cell{} (no bg) so callers that never call setEraseBlank
+    // get pre-BCE behavior.
+    void setEraseBlank(const Cell &c) { eraseBlank_ = c; }
+    const Cell &eraseBlank() const { return eraseBlank_; }
+
+protected:
+    Cell eraseBlank_ {};
+
+    // Hot path: when the erase blank is all-zeros, callers can use memset
+    // instead of per-cell assignment. True for the common default-bg case.
+    // Relies on Cell being trivially copyable with no implicit padding (the
+    // static_assert in CellTypes.h checks sizeof). If a future field gains a
+    // non-zero default initializer, this check stays correct but the memset
+    // fast path in Document::clearPhysicalRow would zero that field — revisit
+    // both sites together.
+    bool eraseBlankIsTrivial() const
+    {
+        const Cell zero {};
+        return std::memcmp(&eraseBlank_, &zero, sizeof(Cell)) == 0;
+    }
 };

@@ -54,36 +54,75 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
         return;
     }
 
+    // xterm modifier code: 1=none, +1 shift, +2 alt, +4 ctrl, +8 meta.
+    // CapsLock / NumLock are not encoded in legacy mode.
+    uint32_t modCode = 1;
+    if (event->modifiers & ShiftModifier) modCode += 1;
+    if (event->modifiers & AltModifier)   modCode += 2;
+    if (event->modifiers & CtrlModifier)  modCode += 4;
+    if (event->modifiers & MetaModifier)  modCode += 8;
+    const bool hasMods = (modCode != 1);
+
     std::string text = event->text;
     if (text.empty()) {
+        char buf[32];
+        // \E[1;<mods><letter> for arrow/Home/End/F1-F4 when modifiers held.
+        auto letterMod = [&](char trailer) -> std::string {
+            int n = snprintf(buf, sizeof(buf), "\x1b[1;%u%c", modCode, trailer);
+            return std::string(buf, n);
+        };
+        // \E[<num>[;<mods>]~ for tilde-form keys (PgUp/Dn/Ins/Del/F5+).
+        auto tildeForm = [&](int num) -> std::string {
+            int n = hasMods
+                ? snprintf(buf, sizeof(buf), "\x1b[%d;%u~", num, modCode)
+                : snprintf(buf, sizeof(buf), "\x1b[%d~", num);
+            return std::string(buf, n);
+        };
+
         switch (event->key) {
             case Key_Return:
             case Key_Enter: text = "\r"; break;
             case Key_Backspace: text = "\x7f"; break;
-            case Key_Tab: text = "\t"; break;
+            case Key_Tab:
+                // Shift-Tab → CBT; other mods fall through to plain tab.
+                text = (event->modifiers & ShiftModifier) ? "\x1b[Z" : "\t";
+                break;
             case Key_Escape: text = "\x1b"; break;
-            case Key_Delete: text = "\x1b[3~"; break;
-            case Key_Left: text = mState->cursorKeyMode ? "\x1bOD" : "\x1b[D"; break;
-            case Key_Right: text = mState->cursorKeyMode ? "\x1bOC" : "\x1b[C"; break;
-            case Key_Up: text = mState->cursorKeyMode ? "\x1bOA" : "\x1b[A"; break;
-            case Key_Down: text = mState->cursorKeyMode ? "\x1bOB" : "\x1b[B"; break;
-            case Key_Home: text = mState->cursorKeyMode ? "\x1bOH" : "\x1b[H"; break;
-            case Key_End: text = mState->cursorKeyMode ? "\x1bOF" : "\x1b[F"; break;
-            case Key_PageUp: text = "\x1b[5~"; break;
-            case Key_PageDown: text = "\x1b[6~"; break;
-            case Key_Insert: text = "\x1b[2~"; break;
-            case Key_F1: text = "\x1bOP"; break;
-            case Key_F2: text = "\x1bOQ"; break;
-            case Key_F3: text = "\x1bOR"; break;
-            case Key_F4: text = "\x1bOS"; break;
-            case Key_F5: text = "\x1b[15~"; break;
-            case Key_F6: text = "\x1b[17~"; break;
-            case Key_F7: text = "\x1b[18~"; break;
-            case Key_F8: text = "\x1b[19~"; break;
-            case Key_F9: text = "\x1b[20~"; break;
-            case Key_F10: text = "\x1b[21~"; break;
-            case Key_F11: text = "\x1b[23~"; break;
-            case Key_F12: text = "\x1b[24~"; break;
+            case Key_Delete: text = tildeForm(3); break;
+            case Key_Left:
+                text = hasMods ? letterMod('D') : (mState->cursorKeyMode ? "\x1bOD" : "\x1b[D");
+                break;
+            case Key_Right:
+                text = hasMods ? letterMod('C') : (mState->cursorKeyMode ? "\x1bOC" : "\x1b[C");
+                break;
+            case Key_Up:
+                text = hasMods ? letterMod('A') : (mState->cursorKeyMode ? "\x1bOA" : "\x1b[A");
+                break;
+            case Key_Down:
+                text = hasMods ? letterMod('B') : (mState->cursorKeyMode ? "\x1bOB" : "\x1b[B");
+                break;
+            case Key_Home:
+                text = hasMods ? letterMod('H') : (mState->cursorKeyMode ? "\x1bOH" : "\x1b[H");
+                break;
+            case Key_End:
+                text = hasMods ? letterMod('F') : (mState->cursorKeyMode ? "\x1bOF" : "\x1b[F");
+                break;
+            case Key_PageUp:   text = tildeForm(5); break;
+            case Key_PageDown: text = tildeForm(6); break;
+            case Key_Insert:   text = tildeForm(2); break;
+            // F1-F4: SS3 form when unmodified, CSI form when modifiers held.
+            case Key_F1: text = hasMods ? letterMod('P') : "\x1bOP"; break;
+            case Key_F2: text = hasMods ? letterMod('Q') : "\x1bOQ"; break;
+            case Key_F3: text = hasMods ? letterMod('R') : "\x1bOR"; break;
+            case Key_F4: text = hasMods ? letterMod('S') : "\x1bOS"; break;
+            case Key_F5:  text = tildeForm(15); break;
+            case Key_F6:  text = tildeForm(17); break;
+            case Key_F7:  text = tildeForm(18); break;
+            case Key_F8:  text = tildeForm(19); break;
+            case Key_F9:  text = tildeForm(20); break;
+            case Key_F10: text = tildeForm(21); break;
+            case Key_F11: text = tildeForm(23); break;
+            case Key_F12: text = tildeForm(24); break;
             default:
                 break;
         }

@@ -129,6 +129,7 @@ TerminalEmulator::TerminalEmulator(TerminalCallbacks callbacks)
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
     memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
     applyColorScheme(ColorScheme {}); // initialize from config defaults
+    pushEraseBlank();                 // BCE: seed grids with default-bg blank
 }
 
 TerminalEmulator::~TerminalEmulator()
@@ -1636,6 +1637,7 @@ void TerminalEmulator::applyEsc(char finalByte)
             notifyPointerShapeChanged();
             mDocument.markAllDirty();
             mAltGrid.markAllDirty();
+            pushEraseBlank(); // BCE: SGR is now default; following clears should hit memset fast path
             for (int r = 0; r < mDocument.rows(); ++r) {
                 mDocument.clearRow(r);
             }
@@ -2366,6 +2368,7 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                 for (int x = 0; x < mWidth; x += 8) {
                     mTabStops[x] = 1;
                 }
+                pushEraseBlank(); // SGR was reset; refresh BCE blank
             } else {
                 sLog().warn("Ignoring CSI p variant: \"{}\"", toPrintable(buf, len));
             }
@@ -2750,6 +2753,7 @@ void TerminalEmulator::onAction(const Action *action)
                     // Kitty: switch to alt screen's stack
                     mKittyFlags = (mKittyStackDepthAlt > 0) ? mKittyStackAlt[mKittyStackDepthAlt - 1] : 0;
                     notifyPointerShapeChanged(); // alt stack is now active
+                    pushEraseBlank();            // mState swapped; refresh blanks for alt-screen erase
                     for (int r = 0; r < mAltGrid.rows(); ++r) {
                         mAltGrid.clearRow(r);
                     }
@@ -2824,6 +2828,7 @@ void TerminalEmulator::onAction(const Action *action)
                     notifyPointerShapeChanged(); // main stack is active again
                     mDocument.markAllDirty();
                     clearSelection();
+                    pushEraseBlank(); // mState swapped back to main; refresh blanks
                     break;
                 case 1004: mState->focusReporting = false; break;
                 case 2004:

@@ -1134,6 +1134,14 @@ private:
     void processCSI(const char *buf, int len);
     void processSGR(const char *buf, int len);
 
+    // BCE: build a Cell that carries the active state's SGR background and
+    // push it to both grids so subsequent erase ops fill with that bg instead
+    // of default. fg / styles / inverse / semantic type are all reset on the
+    // erase blank — only bg propagates (matches xterm behavior). Cheap (two
+    // Cell assignments); call after any path that mutates currentAttrs or
+    // swaps mState (SGR, RIS, DECSTR, alt-screen entry/exit, init).
+    void pushEraseBlank();
+
     static const char *escapeSequenceName(EscapeSequence seq);
 
     enum CSISequence

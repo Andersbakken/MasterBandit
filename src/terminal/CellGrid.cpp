@@ -110,7 +110,7 @@ bool CellGrid::anyDirty() const
 void CellGrid::clearRowInternal(Row &r, int startCol, int endCol)
 {
     for (int c = startCol; c < endCol; ++c) {
-        r.cells[c] = Cell {};
+        r.cells[c] = eraseBlank_;
     }
 }
 
@@ -211,7 +211,7 @@ void CellGrid::deleteChars(int row, int col, int count)
         memmove(&cells[col], &cells[col + count], remaining * sizeof(Cell));
     }
     for (int c = cols_ - count; c < cols_; ++c) {
-        cells[c] = Cell {};
+        cells[c] = eraseBlank_;
     }
 
     if (r.extras && !r.extras->empty()) {
@@ -245,7 +245,7 @@ void CellGrid::insertChars(int row, int col, int count)
         memmove(&cells[col + count], &cells[col], remaining * sizeof(Cell));
     }
     for (int c = col; c < col + count; ++c) {
-        cells[c] = Cell {};
+        cells[c] = eraseBlank_;
     }
 
     if (r.extras && !r.extras->empty()) {

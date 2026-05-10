@@ -277,4 +277,17 @@ void TerminalEmulator::processSGR(const char *buf, int len)
                 break;
         }
     }
+    pushEraseBlank();
+}
+
+void TerminalEmulator::pushEraseBlank()
+{
+    Cell blank {};
+    const auto &sgr = mState->currentAttrs;
+    if (sgr.bgMode() == CellAttrs::RGB) {
+        blank.attrs.setBg(sgr.bgR(), sgr.bgG(), sgr.bgB());
+        blank.attrs.setBgMode(CellAttrs::RGB);
+    }
+    mDocument.setEraseBlank(blank);
+    mAltGrid.setEraseBlank(blank);
 }

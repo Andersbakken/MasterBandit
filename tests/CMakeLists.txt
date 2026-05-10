@@ -64,6 +64,7 @@ set(TEST_SOURCES
     # the platform OBJECT library (Dawn / Cocoa / DBus / etc.).
     ../src/platform/PlatformSpawn.cpp
     test_platform_spawn.cpp
+    test_shell_integration.cpp
 )
 
 if(APPLE)
@@ -108,6 +109,7 @@ target_compile_definitions(mb-tests PRIVATE
     # regression test — the standard subset above is too minimal to
     # exercise that path.
     MB_TEST_BUGGY_VS16_FONT="${MB_RESOURCES_ROOT}/fonts/test-buggy-vs16/buggy-vs16.ttf"
+    MB_TEST_SHELL_INTEGRATION_DIR="${MB_RESOURCES_ROOT}/shell-integration"
     MB_REF_DIR="${CMAKE_SOURCE_DIR}/tests/reference"
 )
 

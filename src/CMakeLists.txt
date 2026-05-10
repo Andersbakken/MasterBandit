@@ -147,5 +147,20 @@ endforeach()
 mb_copy_asset("${CMAKE_SOURCE_DIR}/3rdparty/harfbuzz/src/hb-gpu-vertex.wgsl"
               "${MB_RESOURCES_ROOT}/shaders/hb-gpu-vertex.wgsl")
 
+# Bundled shell-integration scripts (sourced at PTY spawn time via ZDOTDIR
+# hijack and similar). Files are enumerated explicitly because file(GLOB)
+# on most platforms skips leading-dot entries by default — and .zshenv etc.
+# are dotfiles by necessity (zsh only sources $ZDOTDIR/.zshenv).
+set(MB_SHELL_INTEGRATION_FILES
+    zsh/.zshenv
+    zsh/mb-integration.zsh
+)
+foreach(REL ${MB_SHELL_INTEGRATION_FILES})
+    mb_copy_asset(
+        "${CMAKE_SOURCE_DIR}/assets/shell-integration/${REL}"
+        "${MB_RESOURCES_ROOT}/shell-integration/${REL}"
+    )
+endforeach()
+
 add_custom_target(mb_assets ALL DEPENDS ${COPIED_ASSETS})
 add_dependencies(mb mb_assets)

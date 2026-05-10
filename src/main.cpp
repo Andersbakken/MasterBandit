@@ -1,6 +1,7 @@
 #include "CLIClient.h"
 #include "Config.h"
 #include "PlatformDawn.h"
+#include "Resources.h"
 #include "Terminfo.h"
 #include <cstdio>
 #include <cstring>
@@ -206,6 +207,8 @@ int main(int argc, char **argv)
         options.padding               = config.padding;
         options.cursor                = config.cursor;
         options.colors                = config.colors;
+        options.shellIntegration      = config.shell_integration;
+        options.shellIntegrationDir   = Resources::path("shell-integration").string();
     }
 
     char buf[1024];

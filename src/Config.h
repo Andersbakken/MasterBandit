@@ -226,6 +226,13 @@ struct Config
     // Confirm before close-pane / close-tab / quit. JS (default-ui.js) reads
     // this value and decides; unrecognized values are treated as "if_busy".
     std::string confirm_close         = "if_busy"; // "never" | "if_busy" | "always"
+    // Auto-source OSC 133 / OSC 7 / title-restore hooks for supported shells
+    // by injecting per-shell rc files at spawn time. "auto" enables it; "off"
+    // bypasses entirely (no env injection, no rc files sourced). Currently
+    // implemented for zsh; bash/fish are no-ops until those backends land.
+    // Per-feature opt-out lives in MB_SHELL_INTEGRATION (space-separated:
+    // "no-prompt-mark no-cwd no-title").
+    std::string shell_integration     = "auto"; // "auto" | "off"
     NotificationsConfig notifications;
 
     struct glaze
@@ -257,6 +264,7 @@ struct Config
             "key_sequence_timeout_ms", &T::key_sequence_timeout_ms,
             "color_scheme", &T::color_scheme,
             "confirm_close", &T::confirm_close,
+            "shell_integration", &T::shell_integration,
             "notifications", &T::notifications);
     };
 };

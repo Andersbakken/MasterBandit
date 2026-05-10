@@ -28,6 +28,12 @@ struct TerminalOptions
     PaddingConfig padding;
     CursorConfig cursor;
     ColorScheme colors;
+    std::string shellIntegration = "auto"; // "auto" | "off"
+    // Absolute path to the shell-integration asset root (contains zsh/.zshenv,
+    // future bash/, fish/, etc.). Set by main.cpp from Resources::path() so the
+    // terminal lib doesn't need to depend on resource resolution. Empty
+    // disables injection regardless of `shellIntegration` value.
+    std::string shellIntegrationDir;
 
     // Returns the tier1 capacity to pass to Document: INT_MAX when infinite.
     int resolvedScrollback() const

@@ -576,6 +576,60 @@ bool Terminal::init(const TerminalOptions &options)
         ioctl(slaveFD, TIOCSWINSZ, &ws);
     }
 
+    // Decide pre-fork whether to inject shell integration so the child branch
+    // stays simple (no stat / getenv chasing while the parent's heap may be
+    // partially in flux). For zsh: hijack ZDOTDIR so our .zshenv loads first,
+    // restores the user's real ZDOTDIR, then sources mb-integration.zsh which
+    // installs OSC 133 / OSC 7 hooks via add-zsh-hook.
+    std::string shellIntegrationZdotdir; // empty -> no injection
+    std::string shellIntegrationOrigZdotdir;
+    bool shellIntegrationHadOrigZdotdir = false;
+    if (mOptions.shellIntegration != "off"
+        && mOptions.command.empty()
+        && !mOptions.shellIntegrationDir.empty()
+        && !mOptions.shell.empty()) {
+        // Match on basename so /usr/local/bin/zsh and /bin/zsh both qualify.
+        const auto slash    = mOptions.shell.find_last_of('/');
+        const std::string b = (slash == std::string::npos)
+                                  ? mOptions.shell
+                                  : mOptions.shell.substr(slash + 1);
+        if (b == "zsh") {
+            // Skip on a fresh zsh install — none of the user rcfiles exist
+            // yet, so injecting ZDOTDIR would suppress zsh-newuser-install.
+            // Honor an existing ZDOTDIR override when checking (kitty/ghostty
+            // do the same; the user may keep rcfiles outside $HOME).
+            const char *userZ           = getenv("ZDOTDIR");
+            std::string userRcDir       = (userZ && *userZ) ? userZ : "";
+            const char *home            = getenv("HOME");
+            std::string homeDir         = (home && *home) ? home : "";
+            const std::string &checkDir = userRcDir.empty() ? homeDir : userRcDir;
+            const bool haveAnyRc        = !checkDir.empty()
+                                && [&] {
+                                       struct stat st;
+                                       for (const char *name : { "/.zshrc",
+                                                                 "/.zshenv",
+                                                                 "/.zprofile",
+                                                                 "/.zlogin" }) {
+                                           if (stat((checkDir + name).c_str(), &st) == 0) {
+                                               return true;
+                                           }
+                                       }
+                                       return false;
+                                   }();
+            // Resolve our zsh asset dir; bail if it's missing on disk.
+            const std::string zsh = mOptions.shellIntegrationDir + "/zsh";
+            struct stat st;
+            const bool haveAssets = stat((zsh + "/.zshenv").c_str(), &st) == 0;
+            if (haveAnyRc && haveAssets) {
+                shellIntegrationZdotdir = zsh;
+                if (userZ && *userZ) {
+                    shellIntegrationOrigZdotdir    = userZ;
+                    shellIntegrationHadOrigZdotdir = true;
+                }
+            }
+        }
+    }
+
     const pid_t pid = fork();
     int ret;
     switch (pid) {
@@ -631,6 +685,19 @@ bool Terminal::init(const TerminalOptions &options)
             setenv("TERM_PROGRAM", "MasterBandit", 1);
             unsetenv("LC_TERMINAL");
             unsetenv("KONSOLE_VERSION");
+
+            // Shell integration: zsh ZDOTDIR hijack (decision made pre-fork).
+            // The bootstrap .zshenv consumes MB_ORIG_ZDOTDIR (presence vs
+            // absence) to decide whether to restore or unset on the child
+            // side, so we *must* unsetenv when the user didn't have one.
+            if (!shellIntegrationZdotdir.empty()) {
+                setenv("ZDOTDIR", shellIntegrationZdotdir.c_str(), 1);
+                if (shellIntegrationHadOrigZdotdir) {
+                    setenv("MB_ORIG_ZDOTDIR", shellIntegrationOrigZdotdir.c_str(), 1);
+                } else {
+                    unsetenv("MB_ORIG_ZDOTDIR");
+                }
+            }
 
             signal(SIGCHLD, SIG_DFL);
             signal(SIGHUP, SIG_DFL);

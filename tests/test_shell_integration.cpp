@@ -27,7 +27,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if defined(__APPLE__) || defined(__linux__)
+#ifdef __APPLE__
 #include <util.h> // openpty on macOS
 #endif
 

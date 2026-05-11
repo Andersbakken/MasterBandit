@@ -520,8 +520,8 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("ctrl+shift+c") }, Action::Copy {} },
         { { *parseKeyStroke("ctrl+shift+v") }, Action::Paste {} },
         // Tab switching
-        { { *parseKeyStroke("ctrl+shift+pagedown") }, Action::ActivateTabRelative { 1 } },
-        { { *parseKeyStroke("ctrl+shift+pageup") }, Action::ActivateTabRelative { -1 } },
+        { { *parseKeyStroke("ctrl+shift+pagedown") }, Action::ActivateTabRelative { Uuid {}, 1 } },
+        { { *parseKeyStroke("ctrl+shift+pageup") }, Action::ActivateTabRelative { Uuid {}, -1 } },
         { { *parseKeyStroke("alt+1") }, Action::ActivateTab { 0 } },
         { { *parseKeyStroke("alt+2") }, Action::ActivateTab { 1 } },
         { { *parseKeyStroke("alt+3") }, Action::ActivateTab { 2 } },

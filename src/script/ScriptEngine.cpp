@@ -22,6 +22,7 @@
 #else
 #include <sys/random.h> // getrandom
 #endif
+#include <unistd.h> // gethostname
 
 namespace fs = std::filesystem;
 
@@ -4236,6 +4237,29 @@ Engine::Engine()
     layoutRootStack_ = layoutTree_->createStack();
     layoutTree_->setRoot(layoutRootStack_);
 
+    // Subscribe to node-destroyed events so the per-subtree maps
+    // (lastFocusedInTab_, tabIcons_) self-prune. destroyNode fires the
+    // callback bottom-up — descendants before their ancestor — so any
+    // value-side Uuid (focused-pane leaves) is reported before the
+    // wrapper Stack-child whose entry stored it. Both the key (Stack
+    // child id) and the value (Terminal id) can match; erasing on key is
+    // the primary case but a focused-pane-side match (terminal evicted
+    // out from under a still-live subtree) gets cleaned up by the
+    // matching-value sweep below.
+    layoutTree_->setOnNodeDestroyed([this](Uuid id)
+                                    {
+                                        lastFocusedInTab_.erase(id);
+                                        tabIcons_.erase(id);
+                                        for (auto it = lastFocusedInTab_.begin();
+                                             it != lastFocusedInTab_.end();) {
+                                            if (it->second == id) {
+                                                it = lastFocusedInTab_.erase(it);
+                                            } else {
+                                                ++it;
+                                            }
+                                        }
+                                    });
+
     rt_ = JS_NewRuntime();
     JS_SetRuntimeOpaque(rt_, this);
 
@@ -5095,6 +5119,54 @@ void Engine::setupGlobals(JSContext *ctx, InstanceId id)
         JS_SetPropertyStr(ctx, mb, "process", process);
     }
 
+    // mb.os — Node-style platform/arch identity for scripts that want to
+    // gate behavior on host OS without resorting to env / file probes.
+    // Both fields resolve at compile time so scripts get the same values
+    // regardless of the runtime environment. Strings match Node's
+    // `process.platform` / `os.arch()` conventions (the surface most
+    // script authors already know) so cross-engine snippets port without
+    // a translation table.
+    {
+        JSValue os                 = JS_NewObject(ctx);
+        constexpr const char *kPlatform =
+#if defined(__APPLE__)
+            "darwin";
+#elif defined(__linux__)
+            "linux";
+#elif defined(_WIN32)
+            "win32";
+#elif defined(__FreeBSD__)
+            "freebsd";
+#elif defined(__OpenBSD__)
+            "openbsd";
+#else
+            "unknown";
+#endif
+        constexpr const char *kArch =
+#if defined(__aarch64__) || defined(_M_ARM64)
+            "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+            "x64";
+#elif defined(__i386__) || defined(_M_IX86)
+            "ia32";
+#elif defined(__arm__) || defined(_M_ARM)
+            "arm";
+#else
+            "unknown";
+#endif
+        JS_SetPropertyStr(ctx, os, "platform", JS_NewString(ctx, kPlatform));
+        JS_SetPropertyStr(ctx, os, "arch", JS_NewString(ctx, kArch));
+
+        char hostbuf[256] = { 0 };
+        if (gethostname(hostbuf, sizeof(hostbuf) - 1) == 0) {
+            JS_SetPropertyStr(ctx, os, "hostname", JS_NewString(ctx, hostbuf));
+        } else {
+            JS_SetPropertyStr(ctx, os, "hostname", JS_NewString(ctx, ""));
+        }
+
+        JS_SetPropertyStr(ctx, mb, "os", os);
+    }
+
     installLayoutBindings(*this, ctx, mb);
 
     JS_SetPropertyStr(ctx, global, "mb", mb);
@@ -5715,7 +5787,8 @@ bool Engine::runPaneFilters(PaneId pane, const char *filterProp, std::string &da
 // Async notifications
 // ============================================================================
 
-void Engine::notifyAction(const std::string &actionName)
+void Engine::notifyAction(const std::string &actionName,
+                          const std::vector<std::string> &args)
 {
     IterGuard guard(this);
     std::string prop = std::string("__evt_action_") + actionName;
@@ -5727,7 +5800,23 @@ void Engine::notifyAction(const std::string &actionName)
         JSValue global = JS_GetGlobalObject(inst.ctx);
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
-        enqueueListeners(inst.ctx, arr, 0, nullptr);
+
+        // Build per-instance string args. Each JSValue belongs to inst.ctx
+        // and is freed after enqueue — enqueueListeners dups them into the
+        // microtask payload so the originals are safe to release here.
+        std::vector<JSValue> argv;
+        argv.reserve(args.size());
+        for (const auto &s : args) {
+            argv.push_back(JS_NewString(inst.ctx, s.c_str()));
+        }
+        enqueueListeners(inst.ctx,
+                         arr,
+                         static_cast<int>(argv.size()),
+                         argv.empty() ? nullptr : argv.data());
+        for (auto v : argv) {
+            JS_FreeValue(inst.ctx, v);
+        }
+
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);
@@ -5835,21 +5924,29 @@ void Engine::notifyPaneDestroyed(PaneId pane, Uuid nodeId)
     cleanupPane(pane);
 }
 
-void Engine::notifyTabCreated(TabId tab)
+void Engine::notifyTabCreated(TabId tab, Uuid parentStack)
 {
     IterGuard guard(this);
-    std::string s = tab.toString();
+    std::string idStr     = tab.toString();
+    std::string parentStr = parentStack.toString();
+    const bool topLevel   = (parentStack == layoutRootStack_);
+    const char *levelStr  = topLevel ? "top" : "sub";
     for (auto &inst : instances_) {
         if (!inst.ctx) {
             continue;
         }
-
-        JSValue global   = JS_GetGlobalObject(inst.ctx);
-        JSValue mb       = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr      = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
-        JSValue tabIdStr = JS_NewStringLen(inst.ctx, s.data(), s.size());
-        enqueueListeners(inst.ctx, arr, 1, &tabIdStr);
-        JS_FreeValue(inst.ctx, tabIdStr);
+        JSValue global = JS_GetGlobalObject(inst.ctx);
+        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
+        JSValue payload = JS_NewObject(inst.ctx);
+        JS_SetPropertyStr(inst.ctx, payload, "id",
+                          JS_NewStringLen(inst.ctx, idStr.data(), idStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "parentStackId",
+                          JS_NewStringLen(inst.ctx, parentStr.data(), parentStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "level",
+                          JS_NewString(inst.ctx, levelStr));
+        enqueueListeners(inst.ctx, arr, 1, &payload);
+        JS_FreeValue(inst.ctx, payload);
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);
@@ -5901,26 +5998,40 @@ void Engine::fireQuitRequested()
     }
 }
 
-void Engine::notifyTabDestroyed(TabId tab)
+void Engine::notifyTabDestroyed(TabId tab, Uuid parentStack)
 {
     IterGuard guard(this);
-    std::string s = tab.toString();
+    std::string idStr     = tab.toString();
+    std::string parentStr = parentStack.toString();
+    const bool topLevel   = (parentStack == layoutRootStack_);
+    const char *levelStr  = topLevel ? "top" : "sub";
     for (auto &inst : instances_) {
         if (!inst.ctx) {
             continue;
         }
-        JSValue global   = JS_GetGlobalObject(inst.ctx);
-        JSValue mb       = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr      = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabDestroyed");
-        JSValue tabIdStr = JS_NewStringLen(inst.ctx, s.data(), s.size());
-        enqueueListeners(inst.ctx, arr, 1, &tabIdStr);
-        JS_FreeValue(inst.ctx, tabIdStr);
+        JSValue global  = JS_GetGlobalObject(inst.ctx);
+        JSValue mb      = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr     = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabDestroyed");
+        JSValue payload = JS_NewObject(inst.ctx);
+        JS_SetPropertyStr(inst.ctx, payload, "id",
+                          JS_NewStringLen(inst.ctx, idStr.data(), idStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "parentStackId",
+                          JS_NewStringLen(inst.ctx, parentStr.data(), parentStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "level",
+                          JS_NewString(inst.ctx, levelStr));
+        enqueueListeners(inst.ctx, arr, 1, &payload);
+        JS_FreeValue(inst.ctx, payload);
         JS_FreeValue(inst.ctx, arr);
         JS_FreeValue(inst.ctx, mb);
         JS_FreeValue(inst.ctx, global);
     }
 
-    cleanupTab(tab);
+    // cleanupTab clears per-tab listener maps. Only meaningful for
+    // top-level (those are the ones JS scripts care about for tab-level
+    // bookkeeping). Sub-tab containers don't have analogous per-id state.
+    if (topLevel) {
+        cleanupTab(tab);
+    }
 }
 
 void Engine::notifyTerminalExited(PaneId pane, Uuid nodeId)

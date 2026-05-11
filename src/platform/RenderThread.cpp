@@ -82,7 +82,7 @@ void RenderThread::applyPendingMutations()
     // Transfer dirty flags. Note: tabBarDirty_ / dividersDirty_ main-thread
     // flags owned by PlatformDawn are merged and cleared inside
     // buildRenderFrameState().
-    renderState_.tabBarDirty |= pending_.tabBarDirty;
+    renderState_.tabBarsDirty |= pending_.tabBarsDirty;
     renderState_.dividersDirty |= pending_.dividersDirty;
     renderState_.focusChanged |= pending_.focusChanged;
     renderState_.surfaceNeedsReconfigure |= pending_.surfaceNeedsReconfigure;
@@ -110,7 +110,11 @@ void RenderThread::applyPendingMutations()
         pending_.releaseEmbeddedTextures.begin(),
         pending_.releaseEmbeddedTextures.end());
     renderState_.releaseAllPaneTextures |= pending_.releaseAllPaneTextures;
-    renderState_.releaseTabBarTexture |= pending_.releaseTabBarTexture;
+    renderState_.releaseAllTabBarTextures |= pending_.releaseAllTabBarTextures;
+    renderState_.releaseTabBarTextures.insert(
+        renderState_.releaseTabBarTextures.end(),
+        pending_.releaseTabBarTextures.begin(),
+        pending_.releaseTabBarTextures.end());
     renderState_.invalidateAllRowCaches |= pending_.invalidateAllRowCaches;
 
     // Distill structural ops down to destroys. Create* and Resize* are

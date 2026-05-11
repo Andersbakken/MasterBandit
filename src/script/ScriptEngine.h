@@ -459,7 +459,12 @@ public:
     std::shared_ptr<std::atomic<bool>> inputFilterFlag(PaneId pane);
 
     // --- Async events (enqueued as microtasks) ---
-    void notifyAction(const std::string &actionName);
+    // `args` flow through to script-registered handlers as positional
+    // arguments (matches the `(...args: string[]) => void` signature in
+    // mb.d.ts). For built-in actions there are no args, so the default
+    // covers that case.
+    void notifyAction(const std::string &actionName,
+                      const std::vector<std::string> &args = {});
     // Fired from PlatformDawn::applyConfig after a successful hot-reload.
     // No payload — listeners re-read whatever they care about via the
     // relevant `mb.*` getters (e.g. `mb.tabBarPosition`).
@@ -470,10 +475,13 @@ public:
     // so listeners can correlate with handles they captured from paneCreated.
     // Empty UUID is allowed (paths that don't have the UUID handy still work).
     void notifyPaneDestroyed(PaneId pane, Uuid nodeId = {});
-    void notifyTabCreated(TabId tab);
-    // Tab destruction notification. The tab's subtreeRoot Uuid IS its
-    // identity; listeners receive the UUID string in the JS event payload.
-    void notifyTabDestroyed(TabId tab);
+    // Tab create/destroy events. `tab` is the Uuid of the Container or Stack
+    // that became (or was) a direct child of `parentStack`. parentStack ==
+    // layoutRootStack_ marks the event as top-level; anything else is a
+    // sub-tab. JS listeners receive an object: { id, parentStackId, level }
+    // where level is "top" | "sub".
+    void notifyTabCreated(TabId tab, Uuid parentStack);
+    void notifyTabDestroyed(TabId tab, Uuid parentStack);
     // OS-driven quit (X button, NSApp termination) hook. C++ fires the JS
     // event "quit-requested" when at least one listener is registered; the
     // JS handler is responsible for calling mb.quit() to commit. With no
@@ -899,6 +907,16 @@ public:
 
     // Tab-bar rect + tab rect computation.
     Rect tabBarRect(uint32_t windowW, uint32_t windowH);
+
+    // All currently-visible TabBar nodes with their pixel rects. A bar
+    // is "visible" iff it has a non-empty rect under the root-level
+    // computeRects — which naturally handles "sub-bar lives in the
+    // active top-level tab's subtree" because layout walks
+    // Stack::activeChild only. Result is ordered tree-walk order; the
+    // primary bar (Engine::primaryTabBarNode) is typically first but
+    // callers should not depend on it.
+    std::vector<std::pair<Uuid, Rect>>
+    tabBarRects(uint32_t windowW, uint32_t windowH);
     void computeTabRects(Uuid subtreeRoot, uint32_t windowW, uint32_t windowH,
                          int cellW, int cellH);
     std::vector<Rect> tabDividerRects(Uuid subtreeRoot, int dividerPixels) const;

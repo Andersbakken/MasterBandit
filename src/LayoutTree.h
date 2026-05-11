@@ -4,6 +4,7 @@
 #include "Uuid.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -145,6 +146,13 @@ public:
     // `target` is nil.
     bool setStackZoom(Uuid stack, Uuid target);
 
+    // Toggle the navigation-opacity flag on a Stack. When opaque, focus
+    // traversal across panes treats the whole stack as a single unit
+    // (you cannot focus-arrow into its non-active child). Pure navigation
+    // hint; does not affect layout, so no markDirty. Returns false when
+    // `stack` is missing or not a Stack.
+    bool setStackOpaque(Uuid stack, bool opaque);
+
     // Per-slot sizing knobs (mb.layout.setSlot{Stretch,Fixed,Min,Max}).
     // `parent` must be a Container or Stack that contains `child` directly.
     // fixedCells == 0 disables fixed mode for that slot; otherwise stretch is
@@ -159,6 +167,18 @@ public:
     // TabBar bindings pointing at a destroyed Stack go dangling (not erased);
     // computeRects does not chase them, so they simply render as "empty bar."
     void destroyNode(Uuid id);
+
+    // Listener fired once per destroyed node — both the explicit
+    // `destroyNode(id)` target and every descendant unwound recursively.
+    // Used by Script::Engine to evict map entries keyed on node Uuids
+    // (lastFocusedInTab_, tabIcons_) so subtrees taken down by
+    // mb.layout.removeNode / wrapInStack-rollback / sub-bar close don't
+    // leak stale entries. Set once at construction; passing an empty
+    // std::function disables future notifications.
+    void setOnNodeDestroyed(std::function<void(Uuid)> cb)
+    {
+        onNodeDestroyed_ = std::move(cb);
+    }
 
     // --- Lookup ---
     Node *node(Uuid id);
@@ -215,6 +235,27 @@ public:
     Uuid splitByWrapping(Uuid existingChild, SplitDir dir,
                          Uuid newChild, bool newIsFirst);
 
+    // Wrap `existingChild` in
+    //   Container[dir] = [TabBar | Stack[Container[horizontal, existing]]]
+    // (TabBar on the leading side iff `tabBarFirst`). The inner Container
+    // is the "tab content" slot — every Stack child is a Container so that
+    // higher-level callers (e.g. createTerminalInContainer) can target the
+    // Stack directly and have new panes attach into its active tab's
+    // content container. Mirrors the default-ui top-level layout pattern.
+    // Slot inheritance matches splitByWrapping. The TabBar is auto-bound
+    // to the Stack; all four ids are returned so callers can wire labels
+    // / sizing / per-tab content without re-walking the tree.
+    struct WrapInStackResult
+    {
+        Uuid wrapper; // the new outer Container
+        Uuid stack;
+        Uuid tabBar;
+        Uuid content; // inner Container holding `existingChild`
+        bool ok() const { return !wrapper.isNil(); }
+    };
+    WrapInStackResult splitByWrappingStack(Uuid existingChild, SplitDir dir,
+                                           bool tabBarFirst);
+
     // Walk up from `target` until we find a Container parent whose SplitDir
     // matches `axis`. Grow `target`'s side by `pixelDelta` and shrink its
     // neighbour (leading or trailing, preferring trailing). Uses the current
@@ -267,6 +308,7 @@ public:
 private:
     std::unordered_map<Uuid, std::unique_ptr<Node>, UuidHash> nodes_;
     Uuid root_;
+    std::function<void(Uuid)> onNodeDestroyed_;
     bool dirty_        = true; // initial: first frame must compute
     uint64_t revision_ = 1;    // caches track this; starts at 1 so 0 = "no cache"
 };

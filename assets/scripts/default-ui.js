@@ -177,6 +177,22 @@ function _tabUuidByIndex(idx) {
     return stack.children[idx].id;
 }
 
+// Switch the enclosing Stack's activeChild to `tabUuid` and route keyboard
+// focus to a live pane inside it (preferring the remembered focus, else
+// the first visible leaf). C++ activateTabByUuid only handles the Stack
+// switch + GPU teardown; the focusPane call is what fires
+// notifyPaneFocusChange (CSI ?1004, paneFocusChanged listeners, title).
+function _activateTabAndFocus(tabUuid) {
+    if (!tabUuid) return;
+    mb.layout.activateTab(tabUuid);
+    let focusTarget = mb.layout.rememberedFocusInSubtree(tabUuid);
+    if (!focusTarget) {
+        const leaves = mb.layout.terminalLeavesIn(tabUuid, true);
+        if (leaves.length > 0) focusTarget = leaves[0];
+    }
+    if (focusTarget) mb.layout.focusPane(focusTarget);
+}
+
 // Currently active tab UUID (the chrome TabBar's bound Stack's activeChild).
 function _activeTabUuid() {
     if (!_tabBarNode) return null;
@@ -201,34 +217,42 @@ mb.actions.register('newTab', () => {
     const tabUuid = mb.layout.createTab();
     if (!tabUuid) return;
     const opts = cwd ? { cwd } : undefined;
-    const termNodeId = mb.layout.createTerminal(tabUuid, opts);
-    if (termNodeId) mb.layout.focusPane(termNodeId);
-    mb.layout.activateTab(tabUuid);
+    mb.layout.createTerminal(tabUuid, opts);
+    _activateTabAndFocus(tabUuid);
 });
 
-mb.actions.register('closeTab', async ({index}) => {
-    let target = null;
-    if (typeof index === 'number' && index >= 0) {
-        target = _tabUuidByIndex(index);
+mb.actions.register('closeTab', async ({target, index}) => {
+    let targetId = null;
+    if (target) {
+        targetId = target;
+    } else if (typeof index === 'number' && index >= 0) {
+        targetId = _tabUuidByIndex(index);
     } else {
-        target = _activeTabUuid();
+        targetId = _activeTabUuid();
     }
-    if (!target) return;
+    if (!targetId) return;
+
+    // Determine if target is a top-level tab (direct child of _tabsStackNode)
+    // purely for dialog wording. C++ closeTab handles both uniformly.
+    const node = mb.layout.node(targetId);
+    if (!node || !node.parent) return;
+    const isTopLevel = (node.parent === _tabsStackNode);
 
     const mode = _confirmMode();
     if (mode !== "never") {
-        const termIds = mb.layout.queryNodes('terminal', target);
+        const termIds = mb.layout.queryNodes('terminal', targetId);
         const busy    = _busyProcessesIn(termIds);
         const need    = mode === "always" || busy.length > 0;
         if (need) {
-            const fp   = mb.layout.focusedPane();
-            const pane = fp ? mb.pane(fp.nodeId) : mb.activePane;
+            const fp    = mb.layout.focusedPane();
+            const pane  = fp ? mb.pane(fp.nodeId) : mb.activePane;
+            const label = isTopLevel ? "tab" : "sub-tab";
             const msg  = busy.length
-                ? `${busy.length} process${busy.length === 1 ? '' : 'es'} running: ${busy.slice(0, 5).join(', ')}${busy.length > 5 ? '…' : ''}.\nClose tab anyway?`
-                : `Close tab?`;
+                ? `${busy.length} process${busy.length === 1 ? '' : 'es'} running: ${busy.slice(0, 5).join(', ')}${busy.length > 5 ? '…' : ''}.\nClose ${label} anyway?`
+                : `Close ${label}?`;
             const choice = await confirm({
                 pane,
-                title: "Close tab?",
+                title: `Close ${label}?`,
                 message: msg,
                 buttons: [{ label: "Cancel" }, { label: "Close", primary: true }],
                 defaultIndex: 0,
@@ -236,19 +260,40 @@ mb.actions.register('closeTab', async ({index}) => {
             if (choice !== 1) return;
         }
     }
-    mb.layout.closeTab(target);
+    // Kill live terminals first; C++ closeTab refuses to destroy a subtree
+    // containing live Terminals (panes need PTY teardown before the tree
+    // node goes away). After kill, the synchronous closeTab call removes
+    // the now-empty subtree and activates a surviving sibling in the same
+    // Stack.
+    for (const termId of mb.layout.queryNodes('terminal', targetId)) {
+        mb.layout.killTerminal(termId);
+    }
+    mb.layout.closeTab(targetId);
 });
 
-mb.actions.register('activateTab', ({index}) => {
-    const target = _tabUuidByIndex(index);
-    if (target) mb.layout.activateTab(target);
+mb.actions.register('activateTab', ({target, index}) => {
+    let targetId = target;
+    if (!targetId && typeof index === 'number' && index >= 0) {
+        targetId = _tabUuidByIndex(index);
+    }
+    _activateTabAndFocus(targetId);
 });
 
-mb.actions.register('activateTabRelative', ({delta}) => {
-    if (!_tabBarNode) return;
-    const bar = mb.layout.node(_tabBarNode);
-    if (!bar || !bar.boundStack) return;
-    const stack = mb.layout.node(bar.boundStack);
+mb.actions.register('activateTabRelative', ({stack: stackArg, delta}) => {
+    // Cycle the activeChild of `stackArg` (when provided by the dispatcher).
+    // Otherwise walk up from the focused pane to its nearest enclosing
+    // Stack — sub-bar if focus is in one, else top-level tabs Stack.
+    // Falls back to the primary tabs Stack if no pane is focused.
+    let stackId = stackArg || null;
+    if (!stackId) {
+        const fp = mb.layout.focusedPane();
+        if (fp) {
+            stackId = mb.layout.nearestAncestorOfKind(fp.nodeId, "Stack");
+        }
+    }
+    if (!stackId) stackId = _tabsStackNode;
+    if (!stackId) return;
+    const stack = mb.layout.node(stackId);
     if (!stack || !stack.children || stack.children.length === 0) return;
     const active = stack.activeChild;
     let curIdx = -1;
@@ -258,7 +303,7 @@ mb.actions.register('activateTabRelative', ({delta}) => {
     if (curIdx < 0) return;
     const newIdx = curIdx + delta;
     if (newIdx < 0 || newIdx >= stack.children.length) return;
-    mb.layout.activateTab(stack.children[newIdx].id);
+    _activateTabAndFocus(stack.children[newIdx].id);
 });
 
 mb.actions.register('splitPane', ({dir}) => {
@@ -324,35 +369,81 @@ mb.actions.register('adjustPaneSize', ({dir, amount}) => {
 
 mb.addEventListener('terminalExited', ({paneId, paneNodeId}) => {
     // Invariant at entry: Terminal is graveyarded; its tree node is still
-    // present. Remove the node (structural-only — the Terminal is already
-    // gone so the "no live Terminals beneath" guard is satisfied). If its
-    // enclosing tab ends up empty, close the tab. If that was the last
-    // tab, quit.
+    // present. Walk up the chain of Stack-child ancestors INNERMOST first.
+    // At each level, if the subtree has no surviving Terminal, close it
+    // through the unified path (mb.layout.closeTab → C++ closeTab handles
+    // surviving-sibling activation + remembered-focus restore for any Stack,
+    // top-level or sub-bar). Sub-stack about to become empty: dismantle the
+    // wrapper Container so we don't leave an orphan TabBar + empty Stack
+    // visible. Root tabs Stack about to be empty → quit.
+    //
+    // The chain is collected BEFORE removing the terminal so we have
+    // valid parent pointers; the cascade then walks them in order.
+    const node = mb.layout.node(paneNodeId);
+    if (!node) return;
+    const chain = []; // [{ stackChildId, parentStackId }, ...] innermost first
+    for (let cur = node.parent; cur; ) {
+        const n = mb.layout.node(cur);
+        if (!n) break;
+        if (n.parent) {
+            const p = mb.layout.node(n.parent);
+            if (p && p.kind === 'stack') {
+                chain.push({ stackChildId: cur, parentStackId: n.parent });
+            }
+        }
+        cur = n.parent;
+    }
+
     mb.layout.removeNode(paneNodeId);
 
-    // Find a tab subtree that contains zero live Terminal nodes. The killed
-    // pane's tree node is gone (removeNode above); queryNodes("Terminal", subtree)
-    // returns only what's left. We walk the chrome TabBar's bound Stack since
-    // that's the canonical tabs list.
-    if (!_tabBarNode) return;
-    const bar = mb.layout.node(_tabBarNode);
-    if (!bar || !bar.boundStack) return;
-    const stack = mb.layout.node(bar.boundStack);
-    if (!stack || !stack.children) return;
-
-    let emptyTab = null;
-    for (const child of stack.children) {
-        if (mb.layout.queryNodes('terminal', child.id).length === 0) {
-            emptyTab = child.id;
+    for (const { stackChildId, parentStackId } of chain) {
+        // If this Stack-child still has any live Terminal, the ancestors
+        // above it definitely do too. Done walking.
+        if (mb.layout.queryNodes('terminal', stackChildId).length !== 0) {
             break;
         }
+        const parentStack = mb.layout.node(parentStackId);
+        if (!parentStack) break;
+        const isTabsStack = (parentStackId === _tabsStackNode);
+
+        if (parentStack.children.length > 1) {
+            // Multiple siblings remain. C++ closeTab removes this child +
+            // activates a surviving sibling + restores its remembered focus.
+            mb.layout.closeTab(stackChildId);
+            // Fire focus-change events for the new focus so CSI ?1004 +
+            // paneFocusChanged listeners + window-title refresh.
+            const fp = mb.layout.focusedPane();
+            if (fp) mb.layout.focusPane(fp.nodeId);
+            break;
+        }
+
+        // Stack would be empty after removing this child.
+        if (isTabsStack) {
+            mb.quit();
+            return;
+        }
+
+        // Sub-stack about to be empty: dismantle the wrapper Container that
+        // holds [TabBar | this Stack]. wrapInStack created that wrapper as
+        // the sub-stack's parent. Removing the wrapper drops the orphan
+        // TabBar + empty Stack from the layout. The cascade continues so
+        // the wrapper's enclosing levels can collapse too.
+        const wrapperId = parentStack.parent;
+        if (!wrapperId) break;
+        mb.layout.removeNode(wrapperId);
+        // Continue loop — outer Stack-child ancestors may also be empty
+        // now (e.g. the top-level tab's content Container had only the
+        // wrapper).
     }
-    if (!emptyTab) return;
-    if (stack.children.length <= 1) {
-        mb.quit();
-    } else {
-        mb.layout.closeTab(emptyTab);
-    }
+
+    // After cascade, restore focus to a surviving leaf in whatever subtree
+    // remains. C++ closeTab handled this within each Stack it closed; the
+    // wrapper-dismantle branch did not. Pick the focused pane (C++
+    // removeNode falls back to first live pane when focus was inside the
+    // removed subtree) and re-fire focusPane so listeners observe the
+    // transition.
+    const fp = mb.layout.focusedPane();
+    if (fp) mb.layout.focusPane(fp.nodeId);
 });
 
 // JS-only mutator actions for the SHELLS set. config.js calls

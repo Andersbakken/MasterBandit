@@ -138,8 +138,17 @@ private:
     RenderFrameState frameState_;
     Uuid lastFocusedPaneId_;
 
-    // Tab bar render resources
-    PooledTexture *tabBarTexture_ = nullptr;
+    // Tab bar render resources — one texture per visible TabBar node,
+    // keyed by node uuid. The common case is one or two entries; we use
+    // a hash map rather than a vector so per-frame composite/render
+    // lookups stay O(1) per bar even when the bar set is non-trivial.
+    std::unordered_map<Uuid, PooledTexture *, UuidHash> tabBarTextures_;
+    // FNV-1a hash of (rect + cells) for each bar's last successful GPU
+    // build. Compared at the start of each bar's render-loop iteration so
+    // we can skip the upload + draw when the bar's content is unchanged
+    // since the last frame — e.g. closing a sub-tab only redraws that
+    // bar, not the primary too.
+    std::unordered_map<Uuid, uint64_t, UuidHash> tabBarHashes_;
     std::vector<PooledTexture *> pendingTabBarRelease_;
     std::vector<ComputeState *> pendingComputeRelease_;
 

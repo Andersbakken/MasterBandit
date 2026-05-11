@@ -207,8 +207,9 @@ int main(int argc, char **argv)
         options.padding               = config.padding;
         options.cursor                = config.cursor;
         options.colors                = config.colors;
-        options.shellIntegration      = config.shell_integration;
-        options.shellIntegrationDir   = Resources::path("shell-integration").string();
+        options.shellIntegration         = config.shell_integration;
+        options.shellIntegrationDir      = Resources::path("shell-integration").string();
+        options.shellIntegrationFeatures = config.shell_integration_features;
     }
 
     char buf[1024];

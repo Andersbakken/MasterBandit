@@ -81,43 +81,6 @@ std::optional<Uuid> PlatformDawn::findTabForPane(Uuid nodeId) const
     return std::nullopt;
 }
 
-void PlatformDawn::setActiveTab(Uuid sub)
-{
-    if (sub.isNil()) {
-        return;
-    }
-    scriptEngine_.layoutTree().setActiveChild(scriptEngine_.layoutRootStack(), sub);
-
-    // The engine holds a single focused-terminal Uuid. On tab activation we
-    // want to land on *this* tab's last-focused pane (so switching away and
-    // back restores the pane the user was using). Fall back to the existing
-    // behavior when there's no memory yet: keep focus if it's already in the
-    // tab, else pick the first live pane. Without the fallback, JS actions
-    // reading `mb.layout.focusedPane()` right after a tab switch would see
-    // null focus and no-op.
-    auto livePanes = scriptEngine_.panesInSubtree(sub);
-    if (livePanes.empty()) {
-        scriptEngine_.setFocusedTerminalNodeId({});
-        return;
-    }
-    Uuid remembered = scriptEngine_.rememberedFocusInSubtree(sub);
-    if (!remembered.isNil()) {
-        scriptEngine_.setFocusedTerminalNodeId(remembered);
-        return;
-    }
-    Uuid focus      = scriptEngine_.focusedTerminalNodeId();
-    bool focusInTab = false;
-    for (Terminal *t : livePanes) {
-        if (t && t->nodeId() == focus) {
-            focusInTab = true;
-            break;
-        }
-    }
-    if (!focusInTab) {
-        scriptEngine_.setFocusedTerminalNodeId(livePanes.front()->nodeId());
-    }
-}
-
 void PlatformDawn::attachLayoutSubtree(Uuid subtreeRoot, bool activate)
 {
     if (subtreeRoot.isNil()) {
@@ -320,22 +283,42 @@ void PlatformDawn::notifyPaneFocusChange(Uuid subtreeRoot, Uuid prevId, Uuid new
     }
 }
 
-void PlatformDawn::closeTab(Uuid subRoot)
+void PlatformDawn::closeTab(Uuid target)
 {
-    if (subRoot.isNil()) {
+    if (target.isNil()) {
         return;
     }
-    if (scriptEngine_.tabCount() == 1) {
-        return; // can't close the last tab
+    LayoutTree &tree       = scriptEngine_.layoutTree();
+    const Node *targetNode = tree.node(target);
+    if (!targetNode) {
+        return;
     }
-
-    // Find the closed tab's position in the root Stack's children so we can
-    // pick a sensible surviving sibling after removal. Bail out if the UUID
-    // doesn't actually identify a tab (caller passed garbage).
-    auto roots = scriptEngine_.tabSubtreeRoots();
-    int idx    = -1;
-    for (int i = 0; i < static_cast<int>(roots.size()); ++i) {
-        if (roots[i] == subRoot) {
+    // Walk up to the enclosing Stack. Mirrors activateTabByUuid: any
+    // direct child of any Stack is closable. Refuses if target isn't
+    // anchored under a Stack at all.
+    Uuid stackId      = targetNode->parent;
+    const Node *stack = nullptr;
+    while (!stackId.isNil()) {
+        stack = tree.node(stackId);
+        if (!stack) {
+            return;
+        }
+        if (std::holds_alternative<StackData>(stack->data)) {
+            break;
+        }
+        stackId = stack->parent;
+        stack   = nullptr;
+    }
+    if (!stack) {
+        return;
+    }
+    const auto *sd = std::get_if<StackData>(&stack->data);
+    if (!sd) {
+        return;
+    }
+    int idx = -1;
+    for (int i = 0; i < static_cast<int>(sd->children.size()); ++i) {
+        if (sd->children[i].id == target) {
             idx = i;
             break;
         }
@@ -343,10 +326,18 @@ void PlatformDawn::closeTab(Uuid subRoot)
     if (idx < 0) {
         return;
     }
+    // Refuse last child. For the root stack this is "can't close the last
+    // top-level tab" (keeps app running). For sub-stacks it would leave a
+    // useless empty TabBar/Stack pair — callers that want to dismantle a
+    // sub-bar should `mb.layout.removeNode(wrapperContainer)` instead.
+    if (sd->children.size() <= 1) {
+        return;
+    }
+    const bool isTopLevel     = (stackId == scriptEngine_.layoutRootStack());
 
     PendingMutations &pending = renderThread_->pending();
 
-    auto tabPanes = scriptEngine_.panesInSubtree(subRoot);
+    auto tabPanes = scriptEngine_.panesInSubtree(target);
     for (Terminal *panePtr : tabPanes) {
         removePtyPoll(panePtr->masterFD());
         pending.structuralOps.push_back(PendingMutations::DestroyPaneState { panePtr->id() });
@@ -360,7 +351,10 @@ void PlatformDawn::closeTab(Uuid subRoot)
         scriptEngine_.notifyPaneDestroyed(panePtr->id(), panePtr->nodeId());
     }
 
-    scriptEngine_.notifyTabDestroyed(subRoot);
+    // Fire tabDestroyed for any Stack-direct-child closure — top-level OR
+    // sub-bar. Payload includes parentStackId so listeners can filter by
+    // level if they want.
+    scriptEngine_.notifyTabDestroyed(target, stackId);
 
     std::vector<std::unique_ptr<Terminal>> extractedTerminals;
     uint64_t stamp = 0;
@@ -375,27 +369,22 @@ void PlatformDawn::closeTab(Uuid subRoot)
                 extractedTerminals.push_back(std::move(t));
             }
         }
-        scriptEngine_.eraseTabIcon(subRoot);
-        scriptEngine_.eraseLastFocusedInTab(subRoot);
-        LayoutTree &tree = scriptEngine_.layoutTree();
-        tree.removeChild(scriptEngine_.layoutRootStack(), subRoot);
-        tree.destroyNode(subRoot);
+        // tabIcons_ and lastFocusedInTab_ are evicted automatically by the
+        // setOnNodeDestroyed callback wired in Engine ctor.
+        tree.removeChild(stackId, target);
+        tree.destroyNode(target);
         scriptEngine_.setFocusedTerminalNodeId({});
 
-        // Activate a surviving tab (prefer the one before the closed
-        // position, else the first). Without this the root Stack's
-        // activeChild is nil after removeChild and downstream lookups
-        // (active tab, focused pane) break — tests that split_pane
-        // after a close would silently no-op.
-        int surviving  = (idx > 0) ? (idx - 1) : 0;
-        Uuid newActive = tabSubtreeRootAt(surviving);
-        if (!newActive.isNil()) {
-            tree.setActiveChild(scriptEngine_.layoutRootStack(), newActive);
+        // Activate a surviving sibling within the same Stack (prefer the
+        // one before the closed position, else the first remaining).
+        int surviving         = (idx > 0) ? (idx - 1) : 0;
+        const Node *refreshed = tree.node(stackId);
+        const auto *rsd       = refreshed ? std::get_if<StackData>(&refreshed->data) : nullptr;
+        if (rsd && surviving < static_cast<int>(rsd->children.size())) {
+            Uuid newActive = rsd->children[surviving].id;
+            tree.setActiveChild(stackId, newActive);
             auto livePanes = scriptEngine_.panesInSubtree(newActive);
             if (!livePanes.empty()) {
-                // Prefer this tab's last-focused pane over an arbitrary first
-                // pane so users don't lose their working pane when a
-                // neighboring tab closes.
                 Uuid remembered = scriptEngine_.rememberedFocusInSubtree(newActive);
                 scriptEngine_.setFocusedTerminalNodeId(
                     remembered.isNil() ? livePanes.front()->nodeId() : remembered);
@@ -406,21 +395,21 @@ void PlatformDawn::closeTab(Uuid subRoot)
     }
     for (auto &t : extractedTerminals) {
         Terminal *raw = t.get();
-        // Hold past parse-in-flight so a worker that's still inside
-        // injectData on this Terminal doesn't dereference freed memory.
         graveyard_.defer(std::move(t), stamp, [raw]()
                          {
                              return !raw->parseInFlight();
                          });
     }
 
-    updateTabBarVisibility();
+    if (isTopLevel) {
+        updateTabBarVisibility();
+    }
     if (inputController_) {
         inputController_->refreshPointerShape();
     }
     tabBarDirty_ = true;
     setNeedsRedraw();
-    spdlog::info("Closed tab {}", idx + 1);
+    spdlog::info("Closed {} {}", isTopLevel ? "tab" : "sub-tab", idx + 1);
 }
 
 void PlatformDawn::terminalExited(Terminal *terminal)
@@ -584,10 +573,15 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, Uuid subtreeRoot, const std
         return;
     }
 
-    // Locate the owning tab via findTabForNode — nodeId has already been
-    // attached to its Container in the tree by the caller.
-    Uuid ownerTab = scriptEngine_.findTabSubtreeRootForNode(nodeId);
-    Rect pr       = ownerTab.isNil() ? Rect {} : scriptEngine_.nodeRectInSubtree(ownerTab, nodeId);
+    // Resolve the new pane's pixel rect for the initial PTY size. We need
+    // the enclosing top-level tab as the scope for nodeRectInSubtree (it
+    // anchors against the tab's allocated content area; sub-tab panes
+    // share that area but are nested under it). `findTabSubtreeRootForNode`
+    // climbs to the direct child of layoutRootStack regardless of whether
+    // the pane sits at top level or inside a sub-bar — exactly what we
+    // want here.
+    Uuid scopeTab = scriptEngine_.findTabSubtreeRootForNode(nodeId);
+    Rect pr       = scopeTab.isNil() ? Rect {} : scriptEngine_.nodeRectInSubtree(scopeTab, nodeId);
     int cols      = (pr.w > 0 && charWidth > 0) ? static_cast<int>((pr.w - padLeft - padRight) / charWidth) : 80;
     int rows      = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
     cols          = std::max(cols, 1);
@@ -603,7 +597,7 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, Uuid subtreeRoot, const std
     int masterFD      = terminal->masterFD();
     Terminal *termPtr = terminal.get();
 
-    if (!ownerTab.isNil()) {
+    if (!scopeTab.isNil()) {
         terminal->setNodeId(nodeId);
         scriptEngine_.insertTerminal(nodeId, std::move(terminal));
     }
@@ -676,40 +670,68 @@ Uuid PlatformDawn::createEmptyTab()
     tabBarDirty_ = true;
     setNeedsRedraw();
 
-    scriptEngine_.notifyTabCreated(subRoot);
+    scriptEngine_.notifyTabCreated(subRoot, scriptEngine_.layoutRootStack());
     return subRoot;
 }
 
-void PlatformDawn::activateTabByUuid(Uuid sub)
+void PlatformDawn::activateTabByUuid(Uuid target)
 {
-    if (sub.isNil()) {
+    if (target.isNil()) {
         return;
     }
-    // Confirm the UUID is actually a tab — `setActiveChild` would silently
-    // no-op otherwise and we'd skip the GPU/title teardown below.
-    auto roots = scriptEngine_.tabSubtreeRoots();
-    bool found = false;
-    for (Uuid r : roots) {
-        if (r == sub) {
-            found = true;
+    LayoutTree &tree       = scriptEngine_.layoutTree();
+    const Node *targetNode = tree.node(target);
+    if (!targetNode) {
+        return;
+    }
+
+    // Walk up to the enclosing Stack. `target` must be a direct child of
+    // some Stack; otherwise activation is meaningless.
+    Uuid stackId      = targetNode->parent;
+    const Node *stack = nullptr;
+    while (!stackId.isNil()) {
+        stack = tree.node(stackId);
+        if (!stack) {
+            return;
+        }
+        if (std::holds_alternative<StackData>(stack->data)) {
+            break;
+        }
+        stackId = stack->parent;
+        stack   = nullptr;
+    }
+    if (!stack) {
+        return;
+    }
+    const auto *sd = std::get_if<StackData>(&stack->data);
+    if (!sd) {
+        return;
+    }
+    bool isDirectChild = false;
+    for (const auto &slot : sd->children) {
+        if (slot.id == target) {
+            isDirectChild = true;
             break;
         }
     }
-    if (!found) {
+    if (!isDirectChild) {
         return;
     }
-    if (auto prev = activeTab()) {
-        clearDividers(*prev);
-        releaseTabTextures(*prev);
+    Uuid prevChild = sd->activeChild;
+
+    // Per-subtree GPU teardown for the previously-active sibling so its
+    // textures + dividers don't linger off-screen.
+    if (!prevChild.isNil() && prevChild != target) {
+        clearDividers(prevChild);
+        releaseTabTextures(prevChild);
     }
-    setActiveTab(sub);
-    if (auto now = activeTab()) {
-        refreshDividers(*now);
-    }
-    updateWindowTitle();
-    if (inputController_) {
-        inputController_->refreshPointerShape();
-    }
+
+    tree.setActiveChild(stackId, target);
+    refreshDividers(target);
+
+    // Focus selection + notification is the caller's job (default-ui's
+    // activateTab handler calls mb.layout.focusPane, which fires
+    // notifyPaneFocusChange + updates the window title).
     tabBarDirty_ = true;
     setNeedsRedraw();
 }
@@ -1016,12 +1038,19 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                              if (!tab) {
                                  return;
                              }
-                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
-                                 if (*tab == scriptEngine_.activeTabSubtreeRoot()) {
-                                     updateWindowTitle();
-                                 }
-                                 tabBarDirty_ = true;
-                                 setNeedsRedraw();
+                             // Sub-bar tab labels read this pane's title too
+                             // (when it's the remembered focus for the
+                             // sub-stack child containing it). Cheaper to
+                             // always mark the bar dirty — the renderer's
+                             // per-bar FNV-1a hash skips no-op redraws.
+                             tabBarDirty_ = true;
+                             setNeedsRedraw();
+                             // Window title still gates on "this pane is the
+                             // top-level representative AND that tab is
+                             // active" — that's the title shown by the OS.
+                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId
+                                 && *tab == scriptEngine_.activeTabSubtreeRoot()) {
+                                 updateWindowTitle();
                              }
                          });
     };
@@ -1034,12 +1063,11 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                              if (!tab) {
                                  return;
                              }
-                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
-                                 if (*tab == scriptEngine_.activeTabSubtreeRoot()) {
-                                     updateWindowTitle();
-                                 }
-                                 tabBarDirty_ = true;
-                                 setNeedsRedraw();
+                             tabBarDirty_ = true;
+                             setNeedsRedraw();
+                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId
+                                 && *tab == scriptEngine_.activeTabSubtreeRoot()) {
+                                 updateWindowTitle();
                              }
                          });
     };
@@ -1147,7 +1175,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                                              // on activation.
                                              if (auto tab = findTabForPane(paneId)) {
                                                  if (*tab != scriptEngine_.activeTabSubtreeRoot()) {
-                                                     setActiveTab(*tab);
+                                                     activateTabByUuid(*tab);
                                                  }
                                                  focusPaneById(paneId);
                                              }
@@ -1253,16 +1281,16 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                              if (!tab) {
                                  return;
                              }
-                             // Pull-model: no tab-title cache to update. If this pane is the
-                             // tab's representative, the tab bar falls back to the fg process
-                             // when the pane has no OSC title — so just dirty the bar and
-                             // refresh the window title.
-                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId) {
-                                 if (*tab == scriptEngine_.activeTabSubtreeRoot()) {
-                                     updateWindowTitle();
-                                 }
-                                 tabBarDirty_ = true;
-                                 setNeedsRedraw();
+                             // Sub-bar tab labels also fall back to fg
+                             // process when their representative pane has
+                             // no OSC title. Unconditionally dirty the
+                             // bars; the renderer's per-bar hash skips
+                             // redundant work.
+                             tabBarDirty_ = true;
+                             setNeedsRedraw();
+                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId
+                                 && *tab == scriptEngine_.activeTabSubtreeRoot()) {
+                                 updateWindowTitle();
                              }
                          });
     };

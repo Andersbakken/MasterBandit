@@ -1,6 +1,7 @@
 #include "InputController.h"
 
 #include "AnimationScheduler.h"
+#include "LayoutTree.h"
 #include "PlatformDawn.h"
 #include "RenderThread.h"
 #include "ScriptEngine.h"
@@ -344,12 +345,13 @@ MouseRegion InputController::hitTest(double sx, double sy)
     }
     Script::Engine &eng = platform_->scriptEngine_;
 
-    // Check tab bar
-    if (platform_->tabBarVisible()) {
-        Rect tbRect = eng.tabBarRect(platform_->fbWidth_, platform_->fbHeight_);
-        if (!tbRect.isEmpty() &&
-            sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
+    // Check every visible TabBar. `tabBarRects` covers the root primary
+    // bar plus any sub-bars inside the currently-active top-level tab.
+    // Tests every rect (in tree-walk order), returns on the first hit.
+    for (const auto &[barId, tbRect] : eng.tabBarRects(platform_->fbWidth_, platform_->fbHeight_)) {
+        if (sx >= tbRect.x && sx < tbRect.x + tbRect.w &&
             sy >= tbRect.y && sy < tbRect.y + tbRect.h) {
+            (void)barId;
             return MouseRegion::TabBar;
         }
     }
@@ -371,33 +373,51 @@ MouseRegion InputController::hitTest(double sx, double sy)
     return MouseRegion::Pane;
 }
 
-// Resolve which tab index was clicked in the tab bar, given scaled pixel coords.
-// Returns -1 if no tab was hit.
-int InputController::resolveTabBarClickIndex(double sx, double sy)
+// Resolve which TabBar was clicked and which tab index within it. Reads
+// the per-bar render state under the render-thread mutex (caller holds
+// it). With nested TabBars (wrapInStack-created sub-bars), the per-bar
+// `colRanges` are the source of truth for click-to-index mapping;
+// PlatformDawn no longer maintains a singular ranges vector.
+int InputController::resolveTabBarClickIndex(double sx, double sy, Uuid *outBarId)
 {
+    if (outBarId) {
+        *outBarId = {};
+    }
     float tbCharWidth = platform_->tabBarCharWidth_;
     if (tbCharWidth <= 0.0f) {
         return -1;
     }
-    auto tab = platform_->activeTab();
-    if (!tab) {
-        return -1;
-    }
-    Rect tbRect = platform_->scriptEngine_.tabBarRect(platform_->fbWidth_, platform_->fbHeight_);
-    if (tbRect.isEmpty()) {
+    if (!platform_->activeTab()) {
         return -1;
     }
 
-    int clickCol       = static_cast<int>((sx - tbRect.x) / tbCharWidth);
-    const auto &ranges = platform_->tabBarColRanges_;
-    for (int i = 0; i < static_cast<int>(ranges.size()); ++i) {
-        auto [start, end] = ranges[i];
-        if (start < 0) {
-            continue; // not visible
+    const auto &bars = platform_->renderThread_->renderState().tabBars;
+    for (const TabBarRender &bar : bars) {
+        if (bar.rect.isEmpty()) {
+            continue;
         }
-        if (clickCol >= start && clickCol < end) {
-            return i;
+        if (sx < bar.rect.x || sx >= bar.rect.x + bar.rect.w ||
+            sy < bar.rect.y || sy >= bar.rect.y + bar.rect.h) {
+            continue;
         }
+        const int clickCol = static_cast<int>((sx - bar.rect.x) / tbCharWidth);
+        for (int i = 0; i < static_cast<int>(bar.colRanges.size()); ++i) {
+            auto [start, end] = bar.colRanges[i];
+            if (start < 0) {
+                continue; // tab not visible within this bar (overflow-trimmed)
+            }
+            if (clickCol >= start && clickCol < end) {
+                if (outBarId) {
+                    *outBarId = bar.id;
+                }
+                return i;
+            }
+        }
+        // Hit fell in a non-tab column of this bar (overflow indicator etc.).
+        if (outBarId) {
+            *outBarId = bar.id;
+        }
+        return -1;
     }
     return -1;
 }
@@ -715,9 +735,49 @@ void InputController::onMouseButton(int button, int action, int mods)
         mouseCtx_.pixelX           = static_cast<int>(sx);
         mouseCtx_.pixelY           = static_cast<int>(sy);
         mouseCtx_.button           = mb;
+        mouseCtx_.tabBarClickBarId = {};
         mouseCtx_.tabBarClickIndex = (region == MouseRegion::TabBar)
-            ? resolveTabBarClickIndex(sx, sy)
+            ? resolveTabBarClickIndex(sx, sy, &mouseCtx_.tabBarClickBarId)
             : -1;
+
+        // Sub-bar clicks: resolve barId+index to the Stack-child Uuid and
+        // dispatch ActivateTab / CloseTab with `target` set. The executor
+        // handles top-level and sub-stack uniformly. Skip the generic
+        // mouse-binding dispatch below — those bindings carry index = -1
+        // intended for the top-level bar.
+        if (region == MouseRegion::TabBar
+            && !mouseCtx_.tabBarClickBarId.isNil()
+            && mouseCtx_.tabBarClickBarId != platform_->scriptEngine_.primaryTabBarNode()
+            && mouseCtx_.tabBarClickIndex >= 0) {
+            Uuid childId;
+            {
+                LayoutTree &tree = platform_->scriptEngine_.layoutTree();
+                const Node *bar  = tree.node(mouseCtx_.tabBarClickBarId);
+                if (bar) {
+                    if (auto *tb = std::get_if<TabBarData>(&bar->data)) {
+                        const Node *stack = tree.node(tb->boundStack);
+                        if (stack) {
+                            if (auto *sd = std::get_if<StackData>(&stack->data)) {
+                                if (mouseCtx_.tabBarClickIndex < static_cast<int>(sd->children.size())) {
+                                    childId = sd->children[mouseCtx_.tabBarClickIndex].id;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (childId.isNil()) {
+                return;
+            }
+            if (mb == MouseButton::Left) {
+                platform_->actionRouter_->dispatch(
+                    Action::ActivateTab { childId, -1 });
+            } else if (mb == MouseButton::Middle) {
+                platform_->actionRouter_->dispatch(
+                    Action::CloseTab { childId, -1 });
+            }
+            return;
+        }
 
         for (MouseBindingResult &res : matched) {
             std::visit(overloaded { [&](Action::Any &act)

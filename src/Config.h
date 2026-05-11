@@ -230,9 +230,13 @@ struct Config
     // by injecting per-shell rc files at spawn time. "auto" enables it; "off"
     // bypasses entirely (no env injection, no rc files sourced). Currently
     // implemented for zsh; bash/fish are no-ops until those backends land.
-    // Per-feature opt-out lives in MB_SHELL_INTEGRATION (space-separated:
-    // "no-prompt-mark no-cwd no-title").
-    std::string shell_integration     = "auto"; // "auto" | "off"
+    std::string shell_integration              = "auto"; // "auto" | "off"
+    // Per-feature opt-out, kitty-style. Each entry is a "no-<feature>" token.
+    // Recognized features: prompt-mark (OSC 133 A/B/C/D + PS1 suffix), cwd
+    // (OSC 7), title (OSC 0 re-emit). Anything else is silently ignored at
+    // load time. Joined into MB_SHELL_INTEGRATION before exec; users do not
+    // set that env var directly.
+    std::vector<std::string> shell_integration_features;
     NotificationsConfig notifications;
 
     struct glaze
@@ -265,6 +269,7 @@ struct Config
             "color_scheme", &T::color_scheme,
             "confirm_close", &T::confirm_close,
             "shell_integration", &T::shell_integration,
+            "shell_integration_features", &T::shell_integration_features,
             "notifications", &T::notifications);
     };
 };

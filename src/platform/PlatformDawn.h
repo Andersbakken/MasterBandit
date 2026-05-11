@@ -44,6 +44,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -269,8 +270,6 @@ private:
     //
     // The flat tab list, count, and active-tab index live on Script::Engine:
     // `scriptEngine().tabSubtreeRoots()`, `tabCount()`, `activeTabIndex()`.
-    void setActiveTab(Uuid subtreeRoot);
-
     std::optional<Uuid> activeTab() const;
     std::optional<Uuid> tabAt(int idx) const;
 
@@ -420,6 +419,12 @@ private:
     // RenderThread::applyPendingMutations(), which also transfers
     // pending flags into renderState.
     void buildRenderFrameState();
+    // Enumerate every visible TabBar in the layout and populate one
+    // RenderFrameState::TabBarRender entry per bar (rect + per-tab
+    // metadata + cell layout). Called from buildRenderFrameState; split
+    // out so the per-bar sourcing rules (primary uses tabSubtreeRoots,
+    // sub-bars walk their bound Stack's children) stay readable.
+    void populateTabBars();
 
     // If the LayoutTree has been marked dirty since the last call, run a
     // full resize cascade across every tab (computeRects + TIOCSWINSZ +
@@ -434,18 +439,22 @@ private:
     // AppCallbacks hook).
     Config lastConfig_;
 
+    // Coalesced JS-driven config updates. Multiple `mb.config.addKeybinding`
+    // / `removeKeybinding` / `patch` / `applyConfigJson` calls within a
+    // single tick each stash the next draft here, but only ONE realize-pass
+    // (applyConfig) is scheduled via eventLoop_->post. JS reads see the
+    // pending draft (so subsequent patches see their predecessors).
+    std::optional<Config> pendingConfigDraft_;
+    bool pendingConfigScheduled_ = false;
+
     // Tab bar
     TabBarConfig tabBarConfig_;
     std::string tabBarFontName_ = "tab_bar";
     float tabBarFontSize_       = 0.0f;
     float tabBarCharWidth_      = 0.0f;
     float tabBarLineHeight_     = 0.0f;
-    int tabBarCols_             = 0;
     bool tabBarDirty_           = true;
     bool dividersDirty_         = true;
-    // Column ranges for each tab in the rendered tab bar, for hit-testing.
-    // Each pair is (startCol, endCol) — the range of columns occupied by that tab.
-    std::vector<std::pair<int, int>> tabBarColRanges_;
     int tabBarAnimFrame_   = 0;
     uint64_t lastAnimTick_ = 0;
 
@@ -479,6 +488,10 @@ private:
     void initTabBar(const TabBarConfig &cfg);
 
     void applyConfig(const Config &config);
+    // JS-driven entry point: stash draft + schedule a coalesced apply on the
+    // next eventloop drain. Multiple calls in the same tick collapse into a
+    // single realize-pass over the latest draft.
+    void scheduleApplyConfig(Config draft);
     void applyFontChange(const Config &config);
     void invalidateAllRowCaches();
 

@@ -95,7 +95,12 @@ public:
     uint32_t lastMods() const { return lastMods_; }
 
     // Resolve which tab index was clicked in the tab bar. Caller holds lock.
-    int resolveTabBarClickIndex(double sx, double sy);
+    // Resolves which TabBar was clicked and which tab index within it. The
+    // bar uuid is returned via `outBarId` (nil = no bar hit); the function
+    // return is the per-bar tab index (-1 = no tab within the bar). Walks
+    // every visible bar in frameState_, so works for nested TabBars created
+    // by `wrapInStack` as well as the root primary bar.
+    int resolveTabBarClickIndex(double sx, double sy, Uuid *outBarId);
 
     // Map a CSS / kitty pointer name (from OSC 22) to a Window::CursorStyle.
     // Empty string and unknown names fall back to the platform default arrow.
@@ -138,6 +143,7 @@ private:
         int cellCol = 0, cellRow = 0;
         int pixelX = 0, pixelY = 0;
         int tabBarClickIndex = -1;
+        Uuid tabBarClickBarId;             // which TabBar was hit (nil = none)
         MouseButton button   = MouseButton::Left;
     } mouseCtx_;
 

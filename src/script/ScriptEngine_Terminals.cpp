@@ -318,15 +318,33 @@ void Engine::setFocusedTerminalNodeId(Uuid u)
     if (u.isNil()) {
         return;
     }
-    // Record this pane as the "last focused" for whichever tab owns it, so
-    // later tab-switches and inactive-tab reads (progress icon) can restore
-    // the right pane. layoutTree_->contains walks the subtree; tab count is
-    // small, so the linear scan is negligible.
-    for (Uuid sub : tabSubtreeRoots()) {
-        if (layoutTree_->contains(sub, u)) {
-            lastFocusedInTab_[sub] = u;
+    // Record this pane as the "last focused" for every Stack ancestor in
+    // the tree. The map is keyed by the Stack-child node id (the direct
+    // child of the Stack that contains `u`); ie:
+    //   - For a pane inside the active top-level tab, the entry is the
+    //     tab subtree root → pane (preserves the original behavior used by
+    //     tab-switch restore + progress-icon lookup).
+    //   - For a pane inside a wrapInStack sub-stack, an additional entry
+    //     records the sub-tab's content Container → pane, so sub-bar
+    //     tab-switch can restore focus the same way.
+    //
+    // Walks the ancestor chain once (O(depth), tiny in practice). At each
+    // Stack we find, the immediate child along the chain becomes the map
+    // key.
+    Uuid cur = u;
+    while (!cur.isNil()) {
+        const Node *n = layoutTree_->node(cur);
+        if (!n || n->parent.isNil()) {
             break;
         }
+        const Node *parent = layoutTree_->node(n->parent);
+        if (!parent) {
+            break;
+        }
+        if (std::holds_alternative<StackData>(parent->data)) {
+            lastFocusedInTab_[cur] = u;
+        }
+        cur = n->parent;
     }
 }
 
@@ -628,6 +646,26 @@ Rect Engine::tabBarRect(uint32_t windowW, uint32_t windowH)
         return {};
     }
     return it->second;
+}
+
+std::vector<std::pair<Uuid, Rect>>
+Engine::tabBarRects(uint32_t windowW, uint32_t windowH)
+{
+    std::vector<std::pair<Uuid, Rect>> out;
+    if (!layoutTree_) {
+        return out;
+    }
+    const auto &rects = rootRects(windowW, windowH, lastCellW(), lastCellH());
+    auto barNodes     = queryNodesByKind(NodeKind::TabBar, {});
+    out.reserve(barNodes.size());
+    for (Uuid id : barNodes) {
+        auto it = rects.find(id);
+        if (it == rects.end() || it->second.isEmpty()) {
+            continue;
+        }
+        out.emplace_back(id, it->second);
+    }
+    return out;
 }
 
 void Engine::computeTabRects(Uuid subtreeRoot, uint32_t windowW, uint32_t windowH,

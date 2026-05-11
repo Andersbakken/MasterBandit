@@ -697,6 +697,22 @@ bool Terminal::init(const TerminalOptions &options)
                 } else {
                     unsetenv("MB_ORIG_ZDOTDIR");
                 }
+                // Per-feature opt-out: TOML `shell_integration_features` is
+                // joined with spaces here; the integration script reads
+                // MB_SHELL_INTEGRATION as a tokenized opt-out list. Users
+                // never set this env var themselves.
+                if (!mOptions.shellIntegrationFeatures.empty()) {
+                    std::string joined;
+                    for (const auto &f : mOptions.shellIntegrationFeatures) {
+                        if (!joined.empty()) {
+                            joined += ' ';
+                        }
+                        joined += f;
+                    }
+                    setenv("MB_SHELL_INTEGRATION", joined.c_str(), 1);
+                } else {
+                    unsetenv("MB_SHELL_INTEGRATION");
+                }
             }
 
             signal(SIGCHLD, SIG_DFL);

@@ -66,14 +66,19 @@ int PlatformDawn::exec()
         scbs.configJson = [this]() -> std::string
         {
             std::string buf;
-            (void)glz::write_json(lastConfig_, buf);
+            // Return the pending draft if a JS-driven update is in flight
+            // so subsequent `addKeybinding` / `patch` calls in the same
+            // tick patch against the latest state rather than the stale
+            // lastConfig_ from before the deferred apply.
+            const Config &src = pendingConfigDraft_ ? *pendingConfigDraft_ : lastConfig_;
+            (void)glz::write_json(src, buf);
             return buf;
         };
         // JS-driven config mutation. Parse the complete Config JSON from
         // JS (already merged with the current snapshot — JS does the
         // patch) via the same glaze schema used for the TOML loader, then
-        // call applyConfig on success. Returns an error string for JS to
-        // throw if parsing fails. Uses default glaze opts to match the
+        // schedule a coalesced applyConfig. Returns an error string for JS
+        // to throw if parsing fails. Uses default glaze opts to match the
         // TOML loader: unknown keys are silently ignored, same as a typo
         // in config.toml. Type errors (wrong shape) still surface here.
         scbs.applyConfigJson = [this](const std::string &json) -> std::string
@@ -83,7 +88,7 @@ int PlatformDawn::exec()
             if (err) {
                 return std::string("config JSON parse error: ") + glz::format_error(err, json);
             }
-            applyConfig(draft);
+            scheduleApplyConfig(std::move(draft));
             return {};
         };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string &data)
@@ -935,7 +940,7 @@ int PlatformDawn::exec()
         actionRouter_->listeners().addListener([this](Action::TypeIndex idx, const Action::Any &action)
                                                {
                                                    if (auto *sa = std::get_if<Action::ScriptAction>(&action)) {
-                                                       scriptEngine_.notifyAction(sa->name);
+                                                       scriptEngine_.notifyAction(sa->name, sa->args);
                                                    } else {
                                                        scriptEngine_.notifyAction(std::string(Action::nameOf(idx)));
                                                    }
@@ -1091,10 +1096,20 @@ int PlatformDawn::exec()
                 if (hasAnim) {
                     setNeedsRedraw();
                     auto now = TerminalEmulator::mono();
-                    if (tabBarVisible() && now - lastAnimTick_ > 100) {
+                    // Tick the spinner if any TabBar is visible. The primary
+                    // bar's visibility gate alone misses sub-bars (created
+                    // via wrapInStack inside a single-top-level-tab session
+                    // where the primary collapses) — check the render state
+                    // for any populated bar rather than primary-only.
+                    bool anyBarVisible = tabBarVisible();
+                    if (!anyBarVisible) {
+                        std::lock_guard<std::recursive_mutex> lk(renderThread_->mutex());
+                        anyBarVisible = !renderThread_->renderState().tabBars.empty();
+                    }
+                    if (anyBarVisible && now - lastAnimTick_ > 100) {
                         lastAnimTick_ = now;
                         tabBarAnimFrame_++;
-                        tabBarDirty_ = true;
+                        tabBarDirty_  = true;
                     }
                 }
             }

@@ -43,30 +43,45 @@ void PlatformDawn::executeAction(const Action::Any &action)
                    },
                    [&](const Action::CloseTab &a)
                    {
-                       const int idx = a.index;
-                       invokeOrLog("closeTab", [idx](JSContext *ctx)
+                       const std::string targetStr = a.target.isNil() ? std::string {} : a.target.toString();
+                       const int idx               = a.index;
+                       invokeOrLog("closeTab", [targetStr, idx](JSContext *ctx)
                                    {
                                        JSValue o = JS_NewObject(ctx);
+                                       if (!targetStr.empty()) {
+                                           JS_SetPropertyStr(ctx, o, "target",
+                                                             JS_NewStringLen(ctx, targetStr.data(), targetStr.size()));
+                                       }
                                        JS_SetPropertyStr(ctx, o, "index", JS_NewInt32(ctx, idx));
                                        return o;
                                    });
                    },
                    [&](const Action::ActivateTabRelative &a)
                    {
-                       const int delta = a.delta;
-                       invokeOrLog("activateTabRelative", [delta](JSContext *ctx)
+                       const std::string stackStr = a.stack.isNil() ? std::string {} : a.stack.toString();
+                       const int delta            = a.delta;
+                       invokeOrLog("activateTabRelative", [stackStr, delta](JSContext *ctx)
                                    {
                                        JSValue o = JS_NewObject(ctx);
+                                       if (!stackStr.empty()) {
+                                           JS_SetPropertyStr(ctx, o, "stack",
+                                                             JS_NewStringLen(ctx, stackStr.data(), stackStr.size()));
+                                       }
                                        JS_SetPropertyStr(ctx, o, "delta", JS_NewInt32(ctx, delta));
                                        return o;
                                    });
                    },
                    [&](const Action::ActivateTab &a)
                    {
-                       const int idx = a.index;
-                       invokeOrLog("activateTab", [idx](JSContext *ctx)
+                       const std::string targetStr = a.target.isNil() ? std::string {} : a.target.toString();
+                       const int idx               = a.index;
+                       invokeOrLog("activateTab", [targetStr, idx](JSContext *ctx)
                                    {
                                        JSValue o = JS_NewObject(ctx);
+                                       if (!targetStr.empty()) {
+                                           JS_SetPropertyStr(ctx, o, "target",
+                                                             JS_NewStringLen(ctx, targetStr.data(), targetStr.size()));
+                                       }
                                        JS_SetPropertyStr(ctx, o, "index", JS_NewInt32(ctx, idx));
                                        return o;
                                    });
@@ -97,7 +112,10 @@ void PlatformDawn::executeAction(const Action::Any &action)
                        }
 
                        if (a.dir == Action::Direction::Next || a.dir == Action::Direction::Prev) {
-                           auto panes = scriptEngine_.panesInSubtree(*tab);
+                           // Cycle through CURRENTLY VISIBLE leaves only —
+                           // hidden sub-tab panes (siblings of the active
+                           // sub-stack child) must not be focus targets.
+                           auto panes = scriptEngine_.activePanesInSubtree(*tab);
                            if (panes.size() <= 1) {
                                return;
                            }
@@ -160,24 +178,50 @@ void PlatformDawn::executeAction(const Action::Any &action)
                    },
                    [&](const Action::MoveTab &a)
                    {
-                       // Reorder the active tab among its siblings under the root stack.
-                       // activeChild stores a Uuid, so swap preserves focus on the moved
-                       // tab automatically. moveChild marks the tree dirty; the next
-                       // frame's runLayoutIfDirty cascades resize.
+                       // Reorder the focused-context Stack-child within its
+                       // parent Stack: if focus is in a sub-tab, this moves
+                       // the sub-tab; if focus is in a top-level tab with no
+                       // sub-bar, this moves the top-level tab. The Stack's
+                       // activeChild stores a Uuid, so the moved child keeps
+                       // activation through the reorder. moveChild marks the
+                       // tree dirty; the next frame's runLayoutIfDirty
+                       // cascades resize.
                        auto &tree = scriptEngine_.layoutTree();
-                       Uuid tab   = scriptEngine_.activeTabSubtreeRoot();
-                       if (tab.isNil()) {
-                           return;
+                       Uuid focus = scriptEngine_.focusedTerminalNodeId();
+                       Uuid target;
+                       Uuid stackId;
+                       if (!focus.isNil()) {
+                           // Walk up from focused pane to find the innermost
+                           // Stack-child + its parent Stack.
+                           const Node *cur = tree.node(focus);
+                           while (cur) {
+                               if (cur->parent.isNil()) {
+                                   break;
+                               }
+                               const Node *p = tree.node(cur->parent);
+                               if (p && std::holds_alternative<StackData>(p->data)) {
+                                   target  = cur->id;
+                                   stackId = cur->parent;
+                                   break;
+                               }
+                               cur = p;
+                           }
                        }
-                       Node *tabNode = tree.node(tab);
-                       if (!tabNode) {
-                           return;
+                       if (target.isNil()) {
+                           // No focus or no enclosing Stack found — fall back
+                           // to active top-level tab in the root stack.
+                           Uuid activeTop = scriptEngine_.activeTabSubtreeRoot();
+                           if (activeTop.isNil()) {
+                               return;
+                           }
+                           Node *topNode = tree.node(activeTop);
+                           if (!topNode || topNode->parent.isNil()) {
+                               return;
+                           }
+                           target  = activeTop;
+                           stackId = topNode->parent;
                        }
-                       Uuid rootStack = tabNode->parent;
-                       if (rootStack.isNil()) {
-                           return;
-                       }
-                       if (tree.moveChild(rootStack, tab, a.delta)) {
+                       if (tree.moveChild(stackId, target, a.delta)) {
                            tabBarDirty_ = true;
                            setNeedsRedraw();
                        }
@@ -206,7 +250,10 @@ void PlatformDawn::executeAction(const Action::Any &action)
                            case Action::Direction::Down: target = scriptEngine_.paneBelowOf(*tab, focused); break;
                            case Action::Direction::Next:
                            case Action::Direction::Prev: {
-                               auto panes = scriptEngine_.panesInSubtree(*tab);
+                               // Visible-only cycling for SwapPane too —
+                               // swapping with a hidden sub-tab leaf would
+                               // teleport panes invisibly.
+                               auto panes = scriptEngine_.activePanesInSubtree(*tab);
                                if (panes.size() < 2) {
                                    return;
                                }
@@ -260,7 +307,11 @@ void PlatformDawn::executeAction(const Action::Any &action)
                        }
                        auto &tree = scriptEngine_.layoutTree();
                        for (int s = 0; s < std::abs(a.delta); ++s) {
-                           auto p = scriptEngine_.panesInSubtree(*tab);
+                           // Rotate only currently-visible leaves —
+                           // sub-tab hidden panes would otherwise get
+                           // shuffled into visible slots and visible
+                           // panes vanish into hidden ones.
+                           auto p = scriptEngine_.activePanesInSubtree(*tab);
                            int m  = static_cast<int>(p.size());
                            if (m < 2) {
                                break;

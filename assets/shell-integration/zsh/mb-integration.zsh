@@ -75,9 +75,43 @@ _mb_precmd() {
 }
 
 _mb_preexec() {
-    _mb_disabled prompt-mark && return
-    builtin print -nu1 $'\e]133;C\a'
+    if ! _mb_disabled prompt-mark; then
+        builtin print -nu1 $'\e]133;C\a'
+    fi
     _mb_in_command=1
+}
+
+# Title re-emission. Many TUI apps (vim, less, htop) set a title via OSC 2
+# but never restore it on exit. We unconditionally re-emit on every prompt
+# cycle so a leaked title self-heals at the next prompt, and on preexec
+# so the running command's name appears while it runs.
+#
+# Override _mb_title_for_prompt / _mb_title_for_command in your .zshrc to
+# customize the format; the default is the tilde-abbreviated cwd / the
+# first word of the command line.
+_mb_title_for_prompt() {
+    builtin print -r -- "${PWD/#$HOME/~}"
+}
+
+_mb_title_for_command() {
+    # $1 is the expanded command line zsh passes to preexec hooks.
+    local first=${1%% *}
+    builtin print -r -- "$first"
+}
+
+_mb_emit_title() {
+    _mb_disabled title && return
+    # OSC 0 sets icon name AND window title — mirrors what most apps that
+    # set a title actually do, so re-emit overwrites their leak in full.
+    builtin print -nu1 $'\e]0;'$1$'\a'
+}
+
+_mb_precmd_title() {
+    _mb_emit_title "$(_mb_title_for_prompt)"
+}
+
+_mb_preexec_title() {
+    _mb_emit_title "$(_mb_title_for_command "$1")"
 }
 
 # Inject 133;B at end of PS1 each prompt cycle. Themes that rebuild PS1
@@ -94,4 +128,6 @@ _mb_inject_b_into_prompt() {
 # user's .zshrc append after, which is fine.
 add-zsh-hook -Uz precmd _mb_precmd
 add-zsh-hook -Uz precmd _mb_inject_b_into_prompt
+add-zsh-hook -Uz precmd _mb_precmd_title
 add-zsh-hook -Uz preexec _mb_preexec
+add-zsh-hook -Uz preexec _mb_preexec_title

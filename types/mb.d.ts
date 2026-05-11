@@ -44,50 +44,23 @@ type MbPermission =
      */
     | "pane.read"
     | "layout.modify"
-    /**
-     * Launch external (non-PTY) processes via `mb.process.spawn`.
-     * Materially different threat model from `shell.write` (bounded
-     * to the current pane's PTY) and `io.inject` (synthetic terminal
-     * input only): this bit grants execution of arbitrary binaries
-     * with the user's environment. Held separate so popup-only or
-     * shell-only scripts don't pick it up implicitly.
-     */
+    /** Launch external (non-PTY) processes via `mb.process.spawn`. */
     | "process.spawn"
     /**
-     * Shorthand for every regular permission bit. Equivalent to
-     * listing all the groups + the standalone bits (currently
-     * `ui.focus`, `pane.read`). Symmetric with how mb's allowlist
-     * file represents a fully-permissive grant.
-     *
-     * Does NOT include the `"builtin"` elevation marker — `"all"`
-     * grants every privilege a *user script* can hold, but the
-     * loaded instance still runs sandboxed (file paths confined,
-     * allowlist prompt fires, etc.). For the trust elevation, use
-     * `"builtin"` instead (and see its documentation for the
-     * caller-restriction).
+     * Every regular permission bit (all groups + standalone bits). The
+     * loaded instance still runs sandboxed. Does NOT include `"builtin"`
+     * — for full trust use that instead.
      */
     | "all"
     /**
-     * Privilege-elevation request: load the target script as a
-     * built-in. A built-in instance has every permission bit AND
-     * runs without sandbox restrictions — unrestricted file paths,
-     * no allowlist prompt, full trust. Same level as the shipped
-     * controller scripts and `~/.config/MasterBandit/config.js`.
+     * Elevates the script to built-in trust: every permission bit and no
+     * sandbox restrictions (unrestricted file paths, no allowlist prompt).
      *
-     * **Caller restriction**: only built-in scripts may name this
-     * permission in their `mb.loadScript` call. A user script that
-     * tries it triggers a permission violation and the calling
-     * instance is terminated — same kill-on-attempt semantics as
-     * accessing `shell.commands` without the grant. The rationale:
-     * a built-in can already get the same effect by `import`-ing
-     * arbitrary files from its directory (which run with the
-     * importer's permissions in the same JS context), so explicitly
-     * letting them spawn separate built-in instances doesn't grant
-     * new authority — just lifecycle control. User scripts must
-     * never escape their sandbox, so the attempt is a hard error.
+     * **Caller restriction**: only built-in scripts may request this. A
+     * user script that names it triggers a permission violation and is
+     * terminated.
      *
-     * Implies `"all"`; listing them together is redundant but
-     * harmless.
+     * Implies `"all"`.
      */
     | "builtin";
 
@@ -106,74 +79,46 @@ type MbPermissionList = string;
  */
 interface MbProcessSpawnOptions {
     /**
-     * Working directory for the spawned process. Empty string or
-     * omitted → inherit mb's cwd. The chdir is performed in the
-     * grandchild *after* fork but *before* exec; failure aborts the
-     * spawn (the child `_exit(127)`s and the script-side return
-     * stays the intermediate-child pid — there's no synchronous error
-     * channel for post-fork failures in v1).
+     * Working directory for the spawned process. Empty string or omitted
+     * → inherit mb's cwd. Post-fork chdir failure aborts the spawn
+     * silently (no synchronous error channel).
      */
     cwd?: string;
     /**
-     * Environment variable overrides. Each key in this object replaces
-     * (or appends, if absent) the corresponding entry in the inherited
-     * environment. Keys absent here keep their inherited value. There
-     * is no syntax for *removing* an inherited key in v1 — workaround
-     * is to set it to the empty string.
-     *
-     * Values must be strings; non-string entries are silently dropped.
+     * Environment variable overrides — each key replaces (or appends) the
+     * corresponding entry in the inherited environment. Keys absent here
+     * keep their inherited value. No syntax for *removing* an inherited
+     * key (workaround: set to empty string). Non-string values are
+     * silently dropped.
      */
     env?: { [key: string]: string };
 }
 
 interface MbProcess {
     /**
-     * Launch an external process detached from mb. Fire-and-forget:
-     * the spawned process runs as its own session leader (`setsid(2)`),
-     * does not inherit mb's tty or stdio (stdin/stdout/stderr are
-     * reopened to `/dev/null`), and is reaped by init/launchd rather
-     * than mb. There is no exit-code or output-capture surface in v1
-     * — if you need to wait on the process or read its output, use a
-     * terminal pane via `mb.layout.createTerminal` instead.
+     * Launch an external process detached from mb. Fire-and-forget: the
+     * spawned process runs as its own session leader, stdio is redirected
+     * to `/dev/null`, and the child is reaped by init/launchd. No
+     * exit-code or output-capture surface — use `mb.layout.createTerminal`
+     * if you need to read output or wait on the process.
      *
-     * Argv semantics: argv[0] is set to `path` automatically. The
-     * `args` array becomes argv[1..N] as the child sees it. No shell
-     * is involved — `path` is resolved via `execvp(3)` PATH lookup,
-     * and arguments are passed verbatim with no metacharacter
-     * expansion or quoting. This is intentional: shell-style commands
-     * are an injection vector when scripts splice user input.
+     * `path` is resolved via PATH (`execvp(3)`). No shell — args pass
+     * verbatim with no metacharacter expansion. argv[0] is set to `path`
+     * automatically; `args` becomes argv[1..N].
      *
-     * @param path  Program to execute (basename or absolute path).
-     * @param args  argv[1..N]. Defaults to `[]` (program runs with no
-     *              arguments, which is what most launchers want).
-     * @param opts  Optional cwd / env overrides. See
-     *              `MbProcessSpawnOptions`.
-     * @returns     The intermediate-child pid on successful fork,
-     *              or `0` on pre-fork failure (e.g. resource limits).
-     *              Note this is *not* the grandchild pid that actually
-     *              runs the binary — there's no portable way to surface
-     *              that without breaking the detached double-fork
-     *              pattern. v1 has no API for tracking, signalling, or
-     *              waiting on the spawned process; if those are added,
-     *              they'll come as a separate `spawnTracked` returning
-     *              a handle.
+     * Returns the intermediate-child pid on successful fork, `0` on
+     * pre-fork failure. This is NOT the grandchild pid running the binary
+     * (the double-fork detaches that).
      *
-     * @throws TypeError on missing args, invalid arg types, or if the
-     *         caller lacks `process.spawn` permission.
+     * Does NOT throw on grandchild exec failure (e.g. binary missing) —
+     * failure is logged but the script sees a pid return. Validate with
+     * `fs.statSync` first if you need exec confirmation.
      *
-     * Does NOT throw on grandchild exec failure (e.g. binary not found
-     * in PATH). The failure is logged from the C++ side via spdlog,
-     * but the script just sees the spawn return a pid and proceed —
-     * this is a fundamental tradeoff of the detached model. If you
-     * need exec-success confirmation, validate the binary exists with
-     * a synchronous `fs.statSync` first, or use a tracked spawn (when
-     * available).
+     * @throws TypeError on missing/invalid args or missing `process.spawn`
+     *   permission.
      *
      * @example
-     *   // Open the user's $EDITOR on a file
      *   mb.process.spawn(process.env.EDITOR ?? "vi", ["/etc/hosts"]);
-     *
-     *   // Run a linter in a specific directory with extra env
      *   mb.process.spawn("eslint", ["--fix", "src/"], {
      *     cwd: "/home/me/project",
      *     env: { NODE_OPTIONS: "--max-old-space-size=4096" }
@@ -187,29 +132,17 @@ interface MbProcess {
 // ============================================================================
 
 /**
- * Format used to encode captured PTY output.
+ * Encoding for captured PTY output.
  *
- * - `"raw"` writes every byte the emulator received, verbatim. The
- *   resulting file contains all ANSI/CSI/OSC escapes and binary
- *   bytes; viewers like `less -R` or `cat` (with reset on exit)
- *   replay it close to what the user saw. Smallest format, no
- *   per-record overhead.
- * - `"text"` writes escape-stripped plain text suitable for direct
- *   consumption by an LLM, log scraper, or human reading the file
- *   without an interpreter. ANSI/CSI/OSC/DCS/SS3 sequences are
- *   dropped along with C0 control characters other than `\n` and
- *   `\t`. CR is normalised: `\r\n` becomes `\n` and bare `\r` is
- *   dropped (in-place updates like progress bars produce repeated
- *   content but no cursor-driven overwrites — modelling overwrites
- *   would require a full emulator). UTF-8 high bytes pass through
- *   verbatim. Stripper state persists across PTY chunks so a CSI
- *   split mid-sequence still gets dropped correctly.
- * - `"asciicast"` writes asciicast v2 (https://docs.asciinema.org).
- *   A header line at open carries terminal dimensions and the
- *   wall-clock timestamp; each subsequent PTY chunk becomes one
- *   `[<elapsed_seconds>, "o", <chunk>]` JSON-lines record.
- *   Replayable with the asciinema toolchain. Larger than raw because
- *   of JSON framing, but seekable + tooling-rich.
+ * - `"raw"`: every byte the emulator received, verbatim — ANSI/CSI/OSC
+ *   escapes included. Replay with `less -R` or `cat`. Smallest format.
+ * - `"text"`: escape-stripped plain text. ANSI/CSI/OSC/DCS/SS3 and most C0
+ *   controls dropped (keeps `\n` and `\t`). `\r\n` → `\n`, bare `\r`
+ *   dropped. UTF-8 passes through. In-place updates (progress bars) leave
+ *   duplicated content — no cursor-driven overwrite modelling.
+ * - `"asciicast"`: asciicast v2 (https://docs.asciinema.org). Header line +
+ *   per-chunk `[<elapsed>, "o", <data>]` JSON-lines records. Replayable
+ *   with the asciinema toolchain.
  */
 type MbOutputCaptureFormat = "raw" | "text" | "asciicast";
 
@@ -222,13 +155,10 @@ interface MbOutputCaptureOptions {
 /**
  * Reason a capture stopped, surfaced via the `stopped` event.
  *
- * - `"explicit"`: the script called `.stop()` on the handle, OR the
- *   owning script instance was unloaded (cleanup sweep). `error`
- *   is the empty string in this case.
- * - `"io-error"`: a write to the destination file failed (disk full,
- *   EIO, fd revoked, etc.). The capture has been auto-stopped and
- *   the FILE* closed; the `error` field carries the strerror text
- *   from the failing write.
+ * - `"explicit"`: `.stop()` was called, or the owning script was unloaded.
+ *   `error` is the empty string.
+ * - `"io-error"`: a write to the destination file failed (disk full, EIO,
+ *   etc.). Capture has been auto-stopped; `error` carries the strerror.
  */
 type MbOutputCaptureStopReason = "explicit" | "io-error";
 
@@ -240,15 +170,12 @@ interface MbOutputCaptureStoppedEvent {
 }
 
 /**
- * Handle returned by `pane.captureOutputToFile`. Carries enough
- * identifying state for the script to reason about the capture, but
- * the underlying file handle is owned by the C++ Terminal. The
- * handle stays alive after `.stop()` (or auto-stop) — methods just
- * become no-ops; `active` is the canonical "still capturing?" flag.
+ * Handle returned by `pane.captureOutputToFile`. Methods become no-ops
+ * after stop; `active` is the canonical "still capturing?" flag.
  *
- * Multiple captures per pane are supported, but each must point at
- * a distinct path. Calling `pane.captureOutputToFile` twice with
- * the same path on the same pane throws.
+ * Multiple captures per pane are supported, but each must point at a
+ * distinct path. Calling `pane.captureOutputToFile` twice with the same
+ * path on the same pane throws.
  */
 interface MbOutputCapture {
     /** Sandbox-validated absolute path being written to. */
@@ -256,33 +183,24 @@ interface MbOutputCapture {
     /** Format passed at registration time. */
     readonly format: MbOutputCaptureFormat;
     /**
-     * `true` until the capture stops. Flips to `false` immediately
-     * BEFORE the `stopped` event fires, so listeners that check
-     * `handle.active` from inside the callback see the post-stop
-     * state. Idempotent stops (calling `.stop()` on an already-
-     * stopped handle) leave it `false`.
+     * `true` until the capture stops. Flips to `false` BEFORE the
+     * `stopped` event fires, so handlers reading `active` in the callback
+     * see the post-stop state.
      */
     readonly active: boolean;
     /** UUID string of the pane this capture is attached to. */
     readonly paneId: string;
 
     /**
-     * Stop this capture. Closes the file and fires the `stopped`
-     * event with reason `"explicit"`. Idempotent: returns `true`
-     * the first time it actually closed a live capture, `false`
-     * if the handle was already stopped (either by a prior
-     * `.stop()`, an auto-stop on I/O error, or the owning
-     * instance's unload sweep).
+     * Stop this capture and fire `stopped` with reason `"explicit"`.
+     * Returns `true` if it closed a live capture, `false` if already
+     * stopped (idempotent).
      */
     stop(): boolean;
 
     /**
-     * Subscribe to the lifecycle event for this capture. Currently
-     * only `"stopped"` is defined; other event names install
-     * listeners that will simply never fire. Listeners are stored
-     * on the handle object directly — they're freed when the handle
-     * is garbage-collected, so there's no leak from forgetting to
-     * `removeEventListener`.
+     * Subscribe to capture lifecycle. Only `"stopped"` is defined; other
+     * names install listeners that never fire.
      */
     addEventListener(
         event: "stopped",
@@ -308,14 +226,11 @@ interface MbLinkInfo {
 }
 
 /**
- * One match returned from `pane.findText`. Anchored on logical-line ids;
- * `startCol` / `endCol` are cumulative cell offsets within the logical line,
- * NOT visual-row columns — they're directly usable as `addDecoration`
- * `startCol` / `endCol` (`Decoration::startCellOffset` /
- * `endCellOffset`). `endCol` is exclusive (one past the last matched cell).
- *
- * `startRowId === endRowId` for every match — the search engine confines
- * each hit to a single logical line.
+ * One match returned from `pane.findText`. Anchored on logical-line ids.
+ * `startCol` / `endCol` are cumulative cell offsets within the logical
+ * line (NOT visual-row columns); directly usable as `addDecoration`
+ * offsets. `endCol` is exclusive. Each match is confined to a single
+ * logical line (`startRowId === endRowId`).
  */
 interface MbMatch {
     readonly startRowId: number;
@@ -406,12 +321,9 @@ interface MbCommand {
 }
 
 /**
- * Common base for everything backed by a live terminal emulator:
- * `MbPane`, `MbPopup`, `MbEmbeddedTerminal`. Lets applets write generic
- * helpers that take "any terminal-like" without branching on kind.
- *
- * The global `Terminal` exposes this class — `x instanceof Terminal` is
- * true for every subclass instance.
+ * Common base for everything backed by a live terminal emulator: `MbPane`,
+ * `MbPopup`, `MbEmbeddedTerminal`. The global `Terminal` is this class —
+ * `x instanceof Terminal` is true for every subclass instance.
  */
 interface MbTerminal {
     /** Viewport width in character cells. */
@@ -420,9 +332,8 @@ interface MbTerminal {
     readonly rows: number;
     /**
      * Current cursor state. `rowId` is a stable logical-line id (same
-     * numbering as `pane.oldestRowId`/`newestRowId`). On a pane this is
-     * gated on `pane.read`; on popups/embeddeds it's ungated — applets
-     * can always introspect their own children.
+     * numbering as `pane.oldestRowId`/`newestRowId`). On a pane requires
+     * `pane.read`; on popups/embeddeds it's ungated.
      */
     readonly cursor: {
         readonly rowId: number;
@@ -441,24 +352,18 @@ interface MbTerminal {
 
     /**
      * Add a presentation overlay anchored to logical-line ids. Survives
-     * scroll, autowrap reflow, and scrollback eviction (until the anchor
-     * line evicts past the archive cap). Returns an opaque id usable with
-     * `removeDecoration`. Requires `pane.read`.
+     * scroll, autowrap reflow, and scrollback eviction until the anchor
+     * line evicts past the archive cap. Returns a handle usable with
+     * `removeDecoration` or `handle.remove()`. Requires `pane.read`.
      *
-     * Composition order against other overlays: User decorations paint on
-     * top of cell SGR, below hyperlink underlines, the OSC 133 command
-     * region, and selection. fg / bg / strikethrough are last-writer-wins
-     * within User decorations (insertion order, broken by `zPriority`).
-     * Underline is first-writer-wins and never overrides a cell's own SGR
-     * underline.
+     * Composition: User decorations paint on top of cell SGR, below
+     * hyperlink underlines, the OSC 133 command region, and selection.
+     * fg / bg / strikethrough are last-writer-wins by insertion order
+     * (broken by `zPriority`). Underline is first-writer-wins and never
+     * overrides a cell's own SGR underline.
      *
-     * `tag` groups User decorations for `clearDecorations(tag)`. The
-     * reserved tags `"selection"`, `"command-region"`, `"hyperlink"` are
-     * rejected (system kinds own them).
-     *
-     * `style.outline` and `style.dimOthers` are intentionally not exposed:
-     * those are uniform-driven render primitives currently dedicated to
-     * the OSC 133 command region.
+     * `tag` groups decorations for `clearDecorations(tag)`. The reserved
+     * tags `"selection"`, `"command-region"`, `"hyperlink"` are rejected.
      */
     addDecoration(spec: {
         startRowId: number;
@@ -495,9 +400,8 @@ interface MbTerminal {
     }): MbDecorationHandle;
 
     /**
-     * Remove a decoration. Accepts either the numeric id (legacy) or a
-     * DecorationHandle's id. Prefer `decorationHandle.remove()`. Returns
-     * true iff a decoration was actually removed.
+     * Remove a decoration by its numeric id. Prefer `handle.remove()`.
+     * Returns true iff a decoration was actually removed.
      */
     removeDecoration(id: number): boolean;
 
@@ -509,17 +413,10 @@ interface MbTerminal {
     clearDecorations(tag?: string): number;
 
     /**
-     * Begin a decoration batch. Each `addDecoration` / `clearDecorations`
-     * call on the returned batch queues an op without touching the
-     * underlying terminal; `submit()` applies the whole queue atomically
-     * (one snapshot publish for the entire batch) and returns the ids
-     * assigned to the queued Add ops in queue order.
-     *
-     * Use this when a script mutation would otherwise produce a burst of
-     * individual `addDecoration` / `clearDecorations` calls — every one
-     * of those publishes a snapshot, and the render thread can sample
-     * mid-burst and paint with incomplete state (visible as a
-     * blank-frame flicker between the clear and the re-add).
+     * Begin a decoration batch. Queues `addDecoration`/`clearDecorations`
+     * calls without mutating the terminal; `submit()` applies them
+     * atomically with one snapshot publish. Use to avoid mid-burst
+     * flicker when scripts emit many decoration mutations in a row.
      */
     createDecorationBatch(): MbDecorationBatch;
 }
@@ -544,12 +441,9 @@ interface MbDecorationBatch {
 }
 
 /**
- * Animatable decoration property names. Color values are packed RGBA8
- * (0xAABBGGRR); inflate values are pixel ints.
- *
- * `underlineColor` requires `style.underline` to be set on the decoration —
- * if there's no underline, the animation registers and runs but produces
- * no visible effect.
+ * Animatable decoration properties. Colors are packed RGBA8 (0xAABBGGRR);
+ * inflate values are pixel ints. `underlineColor` only takes visible
+ * effect when the decoration has `style.underline` set.
  */
 type MbDecorationProp = "bg" | "fg" | "underlineColor" | "bgInflateX" | "bgInflateY";
 
@@ -557,10 +451,9 @@ type MbDecorationProp = "bg" | "fg" | "underlineColor" | "bgInflateX" | "bgInfla
 type MbEase = "linear" | "easeIn" | "easeOut" | "easeInOut" | "easeInOutCubic";
 
 /**
- * Parameters for an "ease" animation — the only animation type in v1.
- * `startValue` is optional; when omitted, the animation starts from the
- * property's current sampled value at registration time (clean handoff
- * from a prior animation, no snap).
+ * Parameters for an "ease" animation (the only animation type in v1).
+ * `startValue` defaults to the property's currently sampled value (clean
+ * handoff from a prior animation).
  */
 interface MbEaseAnimParams {
     type?: "ease";
@@ -572,41 +465,32 @@ interface MbEaseAnimParams {
 
 /**
  * Handle to a registered decoration. Returned by `addDecoration` and
- * `decorationBatch.submit()`. Holds the underlying numeric id and offers
- * convenience methods for removal and animation registration.
+ * `batch.submit()`.
  */
 interface MbDecorationHandle {
     readonly id: number;
     /** Remove this decoration. Active animations are auto-cancelled. */
     remove(): boolean;
-    /**
-     * Register an animation on `prop`. Equivalent to
-     * `mb.startAnimation(this, prop, params)` but reads more naturally
-     * at the call site.
-     */
+    /** Equivalent to `mb.startAnimation(this, prop, params)`. */
     animate(prop: MbDecorationProp, params: MbEaseAnimParams): MbAnimationHandle;
 }
 
 /**
- * Handle to a running (or settled) animation. Returned by
- * `mb.startAnimation` / `decorationHandle.animate`. Animations are
- * fire-and-forget — the handle can be discarded; the animation continues
- * to run and finalize. Hold the handle only when you need to cancel mid-
- * flight or await completion via `onEnd`.
+ * Handle to a running or settled animation. Animations are fire-and-
+ * forget — the handle can be discarded. Hold it only to cancel
+ * mid-flight or await completion.
  */
 interface MbAnimationHandle {
     /**
-     * Cancel the animation. `"stop"` (default) freezes at the currently
-     * sampled value; `"snap-to-end"` jumps to `endValue` (and the `onEnd`
-     * promise resolves `"completed"` rather than `"cancelled"`). No-op
-     * if the animation has already settled.
+     * Cancel. `"stop"` (default) freezes at the current value;
+     * `"snap-to-end"` jumps to `endValue` and resolves `onEnd` as
+     * `"completed"`. No-op if already settled.
      */
     cancel(mode?: "stop" | "snap-to-end"): void;
     /**
-     * Promise that resolves when the animation finishes. Resolves
-     * `"completed"` for natural completion or `cancel("snap-to-end")`,
-     * `"cancelled"` for `cancel()` or target destruction. Repeated calls
-     * return the same promise.
+     * Promise resolving when the animation finishes. `"completed"` for
+     * natural completion or `cancel("snap-to-end")`; `"cancelled"` for
+     * `cancel()` or target destruction.
      */
     onEnd(): Promise<"completed" | "cancelled">;
 }
@@ -615,11 +499,9 @@ declare const Terminal: MbTerminal;
 
 interface MbPane extends MbTerminal {
     /**
-     * Stable UUID of this pane's Terminal node in `mb.layout`. Use this with
-     * `mb.layout.splitPane(...)`, `focusPane(...)`, `removeNode(...)`,
-     * `killTerminal(...)`, and `node(...)`. Ungated — UUIDs are just
-     * handles; mutations through `mb.layout` carry their own permission
-     * discipline.
+     * Stable UUID of this pane's Terminal node in `mb.layout`. Use with
+     * `mb.layout.splitPane`, `focusPane`, `removeNode`, `killTerminal`,
+     * `node`. Ungated — `mb.layout` mutations carry their own permissions.
      */
     readonly nodeId: string;
     /** OSC 2 title set by the shell. */
@@ -635,11 +517,8 @@ interface MbPane extends MbTerminal {
     /** Active popups on this pane. */
     readonly popups: MbPopupInfo[];
     /**
-     * Current text selection, or `null` if nothing is selected or
-     * `pane.read` permission not granted.
-     * Start is always before or equal to end (normalized).
-     * Column values are exclusive (one past the last selected column),
-     * matching `getTextFromRows` convention. Requires `pane.read`.
+     * Current text selection, normalized (start ≤ end), with exclusive
+     * `endCol`. `null` if nothing selected. Requires `pane.read`.
      */
     readonly selection: {
         readonly startRowId: number;
@@ -648,8 +527,7 @@ interface MbPane extends MbTerminal {
         /** Exclusive — one past the last selected column. */
         readonly endCol: number;
     } | null;
-    // `cursor` is inherited from MbTerminal. On a pane specifically,
-    // reading it still requires `pane.read` at runtime.
+    // `cursor` (inherited from MbTerminal) requires `pane.read` on a pane.
 
     /** Mouse position within this pane, or `null` if the mouse is outside. */
     readonly mousePosition: {
@@ -663,86 +541,65 @@ interface MbPane extends MbTerminal {
     /** Stable row ID of the newest (bottom-most) line. */
     readonly newestRowId: number;
     /**
-     * ID of the currently highlighted OSC 133 command (set via click,
-     * keyboard nav, or `selectCommand`), or `null` if none. Cleared on
-     * Escape (no modifiers) and on alt-screen entry. Requires
-     * `shell.commands`. Subscribe to `commandSelectionChanged` for a
-     * push signal.
+     * ID of the currently highlighted OSC 133 command, or `null` if none.
+     * Cleared on Escape (no modifiers) and on alt-screen entry. Subscribe
+     * to `commandSelectionChanged` for a push signal. Requires
+     * `shell.commands`.
      */
     readonly selectedCommandId: number | null;
     /**
-     * Full record of the OSC 133 command currently highlighted on this pane
-     * (see `selectedCommandId`), or `null` if nothing is selected. The object
-     * is the same shape as entries in `commands` — `command` and `output` are
-     * lazy getters that decode on first access. Requires `shell.commands`.
+     * Full record of the highlighted OSC 133 command, or `null` if none.
+     * Same shape as `commands` entries. Requires `shell.commands`.
      */
     readonly selectedCommand: MbCommand | null;
     /**
-     * Bounded ring of recently completed commands (oldest first, most recent
-     * last). Requires `shell.commands` permission.
+     * Bounded ring of recently completed commands (oldest first). Requires
+     * `shell.commands`.
      */
     readonly commands: readonly MbCommand[];
 
     /**
-     * Extract plain UTF-8 text from a stable row-id range (inclusive on both
-     * ends). `startRowId` maps to the first abs row of that logical line;
-     * `endRowId` maps to the last abs row of that logical line — so a
-     * wrapped line is covered end-to-end at the current width. IDs come from
-     * `MbCommand` fields or from `rowIdAt()`. Returns an empty string if the
-     * start line has been evicted from the archive. `startCol` is inclusive,
-     * `endCol` is exclusive (one past the last column). Requires `pane.read`.
+     * Extract plain UTF-8 text from a stable row-id range (inclusive on
+     * both ends). `startRowId`/`endRowId` map to the first/last abs row of
+     * the logical line — a wrapped line is covered end-to-end at the
+     * current width. `startCol` inclusive, `endCol` exclusive. Returns
+     * empty string if the start line has been evicted past the archive
+     * cap. Requires `pane.read`.
      */
     getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /**
-     * Write the same text `getTextFromRows` would return directly to a
-     * file. Useful for dumping selections, command output, or arbitrary
-     * scrollback ranges without materialising the result as a JS string
-     * the script then has to forward through `mb:fs`.
-     *
-     * Atomic on success: writes to `<path>.tmp` first, then renames into
-     * place. The destination directory is auto-created. The path is
-     * validated against the same sandbox as `fs.writeFileSync` —
-     * built-in scripts may write anywhere; user scripts may write only
-     * under `<configDir>/<scriptStem>/`.
-     *
-     * Range semantics are identical to `getTextFromRows`: `startRowId`
-     * resolves to the first abs row of that logical line, `endRowId` to
-     * the last; `startCol` is inclusive, `endCol` exclusive. An empty
-     * range writes a zero-byte file (does not throw).
-     *
-     * Requires both `pane.read` (the source) and `fs.write` (the
-     * destination). Returns the number of bytes written. Throws on
-     * permission denial, sandbox violation, or I/O failure.
+     * Write the same text `getTextFromRows` would return directly to
+     * `path`. Atomic on success (writes to `<path>.tmp` and renames).
+     * Auto-creates parent directories. Path is sandboxed as
+     * `fs.writeFileSync` (built-ins unrestricted; user scripts confined
+     * to `<configDir>/<scriptStem>/`). Empty ranges write a zero-byte
+     * file. Returns bytes written. Requires `pane.read` + `fs.write`.
      */
     writeRangeToFile(path: string, startRowId: number, startCol: number, endRowId: number, endCol: number): number;
     /**
      * Open a streaming capture of this pane's PTY output. Returns a
-     * handle the script can later `.stop()`; multiple concurrent
-     * captures per pane are supported as long as their paths are
-     * distinct.
+     * handle the script can later `.stop()`. Multiple concurrent captures
+     * per pane are supported as long as their paths are distinct.
      *
-     * Captured bytes are taken at the post-coalesce / pre-filter
-     * point inside the emulator — they reflect what the terminal
-     * actually saw on the wire, regardless of any script-level
-     * `output` filter that's also attached to this pane.
+     * Captured bytes are post-coalesce / pre-filter — they reflect what
+     * the emulator saw on the wire, regardless of any script-level output
+     * filter attached.
      *
-     * Path is validated against the same sandbox as
-     * `fs.writeFileSync` (built-in scripts unrestricted; user
-     * scripts confined to `<configDir>/<scriptStem>/` or
-     * `/tmp/masterbandit/`). The destination directory is auto-
-     * created. Existing files are truncated.
+     * Path is sandboxed as `fs.writeFileSync` (built-ins unrestricted;
+     * user scripts confined to `<configDir>/<scriptStem>/` or
+     * `/tmp/masterbandit/`). Parent directories auto-created; existing
+     * files truncated.
      *
-     * If a write fails (disk full, EIO, ...), the capture
-     * auto-stops and the handle's `stopped` event fires with
-     * `reason="io-error"` and the strerror text. Other captures on
-     * the same pane are unaffected.
+     * On a write failure (disk full, EIO, ...), the capture auto-stops
+     * and the handle's `stopped` event fires with `reason="io-error"`.
+     * Other captures on the same pane are unaffected.
      *
      * Captures are tracked on the calling instance — unloading the
      * script auto-stops every capture it owns.
      *
-     * Requires both `pane.read` (the source) and `fs.write` (the
-     * destination). Throws on permission denial, sandbox violation,
-     * duplicate path on the same pane, or open failure.
+     * Requires `pane.read` + `fs.write`. Throws on permission denial,
+     * sandbox violation, duplicate path on the same pane, or open
+     * failure.
      *
      * @example
      *   // Tail the user's shell into a JSON-Lines asciicast for an
@@ -776,26 +633,20 @@ interface MbPane extends MbTerminal {
      */
     rowIdAt(screenRow: number): number | null;
     /**
-     * Search the pane's scrollback + visible grid for `needle`. Each match
-     * is confined to a single logical line (`startRowId === endRowId`).
-     * Cell columns are cumulative offsets within the logical line, suitable
-     * for use as `addDecoration` `startCol` / `endCol`.
+     * Search the pane's scrollback + visible grid for `needle`. Matches
+     * are confined to a single logical line each; cell columns are
+     * cumulative within the logical line, usable as `addDecoration`
+     * offsets.
      *
-     * Default behavior is case-insensitive literal substring search. Set
-     * `opts.regex = true` to interpret `needle` as an ECMAScript regex
-     * (invalid syntax returns an empty array rather than throwing). Set
-     * `opts.caseSensitive` to disable folding. Set `opts.wholeWord` to
-     * require word boundaries (literal-mode only — regex callers can use
-     * `\b` directly). `opts.limit` caps the number of matches returned;
-     * the walk stops early when reached.
+     * Default: case-insensitive literal substring. `opts.regex` switches
+     * to ECMAScript regex (invalid syntax → `[]`, not a throw).
+     * `opts.caseSensitive` disables folding. `opts.wholeWord` requires
+     * word boundaries (literal mode only — regex callers use `\b`).
+     * `opts.limit` caps results.
      *
-     * Walks oldest → newest, so the returned vector is sorted in scroll
-     * order (top of scrollback first). Empty `needle` returns `[]`.
-     *
-     * Lines that straddle the scrollback / visible-grid boundary (a
-     * partially-soft-wrapped live edit line) are searched on the
-     * scrollback side only — the visible-grid continuation can't be
-     * decoration-anchored correctly via line-id resolution.
+     * Walks oldest → newest. Empty `needle` returns `[]`. Lines
+     * straddling the scrollback/visible-grid boundary are searched on the
+     * scrollback side only.
      *
      * Requires `pane.read`.
      */
@@ -810,11 +661,9 @@ interface MbPane extends MbTerminal {
         limit?: number;
     }): MbMatch[];
     /**
-     * Scroll the viewport so the line with the given logical id is at the
-     * top. Returns `true` iff the viewport actually changed; `false` if the
-     * id was evicted from the archive cap, the row is already in the live
-     * viewport, or the row is already at the visible top. Requires
-     * `pane.read`.
+     * Scroll so the line with `rowId` is at the top. Returns `true` if
+     * the viewport changed; `false` if the id was evicted, already
+     * visible, or already at the top. Requires `pane.read`.
      */
     scrollToRow(rowId: number): boolean;
     /**
@@ -828,18 +677,15 @@ interface MbPane extends MbTerminal {
 
     /**
      * Write raw bytes to the PTY master (shell stdin). No bracketed-paste
-     * wrapping — use this for synthetic keystrokes, OSC responses, or any
+     * wrapping. Use for synthetic keystrokes, OSC responses, or any
      * payload that isn't semantically a user paste. Requires `shell.write`.
      * Throws if no PTY.
      */
     write(data: string): void;
     /**
-     * Paste text to the PTY master. When the terminal has DECSET 2004
-     * (bracketed paste mode) active, `data` is wrapped in `\x1b[200~` /
-     * `\x1b[201~` so the shell's paste handling (quoting, auto-suggest
-     * suppression, multiline confirmation, etc.) kicks in. When mode 2004
-     * is inactive, behaves like `write()`. Requires `shell.write`. Throws
-     * if no PTY.
+     * Paste text to the PTY master. When DECSET 2004 (bracketed paste) is
+     * active, `data` is wrapped in `\x1b[200~`/`\x1b[201~`. Otherwise
+     * behaves like `write()`. Requires `shell.write`. Throws if no PTY.
      */
     paste(data: string): void;
     /** Create a popup on this pane. Requires `ui.popup.create`. Returns null on failure. */
@@ -847,14 +693,11 @@ interface MbPane extends MbTerminal {
 
     /**
      * Create an inline embedded terminal anchored at the current cursor
-     * row. The returned object is a full `MbTerminal`: inject bytes,
-     * resize, listen for user keystrokes when focused, listen for
-     * destruction (either explicit `close()` or eviction once the anchor
-     * row falls off the archive cap). `cols` matches this pane's cols;
-     * `rows` is the caller-specified height. Returns `null` while the
-     * pane is on alt-screen, when `rows <= 0`, or when an embedded
-     * already exists on the current cursor row. Requires
-     * `ui.popup.create` (embeddeds share the popup authority bit).
+     * row. `cols` matches this pane's cols; `rows` is caller-specified.
+     * Returns `null` while the pane is on alt-screen, when `rows <= 0`,
+     * or when an embedded already exists on the current cursor row.
+     * Destroyed by explicit `close()` or eviction past the archive cap.
+     * Requires `ui.popup.create`.
      */
     createEmbeddedTerminal(opts: { rows: number }): MbEmbeddedTerminal | null;
 
@@ -898,18 +741,12 @@ interface MbPane extends MbTerminal {
      */
     addEventListener(event: "commandSelectionChanged", fn: (commandId: number | null) => void): void;
     /**
-     * Fires when a logical-line id is evicted from this pane's
-     * scrollback past the archive cap. Payload carries the evicted
-     * `rowId` — after this fires, the id is no longer valid for any
-     * text/link/selection query on this pane (calls will return empty
-     * results). Useful for scripts that anchor state to specific rows
-     * (prompt markers, bookmarks, embedded terminals) and need to
-     * invalidate their tracking. Requires `pane.read`.
-     *
-     * Subscribing or removing a listener requires `pane.read`. The
-     * event fires once per evicted id, on the main thread, after the
-     * parser has yielded its lock — handlers can safely call any
-     * synchronous pane API.
+     * Fires when a logical-line id is evicted past the archive cap.
+     * After this, the id is invalid for any text/link/selection query
+     * (calls return empty). Use to invalidate row-anchored state (prompt
+     * markers, bookmarks, embedded anchors). Fires once per id, on the
+     * main thread post-parse — handlers may call any synchronous pane
+     * API. Requires `pane.read`.
      */
     addEventListener(event: "rowEvicted", fn: (ev: { rowId: number }) => void): void;
 
@@ -986,11 +823,10 @@ interface MbPopup extends MbTerminal {
 // ============================================================================
 
 /**
- * Headless child terminal anchored to a Document line id in its parent pane.
- * Renders inline at the anchor row; Model B displacement shifts subsequent
- * rows down by `(rows - 1) * cellH` at composite time. Hidden while the
- * parent is on alt-screen; auto-destroyed when the anchor line evicts past
- * the archive cap (fires the `"destroyed"` event).
+ * Headless child terminal anchored to a Document line id in its parent
+ * pane, rendered inline at that row. Hidden while the parent is on
+ * alt-screen; auto-destroyed (fires `"destroyed"`) when the anchor line
+ * evicts past the archive cap.
  */
 interface MbEmbeddedTerminal extends MbTerminal {
     /** Parent pane's tree-node UUID (stringified). */
@@ -1022,9 +858,9 @@ interface MbEmbeddedTerminal extends MbTerminal {
         cellX: number; cellY: number; pixelX: number; pixelY: number;
     }) => void): void;
     /**
-     * Fires after a successful `resize(rows)`. Payload: (cols, rows). Cols
-     * is the parent pane's width at the time — currently doesn't fire when
-     * the parent pane cols change (that cascade isn't wired).
+     * Fires after a successful `resize(rows)`. Payload: (cols, rows).
+     * Cols is the parent pane's width at the time. Does not fire on
+     * parent-pane cols changes.
      */
     addEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
     /** Fired once when the embedded is destroyed (either `close()` or anchor eviction). */
@@ -1054,7 +890,7 @@ interface MbEmbeddedTerminal extends MbTerminal {
 
 /**
  * Outcome of `mb.loadScript` / `mb.approveScript`. Narrow via `status`:
- * the `id` field is only present on `"loaded"`, and `error` only on `"error"`.
+ * `id` is present only on `"loaded"`; `error` only on `"error"`.
  */
 type MbLoadResult =
     | { status: "loaded"; id: number }
@@ -1063,7 +899,7 @@ type MbLoadResult =
     | { status: "error"; error?: string };
 
 // ============================================================================
-// Config snapshot — mirrors the C++ Config struct via glaze JSON
+// Config snapshot
 // ============================================================================
 
 interface MbConfigPadding { left: number; top: number; right: number; bottom: number; }
@@ -1109,25 +945,20 @@ interface MbConfigTabBar {
 
 interface MbConfigNotifications { show_when_foreground: boolean; }
 
-/**
- * One entry in `config.keybinding`. The TOML / glaze key is the singular
- * `keybinding` (matches `[[keybinding]]` table-array syntax in TOML).
- */
+/** One entry in `config.keybinding[]`. */
 interface MbKeybinding {
-    /** A single key like `"ctrl+shift+t"` or a sequence like
-     *  `["ctrl+x", "ctrl+c"]` for kitty-style multi-stroke bindings. */
+    /**
+     * Single key (`"ctrl+shift+t"`) or sequence (`["ctrl+x", "ctrl+c"]`)
+     * for multi-stroke bindings.
+     */
     keys: string[];
-    /** Snake-case action name, optionally namespaced (`"namespace.action"`)
-     *  for script-registered actions. */
+    /** Snake-case action name, optionally namespaced (`"namespace.action"`). */
     action: string;
-    /** Action-specific positional arguments (e.g. `["right"]` for split_pane). */
+    /** Action-specific positional arguments (e.g. `["right"]`). */
     args?: string[];
 }
 
-/**
- * One entry in `config.mousebinding`. The TOML / glaze key is the singular
- * `mousebinding`.
- */
+/** One entry in `config.mousebinding[]`. */
 interface MbMousebinding {
     button: "left" | "middle" | "right";
     event: "press" | "release" | "click" | "doublepress" | "triplepress" | "drag";
@@ -1140,30 +971,24 @@ interface MbMousebinding {
 }
 
 /**
- * Live snapshot of the parsed TOML Config. Read via `mb.config`.
- *
- * The snapshot also carries mutation methods at runtime (see
- * {@link MbConfigMutations}), gated on the `config.modify` permission.
- * Methods are attached to the object returned by the `mb.config` getter
- * each time it is read, so capturing into a local variable retains them:
- * `const cfg = mb.config; cfg.patch({...});`.
+ * Live snapshot of the parsed TOML config. Read via `mb.config`. Includes
+ * mutation methods (see `MbConfigMutations`) gated on `config.modify`.
+ * Capturing into a local works: `const cfg = mb.config; cfg.patch({...})`.
  */
 interface MbConfig extends MbConfigMutations {
     font: string;
     font_size: number;
     bold_strength: number;
     /**
-     * Currently startup-only: changes to this field via TOML hot-reload
-     * or `mb.config.patch` update the snapshot but do NOT resize existing
-     * panes' scrollback rings (and new panes spawned post-reload still
-     * use the startup value). This is a known limitation.
+     * Startup-only: hot-reload / `patch` updates the snapshot but does
+     * NOT resize existing panes' scrollback rings, and new panes spawned
+     * post-reload still use the startup value.
      */
     scrollback_lines: number;
     padding: MbConfigPadding;
     cursor: MbConfigCursor;
     colors: MbConfigColors;
     tab_bar: MbConfigTabBar;
-    /** Glaze serialises the keybindings vector under the singular key. */
     keybinding: MbKeybinding[];
     mousebinding: MbMousebinding[];
     divider_color: string;
@@ -1178,65 +1003,56 @@ interface MbConfig extends MbConfigMutations {
     alt_sends_esc: boolean;
     command_navigation_wrap: boolean;
     key_sequence_timeout_ms: number;
-    /** Reported color preference for mode 2031 / DSR-997. `"auto"` (default)
-     *  defers to the system; `"light"` / `"dark"` overrides bypass DBus
-     *  entirely (useful when the freedesktop portal is missing). */
+    /**
+     * Color preference reported for mode 2031 / DSR-997. `"auto"` defers
+     * to the system; `"light"`/`"dark"` overrides bypass system query.
+     */
     color_scheme: "auto" | "light" | "dark";
-    /** Whether `closePane` / `closeTab` / OS window-close prompts before
-     *  killing the focused unit. `"never"` always closes immediately;
-     *  `"if_busy"` (default) prompts when any non-shell foreground process
-     *  is running; `"always"` prompts unconditionally. The "shell" list is
-     *  JS-side state in default-ui.js; mutate it via the
-     *  `default-ui.add-shell` / `default-ui.remove-shell` actions. */
+    /**
+     * Whether `closePane`/`closeTab`/OS window-close prompts before
+     * killing. `"never"` closes immediately; `"if_busy"` (default) prompts
+     * when any non-shell foreground process is running; `"always"` always
+     * prompts. The "shell" list is JS-side state in default-ui.js; mutate
+     * via `default-ui.add-shell` / `default-ui.remove-shell` actions.
+     */
     confirm_close: "never" | "if_busy" | "always";
     notifications: MbConfigNotifications;
 }
 
 /**
- * Runtime config mutators (gated on the `config.modify` permission).
- * All mutations go through the same `applyConfig` path as TOML hot-reload
- * and are ephemeral — last-write-wins against a concurrent disk edit, and
- * nothing is persisted back to `config.toml`. Throws an `Error` on
- * validation failure (bad shape / wrong types).
+ * Runtime config mutators (gated on `config.modify`). All mutations are
+ * ephemeral — last-write-wins against concurrent disk edits, nothing is
+ * persisted to `config.toml`. Throws `Error` on validation failure.
  */
 interface MbConfigMutations {
     /**
-     * Deep-merge a partial config into the live snapshot. Plain-object
-     * fields recurse; arrays (`keybinding`, `mousebinding`) and primitives
-     * are replaced wholesale, so to add a single keybinding via patch
-     * the caller must supply the full new array. {@link addKeybinding} is
-     * a more ergonomic shortcut for that case.
+     * Deep-merge a partial config. Plain-object fields recurse; arrays
+     * (`keybinding`, `mousebinding`) and primitives are replaced wholesale
+     * — use `addKeybinding`/`addMousebinding` to extend without replacing.
      *
-     * @example
-     *   mb.config.patch({ font_size: 14, tab_bar: { position: "top" } });
+     * @example mb.config.patch({ font_size: 14, tab_bar: { position: "top" } });
      */
     patch(partial: Partial<MbConfig>): void;
 
     /**
-     * Append a single keybinding to `config.keybinding[]` and apply.
-     * Convenience over `patch({keybinding: [...mb.config.keybinding, b]})`.
-     * Does not deduplicate — later entries win in the merge inside
-     * `applyConfig` (which always layers `config.keybinding[]` over the
-     * built-in `defaultBindings()`).
+     * Append a single keybinding. Does not deduplicate; later entries win.
+     * Cannot remove built-in default bindings (those aren't in
+     * `config.keybinding[]`).
      */
     addKeybinding(b: MbKeybinding): void;
 
     /**
-     * Remove all entries whose `keys` array exactly matches (element-wise,
-     * order-sensitive). Returns the count removed (0 if none).
-     * Cannot remove built-in default bindings — those are layered in by
-     * `defaultBindings()` and not part of `config.keybinding[]`.
+     * Remove every entry whose `keys` array exactly matches (element-wise,
+     * order-sensitive). Returns count removed.
      */
     removeKeybinding(match: { keys: string[] }): number;
 
-    /** Append a single mousebinding to `config.mousebinding[]` and apply. */
+    /** Append a single mousebinding. */
     addMousebinding(b: MbMousebinding): void;
 
     /**
-     * Remove mousebindings whose specified fields match. Omitted fields
-     * are wildcards — e.g. `removeMousebinding({button: "middle"})`
-     * removes every middle-button binding regardless of event/mode/region.
-     * Returns the count removed.
+     * Remove mousebindings matching the given fields. Omitted fields are
+     * wildcards. Returns count removed.
      */
     removeMousebinding(match: {
         button?: string;
@@ -1260,26 +1076,20 @@ interface MbActionInfo {
 }
 
 /**
- * The array returned by `mb.actions` is augmented with handler-registry
- * methods. Capturing `const a = mb.actions; a.register(...)` works because the
- * methods are bound to the snapshot. The array itself is regenerated on every
- * `mb.actions` access.
+ * Array returned by `mb.actions`, augmented with handler-registry methods.
+ * Capturing into a local works; the array regenerates on every access.
  */
 interface MbActions extends ReadonlyArray<MbActionInfo> {
-    /**
-     * Register a JS handler invoked when the action fires. Requires
-     * `layout.modify` (used by built-in scripts that own action plumbing).
-     */
+    /** Register a handler for `name`. Requires `layout.modify`. */
     register(name: string, fn: (...args: string[]) => void): void;
     /** Drop a previously-registered handler. Requires `layout.modify`. */
     unregister(name: string): void;
 }
 
 /**
- * Payload for the `terminalExited` event on the `mb` global. Emitted after a
- * Terminal node's PTY child exits. The Terminal node remains in the layout
- * tree so the controller can decide whether to remove the node, transform the
- * tab, or spawn a replacement in response.
+ * Payload for `terminalExited`. Emitted after a Terminal node's PTY child
+ * exits. The Terminal node remains in the tree so the controller can
+ * decide whether to remove it, transform the tab, or respawn.
  */
 interface MbTerminalExitedEvent {
     /** Stringified pane handle (UUID). */
@@ -1311,17 +1121,13 @@ interface MbGlobal {
      */
     readonly layout: MbLayout;
     /**
-     * Live snapshot of the loaded TOML config (the same struct
-     * `PlatformDawn::applyConfig` consumes). Re-read after the
-     * `configChanged` event to pick up hot-reload updates. Shape mirrors
-     * the C++ `Config` struct via glaze JSON serialization.
+     * Live snapshot of the loaded TOML config. Re-read after the
+     * `configChanged` event to pick up hot-reload updates.
      *
-     * The returned object is freshly built on every getter access (it is
-     * NOT live-bound — mutating individual fields on the returned object
-     * has no effect). To change config from JS, use the mutation methods
-     * attached to the returned object (`patch` / `addKeybinding` / etc.,
-     * see {@link MbConfigMutations}); these go through the same
-     * `applyConfig` path as a TOML hot-reload.
+     * The returned object is freshly built on every getter access —
+     * mutating individual fields has no effect. To change config from JS
+     * use the mutation methods on the returned object (`patch`,
+     * `addKeybinding`, etc. — see `MbConfigMutations`).
      */
     readonly config: MbConfig;
 
@@ -1362,17 +1168,12 @@ interface MbGlobal {
 
     // --- Tokens / crypto ---
     /**
-     * Generate `length` cryptographically-secure random bytes and return them
-     * as a `2 * length`-character hex string. Defaults to 32 bytes (64 hex
-     * chars). Ungated — no permission required.
+     * Generate `length` cryptographically-secure random bytes as a
+     * `2 * length`-character hex string. Defaults to 32 bytes (64 chars).
+     * Ungated.
      */
     createSecureToken(length?: number): string;
-    /**
-     * Generate a random UUID v4 (36-char canonical string form). Ungated —
-     * randomness alone confers no capability. String form is the only
-     * JS-safe representation; 128-bit integers don't round-trip through
-     * JS Number.
-     */
+    /** Generate a random UUID v4 (36-char canonical string). Ungated. */
     createUuid(): string;
 
     // --- Custom terminal capabilities ---
@@ -1395,57 +1196,87 @@ interface MbGlobal {
     setClipboard(text: string, source?: "clipboard" | "primary"): void;
 
     /**
-     * Begin an animation on a property of `target`. v1 only accepts a
-     * `MbDecorationHandle` as `target`; future revisions may extend this to
-     * panes, popups, etc. Equivalent to `target.animate(prop, params)`.
-     *
-     * The returned handle can be cancelled, awaited via `onEnd()`, or
-     * discarded — animations are fire-and-forget.
+     * Begin an animation on a property of `target`. v1 only accepts
+     * `MbDecorationHandle`. Equivalent to `target.animate(prop, params)`.
      */
     startAnimation(target: MbDecorationHandle, prop: MbDecorationProp,
                    params: MbEaseAnimParams): MbAnimationHandle;
 
     // --- External process management ---
     /**
-     * External (non-PTY) process APIs. Distinct from `pane.write` /
-     * `pane.paste` (which talk to an existing pane's shell) and from
-     * `mb.layout.createTerminal` (which spawns a new pane with a PTY).
-     * Use this for editors, GUI tools, OS integrations, etc. — anything
-     * that should run alongside mb rather than inside a terminal pane.
+     * External (non-PTY) process APIs. Use for editors, GUI tools, OS
+     * integrations — anything to run alongside mb rather than inside a
+     * pane. For pane shell interaction, use `pane.write`/`pane.paste`
+     * instead.
      */
     readonly process: MbProcess;
+
+    /**
+     * Compile-time host identity, Node-style. Vocabulary matches Node's
+     * `process.platform` / `os.arch()`.
+     */
+    readonly os: {
+        /** `"darwin" | "linux" | "win32" | "freebsd" | "openbsd" | "unknown"` */
+        readonly platform: string;
+        /** `"arm64" | "x64" | "ia32" | "arm" | "unknown"` */
+        readonly arch: string;
+        /**
+         * Captured at startup; later hostname changes are not reflected.
+         * Empty string on `gethostname` failure.
+         */
+        readonly hostname: string;
+    };
 
     // --- Lifecycle events ---
     /** Fires once per new pane. Fires on every loaded instance. */
     addEventListener(event: "paneCreated", fn: (pane: MbPane) => void): void;
     /**
-     * Fires after a pane has been destroyed. The pane handle is no longer
-     * usable, so the payload is the scalar `(paneId, paneNodeId)` pair.
-     * `paneNodeId` is `null` if the pane had already detached from the tree.
+     * Fires after a pane has been destroyed. Payload is `(paneId,
+     * paneNodeId)` — the pane handle is no longer usable. `paneNodeId` is
+     * `null` if the pane had already detached from the tree.
      */
     addEventListener(
         event: "paneDestroyed",
         fn: (paneId: string, paneNodeId: string | null) => void
     ): void;
-    /** Fires once per new tab. Payload is the new tab's subtreeRoot UUID. */
-    addEventListener(event: "tabCreated", fn: (tabNodeId: string) => void): void;
-    /** Fires after a tab has been destroyed. Payload is the closed tab's UUID. */
-    addEventListener(event: "tabDestroyed", fn: (tabNodeId: string) => void): void;
     /**
-     * Fires when a Terminal node's child process exits. The Terminal node is
-     * left in place so the controller can decide what to do (remove node,
+     * Fires when a Stack-direct-child becomes a tab. Top-level tab creation
+     * fires once per `createTab()`; sub-tab creation fires from
+     * `wrapInStack` (first sub-tab content) and `createSubTab`.
+     *
+     * Payload fields:
+     *   - `id`: the new tab/sub-tab's node UUID
+     *   - `parentStackId`: UUID of the enclosing Stack
+     *   - `level`: `"top"` if `parentStackId` is the root tabs Stack,
+     *     `"sub"` otherwise. Filter on this if your listener only cares
+     *     about top-level tabs.
+     */
+    addEventListener(
+        event: "tabCreated",
+        fn: (info: { id: string; parentStackId: string; level: "top" | "sub" }) => void
+    ): void;
+    /**
+     * Fires after a Stack-direct-child has been closed via `closeTab`
+     * (top-level or sub-tab). Payload shape matches `tabCreated`.
+     */
+    addEventListener(
+        event: "tabDestroyed",
+        fn: (info: { id: string; parentStackId: string; level: "top" | "sub" }) => void
+    ): void;
+    /**
+     * Fires when a Terminal node's child process exits. The Terminal node
+     * is left in place — the controller decides what to do (remove node,
      * transform the tab, respawn).
      */
     addEventListener(event: "terminalExited", fn: (ev: MbTerminalExitedEvent) => void): void;
     /** Fires when the persisted config has been reloaded from disk. */
     addEventListener(event: "configChanged", fn: () => void): void;
     /**
-     * OS-level window close (X button / NSApp termination / Cmd+Q where
-     * applicable). When at least one listener is registered, C++ defers the
-     * quit and fans out the event; the listener owns the quit decision and
-     * must call `mb.quit()` to commit. With no listener registered the
-     * fallback path quits immediately, so a broken JS engine can't trap the
-     * user. default-ui.js listens by default to drive close-confirm.
+     * OS-level window close (X button / NSApp termination / Cmd+Q). When
+     * any listener is registered, C++ defers the quit and fires the
+     * event; the listener owns the decision and must call `mb.quit()` to
+     * commit. With no listener, mb quits immediately. default-ui.js
+     * listens by default to drive close-confirm.
      */
     addEventListener(event: "quit-requested", fn: () => void): void;
     /** Fires when any action is invoked, with the action's full name. */
@@ -1469,8 +1300,14 @@ interface MbGlobal {
         event: "paneDestroyed",
         fn: (paneId: string, paneNodeId: string | null) => void
     ): void;
-    removeEventListener(event: "tabCreated", fn: (tabNodeId: string) => void): void;
-    removeEventListener(event: "tabDestroyed", fn: (tabNodeId: string) => void): void;
+    removeEventListener(
+        event: "tabCreated",
+        fn: (info: { id: string; parentStackId: string; level: "top" | "sub" }) => void
+    ): void;
+    removeEventListener(
+        event: "tabDestroyed",
+        fn: (info: { id: string; parentStackId: string; level: "top" | "sub" }) => void
+    ): void;
     removeEventListener(event: "terminalExited", fn: (ev: MbTerminalExitedEvent) => void): void;
     removeEventListener(event: "configChanged", fn: () => void): void;
     removeEventListener(event: "action", fn: (actionName: string) => void): void;
@@ -1485,10 +1322,7 @@ interface MbGlobal {
 // mb.layout — LayoutTree primitives
 // ============================================================================
 
-/**
- * Per-child slot constraints inside a Container. All cell counts are 0 when
- * unset; defaults match the C++ `ChildSlot` struct.
- */
+/** Per-child slot constraints inside a Container. */
 interface MbChildSlotOptions {
     /** Relative growth weight when distributing leftover space. Default 1. */
     stretch?: number;
@@ -1557,7 +1391,12 @@ type MbLayoutNode = MbContainerNode | MbStackNode | MbTabBarNode | MbTerminalNod
 interface MbFocusedPaneInfo {
     /** The focused pane's Terminal-node UUID. */
     readonly nodeId: string;
-    /** The enclosing tab's subtreeRoot UUID, or `null` if not in a tab. */
+    /**
+     * The enclosing TOP-LEVEL tab's subtreeRoot UUID, or `null` if not in
+     * a tab. For panes inside a sub-bar, this is still the top-level tab
+     * (not the sub-tab Container) — walk up via `nearestAncestorOfKind`
+     * for the sub-stack level.
+     */
     readonly tabNodeId: string | null;
 }
 
@@ -1587,16 +1426,33 @@ interface MbLayout {
     // --- Tab lifecycle (route through Platform so PTY/graveyard stay in sync) ---
 
     /**
-     * Create an empty tab. Returns the new tab's subtreeRoot UUID string, or
-     * `null` on failure.
+     * Create an empty top-level tab (a Stack added as a direct child of
+     * the root tabs Stack). Returns the new tab's subtreeRoot UUID, or
+     * `null` on failure. Follow with `createTerminal(returnedId, ...)` to
+     * spawn an initial pane.
      */
     createTab(): string | null;
     /**
-     * Close a tab by its subtreeRoot UUID. Returns `false` when no tab
-     * matched the argument (e.g. nil UUID, garbage, or last-tab guard).
+     * Create a sub-tab inside `parentStackUuid` (must be a Stack —
+     * typically `wrapInStack(...).stack`). Appends a Container as the
+     * Stack's active child and fires `tabCreated` with `level: "sub"`.
+     * Returns the new Container's UUID. Follow with
+     * `createTerminal(returnedId, ...)` to spawn a pane.
+     */
+    createSubTab(parentStackUuid: string, opts?: { dir?: MbSplitDir }): string | null;
+    /**
+     * Close a Stack-direct-child (top-level tab or sub-bar tab). Walks up
+     * to the enclosing Stack, tears down panes, activates a surviving
+     * sibling, restores its remembered focus. Returns `false` if the UUID
+     * isn't a direct child of any Stack or the Stack would be left empty
+     * (refuses last tab).
      */
     closeTab(nodeId: string): boolean;
-    /** Activate a tab by its subtreeRoot UUID. */
+    /**
+     * Make `nodeId` the active child of its enclosing Stack. Works for
+     * top-level tabs and sub-bar tabs. Top-level activation also updates
+     * window title and focus tracking.
+     */
     activateTab(nodeId: string): void;
 
     // --- Pane lifecycle ---
@@ -1625,6 +1481,23 @@ interface MbLayout {
      */
     splitPane(existingNodeId: string, dir: MbSplitDir, newIsFirst?: boolean): string | null;
 
+    /**
+     * Wrap an existing node in
+     *   `Container[dir] = [TabBar | Stack[Container[horizontal, existing]]]`
+     * (TabBar leading iff `tabBarFirst`). The inner Container is the
+     * "tab content" slot — `createTerminal(stack)` descends into the
+     * active tab content. Slot weights of `existingNodeId` transfer to
+     * the new wrapper so the parent layout doesn't lurch. Returns
+     * `{wrapper, stack, tabBar, content}`; throws on validation failure.
+     *
+     * Defaults: `dir = "vertical"`, `tabBarFirst = true` (horizontal tab
+     * strip above content).
+     */
+    wrapInStack(
+        existingNodeId: string,
+        opts?: { dir?: "horizontal" | "vertical" | "h" | "v"; tabBarFirst?: boolean }
+    ): { wrapper: string; stack: string; tabBar: string; content: string };
+
     // --- Slot constraints ---
 
     setSlotStretch(parent: string, child: string, stretch: number): boolean;
@@ -1645,6 +1518,13 @@ interface MbLayout {
      * the zoom and restore normal rendering.
      */
     setStackZoom(stackNodeId: string, targetNodeId?: string | null): boolean;
+    /**
+     * Mark a Stack as opaque to focus traversal — focus-arrow keybindings
+     * treat it as a single unit instead of recursing into children. Pure
+     * navigation hint; layout unchanged. Returns `false` if `stackNodeId`
+     * isn't a Stack.
+     */
+    setStackOpaque(stackNodeId: string, opaque: boolean): boolean;
 
     // --- Tree mutation primitives ---
 
@@ -1655,6 +1535,38 @@ interface MbLayout {
     /** Append `child` under `parent` with optional slot constraints. */
     appendChild(parent: string, child: string, opts?: MbChildSlotOptions): void;
     removeChild(parent: string, child: string): void;
+    /**
+     * Replace `oldChild` in `parent`'s child list with `newChild` (same
+     * position). `newChild` must be detached. Throws on parent missing,
+     * `oldChild` not in parent, or `newChild` already having a parent.
+     */
+    replaceChild(parent: string, oldChild: string, newChild: string, opts?: MbChildSlotOptions): void;
+    /**
+     * Move `child` within `parent` by `delta` positions (no wraparound —
+     * use `rotateChildren` for that). Returns `false` on out-of-bounds.
+     * Stack `activeChild` follows the moved entry.
+     */
+    moveChild(parent: string, child: string, delta: number): boolean;
+    /**
+     * Circularly shift every child of `parent` by `delta` positions.
+     * Returns `false` if `parent` isn't a Container/Stack or has fewer
+     * than two children.
+     */
+    rotateChildren(parent: string, delta: number): boolean;
+    /**
+     * Swap two leaf nodes anywhere in the tree, including across parents.
+     * Slot weights stay with the position so the visual layout doesn't
+     * change — only the leaves move. Refuses nil/equal ids, missing or
+     * detached nodes, or pairs where one is an ancestor of the other.
+     */
+    swapLeaves(a: string, b: string): boolean;
+    /**
+     * Walk up from `fromParent` and collapse each Container with exactly
+     * one child (the lone child is promoted into the grandparent's slot,
+     * the Container is destroyed). Stops at `stopAt` (exclusive) or when
+     * reaching a node with 0 or ≥2 children.
+     */
+    collapseSingletonsAbove(fromParent: string, stopAt: string): void;
     /** Set the active child of a Stack. */
     setActiveChild(stack: string, child: string): void;
     /** Bind a TabBar to a Stack (or pass `null`/omit to clear the binding). */
@@ -1669,10 +1581,9 @@ interface MbLayout {
     /** Return the node record for `id`, or `null` if unknown. */
     node(id: string): MbLayoutNode | null;
     /**
-     * Enumerate every node of `kind` reachable from `subtreeRoot` (or from the
-     * tree root if omitted). Recursion follows Container and Stack children;
-     * TabBar has no children. Returned UUIDs are in implementation-defined
-     * tree-walk order.
+     * Enumerate every node of `kind` reachable from `subtreeRoot` (defaults
+     * to the tree root). Returned UUIDs are in tree-walk order
+     * (implementation-defined within that).
      */
     queryNodes(
         kind: "Terminal" | "Container" | "Stack" | "TabBar"
@@ -1680,26 +1591,39 @@ interface MbLayout {
         subtreeRoot?: string | null
     ): string[];
     /**
-     * Find the first node whose `label` exactly equals `label`. Returns
-     * `null` if none. Empty strings never match (unlabeled nodes are
-     * not findable).
+     * Walk `start`'s parent chain (inclusive) and return the first
+     * ancestor of `kind`. `null` if none.
+     */
+    nearestAncestorOfKind(
+        start: string,
+        kind: "Terminal" | "Container" | "Stack" | "TabBar"
+            | "terminal" | "container" | "stack" | "tabbar"
+    ): string | null;
+    /**
+     * Walk `descendant`'s parent chain and return whether any ancestor
+     * equals `ancestor`. Reflexive: `contains(x, x)` is `true`.
+     */
+    contains(ancestor: string, descendant: string): boolean;
+    /**
+     * Every Terminal-kind leaf UUID inside `start`'s subtree. With
+     * `onlyActiveStack: true`, Stack recursion follows `activeChild` only
+     * (visible-on-screen). Defaults to `false` (every terminal regardless
+     * of visibility).
+     */
+    terminalLeavesIn(start: string, onlyActiveStack?: boolean): string[];
+    /**
+     * First node whose `label` exactly equals `label`, or `null`. Empty
+     * strings never match.
      */
     findByLabel(label: string): string | null;
     /**
-     * Activate a child of the Stack bound to `barUuid`. The second argument
-     * may be a positional index into the bound Stack's `children` array, or
-     * the UUID of one of those children. Returns `true` on success, `false`
-     * if the index is out of range or the child UUID is not in the Stack.
-     * Throws if `barUuid` is not a TabBar or its `boundStack` is nil.
-     *
-     * Distinct from `activateTab`, which targets the global "active tab"
-     * (root-Stack activeChild). Use this for per-bar activation in layouts
-     * with more than one TabBar.
+     * UUID of the pane last focused inside `subtreeRoot`, if it still
+     * exists in the subtree. `null` otherwise.
      */
-    activateTabInBar(barUuid: string, indexOrChildUuid: number | string): boolean;
+    rememberedFocusInSubtree(subtreeRoot: string): string | null;
     /**
-     * Compute pixel rects for every node, given the window rect and per-cell
-     * pixel dimensions. Result is a UUID-keyed map.
+     * Compute pixel rects for every node given the window rect and
+     * per-cell pixel dimensions. Returns a UUID-keyed map.
      */
     computeRects(window: MbRect, cellW?: number, cellH?: number): { [nodeId: string]: MbRect };
     /** Snapshot of the focused pane and its enclosing tab, or `null`. */
@@ -1712,12 +1636,10 @@ interface MbLayout {
 
 declare const mb: MbGlobal;
 
-// Note: `console`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`
-// and the ES built-in types (`ArrayBuffer`, `Uint8Array`, etc.) are available
-// at runtime in MB's QuickJS-ng engine but are NOT declared here — they
-// conflict with `lib.dom.d.ts` if included. Cover them in your project's
-// tsconfig `lib` (e.g. `"es2022"` + your own minimal timer/console shim, or
-// `"dom"` if you're OK with the browser-flavoured signatures).
+// Note: `console`, `setTimeout`, `setInterval`, `clearTimeout`,
+// `clearInterval` and ES built-ins (`ArrayBuffer`, `Uint8Array`, …) are
+// available at runtime but not declared here — cover them via your
+// project's tsconfig `lib` (e.g. `"es2022"`).
 
 // ============================================================================
 // mb:ws — WebSocket server module

@@ -249,11 +249,15 @@ void RenderEngine::shutdown()
     }
     embeddedRenderPrivate_.clear();
 
-    // Release tab bar textures
-    if (tabBarTexture_) {
-        texturePool_.release(tabBarTexture_);
-        tabBarTexture_ = nullptr;
+    // Release tab bar textures (one per visible bar, plus any that were
+    // queued for deferred release in this frame's pending list).
+    for (auto &[id, tex] : tabBarTextures_) {
+        if (tex) {
+            texturePool_.release(tex);
+        }
     }
+    tabBarTextures_.clear();
+    tabBarHashes_.clear();
     for (auto *t : pendingTabBarRelease_) {
         texturePool_.release(t);
     }
@@ -652,24 +656,9 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
 
 void RenderEngine::renderTabBar()
 {
-    if (!frameState_.tabBarVisible) {
+    if (frameState_.tabBars.empty()) {
         return;
     }
-    if (frameState_.tabBarCells.empty()) {
-        return;
-    }
-    const Rect &tbRect = frameState_.tabBarRect;
-    if (tbRect.isEmpty()) {
-        return;
-    }
-
-    int cols = frameState_.tabBarCols;
-    if (cols <= 0) {
-        return;
-    }
-
-    std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
-    std::vector<GlyphEntry> tabBarGlyphs;
 
     // shared_ptr keeps FontData alive across this function even if main
     // unregisters the font mid-execution (HB destruction deferred to dtor).
@@ -678,8 +667,9 @@ void RenderEngine::renderTabBar()
         return;
     }
     FontData *font = fontHandle.get();
-    float scale    = frameState_.tabBarFontSize / font->baseSize;
+    const float scale = frameState_.tabBarFontSize / font->baseSize;
 
+    // Replacement glyph lookup amortised across all bars in this frame.
     GlyphInfo tabBarReplacementGlyph {};
     bool tabBarReplacementGlyphReady = false;
     auto getTabBarReplacementGlyph   = [&]() -> const GlyphInfo *
@@ -704,128 +694,203 @@ void RenderEngine::renderTabBar()
         return &tabBarReplacementGlyph;
     };
 
-    for (int col = 0; col < cols; ++col) {
-        const auto &tbc   = frameState_.tabBarCells[col];
-        ResolvedCell &rc  = cells[static_cast<size_t>(col)];
-        rc.glyph_offset   = 0;
-        rc.glyph_count    = 0;
-        rc.fg_color       = tbc.fgColor;
-        rc.bg_color       = tbc.bgColor;
-        rc.underline_info = 0;
-        rc.bg_inflate     = 0;
+    // Atlas upload is per-font (shared across bars), do it once.
+    renderer_.updateFontAtlas(queue_, frameState_.tabBarFontName, *font);
 
-        if (tbc.ch.empty()) {
+    // Track which textures are kept this frame; bars no longer visible
+    // get their textures queued for deferred release at the end. Common
+    // case is a single bar; reserving small.
+    std::unordered_set<Uuid, UuidHash> visibleBarIds;
+    visibleBarIds.reserve(frameState_.tabBars.size());
+
+    for (const TabBarRender &bar : frameState_.tabBars) {
+        if (bar.cells.empty() || bar.rect.isEmpty() || bar.cols <= 0) {
             continue;
         }
+        visibleBarIds.insert(bar.id);
 
-        int consumed = 0;
-        uint32_t cp  = utf8::decode(tbc.ch.data(), static_cast<int>(tbc.ch.size()), consumed);
+        // Per-bar dirty skip: hash the bar's rect + cell contents and
+        // compare to the last successful GPU build. Closing a sub-tab
+        // bumps the global tabBarsDirty flag, so this loop runs for
+        // every bar — but bars whose hash hasn't changed keep their
+        // existing texture and skip the upload/encode. FNV-1a over the
+        // packed (ch, fg, bg) triples is cheap (a few hundred bytes of
+        // data, single pass). Window-tint and active-tab color are
+        // folded into bar.cells when populateTabBars built the layout,
+        // so a focusChanged that flips active-tab colors changes the
+        // hash and triggers a rebuild.
+        uint64_t h = 1469598103934665603ull; // FNV-1a basis
+        auto mix  = [&h](uint64_t v)
+        {
+            h ^= v;
+            h *= 1099511628211ull;
+        };
+        mix(static_cast<uint32_t>(bar.rect.x));
+        mix(static_cast<uint32_t>(bar.rect.y));
+        mix(static_cast<uint32_t>(bar.rect.w));
+        mix(static_cast<uint32_t>(bar.rect.h));
+        for (const auto &c : bar.cells) {
+            for (unsigned char b : c.ch) {
+                mix(b);
+            }
+            mix(0xff); // end-of-string marker so adjacency doesn't collide
+            mix(c.fgColor);
+            mix(c.bgColor);
+        }
+        auto hashIt = tabBarHashes_.find(bar.id);
+        auto texIt  = tabBarTextures_.find(bar.id);
+        if (hashIt != tabBarHashes_.end() && hashIt->second == h
+            && texIt != tabBarTextures_.end() && texIt->second) {
+            continue; // texture still matches; no GPU work this frame
+        }
 
-        uint32_t tableIdx = ProceduralGlyph::codepointToTableIdx(cp);
-        if (tableIdx != ProceduralGlyph::kInvalidIndex && ProceduralGlyph::kTable[tableIdx] != 0) {
+        const Rect &tbRect = bar.rect;
+        const int cols     = bar.cols;
+        std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
+        std::vector<GlyphEntry> tabBarGlyphs;
+
+        for (int col = 0; col < cols; ++col) {
+            const auto &tbc   = bar.cells[col];
+            ResolvedCell &rc  = cells[static_cast<size_t>(col)];
+            rc.glyph_offset   = 0;
+            rc.glyph_count    = 0;
+            rc.fg_color       = tbc.fgColor;
+            rc.bg_color       = tbc.bgColor;
+            rc.underline_info = 0;
+            rc.bg_inflate     = 0;
+
+            if (tbc.ch.empty()) {
+                continue;
+            }
+
+            int consumed = 0;
+            uint32_t cp  = utf8::decode(tbc.ch.data(), static_cast<int>(tbc.ch.size()), consumed);
+
+            uint32_t tableIdx = ProceduralGlyph::codepointToTableIdx(cp);
+            if (tableIdx != ProceduralGlyph::kInvalidIndex && ProceduralGlyph::kTable[tableIdx] != 0) {
+                GlyphEntry entry;
+                entry.atlas_offset = 0x80000000u | tableIdx;
+                entry.ext_min_x    = 0;
+                entry.ext_min_y    = 0;
+                entry.ext_max_x    = 0;
+                entry.ext_max_y    = 0;
+                entry.upem         = 0;
+                entry.x_offset     = 0;
+                entry.y_offset     = 0;
+                rc.glyph_offset    = static_cast<uint32_t>(tabBarGlyphs.size());
+                rc.glyph_count     = 1;
+                tabBarGlyphs.push_back(entry);
+                continue;
+            }
+
+            const ShapedText &shaped = platform_->textSystem_.shapeText(
+                frameState_.tabBarFontName,
+                tbc.ch,
+                frameState_.tabBarFontSize);
+            if (shaped.glyphs.empty()) {
+                continue;
+            }
+            GlyphInfo gi;
+            if (!resolveCellGlyph(*font, shaped.glyphs[0].glyphId, static_cast<char32_t>(cp), false, getTabBarReplacementGlyph, gi)) {
+                continue;
+            }
             GlyphEntry entry;
-            entry.atlas_offset = 0x80000000u | tableIdx;
-            entry.ext_min_x    = 0;
-            entry.ext_min_y    = 0;
-            entry.ext_max_x    = 0;
-            entry.ext_max_y    = 0;
-            entry.upem         = 0;
-            entry.x_offset     = 0;
-            entry.y_offset     = 0;
+            entry.atlas_offset = gi.atlas_offset;
+            entry.ext_min_x    = gi.ext_min_x;
+            entry.ext_min_y    = gi.ext_min_y;
+            entry.ext_max_x    = gi.ext_max_x;
+            entry.ext_max_y    = gi.ext_max_y;
+            entry.upem         = gi.upem;
+            entry.x_offset     = 0.0f;
+            entry.y_offset     = 0.0f;
             rc.glyph_offset    = static_cast<uint32_t>(tabBarGlyphs.size());
             rc.glyph_count     = 1;
             tabBarGlyphs.push_back(entry);
-            continue;
         }
 
-        const ShapedText &shaped = platform_->textSystem_.shapeText(
-            frameState_.tabBarFontName,
-            tbc.ch,
-            frameState_.tabBarFontSize);
-        if (shaped.glyphs.empty()) {
-            continue;
+        ComputeState *cs      = renderer_.computePool().acquire(static_cast<uint32_t>(cols));
+        uint32_t tbGlyphCount = std::max(static_cast<uint32_t>(tabBarGlyphs.size()), 1u);
+        renderer_.computePool().ensureGlyphCapacity(cs, tbGlyphCount);
+
+        // Tab bar emits no cursor / selection / underline / strikethrough — only
+        // bg quads + procedural glyphs. The +48 slack covers the unused cursor /
+        // selection budget at no real cost.
+        uint32_t tbBgEmit = 0;
+        for (const ResolvedCell &rc : cells) {
+            if (rc.bg_color != 0 && rc.bg_inflate == 0) {
+                ++tbBgEmit;
+            }
         }
-        GlyphInfo gi;
-        if (!resolveCellGlyph(*font, shaped.glyphs[0].glyphId, static_cast<char32_t>(cp), false, getTabBarReplacementGlyph, gi)) {
-            continue;
+        uint32_t tbProcCount = 0;
+        for (const GlyphEntry &ge : tabBarGlyphs) {
+            if (ge.atlas_offset & 0x80000000u) {
+                ++tbProcCount;
+            }
         }
-        GlyphEntry entry;
-        entry.atlas_offset = gi.atlas_offset;
-        entry.ext_min_x    = gi.ext_min_x;
-        entry.ext_min_y    = gi.ext_min_y;
-        entry.ext_max_x    = gi.ext_max_x;
-        entry.ext_max_y    = gi.ext_max_y;
-        entry.upem         = gi.upem;
-        entry.x_offset     = 0.0f;
-        entry.y_offset     = 0.0f;
-        rc.glyph_offset    = static_cast<uint32_t>(tabBarGlyphs.size());
-        rc.glyph_count     = 1;
-        tabBarGlyphs.push_back(entry);
+        uint32_t tbRectVerts = tbBgEmit * 6 + tbProcCount * 48 + 48;
+        renderer_.computePool().ensureRectCapacity(cs, tbRectVerts, 6u);
+
+        renderer_.uploadResolvedCells(queue_, cs, cells.data(), static_cast<uint32_t>(cols));
+        if (!tabBarGlyphs.empty()) {
+            renderer_.uploadGlyphs(queue_, cs, tabBarGlyphs.data(), static_cast<uint32_t>(tabBarGlyphs.size()));
+        }
+
+        TerminalComputeParams params = {};
+        params.cols                  = static_cast<uint32_t>(cols);
+        params.rows                  = 1;
+        params.cell_width            = frameState_.tabBarCharWidth;
+        params.cell_height           = frameState_.tabBarLineHeight;
+        params.viewport_w            = static_cast<float>(tbRect.w);
+        params.viewport_h            = static_cast<float>(tbRect.h);
+        params.font_ascender         = font->ascender * scale;
+        params.font_size             = frameState_.tabBarFontSize;
+        params.pane_origin_x              = 0.0f;
+        params.pane_origin_y              = 0.0f;
+        params.max_text_vertices          = cs->maxTextVertices;
+        params.max_rect_vertices          = cs->maxRectVertices;
+        params.max_inflated_rect_vertices = cs->maxInflatedRectVertices;
+
+        PooledTexture *newTexture = texturePool_.acquire(
+            static_cast<uint32_t>(tbRect.w),
+            static_cast<uint32_t>(std::ceil(frameState_.tabBarLineHeight)));
+
+        wgpu::CommandEncoderDescriptor encDesc = {};
+        wgpu::CommandEncoder encoder           = device_.CreateCommandEncoder(&encDesc);
+        const float *windowTint                = frameState_.windowHasFocus
+                           ? frameState_.activeTint
+                           : frameState_.inactiveTint;
+        renderer_.renderToPane(encoder, queue_, frameState_.tabBarFontName, params, cs, newTexture->view, windowTint, Renderer::DimParams {}, {});
+        wgpu::CommandBuffer commands = encoder.Finish();
+        queue_.Submit(1, &commands);
+        pendingComputeRelease_.push_back(cs);
+
+        // Swap into the per-bar texture map; old texture (if any) goes to
+        // pendingTabBarRelease_ for deferred release after the frame.
+        auto it = tabBarTextures_.find(bar.id);
+        if (it != tabBarTextures_.end() && it->second) {
+            pendingTabBarRelease_.push_back(it->second);
+            it->second = newTexture;
+        } else {
+            tabBarTextures_[bar.id] = newTexture;
+        }
+        tabBarHashes_[bar.id] = h;
     }
 
-    renderer_.updateFontAtlas(queue_, frameState_.tabBarFontName, *font);
-
-    ComputeState *cs      = renderer_.computePool().acquire(static_cast<uint32_t>(cols));
-    uint32_t tbGlyphCount = std::max(static_cast<uint32_t>(tabBarGlyphs.size()), 1u);
-    renderer_.computePool().ensureGlyphCapacity(cs, tbGlyphCount);
-
-    // Tab bar emits no cursor / selection / underline / strikethrough — only
-    // bg quads + procedural glyphs. The +48 slack covers the unused cursor /
-    // selection budget at no real cost.
-    uint32_t tbBgEmit = 0;
-    for (const ResolvedCell &rc : cells) {
-        if (rc.bg_color != 0 && rc.bg_inflate == 0) {
-            ++tbBgEmit;
+    // Drop textures (and matching hashes) for bars no longer in the
+    // visible set — e.g. a sub-bar that disappeared when its containing
+    // tab was closed. Cheap O(N) over the texture map; common case is
+    // one or two entries.
+    for (auto it = tabBarTextures_.begin(); it != tabBarTextures_.end();) {
+        if (visibleBarIds.find(it->first) == visibleBarIds.end()) {
+            if (it->second) {
+                pendingTabBarRelease_.push_back(it->second);
+            }
+            tabBarHashes_.erase(it->first);
+            it = tabBarTextures_.erase(it);
+        } else {
+            ++it;
         }
     }
-    uint32_t tbProcCount = 0;
-    for (const GlyphEntry &ge : tabBarGlyphs) {
-        if (ge.atlas_offset & 0x80000000u) {
-            ++tbProcCount;
-        }
-    }
-    uint32_t tbRectVerts = tbBgEmit * 6 + tbProcCount * 48 + 48;
-    renderer_.computePool().ensureRectCapacity(cs, tbRectVerts, 6u);
-
-    renderer_.uploadResolvedCells(queue_, cs, cells.data(), static_cast<uint32_t>(cols));
-    if (!tabBarGlyphs.empty()) {
-        renderer_.uploadGlyphs(queue_, cs, tabBarGlyphs.data(), static_cast<uint32_t>(tabBarGlyphs.size()));
-    }
-
-    TerminalComputeParams params = {};
-    params.cols                  = static_cast<uint32_t>(cols);
-    params.rows                  = 1;
-    params.cell_width            = frameState_.tabBarCharWidth;
-    params.cell_height           = frameState_.tabBarLineHeight;
-    params.viewport_w            = static_cast<float>(tbRect.w);
-    params.viewport_h            = static_cast<float>(tbRect.h);
-    params.font_ascender         = font->ascender * scale;
-    params.font_size             = frameState_.tabBarFontSize;
-    params.pane_origin_x              = 0.0f;
-    params.pane_origin_y              = 0.0f;
-    params.max_text_vertices          = cs->maxTextVertices;
-    params.max_rect_vertices          = cs->maxRectVertices;
-    params.max_inflated_rect_vertices = cs->maxInflatedRectVertices;
-
-    PooledTexture *newTexture = texturePool_.acquire(
-        static_cast<uint32_t>(tbRect.w),
-        static_cast<uint32_t>(std::ceil(frameState_.tabBarLineHeight)));
-
-    wgpu::CommandEncoderDescriptor encDesc = {};
-    wgpu::CommandEncoder encoder           = device_.CreateCommandEncoder(&encDesc);
-    const float *windowTint                = frameState_.windowHasFocus
-                       ? frameState_.activeTint
-                       : frameState_.inactiveTint;
-    renderer_.renderToPane(encoder, queue_, frameState_.tabBarFontName, params, cs, newTexture->view, windowTint, Renderer::DimParams {}, {});
-    wgpu::CommandBuffer commands = encoder.Finish();
-    queue_.Submit(1, &commands);
-    pendingComputeRelease_.push_back(cs);
-
-    if (tabBarTexture_) {
-        pendingTabBarRelease_.push_back(tabBarTexture_);
-    }
-    tabBarTexture_ = newTexture;
-    // tabBarDirty_ consumed from renderState_ under the lock at frame start
 }
 
 void RenderEngine::renderFrame()
@@ -1010,10 +1075,32 @@ void RenderEngine::renderFrame()
             }
         }
     }
-    if (frameState_.releaseTabBarTexture && tabBarTexture_) {
-        pendingTabBarRelease_.push_back(tabBarTexture_);
-        tabBarTexture_          = nullptr;
-        frameState_.tabBarDirty = true;
+    // Process per-bar texture release requests. `releaseAllTabBarTextures`
+    // is the framebuffer-resize "release everything" path; the per-id
+    // vector covers individual TabBar nodes that disappeared. Either way
+    // the matching texture lands on pendingTabBarRelease_ for deferred
+    // release after the submitted work completes, and the hash entry is
+    // dropped so the next frame doesn't false-positive a skip.
+    if (frameState_.releaseAllTabBarTextures) {
+        for (auto &[id, tex] : tabBarTextures_) {
+            if (tex) {
+                pendingTabBarRelease_.push_back(tex);
+            }
+        }
+        tabBarTextures_.clear();
+        tabBarHashes_.clear();
+        frameState_.tabBarsDirty = true;
+    }
+    for (const Uuid &barId : frameState_.releaseTabBarTextures) {
+        auto it = tabBarTextures_.find(barId);
+        if (it != tabBarTextures_.end()) {
+            if (it->second) {
+                pendingTabBarRelease_.push_back(it->second);
+            }
+            tabBarTextures_.erase(it);
+            tabBarHashes_.erase(barId);
+            frameState_.tabBarsDirty = true;
+        }
     }
 
     // Process destroys. Extract heldTexture + pendingRelease into a
@@ -2180,22 +2267,33 @@ void RenderEngine::renderFrame()
     }
     renderer_.retainImagesOnly(imagesToRetain);
 
-    if (frameState_.tabBarVisible && (frameState_.tabBarDirty || focusChanged)) {
+    // Tab bar rebuild + composite. We rebuild every bar's cells when the
+    // dirty flag is set (or focus changed — the active-tab highlight is
+    // focus-dependent). In the common case (1-2 bars, cells small) this
+    // is microseconds; per-bar dirty tracking would be possible but not
+    // worth the bookkeeping until we have a bar count that justifies it.
+    if (!frameState_.tabBars.empty() && (frameState_.tabBarsDirty || focusChanged)) {
         renderTabBar();
-        frameState_.tabBarDirty = false;
+        frameState_.tabBarsDirty = false;
     }
 
-    if (tabBarTexture_ && !frameState_.tabBarRect.isEmpty()) {
-        const Rect &tbRect = frameState_.tabBarRect;
-        {
-            Renderer::CompositeEntry entry;
-            entry.texture = tabBarTexture_->texture;
-            entry.srcW    = static_cast<uint32_t>(tbRect.w);
-            entry.srcH    = static_cast<uint32_t>(tbRect.h);
-            entry.dstX    = static_cast<uint32_t>(tbRect.x);
-            entry.dstY    = static_cast<uint32_t>(tbRect.y);
-            compositeEntries.push_back(entry);
+    // Composite each visible bar's texture into the window. Lookup is by
+    // bar uuid into the per-bar texture map populated by renderTabBar.
+    for (const TabBarRender &bar : frameState_.tabBars) {
+        if (bar.rect.isEmpty()) {
+            continue;
         }
+        auto it = tabBarTextures_.find(bar.id);
+        if (it == tabBarTextures_.end() || !it->second) {
+            continue;
+        }
+        Renderer::CompositeEntry entry;
+        entry.texture = it->second->texture;
+        entry.srcW    = static_cast<uint32_t>(bar.rect.w);
+        entry.srcH    = static_cast<uint32_t>(bar.rect.h);
+        entry.dstX    = static_cast<uint32_t>(bar.rect.x);
+        entry.dstY    = static_cast<uint32_t>(bar.rect.y);
+        compositeEntries.push_back(entry);
     }
 
     if (!compositeEntries.empty()) {
@@ -2379,10 +2477,17 @@ void RenderEngine::renderFrame()
                     srcW       = it->second.heldTexture->width;
                     srcH       = it->second.heldTexture->height;
                 }
-            } else if (target == "tabbar" && tabBarTexture_) {
-                srcTexture = tabBarTexture_->texture;
-                srcW       = tabBarTexture_->width;
-                srcH       = tabBarTexture_->height;
+            } else if (target == "tabbar" && !tabBarTextures_.empty()) {
+                // Debug-IPC screenshot path. With multiple TabBars present
+                // we'd need a "tabbar:<uuid>" form for specificity; until a
+                // consumer asks for that, just take the first entry. The
+                // primary bar is the typical case and lands first in
+                // insertion order from tabBarRects().
+                if (auto *tex = tabBarTextures_.begin()->second) {
+                    srcTexture = tex->texture;
+                    srcW       = tex->width;
+                    srcH       = tex->height;
+                }
             }
 
             uint32_t copyX = 0, copyY = 0, copyW = srcW, copyH = srcH;

@@ -431,6 +431,22 @@ bool LayoutTree::setStackZoom(Uuid stack, Uuid target)
     return true;
 }
 
+bool LayoutTree::setStackOpaque(Uuid stack, bool opaque)
+{
+    Node *s = node(stack);
+    if (!s) {
+        return false;
+    }
+    auto *sd = std::get_if<StackData>(&s->data);
+    if (!sd) {
+        spdlog::warn("LayoutTree::setStackOpaque: node {} is not a Stack", stack.toString());
+        return false;
+    }
+    sd->opaque = opaque;
+    // Pure navigation flag — does not affect computeRects, so no markDirty.
+    return true;
+}
+
 bool LayoutTree::setActiveChild(Uuid stack, Uuid child)
 {
     Node *s = node(stack);
@@ -608,6 +624,12 @@ void LayoutTree::destroyNode(Uuid id)
         root_ = Uuid {};
     }
     nodes_.erase(id);
+    // Notify the listener (e.g. Script::Engine) so it can evict any map
+    // entries keyed on this Uuid. Fired bottom-up via the recursion above
+    // so descendants are reported before their ancestor.
+    if (onNodeDestroyed_) {
+        onNodeDestroyed_(id);
+    }
     // Clear any Stack zoomTarget pointing at this destroyed node. Ancestor
     // Stacks are likeliest but any Stack in the tree could technically point
     // here if the node was nested under it. Mirrors the activeChild retarget
@@ -881,6 +903,77 @@ Uuid LayoutTree::splitByWrapping(Uuid existingChild, SplitDir dir,
         appendChild(wrapper, ChildSlot { newChild, 1 });
     }
     return wrapper;
+}
+
+LayoutTree::WrapInStackResult LayoutTree::splitByWrappingStack(Uuid existingChild,
+                                                               SplitDir dir,
+                                                               bool tabBarFirst)
+{
+    WrapInStackResult result;
+
+    Node *target = node(existingChild);
+    if (!target || target->parent.isNil()) {
+        return result;
+    }
+
+    Uuid wrapper = createContainer(dir);
+    Uuid stack   = createStack();
+    Uuid tabBar  = createTabBar();
+    Uuid content = createContainer(SplitDir::Horizontal);
+
+    // Inherit the existing slot's sizing knobs onto the wrapper so the
+    // parent's allocation doesn't lurch when we promote into a tabbed region.
+    ChildSlot wrapperSlot { wrapper, 1, 0, 0, 0 };
+    if (Node *parentMut = node(target->parent)) {
+        if (auto *cd = std::get_if<ContainerData>(&parentMut->data)) {
+            for (const auto &s : cd->children) {
+                if (s.id == existingChild) {
+                    wrapperSlot.stretch    = s.stretch;
+                    wrapperSlot.minCells   = s.minCells;
+                    wrapperSlot.maxCells   = s.maxCells;
+                    wrapperSlot.fixedCells = s.fixedCells;
+                    break;
+                }
+            }
+        }
+    }
+    if (!replaceChild(target->parent, existingChild, wrapperSlot)) {
+        // replaceChild has already orphaned target if it touched the slot.
+        // Best-effort: nuke the throwaway nodes so we don't leak. Caller
+        // treats nil result as failure.
+        destroyNode(wrapper);
+        destroyNode(stack);
+        destroyNode(tabBar);
+        destroyNode(content);
+        return result;
+    }
+
+    // existingChild is now orphaned (replaceChild took it out of its slot).
+    // Build the tabbed structure: content holds existing, stack holds
+    // content, wrapper holds tabBar + stack.
+    appendChild(content, ChildSlot { existingChild, 1 });
+    appendChild(stack, ChildSlot { content, 1 });
+
+    // Lay out the wrapper. TabBar sized at one cell along the wrapper axis;
+    // Stack stretches to fill the rest. Order is "tabBar first" (top/left)
+    // vs "stack first" (top/left) per `tabBarFirst`.
+    const ChildSlot tabBarSlot { tabBar, 1, 0, 0, 1 };
+    const ChildSlot stackSlot { stack, 1, 0, 0, 0 };
+    if (tabBarFirst) {
+        appendChild(wrapper, tabBarSlot);
+        appendChild(wrapper, stackSlot);
+    } else {
+        appendChild(wrapper, stackSlot);
+        appendChild(wrapper, tabBarSlot);
+    }
+
+    setTabBarStack(tabBar, stack);
+
+    result.wrapper = wrapper;
+    result.stack   = stack;
+    result.tabBar  = tabBar;
+    result.content = content;
+    return result;
 }
 
 bool LayoutTree::resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,

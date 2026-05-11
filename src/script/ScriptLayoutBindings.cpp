@@ -81,6 +81,11 @@ int32_t optionalInt(JSContext *ctx, JSValueConst obj, const char *prop, int32_t 
     return out;
 }
 
+// Forward decl — defined later; used by jsLayoutNearestAncestorOfKind /
+// jsLayoutQueryNodes. Kept at file scope (anonymous namespace) so binding
+// functions can call into it regardless of definition order.
+bool kindFromName(std::string_view name, NodeKind &out);
+
 // Parse ChildSlot from an optional JS options object. `slotId` is the child's
 // UUID (already resolved). All fields default to the ChildSlot defaults.
 bool parseChildSlot(JSContext *ctx, JSValueConst opts, Uuid slotId, ChildSlot &out)
@@ -347,6 +352,64 @@ JSValue jsLayoutCreateTab(JSContext *ctx, JSValueConst, int, JSValueConst *)
     return uuidToJs(ctx, sub);
 }
 
+// createSubTab(parentStackUuid, opts?) — appends a new Container to
+// `parentStackUuid` (must be a Stack), sets it as activeChild, and returns
+// the new Container Uuid. Fires `tabCreated` with level="sub".
+//
+// Caller is expected to follow up with `createTerminal(returnedId, ...)` to
+// spawn a pane. Symmetric counterpart to top-level `createTab()`.
+//
+// opts.dir: "horizontal" | "vertical" — content Container's split direction
+// (default "horizontal", mirrors default-ui's top-level tab content).
+JSValue jsLayoutCreateSubTab(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "createSubTab(parentStackUuid, opts?)");
+    }
+    Uuid stackId = parseUuidArg(ctx, argv[0], "createSubTab(parentStackUuid)");
+    if (stackId.isNil()) {
+        return JS_EXCEPTION;
+    }
+    SplitDir dir = SplitDir::Horizontal;
+    if (argc >= 2 && JS_IsObject(argv[1]) && !JS_IsNull(argv[1])) {
+        JSValue dv = JS_GetPropertyStr(ctx, argv[1], "dir");
+        if (JS_IsString(dv)) {
+            size_t dlen    = 0;
+            const char *ds = JS_ToCStringLen(ctx, &dlen, dv);
+            if (ds) {
+                std::string s(ds, dlen);
+                if (s == "vertical" || s == "v") {
+                    dir = SplitDir::Vertical;
+                } else if (s == "horizontal" || s == "h") {
+                    dir = SplitDir::Horizontal;
+                }
+                JS_FreeCString(ctx, ds);
+            }
+        }
+        JS_FreeValue(ctx, dv);
+    }
+    auto *eng             = engineFromCtx(ctx);
+    LayoutTree &tree      = eng->layoutTree();
+    const Node *stackNode = tree.node(stackId);
+    if (!stackNode || stackNode->kind() != NodeKind::Stack) {
+        return JS_ThrowTypeError(ctx, "createSubTab: parentStackUuid is not a Stack");
+    }
+    Uuid newContainer = tree.createContainer(dir);
+    if (newContainer.isNil()) {
+        return JS_ThrowTypeError(ctx, "createSubTab: createContainer failed");
+    }
+    if (!tree.appendChild(stackId, ChildSlot { newContainer, /*stretch=*/1 })) {
+        tree.destroyNode(newContainer);
+        return JS_ThrowTypeError(ctx, "createSubTab: appendChild failed");
+    }
+    tree.setActiveChild(stackId, newContainer);
+    eng->notifyTabCreated(newContainer, stackId);
+    return uuidToJs(ctx, newContainer);
+}
+
 JSValue jsLayoutActivateTab(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     if (!checkPerm(ctx, Perm::LayoutModify)) {
@@ -573,6 +636,257 @@ JSValue jsLayoutSplitPane(JSContext *ctx, JSValueConst, int argc, JSValueConst *
         return JS_NULL;
     }
     return JS_NewStringLen(ctx, np.nodeId.data(), np.nodeId.size());
+}
+
+JSValue jsLayoutWrapInStack(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "wrapInStack(existingNodeId, opts?)");
+    }
+    Uuid existing = parseUuidArg(ctx, argv[0], "wrapInStack(existing)");
+    if (existing.isNil()) {
+        return JS_EXCEPTION;
+    }
+    SplitDir dir     = SplitDir::Vertical; // default: tabs sit above content
+    bool tabBarFirst = true;
+    if (argc >= 2 && JS_IsObject(argv[1]) && !JS_IsNull(argv[1])) {
+        JSValue dv = JS_GetPropertyStr(ctx, argv[1], "dir");
+        if (JS_IsString(dv)) {
+            size_t dlen    = 0;
+            const char *ds = JS_ToCStringLen(ctx, &dlen, dv);
+            if (ds) {
+                std::string s(ds, dlen);
+                if (s == "horizontal" || s == "h") {
+                    dir = SplitDir::Horizontal;
+                } else if (s == "vertical" || s == "v") {
+                    dir = SplitDir::Vertical;
+                }
+                JS_FreeCString(ctx, ds);
+            }
+        }
+        JS_FreeValue(ctx, dv);
+        JSValue tf = JS_GetPropertyStr(ctx, argv[1], "tabBarFirst");
+        if (!JS_IsUndefined(tf) && !JS_IsNull(tf)) {
+            tabBarFirst = JS_ToBool(ctx, tf) != 0;
+        }
+        JS_FreeValue(ctx, tf);
+    }
+    auto *eng = engineFromCtx(ctx);
+    auto res  = eng->layoutTree().splitByWrappingStack(existing, dir, tabBarFirst);
+    if (!res.ok()) {
+        return JS_ThrowTypeError(ctx,
+                                 "wrapInStack: existing node missing, detached, or replaceChild failed");
+    }
+    // res.content is the Container wrapping the existing node = the first
+    // sub-tab in the new sub-bar. Fire tabCreated so listeners see it.
+    eng->notifyTabCreated(res.content, res.stack);
+    JSValue obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, obj, "wrapper", uuidToJs(ctx, res.wrapper));
+    JS_SetPropertyStr(ctx, obj, "stack", uuidToJs(ctx, res.stack));
+    JS_SetPropertyStr(ctx, obj, "tabBar", uuidToJs(ctx, res.tabBar));
+    JS_SetPropertyStr(ctx, obj, "content", uuidToJs(ctx, res.content));
+    return obj;
+}
+
+JSValue jsLayoutReplaceChild(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 3) {
+        return JS_ThrowTypeError(ctx, "replaceChild(parent, oldChild, newChild[, options])");
+    }
+    Uuid parent = parseUuidArg(ctx, argv[0], "replaceChild(parent)");
+    if (parent.isNil()) {
+        return JS_EXCEPTION;
+    }
+    Uuid oldChild = parseUuidArg(ctx, argv[1], "replaceChild(oldChild)");
+    if (oldChild.isNil()) {
+        return JS_EXCEPTION;
+    }
+    Uuid newChild = parseUuidArg(ctx, argv[2], "replaceChild(newChild)");
+    if (newChild.isNil()) {
+        return JS_EXCEPTION;
+    }
+    ChildSlot slot;
+    if (argc >= 4) {
+        if (!parseChildSlot(ctx, argv[3], newChild, slot)) {
+            return JS_EXCEPTION;
+        }
+    } else {
+        slot.id = newChild;
+    }
+    if (!engineFromCtx(ctx)->layoutTree().replaceChild(parent, oldChild, slot)) {
+        return JS_ThrowTypeError(ctx,
+                                 "replaceChild: parent missing, oldChild not in parent, or newChild already has a parent");
+    }
+    return JS_UNDEFINED;
+}
+
+JSValue jsLayoutMoveChild(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 3) {
+        return JS_ThrowTypeError(ctx, "moveChild(parent, child, delta)");
+    }
+    Uuid parent = parseUuidArg(ctx, argv[0], "moveChild(parent)");
+    if (parent.isNil()) {
+        return JS_EXCEPTION;
+    }
+    Uuid child = parseUuidArg(ctx, argv[1], "moveChild(child)");
+    if (child.isNil()) {
+        return JS_EXCEPTION;
+    }
+    int32_t delta = 0;
+    if (JS_ToInt32(ctx, &delta, argv[2]) != 0) {
+        return JS_ThrowTypeError(ctx, "moveChild: delta must be an integer");
+    }
+    return JS_NewBool(ctx, engineFromCtx(ctx)->layoutTree().moveChild(parent, child, delta));
+}
+
+JSValue jsLayoutRotateChildren(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "rotateChildren(parent, delta)");
+    }
+    Uuid parent = parseUuidArg(ctx, argv[0], "rotateChildren(parent)");
+    if (parent.isNil()) {
+        return JS_EXCEPTION;
+    }
+    int32_t delta = 0;
+    if (JS_ToInt32(ctx, &delta, argv[1]) != 0) {
+        return JS_ThrowTypeError(ctx, "rotateChildren: delta must be an integer");
+    }
+    return JS_NewBool(ctx, engineFromCtx(ctx)->layoutTree().rotateChildren(parent, delta));
+}
+
+JSValue jsLayoutSwapLeaves(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "swapLeaves(a, b)");
+    }
+    Uuid a = parseUuidArg(ctx, argv[0], "swapLeaves(a)");
+    if (a.isNil()) {
+        return JS_EXCEPTION;
+    }
+    Uuid b = parseUuidArg(ctx, argv[1], "swapLeaves(b)");
+    if (b.isNil()) {
+        return JS_EXCEPTION;
+    }
+    return JS_NewBool(ctx, engineFromCtx(ctx)->layoutTree().swapLeaves(a, b));
+}
+
+JSValue jsLayoutNearestAncestorOfKind(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (argc < 2 || !JS_IsString(argv[1])) {
+        return JS_ThrowTypeError(ctx,
+                                 "nearestAncestorOfKind(start, kind): kind is 'Container'|'Stack'|'TabBar'|'Terminal'");
+    }
+    Uuid start = parseUuidArg(ctx, argv[0], "nearestAncestorOfKind(start)");
+    if (start.isNil()) {
+        return JS_EXCEPTION;
+    }
+    size_t klen    = 0;
+    const char *ks = JS_ToCStringLen(ctx, &klen, argv[1]);
+    if (!ks) {
+        return JS_EXCEPTION;
+    }
+    NodeKind kind;
+    bool ok = kindFromName(std::string_view(ks, klen), kind);
+    JS_FreeCString(ctx, ks);
+    if (!ok) {
+        return JS_ThrowTypeError(ctx, "nearestAncestorOfKind: unknown kind");
+    }
+    Uuid r = engineFromCtx(ctx)->layoutTree().nearestAncestorOfKind(start, kind);
+    if (r.isNil()) {
+        return JS_NULL;
+    }
+    return uuidToJs(ctx, r);
+}
+
+JSValue jsLayoutContains(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "contains(ancestor, descendant)");
+    }
+    Uuid ancestor = parseUuidArg(ctx, argv[0], "contains(ancestor)");
+    if (ancestor.isNil()) {
+        return JS_EXCEPTION;
+    }
+    Uuid descendant = parseUuidArg(ctx, argv[1], "contains(descendant)");
+    if (descendant.isNil()) {
+        return JS_EXCEPTION;
+    }
+    return JS_NewBool(ctx, engineFromCtx(ctx)->layoutTree().contains(ancestor, descendant));
+}
+
+JSValue jsLayoutCollapseSingletonsAbove(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "collapseSingletonsAbove(fromParent, stopAt)");
+    }
+    Uuid from = parseUuidArg(ctx, argv[0], "collapseSingletonsAbove(fromParent)");
+    if (from.isNil()) {
+        return JS_EXCEPTION;
+    }
+    Uuid stopAt = parseUuidArg(ctx, argv[1], "collapseSingletonsAbove(stopAt)");
+    if (stopAt.isNil()) {
+        return JS_EXCEPTION;
+    }
+    engineFromCtx(ctx)->layoutTree().collapseSingletonsAbove(from, stopAt);
+    return JS_UNDEFINED;
+}
+
+JSValue jsLayoutTerminalLeavesIn(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "terminalLeavesIn(start[, onlyActiveStack])");
+    }
+    Uuid start = parseUuidArg(ctx, argv[0], "terminalLeavesIn(start)");
+    if (start.isNil()) {
+        return JS_EXCEPTION;
+    }
+    bool onlyActive = false;
+    if (argc >= 2) {
+        onlyActive = JS_ToBool(ctx, argv[1]) != 0;
+    }
+    std::vector<Uuid> leaves;
+    engineFromCtx(ctx)->layoutTree().terminalLeavesIn(start, onlyActive, leaves);
+    JSValue arr = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < leaves.size(); ++i) {
+        JS_SetPropertyUint32(ctx, arr, i, uuidToJs(ctx, leaves[i]));
+    }
+    return arr;
+}
+
+JSValue jsLayoutSetStackOpaque(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (!checkPerm(ctx, Perm::LayoutModify)) {
+        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    }
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "setStackOpaque(stack, opaque)");
+    }
+    Uuid stack = parseUuidArg(ctx, argv[0], "setStackOpaque(stack)");
+    if (stack.isNil()) {
+        return JS_EXCEPTION;
+    }
+    bool opaque = JS_ToBool(ctx, argv[1]) != 0;
+    return JS_NewBool(ctx, engineFromCtx(ctx)->layoutTree().setStackOpaque(stack, opaque));
 }
 
 // Shared implementation for setSlotStretch/MinCells/MaxCells/FixedCells.
@@ -814,65 +1128,17 @@ JSValue jsLayoutFindByLabel(JSContext *ctx, JSValueConst, int argc, JSValueConst
     return u.isNil() ? JS_NULL : uuidToJs(ctx, u);
 }
 
-// activateTabInBar(barUuid, indexOrChildUuid)
-//   - barUuid: must be a TabBar node with a non-nil boundStack.
-//   - indexOrChildUuid: number → index into boundStack.children;
-//                       string → must be the UUID of a direct child of boundStack.
-// Routes through LayoutTree::setActiveChild — does not touch the global
-// "active tab" (root Stack) wiring. Returns true on success.
-JSValue jsLayoutActivateTabInBar(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+JSValue jsLayoutRememberedFocusInSubtree(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
-    if (!checkPerm(ctx, Perm::LayoutModify)) {
-        return JS_ThrowTypeError(ctx, "permission denied: layout.modify not granted");
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "rememberedFocusInSubtree(nodeId)");
     }
-    if (argc < 2) {
-        return JS_ThrowTypeError(ctx, "activateTabInBar(barUuid, indexOrChildUuid)");
+    Uuid root = parseUuidArg(ctx, argv[0], "rememberedFocusInSubtree(nodeId)");
+    if (root.isNil()) {
+        return JS_NULL;
     }
-    Uuid bar = parseUuidArg(ctx, argv[0], "activateTabInBar(barUuid)");
-    if (bar.isNil()) {
-        return JS_EXCEPTION;
-    }
-
-    auto *eng           = engineFromCtx(ctx);
-    LayoutTree &tree    = eng->layoutTree();
-    const Node *barNode = tree.node(bar);
-    if (!barNode || barNode->kind() != NodeKind::TabBar) {
-        return JS_ThrowTypeError(ctx, "activateTabInBar: barUuid is not a TabBar");
-    }
-    const auto *bd = std::get_if<TabBarData>(&barNode->data);
-    Uuid stack     = bd ? bd->boundStack : Uuid {};
-    if (stack.isNil()) {
-        return JS_ThrowTypeError(ctx, "activateTabInBar: TabBar has no boundStack");
-    }
-    const Node *stackNode = tree.node(stack);
-    const auto *sd        = stackNode ? std::get_if<StackData>(&stackNode->data) : nullptr;
-    if (!sd) {
-        return JS_ThrowTypeError(ctx, "activateTabInBar: boundStack is not a Stack");
-    }
-
-    Uuid target;
-    if (JS_IsNumber(argv[1])) {
-        int32_t idx = -1;
-        if (JS_ToInt32(ctx, &idx, argv[1]) != 0) {
-            return JS_EXCEPTION;
-        }
-        if (idx < 0 || static_cast<size_t>(idx) >= sd->children.size()) {
-            return JS_FALSE;
-        }
-        target = sd->children[idx].id;
-    } else if (JS_IsString(argv[1])) {
-        target = parseUuidArg(ctx, argv[1], "activateTabInBar(child)");
-        if (target.isNil()) {
-            return JS_EXCEPTION;
-        }
-    } else {
-        return JS_ThrowTypeError(ctx, "activateTabInBar: second arg must be number or UUID string");
-    }
-
-    if (!tree.setActiveChild(stack, target)) {
-        return JS_FALSE;
-    }
-    return JS_TRUE;
+    Uuid u = engineFromCtx(ctx)->rememberedFocusInSubtree(root);
+    return u.isNil() ? JS_NULL : uuidToJs(ctx, u);
 }
 
 JSValue childSlotToJs(JSContext *ctx, const ChildSlot &s)
@@ -989,13 +1255,16 @@ void installLayoutBindings(Engine &, JSContext *ctx, JSValue mb)
 
     // Lifecycle + query primitives on mb.layout
     JS_SetPropertyStr(ctx, layout, "createTab", JS_NewCFunction(ctx, jsLayoutCreateTab, "createTab", 0));
+    JS_SetPropertyStr(ctx, layout, "createSubTab", JS_NewCFunction(ctx, jsLayoutCreateSubTab, "createSubTab", 2));
     JS_SetPropertyStr(ctx, layout, "closeTab", JS_NewCFunction(ctx, jsLayoutCloseTab, "closeTab", 1));
     JS_SetPropertyStr(ctx, layout, "activateTab", JS_NewCFunction(ctx, jsLayoutActivateTab, "activateTab", 1));
     JS_SetPropertyStr(ctx, layout, "focusPane", JS_NewCFunction(ctx, jsLayoutFocusPane, "focusPane", 1));
     JS_SetPropertyStr(ctx, layout, "removeNode", JS_NewCFunction(ctx, jsLayoutRemoveNode, "removeNode", 1));
     JS_SetPropertyStr(ctx, layout, "killTerminal", JS_NewCFunction(ctx, jsLayoutKillTerminal, "killTerminal", 1));
     JS_SetPropertyStr(ctx, layout, "splitPane", JS_NewCFunction(ctx, jsLayoutSplitPane, "splitPane", 3));
+    JS_SetPropertyStr(ctx, layout, "wrapInStack", JS_NewCFunction(ctx, jsLayoutWrapInStack, "wrapInStack", 2));
     JS_SetPropertyStr(ctx, layout, "setStackZoom", JS_NewCFunction(ctx, jsLayoutSetStackZoom, "setStackZoom", 2));
+    JS_SetPropertyStr(ctx, layout, "setStackOpaque", JS_NewCFunction(ctx, jsLayoutSetStackOpaque, "setStackOpaque", 2));
     JS_SetPropertyStr(ctx, layout, "setSlotStretch", JS_NewCFunction(ctx, jsLayoutSetSlotStretch, "setSlotStretch", 3));
     JS_SetPropertyStr(ctx, layout, "setSlotMinCells", JS_NewCFunction(ctx, jsLayoutSetSlotMinCells, "setSlotMinCells", 3));
     JS_SetPropertyStr(ctx, layout, "setSlotMaxCells", JS_NewCFunction(ctx, jsLayoutSetSlotMaxCells, "setSlotMaxCells", 3));
@@ -1008,6 +1277,11 @@ void installLayoutBindings(Engine &, JSContext *ctx, JSValue mb)
 
     JS_SetPropertyStr(ctx, layout, "appendChild", JS_NewCFunction(ctx, jsLayoutAppendChild, "appendChild", 3));
     JS_SetPropertyStr(ctx, layout, "removeChild", JS_NewCFunction(ctx, jsLayoutRemoveChild, "removeChild", 2));
+    JS_SetPropertyStr(ctx, layout, "replaceChild", JS_NewCFunction(ctx, jsLayoutReplaceChild, "replaceChild", 4));
+    JS_SetPropertyStr(ctx, layout, "moveChild", JS_NewCFunction(ctx, jsLayoutMoveChild, "moveChild", 3));
+    JS_SetPropertyStr(ctx, layout, "rotateChildren", JS_NewCFunction(ctx, jsLayoutRotateChildren, "rotateChildren", 2));
+    JS_SetPropertyStr(ctx, layout, "swapLeaves", JS_NewCFunction(ctx, jsLayoutSwapLeaves, "swapLeaves", 2));
+    JS_SetPropertyStr(ctx, layout, "collapseSingletonsAbove", JS_NewCFunction(ctx, jsLayoutCollapseSingletonsAbove, "collapseSingletonsAbove", 2));
     JS_SetPropertyStr(ctx, layout, "setActiveChild", JS_NewCFunction(ctx, jsLayoutSetActiveChild, "setActiveChild", 2));
     JS_SetPropertyStr(ctx, layout, "setTabBarStack", JS_NewCFunction(ctx, jsLayoutSetTabBarStack, "setTabBarStack", 2));
     JS_SetPropertyStr(ctx, layout, "setLabel", JS_NewCFunction(ctx, jsLayoutSetLabel, "setLabel", 2));
@@ -1015,8 +1289,11 @@ void installLayoutBindings(Engine &, JSContext *ctx, JSValue mb)
 
     JS_SetPropertyStr(ctx, layout, "node", JS_NewCFunction(ctx, jsLayoutNode, "node", 1));
     JS_SetPropertyStr(ctx, layout, "queryNodes", JS_NewCFunction(ctx, jsLayoutQueryNodes, "queryNodes", 2));
+    JS_SetPropertyStr(ctx, layout, "nearestAncestorOfKind", JS_NewCFunction(ctx, jsLayoutNearestAncestorOfKind, "nearestAncestorOfKind", 2));
+    JS_SetPropertyStr(ctx, layout, "contains", JS_NewCFunction(ctx, jsLayoutContains, "contains", 2));
+    JS_SetPropertyStr(ctx, layout, "terminalLeavesIn", JS_NewCFunction(ctx, jsLayoutTerminalLeavesIn, "terminalLeavesIn", 2));
     JS_SetPropertyStr(ctx, layout, "findByLabel", JS_NewCFunction(ctx, jsLayoutFindByLabel, "findByLabel", 1));
-    JS_SetPropertyStr(ctx, layout, "activateTabInBar", JS_NewCFunction(ctx, jsLayoutActivateTabInBar, "activateTabInBar", 2));
+    JS_SetPropertyStr(ctx, layout, "rememberedFocusInSubtree", JS_NewCFunction(ctx, jsLayoutRememberedFocusInSubtree, "rememberedFocusInSubtree", 1));
     JS_SetPropertyStr(ctx, layout, "computeRects", JS_NewCFunction(ctx, jsLayoutComputeRects, "computeRects", 3));
 
     JS_SetPropertyStr(ctx, mb, "layout", layout);

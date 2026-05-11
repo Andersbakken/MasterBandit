@@ -123,14 +123,20 @@ std::optional<Action::Any> parseAction(const std::string &name,
         return Action::NewTab {};
     }
     if (name == "close_tab") {
+        Uuid target;
         int idx = -1;
         if (!args.empty()) {
             try {
                 idx = std::stoi(args[0]);
             } catch (...) {
+                target = Uuid::fromString(args[0]);
+                if (target.isNil()) {
+                    spdlog::warn("Bindings: close_tab arg '{}' not an int or UUID", args[0]);
+                    return std::nullopt;
+                }
             }
         }
-        return Action::CloseTab { idx };
+        return Action::CloseTab { target, idx };
     }
 
     if (name == "activate_tab_relative") {
@@ -138,24 +144,40 @@ std::optional<Action::Any> parseAction(const std::string &name,
             spdlog::warn("Bindings: activate_tab_relative requires an arg");
             return std::nullopt;
         }
+        int delta = 0;
         try {
-            return Action::ActivateTabRelative { std::stoi(args[0]) };
+            delta = std::stoi(args[0]);
         } catch (...) {
             spdlog::warn("Bindings: bad arg for activate_tab_relative");
             return std::nullopt;
         }
+        Uuid stack;
+        if (args.size() >= 2) {
+            stack = Uuid::fromString(args[1]);
+            if (stack.isNil()) {
+                spdlog::warn("Bindings: activate_tab_relative bad stackUuid '{}'", args[1]);
+                return std::nullopt;
+            }
+        }
+        return Action::ActivateTabRelative { stack, delta };
     }
     if (name == "activate_tab") {
         if (args.empty()) {
             spdlog::warn("Bindings: activate_tab requires an arg");
             return std::nullopt;
         }
+        Uuid target;
+        int idx = -1;
         try {
-            return Action::ActivateTab { std::stoi(args[0]) };
+            idx = std::stoi(args[0]);
         } catch (...) {
-            spdlog::warn("Bindings: bad arg for activate_tab");
-            return std::nullopt;
+            target = Uuid::fromString(args[0]);
+            if (target.isNil()) {
+                spdlog::warn("Bindings: activate_tab arg '{}' not an int or UUID", args[0]);
+                return std::nullopt;
+            }
         }
+        return Action::ActivateTab { target, idx };
     }
     if (name == "split_pane") {
         if (args.empty()) {
@@ -438,17 +460,17 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("meta+c") }, Action::Copy {} },
         { { *parseKeyStroke("meta+v") }, Action::Paste {} },
         // Tab switching
-        { { *parseKeyStroke("meta+shift+]") }, Action::ActivateTabRelative { 1 } },
-        { { *parseKeyStroke("meta+shift+[") }, Action::ActivateTabRelative { -1 } },
-        { { *parseKeyStroke("meta+1") }, Action::ActivateTab { 0 } },
-        { { *parseKeyStroke("meta+2") }, Action::ActivateTab { 1 } },
-        { { *parseKeyStroke("meta+3") }, Action::ActivateTab { 2 } },
-        { { *parseKeyStroke("meta+4") }, Action::ActivateTab { 3 } },
-        { { *parseKeyStroke("meta+5") }, Action::ActivateTab { 4 } },
-        { { *parseKeyStroke("meta+6") }, Action::ActivateTab { 5 } },
-        { { *parseKeyStroke("meta+7") }, Action::ActivateTab { 6 } },
-        { { *parseKeyStroke("meta+8") }, Action::ActivateTab { 7 } },
-        { { *parseKeyStroke("meta+9") }, Action::ActivateTab { 8 } },
+        { { *parseKeyStroke("meta+shift+]") }, Action::ActivateTabRelative { Uuid {}, 1 } },
+        { { *parseKeyStroke("meta+shift+[") }, Action::ActivateTabRelative { Uuid {}, -1 } },
+        { { *parseKeyStroke("meta+1") }, Action::ActivateTab { Uuid {}, 0 } },
+        { { *parseKeyStroke("meta+2") }, Action::ActivateTab { Uuid {}, 1 } },
+        { { *parseKeyStroke("meta+3") }, Action::ActivateTab { Uuid {}, 2 } },
+        { { *parseKeyStroke("meta+4") }, Action::ActivateTab { Uuid {}, 3 } },
+        { { *parseKeyStroke("meta+5") }, Action::ActivateTab { Uuid {}, 4 } },
+        { { *parseKeyStroke("meta+6") }, Action::ActivateTab { Uuid {}, 5 } },
+        { { *parseKeyStroke("meta+7") }, Action::ActivateTab { Uuid {}, 6 } },
+        { { *parseKeyStroke("meta+8") }, Action::ActivateTab { Uuid {}, 7 } },
+        { { *parseKeyStroke("meta+9") }, Action::ActivateTab { Uuid {}, 8 } },
         // Font size
         { { *parseKeyStroke("meta+=") }, Action::IncreaseFontSize {} },
         { { *parseKeyStroke("meta+-") }, Action::DecreaseFontSize {} },
@@ -828,9 +850,9 @@ std::vector<MouseBinding> defaultMouseBindings()
 
         // Tab bar
         { { MouseButton::Left, 0, MouseEventType::Press, MouseMode::Any, MouseRegion::TabBar },
-          Action::ActivateTab { -1 } },
+          Action::ActivateTab { Uuid {}, -1 } },
         { { MouseButton::Middle, 0, MouseEventType::Press, MouseMode::Any, MouseRegion::TabBar },
-          Action::CloseTab { -1 } },
+          Action::CloseTab { Uuid {}, -1 } },
     };
 }
 

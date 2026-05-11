@@ -73,14 +73,15 @@ bool PlatformDawn::snapshotUnderLock(RenderFrameState &out)
     rs.mainFontRemoved        = false;
     rs.tabBarFontRemoved      = false;
     rs.viewportSizeChanged    = false;
-    rs.tabBarDirty            = false;
+    rs.tabBarsDirty           = false;
     rs.dividersDirty          = false;
     rs.releasePaneTextureIds.clear();
     rs.releasePopupTextureKeys.clear();
     rs.releaseEmbeddedTextureKeys.clear();
-    rs.releaseAllPaneTextures = false;
-    rs.releaseTabBarTexture   = false;
-    rs.invalidateAllRowCaches = false;
+    rs.releaseAllPaneTextures   = false;
+    rs.releaseTabBarTextures.clear();
+    rs.releaseAllTabBarTextures = false;
+    rs.invalidateAllRowCaches   = false;
     rs.destroyedPaneIds.clear();
     rs.destroyedPopupKeys.clear();
     rs.destroyedEmbeddedKeys.clear();
@@ -125,6 +126,410 @@ void PlatformDawn::runLayoutIfDirty()
     }
 }
 
+namespace {
+
+// UTF-8 codepoint count of a string. Used by the cell builder to measure
+// rendered width (every codepoint is one cell in our font).
+int utf8CodepointLen(const std::string &s)
+{
+    int w         = 0;
+    const char *p = s.c_str();
+    while (*p) {
+        p += utf8::seqLen(static_cast<uint8_t>(*p));
+        w++;
+    }
+    return w;
+}
+
+// Word-aware truncation: returns prefix of `s` of at most `maxCp`
+// codepoints with an ellipsis appended. Walks back to the last whitespace
+// boundary unless that leaves too little of the budget — protects titles
+// that start with an icon + space from collapsing to just the icon.
+std::string utf8TruncWithEllipsis(const std::string &s, int maxCp)
+{
+    if (maxCp <= 0) {
+        return {};
+    }
+    int cp        = 0;
+    const char *p = s.c_str();
+    while (*p && cp < maxCp) {
+        p += utf8::seqLen(static_cast<uint8_t>(*p));
+        cp++;
+    }
+    if (!*p) {
+        return s;
+    }
+    auto isWS = [](char c)
+    {
+        return c == ' ' || c == '\t';
+    };
+    size_t cutBytes      = static_cast<size_t>(p - s.c_str());
+    const size_t origCut = cutBytes;
+    if (!isWS(s[cutBytes])) {
+        size_t scanCut = cutBytes;
+        while (scanCut > 0 && !isWS(s[scanCut - 1])) {
+            --scanCut;
+        }
+        while (scanCut > 0 && isWS(s[scanCut - 1])) {
+            --scanCut;
+        }
+        int prefixCp      = 0;
+        const char *q     = s.c_str();
+        const char *limit = s.c_str() + scanCut;
+        while (q < limit) {
+            q += utf8::seqLen(static_cast<uint8_t>(*q));
+            ++prefixCp;
+        }
+        const int minKeep = std::max(2, maxCp / 2);
+        if (prefixCp >= minKeep) {
+            cutBytes = scanCut;
+        }
+    }
+    while (cutBytes > 0 && isWS(s[cutBytes - 1])) {
+        --cutBytes;
+    }
+    if (cutBytes == 0) {
+        cutBytes = origCut;
+    }
+    return std::string(s.c_str(), cutBytes) + "\xe2\x80\xa6";
+}
+
+std::string codepointToUtf8(char32_t cp)
+{
+    std::string s;
+    if (cp < 0x80) {
+        s += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        s += static_cast<char>(0xC0 | (cp >> 6));
+        s += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        s += static_cast<char>(0xE0 | (cp >> 12));
+        s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        s += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        s += static_cast<char>(0xF0 | (cp >> 18));
+        s += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        s += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+    return s;
+}
+
+// Indeterminate-spinner glyphs cycled by progressState == 3.
+constexpr char32_t kAnimGlyphs[] = {
+    0xf0130, 0xf0a9e, 0xf0a9f, 0xf0aa0, 0xf0aa1,
+    0xf0aa2, 0xf0aa3, 0xf0aa4, 0xf0aa5
+};
+constexpr int kAnimCount = 9;
+
+std::string progressGlyphFor(const RenderTabInfo &rti, int animFrame)
+{
+    int st  = rti.progressState;
+    int pct = rti.progressPct;
+    if (st == 0) {
+        return {};
+    }
+    int idx;
+    if (st == 3) {
+        int period = 2 * (kAnimCount - 1);
+        int pos    = animFrame % period;
+        idx        = (pos < kAnimCount) ? pos : period - pos;
+    } else if (st == 1 || st == 2) {
+        idx = std::clamp(pct * kAnimCount / 100, 0, kAnimCount - 1);
+    } else {
+        return {};
+    }
+    return codepointToUtf8(kAnimGlyphs[idx]);
+}
+
+// Lay one TabBarRender's cells given its tabs + activeTabIdx + rect.
+// All other styling pulled from the shared `fs`. Writes into bar.cells,
+// bar.cols, bar.colRanges. Used by both the root primary bar and any
+// sub-bar inside an active tab.
+void buildBarCells(TabBarRender &bar, const RenderFrameState &fs, float charWidth)
+{
+    bar.cells.clear();
+    bar.colRanges.clear();
+    bar.cols = 0;
+
+    if (bar.tabs.empty() || bar.rect.isEmpty() || charWidth <= 0.f) {
+        return;
+    }
+
+    int cols = std::max(1, static_cast<int>(bar.rect.w / charWidth));
+    bar.cols = cols;
+
+    struct TI
+    {
+        std::string prefix;
+        std::string title;
+        std::string text;
+        int width;
+        bool isActive;
+        uint32_t bgColor, fgColor;
+    };
+
+    std::vector<TI> tabInfos;
+    tabInfos.reserve(bar.tabs.size());
+    for (int i = 0; i < static_cast<int>(bar.tabs.size()); ++i) {
+        const RenderTabInfo &rtab = bar.tabs[i];
+        bool isActive             = (i == bar.activeTabIdx);
+        TI ti {};
+        ti.isActive = isActive;
+        ti.bgColor  = isActive ? fs.tbActiveBgColor : fs.tbInactiveBgColor;
+        ti.fgColor  = isActive ? fs.tbActiveFgColor : fs.tbInactiveFgColor;
+        ti.prefix   = " ";
+        if (fs.progressIconEnabled) {
+            std::string pg = progressGlyphFor(rtab, fs.tabBarAnimFrame);
+            if (!pg.empty()) {
+                ti.prefix += pg;
+                ti.prefix += " ";
+            }
+        }
+        if (!rtab.icon.empty()) {
+            ti.prefix += rtab.icon;
+            ti.prefix += " ";
+        }
+        ti.prefix += "[";
+        ti.prefix += std::to_string(i + 1);
+        ti.prefix += "] ";
+        ti.title = rtab.title;
+        tabInfos.push_back(std::move(ti));
+    }
+
+    int numTabs  = static_cast<int>(tabInfos.size());
+    int sepWidth = 1;
+
+    int maxTitleLen = fs.maxTitleLength > 0 ? fs.maxTitleLength : 9999;
+    for (;;) {
+        int total = 0;
+        for (int i = 0; i < numTabs; ++i) {
+            std::string truncTitle = utf8TruncWithEllipsis(tabInfos[i].title, maxTitleLen);
+            tabInfos[i].text       = tabInfos[i].prefix + truncTitle + (truncTitle.empty() ? "" : " ");
+            if (tabInfos[i].text.back() != ' ') {
+                tabInfos[i].text += " ";
+            }
+            tabInfos[i].width = utf8CodepointLen(tabInfos[i].text);
+            total += tabInfos[i].width + sepWidth;
+        }
+        if (total <= cols || maxTitleLen <= 0) {
+            break;
+        }
+        maxTitleLen--;
+    }
+
+    int totalWidth = 0;
+    for (auto &ti : tabInfos) {
+        totalWidth += ti.width + sepWidth;
+    }
+    int visStart = 0, visEnd = numTabs;
+    bool overflowLeft = false, overflowRight = false;
+    if (totalWidth > cols && numTabs > 1) {
+        int ati = bar.activeTabIdx;
+        if (ati < 0 || ati >= numTabs) {
+            ati = 0;
+        }
+        visStart           = ati;
+        visEnd             = ati + 1;
+        int used           = tabInfos[ati].width + sepWidth;
+        int indicatorWidth = 2;
+        while (visStart > 0 || visEnd < numTabs) {
+            bool expanded = false;
+            if (visEnd < numTabs) {
+                int need = tabInfos[visEnd].width + sepWidth + (visEnd + 1 < numTabs ? indicatorWidth : 0);
+                if (used + need + (visStart > 0 ? indicatorWidth : 0) <= cols) {
+                    used += tabInfos[visEnd].width + sepWidth;
+                    visEnd++;
+                    expanded = true;
+                }
+            }
+            if (visStart > 0) {
+                int need = tabInfos[visStart - 1].width + sepWidth + (visStart - 1 > 0 ? indicatorWidth : 0);
+                if (used + need + (visEnd < numTabs ? indicatorWidth : 0) <= cols) {
+                    visStart--;
+                    used += tabInfos[visStart].width + sepWidth;
+                    expanded = true;
+                }
+            }
+            if (!expanded) {
+                break;
+            }
+        }
+        overflowLeft  = (visStart > 0);
+        overflowRight = (visEnd < numTabs);
+    }
+
+    bar.cells.resize(cols);
+    for (auto &c : bar.cells) {
+        c.ch.clear();
+        c.fgColor = fs.tbInactiveFgColor;
+        c.bgColor = fs.tbBgColor;
+    }
+
+    auto placeCell = [&](int &col, const std::string &ch, uint32_t fg, uint32_t bg)
+    {
+        if (col >= cols) {
+            return;
+        }
+        bar.cells[col] = { ch, fg, bg };
+        col++;
+    };
+
+    int col = 0;
+    if (overflowLeft) {
+        placeCell(col, "\xe2\x97\x80", fs.tbInactiveFgColor, fs.tbBgColor);
+        placeCell(col, " ", fs.tbInactiveFgColor, fs.tbBgColor);
+    }
+    const std::string SEP_RIGHT = "\xee\x82\xb0";
+
+    bar.colRanges.assign(bar.tabs.size(), { -1, -1 });
+    for (int i = visStart; i < visEnd; ++i) {
+        auto &ti      = tabInfos[i];
+        int startCol  = col;
+        const char *p = ti.text.c_str();
+        while (*p && col < cols) {
+            int len = utf8::seqLen(static_cast<uint8_t>(*p));
+            std::string ch(p, static_cast<size_t>(len));
+            placeCell(col, ch, ti.fgColor, ti.bgColor);
+            p += len;
+        }
+        uint32_t nextBg = (i + 1 < visEnd) ? tabInfos[i + 1].bgColor : fs.tbBgColor;
+        placeCell(col, SEP_RIGHT, ti.bgColor, nextBg);
+        bar.colRanges[i] = { startCol, col };
+    }
+    if (overflowRight && col + 2 <= cols) {
+        placeCell(col, " ", fs.tbInactiveFgColor, fs.tbBgColor);
+        placeCell(col, "\xe2\x96\xb6", fs.tbInactiveFgColor, fs.tbBgColor);
+    }
+}
+
+} // anonymous namespace
+
+void PlatformDawn::populateTabBars()
+{
+    auto &rs = renderThread_->renderState();
+    rs.tabBars.clear();
+
+    auto barRects = scriptEngine_.tabBarRects(fbWidth_, fbHeight_);
+    if (barRects.empty()) {
+        return;
+    }
+    const Uuid primary       = scriptEngine_.primaryTabBarNode();
+    const auto allTabRoots   = scriptEngine_.tabSubtreeRoots();
+    const int activeTopIdx   = scriptEngine_.activeTabIndex();
+    LayoutTree &tree         = scriptEngine_.layoutTree();
+
+    rs.tabBars.reserve(barRects.size());
+    for (auto &[barId, rect] : barRects) {
+        TabBarRender bar;
+        bar.id   = barId;
+        bar.rect = rect;
+
+        if (barId == primary) {
+            // Primary bar — tabs are the top-level tab subtree roots.
+            // Mirrors the pre-refactor sourcing: prefer JS-set
+            // tabTitle/tabIcon, then the remembered-focus terminal's
+            // OSC title/icon, then its foreground process name.
+            bar.tabs.reserve(allTabRoots.size());
+            for (Uuid sub : allTabRoots) {
+                RenderTabInfo rti;
+                rti.focusedPaneId = scriptEngine_.focusedPaneInSubtree(sub);
+                Terminal *fp      = scriptEngine_.rememberedFocusTerminalInSubtree(sub);
+                rti.title         = scriptEngine_.tabTitle(sub);
+                if (rti.title.empty() && fp) {
+                    auto t = fp->title();
+                    if (t.has_value() && !t->empty()) {
+                        rti.title = *t;
+                    } else {
+                        rti.title = fp->foregroundProcess();
+                    }
+                }
+                rti.icon = scriptEngine_.tabIcon(sub);
+                if (rti.icon.empty() && fp) {
+                    rti.icon = fp->icon().value_or("");
+                }
+                rti.progressState = fp ? fp->progressState() : 0;
+                rti.progressPct   = fp ? fp->progressPct() : 0;
+                bar.tabs.push_back(std::move(rti));
+            }
+            bar.activeTabIdx = activeTopIdx;
+        } else {
+            // Sub-bar — tabs are the bound Stack's direct children. Each
+            // child's tab metadata comes from the first active terminal in
+            // its subtree (terminalLeavesIn with onlyActiveStack=true gives
+            // us the visible-now leaf). Node::label, if set by a script,
+            // overrides the title fallback.
+            const Node *barNode = tree.node(barId);
+            if (!barNode) {
+                continue;
+            }
+            const auto *tbd = std::get_if<TabBarData>(&barNode->data);
+            if (!tbd || tbd->boundStack.isNil()) {
+                continue;
+            }
+            const Node *stackNode = tree.node(tbd->boundStack);
+            if (!stackNode) {
+                continue;
+            }
+            const auto *sd = std::get_if<StackData>(&stackNode->data);
+            if (!sd) {
+                continue;
+            }
+            int activeIdx = -1;
+            bar.tabs.reserve(sd->children.size());
+            for (size_t i = 0; i < sd->children.size(); ++i) {
+                const Uuid childId = sd->children[i].id;
+                if (childId == sd->activeChild) {
+                    activeIdx = static_cast<int>(i);
+                }
+
+                // Same metadata-sourcing policy as the primary bar above:
+                // - Title comes from the JS-set Node::label (mb.layout.setLabel)
+                //   if present, else from the remembered-focus pane's OSC
+                //   title / process name. rememberedFocusInSubtree records
+                //   per-Stack-child entries (see setFocusedTerminalNodeId),
+                //   so focus history follows sub-bars exactly like top-level.
+                // - Icon / progress come from the same remembered-focus pane.
+                // - Falls back to "first active terminal in the subtree" when
+                //   no focus has been recorded yet (newly-created sub-tab).
+                Terminal *fp = scriptEngine_.rememberedFocusTerminalInSubtree(childId);
+                if (!fp) {
+                    std::vector<Uuid> leaves;
+                    tree.terminalLeavesIn(childId, true, leaves);
+                    if (!leaves.empty()) {
+                        fp = scriptEngine_.terminal(leaves.front());
+                    }
+                }
+
+                RenderTabInfo rti;
+                rti.focusedPaneId = fp ? fp->nodeId() : Uuid {};
+                if (const Node *child = tree.node(childId);
+                    child && !child->label.empty()) {
+                    rti.title = child->label;
+                }
+                if (rti.title.empty() && fp) {
+                    auto t = fp->title();
+                    if (t.has_value() && !t->empty()) {
+                        rti.title = *t;
+                    } else {
+                        rti.title = fp->foregroundProcess();
+                    }
+                }
+                if (fp) {
+                    rti.icon          = fp->icon().value_or("");
+                    rti.progressState = fp->progressState();
+                    rti.progressPct   = fp->progressPct();
+                }
+                bar.tabs.push_back(std::move(rti));
+            }
+            bar.activeTabIdx = activeIdx;
+        }
+
+        buildBarCells(bar, rs, tabBarCharWidth_);
+        rs.tabBars.push_back(std::move(bar));
+    }
+}
+
 void PlatformDawn::buildRenderFrameState()
 {
     // If any tree mutations happened since the last frame (splits, zooms,
@@ -137,12 +542,11 @@ void PlatformDawn::buildRenderFrameState()
     // Called under the render-thread mutex. Rebuilds the shadow copy from
     // live state and merges main-thread-owned dirty flags (tabBarDirty_,
     // dividersDirty_) into renderThread_->renderState().
-    renderThread_->renderState().tabBarDirty |= tabBarDirty_;
+    renderThread_->renderState().tabBarsDirty |= tabBarDirty_;
     renderThread_->renderState().dividersDirty |= dividersDirty_;
     tabBarDirty_                              = false;
     dividersDirty_                            = false;
     auto tab                                  = activeTab();
-    renderThread_->renderState().activeTabIdx = scriptEngine_.activeTabIndex();
     renderThread_->renderState().fbWidth      = fbWidth_;
     renderThread_->renderState().fbHeight     = fbHeight_;
     renderThread_->renderState().charWidth    = charWidth_;
@@ -154,7 +558,6 @@ void PlatformDawn::buildRenderFrameState()
     renderThread_->renderState().padBottom    = padBottom_;
     std::memcpy(renderThread_->renderState().activeTint, activeTint_, sizeof(activeTint_));
     std::memcpy(renderThread_->renderState().inactiveTint, inactiveTint_, sizeof(inactiveTint_));
-    renderThread_->renderState().tabBarVisible      = tabBarVisible();
     renderThread_->renderState().tabBarPosition     = tabBarConfig_.position;
     renderThread_->renderState().inLiveResize       = window_ && window_->inLiveResize();
     renderThread_->renderState().windowHasFocus     = windowHasFocus_;
@@ -195,13 +598,6 @@ void PlatformDawn::buildRenderFrameState()
 
     // Tab bar animation
     renderThread_->renderState().tabBarAnimFrame = tabBarAnimFrame_;
-
-    // Tab bar rect from layout tree (not tab-specific)
-    if (tab) {
-        renderThread_->renderState().tabBarRect = scriptEngine_.tabBarRect(fbWidth_, fbHeight_);
-    } else {
-        renderThread_->renderState().tabBarRect = {};
-    }
 
     // Active tab pane info. `activePanesInSubtree` walks the tab's subtree
     // honouring Stack activeChild semantics — inactive Stack siblings (e.g.
@@ -250,328 +646,13 @@ void PlatformDawn::buildRenderFrameState()
         }
     }
 
-    // Tab bar data (all tabs)
-    renderThread_->renderState().tabs.clear();
-    auto allTabs = scriptEngine_.tabSubtreeRoots();
-    for (Uuid sub : allTabs) {
-        RenderTabInfo rti;
-        // Title/icon resolution order: JS-set label on the tab node wins
-        // (so scripts can override), else the tab's remembered pane's OSC
-        // title/icon, else the pane's foreground process for title. Icon
-        // has no process fallback — leave empty if unset.
-        //
-        // Empty strings at any level fall through: apps like `claude` clear
-        // the title on exit via OSC 2 "" (instead of XTWINOPS 23 pop),
-        // which arrives as Some("") — treating that as "no title" gives the
-        // same fg-process fallback as nullopt.
-        rti.focusedPaneId = scriptEngine_.focusedPaneInSubtree(sub);
-        Terminal *fp      = scriptEngine_.rememberedFocusTerminalInSubtree(sub);
-        rti.title         = scriptEngine_.tabTitle(sub);
-        if (rti.title.empty() && fp) {
-            auto t = fp->title();
-            if (t.has_value() && !t->empty()) {
-                rti.title = *t;
-            } else {
-                rti.title = fp->foregroundProcess();
-            }
-        }
-        rti.icon = scriptEngine_.tabIcon(sub);
-        if (rti.icon.empty() && fp) {
-            rti.icon = fp->icon().value_or("");
-        }
-        rti.progressState = fp ? fp->progressState() : 0;
-        rti.progressPct   = fp ? fp->progressPct() : 0;
-        renderThread_->renderState().tabs.push_back(std::move(rti));
-    }
-
-    // --- Tab bar layout (text → cell computation) ---
-    renderThread_->renderState().tabBarCells.clear();
-    renderThread_->renderState().tabBarColRanges.clear();
-    renderThread_->renderState().tabBarCols = 0;
-
-    if (!renderThread_->renderState().tabBarVisible || renderThread_->renderState().tabs.empty() ||
-        renderThread_->renderState().tabBarRect.isEmpty() || renderThread_->renderState().tabBarCharWidth <= 0) {
-        return;
-    }
-
-    int cols                                = std::max(1, static_cast<int>(renderThread_->renderState().tabBarRect.w / renderThread_->renderState().tabBarCharWidth));
-    renderThread_->renderState().tabBarCols = cols;
-
-    // Also update the main-thread-owned members used by resolveTabBarClickIndex
-    tabBarCols_ = cols;
-
-    // Helpers
-    auto cpLen = [](const std::string &s) -> int
-    {
-        int w         = 0;
-        const char *p = s.c_str();
-        while (*p) {
-            p += utf8::seqLen(static_cast<uint8_t>(*p));
-            w++;
-        }
-        return w;
-    };
-    auto truncUtf8 = [](const std::string &s, int maxCp) -> std::string
-    {
-        if (maxCp <= 0) {
-            return {};
-        }
-        int cp        = 0;
-        const char *p = s.c_str();
-        while (*p && cp < maxCp) {
-            p += utf8::seqLen(static_cast<uint8_t>(*p));
-            cp++;
-        }
-        if (!*p) {
-            return s;
-        }
-        auto isWS = [](char c)
-        {
-            return c == ' ' || c == '\t';
-        };
-        size_t cutBytes      = static_cast<size_t>(p - s.c_str());
-        const size_t origCut = cutBytes;
-        // If the cut splits a word, walk back to the last whitespace in the
-        // prefix — but only adopt the word-aware cut if it still keeps a
-        // reasonable share of the budget. Otherwise titles that start with
-        // an icon + space (e.g. "✱ Cooking…") collapse to just the icon
-        // when we'd rather show as much of the content as fits.
-        // (UTF-8 multibyte sequences never contain ASCII bytes, so byte scan is safe.)
-        if (!isWS(s[cutBytes])) {
-            size_t scanCut = cutBytes;
-            while (scanCut > 0 && !isWS(s[scanCut - 1])) {
-                --scanCut;
-            }
-            // Trim trailing whitespace from the candidate cut.
-            while (scanCut > 0 && isWS(s[scanCut - 1])) {
-                --scanCut;
-            }
-            // Count codepoints in [0, scanCut). If the word-aware cut leaves
-            // fewer than minKeep cp, fall back to the mid-word cut at origCut.
-            int prefixCp      = 0;
-            const char *q     = s.c_str();
-            const char *limit = s.c_str() + scanCut;
-            while (q < limit) {
-                q += utf8::seqLen(static_cast<uint8_t>(*q));
-                ++prefixCp;
-            }
-            const int minKeep = std::max(2, maxCp / 2);
-            if (prefixCp >= minKeep) {
-                cutBytes = scanCut;
-            }
-        }
-        // Trim trailing whitespace from the chosen cut point.
-        while (cutBytes > 0 && isWS(s[cutBytes - 1])) {
-            --cutBytes;
-        }
-        if (cutBytes == 0) {
-            cutBytes = origCut; // prefix was all whitespace
-        }
-        return std::string(s.c_str(), cutBytes) + "\xe2\x80\xa6";
-    };
-
-    // Indeterminate animation glyphs
-    static const char32_t kAnimGlyphs[] = {
-        0xf0130,
-        0xf0a9e,
-        0xf0a9f,
-        0xf0aa0,
-        0xf0aa1,
-        0xf0aa2,
-        0xf0aa3,
-        0xf0aa4,
-        0xf0aa5
-    };
-    static constexpr int kAnimCount = 9;
-    auto cp32ToUtf8                 = [](char32_t cp) -> std::string
-    {
-        std::string s;
-        if (cp < 0x80) {
-            s += static_cast<char>(cp);
-        } else if (cp < 0x800) {
-            s += static_cast<char>(0xC0 | (cp >> 6));
-            s += static_cast<char>(0x80 | (cp & 0x3F));
-        } else if (cp < 0x10000) {
-            s += static_cast<char>(0xE0 | (cp >> 12));
-            s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-            s += static_cast<char>(0x80 | (cp & 0x3F));
-        } else {
-            s += static_cast<char>(0xF0 | (cp >> 18));
-            s += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-            s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-            s += static_cast<char>(0x80 | (cp & 0x3F));
-        }
-        return s;
-    };
-    auto progressGlyph = [&](const RenderTabInfo &rti) -> std::string
-    {
-        int st  = rti.progressState;
-        int pct = rti.progressPct;
-        if (st == 0) {
-            return "";
-        }
-        int idx;
-        if (st == 3) {
-            int period = 2 * (kAnimCount - 1);
-            int pos    = renderThread_->renderState().tabBarAnimFrame % period;
-            idx        = (pos < kAnimCount) ? pos : period - pos;
-        } else if (st == 1 || st == 2) {
-            idx = std::clamp(pct * kAnimCount / 100, 0, kAnimCount - 1);
-        } else {
-            return "";
-        }
-        return cp32ToUtf8(kAnimGlyphs[idx]);
-    };
-
-    // Build per-tab info
-    struct TI
-    {
-        std::string prefix;
-        std::string title;
-        std::string text;
-        int width;
-        bool isActive;
-        uint32_t bgColor, fgColor;
-    };
-
-    std::vector<TI> tabInfos;
-    for (int i = 0; i < static_cast<int>(renderThread_->renderState().tabs.size()); ++i) {
-        const auto &rtab = renderThread_->renderState().tabs[i];
-        bool isActive    = (i == renderThread_->renderState().activeTabIdx);
-        TI ti;
-        ti.isActive    = isActive;
-        ti.bgColor     = isActive ? renderThread_->renderState().tbActiveBgColor : renderThread_->renderState().tbInactiveBgColor;
-        ti.fgColor     = isActive ? renderThread_->renderState().tbActiveFgColor : renderThread_->renderState().tbInactiveFgColor;
-        ti.prefix      = " ";
-        std::string pg = renderThread_->renderState().progressIconEnabled ? progressGlyph(rtab) : "";
-        if (!pg.empty()) {
-            ti.prefix += pg;
-            ti.prefix += " ";
-        }
-        if (!rtab.icon.empty()) {
-            ti.prefix += rtab.icon;
-            ti.prefix += " ";
-        }
-        ti.prefix += "[";
-        ti.prefix += std::to_string(i + 1);
-        ti.prefix += "] ";
-        ti.title = rtab.title;
-        tabInfos.push_back(std::move(ti));
-    }
-
-    int numTabs  = static_cast<int>(tabInfos.size());
-    int sepWidth = 1;
-
-    // Truncation loop
-    int maxTitleLen = renderThread_->renderState().maxTitleLength > 0 ? renderThread_->renderState().maxTitleLength : 9999;
-    for (;;) {
-        int total = 0;
-        for (int i = 0; i < numTabs; ++i) {
-            std::string truncTitle = truncUtf8(tabInfos[i].title, maxTitleLen);
-            tabInfos[i].text       = tabInfos[i].prefix + truncTitle + (truncTitle.empty() ? "" : " ");
-            if (tabInfos[i].text.back() != ' ') {
-                tabInfos[i].text += " ";
-            }
-            tabInfos[i].width = cpLen(tabInfos[i].text);
-            total += tabInfos[i].width + sepWidth;
-        }
-        if (total <= cols || maxTitleLen <= 0) {
-            break;
-        }
-        maxTitleLen--;
-    }
-
-    // Overflow detection
-    int totalWidth = 0;
-    for (auto &ti : tabInfos) {
-        totalWidth += ti.width + sepWidth;
-    }
-    int visStart = 0, visEnd = numTabs;
-    bool overflowLeft = false, overflowRight = false;
-    if (totalWidth > cols && numTabs > 1) {
-        int ati = renderThread_->renderState().activeTabIdx;
-        if (ati < 0 || ati >= numTabs) {
-            ati = 0;
-        }
-        visStart           = ati;
-        visEnd             = ati + 1;
-        int used           = tabInfos[ati].width + sepWidth;
-        int indicatorWidth = 2;
-        while (visStart > 0 || visEnd < numTabs) {
-            bool expanded = false;
-            if (visEnd < numTabs) {
-                int need = tabInfos[visEnd].width + sepWidth + (visEnd + 1 < numTabs ? indicatorWidth : 0);
-                if (used + need + (visStart > 0 ? indicatorWidth : 0) <= cols) {
-                    used += tabInfos[visEnd].width + sepWidth;
-                    visEnd++;
-                    expanded = true;
-                }
-            }
-            if (visStart > 0) {
-                int need = tabInfos[visStart - 1].width + sepWidth + (visStart - 1 > 0 ? indicatorWidth : 0);
-                if (used + need + (visEnd < numTabs ? indicatorWidth : 0) <= cols) {
-                    visStart--;
-                    used += tabInfos[visStart].width + sepWidth;
-                    expanded = true;
-                }
-            }
-            if (!expanded) {
-                break;
-            }
-        }
-        overflowLeft  = (visStart > 0);
-        overflowRight = (visEnd < numTabs);
-    }
-
-    // Build cell array
-    renderThread_->renderState().tabBarCells.resize(cols);
-    for (auto &c : renderThread_->renderState().tabBarCells) {
-        c.ch.clear();
-        c.fgColor = renderThread_->renderState().tbInactiveFgColor;
-        c.bgColor = renderThread_->renderState().tbBgColor;
-    }
-
-    auto placeCell = [&](int &col, const std::string &ch, uint32_t fg, uint32_t bg)
-    {
-        if (col >= cols) {
-            return;
-        }
-        renderThread_->renderState().tabBarCells[col] = { ch, fg, bg };
-        col++;
-    };
-
-    int col = 0;
-    if (overflowLeft) {
-        placeCell(col, "\xe2\x97\x80", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
-        placeCell(col, " ", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
-    }
-
-    // Powerline separator
-    const std::string SEP_RIGHT = "\xee\x82\xb0";
-
-    renderThread_->renderState().tabBarColRanges.assign(renderThread_->renderState().tabs.size(), { -1, -1 });
-    for (int i = visStart; i < visEnd; ++i) {
-        auto &ti      = tabInfos[i];
-        int startCol  = col;
-        const char *p = ti.text.c_str();
-        while (*p && col < cols) {
-            int len = utf8::seqLen(static_cast<uint8_t>(*p));
-            std::string ch(p, static_cast<size_t>(len));
-            placeCell(col, ch, ti.fgColor, ti.bgColor);
-            p += len;
-        }
-        uint32_t nextBg = (i + 1 < visEnd) ? tabInfos[i + 1].bgColor : renderThread_->renderState().tbBgColor;
-        placeCell(col, SEP_RIGHT, ti.bgColor, nextBg);
-        renderThread_->renderState().tabBarColRanges[i] = { startCol, col };
-    }
-
-    // Also update main-thread-owned col ranges for click handling
-    tabBarColRanges_ = renderThread_->renderState().tabBarColRanges;
-
-    if (overflowRight && col + 2 <= cols) {
-        placeCell(col, " ", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
-        placeCell(col, "\xe2\x96\xb6", renderThread_->renderState().tbInactiveFgColor, renderThread_->renderState().tbBgColor);
-    }
+    // Populate every visible TabBar's render data (rect + per-tab metadata
+    // + cell layout). Driven by ScriptEngine::tabBarRects which enumerates
+    // every TabBar node with a non-empty rect this frame — naturally
+    // covers the root primary bar plus any sub-bars inside the active
+    // top-level tab. See PlatformDawn::populateTabBars for the per-bar
+    // sourcing rules.
+    populateTabBars();
 }
 
 PlatformDawn::~PlatformDawn()
@@ -1432,8 +1513,36 @@ bool PlatformDawn::effectiveIsDarkMode() const
     return platformIsDarkMode();
 }
 
+void PlatformDawn::scheduleApplyConfig(Config draft)
+{
+    // Stash the latest draft so JS reads via `configJson` see it (otherwise
+    // subsequent addKeybinding calls inside the same tick would patch a
+    // stale baseline). Schedule a single eventloop post that calls the
+    // expensive applyConfig once; further calls in the same tick just
+    // overwrite the pending draft.
+    pendingConfigDraft_ = std::move(draft);
+    if (pendingConfigScheduled_) {
+        return;
+    }
+    pendingConfigScheduled_ = true;
+    eventLoop_->post([this]()
+                     {
+                         pendingConfigScheduled_ = false;
+                         if (!pendingConfigDraft_) {
+                             return;
+                         }
+                         Config c = std::move(*pendingConfigDraft_);
+                         pendingConfigDraft_.reset();
+                         applyConfig(c);
+                     });
+}
+
 void PlatformDawn::applyConfig(const Config &config)
 {
+    // A file-watch reload (or any other direct caller) supersedes pending
+    // JS-driven drafts: those were computed against an older lastConfig_
+    // and would clobber the canonical state.
+    pendingConfigDraft_.reset();
     spdlog::info("Config: hot-reload triggered");
 
     // Hold renderThread_->mutex() for the duration of the reload so the
@@ -1675,9 +1784,9 @@ void PlatformDawn::onFramebufferResize(int width, int height)
         fbHeight_                                        = static_cast<uint32_t>(height);
         renderThread_->pending().surfaceNeedsReconfigure = true;
         renderThread_->pending().viewportSizeChanged     = true;
-        renderThread_->pending().releaseAllPaneTextures  = true;
-        renderThread_->pending().releaseTabBarTexture    = true;
-        tabBarDirty_                                     = true;
+        renderThread_->pending().releaseAllPaneTextures   = true;
+        renderThread_->pending().releaseAllTabBarTextures = true;
+        tabBarDirty_                                      = true;
         setNeedsRedraw();
         renderThread_->wake();
         return;
@@ -1724,9 +1833,9 @@ void PlatformDawn::applyFramebufferResize(int width, int height)
     runLayoutIfDirty();
 
     // Release all held textures — they're now the wrong size.
-    renderThread_->pending().releaseAllPaneTextures = true;
-    renderThread_->pending().releaseTabBarTexture   = true;
-    tabBarDirty_                                    = true;
+    renderThread_->pending().releaseAllPaneTextures   = true;
+    renderThread_->pending().releaseAllTabBarTextures = true;
+    tabBarDirty_                                      = true;
     if (auto active = activeTab()) {
         refreshDividers(*active);
     }

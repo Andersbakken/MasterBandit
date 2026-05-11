@@ -96,19 +96,40 @@ struct TabBarCell
     uint32_t bgColor = 0;
 };
 
+// Per-TabBar-node render data. The frame state holds a vector of these,
+// one per TabBar node in the layout that has a non-empty rect this frame
+// (i.e. every currently-visible bar — root-level primary plus any
+// sub-bars created via wrapInStack inside an active top-level tab).
+//
+// Each bar carries its own tabs list (synthesized from the bar's bound
+// Stack's children for sub-bars, or the global tabs list for the root)
+// plus the cell layout that the GPU pass consumes. Texture handles live
+// in the render engine, keyed by `id`.
+struct TabBarRender
+{
+    Uuid id;                                    // TabBar node uuid (key)
+    Rect rect;                                  // pixel rect this frame
+    std::vector<RenderTabInfo> tabs;            // per-tab metadata
+    int activeTabIdx = -1;                      // index into `tabs`
+    std::vector<TabBarCell> cells;              // one per column, post-layout
+    int cols = 0;
+    std::vector<std::pair<int, int>> colRanges; // per-tab [startCol, endCol)
+    bool dirty = true;
+};
+
 struct RenderFrameState
 {
     // Active tab's panes (in iteration order)
     std::vector<RenderPaneInfo> panes;
     Uuid focusedPaneId;
 
-    // Tab bar data (all tabs)
-    std::vector<RenderTabInfo> tabs;
-    int activeTabIdx = -1;
+    // One entry per currently-visible TabBar node. The root-level primary
+    // bar (if visible) plus any sub-bars inside the active top-level tab.
+    // Built by PlatformDawn each frame; consumed by RenderEngine.
+    std::vector<TabBarRender> tabBars;
 
     // Layout geometry
     uint32_t fbWidth = 0, fbHeight = 0;
-    Rect tabBarRect;
     std::string tabBarPosition;
 
     // Font metrics (copied from main thread scalars)
@@ -118,8 +139,11 @@ struct RenderFrameState
     // Visual state
     float activeTint[4]          = { 1.0f, 1.0f, 1.0f, 1.0f };
     float inactiveTint[4]        = { 1.0f, 1.0f, 1.0f, 1.0f };
-    bool tabBarDirty             = true;
-    bool tabBarVisible           = false;
+    // Coarse "rebuild every bar in `tabBars` this frame" signal. Per-bar
+    // dirty tracking would let us skip unchanged bars, but in the common
+    // case (1-2 bars, only the focused/active changing) it's not worth
+    // the bookkeeping — the cell build is microseconds per bar.
+    bool tabBarsDirty            = true;
     bool dividersDirty           = true;
     bool focusChanged            = false;
     bool surfaceNeedsReconfigure = false;
@@ -155,8 +179,12 @@ struct RenderFrameState
     std::vector<std::string> releasePopupTextureKeys;
     std::vector<std::string> releaseEmbeddedTextureKeys;
     bool releaseAllPaneTextures = false;
-    bool releaseTabBarTexture   = false;
-    bool invalidateAllRowCaches = false;
+    // Per-bar texture release. `releaseAllTabBarTextures` covers viewport
+    // / framebuffer-size changes that invalidate everything; the vector
+    // covers individual TabBar nodes that disappeared from the layout.
+    std::vector<Uuid> releaseTabBarTextures;
+    bool releaseAllTabBarTextures = false;
+    bool invalidateAllRowCaches   = false;
 
     // Structural destroys accumulated from main-thread pane/popup/embedded
     // destruction. The render thread erases the matching render-private
@@ -188,11 +216,6 @@ struct RenderFrameState
 
     // Tab bar animation frame counter (snapshot of main-thread counter)
     int tabBarAnimFrame = 0;
-
-    // Pre-computed tab bar layout (main thread fills, render thread consumes)
-    std::vector<TabBarCell> tabBarCells;              // one per column
-    int tabBarCols = 0;                               // number of columns
-    std::vector<std::pair<int, int>> tabBarColRanges; // per-tab [startCol, endCol)
 };
 
 // ---------------------------------------------------------------------------
@@ -267,7 +290,7 @@ struct PendingMutations
 {
     // --- Dirty flags ---
     std::unordered_set<Uuid, UuidHash> dirtyPanes;
-    bool tabBarDirty             = false;
+    bool tabBarsDirty            = false;
     bool dividersDirty           = false;
     bool focusChanged            = false;
     bool surfaceNeedsReconfigure = false;
@@ -330,8 +353,9 @@ struct PendingMutations
     std::vector<Uuid> releasePaneTextures;            // pane Uuids whose heldTexture should be released
     std::vector<std::string> releasePopupTextures;    // popup keys ("<uuid>/<popupId>")
     std::vector<std::string> releaseEmbeddedTextures; // embedded keys ("<uuid>:<lineId>")
-    bool releaseTabBarTexture   = false;
-    bool releaseAllPaneTextures = false; // resize: release everything
+    std::vector<Uuid> releaseTabBarTextures;
+    bool releaseAllTabBarTextures = false;
+    bool releaseAllPaneTextures   = false; // resize: release everything
 
     // --- Divider geometry updates ---
     struct DividerUpdate
@@ -361,7 +385,7 @@ struct PendingMutations
     void clear()
     {
         dirtyPanes.clear();
-        tabBarDirty             = false;
+        tabBarsDirty            = false;
         dividersDirty           = false;
         focusChanged            = false;
         surfaceNeedsReconfigure = false;
@@ -369,8 +393,9 @@ struct PendingMutations
         releasePaneTextures.clear();
         releasePopupTextures.clear();
         releaseEmbeddedTextures.clear();
-        releaseTabBarTexture   = false;
-        releaseAllPaneTextures = false;
+        releaseTabBarTextures.clear();
+        releaseAllTabBarTextures = false;
+        releaseAllPaneTextures   = false;
         dividerUpdates.clear();
         clearDividerPanes.clear();
         newFbSize.reset();

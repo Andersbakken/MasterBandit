@@ -34,6 +34,10 @@ struct TerminalOptions
     // terminal lib doesn't need to depend on resource resolution. Empty
     // disables injection regardless of `shellIntegration` value.
     std::string shellIntegrationDir;
+    // Per-feature opt-out tokens (e.g. "no-cwd"). Joined with spaces and
+    // exported as MB_SHELL_INTEGRATION pre-exec; the integration script
+    // reads that env var. Users configure via TOML, never the env var.
+    std::vector<std::string> shellIntegrationFeatures;
 
     // Returns the tier1 capacity to pass to Document: INT_MAX when infinite.
     int resolvedScrollback() const

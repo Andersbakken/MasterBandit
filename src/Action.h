@@ -1,5 +1,6 @@
 #pragma once
 #include "Utils.h" // overloaded<> helper for std::visit
+#include "Uuid.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -26,19 +27,31 @@ struct NewTab
 {
 };
 
+// target = direct child of the owning Stack (top-level tab or sub-stack
+// child). target.isNil() + index >= 0 = top-level tab by index. Both nil/
+// negative = the active top-level tab.
 struct CloseTab
 {
+    Uuid target;
     int index = -1;
-}; // -1 = active tab
-
-struct ActivateTabRelative
-{
-    int delta;
 };
 
+// Cycle the activeChild of a Stack by `delta` positions. `stack` is the
+// Stack to cycle in: nil means "resolve at handler time from the focused
+// pane's nearest enclosing Stack" (so a single keybinding cycles the
+// containing sub-bar when focus is in one, else top-level tabs).
+struct ActivateTabRelative
+{
+    Uuid stack;
+    int delta = 0;
+};
+
+// target = direct child of the owning Stack. target.isNil() + index >= 0
+// resolves to root stack child at that index.
 struct ActivateTab
 {
-    int index;
+    Uuid target;
+    int index = -1;
 };
 
 // dir = where the new pane appears (Right/Down/Left/Up)

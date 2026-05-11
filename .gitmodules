@@ -7,3 +7,6 @@
 [submodule "3rdparty/libgrapheme"]
 	path = 3rdparty/libgrapheme
 	url = https://github.com/FRIGN/libgrapheme.git
+[submodule "3rdparty/whiteout"]
+	path = 3rdparty/whiteout
+	url = https://github.com/jhanssen/whiteout.git

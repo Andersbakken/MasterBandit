@@ -1040,8 +1040,12 @@ private:
     JSContext *createContext();
     void setupGlobals(JSContext *ctx, InstanceId id);
 
+    // `errOut`, when non-null, receives a human-readable reason on failure
+    // (TypeScript transform error, JS_Eval rejection, etc.) so the public
+    // loadScript wrapper can surface it through LoadResult.error to JS
+    // callers of mb.loadScript.
     InstanceId loadScriptInternal(const std::string &path, const std::string &content,
-                                  uint32_t permissions);
+                                  uint32_t permissions, std::string *errOut = nullptr);
     void notifyPermissionRequired(const std::string &path, const std::string &permissions,
                                   const std::string &hash);
 

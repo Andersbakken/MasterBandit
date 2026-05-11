@@ -71,3 +71,10 @@ set(SB_CONFIG_UNITY OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 add_subdirectory(SheenBidi)
 target_compile_definitions(SheenBidi PRIVATE SB_CONFIG_DISABLE_SCRATCH_MEMORY)
+
+# whiteout: TypeScript type-stripping (turns .ts into byte-equal-length .js).
+# We consume it via add_subdirectory; tests/examples default OFF in that mode
+# but force them off explicitly so a stray top-level toggle can't pull them in.
+set(WHITEOUT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WHITEOUT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(whiteout)

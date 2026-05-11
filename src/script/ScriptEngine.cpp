@@ -5,6 +5,7 @@
 #include "ScriptLayoutBindings.h"
 #include "ScriptWsModule.h"
 #include "Terminal.h"
+#include "TsTransform.h"
 #include "Utils.h"
 #include "Uuid.h"
 
@@ -128,9 +129,19 @@ static char *moduleNormalize(JSContext *ctx, const char *base_name,
     fs::path baseDir  = basePath.parent_path();
     fs::path resolved = baseDir / name;
 
-    // Add .js extension if not present
+    // Add .js / .ts extension if not present. Prefer .ts when both exist on
+    // disk so a TS author who imports `./foo` (the JS convention) gets the
+    // typed source rather than a stale sibling .js. Falls back to .js when
+    // neither exists so error messages stay consistent with the pre-TS world.
     if (!resolved.has_extension()) {
-        resolved.replace_extension(".js");
+        std::error_code ec;
+        fs::path tsCandidate = resolved;
+        tsCandidate.replace_extension(".ts");
+        if (fs::exists(tsCandidate, ec) && !ec) {
+            resolved = tsCandidate;
+        } else {
+            resolved.replace_extension(".js");
+        }
     }
 
     std::string resolvedStr = resolved.string();
@@ -173,14 +184,27 @@ static JSModuleDef *moduleLoader(JSContext *ctx, const char *module_name, void *
         return createWsNativeModule(ctx, eng);
     }
 
-    std::ifstream f(module_name, std::ios::binary);
-    if (!f) {
-        JS_ThrowReferenceError(ctx, "Cannot open module '%s'", module_name);
+    // mb::tsx::loadAsJs handles .ts files transparently (type-stripped via
+    // whiteout, with a per-source-hash disk cache). For .js files this is a
+    // straight read. Distinguish read failures (err.message empty) from
+    // whiteout failures so JS sees the precise reason: ReferenceError for
+    // missing/unreadable files (matches the pre-TS behaviour and is what
+    // QuickJS itself emits for unresolvable imports), SyntaxError carrying
+    // the whiteout diagnostic for type-strip failures.
+    mb::tsx::TransformError tsErr;
+    std::string src = mb::tsx::loadAsJs(module_name, &tsErr);
+    if (src.empty()) {
+        if (!tsErr.message.empty()) {
+            JS_ThrowSyntaxError(ctx,
+                                "TypeScript transform failed for '%s' at byte %zu: %s",
+                                module_name,
+                                tsErr.offset,
+                                tsErr.message.c_str());
+        } else {
+            JS_ThrowReferenceError(ctx, "Cannot load module '%s'", module_name);
+        }
         return nullptr;
     }
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    std::string src = ss.str();
 
     JSValue func = JS_Eval(ctx, src.c_str(), src.size(), module_name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     if (JS_IsException(func)) {
@@ -5175,9 +5199,17 @@ void Engine::setupGlobals(JSContext *ctx, InstanceId id)
 
 InstanceId Engine::loadController(const std::string &path)
 {
-    std::string src = io::readFile(path);
+    mb::tsx::TransformError tsErr;
+    std::string src = mb::tsx::loadAsJs(path, &tsErr);
     if (src.empty()) {
-        sLog().error("ScriptEngine: failed to read '{}'", path);
+        if (!tsErr.message.empty()) {
+            sLog().error("ScriptEngine: '{}' TypeScript transform failed at byte {}: {}",
+                         path,
+                         tsErr.offset,
+                         tsErr.message);
+        } else {
+            sLog().error("ScriptEngine: failed to read '{}'", path);
+        }
         return 0;
     }
     JSContext *ctx = createContext();
@@ -5214,9 +5246,17 @@ bool Engine::reevalInstance(InstanceId id, const std::string &path)
         sLog().error("ScriptEngine: reevalInstance: id {} not found", id);
         return false;
     }
-    std::string src = io::readFile(path);
+    mb::tsx::TransformError tsErr;
+    std::string src = mb::tsx::loadAsJs(path, &tsErr);
     if (src.empty()) {
-        sLog().error("ScriptEngine: reevalInstance: failed to read '{}'", path);
+        if (!tsErr.message.empty()) {
+            sLog().error("ScriptEngine: reevalInstance '{}' TypeScript transform failed at byte {}: {}",
+                         path,
+                         tsErr.offset,
+                         tsErr.message);
+        } else {
+            sLog().error("ScriptEngine: reevalInstance: failed to read '{}'", path);
+        }
         return false;
     }
     JSValue result = JS_Eval(inst->ctx, src.c_str(), src.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
@@ -5382,7 +5422,13 @@ collectDirModules(const std::string &scriptPath)
         if (!entry.is_regular_file(ec) || ec) {
             continue;
         }
-        if (entry.path().extension() != ".js") {
+        // Both .js and .ts contribute to the allowlist hash bundle: .ts files
+        // execute (via whiteout) the same way .js does, so a TS edit must
+        // invalidate the cached grant just like a JS edit would. Hash the raw
+        // on-disk bytes — what the user audited at approval time — rather
+        // than the post-transform output.
+        auto ext = entry.path().extension();
+        if (ext != ".js" && ext != ".ts") {
             continue;
         }
         std::string p       = entry.path().string();
@@ -5424,9 +5470,10 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
     // by definition; the BuiltIn marker bit itself is consumed by
     // loadScriptInternal and not stored on the Instance.
     if (requestedPerms & Perm::BuiltIn) {
-        InstanceId id = loadScriptInternal(path, content, Perm::All | Perm::BuiltIn);
+        std::string err;
+        InstanceId id = loadScriptInternal(path, content, Perm::All | Perm::BuiltIn, &err);
         if (id == 0) {
-            return { LoadResult::Status::Error, 0, "script evaluation failed" };
+            return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
         return { LoadResult::Status::Loaded, id, {} };
     }
@@ -5442,9 +5489,10 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
     if (entry) {
         if ((requestedPerms & ~entry->permissions) == 0) {
             if (verifyModuleHashes(*entry)) {
-                InstanceId id = loadScriptInternal(path, content, requestedPerms);
+                std::string err;
+                InstanceId id = loadScriptInternal(path, content, requestedPerms, &err);
                 if (id == 0) {
-                    return { LoadResult::Status::Error, 0, "script evaluation failed" };
+                    return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
                 }
                 return { LoadResult::Status::Loaded, id, {} };
             }
@@ -5463,7 +5511,7 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
 }
 
 InstanceId Engine::loadScriptInternal(const std::string &path, const std::string &content,
-                                      uint32_t permissions)
+                                      uint32_t permissions, std::string *errOut)
 {
     std::string hash = sha256Hex(content);
 
@@ -5515,11 +5563,34 @@ InstanceId Engine::loadScriptInternal(const std::string &path, const std::string
     instances_.push_back({ id, ctx, path, hash, storedPerms, asBuiltIn });
     JS_SetContextOpaque(ctx, reinterpret_cast<void *>(static_cast<uintptr_t>(id)));
 
-    JSValue result = JS_Eval(ctx, content.c_str(), content.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
+    // For .ts inputs, hand QuickJS the type-stripped bytes; identity hash and
+    // allowlist comparison stay on the on-disk source so user-visible auditing
+    // tracks what the user actually edited rather than a derived artifact.
+    mb::tsx::TransformError tsErr;
+    std::string evalSrc = mb::tsx::toJs(path, content, &tsErr);
+    if (evalSrc.empty()) {
+        sLog().error("ScriptEngine: '{}' TypeScript transform failed at byte {}: {}",
+                     path,
+                     tsErr.offset,
+                     tsErr.message.empty() ? "(no detail)" : tsErr.message);
+        if (errOut) {
+            *errOut = !tsErr.message.empty()
+                ? "TypeScript transform failed at byte " + std::to_string(tsErr.offset) + ": " + tsErr.message
+                : std::string("TypeScript transform failed");
+        }
+        JS_FreeContext(ctx);
+        instances_.pop_back();
+        return 0;
+    }
+    JSValue result = JS_Eval(ctx, evalSrc.c_str(), evalSrc.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
     if (JS_IsException(result)) {
         JSValue exc     = JS_GetException(ctx);
         const char *str = JS_ToCString(ctx, exc);
-        sLog().error("ScriptEngine: '{}' error: {}", path, str ? str : "(null)");
+        std::string evalMsg = str ? str : "(null)";
+        sLog().error("ScriptEngine: '{}' error: {}", path, evalMsg);
+        if (errOut) {
+            *errOut = "script evaluation failed: " + evalMsg;
+        }
         if (str) {
             JS_FreeCString(ctx, str);
         }
@@ -5551,9 +5622,10 @@ Engine::LoadResult Engine::approveScript(const std::string &path, char response)
 
     auto tryLoad = [&]() -> LoadResult
     {
-        InstanceId id = loadScriptInternal(pending.path, pending.content, pending.requestedPerms);
+        std::string err;
+        InstanceId id = loadScriptInternal(pending.path, pending.content, pending.requestedPerms, &err);
         if (id == 0) {
-            return { LoadResult::Status::Error, 0, "script evaluation failed" };
+            return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
         return { LoadResult::Status::Loaded, id, {} };
     };

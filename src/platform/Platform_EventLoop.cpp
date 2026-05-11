@@ -990,63 +990,83 @@ int PlatformDawn::exec()
         configLoader_->installFileWatch(configFilePath());
         configLoader_->reloadNow();
 
-        // Optional config.js: fully-trusted controller loaded after TOML.
-        // The script calls mb.config.patch / addKeybinding / etc. to
-        // override anything the TOML set. The watch is installed
-        // unconditionally — backend watchers (epoll inotify on parent
-        // dir, FSEvents on macOS) detect file creation, so saving
-        // config.js after launch loads it without restart. On file
-        // change, re-eval in the same JSContext (timers + listeners
-        // persist; idempotent top-level mb.config.patch /
-        // mb.actions.register calls reapply cleanly).
+        // Optional config.ts / config.js: fully-trusted controller loaded
+        // after TOML. The script calls mb.config.patch / addKeybinding / etc.
+        // to override anything the TOML set. Watches are installed on both
+        // candidate paths unconditionally — backend watchers (epoll inotify
+        // on parent dir, FSEvents on macOS) detect file creation, so saving
+        // either file after launch loads it without restart. On file change,
+        // re-eval in the same JSContext (timers + listeners persist;
+        // idempotent top-level mb.config.patch / mb.actions.register calls
+        // reapply cleanly). When both files exist, .ts wins — author intent
+        // is clearer when they've explicitly created the typed variant, and
+        // the script engine type-strips it via whiteout transparently.
         std::string jsPath = configJsFilePath();
-        if (!jsPath.empty()) {
-            if (std::filesystem::exists(jsPath)) {
-                configJsInstanceId_ = scriptEngine_.loadController(jsPath);
-                if (configJsInstanceId_ == 0) {
-                    spdlog::warn("Config: failed to load JS config '{}'", jsPath);
-                } else {
-                    spdlog::info("Config: loaded JS config '{}' (id={})",
-                                 jsPath,
-                                 configJsInstanceId_);
-                }
+        std::string tsPath = configTsFilePath();
+        // Resolves to the preferred existing file (.ts before .js), or empty
+        // if neither is on disk right now. Re-evaluated on every fire so the
+        // user can flip between the two without restarting.
+        auto resolveConfigScriptPath = [tsPath, jsPath]() -> std::string {
+            std::error_code ec;
+            if (!tsPath.empty() && std::filesystem::exists(tsPath, ec) && !ec) {
+                return tsPath;
             }
-            eventLoop_->addFileWatch(jsPath, [this, jsPath]()
-                                     {
-                                         if (configJsDebounceActive_) {
-                                             eventLoop_->removeTimer(configJsDebounceTimer_);
-                                         }
-                                         configJsDebounceTimer_  = eventLoop_->addTimer(300, false, [this, jsPath]()
-                                                                                       {
-                                                                                           configJsDebounceActive_ = false;
-                                                                                           if (!std::filesystem::exists(jsPath)) {
-                                                                                               // File was deleted between the watch event and
-                                                                                               // the debounce expiry; ignore. Existing patches
-                                                                                               // already applied to lastConfig_ remain in
-                                                                                               // effect until the user restarts or re-creates
-                                                                                               // the file. (Unloading the instance to roll
-                                                                                               // back the patches would surprise scripts with
-                                                                                               // registered listeners; we don't.)
-                                                                                               return;
-                                                                                           }
-                                                                                           if (configJsInstanceId_ == 0) {
-                                                                                               // Either the file didn't exist at startup, or
-                                                                                               // initial load failed (syntax error etc). Fresh
-                                                                                               // load now.
-                                                                                               configJsInstanceId_ = scriptEngine_.loadController(jsPath);
-                                                                                               if (configJsInstanceId_) {
-                                                                                                   spdlog::info("Config: loaded JS config '{}' on file-watch (id={})",
-                                                                                                                jsPath,
-                                                                                                                configJsInstanceId_);
-                                                                                               } else {
-                                                                                                   spdlog::warn("Config: failed to load JS config '{}'", jsPath);
-                                                                                               }
-                                                                                           } else {
-                                                                                               scriptEngine_.reevalInstance(configJsInstanceId_, jsPath);
-                                                                                           }
-                                                                                       });
-                                         configJsDebounceActive_ = true;
-                                     });
+            if (!jsPath.empty() && std::filesystem::exists(jsPath, ec) && !ec) {
+                return jsPath;
+            }
+            return {};
+        };
+        std::string initialPath = resolveConfigScriptPath();
+        if (!initialPath.empty()) {
+            configJsInstanceId_ = scriptEngine_.loadController(initialPath);
+            if (configJsInstanceId_ == 0) {
+                spdlog::warn("Config: failed to load JS config '{}'", initialPath);
+            } else {
+                spdlog::info("Config: loaded JS config '{}' (id={})",
+                             initialPath,
+                             configJsInstanceId_);
+            }
+        }
+        auto onConfigScriptChanged = [this, resolveConfigScriptPath]() {
+            if (configJsDebounceActive_) {
+                eventLoop_->removeTimer(configJsDebounceTimer_);
+            }
+            configJsDebounceTimer_ = eventLoop_->addTimer(300, false, [this, resolveConfigScriptPath]() {
+                configJsDebounceActive_ = false;
+                std::string currentPath = resolveConfigScriptPath();
+                if (currentPath.empty()) {
+                    // Neither candidate exists at the moment — either both
+                    // were never created, or whichever did exist was deleted
+                    // between the watch event and the debounce expiry. Either
+                    // way, drop it: existing patches already applied to
+                    // lastConfig_ remain in effect until the user restarts or
+                    // re-creates the file. (Unloading the instance to roll
+                    // back the patches would surprise scripts with registered
+                    // listeners; we don't.)
+                    return;
+                }
+                if (configJsInstanceId_ == 0) {
+                    // Either the file didn't exist at startup, or initial
+                    // load failed (syntax error etc). Fresh load now.
+                    configJsInstanceId_ = scriptEngine_.loadController(currentPath);
+                    if (configJsInstanceId_) {
+                        spdlog::info("Config: loaded JS config '{}' on file-watch (id={})",
+                                     currentPath,
+                                     configJsInstanceId_);
+                    } else {
+                        spdlog::warn("Config: failed to load JS config '{}'", currentPath);
+                    }
+                } else {
+                    scriptEngine_.reevalInstance(configJsInstanceId_, currentPath);
+                }
+            });
+            configJsDebounceActive_ = true;
+        };
+        if (!jsPath.empty()) {
+            eventLoop_->addFileWatch(jsPath, onConfigScriptChanged);
+        }
+        if (!tsPath.empty()) {
+            eventLoop_->addFileWatch(tsPath, onConfigScriptChanged);
         }
     }
 

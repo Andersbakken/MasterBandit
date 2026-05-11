@@ -20,6 +20,7 @@ add_executable(mb
     script/ScriptEngine.cpp script/ScriptEngine_Terminals.cpp
     script/ScriptPermissions.cpp script/ScriptFsModule.cpp
     script/ScriptWsModule.cpp script/ScriptLayoutBindings.cpp
+    script/TsTransform.cpp
     ClickDetector.cpp
     Resources.cpp
     Uuid.cpp
@@ -85,7 +86,7 @@ target_include_directories(mb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/eventloop
 )
 
-target_link_libraries(mb PRIVATE terminal platform eventloop glaze::glaze cxxopts::cxxopts qjs)
+target_link_libraries(mb PRIVATE terminal platform eventloop glaze::glaze cxxopts::cxxopts qjs whiteout)
 
 # Copy assets next to the executable.
 #

@@ -35,6 +35,12 @@ static std::filesystem::path configJsPath() // internal
     return d.empty() ? std::filesystem::path {} : d / "config.js";
 }
 
+static std::filesystem::path configTsPath() // internal
+{
+    auto d = configDir();
+    return d.empty() ? std::filesystem::path {} : d / "config.ts";
+}
+
 std::string configFilePath()
 {
     auto p = configPath();
@@ -44,6 +50,12 @@ std::string configFilePath()
 std::string configJsFilePath()
 {
     auto p = configJsPath();
+    return p.empty() ? std::string {} : p.string();
+}
+
+std::string configTsFilePath()
+{
+    auto p = configTsPath();
     return p.empty() ? std::string {} : p.string();
 }
 

@@ -285,3 +285,7 @@ std::string configFilePath();
 // addKeybinding / etc. and override anything the TOML set. Always valid
 // path; the file may or may not actually exist on disk.
 std::string configJsFilePath();
+// Same as configJsFilePath but for the TypeScript variant (config.ts).
+// When both files exist, the .ts variant takes precedence — the script
+// engine type-strips it on load (see TsTransform.h).
+std::string configTsFilePath();

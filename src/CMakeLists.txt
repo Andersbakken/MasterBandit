@@ -17,6 +17,7 @@ add_executable(mb
     main.cpp
     text.cpp ColrEncoder.cpp ColrAtlas.cpp
     DebugIPC.cpp CLIClient.cpp Config.cpp Bindings.cpp Action.cpp
+    Sha256.cpp
     script/ScriptEngine.cpp script/ScriptEngine_Terminals.cpp
     script/ScriptPermissions.cpp script/ScriptFsModule.cpp
     script/ScriptWsModule.cpp script/ScriptLayoutBindings.cpp

@@ -54,10 +54,13 @@ set(TEST_SOURCES
     ../src/LayoutTree.cpp
     ../src/Uuid.cpp
     ../src/script/ScriptEngine_Terminals.cpp
-    # Permission parsing / formatting + sha256 helper. Pulled in so the
-    # permission-name unit tests can run without standing up a full
-    # ScriptEngine. The TU has zero deps on QuickJS.
+    # Permission parsing / formatting. Pulled in so the permission-name unit
+    # tests can run without standing up a full ScriptEngine. The TU has zero
+    # deps on QuickJS.
     ../src/script/ScriptPermissions.cpp
+    # SHA-256 helper used by the script allowlist and by the
+    # known-vectors / streaming tests below.
+    ../src/Sha256.cpp
     test_permissions.cpp
     # Cross-platform detached spawn. Self-contained (libc + spdlog),
     # so we link it directly here rather than dragging in the rest of

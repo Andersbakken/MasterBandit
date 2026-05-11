@@ -128,9 +128,6 @@ std::string permissionsToString(uint32_t perms);
 // Returns 0 if the action needs no extra permission beyond ActionsInvoke.
 uint32_t actionPermission(const std::string &actionName);
 
-// Compute SHA-256 hex digest of a string
-std::string sha256Hex(const std::string &content);
-
 // Bump when permission semantics change (new permissions, renamed groups, etc.)
 // Mismatched version in the TOML file discards all cached entries.
 inline constexpr int kAllowlistVersion = 12;

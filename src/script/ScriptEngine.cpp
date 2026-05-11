@@ -4,6 +4,7 @@
 #include "ScriptFsModule.h"
 #include "ScriptLayoutBindings.h"
 #include "ScriptWsModule.h"
+#include "Sha256.h"
 #include "Terminal.h"
 #include "TsTransform.h"
 #include "Utils.h"
@@ -5434,7 +5435,7 @@ collectDirModules(const std::string &scriptPath)
         std::string p       = entry.path().string();
         std::string content = io::readFile(p);
         if (!content.empty()) {
-            result.emplace_back(std::move(p), sha256Hex(content));
+            result.emplace_back(std::move(p), crypto::sha256Hex(content));
         }
     }
     std::sort(result.begin(), result.end());
@@ -5478,7 +5479,7 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
         return { LoadResult::Status::Loaded, id, {} };
     }
 
-    std::string hash = sha256Hex(content);
+    std::string hash = crypto::sha256Hex(content);
 
     if (allowlist_.isDenied(path, hash)) {
         sLog().info("ScriptEngine: script '{}' is permanently denied", path);
@@ -5513,7 +5514,7 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
 InstanceId Engine::loadScriptInternal(const std::string &path, const std::string &content,
                                       uint32_t permissions, std::string *errOut)
 {
-    std::string hash = sha256Hex(content);
+    std::string hash = crypto::sha256Hex(content);
 
     // Built-in elevation: the marker bit lives in `permissions` itself.
     // Strip it from the value we store on the Instance (it's not a

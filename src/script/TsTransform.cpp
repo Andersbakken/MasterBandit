@@ -1,6 +1,6 @@
 #include "TsTransform.h"
 
-#include "ScriptPermissions.h"
+#include "Sha256.h"
 #include "Utils.h"
 
 #include <cstdlib>
@@ -91,15 +91,33 @@ bool transformTsInPlace(std::string &buf,
     return true;
 }
 
-static fs::path cacheFileFor(std::string_view sourceHash)
+// Per-source cache directory: sha256(WHITEOUT_VERSION || absPath). One dir per
+// (path, version) pair, so editing a file overwrites its prior entry rather
+// than orphaning a content-addressed file each time. A version bump produces
+// a different dir, so old layouts coexist harmlessly until they're swept.
+//
+// Path is canonicalized first so `./foo.ts` and `/abs/foo.ts` resolve to the
+// same key. weakly_canonical works on missing files (we may be hashing in
+// advance of a write) and returns the absolute form unchanged otherwise.
+static fs::path cacheEntryDirFor(std::string_view path)
 {
-    auto dir = cacheDir();
-    if (dir.empty()) {
+    auto root = cacheDir();
+    if (root.empty()) {
         return {};
     }
-    // Hex sha256 is fixed-width, safe to embed directly. .js extension keeps
-    // it obvious in tooling (and matches what we'd produce by stripping).
-    return dir / (std::string(sourceHash) + ".js");
+    std::error_code ec;
+    fs::path abs = fs::weakly_canonical(fs::absolute(fs::path(path), ec), ec);
+    if (ec || abs.empty()) {
+        abs = fs::path(path);
+    }
+    std::string absStr = abs.string();
+
+    crypto::Sha256 hasher;
+    int version = WHITEOUT_VERSION;
+    hasher.update(&version, sizeof version);
+    hasher.update("\0", 1);
+    hasher.update(absStr);
+    return root / hasher.finalizeHex();
 }
 
 static std::optional<std::string> readFile(const fs::path &p)
@@ -118,70 +136,91 @@ static std::optional<std::string> readFile(const fs::path &p)
     return data;
 }
 
-static void writeCache(const fs::path &p, std::string_view js)
+// Atomic single-file write: temp sibling + rename. Concurrent readers either
+// see the prior file's bytes or the new file's bytes, never a torn write.
+static bool atomicWrite(const fs::path &finalPath, std::string_view bytes)
 {
-    std::error_code ec;
-    fs::create_directories(p.parent_path(), ec);
-    if (ec) {
-        spdlog::warn("TsTransform: cache dir '{}' create failed: {}", p.parent_path().string(), ec.message());
-        return;
-    }
-
-    // Atomic write: temp file in the same dir + rename, so a concurrent reader
-    // never sees a half-written cache entry. Per-cache-file mutex avoids two
-    // threads racing on the same hash key in this process; cross-process races
-    // are still safe because rename() is atomic on POSIX.
-    static std::mutex sWriteMutex;
-    std::lock_guard<std::mutex> lock(sWriteMutex);
-
-    auto tmp = p;
+    fs::path tmp = finalPath;
     tmp += ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) {
             spdlog::warn("TsTransform: cache write '{}' open failed", tmp.string());
-            return;
+            return false;
         }
-        out.write(js.data(), static_cast<std::streamsize>(js.size()));
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         if (!out) {
             spdlog::warn("TsTransform: cache write '{}' failed", tmp.string());
+            std::error_code ec;
             fs::remove(tmp, ec);
-            return;
+            return false;
         }
     }
-    fs::rename(tmp, p, ec);
+    std::error_code ec;
+    fs::rename(tmp, finalPath, ec);
     if (ec) {
         spdlog::warn("TsTransform: cache rename '{}' -> '{}' failed: {}",
-                     tmp.string(),
-                     p.string(),
-                     ec.message());
+                     tmp.string(), finalPath.string(), ec.message());
         fs::remove(tmp, ec);
+        return false;
     }
+    return true;
+}
+
+// Write index.js (the transformed JS) then hash.txt (the raw-source sha256).
+// Ordering matters for crash recovery: index.js lands first, hash.txt is the
+// commit marker. If we crash between the two, the on-disk hash.txt stays at
+// its prior value (or stays absent), the next load's hash compare fails, we
+// re-transform — no stale-data risk. Per-process mutex prevents two threads
+// in the same process from racing on the same entry; cross-process races
+// settle to whoever's rename wins last (output is deterministic, so the
+// result is identical either way).
+static void writeCacheEntry(const fs::path &dir, std::string_view contentHash, std::string_view js)
+{
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        spdlog::warn("TsTransform: cache dir '{}' create failed: {}", dir.string(), ec.message());
+        return;
+    }
+
+    static std::mutex sWriteMutex;
+    std::lock_guard<std::mutex> lock(sWriteMutex);
+
+    if (!atomicWrite(dir / "index.js", js)) {
+        return;
+    }
+    atomicWrite(dir / "hash.txt", contentHash);
 }
 
 // Shared transform-with-cache step. `buf` enters holding the raw TS source
 // (owned, mutable) and leaves holding either the cached JS (cache hit) or the
 // freshly stripped JS (cache miss, mutation in place). On whiteout failure
 // returns false and leaves buf as the raw source.
-//
-// Content-addressed cache: keyed by sha256 of the source bytes. Whiteout
-// output is a pure function of input, so a matching hash means a valid cached
-// translation regardless of mtime games or path renames.
 static bool transformAndCache(std::string &buf, std::string_view path, TransformError *errOut)
 {
-    std::string hash   = Script::sha256Hex(buf);
-    fs::path cachePath = cacheFileFor(hash);
-    if (!cachePath.empty()) {
-        if (auto cached = readFile(cachePath)) {
-            buf = std::move(*cached);
-            return true;
+    fs::path entryDir       = cacheEntryDirFor(path);
+    std::string contentHash = crypto::sha256Hex(buf);
+
+    if (!entryDir.empty()) {
+        if (auto storedHash = readFile(entryDir / "hash.txt")) {
+            // Compare hex digests — these are written as exactly 64 chars with
+            // no newline (see writeCacheEntry / Sha256::finalizeHex), so a
+            // straight equality check is correct.
+            if (*storedHash == contentHash) {
+                if (auto cached = readFile(entryDir / "index.js")) {
+                    buf = std::move(*cached);
+                    return true;
+                }
+            }
         }
     }
+
     if (!transformTsInPlace(buf, path, errOut)) {
         return false;
     }
-    if (!cachePath.empty()) {
-        writeCache(cachePath, buf);
+    if (!entryDir.empty()) {
+        writeCacheEntry(entryDir, contentHash, buf);
     }
     return true;
 }

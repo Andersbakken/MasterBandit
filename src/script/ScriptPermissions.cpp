@@ -8,12 +8,6 @@
 #include <sstream>
 #include <unordered_map>
 
-#ifdef __APPLE__
-#include <CommonCrypto/CommonDigest.h>
-#else
-#include <openssl/sha.h>
-#endif
-
 namespace Script {
 
 // ============================================================================
@@ -211,32 +205,6 @@ uint32_t actionPermission(const std::string &actionName)
         return Perm::TabsClose;
     }
     return 0; // safe actions need no extra permission
-}
-
-// ============================================================================
-// SHA-256
-// ============================================================================
-
-std::string sha256Hex(const std::string &content)
-{
-    unsigned char hash[32];
-
-#ifdef __APPLE__
-    CC_SHA256(content.data(), static_cast<CC_LONG>(content.size()), hash);
-#else
-    SHA256(reinterpret_cast<const unsigned char *>(content.data()),
-           content.size(),
-           hash);
-#endif
-
-    static const char hex[] = "0123456789abcdef";
-    std::string result;
-    result.reserve(64);
-    for (int i = 0; i < 32; ++i) {
-        result += hex[hash[i] >> 4];
-        result += hex[hash[i] & 0x0F];
-    }
-    return result;
 }
 
 // ============================================================================

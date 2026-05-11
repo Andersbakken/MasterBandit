@@ -11,6 +11,7 @@
 #include <doctest/doctest.h>
 
 #include "ScriptPermissions.h"
+#include "Sha256.h"
 
 #include <string>
 
@@ -337,10 +338,35 @@ TEST_CASE("actionPermission: safe actions return 0 (no extra perm)")
 TEST_CASE("sha256Hex: known vectors")
 {
     // Standard SHA-256 test vectors from FIPS 180-2 + RFC 6234.
-    CHECK(Script::sha256Hex("") ==
+    CHECK(crypto::sha256Hex("") ==
           "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    CHECK(Script::sha256Hex("abc") ==
+    CHECK(crypto::sha256Hex("abc") ==
           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    CHECK(Script::sha256Hex("The quick brown fox jumps over the lazy dog") ==
+    CHECK(crypto::sha256Hex("The quick brown fox jumps over the lazy dog") ==
           "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592");
+}
+
+TEST_CASE("Sha256: streaming matches one-shot")
+{
+    // Splitting a message across multiple update() calls must produce the
+    // same digest as feeding it all at once — protects against a backend
+    // that buffers state incorrectly.
+    const std::string msg = "The quick brown fox jumps over the lazy dog";
+    crypto::Sha256 h;
+    h.update("The quick brown ");
+    h.update("fox jumps over ");
+    h.update("the lazy dog");
+    CHECK(h.finalizeHex() == crypto::sha256Hex(msg));
+}
+
+TEST_CASE("Sha256: reset reuses the same instance")
+{
+    crypto::Sha256 h;
+    h.update("abc");
+    CHECK(h.finalizeHex() ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    h.reset();
+    h.update("");
+    CHECK(h.finalizeHex() ==
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 }

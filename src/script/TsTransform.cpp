@@ -55,9 +55,9 @@ static whiteout_ctx *threadCtx()
     return owner.ctx;
 }
 
-std::optional<std::string> transformTs(std::string_view source,
-                                       std::string_view pathForDiagnostics,
-                                       TransformError *errOut)
+bool transformTsInPlace(std::string &buf,
+                        std::string_view pathForDiagnostics,
+                        TransformError *errOut)
 {
     whiteout_ctx *ctx = threadCtx();
     if (!ctx) {
@@ -66,13 +66,11 @@ std::optional<std::string> transformTs(std::string_view source,
             errOut->message = "failed to allocate whiteout context";
             errOut->offset  = 0;
         }
-        return std::nullopt;
+        return false;
     }
 
-    char *out         = nullptr;
-    size_t outLen     = 0;
     whiteout_error err {};
-    whiteout_status st = whiteout_transform(ctx, source.data(), source.size(), &out, &outLen, &err);
+    whiteout_status st = whiteout_transform_inplace(ctx, buf.data(), buf.size(), &err);
     if (st != WHITEOUT_OK) {
         // err.message is owned by ctx — copy before we hand a pointer to the
         // caller, since ctx may be reused (or destroyed at thread exit) before
@@ -87,15 +85,10 @@ std::optional<std::string> transformTs(std::string_view source,
             errOut->message = std::move(msg);
             errOut->offset  = err.offset;
         }
-        if (out) {
-            whiteout_free(out);
-        }
-        return std::nullopt;
+        // whiteout_transform_inplace guarantees buf is untouched on non-OK.
+        return false;
     }
-
-    std::string result(out, outLen);
-    whiteout_free(out);
-    return result;
+    return true;
 }
 
 static fs::path cacheFileFor(std::string_view sourceHash)
@@ -166,31 +159,43 @@ static void writeCache(const fs::path &p, std::string_view js)
     }
 }
 
+// Shared transform-with-cache step. `buf` enters holding the raw TS source
+// (owned, mutable) and leaves holding either the cached JS (cache hit) or the
+// freshly stripped JS (cache miss, mutation in place). On whiteout failure
+// returns false and leaves buf as the raw source.
+//
+// Content-addressed cache: keyed by sha256 of the source bytes. Whiteout
+// output is a pure function of input, so a matching hash means a valid cached
+// translation regardless of mtime games or path renames.
+static bool transformAndCache(std::string &buf, std::string_view path, TransformError *errOut)
+{
+    std::string hash   = Script::sha256Hex(buf);
+    fs::path cachePath = cacheFileFor(hash);
+    if (!cachePath.empty()) {
+        if (auto cached = readFile(cachePath)) {
+            buf = std::move(*cached);
+            return true;
+        }
+    }
+    if (!transformTsInPlace(buf, path, errOut)) {
+        return false;
+    }
+    if (!cachePath.empty()) {
+        writeCache(cachePath, buf);
+    }
+    return true;
+}
+
 std::string toJs(const std::string &path, std::string_view rawSource, TransformError *errOut)
 {
     if (!isTypeScriptPath(path)) {
         return std::string(rawSource);
     }
-
-    // Content-addressed cache: key by sha256 of the source bytes. Whiteout
-    // output is a pure function of input, so a matching hash means a valid
-    // cached translation regardless of mtime games or path renames.
-    std::string hash   = Script::sha256Hex(std::string(rawSource));
-    fs::path cachePath = cacheFileFor(hash);
-    if (!cachePath.empty()) {
-        if (auto cached = readFile(cachePath)) {
-            return *cached;
-        }
-    }
-
-    auto transformed = transformTs(rawSource, path, errOut);
-    if (!transformed) {
+    std::string buf(rawSource); // single owning copy; becomes the returned value
+    if (!transformAndCache(buf, path, errOut)) {
         return {};
     }
-    if (!cachePath.empty()) {
-        writeCache(cachePath, *transformed);
-    }
-    return std::move(*transformed);
+    return buf;
 }
 
 std::string loadAsJs(const std::string &path, TransformError *errOut)
@@ -202,7 +207,12 @@ std::string loadAsJs(const std::string &path, TransformError *errOut)
     if (!isTypeScriptPath(path)) {
         return src;
     }
-    return toJs(path, src, errOut);
+    // We already own `src`; transform it in place rather than routing through
+    // toJs (which would force an extra copy of the raw bytes).
+    if (!transformAndCache(src, path, errOut)) {
+        return {};
+    }
+    return src;
 }
 
 } // namespace mb::tsx

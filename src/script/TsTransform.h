@@ -1,13 +1,12 @@
 #pragma once
 
 #include <cstddef>
-#include <optional>
 #include <string>
 #include <string_view>
 
 namespace mb::tsx {
 
-// Structured failure detail surfaced by transformTs / toJs / loadAsJs. The
+// Structured failure detail surfaced by the transform helpers below. The
 // fields mirror whiteout_error so JS callers can construct a precise
 // SyntaxError, and C++ callers can include offset/message in their logs.
 struct TransformError
@@ -25,14 +24,15 @@ struct TransformError
 // is case-sensitive on the extension).
 bool isTypeScriptPath(std::string_view path);
 
-// Transforms TS source into byte-equal-length JS by erasing type syntax.
-// Caches results on disk under $XDG_DATA_HOME/MasterBandit/ts-cache/, keyed by
-// sha256 of the source bytes; cache hits skip the tree-sitter parse entirely.
-// Logs on failure. If err is non-null, it is populated with whiteout's status
-// detail so the caller can surface it (e.g. as a QuickJS exception).
-std::optional<std::string> transformTs(std::string_view source,
-                                       std::string_view pathForDiagnostics,
-                                       TransformError *err = nullptr);
+// Whiteout-strips `buf` in place — type-bearing bytes become whitespace, total
+// length and per-byte (line, column) positions are preserved. Returns true on
+// success (`buf` mutated); on failure returns false, `buf` is left untouched,
+// and `err` (if non-null) gets whiteout's status/message/offset. Logs on
+// failure regardless of `err`. No allocation for the output bytes — the
+// caller's storage IS the output.
+bool transformTsInPlace(std::string &buf,
+                        std::string_view pathForDiagnostics,
+                        TransformError *err = nullptr);
 
 // Reads `path` from disk and, if it is a .ts file, returns the whiteout-stripped
 // JS source (cached). For non-.ts files returns the raw bytes. Empty string on

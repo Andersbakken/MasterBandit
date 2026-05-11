@@ -238,6 +238,12 @@ EpollEventLoop::TimerId EpollEventLoop::addTimer(uint64_t ms, bool repeat, Timer
 
 void EpollEventLoop::removeTimer(TimerId id)
 {
+    // The currently-firing timer (if any) is OUT of the heap — drainTimers
+    // popped it before invoking the callback. Mark it cancelled so the
+    // post-callback re-push is skipped.
+    if (id != 0 && id == firingTimerId_) {
+        firingTimerCancelled_ = true;
+    }
     // Rebuild the heap without the matching timer.
     // std::priority_queue doesn't support O(1) removal; for the small number
     // of timers used here this is fine.
@@ -283,8 +289,13 @@ void EpollEventLoop::drainTimers()
     while (!timers_.empty() && timers_.top().nextFireNs <= now) {
         Timer t = timers_.top();
         timers_.pop();
+        firingTimerId_        = t.id;
+        firingTimerCancelled_ = false;
         t.cb();
-        if (t.repeat) {
+        const bool cancelled  = firingTimerCancelled_;
+        firingTimerId_        = 0;
+        firingTimerCancelled_ = false;
+        if (t.repeat && !cancelled) {
             t.nextFireNs = nowNs() + t.ms * 1'000'000ULL;
             timers_.push(std::move(t));
         }

@@ -251,8 +251,13 @@ void KQueueEventLoop::processTimers()
     while (!timers_.empty() && timers_.top().nextFireMs <= now) {
         Timer t = timers_.top();
         timers_.pop();
+        firingTimerId_        = t.id;
+        firingTimerCancelled_ = false;
         t.cb();
-        if (t.repeat) {
+        const bool cancelled  = firingTimerCancelled_;
+        firingTimerId_        = 0;
+        firingTimerCancelled_ = false;
+        if (t.repeat && !cancelled) {
             t.nextFireMs = nowMs() + t.ms;
             timers_.push(std::move(t));
         }
@@ -268,6 +273,12 @@ KQueueEventLoop::TimerId KQueueEventLoop::addTimer(uint64_t ms, bool repeat, Tim
 
 void KQueueEventLoop::removeTimer(TimerId id)
 {
+    // The currently-firing timer (if any) is OUT of the heap — processTimers
+    // popped it before invoking the callback. Mark it cancelled so the
+    // post-callback re-push is skipped.
+    if (id != 0 && id == firingTimerId_) {
+        firingTimerCancelled_ = true;
+    }
     std::vector<Timer> remaining;
     remaining.reserve(timers_.size());
     while (!timers_.empty()) {

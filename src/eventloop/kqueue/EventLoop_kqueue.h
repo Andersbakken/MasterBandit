@@ -65,6 +65,14 @@ private:
     std::priority_queue<Timer, std::vector<Timer>, std::greater<Timer>> timers_;
     TimerId nextTimerId_ = 1;
 
+    // While processTimers is invoking a callback, the firing timer is OUT
+    // of the heap. If that callback calls removeTimer on its own id, the
+    // heap scan finds nothing — and processTimers would otherwise re-push
+    // the (just-cancelled) repeating timer. Track the in-flight id so
+    // removeTimer can mark it cancelled instead.
+    TimerId firingTimerId_     = 0;
+    bool firingTimerCancelled_ = false;
+
     // File watches always observe the parent directory (one
     // EVFILT_VNODE/NOTE_WRITE watch per unique parent dir, shared by
     // every WatchEntry under that dir) — never the file itself. This

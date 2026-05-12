@@ -1184,9 +1184,18 @@ void InputController::onCursorPos(double x, double y)
             vp   = term->viewportOffset();
             hist = term->document().historySize();
         }
-        if (relY < 0 && vp < hist) {
+        // Hot zone: a single cell row at the top/bottom of the pane. Inside
+        // this band the autoscroll timer arms; velocity is purely a function
+        // of how long the timer has been running (see doAutoScroll). A one-row
+        // band is the minimum needed for maximized/fullscreen panes, where the
+        // OS clips the cursor to the screen so `relY` can never go past the
+        // pane boundary.
+        const float hotZone = lineHeight;
+        bool above          = relY < hotZone;
+        bool below          = relY >= paneH - hotZone;
+        if (above && vp < hist) {
             startAutoScroll(+1, ev.x);
-        } else if (relY >= paneH && vp > 0) {
+        } else if (below && vp > 0) {
             startAutoScroll(-1, ev.x);
         } else {
             stopAutoScroll();
@@ -1257,6 +1266,12 @@ void InputController::onCursorPos(double x, double y)
 
 void InputController::startAutoScroll(int dir, int col)
 {
+    // Fresh start or direction flip resets the ramp; otherwise the in-flight
+    // velocity is preserved so the timer body can keep ramping.
+    if (autoScrollDir_ != dir) {
+        autoScrollLinesPerTick_ = 1;
+        autoScrollTickCount_    = 0;
+    }
     autoScrollDir_ = dir;
     autoScrollCol_ = col;
     if (autoScrollTimerActive_) {
@@ -1281,7 +1296,10 @@ void InputController::stopAutoScroll()
     if (EventLoop *el = platform_->eventLoop_.get()) {
         el->removeTimer(autoScrollTimer_);
     }
-    autoScrollTimerActive_ = false;
+    autoScrollTimerActive_  = false;
+    autoScrollLinesPerTick_ = 1;
+    autoScrollTickCount_    = 0;
+    autoScrollDir_          = 0;
 }
 
 void InputController::doAutoScroll()
@@ -1305,7 +1323,18 @@ void InputController::doAutoScroll()
         return;
     }
 
-    term->scrollViewport(autoScrollDir_);
+    term->scrollViewport(autoScrollDir_ * autoScrollLinesPerTick_);
+
+    // Ramp velocity: +1 line/tick every 8 ticks (400 ms at the 50 ms tick),
+    // capped at 8 lines/tick. Reaches the cap after ~2.8 s.
+    constexpr int kRampEveryNTicks = 8;
+    constexpr int kMaxLinesPerTick = 8;
+    if (++autoScrollTickCount_ >= kRampEveryNTicks) {
+        autoScrollTickCount_ = 0;
+        if (autoScrollLinesPerTick_ < kMaxLinesPerTick) {
+            ++autoScrollLinesPerTick_;
+        }
+    }
 
     // Extend selection to the boundary row now visible
     MouseEvent ev;

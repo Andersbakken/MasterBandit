@@ -137,6 +137,8 @@ private:
     bool autoScrollTimerActive_         = false;
     int autoScrollDir_                  = 0;
     int autoScrollCol_                  = 0;
+    int autoScrollLinesPerTick_         = 1;
+    int autoScrollTickCount_            = 0;
 
     struct MouseContext
     {

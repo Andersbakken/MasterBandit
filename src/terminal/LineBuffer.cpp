@@ -254,6 +254,14 @@ void LineBuffer::appendLine(const Cell *cells, int len,
                             uint64_t lineId, uint8_t flags,
                             const std::unordered_map<int, CellExtra> *extras)
 {
+    // Snapshot pre-append state so the post-mutation tail can either update
+    // the sum cache in place (O(lines-in-back-block)) or invalidate it
+    // (forcing the next reader to walk all blocks). Without this, every
+    // appended line invalidated the cache and the next read rebuilt it from
+    // scratch — quadratic in the scrollback depth.
+    const int preBlockCount  = static_cast<int>(blocks_.size());
+    const bool cacheWasValid = (cachedSumWidth_ != -1 && static_cast<int>(cachedBlockEndCum_.size()) == preBlockCount);
+
     // Try to append to the last block. If it fails (capacity, or the
     // extendsLast precondition isn't met because the last line is in a
     // different block), open a new block.
@@ -308,8 +316,39 @@ void LineBuffer::appendLine(const Cell *cells, int len,
     }
 
     totalCells_ += len;
+
+    // enforceLimits may evict from the front. Any eviction shifts every
+    // surviving prefix sum, so we have to fall back to full invalidation in
+    // that case. Detect it by comparing line counts across the call —
+    // popping just one line from the head block still moves the prefix sums
+    // even though blocks_.size() may not change.
+    const int linesBeforeEvict = totalLines_;
     enforceLimits();
-    invalidateSumCache();
+    const bool evicted = totalLines_ < linesBeforeEvict;
+
+    if (cacheWasValid && !evicted) {
+        const int postBlockCount = static_cast<int>(blocks_.size());
+        const int newBackRows    = blocks_.back().numWrappedRows(cachedSumWidth_);
+        if (postBlockCount == preBlockCount) {
+            // Same last block, modified in place (extendsLast or a new line
+            // that fit in the existing tail block).
+            const int prevCum = (postBlockCount >= 2) ? cachedBlockEndCum_[postBlockCount - 2] : 0;
+            const int oldCum  = cachedBlockEndCum_.back();
+            const int newCum  = prevCum + newBackRows;
+            cachedBlockEndCum_.back()  = newCum;
+            cachedTotalWrappedRows_   += (newCum - oldCum);
+        } else {
+            // A new block was sealed in. The previously last block wasn't
+            // touched (we only reached this path because it returned false
+            // from appendLine), so its prefix sum is unchanged.
+            const int prevCum = cachedBlockEndCum_.empty() ? 0 : cachedBlockEndCum_.back();
+            const int newCum  = prevCum + newBackRows;
+            cachedBlockEndCum_.push_back(newCum);
+            cachedTotalWrappedRows_   = newCum;
+        }
+    } else {
+        invalidateSumCache();
+    }
 }
 
 void LineBuffer::appendHardLine(const Cell *cells, int len,

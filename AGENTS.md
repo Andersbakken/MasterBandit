@@ -29,10 +29,23 @@ escapes, or huge logs that confuse interactive piping. Always redirect
 to disk first, then search.
 
 ```sh
-./build/bin/mb-tests > /tmp/mb-tests.out 2>&1
+rm -f /tmp/mb-tests.out
+ASAN_OPTIONS=detect_leaks=0 ./build/bin/mb-tests > /tmp/mb-tests.out 2>&1
 echo "exit=$?"
 grep -a -E 'Status:|FAIL|test cases:' /tmp/mb-tests.out
 ```
+
+A full pass looks like:
+
+```
+[doctest] test cases: 1015 | 1015 passed | 0 failed | 0 skipped
+[doctest] assertions: 4690 | 4690 passed | 0 failed |
+[doctest] Status: SUCCESS!
+```
+
+If `test cases: N | N passed | 0 failed` and the summary says `SUCCESS!`,
+the run is green — even with a non-zero exit code from ASAN leak reports
+that landed after doctest finished.
 
 Notes:
 - Use `grep -a` (treat as text) — the output contains binary bytes from
@@ -41,6 +54,14 @@ Notes:
 - Capture both stdout and stderr (`2>&1`).
 - Always check the exit code separately — a doctest run that crashed
   mid-suite can still produce a "SUCCESS!" line earlier in the file.
+- `rm -f` the output file before redirecting: zsh's `noclobber` setopt
+  (in use here) makes `>` error out when the file already exists, so a
+  second run will fail silently without it. Use `>!` if you prefer.
+- `ASAN_OPTIONS=detect_leaks=0` keeps fontconfig / third-party leak
+  reports from drowning the doctest summary in the tail of the file.
+  These leaks are pre-existing and not from `mb` code; turning them off
+  during test verification is fine. Re-enable if you're hunting an
+  actual leak.
 
 For targeted runs use the doctest filters:
 

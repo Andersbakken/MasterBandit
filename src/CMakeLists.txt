@@ -143,6 +143,12 @@ foreach(MOD ${MODULE_FILES})
     mb_copy_asset(${MOD} "${MB_RESOURCES_ROOT}/scripts/modules/${MOD_NAME}")
 endforeach()
 
+# Bundled TypeScript ambient declarations. Refreshed into the user's
+# config dir at startup (see refreshTypesScaffolding) so config.ts gets
+# LSP completions against the running binary's API.
+mb_copy_asset("${CMAKE_SOURCE_DIR}/types/mb.d.ts"
+              "${MB_RESOURCES_ROOT}/types/mb.d.ts")
+
 # hb-gpu vertex helper from harfbuzz source (vertex shader is unmodified upstream).
 # hb-gpu-fragment.wgsl is a project-local fork in src/shaders/ (see comment in
 # that file): it implements packed-int16 atlas reads to halve storage size.

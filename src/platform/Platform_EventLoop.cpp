@@ -961,6 +961,11 @@ int PlatformDawn::exec()
         }
         if (!configDir.empty()) {
             scriptEngine_.setConfigDir(configDir);
+            // Mirror the bundled mb.d.ts into <configDir>/types/ so config.ts
+            // can use `/// <reference path="./types/mb.d.ts" />` and have its
+            // LSP completions track the running binary's API. Always overwrites
+            // (unless dest is a symlink); see refreshTypesScaffolding.
+            refreshTypesScaffolding();
         }
     }
 

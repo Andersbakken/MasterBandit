@@ -1,10 +1,12 @@
 #include "Config.h"
+#include "Resources.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <glaze/toml.hpp>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <system_error>
 
 static std::filesystem::path configDir() // internal
 {
@@ -92,4 +94,47 @@ Config loadConfig()
     }
 
     return cfg;
+}
+
+void refreshTypesScaffolding()
+{
+    auto dir = configDir();
+    if (dir.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    auto typesDir = dir / "types";
+    std::filesystem::create_directories(typesDir, ec);
+    if (ec) {
+        spdlog::warn("Config: failed to create {}: {}", typesDir.string(), ec.message());
+        return;
+    }
+
+    auto source = Resources::path("types/mb.d.ts");
+    if (!std::filesystem::exists(source, ec)) {
+        spdlog::warn("Config: bundled types missing at {}; config.ts LSP completions unavailable",
+                     source.string());
+        return;
+    }
+
+    auto dest = typesDir / "mb.d.ts";
+    // is_symlink uses lstat semantics — true only when the entry itself
+    // is a symlink, regardless of target validity. Users who symlink
+    // this to a source checkout get to keep that arrangement.
+    if (std::filesystem::is_symlink(dest, ec)) {
+        spdlog::info("Config: {} is a symlink, leaving it alone", dest.string());
+        return;
+    }
+
+    std::filesystem::copy_file(source,
+                               dest,
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    if (ec) {
+        spdlog::warn("Config: failed to copy {} -> {}: {}",
+                     source.string(),
+                     dest.string(),
+                     ec.message());
+    }
 }

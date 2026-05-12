@@ -289,3 +289,12 @@ std::string configJsFilePath();
 // When both files exist, the .ts variant takes precedence — the script
 // engine type-strips it on load (see TsTransform.h).
 std::string configTsFilePath();
+
+// Refresh <configDir>/types/mb.d.ts from the bundled copy shipped next
+// to the binary (Resources::path("types/mb.d.ts")). Always overwrites
+// so the on-disk types track the running build — an out-of-date copy
+// would silently mislead LSP completions in config.ts. Skipped when the
+// destination is a symlink: that signals the user is managing the file
+// themselves (e.g. pointing at a source checkout). Best-effort: errors
+// are logged but never block startup.
+void refreshTypesScaffolding();

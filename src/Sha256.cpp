@@ -4,18 +4,18 @@
 #include <CommonCrypto/CommonDigest.h>
 using BackendCtx = CC_SHA256_CTX;
 #else
-#include <openssl/sha.h>
-using BackendCtx = SHA256_CTX;
+#include <openssl/evp.h>
 #endif
 
 namespace crypto {
 
-// Keep Sha256::state_ in sync with whichever backend's context is larger.
-// If a future SDK update grows BackendCtx, this catches it at compile time
-// instead of silently corrupting memory.
-static_assert(sizeof(BackendCtx) <= 112,
+#ifdef __APPLE__
+// Keep Sha256::state_ in sync with CommonCrypto's context size. If a future
+// SDK update grows BackendCtx, this catches it at compile time instead of
+// silently corrupting memory.
+static_assert(Sha256::kStateSize >= sizeof(BackendCtx),
               "Sha256::state_ too small for backend SHA-256 context");
-static_assert(alignof(BackendCtx) <= 8,
+static_assert(Sha256::kStateAlign >= alignof(BackendCtx),
               "Sha256::state_ alignment too weak for backend context");
 
 // state_ holds the platform context; reinterpret rather than aliasing so we
@@ -24,10 +24,26 @@ static inline BackendCtx *ctx(unsigned char *state)
 {
     return reinterpret_cast<BackendCtx *>(state);
 }
+#else
+static inline EVP_MD_CTX *ctx(void *state)
+{
+    return static_cast<EVP_MD_CTX *>(state);
+}
+#endif
 
 Sha256::Sha256()
 {
+#ifndef __APPLE__
+    state_ = EVP_MD_CTX_new();
+#endif
     reset();
+}
+
+Sha256::~Sha256()
+{
+#ifndef __APPLE__
+    EVP_MD_CTX_free(ctx(state_));
+#endif
 }
 
 void Sha256::reset()
@@ -35,7 +51,7 @@ void Sha256::reset()
 #ifdef __APPLE__
     CC_SHA256_Init(ctx(state_));
 #else
-    SHA256_Init(ctx(state_));
+    EVP_DigestInit_ex(ctx(state_), EVP_sha256(), nullptr);
 #endif
 }
 
@@ -47,7 +63,7 @@ Sha256 &Sha256::update(const void *data, std::size_t len)
 #ifdef __APPLE__
     CC_SHA256_Update(ctx(state_), data, static_cast<CC_LONG>(len));
 #else
-    SHA256_Update(ctx(state_), data, len);
+    EVP_DigestUpdate(ctx(state_), data, len);
 #endif
     return *this;
 }
@@ -58,7 +74,8 @@ std::string Sha256::finalizeHex()
 #ifdef __APPLE__
     CC_SHA256_Final(digest, ctx(state_));
 #else
-    SHA256_Final(digest, ctx(state_));
+    unsigned int outLen = 0;
+    EVP_DigestFinal_ex(ctx(state_), digest, &outLen);
 #endif
 
     static const char hex[] = "0123456789abcdef";

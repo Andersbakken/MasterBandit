@@ -478,6 +478,44 @@ private:
     // Atomic because markExited may run on the PtyMux thread (HUP
     // path) while writes happen on main / worker.
     std::atomic<bool> mExited { false };
+    // Shell pid from fork(). Watched so the tab closes when the shell
+    // process itself exits, even if a backgrounded child still holds
+    // the slave PTY fd open (e.g. `foo &!; exit` in zsh). Without
+    // this, mb only learns "shell exited" via PTY master EOF — which
+    // requires every slave-side fd to close. Modern terminals (kitty,
+    // foot, wezterm, alacritty, ghostty, iTerm2, Terminal.app) all
+    // watch the shell pid for this reason. -1 in headless mode.
+    pid_t mShellPid { -1 };
+#ifdef __linux__
+    // pidfd opened post-fork; epoll/EventLoop watches it as Readable.
+    // Fires when the shell process exits. Tear down in destructor and
+    // in markExited (in case PTY EOF wins the race).
+    int mPidFd { -1 };
+#endif
+#ifdef __APPLE__
+    // Detached helper thread blocks on waitpid(mShellPid) and post()s
+    // markExited back to the EventLoop on exit. macOS's EventLoop API
+    // doesn't expose EVFILT_PROC, so this is the portable workaround.
+    //
+    // Lifecycle (the hard part): the helper is blocked in waitpid and
+    // can't be cancelled portably. If `Terminal` is destroyed before
+    // the child dies (e.g. pane closed via the close button while the
+    // shell still runs), we must NOT free state the helper reads.
+    // Solution: a heap-allocated shared block owned by both the helper
+    // and the Terminal (shared_ptr). The Terminal flips a "dead" flag
+    // in the block on destruct; the helper reads it after waitpid
+    // returns and bails without touching `this` if set.
+    struct PidWatch
+    {
+        std::atomic<bool> ownerDead { false };
+        EventLoop *loop { nullptr }; // captured snapshot; loop outlives Terminal
+        pid_t pid { -1 };
+        Terminal *owner { nullptr }; // only dereferenced when !ownerDead
+    };
+
+    std::shared_ptr<PidWatch> mPidWatch;
+    std::thread mPidWatchThread; // detached on shutdown
+#endif
     // Bytes queued for write but not yet accepted by the kernel
     // PTY input buffer. Serialized by mWriteQueueMutex because
     // writeToPTY can be invoked from main (keystrokes / paste /
@@ -694,4 +732,9 @@ private:
     // Disarm the PTY fd in the event loop and fire onTerminalExited (once).
     // Safe to call multiple times — the first call sets mExited.
     void markExited();
+
+    // Set up / tear down the shell-pid exit watch. See mShellPid declaration
+    // for the rationale. Idempotent.
+    void startShellPidWatch();
+    void stopShellPidWatch();
 };

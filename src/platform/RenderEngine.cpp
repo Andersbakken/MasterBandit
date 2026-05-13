@@ -304,8 +304,14 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
     const auto &rowExtraEntries = snap.rowExtras[static_cast<size_t>(row)].entries;
 
     // Lookup helper — snapshot rowExtras is sorted by column, so binary search.
+    // Fast-path the empty case explicitly; under ASAN the lower_bound helper
+    // doesn't inline and even an empty-range call shows up in profiles (the
+    // resolveRow path calls this per cell during byteToCell construction).
     auto findExtra = [&](int col) -> const CellExtra *
     {
+        if (rowExtraEntries.empty()) {
+            return nullptr;
+        }
         auto it = std::lower_bound(
             rowExtraEntries.begin(),
             rowExtraEntries.end(),
@@ -530,11 +536,18 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
         float penX = 0;
         for (const auto &sg : shaped.glyphs) {
             int cellCol = -1;
-            for (auto it = byteToCell.rbegin(); it != byteToCell.rend(); ++it) {
-                if (sg.cluster >= it->first) {
-                    cellCol = it->second;
-                    break;
-                }
+            // byteToCell is built in strictly-ascending order of `.first`
+            // (the byte offset in `runText` before each cell's bytes were
+            // appended), so we want the LAST entry whose .first <= sg.cluster.
+            // That's `upper_bound - 1`. Previously this was a reverse linear
+            // scan, which made the whole loop O(N*M) and was the dominant
+            // cost in resolveRow per perf profiling (commit message ref).
+            auto upper  = std::upper_bound(byteToCell.begin(), byteToCell.end(), sg.cluster, [](uint32_t v, const std::pair<uint32_t, int> &p)
+                                          {
+                                              return v < p.first;
+                                          });
+            if (upper != byteToCell.begin()) {
+                cellCol = (upper - 1)->second;
             }
 
             if (sg.rtl && cellCol >= 0) {
@@ -666,7 +679,7 @@ void RenderEngine::renderTabBar()
     if (!fontHandle) {
         return;
     }
-    FontData *font = fontHandle.get();
+    FontData *font    = fontHandle.get();
     const float scale = frameState_.tabBarFontSize / font->baseSize;
 
     // Replacement glyph lookup amortised across all bars in this frame.
@@ -720,7 +733,7 @@ void RenderEngine::renderTabBar()
         // so a focusChanged that flips active-tab colors changes the
         // hash and triggers a rebuild.
         uint64_t h = 1469598103934665603ull; // FNV-1a basis
-        auto mix  = [&h](uint64_t v)
+        auto mix   = [&h](uint64_t v)
         {
             h ^= v;
             h *= 1099511628211ull;
@@ -739,8 +752,7 @@ void RenderEngine::renderTabBar()
         }
         auto hashIt = tabBarHashes_.find(bar.id);
         auto texIt  = tabBarTextures_.find(bar.id);
-        if (hashIt != tabBarHashes_.end() && hashIt->second == h
-            && texIt != tabBarTextures_.end() && texIt->second) {
+        if (hashIt != tabBarHashes_.end() && hashIt->second == h && texIt != tabBarTextures_.end() && texIt->second) {
             continue; // texture still matches; no GPU work this frame
         }
 
@@ -835,15 +847,15 @@ void RenderEngine::renderTabBar()
             renderer_.uploadGlyphs(queue_, cs, tabBarGlyphs.data(), static_cast<uint32_t>(tabBarGlyphs.size()));
         }
 
-        TerminalComputeParams params = {};
-        params.cols                  = static_cast<uint32_t>(cols);
-        params.rows                  = 1;
-        params.cell_width            = frameState_.tabBarCharWidth;
-        params.cell_height           = frameState_.tabBarLineHeight;
-        params.viewport_w            = static_cast<float>(tbRect.w);
-        params.viewport_h            = static_cast<float>(tbRect.h);
-        params.font_ascender         = font->ascender * scale;
-        params.font_size             = frameState_.tabBarFontSize;
+        TerminalComputeParams params      = {};
+        params.cols                       = static_cast<uint32_t>(cols);
+        params.rows                       = 1;
+        params.cell_width                 = frameState_.tabBarCharWidth;
+        params.cell_height                = frameState_.tabBarLineHeight;
+        params.viewport_w                 = static_cast<float>(tbRect.w);
+        params.viewport_h                 = static_cast<float>(tbRect.h);
+        params.font_ascender              = font->ascender * scale;
+        params.font_size                  = frameState_.tabBarFontSize;
         params.pane_origin_x              = 0.0f;
         params.pane_origin_y              = 0.0f;
         params.max_text_vertices          = cs->maxTextVertices;
@@ -1443,8 +1455,8 @@ void RenderEngine::renderFrame()
         // mark target rows dirty (per-row cache invalidation) and
         // request another frame if any animation is still in-flight.
         if (!rs.snapshot.animations.empty()) {
-            uint64_t nowMs    = TerminalEmulator::mono();
-            bool anyInFlight  = false;
+            uint64_t nowMs   = TerminalEmulator::mono();
+            bool anyInFlight = false;
             // Build a small id→index map of decorations for O(1) lookup
             // when applying. With low decoration counts a linear scan is
             // also fine; this avoids it without measurable cost.
@@ -1735,9 +1747,9 @@ void RenderEngine::renderFrame()
                         // ComputeTypes.h::ResolvedCell::bg_inflate.
                         uint32_t inflatePacked = 0;
                         if (d.style.bgInflateX != 0 || d.style.bgInflateY != 0) {
-                            int32_t ix             = std::clamp(d.style.bgInflateX, -32768, 32767);
-                            int32_t iy             = std::clamp(d.style.bgInflateY, -32768, 32767);
-                            inflatePacked          = (static_cast<uint32_t>(ix) & 0xFFFFu) |
+                            int32_t ix    = std::clamp(d.style.bgInflateX, -32768, 32767);
+                            int32_t iy    = std::clamp(d.style.bgInflateY, -32768, 32767);
+                            inflatePacked = (static_cast<uint32_t>(ix) & 0xFFFFu) |
                                 ((static_cast<uint32_t>(iy) & 0xFFFFu) << 16);
                         }
 
@@ -1956,15 +1968,15 @@ void RenderEngine::renderFrame()
                 }
             }
 
-            TerminalComputeParams params = {};
-            params.cols                  = static_cast<uint32_t>(snap.cols);
-            params.rows                  = static_cast<uint32_t>(snap.rows);
-            params.cell_width            = frameState_.charWidth;
-            params.cell_height           = frameState_.lineHeight;
-            params.viewport_w            = static_cast<float>(paneRect.w);
-            params.viewport_h            = static_cast<float>(paneRect.h);
-            params.font_ascender         = font->ascender * scale;
-            params.font_size             = frameState_.fontSize;
+            TerminalComputeParams params      = {};
+            params.cols                       = static_cast<uint32_t>(snap.cols);
+            params.rows                       = static_cast<uint32_t>(snap.rows);
+            params.cell_width                 = frameState_.charWidth;
+            params.cell_height                = frameState_.lineHeight;
+            params.viewport_w                 = static_cast<float>(paneRect.w);
+            params.viewport_h                 = static_cast<float>(paneRect.h);
+            params.font_ascender              = font->ascender * scale;
+            params.font_size                  = frameState_.fontSize;
             params.pane_origin_x              = target.pixelOriginX;
             params.pane_origin_y              = target.pixelOriginY;
             params.max_text_vertices          = cs->maxTextVertices;

@@ -289,11 +289,25 @@ private:
 
     // Width-keyed cumulative wrap-row cache. cachedBlockEndCum_[i] = sum of
     // wrapped rows in blocks_[0..i] at cachedSumWidth_. Lets numWrappedRows()
-    // be O(1) and wrappedRowAt() be O(log blocks + lines_per_block). Any
-    // structural mutation invalidates by setting cachedSumWidth_ = -1.
+    // be O(1) and wrappedRowAt() be O(log blocks + lines_per_block).
+    //
+    // Validity: cachedSumWidth_ == -1 means cache is fully invalid. When
+    // valid, cachedBlockEndCum_.size() == blocks_.size().
     mutable int cachedSumWidth_         = -1;
     mutable int cachedTotalWrappedRows_ = 0;
     mutable std::vector<int> cachedBlockEndCum_;
+
+    // Width-independent cumulative logical-line-count cache.
+    // cachedBlockEndLogical_[i] = sum_{j<=i} blocks_[j].numLines().
+    // Lets resolveLogicalIndex() be O(log blocks) instead of O(blocks).
+    //
+    // Separate validity flag because logical line counts don't depend on
+    // width — querying at a new width should not invalidate this cache.
+    // Front evictions and back-only mutations are handled the same way as
+    // the wrap-rows cache (full invalidate on front eviction; incremental
+    // update via afterBackBlockMutation on back-only changes).
+    mutable bool cachedLogicalValid_ = false;
+    mutable std::vector<int> cachedBlockEndLogical_;
 
     // O(1) lineId → location index. Each entry stores the block's *stable*
     // seq plus the line's *internal* meta_-array index, so the entry survives
@@ -315,8 +329,22 @@ private:
     uint64_t firstBlockSeq_ = 0;
 
     void ensureSumCache(int width) const;
+    void ensureLogicalCache() const;
 
-    void invalidateSumCache() { cachedSumWidth_ = -1; }
+    void invalidateSumCache()
+    {
+        cachedSumWidth_     = -1;
+        cachedLogicalValid_ = false;
+    }
+
+    // Called after a back-of-deque mutation (append / pop-last) and after
+    // enforceLimits has run. Decides whether the caches can be updated
+    // incrementally (cheap, common case) or must be invalidated (eviction
+    // happened, or a cache wasn't valid to begin with).
+    //
+    // preBlockCount is blocks_.size() before any mutation.
+    // evicted is true iff enforceLimits dropped any line from the front.
+    void afterBackBlockMutation(int preBlockCount, bool evicted);
 
     void enforceLimits();
     void recomputeTotals();

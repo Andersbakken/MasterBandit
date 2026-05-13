@@ -273,3 +273,155 @@ TEST_CASE("insert mode: reset via RIS")
     t.feed("XY");
     CHECK(t.rowText(0) == "XYCDE"); // overwrite, not insert
 }
+
+// ── UTF-8 decoder ────────────────────────────────────────────────────────────
+//
+// These exercise the streaming UTF-8 decoder in ParseToActions.cpp via
+// the public `injectData` entry. They're here, not in a parser-only unit
+// test, because the boundary case we care about (multi-byte sequence split
+// across two injectData calls) only exposes a bug if the decoder's state
+// (`mUtf8Buffer`, `mUtf8Index`, `mParserState`) is preserved across calls.
+
+TEST_CASE("UTF-8: 2-byte sequence split across feeds")
+{
+    TestTerminal t;
+    t.feed("\xC3");
+    t.feed("\xA9"); // completes 'é'
+    CHECK(t.wc(0, 0) == U'\u00E9');
+    CHECK(t.term.cursorX() == 1);
+}
+
+TEST_CASE("UTF-8: 3-byte sequence split across feeds (every internal boundary)")
+{
+    // U+65E5 '日' = E6 97 A5. East Asian Wide → col 0 holds the codepoint,
+    // col 1 is the wide spacer (wc=0).
+    for (int splitAfter : { 1, 2 }) {
+        TestTerminal t;
+        std::string seq = "\xE6\x97\xA5";
+        t.feed(seq.substr(0, splitAfter));
+        t.feed(seq.substr(splitAfter));
+        CHECK_MESSAGE(t.wc(0, 0) == U'\u65E5', "split after byte ", splitAfter);
+        CHECK_MESSAGE(t.term.cursorX() == 2, "cursor split after byte ", splitAfter);
+    }
+}
+
+TEST_CASE("UTF-8: 4-byte sequence split across feeds (every internal boundary)")
+{
+    // U+1F600 😀 = F0 9F 98 80. Emoji is East Asian Wide → 2 cells.
+    for (int splitAfter : { 1, 2, 3 }) {
+        TestTerminal t;
+        std::string seq = "\xF0\x9F\x98\x80";
+        t.feed(seq.substr(0, splitAfter));
+        t.feed(seq.substr(splitAfter));
+        CHECK_MESSAGE(t.wc(0, 0) == U'\U0001F600', "split after byte ", splitAfter);
+        CHECK_MESSAGE(t.term.cursorX() == 2, "cursor split after byte ", splitAfter);
+    }
+}
+
+TEST_CASE("UTF-8: 4-byte sequence split byte-by-byte across four feeds")
+{
+    TestTerminal t;
+    const char *seq = "\xF0\x9F\x98\x80"; // U+1F600
+    for (int i = 0; i < 4; ++i) {
+        t.feed(std::string(1, seq[i]));
+    }
+    CHECK(t.wc(0, 0) == U'\U0001F600');
+    CHECK(t.term.cursorX() == 2); // wide
+}
+
+TEST_CASE("UTF-8: malformed - C2 followed by non-continuation (the opencode case)")
+{
+    // 0xC2 expects one continuation. 0x60 is '`' (0b01100000), top bits 01,
+    // not 10 — so the decoder should reject the sequence, reset state, and
+    // reprocess 0x60 as ASCII '`'. Reproduces the exact sequence seen in
+    // production logs.
+    TestTerminal t;
+    t.feed("X\xC2\x60Y");
+    CHECK(t.wc(0, 0) == U'X');
+    CHECK(t.wc(1, 0) == U'`'); // 0x60 emitted as ASCII after rewind
+    CHECK(t.wc(2, 0) == U'Y');
+}
+
+TEST_CASE("UTF-8: malformed - two lead bytes in a row")
+{
+    // 0xC2 0xC2: second 0xC2 is a lead byte, not a continuation. First
+    // sequence is malformed; second 0xC2 starts a new sequence (still
+    // incomplete after this feed). Final 'A' would complete nothing because
+    // 'A' is also not a continuation — second sequence aborts too, 'A' is
+    // emitted as ASCII.
+    TestTerminal t;
+    t.feed("\xC2\xC2"
+           "A");
+    CHECK(t.wc(0, 0) == U'A');
+}
+
+TEST_CASE("UTF-8: stray continuation byte in Normal state")
+{
+    // 0x80 has top bits 10. In Normal state, anything >= 0x80 is treated as
+    // a lead byte and enters InUtf8. The next byte (here EOF / next feed)
+    // must be a continuation — here we follow with an ASCII 'X' which is
+    // not a continuation byte, so the decoder rejects and reprocesses 'X'.
+    // The original 0x80 is dropped without emitting anything. Document
+    // current behavior: 0x80 alone → no glyph; followed by ASCII →
+    // ASCII printed.
+    TestTerminal t;
+    t.feed("\x80"
+           "X");
+    CHECK(t.wc(0, 0) == U'X');
+}
+
+TEST_CASE("UTF-8: incomplete trailing sequence does not corrupt next feed")
+{
+    // Stream ends mid-multibyte. The next feed completes the sequence and
+    // continues with ASCII; both should land correctly. '日' is wide → col
+    // 1 holds the codepoint, col 2 is its spacer, 'B' lands in col 3.
+    TestTerminal t;
+    t.feed("A\xE6"); // start of 3-byte sequence
+    t.feed("\x97\xA5"
+           "B"); // complete '日', then 'B'
+    CHECK(t.wc(0, 0) == U'A');
+    CHECK(t.wc(1, 0) == U'\u65E5');
+    CHECK(t.wc(3, 0) == U'B');
+    CHECK(t.term.cursorX() == 4);
+}
+
+TEST_CASE("UTF-8: many random splits round-trip")
+{
+    // Build a long mixed string, feed at random byte boundaries, verify the
+    // decoded grid matches a single-shot feed of the same bytes.
+    std::string text;
+    for (int i = 0; i < 50; ++i) {
+        text += "ascii ";
+        text += "\xC3\xA9";         // é
+        text += "\xE6\x97\xA5";     // 日
+        text += "\xF0\x9F\x98\x80"; // 😀
+        text += "x ";
+    }
+    // Single-shot reference.
+    TestTerminal ref(200, 10);
+    ref.feed(text);
+    // Chunked feed.
+    TestTerminal chunked(200, 10);
+    size_t pos     = 0;
+    uint32_t seed  = 12345u;
+    auto nextSplit = [&]()
+    {
+        seed = seed * 1103515245u + 12345u;
+        return (seed >> 16) % 5 + 1; // 1..5 bytes
+    };
+    while (pos < text.size()) {
+        size_t n = std::min<size_t>(nextSplit(), text.size() - pos);
+        chunked.feed(text.substr(pos, n));
+        pos += n;
+    }
+    // Compare every cell across the visible grid.
+    for (int row = 0; row < 10; ++row) {
+        for (int col = 0; col < 200; ++col) {
+            CHECK_MESSAGE(chunked.wc(col, row) == ref.wc(col, row),
+                          "mismatch at row=",
+                          row,
+                          " col=",
+                          col);
+        }
+    }
+}

@@ -313,3 +313,321 @@ TEST_CASE("LineBuffer: clear")
     CHECK(lb.totalCells() == 0);
     CHECK(lb.blockCount() == 0);
 }
+
+// Oracle: fresh recompute via invalidateWrapCaches + numWrappedRows.
+static int freshNumWrappedRows(LineBuffer &lb, int width)
+{
+    lb.invalidateWrapCaches();
+    return lb.numWrappedRows(width);
+}
+
+TEST_CASE("LineBuffer: incremental sum cache matches fresh recompute (warm cache, no eviction)")
+{
+    LineBuffer lb;
+    const int width = 13;
+    // Warm cache with the empty state.
+    CHECK(lb.numWrappedRows(width) == 0);
+
+    // Append lines of varying lengths (forcing multi-row wraps).
+    const char *src = "abcdefghijklmnopqrstuvwxyz0123456789";
+    for (int i = 0; i < 5000; ++i) {
+        std::string s;
+        int len = 1 + (i * 7) % 64; // 1..64
+        for (int k = 0; k < len; ++k) {
+            s += src[(i + k) % 36];
+        }
+        auto r       = row(s);
+        bool partial = (i % 5) == 0;
+        auto eol     = partial ? LineMeta::EolSoft : LineMeta::EolHard;
+        lb.appendLine(r.data(), static_cast<int>(r.size()), eol, partial,
+                      /*extendsLast*/ false,
+                      static_cast<uint64_t>(i + 1),
+                      0,
+                      nullptr);
+        // Touch the cache periodically — this is what real callers do during
+        // rendering and what makes the optimization actually fire.
+        if ((i % 17) == 0) {
+            (void)lb.numWrappedRows(width);
+        }
+    }
+
+    int cached = lb.numWrappedRows(width);
+    int fresh  = freshNumWrappedRows(lb, width);
+    CHECK(cached == fresh);
+}
+
+TEST_CASE("LineBuffer: incremental sum cache matches fresh recompute (with extendsLast)")
+{
+    LineBuffer lb;
+    const int width = 11;
+    CHECK(lb.numWrappedRows(width) == 0);
+
+    // Alternate "new partial line" / "extend it" / "seal with hard line".
+    uint64_t id = 1;
+    for (int batch = 0; batch < 1000; ++batch) {
+        // Start partial.
+        auto r1 = row("aaa");
+        lb.appendLine(r1.data(), 3, LineMeta::EolSoft, /*partial*/ true,
+                      /*extendsLast*/ false,
+                      id,
+                      0,
+                      nullptr);
+        // Touch cache.
+        (void)lb.numWrappedRows(width);
+
+        // Extend a few times.
+        for (int k = 0; k < 4; ++k) {
+            auto rk = row("bbbbbb"); // 6 cells
+            lb.appendLine(rk.data(), 6, LineMeta::EolSoft, /*partial*/ true,
+                          /*extendsLast*/ true,
+                          id,
+                          0,
+                          nullptr);
+            if ((k & 1) == 0) {
+                (void)lb.numWrappedRows(width);
+            }
+        }
+
+        // Seal with a hard EOL extension.
+        auto rs = row("Z");
+        lb.appendLine(rs.data(), 1, LineMeta::EolHard, /*partial*/ false,
+                      /*extendsLast*/ true,
+                      id,
+                      0,
+                      nullptr);
+        (void)lb.numWrappedRows(width);
+
+        ++id;
+    }
+
+    int cached = lb.numWrappedRows(width);
+    int fresh  = freshNumWrappedRows(lb, width);
+    CHECK(cached == fresh);
+}
+
+TEST_CASE("LineBuffer: incremental sum cache matches fresh recompute (with eviction)")
+{
+    // Tight scrollback that forces evictions on most appends.
+    LineBuffer lb(/*maxLogicalLines*/ 50, /*maxTotalCells*/ 0);
+    const int width = 7;
+    CHECK(lb.numWrappedRows(width) == 0);
+
+    const char *src = "abcdefghij";
+    for (int i = 0; i < 5000; ++i) {
+        std::string s;
+        int len = 1 + (i * 3) % 30;
+        for (int k = 0; k < len; ++k) {
+            s += src[(i + k) % 10];
+        }
+        auto r = row(s);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(i + 1), 0, nullptr);
+        if ((i % 11) == 0) {
+            (void)lb.numWrappedRows(width);
+        }
+    }
+
+    int cached = lb.numWrappedRows(width);
+    int fresh  = freshNumWrappedRows(lb, width);
+    CHECK(cached == fresh);
+}
+
+TEST_CASE("LineBuffer: incremental sum cache matches fresh recompute (mixed append + popLastLine)")
+{
+    // popLastLine invalidates the sum cache fully. Re-appending afterward
+    // must rebuild correctly.
+    LineBuffer lb;
+    const int width = 9;
+    (void)lb.numWrappedRows(width);
+
+    uint64_t id = 1;
+    for (int round = 0; round < 200; ++round) {
+        for (int i = 0; i < 10; ++i) {
+            std::string s(1 + ((round + i) % 25), 'X');
+            auto r = row(s);
+            lb.appendHardLine(r.data(), static_cast<int>(r.size()), id++, 0, nullptr);
+            if ((i & 3) == 0) {
+                (void)lb.numWrappedRows(width);
+            }
+        }
+        // Pop a couple — invalidates cache.
+        lb.popLastLine();
+        lb.popLastLine();
+        // Re-warm cache, then keep going.
+        (void)lb.numWrappedRows(width);
+    }
+
+    int cached = lb.numWrappedRows(width);
+    int fresh  = freshNumWrappedRows(lb, width);
+    CHECK(cached == fresh);
+}
+
+TEST_CASE("LineBuffer: width switch then incremental append")
+{
+    LineBuffer lb;
+    for (int i = 0; i < 100; ++i) {
+        std::string s(1 + (i % 20), 'X');
+        auto r = row(s);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(i + 1), 0, nullptr);
+    }
+    // Warm at width 10.
+    int w10_before = lb.numWrappedRows(10);
+    // Now ask at width 5 (different) — internally rebuilds cache at width 5.
+    int w5_before  = lb.numWrappedRows(5);
+    // Append more. The internal cache is at width 5. The block-level wrap
+    // cache for the back block may still hold width 10's value until the
+    // append invalidates it.
+    for (int i = 0; i < 50; ++i) {
+        std::string s(3 + (i % 11), 'Y');
+        auto r = row(s);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(1000 + i), 0, nullptr);
+        if ((i & 1) == 0) {
+            (void)lb.numWrappedRows(5);
+        }
+    }
+    int w5_cached = lb.numWrappedRows(5);
+    int w5_fresh  = freshNumWrappedRows(lb, 5);
+    CHECK(w5_cached == w5_fresh);
+    int w10_cached = lb.numWrappedRows(10);
+    int w10_fresh  = freshNumWrappedRows(lb, 10);
+    CHECK(w10_cached == w10_fresh);
+    (void)w10_before;
+    (void)w5_before;
+}
+
+TEST_CASE("LineBuffer: cache survives back-to-back appends that cross block boundaries")
+{
+    // Sized to push hard against LogicalLineBlock::kCellCapacity (682) so the
+    // append path frequently seals a block and opens a new one.
+    LineBuffer lb;
+    const int width = 17;
+    (void)lb.numWrappedRows(width);
+
+    std::string big(200, 'q');
+    for (int i = 0; i < 2000; ++i) {
+        auto r = row(big);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(i + 1), 0, nullptr);
+        if ((i & 7) == 0) {
+            (void)lb.numWrappedRows(width);
+        }
+    }
+    int cached = lb.numWrappedRows(width);
+    int fresh  = freshNumWrappedRows(lb, width);
+    CHECK(cached == fresh);
+}
+
+// ── resolveLogicalIndex: O(log N_blocks) via cachedBlockEndLogical_ ──────────
+
+namespace {
+// Reference implementation: the old O(N_blocks) linear scan. Lets tests
+// compare the new binary-search impl against ground truth at every index.
+bool resolveLogicalIndexLinear(const LineBuffer &lb, int idx, int *blockIdx, int *lineInBlock)
+{
+    if (idx < 0) {
+        return false;
+    }
+    int rem = idx;
+    for (int bi = 0; bi < lb.blockCount(); ++bi) {
+        const int n = lb.block(bi).numLines();
+        if (rem < n) {
+            *blockIdx    = bi;
+            *lineInBlock = rem;
+            return true;
+        }
+        rem -= n;
+    }
+    return false;
+}
+} // namespace
+
+TEST_CASE("LineBuffer: resolveLogicalIndex matches linear scan across mutation patterns")
+{
+    LineBuffer lb;
+    uint64_t id = 1;
+
+    // Build up to several blocks of mixed line lengths so the prefix array
+    // has nontrivial breakpoints.
+    for (int batch = 0; batch < 200; ++batch) {
+        for (int j = 0; j < 5; ++j) {
+            std::string s(1 + ((batch + j) % 50), 'X');
+            auto r = row(s);
+            lb.appendHardLine(r.data(), static_cast<int>(r.size()), id++, 0, nullptr);
+        }
+        // Pop one occasionally — exercises truncate path in afterBackBlockMutation.
+        if ((batch % 7) == 0) {
+            lb.popLastLine();
+        }
+        // Touch caches with mixed accesses.
+        (void)lb.numWrappedRows(11);
+        (void)lb.numWrappedRows(31);
+    }
+
+    REQUIRE(lb.totalLogicalLines() > 0);
+    const int total = lb.totalLogicalLines();
+    // Spot-check every index.
+    for (int idx = 0; idx < total; ++idx) {
+        int b1 = -1, l1 = -1, b2 = -1, l2 = -1;
+        bool ok1 = resolveLogicalIndexLinear(lb, idx, &b1, &l1);
+        bool ok2 = lb.resolveLogicalIndex(idx, &b2, &l2);
+        REQUIRE(ok1 == ok2);
+        if (ok1) {
+            CHECK_MESSAGE(b1 == b2, "block mismatch at idx=", idx);
+            CHECK_MESSAGE(l1 == l2, "line-in-block mismatch at idx=", idx);
+        }
+    }
+    // Out-of-range.
+    int b = -1, l = -1;
+    CHECK_FALSE(lb.resolveLogicalIndex(total, &b, &l));
+    CHECK_FALSE(lb.resolveLogicalIndex(total + 1000, &b, &l));
+    CHECK_FALSE(lb.resolveLogicalIndex(-1, &b, &l));
+}
+
+TEST_CASE("LineBuffer: resolveLogicalIndex correct after eviction")
+{
+    // Tight scrollback forces eviction. After eviction the logical cache
+    // must be rebuilt and continue to match the linear scan.
+    LineBuffer lb(/*maxLogicalLines*/ 80, /*maxTotalCells*/ 0);
+    for (int i = 0; i < 5000; ++i) {
+        std::string s(1 + (i * 3) % 28, 'A');
+        auto r = row(s);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(i + 1), 0, nullptr);
+        // Force the logical cache warm by calling resolveLogicalIndex.
+        if ((i % 13) == 0 && lb.totalLogicalLines() > 0) {
+            int b, l;
+            (void)lb.resolveLogicalIndex(0, &b, &l);
+            (void)lb.resolveLogicalIndex(lb.totalLogicalLines() - 1, &b, &l);
+        }
+    }
+    // After all that churn, every index should still resolve identically.
+    const int total = lb.totalLogicalLines();
+    for (int idx = 0; idx < total; ++idx) {
+        int b1, l1, b2, l2;
+        bool ok1 = resolveLogicalIndexLinear(lb, idx, &b1, &l1);
+        bool ok2 = lb.resolveLogicalIndex(idx, &b2, &l2);
+        REQUIRE(ok1 == ok2);
+        REQUIRE(ok1);
+        CHECK(b1 == b2);
+        CHECK(l1 == l2);
+    }
+}
+
+TEST_CASE("LineBuffer: incremental sum cache stays valid across width queries interleaved with appends")
+{
+    // Drives the selection-drag scenario: render thread asks numWrappedRows
+    // at the current width while the parse worker keeps appending blocks.
+    // Each append should perform an incremental extend, not a full rebuild.
+    // We can't measure that directly from the public API, but we CAN verify
+    // the cache stays correct.
+    LineBuffer lb;
+    const int width = 19;
+    std::string base = "hello world this is a moderately long line to force wrapping";
+    for (int i = 0; i < 3000; ++i) {
+        auto r = row(base);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(i + 1), 0, nullptr);
+        // Hammer the cache.
+        if ((i & 1) == 0) {
+            int cached = lb.numWrappedRows(width);
+            int fresh  = freshNumWrappedRows(lb, width);
+            CHECK_MESSAGE(cached == fresh, "diverged at i=", i);
+        }
+    }
+}

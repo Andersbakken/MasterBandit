@@ -16,11 +16,24 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <thread>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <libproc.h>
+#endif
+#ifdef __linux__
+#include <sys/syscall.h>
+
+// pidfd_open syscall wrapper (added in Linux 5.3 / glibc 2.36). We don't
+// rely on glibc 2.36, so syscall(2) it directly. CLOEXEC is set via the
+// flags argument (PIDFD_NONBLOCK = 1; we want blocking-on-read semantics
+// from the event loop, so pass 0). Returns -1 / sets errno on failure.
+static inline int mb_pidfd_open(pid_t pid, unsigned int flags)
+{
+    return static_cast<int>(::syscall(SYS_pidfd_open, pid, flags));
+}
 #endif
 
 Terminal::Terminal(PlatformCallbacks platformCbs, TerminalCallbacks callbacks)
@@ -584,15 +597,12 @@ bool Terminal::init(const TerminalOptions &options)
     std::string shellIntegrationZdotdir; // empty -> no injection
     std::string shellIntegrationOrigZdotdir;
     bool shellIntegrationHadOrigZdotdir = false;
-    if (mOptions.shellIntegration != "off"
-        && mOptions.command.empty()
-        && !mOptions.shellIntegrationDir.empty()
-        && !mOptions.shell.empty()) {
+    if (mOptions.shellIntegration != "off" && mOptions.command.empty() && !mOptions.shellIntegrationDir.empty() && !mOptions.shell.empty()) {
         // Match on basename so /usr/local/bin/zsh and /bin/zsh both qualify.
         const auto slash    = mOptions.shell.find_last_of('/');
         const std::string b = (slash == std::string::npos)
-                                  ? mOptions.shell
-                                  : mOptions.shell.substr(slash + 1);
+            ? mOptions.shell
+            : mOptions.shell.substr(slash + 1);
         if (b == "zsh") {
             // Skip on a fresh zsh install — none of the user rcfiles exist
             // yet, so injecting ZDOTDIR would suppress zsh-newuser-install.
@@ -603,19 +613,19 @@ bool Terminal::init(const TerminalOptions &options)
             const char *home            = getenv("HOME");
             std::string homeDir         = (home && *home) ? home : "";
             const std::string &checkDir = userRcDir.empty() ? homeDir : userRcDir;
-            const bool haveAnyRc        = !checkDir.empty()
-                                && [&] {
-                                       struct stat st;
-                                       for (const char *name : { "/.zshrc",
-                                                                 "/.zshenv",
-                                                                 "/.zprofile",
-                                                                 "/.zlogin" }) {
-                                           if (stat((checkDir + name).c_str(), &st) == 0) {
-                                               return true;
-                                           }
-                                       }
-                                       return false;
-                                   }();
+            const bool haveAnyRc        = !checkDir.empty() && [&]
+            {
+                struct stat st;
+                for (const char *name : { "/.zshrc",
+                                          "/.zshenv",
+                                          "/.zprofile",
+                                          "/.zlogin" }) {
+                    if (stat((checkDir + name).c_str(), &st) == 0) {
+                        return true;
+                    }
+                }
+                return false;
+            }();
             // Resolve our zsh asset dir; bail if it's missing on disk.
             const std::string zsh = mOptions.shellIntegrationDir + "/zsh";
             struct stat st;
@@ -737,6 +747,14 @@ bool Terminal::init(const TerminalOptions &options)
             return false;
         default:
             EINTRWRAP(ret, ::close(slaveFD));
+            mShellPid = pid;
+            // Watch the shell pid for exit. Without this we'd only learn
+            // about shell death via PTY master EOF, which requires every
+            // slave-side fd to be closed — backgrounded/disowned children
+            // (zsh's `foo &!; exit`) keep their slave fds open and
+            // prevent EOF, leaving the tab orphaned. See header comment
+            // on mShellPid for the full rationale.
+            startShellPidWatch();
             break;
     }
     return true;
@@ -843,6 +861,12 @@ void Terminal::markExited()
                    });
     }
 
+    // Tear down the shell-pid watch. The exit notification path
+    // calls markExited() too, so the CAS guard above means we're
+    // either past it (watch already removed itself) or racing with
+    // PTY EOF (watch is still live and must be cancelled). Idempotent.
+    stopShellPidWatch();
+
     // onTerminalExited's body (Platform_Tabs.cpp) is
     // renderThread_->enqueueTerminalExit(t), which is itself thread-
     // safe (RenderThread::enqueueTerminalExit takes a mutex + wakes
@@ -850,6 +874,129 @@ void Terminal::markExited()
     if (mPlatformCbs.onTerminalExited) {
         mPlatformCbs.onTerminalExited(this);
     }
+}
+
+void Terminal::startShellPidWatch()
+{
+    if (mShellPid <= 0) {
+        return;
+    }
+
+#ifdef __linux__
+    // pidfd_open requires Linux 5.3+. On older kernels we silently
+    // skip the watch — falls back to PTY-EOF-only behavior, which is
+    // what mb had before. Not worth a runtime warning; the user can't
+    // do anything about it.
+    int fd = mb_pidfd_open(mShellPid, 0);
+    if (fd < 0) {
+        spdlog::warn("Terminal: pidfd_open({}) failed: {} {}",
+                     mShellPid,
+                     errno,
+                     strerror(errno));
+        return;
+    }
+    // pidfd flags: CLOEXEC is not set by default on the syscall; fix
+    // that so a subsequent fork+exec for e.g. spawn doesn't leak the
+    // fd into the child.
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+    mPidFd = fd;
+    if (!mEventLoop) {
+        // No event loop yet (test / headless path). Close the pidfd —
+        // the caller wasn't going to get exit notifications anyway.
+        ::close(mPidFd);
+        mPidFd = -1;
+        return;
+    }
+    // Watch as readable. pidfd is "readable" iff the process has exited
+    // and the kernel is ready to return its status. The callback fires
+    // on the main thread (EventLoop is main-thread-only), so calling
+    // markExited from there is safe wrt the rest of the teardown.
+    mEventLoop->watchFd(mPidFd, EventLoop::FdEvents::Readable, [this](EventLoop::FdEvents)
+                        {
+                            // Reap so the pid doesn't linger as a zombie.
+                            // WNOHANG is sufficient because pidfd "readable"
+                            // means waitpid will succeed without blocking.
+                            int status = 0;
+                            ::waitpid(mShellPid, &status, WNOHANG);
+                            spdlog::info("Terminal: shell pid {} exited (status={})",
+                                         mShellPid,
+                                         status);
+                            markExited();
+                        });
+#elif defined(__APPLE__)
+    // macOS's EventLoop doesn't expose EVFILT_PROC. Spawn a small
+    // helper thread that blocks on waitpid and post()s back to main
+    // on exit.
+    //
+    // Lifecycle: the helper captures a shared_ptr<PidWatch>. If
+    // Terminal is destructed before the child dies, the destructor
+    // flips watch->ownerDead. The helper observes that after waitpid
+    // unblocks and skips post() entirely. The posted lambda also
+    // re-checks ownerDead before dereferencing `owner`, because the
+    // Terminal can die between the helper's check and the lambda
+    // running on the main thread.
+    if (!mEventLoop) {
+        return;
+    }
+    mPidWatch        = std::make_shared<PidWatch>();
+    mPidWatch->loop  = mEventLoop;
+    mPidWatch->pid   = mShellPid;
+    mPidWatch->owner = this;
+    auto watch       = mPidWatch;
+    mPidWatchThread  = std::thread([watch]()
+                                  {
+                                      int status = 0;
+                                      pid_t r;
+                                      do {
+                                          r = ::waitpid(watch->pid, &status, 0);
+                                      } while (r < 0 && errno == EINTR);
+                                      if (watch->ownerDead.load(std::memory_order_acquire)) {
+                                          return;
+                                      }
+                                      EventLoop *loop = watch->loop;
+                                      pid_t pid       = watch->pid;
+                                      loop->post([watch, pid, status]()
+                                                 {
+                                                     if (watch->ownerDead.load(std::memory_order_acquire)) {
+                                                         return;
+                                                     }
+                                                     spdlog::info("Terminal: shell pid {} exited (status={})",
+                                                                  pid,
+                                                                  status);
+                                                     watch->owner->markExited();
+                                                 });
+                                  });
+#endif
+}
+
+void Terminal::stopShellPidWatch()
+{
+#ifdef __linux__
+    if (mPidFd >= 0) {
+        if (mEventLoop) {
+            mEventLoop->removeFd(mPidFd);
+        }
+        ::close(mPidFd);
+        mPidFd = -1;
+    }
+#elif defined(__APPLE__)
+    if (mPidWatch) {
+        // Flip the flag so the helper (or its posted lambda) bails
+        // before touching us. The flag lives in the shared block so
+        // it remains valid past our destruction.
+        mPidWatch->ownerDead.store(true, std::memory_order_release);
+    }
+    if (mPidWatchThread.joinable()) {
+        // Can't unblock waitpid portably; detach and rely on
+        // ownerDead. The helper will eventually return when the
+        // child exits (possibly long after us) and self-clean.
+        mPidWatchThread.detach();
+    }
+    mPidWatch.reset();
+#endif
 }
 
 void Terminal::readFromFD()

@@ -800,8 +800,8 @@ uint64_t TerminalEmulator::addDecoration(Decoration spec)
 // appending their handleIds to `out` when non-null. Caller must hold
 // mMutex.
 static void drainAnimsForDecoration(std::unordered_map<uint64_t, Animation> &table,
-                                    uint64_t                                 decorationId,
-                                    std::vector<uint64_t>                   *out)
+                                    uint64_t decorationId,
+                                    std::vector<uint64_t> *out)
 {
     for (auto it = table.begin(); it != table.end();) {
         if (it->second.kind == AnimTargetKind::Decoration && it->second.targetId == decorationId) {
@@ -829,7 +829,7 @@ bool TerminalEmulator::removeDecoration(uint64_t id, std::vector<uint64_t> *canc
     return false;
 }
 
-size_t TerminalEmulator::clearUserDecorations(std::string_view       tag,
+size_t TerminalEmulator::clearUserDecorations(std::string_view tag,
                                               std::vector<uint64_t> *cancelledAnimHandlesOut)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
@@ -842,8 +842,7 @@ size_t TerminalEmulator::clearUserDecorations(std::string_view       tag,
                            }
                            bool match = tag.empty() ? true : (d.tag == tag);
                            if (match) {
-                               drainAnimsForDecoration(mAnimations, d.id,
-                                                       cancelledAnimHandlesOut);
+                               drainAnimsForDecoration(mAnimations, d.id, cancelledAnimHandlesOut);
                            }
                            return match;
                        }),
@@ -856,7 +855,7 @@ size_t TerminalEmulator::clearUserDecorations(std::string_view       tag,
 }
 
 std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<DecorationBatchOp> ops,
-                                                             std::vector<uint64_t>         *cancelledAnimHandlesOut)
+                                                             std::vector<uint64_t> *cancelledAnimHandlesOut)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     std::vector<uint64_t> ids;
@@ -874,8 +873,7 @@ std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<Decorat
                                    }
                                    bool match = tag.empty() ? true : (d.tag == tag);
                                    if (match) {
-                                       drainAnimsForDecoration(mAnimations, d.id,
-                                                               cancelledAnimHandlesOut);
+                                       drainAnimsForDecoration(mAnimations, d.id, cancelledAnimHandlesOut);
                                    }
                                    return match;
                                }),

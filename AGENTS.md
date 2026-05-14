@@ -126,3 +126,5 @@ Specific triggers:
 Verify by reading the diff of `types/mb.d.ts` against your C++ change
 side-by-side. The file lives under `types/` and is the only `.d.ts` in
 the repo.
+
+## 4. Build with -j$(nproc) or -j$(sysctl -n hw.logicalcpu)

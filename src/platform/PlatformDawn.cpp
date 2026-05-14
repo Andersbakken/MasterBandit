@@ -1029,7 +1029,7 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
                 platformSetNotificationWindowState(windowHasFocus_, windowVisible_);
             };
 
-            if (!window_->create(800, 600, "MasterBandit")) {
+            if (!window_->create(800, 600, "mb")) {
                 spdlog::error("Failed to create window");
                 return;
             }

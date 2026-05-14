@@ -12,23 +12,63 @@
 #include <kqueue/EventLoop_kqueue.h>
 #include <mac/EventLoop_nsapp.h>
 #include <mac/Window_cocoa.h>
+#include <mach-o/dyld.h>
 #elif defined(__linux__)
 #include <epoll/EventLoop_epoll.h>
 #include <xcb/Window_xcb.h>
 #endif
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sys/ioctl.h>
 #include <thread>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
 static std::vector<uint8_t> loadFontFile(const std::string &path)
 {
     return io::loadFile(path);
+}
+
+// Ask the kernel for the real binary path. Required because argv[0] is
+// whatever the parent shell decided to pass: a bare name from PATH ("mb"),
+// a symlink (~/bin/mb -> .../build-release/bin/mb), or an absolute path.
+// fs::weakly_canonical(argv[0]) breaks for the bare-name case (it resolves
+// against cwd, not PATH) and the symlink case (it may keep the link path).
+static fs::path resolveExecutablePath(const char *argv0)
+{
+#if defined(__linux__)
+    char buf[PATH_MAX];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        return fs::path(buf);
+    }
+#elif defined(__APPLE__)
+    char buf[PATH_MAX];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        std::error_code ec;
+        auto resolved = fs::canonical(buf, ec);
+        if (!ec) {
+            return resolved;
+        }
+        return fs::path(buf);
+    }
+#endif
+    // Kernel API unavailable / failed. canonical() (unlike weakly_canonical)
+    // both resolves symlinks AND makes the path absolute, but only if argv0
+    // names an existing file - false for a bare name resolved via PATH.
+    std::error_code ec;
+    auto resolved = fs::canonical(argv0, ec);
+    if (!ec) {
+        return resolved;
+    }
+    return fs::weakly_canonical(argv0);
 }
 
 PlatformDawn::PlatformDawn(int argc, char **argv, uint32_t flags)
@@ -41,7 +81,7 @@ PlatformDawn::PlatformDawn(int argc, char **argv, uint32_t flags)
                           l->sinks().push_back(debugSink_);
                       });
 
-    exeDir_ = fs::weakly_canonical(fs::path(argv[0])).parent_path().string();
+    exeDir_ = resolveExecutablePath(argv[0]).parent_path().string();
     Resources::init(exeDir_);
 
     renderEngine_    = std::make_unique<RenderEngine>();
@@ -78,7 +118,7 @@ bool PlatformDawn::snapshotUnderLock(RenderFrameState &out)
     rs.releasePaneTextureIds.clear();
     rs.releasePopupTextureKeys.clear();
     rs.releaseEmbeddedTextureKeys.clear();
-    rs.releaseAllPaneTextures   = false;
+    rs.releaseAllPaneTextures = false;
     rs.releaseTabBarTextures.clear();
     rs.releaseAllTabBarTextures = false;
     rs.invalidateAllRowCaches   = false;
@@ -217,8 +257,15 @@ std::string codepointToUtf8(char32_t cp)
 
 // Indeterminate-spinner glyphs cycled by progressState == 3.
 constexpr char32_t kAnimGlyphs[] = {
-    0xf0130, 0xf0a9e, 0xf0a9f, 0xf0aa0, 0xf0aa1,
-    0xf0aa2, 0xf0aa3, 0xf0aa4, 0xf0aa5
+    0xf0130,
+    0xf0a9e,
+    0xf0a9f,
+    0xf0aa0,
+    0xf0aa1,
+    0xf0aa2,
+    0xf0aa3,
+    0xf0aa4,
+    0xf0aa5
 };
 constexpr int kAnimCount = 9;
 
@@ -414,10 +461,10 @@ void PlatformDawn::populateTabBars()
     if (barRects.empty()) {
         return;
     }
-    const Uuid primary       = scriptEngine_.primaryTabBarNode();
-    const auto allTabRoots   = scriptEngine_.tabSubtreeRoots();
-    const int activeTopIdx   = scriptEngine_.activeTabIndex();
-    LayoutTree &tree         = scriptEngine_.layoutTree();
+    const Uuid primary     = scriptEngine_.primaryTabBarNode();
+    const auto allTabRoots = scriptEngine_.tabSubtreeRoots();
+    const int activeTopIdx = scriptEngine_.activeTabIndex();
+    LayoutTree &tree       = scriptEngine_.layoutTree();
 
     rs.tabBars.reserve(barRects.size());
     for (auto &[barId, rect] : barRects) {
@@ -544,18 +591,18 @@ void PlatformDawn::buildRenderFrameState()
     // dividersDirty_) into renderThread_->renderState().
     renderThread_->renderState().tabBarsDirty |= tabBarDirty_;
     renderThread_->renderState().dividersDirty |= dividersDirty_;
-    tabBarDirty_                              = false;
-    dividersDirty_                            = false;
-    auto tab                                  = activeTab();
-    renderThread_->renderState().fbWidth      = fbWidth_;
-    renderThread_->renderState().fbHeight     = fbHeight_;
-    renderThread_->renderState().charWidth    = charWidth_;
-    renderThread_->renderState().lineHeight   = lineHeight_;
-    renderThread_->renderState().fontSize     = fontSize_;
-    renderThread_->renderState().padLeft      = padLeft_;
-    renderThread_->renderState().padTop       = padTop_;
-    renderThread_->renderState().padRight     = padRight_;
-    renderThread_->renderState().padBottom    = padBottom_;
+    tabBarDirty_                            = false;
+    dividersDirty_                          = false;
+    auto tab                                = activeTab();
+    renderThread_->renderState().fbWidth    = fbWidth_;
+    renderThread_->renderState().fbHeight   = fbHeight_;
+    renderThread_->renderState().charWidth  = charWidth_;
+    renderThread_->renderState().lineHeight = lineHeight_;
+    renderThread_->renderState().fontSize   = fontSize_;
+    renderThread_->renderState().padLeft    = padLeft_;
+    renderThread_->renderState().padTop     = padTop_;
+    renderThread_->renderState().padRight   = padRight_;
+    renderThread_->renderState().padBottom  = padBottom_;
     std::memcpy(renderThread_->renderState().activeTint, activeTint_, sizeof(activeTint_));
     std::memcpy(renderThread_->renderState().inactiveTint, inactiveTint_, sizeof(inactiveTint_));
     renderThread_->renderState().tabBarPosition     = tabBarConfig_.position;
@@ -1780,10 +1827,10 @@ void PlatformDawn::onFramebufferResize(int width, int height)
     // → flushPendingFramebufferResize → applyFramebufferResize.
     const bool live = window_ && window_->inLiveResize();
     if (live) {
-        fbWidth_                                         = static_cast<uint32_t>(width);
-        fbHeight_                                        = static_cast<uint32_t>(height);
-        renderThread_->pending().surfaceNeedsReconfigure = true;
-        renderThread_->pending().viewportSizeChanged     = true;
+        fbWidth_                                          = static_cast<uint32_t>(width);
+        fbHeight_                                         = static_cast<uint32_t>(height);
+        renderThread_->pending().surfaceNeedsReconfigure  = true;
+        renderThread_->pending().viewportSizeChanged      = true;
         renderThread_->pending().releaseAllPaneTextures   = true;
         renderThread_->pending().releaseAllTabBarTextures = true;
         tabBarDirty_                                      = true;

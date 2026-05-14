@@ -133,14 +133,17 @@ let _tabsStackNode = null;
 
 // Hot-reload support: if the user toggles [tab_bar].position between "top"
 // and "bottom" at runtime, swap the root Container's children so the tab
-// bar moves side without a restart. LayoutTree has no "reorder children"
-// API; instead we detach and re-append in the new order.
+// bar moves side without a restart. Use moveChild (in-place rotate) rather
+// than removeChild + appendChild because appendChild constructs a fresh
+// ChildSlot from the JS defaults ({fixedCells: 1, stretch: 1}), which
+// overwrites whatever initTabBar's setBarSlot last wrote — in particular
+// the {fixedCells: 0, stretch: 0} "hidden" state used by style="auto" with
+// a single tab. moveChild is a structural reorder that leaves every
+// ChildSlot field untouched, so auto-hide survives a position swap.
 mb.addEventListener('configChanged', () => {
     if (!_rootContainer || !_tabBarNode || !_tabsStackNode) return;
     const want = mb.config?.tab_bar?.position || 'bottom';
 
-    // Determine current order by walking children. If already correct,
-    // skip the churn.
     const rootNode = mb.layout.node(_rootContainer);
     if (!rootNode || !rootNode.children) return;
     const ids = rootNode.children.map(c => c.id);
@@ -150,17 +153,7 @@ mb.addEventListener('configChanged', () => {
     const currentlyTop = barIdx < stackIdx;
     if ((want === 'top') === currentlyTop) return;
 
-    // Reorder: detach both, re-append in new order. The inner subtree
-    // (_tabsStackNode) isn't destroyed — removeChild is structural-only.
-    mb.layout.removeChild(_rootContainer, _tabBarNode);
-    mb.layout.removeChild(_rootContainer, _tabsStackNode);
-    if (want === 'top') {
-        mb.layout.appendChild(_rootContainer, _tabBarNode,    {fixedCells: 1});
-        mb.layout.appendChild(_rootContainer, _tabsStackNode, {stretch: 1});
-    } else {
-        mb.layout.appendChild(_rootContainer, _tabsStackNode, {stretch: 1});
-        mb.layout.appendChild(_rootContainer, _tabBarNode,    {fixedCells: 1});
-    }
+    mb.layout.moveChild(_rootContainer, _tabBarNode, want === 'top' ? -1 : +1);
 });
 
 // Resolve `idx` to a tab UUID by indexing into the chrome TabBar's bound

@@ -811,3 +811,203 @@ TEST_CASE("LayoutTree::swapLeaves rejects bad inputs")
     CHECK_FALSE(t.swapLeaves(root, a));    // ancestor of a
     CHECK_FALSE(t.swapLeaves(a, root));    // a is descendant of root
 }
+
+// Reproduces the "auto tab bar visibility" bug. When the bar slot is in
+// the hidden state (fixedCells=0, stretch=0) and the content slot has
+// stretch=1, the bar must collapse to zero size and the content must get
+// the full window — regardless of which child slot the bar occupies.
+TEST_CASE("LayoutTree: hidden bar slot collapses regardless of child order")
+{
+    constexpr int CELL_W = 10;
+    constexpr int CELL_H = 20;
+    const Rect window { 0, 0, 800, 600 };
+
+    SUBCASE("bar first (position=top), hidden")
+    {
+        LayoutTree t;
+        Uuid root  = t.createContainer(SplitDir::Vertical);
+        Uuid bar   = t.createTabBar();
+        Uuid stack = t.createStack();
+        REQUIRE(t.setRoot(root));
+        ChildSlot barSlot { bar };
+        barSlot.fixedCells = 0;
+        barSlot.stretch    = 0;
+        REQUIRE(t.appendChild(root, barSlot));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+
+        auto m = t.computeRects(window, CELL_W, CELL_H);
+        CHECK_FALSE(isPresent(m, bar));
+        CHECK(rectOf(m, stack) == Rect { 0, 0, 800, 600 });
+    }
+
+    SUBCASE("bar last (position=bottom), hidden")
+    {
+        LayoutTree t;
+        Uuid root  = t.createContainer(SplitDir::Vertical);
+        Uuid stack = t.createStack();
+        Uuid bar   = t.createTabBar();
+        REQUIRE(t.setRoot(root));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+        ChildSlot barSlot { bar };
+        barSlot.fixedCells = 0;
+        barSlot.stretch    = 0;
+        REQUIRE(t.appendChild(root, barSlot));
+
+        auto m = t.computeRects(window, CELL_W, CELL_H);
+        CHECK_FALSE(isPresent(m, bar));
+        CHECK(rectOf(m, stack) == Rect { 0, 0, 800, 600 });
+    }
+
+    SUBCASE("bar first (position=top), visible (fixedCells=1, stretch=0)")
+    {
+        LayoutTree t;
+        Uuid root  = t.createContainer(SplitDir::Vertical);
+        Uuid bar   = t.createTabBar();
+        Uuid stack = t.createStack();
+        REQUIRE(t.setRoot(root));
+        ChildSlot barSlot { bar };
+        barSlot.fixedCells = 1;
+        barSlot.stretch    = 0;
+        REQUIRE(t.appendChild(root, barSlot));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+
+        auto m = t.computeRects(window, CELL_W, CELL_H);
+        CHECK(rectOf(m, bar) == Rect { 0, 0, 800, CELL_H });
+        CHECK(rectOf(m, stack) == Rect { 0, CELL_H, 800, 600 - CELL_H });
+    }
+
+    SUBCASE("bar last (position=bottom), visible (fixedCells=1, stretch=0)")
+    {
+        LayoutTree t;
+        Uuid root  = t.createContainer(SplitDir::Vertical);
+        Uuid stack = t.createStack();
+        Uuid bar   = t.createTabBar();
+        REQUIRE(t.setRoot(root));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+        ChildSlot barSlot { bar };
+        barSlot.fixedCells = 1;
+        barSlot.stretch    = 0;
+        REQUIRE(t.appendChild(root, barSlot));
+
+        auto m = t.computeRects(window, CELL_W, CELL_H);
+        CHECK(rectOf(m, stack) == Rect { 0, 0, 800, 600 - CELL_H });
+        CHECK(rectOf(m, bar) == Rect { 0, 600 - CELL_H, 800, CELL_H });
+    }
+
+    // The state default-ui.js leaves behind when it appends with
+    // `{fixedCells: 1}` only — the JS binding default for `stretch` is 1.
+    // initTabBar's setBarSlot then overwrites stretch=0 explicitly. This
+    // test pins down the BROKEN intermediate state to confirm the comment
+    // in setBarSlot is correct.
+    SUBCASE("bar first, fixedCells=1 + stretch=1 (raw JS append default)")
+    {
+        LayoutTree t;
+        Uuid root  = t.createContainer(SplitDir::Vertical);
+        Uuid bar   = t.createTabBar();
+        Uuid stack = t.createStack();
+        REQUIRE(t.setRoot(root));
+        ChildSlot barSlot { bar };
+        barSlot.fixedCells = 1;
+        barSlot.stretch    = 1;
+        REQUIRE(t.appendChild(root, barSlot));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+
+        auto m = t.computeRects(window, CELL_W, CELL_H);
+        // With fixedCells > 0, the bar should still pin to 1 cell even
+        // though stretch is also set. stretch is ignored when fixedCells>0.
+        CHECK(rectOf(m, bar) == Rect { 0, 0, 800, CELL_H });
+        CHECK(rectOf(m, stack) == Rect { 0, CELL_H, 800, 600 - CELL_H });
+    }
+
+    SUBCASE("bar first, fixedCells=0 + stretch=1 (forgot setBarSlot)")
+    {
+        LayoutTree t;
+        Uuid root  = t.createContainer(SplitDir::Vertical);
+        Uuid bar   = t.createTabBar();
+        Uuid stack = t.createStack();
+        REQUIRE(t.setRoot(root));
+        ChildSlot barSlot { bar };
+        barSlot.fixedCells = 0;
+        barSlot.stretch    = 1;
+        REQUIRE(t.appendChild(root, barSlot));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+
+        auto m = t.computeRects(window, CELL_W, CELL_H);
+        // BUG SHAPE: stretch=1 vs stretch=1 -> 50/50 split. Bar gets half
+        // the window. Reproduces the symptom "tab bar covers half the
+        // window" if updateTabBarVisibility forgets to setSlotStretch(0).
+        CHECK(rectOf(m, bar) == Rect { 0, 0, 800, 300 });
+        CHECK(rectOf(m, stack) == Rect { 0, 300, 800, 300 });
+    }
+}
+
+// Regression: the default-ui.js configChanged handler used to reorder bar
+// and content via removeChild + appendChild, which reset the bar's
+// ChildSlot (fixedCells, stretch) to the JS binding defaults
+// {fixedCells: 1, stretch: 1}. That overwrote initTabBar's setBarSlot(0)
+// for the "auto + single tab" case, so the bar appeared at the top
+// regardless of style="auto" with 1 tab. moveChild reorders in place and
+// preserves slot state, fixing the symmetry.
+TEST_CASE("LayoutTree: moveChild preserves slot state across position swap")
+{
+    constexpr int CELL_W = 10;
+    constexpr int CELL_H = 20;
+    const Rect window { 0, 0, 800, 600 };
+
+    auto buildBottom = [&](LayoutTree &t, Uuid &root, Uuid &bar, Uuid &stack)
+    {
+        root  = t.createContainer(SplitDir::Vertical);
+        bar   = t.createTabBar();
+        stack = t.createStack();
+        REQUIRE(t.setRoot(root));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+        ChildSlot bs { bar };
+        bs.fixedCells = 1;
+        bs.stretch    = 1;
+        REQUIRE(t.appendChild(root, bs));
+    };
+
+    SUBCASE("setBarSlot(0) hides bar, then moveChild to top keeps it hidden")
+    {
+        LayoutTree t;
+        Uuid root, bar, stack;
+        buildBottom(t, root, bar, stack);
+
+        REQUIRE(t.setSlotFixedCells(root, bar, 0));
+        REQUIRE(t.setSlotStretch(root, bar, 0));
+        {
+            auto m = t.computeRects(window, CELL_W, CELL_H);
+            CHECK_FALSE(isPresent(m, bar));
+            CHECK(rectOf(m, stack) == Rect { 0, 0, 800, 600 });
+        }
+
+        REQUIRE(t.moveChild(root, bar, -1));
+        {
+            auto m = t.computeRects(window, CELL_W, CELL_H);
+            CHECK_FALSE(isPresent(m, bar));
+            CHECK(rectOf(m, stack) == Rect { 0, 0, 800, 600 });
+        }
+    }
+
+    SUBCASE("removeChild + appendChild RESETS the slot (regression that caused the bug)")
+    {
+        LayoutTree t;
+        Uuid root, bar, stack;
+        buildBottom(t, root, bar, stack);
+
+        REQUIRE(t.setSlotFixedCells(root, bar, 0));
+        REQUIRE(t.setSlotStretch(root, bar, 0));
+
+        REQUIRE(t.removeChild(root, bar));
+        REQUIRE(t.removeChild(root, stack));
+        ChildSlot bsReset { bar };
+        bsReset.fixedCells = 1;
+        bsReset.stretch    = 1;
+        REQUIRE(t.appendChild(root, bsReset));
+        REQUIRE(t.appendChild(root, ChildSlot { stack, 1 }));
+
+        auto m = t.computeRects(window, CELL_W, CELL_H);
+        CHECK(rectOf(m, bar) == Rect { 0, 0, 800, CELL_H });
+        CHECK(rectOf(m, stack) == Rect { 0, CELL_H, 800, 600 - CELL_H });
+    }
+}

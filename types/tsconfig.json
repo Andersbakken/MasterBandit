@@ -1,0 +1,39 @@
+{
+  // MasterBandit user-config tsconfig.
+  //
+  // mb loads config.ts (or config.js) directly via its built-in TypeScript
+  // whiteout (a type-strip, not a full compile). This tsconfig produces NO
+  // output - "noEmit" - it exists purely so editors / language servers know
+  // about the `mb` global declared in ./types/mb.d.ts when authoring config.
+  //
+  // ./types/mb.d.ts is refreshed from the running binary on every mb
+  // launch (see refreshTypesScaffolding in src/Config.cpp), so it stays in
+  // sync with whatever build of mb is on disk.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true
+  },
+  "include": [
+    "config.ts",
+    "config.js",
+    "types/**/*.d.ts"
+  ]
+}

@@ -290,10 +290,13 @@ std::string configJsFilePath();
 // engine type-strips it on load (see TsTransform.h).
 std::string configTsFilePath();
 
-// Refresh <configDir>/types/mb.d.ts from the bundled copy shipped next
-// to the binary (Resources::path("types/mb.d.ts")). Always overwrites
-// so the on-disk types track the running build — an out-of-date copy
-// would silently mislead LSP completions in config.ts. Skipped when the
+// Refresh the TS authoring scaffolding in the user's config dir from the
+// copies bundled next to the binary:
+//   <configDir>/types/mb.d.ts   <- Resources::path("types/mb.d.ts")
+//   <configDir>/tsconfig.json   <- Resources::path("types/tsconfig.json")
+// Always overwrites so the on-disk scaffolding tracks the running build —
+// an out-of-date mb.d.ts would silently mislead LSP completions, and a
+// stale tsconfig might exclude new sources. Skipped per-file when the
 // destination is a symlink: that signals the user is managing the file
 // themselves (e.g. pointing at a source checkout). Best-effort: errors
 // are logged but never block startup.

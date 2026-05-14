@@ -96,6 +96,38 @@ Config loadConfig()
     return cfg;
 }
 
+namespace {
+// Overwrite `dest` with the contents of `source`, unless `dest` is a
+// symlink (lstat semantics) — that signals the user is managing the file
+// themselves (e.g. pointing at a source checkout) and we leave it alone.
+// Best-effort: every failure mode is logged and swallowed so a broken
+// scaffold never blocks startup.
+void refreshOneScaffold(const std::filesystem::path &source,
+                        const std::filesystem::path &dest)
+{
+    std::error_code ec;
+    if (!std::filesystem::exists(source, ec)) {
+        spdlog::warn("Config: bundled file missing at {}; config.ts scaffolding incomplete",
+                     source.string());
+        return;
+    }
+    if (std::filesystem::is_symlink(dest, ec)) {
+        spdlog::info("Config: {} is a symlink, leaving it alone", dest.string());
+        return;
+    }
+    std::filesystem::copy_file(source,
+                               dest,
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    if (ec) {
+        spdlog::warn("Config: failed to copy {} -> {}: {}",
+                     source.string(),
+                     dest.string(),
+                     ec.message());
+    }
+}
+} // namespace
+
 void refreshTypesScaffolding()
 {
     auto dir = configDir();
@@ -111,30 +143,6 @@ void refreshTypesScaffolding()
         return;
     }
 
-    auto source = Resources::path("types/mb.d.ts");
-    if (!std::filesystem::exists(source, ec)) {
-        spdlog::warn("Config: bundled types missing at {}; config.ts LSP completions unavailable",
-                     source.string());
-        return;
-    }
-
-    auto dest = typesDir / "mb.d.ts";
-    // is_symlink uses lstat semantics — true only when the entry itself
-    // is a symlink, regardless of target validity. Users who symlink
-    // this to a source checkout get to keep that arrangement.
-    if (std::filesystem::is_symlink(dest, ec)) {
-        spdlog::info("Config: {} is a symlink, leaving it alone", dest.string());
-        return;
-    }
-
-    std::filesystem::copy_file(source,
-                               dest,
-                               std::filesystem::copy_options::overwrite_existing,
-                               ec);
-    if (ec) {
-        spdlog::warn("Config: failed to copy {} -> {}: {}",
-                     source.string(),
-                     dest.string(),
-                     ec.message());
-    }
+    refreshOneScaffold(Resources::path("types/mb.d.ts"), typesDir / "mb.d.ts");
+    refreshOneScaffold(Resources::path("types/tsconfig.json"), dir / "tsconfig.json");
 }

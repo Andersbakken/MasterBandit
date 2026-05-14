@@ -89,15 +89,55 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
             return std::string(buf, n);
         };
 
+        // xterm legacy convention for the "bare byte" keys (Enter, Backspace,
+        // Tab, Escape):
+        //   - Shift / Ctrl / Shift+Ctrl are collapsed onto the base byte,
+        //     EXCEPT Ctrl+Backspace flips 0x7f → 0x08 and Shift+Tab → ESC[Z.
+        //   - Alt (gated on OptionAsAltModifier so macOS right-Option-as-compose
+        //     stays out of it) prepends an ESC byte to whatever the above
+        //     produced — yes, even on top of ESC[Z (Alt+Shift+Tab → ESC ESC[Z)
+        //     and on top of bare ESC (Alt+Escape → ESC ESC). Required so e.g.
+        //     terminal-kit / readline / bash see Alt+Enter as `M-RET` (insert
+        //     newline) rather than plain Enter (submit).
+        // Ctrl also has effects on space and a handful of punctuation
+        // (`@ [ \ ] ^ _ ? /`) — those flow in via printable text and are
+        // handled in InputController, not here.
+        const bool altPrefix = (event->modifiers & OptionAsAltModifier) != 0;
+        auto withAlt         = [&](const char *s) -> std::string
+        {
+            return altPrefix ? std::string("\x1b") + s : std::string(s);
+        };
         switch (event->key) {
             case Key_Return:
-            case Key_Enter: text = "\r"; break;
-            case Key_Backspace: text = "\x7f"; break;
-            case Key_Tab:
-                // Shift-Tab → CBT; other mods fall through to plain tab.
-                text = (event->modifiers & ShiftModifier) ? "\x1b[Z" : "\t";
+            case Key_Enter: text = withAlt("\r"); break;
+            case Key_Backspace:
+                // Ctrl+Backspace flips DEL (0x7f) to BS (0x08), per xterm's
+                // backarrowKey=true default. Shift is ignored.
+                text = withAlt((event->modifiers & CtrlModifier) ? "\x08" : "\x7f");
                 break;
-            case Key_Escape: text = "\x1b"; break;
+            case Key_Tab:
+                // Tab is the special case: xterm legacy collapses every
+                // modifier onto `\t` (except Shift+Tab → CBT `\x1b[Z`), but
+                // wezterm emits distinguishing CSI-u-like sequences for
+                // Ctrl+Tab / Ctrl+Shift+Tab even in non-modifyOtherKeys mode
+                // — apps in the field have grown to depend on this so they
+                // can bind Ctrl-Tab without losing it to readline. Match
+                // wezterm exactly (termwiz/src/input.rs:356-370):
+                //   Tab                  → \t
+                //   Shift+Tab            → \x1b[Z
+                //   Ctrl+Tab             → \x1b[9;5u
+                //   Ctrl+Shift+Tab       → \x1b[1;5Z
+                //   any of the above + Alt → ESC-prefixed
+                {
+                    const bool sh    = (event->modifiers & ShiftModifier) != 0;
+                    const bool ct    = (event->modifiers & CtrlModifier) != 0;
+                    const char *base = ct
+                        ? (sh ? "\x1b[1;5Z" : "\x1b[9;5u")
+                        : (sh ? "\x1b[Z" : "\t");
+                    text             = withAlt(base);
+                }
+                break;
+            case Key_Escape: text = withAlt("\x1b"); break;
             case Key_Delete: text = tildeForm(3); break;
             case Key_Left:
                 text = hasMods ? letterMod('D') : (mState->cursorKeyMode ? "\x1bOD" : "\x1b[D");

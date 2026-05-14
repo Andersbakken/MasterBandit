@@ -19,6 +19,41 @@ static std::string codepointToUtf8(uint32_t cp)
     return utf8::encode(cp);
 }
 
+// Wezterm's ctrl_mapping table (wezterm-input-types/src/lib.rs:2235).
+// Returns the legacy control byte for Ctrl+<ch>, or -1 if not in the
+// table (in which case the caller should emit `ch` literally per
+// wezterm's csi_u_encode final fallback). Aliases match wezterm:
+// `@` / `` ` `` / space / `2` → NUL, etc. Both Shift'd and unshifted
+// forms of bracket/symbol keys are accepted so the caller doesn't have
+// to resolve Shift before lookup.
+static int ctrlMappingForChar(uint32_t ch)
+{
+    switch (ch) {
+        case ' ':
+        case '@':
+        case '`':
+        case '2': return 0x00;
+        case '[':
+        case '{':
+        case '3': return 0x1b;
+        case '\\':
+        case '|':
+        case '4': return 0x1c;
+        case ']':
+        case '}':
+        case '5': return 0x1d;
+        case '^':
+        case '~':
+        case '6': return 0x1e;
+        case '_':
+        case '/':
+        case '7': return 0x1f;
+        case '?':
+        case '8': return 0x7f;
+        default: return -1;
+    }
+}
+
 static MouseButton buttonToMouseButton(int button)
 {
     switch (button) {
@@ -258,6 +293,50 @@ void InputController::onKey(int key, int scancode, int action, int mods)
         spdlog::debug("onKey: ctrl+letter, sending text=0x{:02x}", static_cast<unsigned char>(ev.text[0]));
         term->keyPressEvent(&ev);
         return;
+    }
+
+    // ctrl + space / punctuation / digit → control byte (xterm legacy + the
+    // wezterm `ctrl_mapping` table — wezterm-input-types/src/lib.rs:2235).
+    // The byte depends on the *resulting* character the user typed, not the
+    // base keysym, so e.g. Ctrl+Shift+2 on US (which produces '@') must map
+    // to 0x00 even though the base keysym is Key_2. Use the shifted codepoint
+    // when Shift is held, the base keyName otherwise.
+    //
+    //   ctrl+space  ctrl+@  ctrl+`  ctrl+2  → 0x00 (NUL)
+    //   ctrl+[      ctrl+{  ctrl+3          → 0x1b (ESC)  [same as bare Esc]
+    //   ctrl+\      ctrl+|  ctrl+4          → 0x1c (FS)
+    //   ctrl+]      ctrl+}  ctrl+5          → 0x1d (GS)
+    //   ctrl+^      ctrl+~  ctrl+6          → 0x1e (RS)
+    //   ctrl+_      ctrl+/  ctrl+7          → 0x1f (US)
+    //   ctrl+?      ctrl+8                  → 0x7f (DEL)
+    //
+    // Ctrl + (0,1,9, or any punctuation not above) → just the char itself
+    // (matching wezterm's csi_u_encode final fallback). If Alt is also held,
+    // prepend ESC. Done here rather than in onChar because onChar drops
+    // everything when controlPressed_ is set.
+    if (controlPressed_ && window && key < 0x01000000 && k != Key_unknown) {
+        uint32_t ch = 0;
+        if ((lastMods_ & ShiftModifier) != 0) {
+            ch = window->shiftedKeyCodepoint(scancode);
+        }
+        if (ch == 0) {
+            std::string base = window->keyName(scancode);
+            if (!base.empty()) {
+                ch = static_cast<unsigned char>(base[0]);
+            }
+        }
+        int mapped = ctrlMappingForChar(ch);
+        if (mapped >= 0) {
+            char outByte         = static_cast<char>(mapped);
+            const bool altPrefix = (lastMods_ & OptionAsAltModifier) != 0;
+            ev.text              = altPrefix ? std::string("\x1b") + outByte : std::string(1, outByte);
+            spdlog::debug("onKey: ctrl+punct ch=0x{:02x} → 0x{:02x}{}",
+                          ch,
+                          static_cast<unsigned char>(outByte),
+                          altPrefix ? " (alt-prefixed)" : "");
+            term->keyPressEvent(&ev);
+            return;
+        }
     }
 
     // Alt+printable → ESC prefix (xterm convention, required for readline
@@ -1525,6 +1604,28 @@ void InputController::replayPendingSequenceKey(const PendingKey &p)
         ev.text    = std::string(1, static_cast<char>(offset + 1));
         term->keyPressEvent(&ev);
         return;
+    }
+
+    // Legacy: ctrl + space/punctuation/digit (mirrors the onKey path).
+    if (ctrl && window && p.key < 0x01000000 && k != Key_unknown) {
+        uint32_t ch = 0;
+        if ((p.mods & ShiftModifier) != 0) {
+            ch = window->shiftedKeyCodepoint(p.scancode);
+        }
+        if (ch == 0) {
+            std::string base = window->keyName(p.scancode);
+            if (!base.empty()) {
+                ch = static_cast<unsigned char>(base[0]);
+            }
+        }
+        int mapped = ctrlMappingForChar(ch);
+        if (mapped >= 0) {
+            char outByte         = static_cast<char>(mapped);
+            const bool altPrefix = (p.mods & OptionAsAltModifier) != 0;
+            ev.text              = altPrefix ? std::string("\x1b") + outByte : std::string(1, outByte);
+            term->keyPressEvent(&ev);
+            return;
+        }
     }
 
     // Legacy: alt+printable with altSendsEsc. Gate on OptionAsAltModifier

@@ -1316,6 +1316,36 @@ interface MbGlobal {
         event: "scriptPermissionRequired",
         fn: (path: string, permissions: string, hash: string) => void
     ): void;
+
+    /**
+     * Bulk-remove listeners installed on `mb` via `addEventListener`.
+     *
+     *  - `removeAllListeners()` — clear every listener across every event
+     *    family on `mb`, including all per-action handlers.
+     *  - `removeAllListeners(event)` — clear listeners for a single
+     *    event. `event === "action"` is a wildcard: clears every
+     *    per-action listener at once.
+     *  - `removeAllListeners("action", actionName)` — clear only the
+     *    listeners registered for that specific action.
+     *
+     * Listeners installed on sub-objects (`pane.addEventListener`,
+     * `popup.addEventListener`, …) live on their own registries and are
+     * not affected.
+     */
+    removeAllListeners(): void;
+    removeAllListeners(
+        event:
+            | "paneCreated"
+            | "paneDestroyed"
+            | "tabCreated"
+            | "tabDestroyed"
+            | "terminalExited"
+            | "configChanged"
+            | "quit-requested"
+            | "action"
+            | "scriptPermissionRequired"
+    ): void;
+    removeAllListeners(event: "action", actionName: string): void;
 }
 
 // ============================================================================

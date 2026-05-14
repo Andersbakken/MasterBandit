@@ -3395,6 +3395,88 @@ static JSValue jsMbRemoveEventListener(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+// Walk every own property of `obj` and set those whose name starts with
+// `prefix` to undefined. Used by removeAllListeners to nuke entire
+// `__evt_*` families in one pass — notify* paths treat undefined as
+// "no listeners" so this is functionally equivalent to deleting the
+// property but cheaper and survives subsequent addEventListener calls
+// (which lazily recreate the array on next push).
+static void clearOwnPropsWithPrefix(JSContext *ctx, JSValueConst obj,
+                                    const char *prefix)
+{
+    JSPropertyEnum *tab = nullptr;
+    uint32_t len        = 0;
+    if (JS_GetOwnPropertyNames(ctx, &tab, &len, obj, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0) {
+        return;
+    }
+    const size_t prefixLen = std::strlen(prefix);
+    for (uint32_t i = 0; i < len; ++i) {
+        const char *name = JS_AtomToCString(ctx, tab[i].atom);
+        if (name && std::strncmp(name, prefix, prefixLen) == 0) {
+            JS_SetProperty(ctx, obj, tab[i].atom, JS_UNDEFINED);
+        }
+        if (name) {
+            JS_FreeCString(ctx, name);
+        }
+        JS_FreeAtom(ctx, tab[i].atom);
+    }
+    js_free(ctx, tab);
+}
+
+// mb.removeAllListeners()                      -> clear every __evt_* family
+// mb.removeAllListeners(eventName)             -> clear __evt_<eventName>
+// mb.removeAllListeners("action")              -> clear every __evt_action_*
+// mb.removeAllListeners("action", actionName)  -> clear __evt_action_<actionName>
+static JSValue jsMbRemoveAllListeners(JSContext *ctx, JSValueConst,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue mb     = JS_GetPropertyStr(ctx, global, "mb");
+
+    if (argc == 0) {
+        clearOwnPropsWithPrefix(ctx, mb, "__evt_");
+        JS_FreeValue(ctx, mb);
+        JS_FreeValue(ctx, global);
+        return JS_UNDEFINED;
+    }
+
+    if (!JS_IsString(argv[0])) {
+        JS_FreeValue(ctx, mb);
+        JS_FreeValue(ctx, global);
+        return JS_ThrowTypeError(ctx,
+                                 "removeAllListeners requires no args, an "
+                                 "event string, or ('action', actionName)");
+    }
+
+    const char *event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        JS_FreeValue(ctx, mb);
+        JS_FreeValue(ctx, global);
+        return JS_EXCEPTION;
+    }
+
+    if (std::strcmp(event, "action") == 0) {
+        if (argc >= 2 && JS_IsString(argv[1])) {
+            const char *actionName = JS_ToCString(ctx, argv[1]);
+            if (actionName) {
+                std::string prop = std::string("__evt_action_") + actionName;
+                JS_SetPropertyStr(ctx, mb, prop.c_str(), JS_UNDEFINED);
+                JS_FreeCString(ctx, actionName);
+            }
+        } else {
+            clearOwnPropsWithPrefix(ctx, mb, "__evt_action_");
+        }
+    } else {
+        std::string prop = std::string("__evt_") + event;
+        JS_SetPropertyStr(ctx, mb, prop.c_str(), JS_UNDEFINED);
+    }
+
+    JS_FreeCString(ctx, event);
+    JS_FreeValue(ctx, mb);
+    JS_FreeValue(ctx, global);
+    return JS_UNDEFINED;
+}
+
 static JSValue jsMbGetActivePane(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
     // Engine holds the global focused-terminal Uuid — no need to walk through
@@ -5100,6 +5182,7 @@ void Engine::setupGlobals(JSContext *ctx, InstanceId id)
     JS_SetPropertyStr(ctx, mb, "invokeAction", JS_NewCFunction(ctx, jsMbInvokeAction, "invokeAction", 1));
     JS_SetPropertyStr(ctx, mb, "addEventListener", JS_NewCFunction(ctx, jsMbAddEventListener, "addEventListener", 2));
     JS_SetPropertyStr(ctx, mb, "removeEventListener", JS_NewCFunction(ctx, jsMbRemoveEventListener, "removeEventListener", 2));
+    JS_SetPropertyStr(ctx, mb, "removeAllListeners", JS_NewCFunction(ctx, jsMbRemoveAllListeners, "removeAllListeners", 0));
     // Getter properties on mb object
     auto defineGetter = [&](const char *name, JSCFunction *getter)
     {

@@ -1665,11 +1665,39 @@ interface MbLayout {
 // ============================================================================
 
 declare const mb: MbGlobal;
+// Host-provided timer globals. These are NOT WHATWG-spec timers — the
+// callback receives no arguments, ids are plain numbers (not Node's
+// opaque `Timeout` object), and `setInterval`'s `ms` is required (the
+// runtime returns nothing useful when it is missing rather than
+// defaulting). Implementations live in `src/script/ScriptEngine.cpp`.
 
-// Note: `console`, `setTimeout`, `setInterval`, `clearTimeout`,
-// `clearInterval` and ES built-ins (`ArrayBuffer`, `Uint8Array`, …) are
-// available at runtime but not declared here — cover them via your
-// project's tsconfig `lib` (e.g. `"es2022"`).
+/** Schedule `fn` to run once after `ms` (default 0). Returns the timer id. */
+declare function setTimeout(fn: () => void, ms?: number): number;
+/** Cancel a pending `setTimeout`. Unknown ids are silently ignored. */
+declare function clearTimeout(id: number): void;
+/** Schedule `fn` to fire every `ms` (clamped to a 1 ms minimum). Returns the timer id. */
+declare function setInterval(fn: () => void, ms: number): number;
+/** Cancel a `setInterval`. Unknown ids are silently ignored. */
+declare function clearInterval(id: number): void;
+
+// Host console. Each method stringifies its arguments (joined by a single
+// space) and writes them to spdlog under the `[js]` logger. Level map:
+// trace -> trace, debug -> debug, info / log -> info, warn -> warn,
+// error -> error. `group` / `groupCollapsed` indent subsequent output by
+// two spaces per nesting level; `groupEnd` unindents. Implementations
+// live in `src/script/ScriptEngine.cpp`.
+interface MbConsole {
+    log(...args: unknown[]): void;
+    info(...args: unknown[]): void;
+    warn(...args: unknown[]): void;
+    error(...args: unknown[]): void;
+    debug(...args: unknown[]): void;
+    trace(...args: unknown[]): void;
+    group(...args: unknown[]): void;
+    groupCollapsed(...args: unknown[]): void;
+    groupEnd(): void;
+}
+declare const console: MbConsole;
 
 // ============================================================================
 // mb:ws — WebSocket server module

@@ -320,3 +320,143 @@ TEST_CASE("mergeKeyBindings: dispatch behavior — user-shadowed stroke fires on
     REQUIRE(r.actions.size() == 1);
     CHECK(std::holds_alternative<Action::CloseTab>(r.actions[0]));
 }
+
+// ── defaultBindings sanity ───────────────────────────────────────────────────
+//
+// Regression net against the C++ aggregate-init landmine that bit the
+// Linux Alt+N bindings (and would silently bite any future addition):
+// `Action::ActivateTab { N }` initializes the leading Uuid field with N,
+// not the int index — index falls back to its default (-1), producing a
+// "no tab" binding. Same shape for ActivateTabRelative. These tests pin
+// the alt/cmd+N keystrokes to concrete indices, so a future contributor
+// who reintroduces the short brace form gets a loud test failure.
+
+namespace {
+const Binding *findSingleStrokeBinding(const std::vector<Binding> &bs, const KeyStroke &k)
+{
+    for (const auto &b : bs) {
+        if (b.keys.size() == 1 && b.keys[0] == k) {
+            return &b;
+        }
+    }
+    return nullptr;
+}
+} // namespace
+
+TEST_CASE("defaultBindings: tab-N shortcuts map to ActivateTab with index N-1")
+{
+    const auto defaults = defaultBindings();
+    for (int n = 1; n <= 9; ++n) {
+#ifdef __APPLE__
+        const std::string spec = "meta+" + std::to_string(n);
+#else
+        const std::string spec = "alt+" + std::to_string(n);
+#endif
+        CAPTURE(spec);
+        const Binding *b = findSingleStrokeBinding(defaults, ks(spec.c_str()));
+        REQUIRE(b != nullptr);
+        REQUIRE(std::holds_alternative<Action::ActivateTab>(b->action));
+        const auto &at = std::get<Action::ActivateTab>(b->action);
+        CHECK(at.target.isNil());
+        // Off-by-one between visible 1-based and zero-based index is the
+        // exact failure mode the broken aggregate-init produced (-1).
+        CHECK(at.index == n - 1);
+    }
+}
+
+TEST_CASE("defaultBindings: prev/next tab shortcuts map to ActivateTabRelative ±1")
+{
+    const auto defaults = defaultBindings();
+
+    struct Case
+    {
+        const char *spec;
+        int expectedDelta;
+    };
+
+    const std::vector<Case> cases = {
+#ifdef __APPLE__
+        { "meta+shift+]", +1 },
+        { "meta+shift+[", -1 },
+#else
+        { "ctrl+shift+pagedown", +1 },
+        { "ctrl+shift+pageup", -1 },
+        { "alt+shift+right", +1 },
+        { "alt+shift+left", -1 },
+#endif
+    };
+
+    for (const auto &c : cases) {
+        CAPTURE(c.spec);
+        const Binding *b = findSingleStrokeBinding(defaults, ks(c.spec));
+        REQUIRE(b != nullptr);
+        REQUIRE(std::holds_alternative<Action::ActivateTabRelative>(b->action));
+        const auto &atr = std::get<Action::ActivateTabRelative>(b->action);
+        CHECK(atr.stack.isNil());
+        CHECK(atr.delta == c.expectedDelta);
+    }
+}
+
+// ── kBindingModMask: lock-modifier leak guard ────────────────────────────────
+//
+// The XCB key handler sets CapsLockModifier / NumLockModifier on every
+// event whenever those locks are active (xkb reports them as effective
+// modifiers). kBindingModMask is the live runtime mods → binding mods
+// translator; if it leaks lock bits through, KeyStroke equality fails
+// against the parsed-binding stroke (which only carries Ctrl/Shift/Alt/
+// Meta), and every binding silently no-ops for the user. These tests
+// pin that contract: lock and internal-signal bits must be stripped
+// before reaching the matcher.
+
+TEST_CASE("kBindingModMask: strips lock and internal-signal modifiers")
+{
+    // Locks and internal signals must be zeroed when masked.
+    CHECK((CapsLockModifier & kBindingModMask) == 0u);
+    CHECK((NumLockModifier & kBindingModMask) == 0u);
+    CHECK((HyperModifier & kBindingModMask) == 0u);
+    CHECK((OptionAsAltModifier & kBindingModMask) == 0u);
+
+    // The four parseKeyStroke-recognised modifiers must pass through.
+    CHECK((ShiftModifier & kBindingModMask) == ShiftModifier);
+    CHECK((CtrlModifier & kBindingModMask) == CtrlModifier);
+    CHECK((AltModifier & kBindingModMask) == AltModifier);
+    CHECK((MetaModifier & kBindingModMask) == MetaModifier);
+}
+
+TEST_CASE("SequenceMatcher: NumLock-on user can still trigger ctrl-key bindings")
+{
+    // Simulates the real-world bug: user has NumLock on, presses
+    // Ctrl+PageUp. xkb_state reports both Ctrl AND NumLock as effective
+    // modifiers, so the live keystroke carries mods=Ctrl|NumLock. The
+    // parsed binding for "ctrl+pageup" only carries mods=Ctrl. Without
+    // the lock-strip, KeyStroke::operator== returns false and the
+    // binding silently no-ops.
+    std::vector<Binding> bindings = {
+        mkBinding({ ks("ctrl+pageup") }, Action::ScrollPageUp {}),
+    };
+
+    KeyStroke live { Key_PageUp, CtrlModifier | NumLockModifier };
+    KeyStroke masked { live.key, live.mods & kBindingModMask };
+
+    SequenceMatcher sm;
+    auto r = sm.advance(masked, bindings);
+    CHECK(r.result == R::Match);
+    REQUIRE(r.actions.size() == 1);
+    CHECK(std::holds_alternative<Action::ScrollPageUp>(r.actions[0]));
+}
+
+TEST_CASE("SequenceMatcher: CapsLock-on user can still trigger ctrl-key bindings")
+{
+    std::vector<Binding> bindings = {
+        mkBinding({ ks("ctrl+shift+t") }, Action::NewTab {}),
+    };
+
+    KeyStroke live { Key_T, CtrlModifier | ShiftModifier | CapsLockModifier };
+    KeyStroke masked { live.key, live.mods & kBindingModMask };
+
+    SequenceMatcher sm;
+    auto r = sm.advance(masked, bindings);
+    CHECK(r.result == R::Match);
+    REQUIRE(r.actions.size() == 1);
+    CHECK(std::holds_alternative<Action::NewTab>(r.actions[0]));
+}

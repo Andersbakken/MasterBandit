@@ -137,7 +137,7 @@ struct ColorScheme
 struct CursorConfig
 {
     std::string shape = "block"; // "block" | "underline" | "bar"
-    bool blink        = false;   // off by default; opt-in via config or DECSCUSR
+    std::string blink = "off";   // off by default; "off" | "on" | "never" | "always" opt-in via config or DECSCUSR
     int blink_rate    = 800;     // ms per phase (fade-in or fade-out); 0 disables blinking
     int blink_fps     = 10;      // animation frames per second during blink fade
 

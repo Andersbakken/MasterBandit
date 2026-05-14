@@ -266,49 +266,61 @@ void TerminalEmulator::startSelection(int col, int absRow, bool xRightHalf)
     mSelection.mode            = SelectionMode::Normal;
 }
 
-void TerminalEmulator::startWordSelection(int col, int absRow)
+namespace {
+// Scan left/right within `absRow` for the word boundaries surrounding `col`.
+// Returns the inclusive cell range [left, right]. Mirrors the boundary logic
+// used inside `startWordSelection`.
+struct WordCells
 {
-    std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    // Scan left and right for word boundaries
-    int left = col, right = col;
-    char32_t ch = cellAt(*this, col, absRow);
-    bool isWord = isWordChar(ch);
+    int left;
+    int right;
+};
 
+WordCells wordCellsAt(const TerminalEmulator &te, int col, int absRow, int width)
+{
+    int left = col, right = col;
+    char32_t ch = cellAt(te, col, absRow);
+    bool isWord = isWordChar(ch);
     while (left > 0) {
-        char32_t c = cellAt(*this, left - 1, absRow);
+        char32_t c = cellAt(te, left - 1, absRow);
         if (isWordChar(c) != isWord) {
             break;
         }
         left--;
     }
-    while (right < mWidth - 1) {
-        char32_t c = cellAt(*this, right + 1, absRow);
+    while (right < width - 1) {
+        char32_t c = cellAt(te, right + 1, absRow);
         if (isWordChar(c) != isWord) {
             break;
         }
         right++;
     }
+    return { left, right };
+}
+} // namespace
 
-    // Word: store boundaries enclosing cells [left..right] inclusive,
-    // i.e. start boundary = left, end boundary = right + 1.
-    uint64_t id                = mDocument.lineIdForAbs(absRow);
+void TerminalEmulator::startWordSelection(int col, int absRow)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    WordCells w = wordCellsAt(*this, col, absRow, mWidth);
+
+    uint64_t id  = mDocument.lineIdForAbs(absRow);
+    int leftOff  = boundaryOffsetWithinLine(mDocument, id, absRow, w.left, false, mWidth);
+    int rightOff = boundaryOffsetWithinLine(mDocument, id, absRow, w.right, true, mWidth);
+
     mSelection.startLineId     = id;
-    mSelection.startCellOffset = boundaryOffsetWithinLine(mDocument, id, absRow, left, false, mWidth);
+    mSelection.startCellOffset = leftOff;
     mSelection.endLineId       = id;
-    mSelection.endCellOffset   = boundaryOffsetWithinLine(mDocument, id, absRow, right, true, mWidth);
+    mSelection.endCellOffset   = rightOff;
     mSelection.active          = true;
     mSelection.valid           = false;
     mSelection.mode            = SelectionMode::Word;
 
-    finalizeSelection();
-    std::string text = selectedText();
-    if (!text.empty() && mCallbacks.copyToClipboard) {
-        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
-        // X11 convention: drag-selection also populates PRIMARY so
-        // middle-click paste in this app or another picks it up
-        // without an explicit copy. No-op on Cocoa (single pasteboard).
-        mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
-    }
+    mSelection.anchorStartLineId     = id;
+    mSelection.anchorStartCellOffset = leftOff;
+    mSelection.anchorEndLineId       = id;
+    mSelection.anchorEndCellOffset   = rightOff;
+
     publishAndFireEvent(static_cast<int>(Update));
 }
 
@@ -322,25 +334,22 @@ void TerminalEmulator::startLineSelection(int absRow)
     int firstAbs               = mDocument.firstAbsOfLine(id);
     int lastAbs                = mDocument.lastAbsOfLine(id);
     int rowSpan                = (firstAbs < 0 || lastAbs < 0) ? 0 : (lastAbs - firstAbs);
+    int endOff                 = rowSpan * mWidth + mWidth;
     // Line: enclose every cell of the wrapped line. End boundary is past
     // the last cell of the last visual row.
     mSelection.startLineId     = id;
     mSelection.startCellOffset = 0;
     mSelection.endLineId       = id;
-    mSelection.endCellOffset   = rowSpan * mWidth + mWidth;
+    mSelection.endCellOffset   = endOff;
     mSelection.active          = true;
     mSelection.valid           = false;
     mSelection.mode            = SelectionMode::Line;
 
-    finalizeSelection();
-    std::string text = selectedText();
-    if (!text.empty() && mCallbacks.copyToClipboard) {
-        mCallbacks.copyToClipboard(text, ClipboardTarget::Clipboard);
-        // X11 convention: drag-selection also populates PRIMARY so
-        // middle-click paste in this app or another picks it up
-        // without an explicit copy. No-op on Cocoa (single pasteboard).
-        mCallbacks.copyToClipboard(text, ClipboardTarget::Primary);
-    }
+    mSelection.anchorStartLineId     = id;
+    mSelection.anchorStartCellOffset = 0;
+    mSelection.anchorEndLineId       = id;
+    mSelection.anchorEndCellOffset   = endOff;
+
     publishAndFireEvent(static_cast<int>(Update));
 }
 
@@ -404,9 +413,92 @@ void TerminalEmulator::startRectangleSelection(int col, int absRow, bool xRightH
 void TerminalEmulator::updateSelection(int col, int absRow, bool xRightHalf)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    if (mSelection.mode == SelectionMode::Word) {
+        updateWordSelection(col, absRow);
+        return;
+    }
+    if (mSelection.mode == SelectionMode::Line) {
+        updateLineSelection(absRow);
+        return;
+    }
     uint64_t id              = mDocument.lineIdForAbs(absRow);
     mSelection.endLineId     = id;
     mSelection.endCellOffset = boundaryOffsetWithinLine(mDocument, id, absRow, col, xRightHalf, mWidth);
+}
+
+void TerminalEmulator::updateWordSelection(int col, int absRow)
+{
+    int cw = std::max(0, std::min(col, mWidth - 1));
+    if (absRow < 0) {
+        absRow = 0;
+    }
+
+    WordCells w     = wordCellsAt(*this, cw, absRow, mWidth);
+    uint64_t curId  = mDocument.lineIdForAbs(absRow);
+    int curLeftOff  = boundaryOffsetWithinLine(mDocument, curId, absRow, w.left, false, mWidth);
+    int curRightOff = boundaryOffsetWithinLine(mDocument, curId, absRow, w.right, true, mWidth);
+
+    int curFirstAbs    = mDocument.firstAbsOfLine(curId);
+    int anchorFirstAbs = mDocument.firstAbsOfLine(mSelection.anchorStartLineId);
+    if (curFirstAbs < 0 || anchorFirstAbs < 0) {
+        return;
+    }
+
+    // Compare absolute positions of the cursor word's left edge against the
+    // anchor word's left edge. "Before" means the cursor word lives earlier
+    // in document order than the anchor — we then extend leftward, keeping
+    // the anchor's right edge fixed.
+    int w_              = std::max(1, mWidth);
+    int curLeftRow      = curFirstAbs + curLeftOff / w_;
+    int curLeftCol      = curLeftOff % w_;
+    int anchorLeftRow   = anchorFirstAbs + mSelection.anchorStartCellOffset / w_;
+    int anchorLeftCol   = mSelection.anchorStartCellOffset % w_;
+    bool cursorIsBefore = (curLeftRow < anchorLeftRow) ||
+        (curLeftRow == anchorLeftRow && curLeftCol < anchorLeftCol);
+
+    if (cursorIsBefore) {
+        mSelection.startLineId     = curId;
+        mSelection.startCellOffset = curLeftOff;
+        mSelection.endLineId       = mSelection.anchorEndLineId;
+        mSelection.endCellOffset   = mSelection.anchorEndCellOffset;
+    } else {
+        mSelection.startLineId     = mSelection.anchorStartLineId;
+        mSelection.startCellOffset = mSelection.anchorStartCellOffset;
+        mSelection.endLineId       = curId;
+        mSelection.endCellOffset   = curRightOff;
+    }
+}
+
+void TerminalEmulator::updateLineSelection(int absRow)
+{
+    if (absRow < 0) {
+        absRow = 0;
+    }
+
+    uint64_t curId  = mDocument.lineIdForAbs(absRow);
+    int curFirstAbs = mDocument.firstAbsOfLine(curId);
+    int curLastAbs  = mDocument.lastAbsOfLine(curId);
+    if (curFirstAbs < 0 || curLastAbs < 0) {
+        return;
+    }
+    int curEndOff = (curLastAbs - curFirstAbs) * mWidth + mWidth;
+
+    int anchorFirstAbs = mDocument.firstAbsOfLine(mSelection.anchorStartLineId);
+    if (anchorFirstAbs < 0) {
+        return;
+    }
+
+    if (curFirstAbs < anchorFirstAbs) {
+        mSelection.startLineId     = curId;
+        mSelection.startCellOffset = 0;
+        mSelection.endLineId       = mSelection.anchorEndLineId;
+        mSelection.endCellOffset   = mSelection.anchorEndCellOffset;
+    } else {
+        mSelection.startLineId     = mSelection.anchorStartLineId;
+        mSelection.startCellOffset = mSelection.anchorStartCellOffset;
+        mSelection.endLineId       = curId;
+        mSelection.endCellOffset   = curEndOff;
+    }
 }
 
 void TerminalEmulator::finalizeSelection()

@@ -152,6 +152,22 @@ public:
         CursorSteadyBar       = 6
     };
 
+    // User-level cursor blink override. "Off"/"On" are soft defaults — the
+    // running app can still flip blinking via DECSCUSR (blinking vs steady
+    // shape) or DEC private mode 12. "Never"/"Always" are hard locks — they
+    // shadow the app-controlled state at render time so the cursor is
+    // forced unblinking / forced blinking regardless of what the app
+    // requests. Modeled after iTerm2's three-way "Blinking cursor" pref,
+    // split into four to preserve a config-only initial-default vs locked
+    // distinction.
+    enum class CursorBlinkMode
+    {
+        Off,    // initial default: not blinking; app may enable
+        On,     // initial default: blinking; app may disable
+        Never,  // forced off; app requests ignored at render time
+        Always, // forced on;  app requests ignored at render time
+    };
+
     // Per-screen terminal state. Main and alt screens each own an instance;
     // mState points at the active one. 1049 h/l swaps mState so app-set modes
     // (mouse, bracketed paste, focus reporting, etc.) don't leak across the
@@ -230,10 +246,21 @@ public:
     // True if `name` is a CSS pointer name we recognise (or a kitty/X11 alias).
     static bool isKnownPointerShape(std::string_view name);
 
-    // True iff the cursor should currently visibly blink: shape is a blinking
-    // variant AND DEC private mode 12 is on.
+    // True iff the cursor should currently visibly blink. Render-time
+    // resolution layered three-deep:
+    //   1. CursorBlinkMode::Never / Always (user lock) — short-circuit
+    //      both directions, ignoring whatever the app requested.
+    //   2. DECSCUSR blinking shape variant (Block/Underline/Bar) — blinks
+    //      regardless of mode-12 state, matching xterm semantics.
+    //   3. DEC private mode 12 (cursorBlinkEnabled) for steady shapes.
     bool cursorBlinking() const
     {
+        if (mBlinkMode == CursorBlinkMode::Never) {
+            return false;
+        }
+        if (mBlinkMode == CursorBlinkMode::Always) {
+            return true;
+        }
         switch (mState->cursorShape) {
             case CursorBlock:
             case CursorUnderline:
@@ -243,6 +270,8 @@ public:
                 return mState->cursorBlinkEnabled;
         }
     }
+
+    CursorBlinkMode cursorBlinkMode() const { return mBlinkMode; }
 
     // Config-applied cursor defaults. Propagates the new default to the
     // config prototype and to BOTH screen states so the user-visible cursor
@@ -546,6 +575,17 @@ public:
         bool active { false };
         bool valid { false };
         SelectionMode mode { SelectionMode::Normal };
+
+        // Anchor span captured by `startWordSelection` / `startLineSelection`
+        // so that a follow-up drag extends from the original word/line rather
+        // than collapsing it. Drag-extension in Word / Line modes computes the
+        // word/line span at the cursor and merges it with this anchor. Unused
+        // in Normal / Rectangle modes (their press point doubles as anchor via
+        // start{LineId,CellOffset}).
+        uint64_t anchorStartLineId { 0 };
+        int anchorStartCellOffset { 0 };
+        uint64_t anchorEndLineId { 0 };
+        int anchorEndCellOffset { 0 };
     };
 
     // Resolved view of a Selection — abs rows looked up at the time of the
@@ -925,6 +965,12 @@ private:
     TerminalState mDefaults;               // seeded from config; source for resetToDefault().
     TerminalState *mState { &mMainState }; // active state — follows 1049 h/l.
 
+    // User-level blink override. Not part of TerminalState because it's a
+    // user preference that must persist across 1049 h/l screen swaps and
+    // across RIS — neither the app nor an alt-screen entry/exit can change
+    // it. Updated only by applyCursorConfig() (config load + hot reload).
+    CursorBlinkMode mBlinkMode { CursorBlinkMode::On };
+
     // Reset `s` to current defaults, plus runtime-derived fields (scroll region).
     void resetToDefault(TerminalState &s)
     {
@@ -1060,6 +1106,9 @@ protected:
 private:
     void applyEsc(char finalByte);
     void applyDesignateCharset(char slot, char charset);
+
+    void updateWordSelection(int col, int absRow);
+    void updateLineSelection(int absRow);
 
     // Republish mTitleShadow / mIconShadow from the current top of
     // mTitleStack / mIconStack. Caller must hold mMutex (parser

@@ -826,7 +826,7 @@ TEST_CASE("RIS restores configured cursor defaults")
     TestTerminal t;
     CursorConfig cc;
     cc.shape = "underline";
-    cc.blink = false;
+    cc.blink = "off";
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyUnderline);
     CHECK_FALSE(t.term.cursorBlinkEnabled());
@@ -849,7 +849,7 @@ TEST_CASE("applyCursorConfig: block + blink → CursorBlock")
     TestTerminal t;
     CursorConfig cc;
     cc.shape = "block";
-    cc.blink = true;
+    cc.blink = "on";
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
     CHECK(t.term.cursorBlinkEnabled());
@@ -860,7 +860,7 @@ TEST_CASE("applyCursorConfig: block + no blink → CursorSteadyBlock")
     TestTerminal t;
     CursorConfig cc;
     cc.shape = "block";
-    cc.blink = false;
+    cc.blink = "off";
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
     CHECK_FALSE(t.term.cursorBlinkEnabled());
@@ -871,7 +871,7 @@ TEST_CASE("applyCursorConfig: underline + blink → CursorUnderline")
     TestTerminal t;
     CursorConfig cc;
     cc.shape = "underline";
-    cc.blink = true;
+    cc.blink = "on";
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorUnderline);
 }
@@ -881,7 +881,7 @@ TEST_CASE("applyCursorConfig: bar + no blink → CursorSteadyBar")
     TestTerminal t;
     CursorConfig cc;
     cc.shape = "bar";
-    cc.blink = false;
+    cc.blink = "off";
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBar);
 }
@@ -891,9 +891,138 @@ TEST_CASE("applyCursorConfig: unknown shape falls back to block")
     TestTerminal t;
     CursorConfig cc;
     cc.shape = "weird";
-    cc.blink = true;
+    cc.blink = "on";
     t.term.applyCursorConfig(cc);
     CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+}
+
+// ── cursor blink modes (off / on / never / always) ───────────────────────────
+
+TEST_CASE("applyCursorConfig: blink=off → mode Off, steady shape, blink disabled")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.shape = "block";
+    cc.blink = "off";
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorBlinkMode() == TerminalEmulator::CursorBlinkMode::Off);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+    CHECK_FALSE(t.term.cursorBlinking());
+}
+
+TEST_CASE("applyCursorConfig: blink=on → mode On, blinking shape, blink enabled")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.shape = "block";
+    cc.blink = "on";
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorBlinkMode() == TerminalEmulator::CursorBlinkMode::On);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBlock);
+    CHECK(t.term.cursorBlinkEnabled());
+    CHECK(t.term.cursorBlinking());
+}
+
+TEST_CASE("applyCursorConfig: blink=never seeds steady cursor")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.shape = "underline";
+    cc.blink = "never";
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorBlinkMode() == TerminalEmulator::CursorBlinkMode::Never);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyUnderline);
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+    CHECK_FALSE(t.term.cursorBlinking());
+}
+
+TEST_CASE("applyCursorConfig: blink=always seeds blinking cursor")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.shape = "bar";
+    cc.blink = "always";
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorBlinkMode() == TerminalEmulator::CursorBlinkMode::Always);
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBar);
+    CHECK(t.term.cursorBlinkEnabled());
+    CHECK(t.term.cursorBlinking());
+}
+
+TEST_CASE("blink=never overrides DECSCUSR blinking shape at render time")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.blink = "never";
+    t.term.applyCursorConfig(cc);
+
+    // App requests blinking bar via DECSCUSR. Internal state updates,
+    // but cursorBlinking() must still report false — the user lock wins.
+    t.csi("5 q"); // DECSCUSR blinking bar
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorBar);
+    CHECK_FALSE(t.term.cursorBlinking());
+
+    // ?12h also can't override the lock.
+    t.csi("?12h");
+    CHECK(t.term.cursorBlinkEnabled());
+    CHECK_FALSE(t.term.cursorBlinking());
+}
+
+TEST_CASE("blink=always overrides DECSCUSR steady shape at render time")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.blink = "always";
+    t.term.applyCursorConfig(cc);
+
+    // App requests steady block via DECSCUSR + disables mode 12. Internal
+    // state updates, but cursorBlinking() must still report true — the
+    // user lock wins.
+    t.csi("2 q"); // DECSCUSR steady block
+    t.csi("?12l");
+    CHECK(t.term.cursorShape() == TerminalEmulator::CursorSteadyBlock);
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
+    CHECK(t.term.cursorBlinking());
+}
+
+TEST_CASE("blink=off (default) allows app to enable blinking via DECSCUSR")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.blink = "off";
+    t.term.applyCursorConfig(cc);
+    CHECK_FALSE(t.term.cursorBlinking());
+
+    // App switches to blinking bar — mode is Off (soft default), not Never,
+    // so the app's request takes effect.
+    t.csi("5 q");
+    CHECK(t.term.cursorBlinking());
+}
+
+TEST_CASE("blink=on allows app to disable blinking via DECSCUSR")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.blink = "on";
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorBlinking());
+
+    // App switches to steady block and disables mode 12. Mode is On
+    // (soft default), so the app's request takes effect.
+    t.csi("2 q");
+    t.csi("?12l");
+    CHECK_FALSE(t.term.cursorBlinking());
+}
+
+TEST_CASE("applyCursorConfig: unknown blink value falls back to off")
+{
+    TestTerminal t;
+    CursorConfig cc;
+    cc.blink = "blinky-mcblink";
+    t.term.applyCursorConfig(cc);
+    CHECK(t.term.cursorBlinkMode() == TerminalEmulator::CursorBlinkMode::Off);
+    CHECK_FALSE(t.term.cursorBlinkEnabled());
 }
 
 // ── DECOM (origin mode, private mode 6) ───────────────────────────────────────

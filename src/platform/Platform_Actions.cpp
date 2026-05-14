@@ -385,6 +385,22 @@ void PlatformDawn::executeAction(const Action::Any &action)
                            term->scrollViewport(-a.lines);
                        }
                    },
+                   [&](const Action::ScrollPageUp &)
+                   {
+                       Terminal *term = activeTerm();
+                       if (term) {
+                           const int page = std::max(1, term->height() - 1);
+                           term->scrollViewport(page);
+                       }
+                   },
+                   [&](const Action::ScrollPageDown &)
+                   {
+                       Terminal *term = activeTerm();
+                       if (term) {
+                           const int page = std::max(1, term->height() - 1);
+                           term->scrollViewport(-page);
+                       }
+                   },
                    [&](const Action::ScrollToTop &)
                    {
                        Terminal *term = activeTerm();

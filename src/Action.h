@@ -99,6 +99,18 @@ struct ScrollDown
     int lines = 3;
 };
 
+// Scroll the viewport by one "page" of the active terminal — resolved at
+// dispatch time as (visible rows - 1), so a page-sized scroll always
+// matches the current terminal geometry and keeps one row of overlap for
+// reading context across the jump. Default-bound to Ctrl+PageUp/PageDown.
+struct ScrollPageUp
+{
+};
+
+struct ScrollPageDown
+{
+};
+
 struct ScrollToTop
 {
 };
@@ -189,7 +201,7 @@ using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
     SplitPane, ClosePane, ZoomPane, FocusPane, AdjustPaneSize,
     Copy, Paste,
-    ScrollUp, ScrollDown, ScrollToTop, ScrollToBottom,
+    ScrollUp, ScrollDown, ScrollPageUp, ScrollPageDown, ScrollToTop, ScrollToBottom,
     IncreaseFontSize, DecreaseFontSize, ResetFontSize,
     ScrollToPrompt, SelectCommandOutput,
     CopyLastCommand, CopySelectedCommandOutput, CopyDocument,

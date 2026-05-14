@@ -621,10 +621,21 @@ enum Modifier
     OptionAsAltModifier = 0x80,
 };
 
-// Modifier bits that participate in keybinding match. OptionAsAltModifier is
-// an internal signal for the ESC-prefix path and must not affect which
-// binding fires.
-inline constexpr uint32_t kBindingModMask = ~static_cast<uint32_t>(OptionAsAltModifier);
+// Modifier bits that participate in keybinding match. Positive-list (not
+// `~OptionAsAltModifier`) so lock-state bits — CapsLockModifier,
+// NumLockModifier, HyperModifier — and any future internal-signal bits
+// can never leak through and silently break binding equality.
+//
+// The previous form (~OptionAsAltModifier) had a real bug: a user with
+// NumLock on sees mods=0x42 (Ctrl|NumLock) for Ctrl+PageUp, but
+// parseKeyStroke only ever sets the four bits below, so the registered
+// binding has mods=0x2 and the runtime keystroke compared unequal —
+// silent no-op for every binding while NumLock or CapsLock was on.
+//
+// parseKeyStroke (Bindings.cpp) only recognises ctrl/shift/alt/meta-class
+// modifier names; keep this in sync if that grammar grows.
+inline constexpr uint32_t kBindingModMask =
+    ShiftModifier | CtrlModifier | AltModifier | MetaModifier;
 
 // Mouse binding system enums
 enum class MouseButton : uint8_t

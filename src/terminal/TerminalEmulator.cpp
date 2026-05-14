@@ -203,17 +203,41 @@ void TerminalEmulator::applyColorScheme(const ColorScheme &cs)
 void TerminalEmulator::applyCursorConfig(const CursorConfig &cc)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
+
+    // Parse the user-facing blink string into the four-mode override.
+    // Unknown values fall back to "off" with a warning, matching how
+    // unknown `shape` values fall back to "block" below.
+    CursorBlinkMode mode = CursorBlinkMode::Off;
+    if (cc.blink == "on") {
+        mode = CursorBlinkMode::On;
+    } else if (cc.blink == "never") {
+        mode = CursorBlinkMode::Never;
+    } else if (cc.blink == "always") {
+        mode = CursorBlinkMode::Always;
+    } else if (cc.blink != "off") {
+        spdlog::warn("CursorConfig: unknown blink mode '{}', falling back to 'off'", cc.blink);
+    }
+    mBlinkMode = mode;
+
+    // "On" and "Always" seed the initial app-visible state with a blinking
+    // cursor (DECSCUSR blinking shape + mode 12 enabled). "Off" and "Never"
+    // seed with a steady cursor. For the locked modes the app can still
+    // mutate this state — `cursorBlinking()` ignores it at render time —
+    // but seeding it consistently means scripts that read cursorShape() /
+    // cursorBlinkEnabled() see a value that matches the visible behavior.
+    const bool defaultBlink = (mode == CursorBlinkMode::On || mode == CursorBlinkMode::Always);
+
     CursorShape shape;
     if (cc.shape == "underline") {
-        shape = cc.blink ? CursorUnderline : CursorSteadyUnderline;
+        shape = defaultBlink ? CursorUnderline : CursorSteadyUnderline;
     } else if (cc.shape == "bar" || cc.shape == "beam") {
-        shape = cc.blink ? CursorBar : CursorSteadyBar;
+        shape = defaultBlink ? CursorBar : CursorSteadyBar;
     } else {
         // "block" or anything unrecognized falls back to block
-        shape = cc.blink ? CursorBlock : CursorSteadyBlock;
+        shape = defaultBlink ? CursorBlock : CursorSteadyBlock;
     }
     setDefaultCursorShape(shape);
-    setDefaultCursorBlinkEnabled(cc.blink);
+    setDefaultCursorBlinkEnabled(defaultBlink);
 }
 
 void TerminalEmulator::resize(int width, int height)

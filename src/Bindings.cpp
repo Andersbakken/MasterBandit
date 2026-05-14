@@ -330,6 +330,12 @@ std::optional<Action::Any> parseAction(const std::string &name,
         int lines = args.empty() ? 3 : std::stoi(args[0]);
         return Action::ScrollDown { lines };
     }
+    if (name == "scroll_page_up") {
+        return Action::ScrollPageUp {};
+    }
+    if (name == "scroll_page_down") {
+        return Action::ScrollPageDown {};
+    }
     if (name == "scroll_to_top") {
         return Action::ScrollToTop {};
     }
@@ -495,6 +501,9 @@ std::vector<Binding> defaultBindings()
         // Prompt navigation
         { { *parseKeyStroke("meta+up") }, Action::ScrollToPrompt { -1 } },
         { { *parseKeyStroke("meta+down") }, Action::ScrollToPrompt { 1 } },
+        // Scrollback page navigation
+        { { *parseKeyStroke("ctrl+pageup") }, Action::ScrollPageUp {} },
+        { { *parseKeyStroke("ctrl+pagedown") }, Action::ScrollPageDown {} },
         // Scrollback search (in-pane, decoration-overlay-driven). The
         // built-in `scrollback-search.js` applet registers
         // `search.open`; opening it on a pane that already has a search
@@ -519,18 +528,28 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("ctrl+shift+w") }, Action::ClosePane {} },
         { { *parseKeyStroke("ctrl+shift+c") }, Action::Copy {} },
         { { *parseKeyStroke("ctrl+shift+v") }, Action::Paste {} },
-        // Tab switching
+        // Tab switching.
+        //
+        // ActivateTab/ActivateTabRelative MUST be brace-initialized with
+        // both fields (`Uuid {}, N`). Writing `ActivateTab { N }` is an
+        // aggregate-init landmine: since Uuid is itself an aggregate
+        // ({uint64 high, uint64 low}), `{N}` initializes `target.high = N`
+        // and leaves `index` at its default (-1), producing a binding that
+        // resolves to "no specific tab" at dispatch time. The same shape
+        // applies to ActivateTabRelative (Uuid stack + int delta).
         { { *parseKeyStroke("ctrl+shift+pagedown") }, Action::ActivateTabRelative { Uuid {}, 1 } },
         { { *parseKeyStroke("ctrl+shift+pageup") }, Action::ActivateTabRelative { Uuid {}, -1 } },
-        { { *parseKeyStroke("alt+1") }, Action::ActivateTab { 0 } },
-        { { *parseKeyStroke("alt+2") }, Action::ActivateTab { 1 } },
-        { { *parseKeyStroke("alt+3") }, Action::ActivateTab { 2 } },
-        { { *parseKeyStroke("alt+4") }, Action::ActivateTab { 3 } },
-        { { *parseKeyStroke("alt+5") }, Action::ActivateTab { 4 } },
-        { { *parseKeyStroke("alt+6") }, Action::ActivateTab { 5 } },
-        { { *parseKeyStroke("alt+7") }, Action::ActivateTab { 6 } },
-        { { *parseKeyStroke("alt+8") }, Action::ActivateTab { 7 } },
-        { { *parseKeyStroke("alt+9") }, Action::ActivateTab { 8 } },
+        { { *parseKeyStroke("alt+shift+right") }, Action::ActivateTabRelative { Uuid {}, 1 } },
+        { { *parseKeyStroke("alt+shift+left") }, Action::ActivateTabRelative { Uuid {}, -1 } },
+        { { *parseKeyStroke("alt+1") }, Action::ActivateTab { Uuid {}, 0 } },
+        { { *parseKeyStroke("alt+2") }, Action::ActivateTab { Uuid {}, 1 } },
+        { { *parseKeyStroke("alt+3") }, Action::ActivateTab { Uuid {}, 2 } },
+        { { *parseKeyStroke("alt+4") }, Action::ActivateTab { Uuid {}, 3 } },
+        { { *parseKeyStroke("alt+5") }, Action::ActivateTab { Uuid {}, 4 } },
+        { { *parseKeyStroke("alt+6") }, Action::ActivateTab { Uuid {}, 5 } },
+        { { *parseKeyStroke("alt+7") }, Action::ActivateTab { Uuid {}, 6 } },
+        { { *parseKeyStroke("alt+8") }, Action::ActivateTab { Uuid {}, 7 } },
+        { { *parseKeyStroke("alt+9") }, Action::ActivateTab { Uuid {}, 8 } },
         // Font size
         { { *parseKeyStroke("ctrl+=") }, Action::IncreaseFontSize {} },
         { { *parseKeyStroke("ctrl+-") }, Action::DecreaseFontSize {} },
@@ -555,6 +574,9 @@ std::vector<Binding> defaultBindings()
         // Prompt navigation
         { { *parseKeyStroke("ctrl+alt+z") }, Action::ScrollToPrompt { -1 } },
         { { *parseKeyStroke("ctrl+alt+x") }, Action::ScrollToPrompt { 1 } },
+        // Scrollback page navigation
+        { { *parseKeyStroke("ctrl+pageup") }, Action::ScrollPageUp {} },
+        { { *parseKeyStroke("ctrl+pagedown") }, Action::ScrollPageDown {} },
         // Scrollback search (in-pane, decoration-overlay-driven). The
         // built-in `scrollback-search.js` applet registers
         // `search.open`; opening it on a pane that already has a search

@@ -299,3 +299,124 @@ TEST_CASE("autowrap row that exactly fills the line still joins on copy")
 // flooding past `maxArchiveRows` (100 000 by default), which is too slow.
 // Add a knob on resetScrollback for the archive cap and re-introduce the
 // test if the behavior ever needs lockdown.)
+
+TEST_CASE("triple-click selects the whole line")
+{
+    TestTerminal t(20, 5);
+    t.feed("first line\r\nsecond line\r\nthird line");
+
+    t.term.startLineSelection(/*absRow=*/1);
+    auto rel = makeMouseEvent(0, 0);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "second line");
+}
+
+TEST_CASE("triple-click + drag down extends selection by full lines")
+{
+    TestTerminal t(20, 5);
+    t.feed("first line\r\nsecond line\r\nthird line\r\nfourth line");
+
+    t.term.startLineSelection(/*absRow=*/1);
+    auto move = makeMouseEvent(/*col=*/3, /*row=*/2);
+    t.term.mouseMoveEvent(&move);
+    auto rel = makeMouseEvent(3, 2);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "second line\nthird line");
+}
+
+TEST_CASE("triple-click + drag up extends selection by full lines")
+{
+    TestTerminal t(20, 5);
+    t.feed("first line\r\nsecond line\r\nthird line\r\nfourth line");
+
+    t.term.startLineSelection(/*absRow=*/2);
+    auto move = makeMouseEvent(/*col=*/5, /*row=*/0);
+    t.term.mouseMoveEvent(&move);
+    auto rel = makeMouseEvent(5, 0);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "first line\nsecond line\nthird line");
+}
+
+TEST_CASE("triple-click + drag into same line keeps the original line")
+{
+    TestTerminal t(20, 5);
+    t.feed("first line\r\nsecond line\r\nthird line");
+
+    t.term.startLineSelection(/*absRow=*/1);
+    auto move = makeMouseEvent(/*col=*/0, /*row=*/1);
+    t.term.mouseMoveEvent(&move);
+    auto rel = makeMouseEvent(0, 1);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "second line");
+}
+
+TEST_CASE("triple-click + drag finalizes and copies to clipboard")
+{
+    TestTerminal t(20, 5);
+    t.feed("first line\r\nsecond line\r\nthird line");
+
+    t.term.startLineSelection(/*absRow=*/0);
+    auto move = makeMouseEvent(/*col=*/0, /*row=*/1);
+    t.term.mouseMoveEvent(&move);
+    auto rel = makeMouseEvent(0, 1);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.capturedClipboard == "first line\nsecond line");
+    CHECK(t.capturedPrimary == "first line\nsecond line");
+}
+
+TEST_CASE("double-click selects the word under cursor")
+{
+    TestTerminal t(40, 5);
+    t.feed("hello world foo");
+
+    t.term.startWordSelection(/*col=*/2, /*absRow=*/0);
+    auto rel = makeMouseEvent(2, 0);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "hello");
+}
+
+TEST_CASE("double-click + drag right extends selection to cover later words")
+{
+    TestTerminal t(40, 5);
+    t.feed("hello world foo");
+
+    t.term.startWordSelection(/*col=*/2, /*absRow=*/0);
+    auto move = makeMouseEvent(/*col=*/13, /*row=*/0, LeftButton, /*xRightHalf=*/true);
+    t.term.mouseMoveEvent(&move);
+    auto rel = makeMouseEvent(13, 0, LeftButton, /*xRightHalf=*/true);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "hello world foo");
+}
+
+TEST_CASE("double-click + drag left extends selection to cover earlier words")
+{
+    TestTerminal t(40, 5);
+    t.feed("hello world foo");
+
+    t.term.startWordSelection(/*col=*/13, /*absRow=*/0);
+    auto move = makeMouseEvent(/*col=*/2, /*row=*/0);
+    t.term.mouseMoveEvent(&move);
+    auto rel = makeMouseEvent(2, 0);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "hello world foo");
+}
+
+TEST_CASE("triple-click on a wrapped line selects the whole logical line")
+{
+    TestTerminal t(10, 5);
+    t.feed("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
+
+    t.term.startLineSelection(/*absRow=*/1);
+    auto rel = makeMouseEvent(0, 0);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
+}

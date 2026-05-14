@@ -892,6 +892,12 @@ void InputController::onMouseButton(int button, int action, int mods)
                                                 }
                                                 case MouseAction::SelectionType::Word:
                                                     term->startWordSelection(col, absRow);
+                                                    // Selection stays `active` so a follow-up drag
+                                                    // calls into `updateSelection` (mode-aware) and
+                                                    // extends word-by-word. Release finalizes via the
+                                                    // existing SelectionDrag path above.
+                                                    activeDrag_ = std::make_unique<SelectionDrag>(sx, sy, MouseButton::Left, term);
+                                                    activeDrag_->setStarted(true);
 #if defined(__linux__)
                                                     if (term->hasSelection()) {
                                                         auto s = term->selectedText();
@@ -903,6 +909,8 @@ void InputController::onMouseButton(int button, int action, int mods)
                                                     break;
                                                 case MouseAction::SelectionType::Line:
                                                     term->startLineSelection(absRow);
+                                                    activeDrag_ = std::make_unique<SelectionDrag>(sx, sy, MouseButton::Left, term);
+                                                    activeDrag_->setStarted(true);
 #if defined(__linux__)
                                                     if (term->hasSelection()) {
                                                         auto s = term->selectedText();

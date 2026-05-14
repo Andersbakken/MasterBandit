@@ -57,22 +57,32 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
     // xterm modifier code: 1=none, +1 shift, +2 alt, +4 ctrl, +8 meta.
     // CapsLock / NumLock are not encoded in legacy mode.
     uint32_t modCode = 1;
-    if (event->modifiers & ShiftModifier) modCode += 1;
-    if (event->modifiers & AltModifier)   modCode += 2;
-    if (event->modifiers & CtrlModifier)  modCode += 4;
-    if (event->modifiers & MetaModifier)  modCode += 8;
+    if (event->modifiers & ShiftModifier) {
+        modCode += 1;
+    }
+    if (event->modifiers & AltModifier) {
+        modCode += 2;
+    }
+    if (event->modifiers & CtrlModifier) {
+        modCode += 4;
+    }
+    if (event->modifiers & MetaModifier) {
+        modCode += 8;
+    }
     const bool hasMods = (modCode != 1);
 
     std::string text = event->text;
     if (text.empty()) {
         char buf[32];
         // \E[1;<mods><letter> for arrow/Home/End/F1-F4 when modifiers held.
-        auto letterMod = [&](char trailer) -> std::string {
+        auto letterMod = [&](char trailer) -> std::string
+        {
             int n = snprintf(buf, sizeof(buf), "\x1b[1;%u%c", modCode, trailer);
             return std::string(buf, n);
         };
         // \E[<num>[;<mods>]~ for tilde-form keys (PgUp/Dn/Ins/Del/F5+).
-        auto tildeForm = [&](int num) -> std::string {
+        auto tildeForm = [&](int num) -> std::string
+        {
             int n = hasMods
                 ? snprintf(buf, sizeof(buf), "\x1b[%d;%u~", num, modCode)
                 : snprintf(buf, sizeof(buf), "\x1b[%d~", num);
@@ -107,19 +117,19 @@ void TerminalEmulator::keyPressEvent(const KeyEvent *event)
             case Key_End:
                 text = hasMods ? letterMod('F') : (mState->cursorKeyMode ? "\x1bOF" : "\x1b[F");
                 break;
-            case Key_PageUp:   text = tildeForm(5); break;
+            case Key_PageUp: text = tildeForm(5); break;
             case Key_PageDown: text = tildeForm(6); break;
-            case Key_Insert:   text = tildeForm(2); break;
+            case Key_Insert: text = tildeForm(2); break;
             // F1-F4: SS3 form when unmodified, CSI form when modifiers held.
             case Key_F1: text = hasMods ? letterMod('P') : "\x1bOP"; break;
             case Key_F2: text = hasMods ? letterMod('Q') : "\x1bOQ"; break;
             case Key_F3: text = hasMods ? letterMod('R') : "\x1bOR"; break;
             case Key_F4: text = hasMods ? letterMod('S') : "\x1bOS"; break;
-            case Key_F5:  text = tildeForm(15); break;
-            case Key_F6:  text = tildeForm(17); break;
-            case Key_F7:  text = tildeForm(18); break;
-            case Key_F8:  text = tildeForm(19); break;
-            case Key_F9:  text = tildeForm(20); break;
+            case Key_F5: text = tildeForm(15); break;
+            case Key_F6: text = tildeForm(17); break;
+            case Key_F7: text = tildeForm(18); break;
+            case Key_F8: text = tildeForm(19); break;
+            case Key_F9: text = tildeForm(20); break;
             case Key_F10: text = tildeForm(21); break;
             case Key_F11: text = tildeForm(23); break;
             case Key_F12: text = tildeForm(24); break;
@@ -294,7 +304,7 @@ static uint32_t kittyFunctionalCode(Key k)
         case Key_Hyper_R: return 57451;
         case Key_Meta_R: return 57452;
         // ISO level shifts (kitty 57453–57454)
-        case Key_AltGr: return 57453;            // ISO_Level3_Shift
+        case Key_AltGr: return 57453; // ISO_Level3_Shift
         case Key_ISO_Level5_Shift: return 57454;
         default: return 0;
     }
@@ -513,9 +523,9 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
     // sub-field is emitted only when shift is held (otherwise empty —
     // i.e. the spec's `keycode::base_layout_key` form is reachable).
     char keyPart[64];
-    bool shiftHeld          = (ev.modifiers & ShiftModifier) != 0;
-    bool emitShifted        = reportAlternate && shiftHeld && ev.shiftedKey != 0 && ev.shiftedKey != keyCode;
-    bool emitBaseLayout     = reportAlternate && ev.baseLayoutKey != 0 && ev.baseLayoutKey != keyCode;
+    bool shiftHeld      = (ev.modifiers & ShiftModifier) != 0;
+    bool emitShifted    = reportAlternate && shiftHeld && ev.shiftedKey != 0 && ev.shiftedKey != keyCode;
+    bool emitBaseLayout = reportAlternate && ev.baseLayoutKey != 0 && ev.baseLayoutKey != keyCode;
     if (emitShifted && emitBaseLayout) {
         snprintf(keyPart, sizeof(keyPart), "%u:%u:%u", keyCode, ev.shiftedKey, ev.baseLayoutKey);
     } else if (emitShifted) {

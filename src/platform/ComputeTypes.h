@@ -61,10 +61,10 @@ struct TerminalComputeParams
     uint32_t cursor_col;
     uint32_t cursor_row;
     uint32_t cursor_type;
-    uint32_t cursor_color;      // packed RGBA8 — block/underline/bar fill, hollow outline
-    uint32_t cursor_text_color; // packed RGBA8 — glyph color at the cursor cell when
-                                // cursor_type == 1 (solid block). Ignored for other
-                                // cursor types since they don't occlude the glyph.
+    uint32_t cursor_color;               // packed RGBA8 — block/underline/bar fill, hollow outline
+    uint32_t cursor_text_color;          // packed RGBA8 — glyph color at the cursor cell when
+                                         // cursor_type == 1 (solid block). Ignored for other
+                                         // cursor types since they don't occlude the glyph.
     uint32_t max_text_vertices;          // safety cap for text vertex emission
     uint32_t max_rect_vertices;          // safety cap for rect_verts emission
     uint32_t max_inflated_rect_vertices; // safety cap for inflated_rect_verts emission

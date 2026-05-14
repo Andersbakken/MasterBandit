@@ -572,7 +572,7 @@ bool XCBWindow::create(int width, int height, const std::string &title)
     // skip emitting the third CSI u field. Mirrors kitty xkb_glfw.c:594.
     {
         xkb_rule_names defaultRules = {};
-        xkbDefaultKeymap_ = xkb_keymap_new_from_names(xkbCtx_, &defaultRules, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        xkbDefaultKeymap_           = xkb_keymap_new_from_names(xkbCtx_, &defaultRules, XKB_KEYMAP_COMPILE_NO_FLAGS);
         if (xkbDefaultKeymap_) {
             xkbDefaultState_ = xkb_state_new(xkbDefaultKeymap_);
             if (!xkbDefaultState_) {

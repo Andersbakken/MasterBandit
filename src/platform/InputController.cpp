@@ -239,8 +239,8 @@ void InputController::onKey(int key, int scancode, int action, int mods)
         }
         // Populate shifted_key + base_layout_key for report_alternate_key mode
         if (window) {
-            ev.shiftedKey     = window->shiftedKeyCodepoint(scancode);
-            ev.baseLayoutKey  = window->baseLayoutKeyCodepoint(scancode);
+            ev.shiftedKey    = window->shiftedKeyCodepoint(scancode);
+            ev.baseLayoutKey = window->baseLayoutKeyCodepoint(scancode);
         }
         term->keyPressEvent(&ev);
         return;
@@ -745,10 +745,7 @@ void InputController::onMouseButton(int button, int action, int mods)
         // handles top-level and sub-stack uniformly. Skip the generic
         // mouse-binding dispatch below — those bindings carry index = -1
         // intended for the top-level bar.
-        if (region == MouseRegion::TabBar
-            && !mouseCtx_.tabBarClickBarId.isNil()
-            && mouseCtx_.tabBarClickBarId != platform_->scriptEngine_.primaryTabBarNode()
-            && mouseCtx_.tabBarClickIndex >= 0) {
+        if (region == MouseRegion::TabBar && !mouseCtx_.tabBarClickBarId.isNil() && mouseCtx_.tabBarClickBarId != platform_->scriptEngine_.primaryTabBarNode() && mouseCtx_.tabBarClickIndex >= 0) {
             Uuid childId;
             {
                 LayoutTree &tree = platform_->scriptEngine_.layoutTree();

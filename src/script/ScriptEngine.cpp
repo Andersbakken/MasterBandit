@@ -2563,8 +2563,7 @@ static JSValue jsDecorationBatchSubmit(JSContext *ctx, JSValueConst this_val,
     }
     JSValue arr = JS_NewArray(ctx);
     for (size_t i = 0; i < ids.size(); ++i) {
-        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i),
-                             jsDecorationHandleNew(ctx, d->ownerRef, ids[i]));
+        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), jsDecorationHandleNew(ctx, d->ownerRef, ids[i]));
     }
     return arr;
 }
@@ -2618,9 +2617,9 @@ static JSClassDef jsDecorationHandleClassDef = { "DecorationHandle", jsDecoratio
 
 static JSValue jsDecorationHandleNew(JSContext *ctx, JSValueConst owner, uint64_t decorationId)
 {
-    JSValue obj = JS_NewObjectClass(ctx, jsDecorationHandleClassId);
-    auto *d     = new JsDecorationHandleData;
-    d->ownerRef = JS_DupValue(ctx, owner);
+    JSValue obj     = JS_NewObjectClass(ctx, jsDecorationHandleClassId);
+    auto *d         = new JsDecorationHandleData;
+    d->ownerRef     = JS_DupValue(ctx, owner);
     d->decorationId = decorationId;
     JS_SetOpaque(obj, d);
     return obj;
@@ -2933,9 +2932,8 @@ static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
     auto inserted = eng->animLifecycles().emplace(handleId, std::move(lc));
 
     // Arm the completion timer. On fire: settle as "completed".
-    EventLoop *loop        = eng->loop();
-    EventLoop::TimerId tid = loop->addTimer(static_cast<uint64_t>(durationMs), false,
-                                            [eng, handleId]()
+    EventLoop *loop                = eng->loop();
+    EventLoop::TimerId tid         = loop->addTimer(static_cast<uint64_t>(durationMs), false, [eng, handleId]()
                                             {
                                                 eng->settleDecorationAnimation(handleId, "completed",
                                                                                /*snapToEnd=*/true,
@@ -2950,7 +2948,8 @@ static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
     // lifecycle.
     if (priorHandleId != 0 && priorHandleId != handleId) {
         eng->settleDecorationAnimation(priorHandleId, "cancelled",
-                                       /*snapToEnd=*/false, nowMs);
+                                       /*snapToEnd=*/false,
+                                       nowMs);
     }
 
     if (auto &cb = eng->callbacks().requestRedraw) {
@@ -2989,8 +2988,7 @@ static JSValue jsAnimationHandleCancel(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx, "engine gone");
     }
     const char *outcome = snapToEnd ? "completed" : "cancelled";
-    eng->settleDecorationAnimation(hd->handleId, outcome, snapToEnd,
-                                   TerminalEmulator::mono());
+    eng->settleDecorationAnimation(hd->handleId, outcome, snapToEnd, TerminalEmulator::mono());
     return JS_UNDEFINED;
 }
 
@@ -3010,9 +3008,9 @@ static JSValue jsAnimationHandleOnEnd(JSContext *ctx, JSValueConst this_val,
     if (hd->settled) {
         // Already settled — return a fresh resolved promise.
         JSValue resolving[2];
-        JSValue p = JS_NewPromiseCapability(ctx, resolving);
+        JSValue p   = JS_NewPromiseCapability(ctx, resolving);
         JSValue arg = JS_NewString(ctx, hd->outcome.c_str());
-        JSValue r = JS_Call(ctx, resolving[0], JS_UNDEFINED, 1, &arg);
+        JSValue r   = JS_Call(ctx, resolving[0], JS_UNDEFINED, 1, &arg);
         JS_FreeValue(ctx, r);
         JS_FreeValue(ctx, arg);
         JS_FreeValue(ctx, resolving[0]);
@@ -3022,7 +3020,7 @@ static JSValue jsAnimationHandleOnEnd(JSContext *ctx, JSValueConst this_val,
     }
     // Pending — capture resolve so settle can fire.
     JSValue resolving[2];
-    JSValue p = JS_NewPromiseCapability(ctx, resolving);
+    JSValue p     = JS_NewPromiseCapability(ctx, resolving);
     hd->resolveFn = resolving[0];
     JS_FreeValue(ctx, resolving[1]); // reject — unused
     hd->promise = JS_DupValue(ctx, p);
@@ -4529,13 +4527,11 @@ JSContext *Engine::createContext()
 
     // DecorationHandle / AnimationHandle prototypes.
     JSValue decorationHandleProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, decorationHandleProto, jsDecorationHandleProto,
-                               sizeof(jsDecorationHandleProto) / sizeof(jsDecorationHandleProto[0]));
+    JS_SetPropertyFunctionList(ctx, decorationHandleProto, jsDecorationHandleProto, sizeof(jsDecorationHandleProto) / sizeof(jsDecorationHandleProto[0]));
     JS_SetClassProto(ctx, jsDecorationHandleClassId, decorationHandleProto);
 
     JSValue animationHandleProto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, animationHandleProto, jsAnimationHandleProto,
-                               sizeof(jsAnimationHandleProto) / sizeof(jsAnimationHandleProto[0]));
+    JS_SetPropertyFunctionList(ctx, animationHandleProto, jsAnimationHandleProto, sizeof(jsAnimationHandleProto) / sizeof(jsAnimationHandleProto[0]));
     JS_SetClassProto(ctx, jsAnimationHandleClassId, animationHandleProto);
 
     // Timer globals
@@ -5152,7 +5148,7 @@ void Engine::setupGlobals(JSContext *ctx, InstanceId id)
     // script authors already know) so cross-engine snippets port without
     // a translation table.
     {
-        JSValue os                 = JS_NewObject(ctx);
+        JSValue os = JS_NewObject(ctx);
         constexpr const char *kPlatform =
 #if defined(__APPLE__)
             "darwin";
@@ -5585,8 +5581,8 @@ InstanceId Engine::loadScriptInternal(const std::string &path, const std::string
     }
     JSValue result = JS_Eval(ctx, evalSrc.c_str(), evalSrc.size(), path.c_str(), JS_EVAL_TYPE_MODULE);
     if (JS_IsException(result)) {
-        JSValue exc     = JS_GetException(ctx);
-        const char *str = JS_ToCString(ctx, exc);
+        JSValue exc         = JS_GetException(ctx);
+        const char *str     = JS_ToCString(ctx, exc);
         std::string evalMsg = str ? str : "(null)";
         sLog().error("ScriptEngine: '{}' error: {}", path, evalMsg);
         if (errOut) {
@@ -6008,16 +6004,13 @@ void Engine::notifyTabCreated(TabId tab, Uuid parentStack)
         if (!inst.ctx) {
             continue;
         }
-        JSValue global = JS_GetGlobalObject(inst.ctx);
-        JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
-        JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
+        JSValue global  = JS_GetGlobalObject(inst.ctx);
+        JSValue mb      = JS_GetPropertyStr(inst.ctx, global, "mb");
+        JSValue arr     = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabCreated");
         JSValue payload = JS_NewObject(inst.ctx);
-        JS_SetPropertyStr(inst.ctx, payload, "id",
-                          JS_NewStringLen(inst.ctx, idStr.data(), idStr.size()));
-        JS_SetPropertyStr(inst.ctx, payload, "parentStackId",
-                          JS_NewStringLen(inst.ctx, parentStr.data(), parentStr.size()));
-        JS_SetPropertyStr(inst.ctx, payload, "level",
-                          JS_NewString(inst.ctx, levelStr));
+        JS_SetPropertyStr(inst.ctx, payload, "id", JS_NewStringLen(inst.ctx, idStr.data(), idStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "parentStackId", JS_NewStringLen(inst.ctx, parentStr.data(), parentStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "level", JS_NewString(inst.ctx, levelStr));
         enqueueListeners(inst.ctx, arr, 1, &payload);
         JS_FreeValue(inst.ctx, payload);
         JS_FreeValue(inst.ctx, arr);
@@ -6086,12 +6079,9 @@ void Engine::notifyTabDestroyed(TabId tab, Uuid parentStack)
         JSValue mb      = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr     = JS_GetPropertyStr(inst.ctx, mb, "__evt_tabDestroyed");
         JSValue payload = JS_NewObject(inst.ctx);
-        JS_SetPropertyStr(inst.ctx, payload, "id",
-                          JS_NewStringLen(inst.ctx, idStr.data(), idStr.size()));
-        JS_SetPropertyStr(inst.ctx, payload, "parentStackId",
-                          JS_NewStringLen(inst.ctx, parentStr.data(), parentStr.size()));
-        JS_SetPropertyStr(inst.ctx, payload, "level",
-                          JS_NewString(inst.ctx, levelStr));
+        JS_SetPropertyStr(inst.ctx, payload, "id", JS_NewStringLen(inst.ctx, idStr.data(), idStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "parentStackId", JS_NewStringLen(inst.ctx, parentStr.data(), parentStr.size()));
+        JS_SetPropertyStr(inst.ctx, payload, "level", JS_NewString(inst.ctx, levelStr));
         enqueueListeners(inst.ctx, arr, 1, &payload);
         JS_FreeValue(inst.ctx, payload);
         JS_FreeValue(inst.ctx, arr);

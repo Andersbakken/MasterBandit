@@ -75,8 +75,8 @@ private:
     // scan finds nothing — and drainTimers would otherwise re-push the
     // (just-cancelled) repeating timer. Track the in-flight id so
     // removeTimer can mark it cancelled instead.
-    TimerId firingTimerId_       = 0;
-    bool firingTimerCancelled_   = false;
+    TimerId firingTimerId_     = 0;
+    bool firingTimerCancelled_ = false;
 
     // (filename, cb) pairs sharing a single inotify-on-dir watch. The
     // caller-facing addFileWatch API allows multiple files but only if

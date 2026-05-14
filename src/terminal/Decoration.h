@@ -329,7 +329,8 @@ inline uint32_t lerpRGBA8Linear(uint32_t a, uint32_t b, float t)
     float lb = toLin(ab) + (toLin(bb) - toLin(ab)) * t;
     float la = static_cast<float>(aa) + (static_cast<float>(ba) - static_cast<float>(aa)) * t;
 
-    uint8_t outA = (la <= 0.0f) ? 0 : (la >= 255.0f) ? 255 : static_cast<uint8_t>(la + 0.5f);
+    uint8_t outA = (la <= 0.0f) ? 0 : (la >= 255.0f) ? 255
+                                                     : static_cast<uint8_t>(la + 0.5f);
 
     return static_cast<uint32_t>(fromLin(lr)) |
         (static_cast<uint32_t>(fromLin(lg)) << 8) |
@@ -343,15 +344,16 @@ inline uint32_t sampleAnimColor(const AnimDescriptor &d, uint64_t nowMs)
 {
     float t = easeApply(d.ease, animProgress(d, nowMs));
     return lerpRGBA8Linear(static_cast<uint32_t>(d.startValue & 0xFFFFFFFFu),
-                           static_cast<uint32_t>(d.endValue & 0xFFFFFFFFu), t);
+                           static_cast<uint32_t>(d.endValue & 0xFFFFFFFFu),
+                           t);
 }
 
 // Sample an animated scalar (inflate) property at `nowMs`. Caller chooses
 // the int width.
 inline int32_t sampleAnimScalar(const AnimDescriptor &d, uint64_t nowMs)
 {
-    float t       = easeApply(d.ease, animProgress(d, nowMs));
-    float lerped  = static_cast<float>(d.startValue) +
+    float t      = easeApply(d.ease, animProgress(d, nowMs));
+    float lerped = static_cast<float>(d.startValue) +
         static_cast<float>(d.endValue - d.startValue) * t;
     return static_cast<int32_t>(std::lround(lerped));
 }

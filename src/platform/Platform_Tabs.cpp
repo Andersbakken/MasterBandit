@@ -333,7 +333,7 @@ void PlatformDawn::closeTab(Uuid target)
     if (sd->children.size() <= 1) {
         return;
     }
-    const bool isTopLevel     = (stackId == scriptEngine_.layoutRootStack());
+    const bool isTopLevel = (stackId == scriptEngine_.layoutRootStack());
 
     PendingMutations &pending = renderThread_->pending();
 
@@ -1048,8 +1048,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                              // Window title still gates on "this pane is the
                              // top-level representative AND that tab is
                              // active" — that's the title shown by the OS.
-                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId
-                                 && *tab == scriptEngine_.activeTabSubtreeRoot()) {
+                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId && *tab == scriptEngine_.activeTabSubtreeRoot()) {
                                  updateWindowTitle();
                              }
                          });
@@ -1065,8 +1064,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                              }
                              tabBarDirty_ = true;
                              setNeedsRedraw();
-                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId
-                                 && *tab == scriptEngine_.activeTabSubtreeRoot()) {
+                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId && *tab == scriptEngine_.activeTabSubtreeRoot()) {
                                  updateWindowTitle();
                              }
                          });
@@ -1288,8 +1286,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                              // redundant work.
                              tabBarDirty_ = true;
                              setNeedsRedraw();
-                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId
-                                 && *tab == scriptEngine_.activeTabSubtreeRoot()) {
+                             if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId && *tab == scriptEngine_.activeTabSubtreeRoot()) {
                                  updateWindowTitle();
                              }
                          });

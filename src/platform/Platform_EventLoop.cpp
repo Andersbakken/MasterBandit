@@ -1006,12 +1006,13 @@ int PlatformDawn::exec()
         // reapply cleanly). When both files exist, .ts wins — author intent
         // is clearer when they've explicitly created the typed variant, and
         // the script engine type-strips it via whiteout transparently.
-        std::string jsPath = configJsFilePath();
-        std::string tsPath = configTsFilePath();
+        std::string jsPath           = configJsFilePath();
+        std::string tsPath           = configTsFilePath();
         // Resolves to the preferred existing file (.ts before .js), or empty
         // if neither is on disk right now. Re-evaluated on every fire so the
         // user can flip between the two without restarting.
-        auto resolveConfigScriptPath = [tsPath, jsPath]() -> std::string {
+        auto resolveConfigScriptPath = [tsPath, jsPath]() -> std::string
+        {
             std::error_code ec;
             if (!tsPath.empty() && std::filesystem::exists(tsPath, ec) && !ec) {
                 return tsPath;
@@ -1032,39 +1033,41 @@ int PlatformDawn::exec()
                              configJsInstanceId_);
             }
         }
-        auto onConfigScriptChanged = [this, resolveConfigScriptPath]() {
+        auto onConfigScriptChanged = [this, resolveConfigScriptPath]()
+        {
             if (configJsDebounceActive_) {
                 eventLoop_->removeTimer(configJsDebounceTimer_);
             }
-            configJsDebounceTimer_ = eventLoop_->addTimer(300, false, [this, resolveConfigScriptPath]() {
-                configJsDebounceActive_ = false;
-                std::string currentPath = resolveConfigScriptPath();
-                if (currentPath.empty()) {
-                    // Neither candidate exists at the moment — either both
-                    // were never created, or whichever did exist was deleted
-                    // between the watch event and the debounce expiry. Either
-                    // way, drop it: existing patches already applied to
-                    // lastConfig_ remain in effect until the user restarts or
-                    // re-creates the file. (Unloading the instance to roll
-                    // back the patches would surprise scripts with registered
-                    // listeners; we don't.)
-                    return;
-                }
-                if (configJsInstanceId_ == 0) {
-                    // Either the file didn't exist at startup, or initial
-                    // load failed (syntax error etc). Fresh load now.
-                    configJsInstanceId_ = scriptEngine_.loadController(currentPath);
-                    if (configJsInstanceId_) {
-                        spdlog::info("Config: loaded JS config '{}' on file-watch (id={})",
-                                     currentPath,
-                                     configJsInstanceId_);
-                    } else {
-                        spdlog::warn("Config: failed to load JS config '{}'", currentPath);
-                    }
-                } else {
-                    scriptEngine_.reevalInstance(configJsInstanceId_, currentPath);
-                }
-            });
+            configJsDebounceTimer_  = eventLoop_->addTimer(300, false, [this, resolveConfigScriptPath]()
+                                                          {
+                                                              configJsDebounceActive_ = false;
+                                                              std::string currentPath = resolveConfigScriptPath();
+                                                              if (currentPath.empty()) {
+                                                                  // Neither candidate exists at the moment — either both
+                                                                  // were never created, or whichever did exist was deleted
+                                                                  // between the watch event and the debounce expiry. Either
+                                                                  // way, drop it: existing patches already applied to
+                                                                  // lastConfig_ remain in effect until the user restarts or
+                                                                  // re-creates the file. (Unloading the instance to roll
+                                                                  // back the patches would surprise scripts with registered
+                                                                  // listeners; we don't.)
+                                                                  return;
+                                                              }
+                                                              if (configJsInstanceId_ == 0) {
+                                                                  // Either the file didn't exist at startup, or initial
+                                                                  // load failed (syntax error etc). Fresh load now.
+                                                                  configJsInstanceId_ = scriptEngine_.loadController(currentPath);
+                                                                  if (configJsInstanceId_) {
+                                                                      spdlog::info("Config: loaded JS config '{}' on file-watch (id={})",
+                                                                                   currentPath,
+                                                                                   configJsInstanceId_);
+                                                                  } else {
+                                                                      spdlog::warn("Config: failed to load JS config '{}'", currentPath);
+                                                                  }
+                                                              } else {
+                                                                  scriptEngine_.reevalInstance(configJsInstanceId_, currentPath);
+                                                              }
+                                                          });
             configJsDebounceActive_ = true;
         };
         if (!jsPath.empty()) {
@@ -1120,7 +1123,7 @@ int PlatformDawn::exec()
                 }
                 if (hasAnim) {
                     setNeedsRedraw();
-                    auto now = TerminalEmulator::mono();
+                    auto now           = TerminalEmulator::mono();
                     // Tick the spinner if any TabBar is visible. The primary
                     // bar's visibility gate alone misses sub-bars (created
                     // via wrapInStack inside a single-top-level-tab session
@@ -1134,7 +1137,7 @@ int PlatformDawn::exec()
                     if (anyBarVisible && now - lastAnimTick_ > 100) {
                         lastAnimTick_ = now;
                         tabBarAnimFrame_++;
-                        tabBarDirty_  = true;
+                        tabBarDirty_ = true;
                     }
                 }
             }

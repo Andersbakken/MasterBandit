@@ -735,44 +735,44 @@ void DebugIPC::cmdAnim(struct lws *wsi, int id, const glz::generic &j)
 
     if (op == "add") {
         // Parse the spec.
-        int startCol           = jsonInt(j, "startCol");
-        int endCol             = jsonInt(j, "endCol");
-        int64_t bg             = jsonI64(j, "bg");
-        std::string propStr    = jsonStr(j, "prop");
-        int64_t startValue     = jsonI64(j, "startValue");
-        int64_t endValue       = jsonI64(j, "endValue");
-        int64_t startMs        = jsonI64(j, "startMs");
-        int64_t durationMs     = jsonI64(j, "durationMs");
-        std::string easeStr    = jsonStr(j, "ease", "linear");
+        int startCol        = jsonInt(j, "startCol");
+        int endCol          = jsonInt(j, "endCol");
+        int64_t bg          = jsonI64(j, "bg");
+        std::string propStr = jsonStr(j, "prop");
+        int64_t startValue  = jsonI64(j, "startValue");
+        int64_t endValue    = jsonI64(j, "endValue");
+        int64_t startMs     = jsonI64(j, "startMs");
+        int64_t durationMs  = jsonI64(j, "durationMs");
+        std::string easeStr = jsonStr(j, "ease", "linear");
 
         AnimProp prop;
-        if (propStr == "bg")
+        if (propStr == "bg") {
             prop = AnimProp::Bg;
-        else if (propStr == "fg")
+        } else if (propStr == "fg") {
             prop = AnimProp::Fg;
-        else if (propStr == "underlineColor")
+        } else if (propStr == "underlineColor") {
             prop = AnimProp::UnderlineColor;
-        else if (propStr == "bgInflateX")
+        } else if (propStr == "bgInflateX") {
             prop = AnimProp::BgInflateX;
-        else if (propStr == "bgInflateY")
+        } else if (propStr == "bgInflateY") {
             prop = AnimProp::BgInflateY;
-        else {
+        } else {
             sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "anim.add: unknown prop" } }));
             return;
         }
 
         Ease ease;
-        if (easeStr == "linear")
+        if (easeStr == "linear") {
             ease = Ease::Linear;
-        else if (easeStr == "easeIn")
+        } else if (easeStr == "easeIn") {
             ease = Ease::EaseIn;
-        else if (easeStr == "easeOut")
+        } else if (easeStr == "easeOut") {
             ease = Ease::EaseOut;
-        else if (easeStr == "easeInOut")
+        } else if (easeStr == "easeInOut") {
             ease = Ease::EaseInOut;
-        else if (easeStr == "easeInOutCubic")
+        } else if (easeStr == "easeInOutCubic") {
             ease = Ease::EaseInOutCubic;
-        else {
+        } else {
             sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "anim.add: unknown ease" } }));
             return;
         }

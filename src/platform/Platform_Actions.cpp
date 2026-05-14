@@ -49,8 +49,7 @@ void PlatformDawn::executeAction(const Action::Any &action)
                                    {
                                        JSValue o = JS_NewObject(ctx);
                                        if (!targetStr.empty()) {
-                                           JS_SetPropertyStr(ctx, o, "target",
-                                                             JS_NewStringLen(ctx, targetStr.data(), targetStr.size()));
+                                           JS_SetPropertyStr(ctx, o, "target", JS_NewStringLen(ctx, targetStr.data(), targetStr.size()));
                                        }
                                        JS_SetPropertyStr(ctx, o, "index", JS_NewInt32(ctx, idx));
                                        return o;
@@ -64,8 +63,7 @@ void PlatformDawn::executeAction(const Action::Any &action)
                                    {
                                        JSValue o = JS_NewObject(ctx);
                                        if (!stackStr.empty()) {
-                                           JS_SetPropertyStr(ctx, o, "stack",
-                                                             JS_NewStringLen(ctx, stackStr.data(), stackStr.size()));
+                                           JS_SetPropertyStr(ctx, o, "stack", JS_NewStringLen(ctx, stackStr.data(), stackStr.size()));
                                        }
                                        JS_SetPropertyStr(ctx, o, "delta", JS_NewInt32(ctx, delta));
                                        return o;
@@ -79,8 +77,7 @@ void PlatformDawn::executeAction(const Action::Any &action)
                                    {
                                        JSValue o = JS_NewObject(ctx);
                                        if (!targetStr.empty()) {
-                                           JS_SetPropertyStr(ctx, o, "target",
-                                                             JS_NewStringLen(ctx, targetStr.data(), targetStr.size()));
+                                           JS_SetPropertyStr(ctx, o, "target", JS_NewStringLen(ctx, targetStr.data(), targetStr.size()));
                                        }
                                        JS_SetPropertyStr(ctx, o, "index", JS_NewInt32(ctx, idx));
                                        return o;

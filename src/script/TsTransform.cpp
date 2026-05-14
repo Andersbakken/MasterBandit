@@ -45,6 +45,7 @@ static whiteout_ctx *threadCtx()
     thread_local struct CtxOwner
     {
         whiteout_ctx *ctx = whiteout_ctx_new();
+
         ~CtxOwner()
         {
             if (ctx) {
@@ -52,6 +53,7 @@ static whiteout_ctx *threadCtx()
             }
         }
     } owner;
+
     return owner.ctx;
 }
 
@@ -160,7 +162,9 @@ static bool atomicWrite(const fs::path &finalPath, std::string_view bytes)
     fs::rename(tmp, finalPath, ec);
     if (ec) {
         spdlog::warn("TsTransform: cache rename '{}' -> '{}' failed: {}",
-                     tmp.string(), finalPath.string(), ec.message());
+                     tmp.string(),
+                     finalPath.string(),
+                     ec.message());
         fs::remove(tmp, ec);
         return false;
     }

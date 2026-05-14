@@ -251,8 +251,10 @@ public:
         Uuid stack;
         Uuid tabBar;
         Uuid content; // inner Container holding `existingChild`
+
         bool ok() const { return !wrapper.isNil(); }
     };
+
     WrapInStackResult splitByWrappingStack(Uuid existingChild, SplitDir dir,
                                            bool tabBarFirst);
 

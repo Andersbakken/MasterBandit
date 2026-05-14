@@ -1045,9 +1045,18 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
     queue.WriteBuffer(computeState->computeParamsBuffer, 0, &params, sizeof(params));
 
     uint32_t indirectInit[12] = {
-        0, 1, 0, 0, // text:    vertexCount, instanceCount, firstVertex, firstInstance
-        0, 1, 0, 0, // rect:    "
-        0, 1, 0, 0, // inflated rect: "
+        0,
+        1,
+        0,
+        0, // text:    vertexCount, instanceCount, firstVertex, firstInstance
+        0,
+        1,
+        0,
+        0, // rect:    "
+        0,
+        1,
+        0,
+        0, // inflated rect: "
     };
     queue.WriteBuffer(computeState->indirectBuffer, 0, indirectInit, sizeof(indirectInit));
 

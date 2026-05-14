@@ -361,9 +361,9 @@ enum Key
     Key_MediaTogglePlayPause   = 0x1000086,
     // Kitty protocol exposes these as distinct codes (57431/57433/57434);
     // X11 has XF86AudioForward / XF86AudioRewind (no Reverse keysym).
-    Key_MediaReverse     = 0x01000087,
-    Key_MediaFastForward = 0x01000088,
-    Key_MediaRewind      = 0x01000089,
+    Key_MediaReverse           = 0x01000087,
+    Key_MediaFastForward       = 0x01000088,
+    Key_MediaRewind            = 0x01000089,
     Key_HomePage               = 0x01000090,
     Key_Favorites              = 0x01000091,
     Key_Search                 = 0x01000092,
@@ -545,38 +545,38 @@ enum Key
     Key_CameraFocus = 0x01100021,
 
     // Keypad keys (Kitty keyboard protocol)
-    Key_KP_0        = 0x01200000,
-    Key_KP_1        = 0x01200001,
-    Key_KP_2        = 0x01200002,
-    Key_KP_3        = 0x01200003,
-    Key_KP_4        = 0x01200004,
-    Key_KP_5        = 0x01200005,
-    Key_KP_6        = 0x01200006,
-    Key_KP_7        = 0x01200007,
-    Key_KP_8        = 0x01200008,
-    Key_KP_9        = 0x01200009,
-    Key_KP_Decimal  = 0x0120000a,
-    Key_KP_Divide   = 0x0120000b,
-    Key_KP_Multiply = 0x0120000c,
-    Key_KP_Subtract = 0x0120000d,
-    Key_KP_Add      = 0x0120000e,
+    Key_KP_0         = 0x01200000,
+    Key_KP_1         = 0x01200001,
+    Key_KP_2         = 0x01200002,
+    Key_KP_3         = 0x01200003,
+    Key_KP_4         = 0x01200004,
+    Key_KP_5         = 0x01200005,
+    Key_KP_6         = 0x01200006,
+    Key_KP_7         = 0x01200007,
+    Key_KP_8         = 0x01200008,
+    Key_KP_9         = 0x01200009,
+    Key_KP_Decimal   = 0x0120000a,
+    Key_KP_Divide    = 0x0120000b,
+    Key_KP_Multiply  = 0x0120000c,
+    Key_KP_Subtract  = 0x0120000d,
+    Key_KP_Add       = 0x0120000e,
     Key_KP_Enter     = 0x0120000f,
     Key_KP_Equal     = 0x01200010,
     Key_KP_Separator = 0x01200011,
     // Keypad navigation (Linux/XKB has distinct keysyms; macOS shares
     // virtual keycodes with main nav cluster, so these only ever fire on
     // X11/Wayland — Cocoa main-nav keys arrive as Key_Left/Right/etc.).
-    Key_KP_Left     = 0x01200012,
-    Key_KP_Right    = 0x01200013,
-    Key_KP_Up       = 0x01200014,
-    Key_KP_Down     = 0x01200015,
-    Key_KP_PageUp   = 0x01200016,
-    Key_KP_PageDown = 0x01200017,
-    Key_KP_Home     = 0x01200018,
-    Key_KP_End      = 0x01200019,
-    Key_KP_Insert   = 0x0120001a,
-    Key_KP_Delete   = 0x0120001b,
-    Key_KP_Begin    = 0x0120001c,
+    Key_KP_Left      = 0x01200012,
+    Key_KP_Right     = 0x01200013,
+    Key_KP_Up        = 0x01200014,
+    Key_KP_Down      = 0x01200015,
+    Key_KP_PageUp    = 0x01200016,
+    Key_KP_PageDown  = 0x01200017,
+    Key_KP_Home      = 0x01200018,
+    Key_KP_End       = 0x01200019,
+    Key_KP_Insert    = 0x0120001a,
+    Key_KP_Delete    = 0x0120001b,
+    Key_KP_Begin     = 0x0120001c,
 
     // Real X11 Meta_L/Meta_R — distinct from Cmd/Super (which MB's
     // MetaModifier represents in `Modifier`). Practically nonexistent on
@@ -604,14 +604,14 @@ enum Button
 
 enum Modifier
 {
-    NoModifier       = 0x0,
-    ShiftModifier    = 0x1,
-    CtrlModifier     = 0x2,
-    AltModifier      = 0x4,
-    MetaModifier     = 0x8,
-    HyperModifier    = 0x10,
-    CapsLockModifier = 0x20,
-    NumLockModifier  = 0x40,
+    NoModifier          = 0x0,
+    ShiftModifier       = 0x1,
+    CtrlModifier        = 0x2,
+    AltModifier         = 0x4,
+    MetaModifier        = 0x8,
+    HyperModifier       = 0x10,
+    CapsLockModifier    = 0x20,
+    NumLockModifier     = 0x40,
     // Set by the platform layer alongside AltModifier when this specific Alt
     // keystroke should be treated as a real Alt modifier (not OS-level Unicode
     // composition). On macOS, gated by `macos_option_as_alt` and the held
@@ -708,8 +708,8 @@ struct KeyEvent
 {
     Key key { Key_unknown };
     std::string text;
-    uint32_t shiftedKey { 0 };     // Kitty protocol: Unicode codepoint of shifted variant (e.g. 'C' for 'c') in the *current* layout
-    uint32_t baseLayoutKey { 0 };  // Kitty protocol "alternate_key" / spec "base_layout_key": codepoint in the system default (typically US ANSI) layout. Used by non-US users to match physical-key shortcuts.
+    uint32_t shiftedKey { 0 };    // Kitty protocol: Unicode codepoint of shifted variant (e.g. 'C' for 'c') in the *current* layout
+    uint32_t baseLayoutKey { 0 }; // Kitty protocol "alternate_key" / spec "base_layout_key": codepoint in the system default (typically US ANSI) layout. Used by non-US users to match physical-key shortcuts.
     size_t count { 1 };
     bool autoRepeat { false };
     uint32_t modifiers { 0 };
@@ -748,7 +748,7 @@ inline bool isModifierKey(Key k)
         case Key_Hyper_R:
         case Key_Meta_L:
         case Key_Meta_R:
-        case Key_AltGr:              // ISO_Level3_Shift — modifier-only key on non-US layouts
+        case Key_AltGr: // ISO_Level3_Shift — modifier-only key on non-US layouts
         case Key_ISO_Level5_Shift:
         case Key_CapsLock:
         case Key_NumLock:

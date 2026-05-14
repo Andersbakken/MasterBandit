@@ -49,6 +49,7 @@ public:
     // Default value is Cell{} (no bg) so callers that never call setEraseBlank
     // get pre-BCE behavior.
     void setEraseBlank(const Cell &c) { eraseBlank_ = c; }
+
     const Cell &eraseBlank() const { return eraseBlank_; }
 
 protected:

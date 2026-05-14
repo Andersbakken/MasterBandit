@@ -145,8 +145,8 @@ private:
         int cellCol = 0, cellRow = 0;
         int pixelX = 0, pixelY = 0;
         int tabBarClickIndex = -1;
-        Uuid tabBarClickBarId;             // which TabBar was hit (nil = none)
-        MouseButton button   = MouseButton::Left;
+        Uuid tabBarClickBarId; // which TabBar was hit (nil = none)
+        MouseButton button = MouseButton::Left;
     } mouseCtx_;
 
     std::unordered_map<Uuid, Window::CursorStyle, UuidHash> paneCursorStyle_;

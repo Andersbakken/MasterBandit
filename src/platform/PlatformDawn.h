@@ -455,8 +455,8 @@ private:
     float tabBarLineHeight_     = 0.0f;
     bool tabBarDirty_           = true;
     bool dividersDirty_         = true;
-    int tabBarAnimFrame_   = 0;
-    uint64_t lastAnimTick_ = 0;
+    int tabBarAnimFrame_        = 0;
+    uint64_t lastAnimTick_      = 0;
 
     // Pane divider colors
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;

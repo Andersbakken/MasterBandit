@@ -479,7 +479,9 @@ std::string emitTerminfoSource()
     auto isTerminfoLegalName = [](const std::string &k)
     {
         return std::all_of(k.begin(), k.end(), [](char c)
-                           { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); });
+                           {
+                               return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+                           });
     };
 
     for (const auto &[k, v] : table) {
@@ -491,15 +493,24 @@ std::string emitTerminfoSource()
         }
         if (v.empty()) {
             bools.push_back(k);
-        } else if (std::all_of(v.begin(), v.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        } else if (std::all_of(v.begin(), v.end(), [](char c)
+                               {
+                                   return c >= '0' && c <= '9';
+                               })) {
             nums.emplace_back(k, v);
         } else {
             strings.emplace_back(k, v);
         }
     }
     std::sort(bools.begin(), bools.end());
-    std::sort(nums.begin(), nums.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-    std::sort(strings.begin(), strings.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::sort(nums.begin(), nums.end(), [](const auto &a, const auto &b)
+              {
+                  return a.first < b.first;
+              });
+    std::sort(strings.begin(), strings.end(), [](const auto &a, const auto &b)
+              {
+                  return a.first < b.first;
+              });
 
     // Terminfo source escape: comma is the cap separator and must be backslash-
     // escaped if it appears inside a value. Caret is *not* escaped — `^X` is the

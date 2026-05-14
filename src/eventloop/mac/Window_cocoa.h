@@ -78,9 +78,9 @@ public:
     NSWindow *nsWindowRaw() const;
 
 private:
-    NSWindow *nsWindow_        = nullptr;
-    MBView *mbView_            = nullptr;
-    bool shouldClose_          = false;
+    NSWindow *nsWindow_                = nullptr;
+    MBView *mbView_                    = nullptr;
+    bool shouldClose_                  = false;
     MacosOptionAsAlt macosOptionAsAlt_ = MacosOptionAsAlt::Both;
     // CFRunLoopTimer (not the EventLoop's kqueue-based timer) so the
     // debounce fires during AppKit's tracking-mode loop while the user
@@ -89,5 +89,5 @@ private:
     // serviced directly by the run loop in commonModes (which includes
     // NSEventTrackingRunLoopMode), so the 100 ms idle gap actually wakes
     // us mid-drag the way XCB's epoll-driven timer does on Linux.
-    void *resizeDebounceTimer_ = nullptr; // CFRunLoopTimerRef
+    void *resizeDebounceTimer_         = nullptr; // CFRunLoopTimerRef
 };

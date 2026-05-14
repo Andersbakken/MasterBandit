@@ -93,9 +93,15 @@ public:
     // values fall back to Left (the default).
     static MacosOptionAsAlt parseMacosOptionAsAlt(const std::string &s)
     {
-        if (s == "none" || s == "no" || s == "false") return MacosOptionAsAlt::None;
-        if (s == "right") return MacosOptionAsAlt::Right;
-        if (s == "both" || s == "yes" || s == "true") return MacosOptionAsAlt::Both;
+        if (s == "none" || s == "no" || s == "false") {
+            return MacosOptionAsAlt::None;
+        }
+        if (s == "right") {
+            return MacosOptionAsAlt::Right;
+        }
+        if (s == "both" || s == "yes" || s == "true") {
+            return MacosOptionAsAlt::Both;
+        }
         return MacosOptionAsAlt::Left;
     }
 

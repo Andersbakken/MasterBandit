@@ -107,11 +107,11 @@ struct TabBarCell
 // in the render engine, keyed by `id`.
 struct TabBarRender
 {
-    Uuid id;                                    // TabBar node uuid (key)
-    Rect rect;                                  // pixel rect this frame
-    std::vector<RenderTabInfo> tabs;            // per-tab metadata
-    int activeTabIdx = -1;                      // index into `tabs`
-    std::vector<TabBarCell> cells;              // one per column, post-layout
+    Uuid id;                         // TabBar node uuid (key)
+    Rect rect;                       // pixel rect this frame
+    std::vector<RenderTabInfo> tabs; // per-tab metadata
+    int activeTabIdx = -1;           // index into `tabs`
+    std::vector<TabBarCell> cells;   // one per column, post-layout
     int cols = 0;
     std::vector<std::pair<int, int>> colRanges; // per-tab [startCol, endCol)
     bool dirty = true;

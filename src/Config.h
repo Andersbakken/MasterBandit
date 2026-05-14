@@ -214,8 +214,8 @@ struct Config
     // is treated as Alt; alt_sends_esc controls *what bytes* such a
     // keystroke produces.
     std::string macos_option_as_alt   = "left";
-    bool command_navigation_wrap      = true;           // Cmd+Up at oldest wraps to newest; Cmd+Down at newest wraps to oldest
-    int key_sequence_timeout_ms       = 0;              // Multi-key binding timeout in ms (0 = disabled). Aborts an in-progress sequence after idle.
+    bool command_navigation_wrap      = true; // Cmd+Up at oldest wraps to newest; Cmd+Down at newest wraps to oldest
+    int key_sequence_timeout_ms       = 0;    // Multi-key binding timeout in ms (0 = disabled). Aborts an in-progress sequence after idle.
     // Reported color preference for mode 2031 / DSR-997. "auto" (default)
     // queries the system: NSApp.effectiveAppearance on macOS,
     // org.freedesktop.portal.Settings (color-scheme) on Linux. "light" /
@@ -230,7 +230,7 @@ struct Config
     // by injecting per-shell rc files at spawn time. "auto" enables it; "off"
     // bypasses entirely (no env injection, no rc files sourced). Currently
     // implemented for zsh; bash/fish are no-ops until those backends land.
-    std::string shell_integration              = "auto"; // "auto" | "off"
+    std::string shell_integration     = "auto"; // "auto" | "off"
     // Per-feature opt-out, kitty-style. Each entry is a "no-<feature>" token.
     // Recognized features: prompt-mark (OSC 133 A/B/C/D + PS1 suffix), cwd
     // (OSC 7), title (OSC 0 re-emit). Anything else is silently ignored at

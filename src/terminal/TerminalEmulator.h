@@ -610,7 +610,7 @@ public:
     // User decoration (system kinds untouched). Returns count removed.
     // `cancelledAnimHandlesOut` aggregates handleIds across every removed
     // decoration (same semantics as removeDecoration).
-    size_t clearUserDecorations(std::string_view tag                    = {},
+    size_t clearUserDecorations(std::string_view tag                           = {},
                                 std::vector<uint64_t> *cancelledAnimHandlesOut = nullptr);
 
     // Apply a queued sequence of Add / Clear ops atomically: one mMutex
@@ -625,7 +625,7 @@ public:
     // mid-burst and paint with incomplete state (visible as a blank-frame
     // flicker between the clear and the re-add).
     std::vector<uint64_t> applyDecorationBatch(std::vector<DecorationBatchOp> ops,
-                                               std::vector<uint64_t>         *cancelledAnimHandlesOut = nullptr);
+                                               std::vector<uint64_t> *cancelledAnimHandlesOut = nullptr);
 
     const std::vector<Decoration> &decorations() const { return mDecorations; }
 
@@ -677,7 +677,6 @@ private:
     void applyAnimResultToTarget(AnimTargetKind kind, uint64_t targetId, AnimProp prop, int64_t value);
 
 public:
-
     // Image registry
     struct ImageEntry
     {

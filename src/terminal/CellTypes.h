@@ -228,7 +228,8 @@ static_assert(sizeof(Cell) == 12);
 // this assert fires and both sites must change in lockstep.
 static_assert(std::is_trivially_copyable_v<Cell>);
 static_assert(
-    []() constexpr {
+    []() constexpr
+    {
         Cell c {};
         auto bytes = std::bit_cast<std::array<unsigned char, sizeof(Cell)>>(c);
         for (auto b : bytes) {

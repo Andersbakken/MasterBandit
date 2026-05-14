@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cxxopts.hpp>
+#include <execinfo.h>
 #include <pwd.h>
 #include <signal.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -14,14 +15,89 @@
 #include <sstream>
 #include <unistd.h>
 
-static void cleanupSocketAndExit(int sig)
+// Sticky flag flipped by main() once it commits to the headless/IPC code
+// path. The signal handlers consult it to decide whether they also need
+// to remove the IPC socket file before re-raising. Marked volatile +
+// sig_atomic_t because it's read from a signal handler.
+static volatile sig_atomic_t g_socketCleanupOnExit = 0;
+
+// Async-signal-safe removal of the per-pid IPC socket. snprintf is not
+// formally on POSIX's signal-safe list, but every libc implementation
+// we target uses a stack buffer for `%d` formatting with no locks, and
+// the existing handler has used it without issue.
+static void removeIpcSocket()
 {
     char path[64];
     snprintf(path, sizeof(path), "/tmp/mb-%d.sock", getpid());
     unlink(path);
-    // Re-raise with default handler to get correct exit status
+}
+
+// Async-signal-safe write of a NUL-terminated string. Used by the crash
+// handler in place of fprintf / spdlog, neither of which is safe to
+// call from a signal handler.
+static void writeStrSig(int fd, const char *s)
+{
+    size_t len = 0;
+    while (s[len]) {
+        ++len;
+    }
+    [[maybe_unused]] auto n = write(fd, s, len);
+}
+
+// Fatal-signal handler: dumps a backtrace to stderr, cleans up the IPC
+// socket if applicable, then re-raises with the default handler to get
+// the correct exit status (and a core file if rlimits allow).
+//
+// Uses backtrace_symbols_fd, not backtrace_symbols, because the latter
+// calls malloc — not async-signal-safe. After a SIGSEGV the allocator
+// state can be arbitrarily corrupt, and calling malloc would risk
+// deadlock or a second crash that swallows the original trace.
+static void crashSignalHandler(int sig)
+{
+    writeStrSig(STDERR_FILENO, "\nmb: fatal signal ");
+    char numbuf[32];
+    int n = snprintf(numbuf, sizeof(numbuf), "%d\nstack trace:\n", sig);
+    if (n > 0) {
+        [[maybe_unused]] auto w = write(STDERR_FILENO, numbuf, static_cast<size_t>(n));
+    }
+
+    constexpr int kMaxFrames = 128;
+    void *frames[kMaxFrames];
+    int count = backtrace(frames, kMaxFrames);
+    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+
+    if (g_socketCleanupOnExit) {
+        removeIpcSocket();
+    }
+
+    // Re-raise under the default handler so the exit status reflects
+    // the real signal (and a core file gets written if ulimit permits).
     signal(sig, SIG_DFL);
     raise(sig);
+}
+
+// Graceful-shutdown handler for SIGTERM/SIGINT in headless/IPC mode.
+// Performs socket cleanup and re-raises; no backtrace because these
+// aren't crashes.
+static void cleanupSocketAndExit(int sig)
+{
+    if (g_socketCleanupOnExit) {
+        removeIpcSocket();
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void installCrashSignalHandlers()
+{
+    // Install for every signal that indicates a programming error or
+    // hardware fault. SIGABRT covers assert() / abort() / std::terminate
+    // and so is one of the most useful in practice.
+    signal(SIGSEGV, crashSignalHandler);
+    signal(SIGBUS, crashSignalHandler);
+    signal(SIGABRT, crashSignalHandler);
+    signal(SIGILL, crashSignalHandler);
+    signal(SIGFPE, crashSignalHandler);
 }
 
 static std::string defaultShell(const std::string &user)
@@ -39,6 +115,10 @@ static std::string defaultShell(const std::string &user)
 
 int main(int argc, char **argv)
 {
+    // Install before anything else (including the --ctl branch and any
+    // cxxopts work) so even early-startup crashes get a backtrace.
+    installCrashSignalHandlers();
+
     // Check for --ctl flag: if present, run as CLI client (before cxxopts,
     // because the CLI client has its own arg parsing)
     for (int i = 1; i < argc; i++) {
@@ -189,24 +269,24 @@ int main(int argc, char **argv)
 
     TerminalOptions options;
     if (!testMode) {
-        Config config                 = loadConfig();
-        options.font                  = config.font;
-        options.fontSize              = config.font_size;
-        options.boldStrength          = config.bold_strength;
-        options.scrollbackLines       = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
-        options.tabBar                = config.tab_bar;
-        options.keybindings           = config.keybindings;
-        options.mousebindings         = config.mousebindings;
-        options.dividerColor          = config.divider_color;
-        options.dividerWidth          = config.divider_width;
-        options.inactivePaneTint      = config.inactive_pane_tint;
-        options.inactivePaneTintAlpha = config.inactive_pane_tint_alpha;
-        options.activePaneTint        = config.active_pane_tint;
-        options.activePaneTintAlpha   = config.active_pane_tint_alpha;
-        options.replacementChar       = config.replacement_char;
-        options.padding               = config.padding;
-        options.cursor                = config.cursor;
-        options.colors                = config.colors;
+        Config config                    = loadConfig();
+        options.font                     = config.font;
+        options.fontSize                 = config.font_size;
+        options.boldStrength             = config.bold_strength;
+        options.scrollbackLines          = config.scrollback_lines < 0 ? std::nullopt : std::optional<int>(config.scrollback_lines);
+        options.tabBar                   = config.tab_bar;
+        options.keybindings              = config.keybindings;
+        options.mousebindings            = config.mousebindings;
+        options.dividerColor             = config.divider_color;
+        options.dividerWidth             = config.divider_width;
+        options.inactivePaneTint         = config.inactive_pane_tint;
+        options.inactivePaneTintAlpha    = config.inactive_pane_tint_alpha;
+        options.activePaneTint           = config.active_pane_tint;
+        options.activePaneTintAlpha      = config.active_pane_tint_alpha;
+        options.replacementChar          = config.replacement_char;
+        options.padding                  = config.padding;
+        options.cursor                   = config.cursor;
+        options.colors                   = config.colors;
         options.shellIntegration         = config.shell_integration;
         options.shellIntegrationDir      = Resources::path("shell-integration").string();
         options.shellIntegrationFeatures = config.shell_integration_features;
@@ -231,11 +311,12 @@ int main(int argc, char **argv)
     }
 
     if (platformFlags & (PlatformDawn::FlagHeadless | PlatformDawn::FlagIPC)) {
+        // SIGSEGV/SIGBUS/SIGABRT/SIGILL/SIGFPE are already handled by
+        // crashSignalHandler (installed at the top of main); this flag
+        // tells both handlers to also remove the per-pid IPC socket.
+        g_socketCleanupOnExit = 1;
         signal(SIGTERM, cleanupSocketAndExit);
         signal(SIGINT, cleanupSocketAndExit);
-        signal(SIGSEGV, cleanupSocketAndExit);
-        signal(SIGBUS, cleanupSocketAndExit);
-        signal(SIGABRT, cleanupSocketAndExit);
     }
 
     platform->createTerminal(options);

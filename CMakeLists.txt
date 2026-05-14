@@ -31,6 +31,21 @@ if(TSAN)
     add_link_options(-fsanitize=thread)
 endif()
 
+# Release builds carry -g so backtrace_symbols_fd in the crash handler
+# can produce useful frames, and so a stripped offline copy of the
+# binary can still be decoded with addr2line. -g is independent of -O
+# level so runtime perf is unaffected; cost is binary size + link time.
+# RelWithDebInfo (the "profile" preset) already includes -g by default.
+add_compile_options($<$<CONFIG:Release>:-g>)
+
+# On ELF platforms backtrace_symbols_fd resolves names via the dynamic
+# symbol table. Without -rdynamic only exported symbols are visible,
+# which strips essentially every internal frame from the crash trace.
+# macOS uses dladdr() internally and doesn't need this.
+if(NOT APPLE)
+    add_link_options(-rdynamic)
+endif()
+
 # Where bundled assets (shaders, fonts, scripts) get copied. On macOS this is
 # inside the .app bundle's Contents/Resources so the binary picks them up via
 # [NSBundle mainBundle]; elsewhere it's flat next to the executable.

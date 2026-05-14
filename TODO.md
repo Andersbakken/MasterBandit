@@ -158,6 +158,7 @@
 ## Observability
 
 - [x] `mb --ctl stats` — reports texture pool, compute pool, and per-pane GPU memory usage as JSON. Inactive tab textures are released to pool on tab switch.
+- [x] Fatal-signal backtrace — `crashSignalHandler` (`src/main.cpp`) installed at the top of `main()` for `SIGSEGV`/`SIGBUS`/`SIGABRT`/`SIGILL`/`SIGFPE` before anything else (including the `--ctl` branch) so static-init and early-startup crashes still produce diagnostics. Captures up to 128 frames via `backtrace(3)` and writes them to `STDERR_FILENO` with `backtrace_symbols_fd` — `_fd` not `backtrace_symbols`, because the latter calls `malloc` and the allocator state can be arbitrarily corrupt after a SIGSEGV. Re-raises under `SIG_DFL` so the exit status reflects the real signal and a core file gets written if `ulimit -c` permits. Shares the per-pid IPC-socket cleanup path with `cleanupSocketAndExit` via a `volatile sig_atomic_t g_socketCleanupOnExit` flag flipped on once `main()` commits to the headless/IPC code path, so the socket file is removed on either crash or graceful exit. Release builds carry `-g` and link with `-rdynamic` on non-Apple targets (see top-level `CMakeLists.txt`) so the dynamic symbol table actually resolves internal frames — without `-rdynamic` on ELF you only get `binary+0xoffset` per frame, which is useless without an offline `addr2line` pass. macOS uses `dladdr()` internally and doesn't need the flag.
 
 ## Infrastructure
 

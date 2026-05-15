@@ -274,14 +274,67 @@ mb.actions.register('activateTab', ({target, index}) => {
 
 mb.actions.register('activateTabRelative', ({stack: stackArg, delta}) => {
     // Cycle the activeChild of `stackArg` (when provided by the dispatcher).
-    // Otherwise walk up from the focused pane to its nearest enclosing
-    // Stack — sub-bar if focus is in one, else top-level tabs Stack.
-    // Falls back to the primary tabs Stack if no pane is focused.
+    // Otherwise walk up from the focused pane to the nearest enclosing
+    // *tabs-list* Stack — the Stack whose children are tab Stacks. The tree
+    // shape for a normal tab is:
+    //
+    //   tabsStack (Stack)            ← what we want to cycle
+    //     tab      (Stack)           ← Stack-child; the tab itself
+    //       content (Container)
+    //         terminal
+    //
+    // `nearestAncestorOfKind(fp, "Stack")` returns the *inner* `tab` Stack,
+    // not `tabsStack`, so cycling its activeChild is a no-op (its only
+    // child is `content`, never a sibling). The correct lookup walks up
+    // looking for the first Stack-child whose PARENT is a Stack — that
+    // parent is the tabs-list (top-level tabs, or a sub-tab Stack inside
+    // a sub-bar). Falls back to the primary tabs Stack if no pane is
+    // focused.
+    // The tree shape for a normal top-level tab is:
+    //
+    //   tabsStack (Stack)            ← _tabsStackNode; we want to cycle this
+    //     tab      (Stack)           ← Stack-child of tabsStack; the tab
+    //       content (Container)
+    //         terminal
+    //
+    // Sub-tab bars add another layer:
+    //
+    //   tabsStack (Stack)
+    //     tab (Stack)
+    //       wrapper (Container)
+    //         subTabBar (TabBar)
+    //         subTabsStack (Stack)    ← cycle this if focus is inside it
+    //           subTab (Stack)
+    //             content (Container)
+    //               terminal
+    //
+    // Strategy: walk from the focused pane up to the root, collecting every
+    // Stack-of-Stacks (a Stack whose first child is also a Stack) we pass
+    // through. The INNERMOST such Stack is the right one to cycle —
+    // `subTabsStack` if focus is in a sub-bar, `_tabsStackNode` otherwise.
+    // Falls back to `_tabsStackNode` for callers without a focused pane
+    // (e.g. palette invocation with no pane focus context).
     let stackId = stackArg || null;
     if (!stackId) {
         const fp = mb.layout.focusedPane();
         if (fp) {
-            stackId = mb.layout.nearestAncestorOfKind(fp.nodeId, "Stack");
+            for (let cur = fp.nodeId; cur; ) {
+                const n = mb.layout.node(cur);
+                if (!n) break;
+                if (n.kind === 'stack' && n.children && n.children.length > 0) {
+                    const firstChild = mb.layout.node(n.children[0].id);
+                    if (firstChild && firstChild.kind === 'stack') {
+                        stackId = cur;
+                        // keep walking — outer matches override inner ones
+                        // only when no inner match was found (innermost wins
+                        // because the first assignment along the walk-up is
+                        // the innermost; later assignments would overwrite).
+                        // Actually we want INNERMOST, so break here.
+                        break;
+                    }
+                }
+                cur = n.parent;
+            }
         }
     }
     if (!stackId) stackId = _tabsStackNode;

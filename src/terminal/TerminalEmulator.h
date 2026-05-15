@@ -439,6 +439,7 @@ public:
             ClearScreen,
             ClearToBeginningOfScreen,
             ClearToEndOfScreen,
+            ClearScrollbackHistory, // xterm CSI 3 J: drop scrollback; live grid untouched
             ClearLine,
             ClearToBeginningOfLine,
             ClearToEndOfLine,
@@ -666,6 +667,27 @@ public:
     // flicker between the clear and the re-add).
     std::vector<uint64_t> applyDecorationBatch(std::vector<DecorationBatchOp> ops,
                                                std::vector<uint64_t> *cancelledAnimHandlesOut = nullptr);
+
+    // wezterm-style screen clear: lift the in-progress prompt span up to
+    // row 0, wipe everything else in the live grid, optionally drop
+    // scrollback. The prompt-span is `[promptStartLineId..cursorY]` when
+    // an OSC 133 in-progress command record is available and its prompt-
+    // start resolves into the current viewport; otherwise just the
+    // cursor's row is preserved (matches wezterm's behaviour exactly).
+    // Cursor is moved up by the same amount the prompt was lifted, so
+    // cursorX is preserved and the shell's input position relative to
+    // the prompt is unchanged. No-op on alt screen — TUI apps own the
+    // screen there.
+    //
+    // Caveat (carried from wezterm): the shell's line editor still
+    // thinks its prompt is at the original row. The first subsequent
+    // shell redraw (arrow key, tab completion, RPROMPT update) will
+    // paint over that original position, leaving the lifted prompt as
+    // an orphaned copy at the top. This is the cost of operating
+    // without shell cooperation; it's acceptable because the alternative
+    // (sending Ctrl+L to the PTY) breaks for non-shell foreground
+    // processes (`top`, `ssh`, `cat > file`, …).
+    void clearWithPromptPreserved(bool alsoScrollback);
 
     const std::vector<Decoration> &decorations() const { return mDecorations; }
 

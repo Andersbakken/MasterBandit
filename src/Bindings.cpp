@@ -372,6 +372,21 @@ std::optional<Action::Any> parseAction(const std::string &name,
     if (name == "reload_config") {
         return Action::ReloadConfig {};
     }
+    if (name == "clear") {
+        // Modes: "scrollback" (drop history; live grid + cursor untouched),
+        // "all" (lift the in-progress prompt span to row 0, wipe everything
+        // else in the live grid, drop scrollback). Default is "all" — the
+        // `clear(1)` mental model.
+        std::string m = args.empty() ? "all" : toLower(args[0]);
+        if (m == "scrollback") {
+            return Action::Clear { Action::ClearMode::Scrollback };
+        }
+        if (m == "all") {
+            return Action::Clear { Action::ClearMode::All };
+        }
+        spdlog::warn("Bindings: unknown clear mode '{}'", args[0]);
+        return std::nullopt;
+    }
 
     // mouse_selection / open_hyperlink / select_command moved to
     // parseMouseAction — they need cell context so they live in

@@ -415,6 +415,38 @@ void PlatformDawn::executeAction(const Action::Any &action)
                            term->resetViewport();
                        }
                    },
+                   [&](const Action::Clear &a)
+                   {
+                       // Scrollback: drop history only via the existing
+                       // CSI 3 J handler (alt-screen guard lives there
+                       // at `TerminalEmulator.cpp:1941`). Nothing about
+                       // the live grid changes, so the shell is unaware.
+                       //
+                       // All: wezterm-style grid surgery via the new
+                       // `TerminalEmulator::clearWithPromptPreserved`
+                       // primitive. It alt-screen-guards itself, lifts
+                       // the OSC 133 prompt span (or just the cursor
+                       // row), wipes everything else, drops scrollback,
+                       // and updates the cursor. See the method's
+                       // header comment for the shell-state-drift
+                       // caveat.
+                       Terminal *term = activeTerm();
+                       if (!term) {
+                           return;
+                       }
+                       auto *emu = static_cast<TerminalEmulator *>(term);
+                       switch (a.mode) {
+                           case Action::ClearMode::Scrollback: {
+                               static constexpr char kSeq[] = "\x1b[3J";
+                               emu->injectData(kSeq, sizeof(kSeq) - 1);
+                               break;
+                           }
+                           case Action::ClearMode::All:
+                               emu->clearWithPromptPreserved(/*alsoScrollback=*/true);
+                               break;
+                       }
+                       setNeedsRedraw();
+                   },
                    [&](const Action::IncreaseFontSize &)
                    {
                        adjustFontSize(1.0f);

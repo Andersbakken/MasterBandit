@@ -918,6 +918,66 @@ std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<Decorat
     return ids;
 }
 
+void TerminalEmulator::clearWithPromptPreserved(bool alsoScrollback)
+{
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+
+    // Alt screen: TUI apps own the screen. CSI 3 J already no-ops here
+    // (TerminalEmulator.cpp:1941), and we mirror that for the whole
+    // Clear action so a stray binding can't corrupt vim/less/htop.
+    if (mUsingAltScreen) {
+        return;
+    }
+
+    // Determine the preserved row span. With OSC 133 in-progress
+    // command tracking, use the full prompt-start → cursor span (so
+    // multi-line prompts and partial multi-line input survive). Without
+    // it, fall back to the cursor row only (wezterm's behaviour).
+    const int cursorY = mState->cursorY;
+    int topRow        = cursorY;
+    if (CommandRecord *r = inProgressCommandMut()) {
+        if (r->promptStartLineId != 0) {
+            const int abs = mDocument.firstAbsOfLine(r->promptStartLineId);
+            if (abs >= 0) {
+                const int hist      = mDocument.historySize();
+                // Resolve to a screen row. If the prompt-start landed in
+                // scrollback (rare — the prompt itself scrolled off the
+                // viewport but the input cursor stayed in the grid), clamp
+                // to row 0 so we still preserve everything that's visible.
+                const int screenRow = abs - hist;
+                if (screenRow < 0) {
+                    topRow = 0;
+                } else if (screenRow <= cursorY) {
+                    topRow = screenRow;
+                }
+                // screenRow > cursorY shouldn't happen for a live in-progress
+                // command (cursor advances past prompt start), but if it
+                // does, leave topRow at cursorY — single-row fallback.
+            }
+        }
+    }
+
+    mDocument.liftRowsAndClearGrid(topRow, cursorY);
+
+    if (alsoScrollback) {
+        mDocument.clearHistory();
+    }
+
+    // Cursor.y moves up by the lift distance so the cursor stays on the
+    // same logical input row (now at row `cursorY - topRow`). Cursor.x
+    // is untouched.
+    mState->cursorY = cursorY - topRow;
+
+    // The on-screen line ids for the lifted rows are preserved, so any
+    // CommandRecord that referenced them still resolves. Records that
+    // pointed into the now-erased scrollback (alsoScrollback=true) or
+    // into the erased portion of the live grid (above topRow, or below
+    // cursorY) get pruned by the normal lineId-evicted callback path.
+    pruneCommandRing();
+
+    buildAndPublishSnapshotLocked();
+}
+
 // Apply `value` to the appropriate static field on `targetId` for prop
 // `prop`. v1 only handles AnimTargetKind::Decoration; future kinds
 // branch on `kind` here. Caller holds mMutex.
@@ -1936,11 +1996,17 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                 case 0: action.type = Action::ClearToEndOfScreen; break;
                 case 1: action.type = Action::ClearToBeginningOfScreen; break;
                 case 2: action.type = Action::ClearScreen; break;
-                case 3: // Clear screen + scrollback
-                    action.type = Action::ClearScreen;
-                    if (!mUsingAltScreen) {
-                        mDocument.clearHistory();
-                    }
+                case 3:
+                    // xterm extension: "P s = 3 → Erase Saved Lines". Drops
+                    // scrollback only — the visible grid is unaffected. A
+                    // previous version of this handler also set
+                    // action.type = ClearScreen, which (a) is non-standard
+                    // and (b) made `\x1b[3J` unusable as a pure scrollback
+                    // wipe. Now routed as a proper action so the apply
+                    // phase holds mMutex while mutating the scrollback —
+                    // the parse phase only holds mParseStateMutex and
+                    // mustn't touch the Document.
+                    action.type = Action::ClearScrollbackHistory;
                     break;
                 default: sLog().error("Invalid CSI ED {}", readCount(0)); break;
             }
@@ -2645,6 +2711,14 @@ void TerminalEmulator::onAction(const Action *action)
             }
             g.clearRow(mState->cursorY, 0, mState->cursorX + 1);
             break;
+        case Action::ClearScrollbackHistory:
+            // xterm CSI 3 J: drop scrollback only. No-op on alt screen
+            // (the alt screen has no scrollback by design). Visible grid
+            // and cursor untouched.
+            if (!mUsingAltScreen) {
+                mDocument.clearHistory();
+            }
+            break;
         case Action::ClearLine:
             g.clearRow(mState->cursorY);
             break;
@@ -2886,6 +2960,7 @@ const char *TerminalEmulator::Action::typeName(Type type)
         case ClearScreen: return "ClearScreen";
         case ClearToBeginningOfScreen: return "ClearToBeginningOfScreen";
         case ClearToEndOfScreen: return "ClearToEndOfScreen";
+        case ClearScrollbackHistory: return "ClearScrollbackHistory";
         case ClearLine: return "ClearLine";
         case ClearToBeginningOfLine: return "ClearToBeginningOfLine";
         case ClearToEndOfLine: return "ClearToEndOfLine";

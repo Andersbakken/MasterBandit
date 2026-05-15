@@ -80,6 +80,23 @@ public:
     bool isHistoryRowContinued(int idx) const;
     void clearHistory();
 
+    // Lift the inclusive screen-row range `[topRow, bottomRow]` to occupy
+    // rows `[0, bottomRow-topRow]`, then clear every other live-grid row.
+    // Cells, extras, the per-row "continued" flag, and the per-row logical-
+    // line IDs are all carried with the lifted rows so OSC 133 records and
+    // any other lineId-anchored state keep pointing at the same content
+    // after the operation. Rows below the lift get fresh logical-line IDs
+    // (they're freshly empty content, not soft-wrap continuations).
+    //
+    // No scrollback push: this is the "wezterm `ScrollbackAndViewport`
+    // erase" primitive — the caller is expected to have already decided
+    // that the rows above and below the lifted span should disappear (not
+    // be saved). `clearHistory()` is independent.
+    //
+    // Out-of-range / inverted inputs are no-ops with a warning. Caller
+    // owns publishing the snapshot.
+    void liftRowsAndClearGrid(int topRow, int bottomRow);
+
     // Total logical lines in scrollback (one per hard-broken or partial line).
     int scrollbackLogicalLines() const;
 

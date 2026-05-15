@@ -197,6 +197,27 @@ struct PasteSelection
 {
 };
 
+// Clear the focused terminal. `mode` selects what to wipe:
+//   Scrollback — drop history rows. Live grid (prompt, current input,
+//                command output in progress) and cursor untouched.
+//                Implemented via `\x1b[3J`, which no-ops on alt screen
+//                (`TerminalEmulator.cpp:1941`).
+//   All        — wipe the live grid AND scrollback, lifting the
+//                in-progress prompt span (OSC 133 promptStart → cursor
+//                row, or just the cursor row if OSC 133 absent) to the
+//                top so the user sees the prompt at row 0 of an empty
+//                screen. Whole action is a no-op on alt screen.
+enum class ClearMode : uint8_t
+{
+    Scrollback,
+    All,
+};
+
+struct Clear
+{
+    ClearMode mode = ClearMode::All;
+};
+
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
     SplitPane, ClosePane, ZoomPane, FocusPane, AdjustPaneSize,
@@ -207,7 +228,8 @@ using Any = std::variant<
     CopyLastCommand, CopySelectedCommandOutput, CopyDocument,
     FocusPopup, ReloadConfig, ScriptAction,
     PasteSelection,
-    MoveTab, SwapPane, RotatePanes>;
+    MoveTab, SwapPane, RotatePanes,
+    Clear>;
 
 // Action type identity is the variant index.
 using TypeIndex = std::size_t;

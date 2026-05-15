@@ -682,6 +682,71 @@ void Document::clearHistory()
     wrapBufferRowIdx_ = -1;
 }
 
+void Document::liftRowsAndClearGrid(int topRow, int bottomRow)
+{
+    // Validate. Inverted or out-of-range ranges turn into a plain
+    // clear-everything to keep the failure mode safe (the caller asked
+    // for the live grid to be wiped one way or another).
+    if (topRow < 0 || bottomRow >= screenHeight_ || topRow > bottomRow) {
+        for (int r = 0; r < screenHeight_; ++r) {
+            clearPhysicalRow(screenRowToPhysical(r));
+            screenLineId_[r] = nextLineId_++;
+            dirty_[r]        = true;
+        }
+        allDirty_         = true;
+        wrapBufferRowIdx_ = -1;
+        return;
+    }
+
+    const int preserveCount = bottomRow - topRow + 1;
+
+    // Snapshot the preserved range BEFORE we start mutating ring slots.
+    // Working buffers are local — same shape Document already uses in
+    // the partial scrollUp path (Document.cpp:411-422).
+    std::vector<Cell> savedCells(static_cast<size_t>(preserveCount) * cols_);
+    std::vector<std::unordered_map<int, CellExtra>> savedExtras(preserveCount);
+    std::vector<uint8_t> savedFlags(preserveCount, 0);
+    std::vector<uint64_t> savedLineIds(preserveCount, 0);
+    for (int i = 0; i < preserveCount; ++i) {
+        const int src  = topRow + i;
+        const int phys = screenRowToPhysical(src);
+        std::memcpy(&savedCells[static_cast<size_t>(i) * cols_], rowPtr(phys), cols_ * sizeof(Cell));
+        savedExtras[i]  = std::move(ringExtras_[phys]); // emptied in source slot
+        savedFlags[i]   = rowFlags_[phys];
+        savedLineIds[i] = screenLineId_[src];
+    }
+
+    // Wipe every live-grid row. `clearPhysicalRow` zeroes cells, drops
+    // extras, clears flags. screenLineId_ is rewritten below; no need to
+    // touch it here.
+    for (int r = 0; r < screenHeight_; ++r) {
+        clearPhysicalRow(screenRowToPhysical(r));
+    }
+
+    // Restamp the preserved rows at rows [0, preserveCount).
+    for (int i = 0; i < preserveCount; ++i) {
+        const int phys = screenRowToPhysical(i);
+        std::memcpy(rowPtr(phys), &savedCells[static_cast<size_t>(i) * cols_], cols_ * sizeof(Cell));
+        ringExtras_[phys] = std::move(savedExtras[i]);
+        rowFlags_[phys]   = savedFlags[i];
+        screenLineId_[i]  = savedLineIds[i];
+    }
+
+    // Rows below the preserved span get fresh logical-line IDs — they're
+    // freshly empty, not soft-wrap continuations of anything.
+    for (int r = preserveCount; r < screenHeight_; ++r) {
+        screenLineId_[r] = nextLineId_++;
+    }
+
+    // The wrap-buffer cache is keyed on history rows; we haven't touched
+    // history here. But it can still cache the formerly-visible content
+    // that the caller is about to erase via clearHistory() (if they ask)
+    // — invalidate to be safe.
+    wrapBufferRowIdx_ = -1;
+
+    markAllDirty();
+}
+
 const Cell *Document::viewportRow(int viewRow, int viewportOffset) const
 {
     if (viewportOffset == 0) {

@@ -3546,6 +3546,7 @@ static JSValue jsMbGetActions(JSContext *ctx, JSValueConst, int, JSValueConst *)
         { "MoveTab", { { "left", "Left" }, { "right", "Right" } } },
         { "SwapPane", { { "left", "Left" }, { "right", "Right" }, { "up", "Up" }, { "down", "Down" }, { "next", "Next" }, { "prev", "Previous" } } },
         { "RotatePanes", { { "cw", "Clockwise" }, { "ccw", "Counterclockwise" } } },
+        { "Clear", { { "scrollback", "Scrollback" }, { "all", "All" } } },
     };
 
     JSValue arr  = JS_NewArray(ctx);

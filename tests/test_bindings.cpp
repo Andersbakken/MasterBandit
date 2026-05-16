@@ -321,6 +321,84 @@ TEST_CASE("mergeKeyBindings: dispatch behavior — user-shadowed stroke fires on
     CHECK(std::holds_alternative<Action::CloseTab>(r.actions[0]));
 }
 
+TEST_CASE("mergeKeyBindings: Nop user entry shadows default and is kept (key consumed)")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ ks("ctrl+shift+w") }, Action::ClosePane {}),
+    };
+    std::vector<Binding> user = {
+        mkBinding({ ks("ctrl+shift+w") }, Action::Nop {}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
+    REQUIRE(merged.size() == 1);
+    CHECK(std::holds_alternative<Action::Nop>(merged[0].action));
+}
+
+TEST_CASE("mergeKeyBindings: DisableDefaultAssignment drops default AND user entry (stroke unbound)")
+{
+    std::vector<Binding> defaults = {
+        mkBinding({ ks("ctrl+shift+w") }, Action::ClosePane {}),
+        mkBinding({ ks("ctrl+shift+t") }, Action::NewTab {}),
+    };
+    std::vector<Binding> user = {
+        mkBinding({ ks("ctrl+shift+w") }, Action::DisableDefaultAssignment {}),
+    };
+    auto merged = mergeKeyBindings(std::move(defaults), std::move(user));
+    REQUIRE(merged.size() == 1);
+    CHECK(std::holds_alternative<Action::NewTab>(merged[0].action));
+
+    SequenceMatcher sm;
+    auto r = sm.advance(ks("ctrl+shift+w"), merged);
+    CHECK(r.result == R::NoMatch);
+}
+
+TEST_CASE("parseAction: send_string requires text arg")
+{
+    auto a = parseAction("send_string", { "clear\n" });
+    REQUIRE(a.has_value());
+    REQUIRE(std::holds_alternative<Action::SendString>(*a));
+    CHECK(std::get<Action::SendString>(*a).text == "clear\n");
+
+    auto missing = parseAction("send_string", {});
+    CHECK(!missing.has_value());
+}
+
+TEST_CASE("parseAction: send_key parses keystroke arg")
+{
+    auto a = parseAction("send_key", { "ctrl+l" });
+    REQUIRE(a.has_value());
+    REQUIRE(std::holds_alternative<Action::SendKey>(*a));
+    const auto &sk = std::get<Action::SendKey>(*a);
+    CHECK(sk.key == Key_L);
+    CHECK((sk.mods & CtrlModifier) != 0);
+
+    auto missing = parseAction("send_key", {});
+    CHECK(!missing.has_value());
+
+    auto bad = parseAction("send_key", { "garbage+key" });
+    CHECK(!bad.has_value());
+}
+
+TEST_CASE("parseAction: nop / disable_default_assignment / reset_terminal / activate_last_tab")
+{
+    auto nop = parseAction("nop", {});
+    REQUIRE(nop.has_value());
+    CHECK(std::holds_alternative<Action::Nop>(*nop));
+
+    auto dda = parseAction("disable_default_assignment", {});
+    REQUIRE(dda.has_value());
+    CHECK(std::holds_alternative<Action::DisableDefaultAssignment>(*dda));
+
+    auto rt = parseAction("reset_terminal", {});
+    REQUIRE(rt.has_value());
+    CHECK(std::holds_alternative<Action::ResetTerminal>(*rt));
+
+    auto last = parseAction("activate_last_tab", {});
+    REQUIRE(last.has_value());
+    REQUIRE(std::holds_alternative<Action::ActivateLastTab>(*last));
+    CHECK(std::get<Action::ActivateLastTab>(*last).stack.isNil());
+}
+
 // ── defaultBindings sanity ───────────────────────────────────────────────────
 //
 // Regression net against the C++ aggregate-init landmine that bit the

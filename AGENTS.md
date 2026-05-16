@@ -70,12 +70,20 @@ For targeted runs use the doctest filters:
 grep -a -E 'Status:|FAIL|assertions:' /tmp/run.out
 ```
 
-`mb-tests` with no filter runs every doctest suite in the binary,
-including the `[render]` suite (`tests/test_render.cpp`). That suite
-exercises the full WebGPU pipeline — compute shader, indirect draw,
-screenshot capture — and diffs against reference PNGs in
-`tests/reference/`. Do **not** describe a no-filter run as
-"non-GPU" or claim the compute / shader path is unexercised: it is.
+### The `[render]` suite is part of `mb-tests`. Run it. Do not exclude it.
+
+A no-filter `mb-tests` runs every doctest suite in the binary, including
+the `[render]` suite (`tests/test_render.cpp`). That suite drives the
+full WebGPU pipeline — compute shader, indirect draw, screenshot capture
+— and diffs the result against reference PNGs in `tests/reference/`.
+
+- **Do not exclude it from verification runs.** No `--test-case-exclude='*render*'`,
+  no filter that drops `[render]`, no "skip render to save time". It's not a
+  speed shortcut worth taking; the run no longer answers "is this change green".
+- **Do not claim GPU paths are unexercised after a no-filter run.** They are.
+  The shader and compute path are covered.
+- If a partial run is genuinely needed, say so out loud and name which suite
+  you skipped and why.
 
 To regenerate reference PNGs after an intentional visual change:
 

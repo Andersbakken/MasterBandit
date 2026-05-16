@@ -1,6 +1,7 @@
 #pragma once
 #include "Utils.h" // overloaded<> helper for std::visit
 #include "Uuid.h"
+#include "platform/InputTypes.h" // Key, modifier flags (SendKey)
 
 #include <cstddef>
 #include <cstdint>
@@ -218,6 +219,50 @@ struct Clear
     ClearMode mode = ClearMode::All;
 };
 
+// Write `text` to the focused pane's PTY as if it were typed. No bracketed-
+// paste wrapping (use Paste for clipboard-style input). Useful for binding
+// macros like `Cmd+K → send_string "clear\n"`.
+struct SendString
+{
+    std::string text;
+};
+
+// Synthesize a keystroke and route it through the terminal's keyboard
+// encoder (kitty / cursor-key / app-keypad mode all apply). Single keystroke
+// per call — chain via Multiple if/when it lands.
+struct SendKey
+{
+    Key key       = Key_unknown;
+    uint32_t mods = 0;
+};
+
+// Bound key consumed, no action. Use to shadow a default binding without
+// rebinding it to something else.
+struct Nop
+{
+};
+
+// Drops the matching default binding entirely. The stroke is NOT bound after
+// merge — it falls through to normal input handling as if no binding existed.
+// Handled in mergeKeyBindings; dispatch is a no-op (defensive).
+struct DisableDefaultAssignment
+{
+};
+
+// Activate the previously-active child of `stack`. Nil stack resolves to the
+// root tabs Stack at dispatch time (same convention as ActivateTabRelative).
+// Per-stack history is kept in the JS controller.
+struct ActivateLastTab
+{
+    Uuid stack;
+};
+
+// Hard reset (RIS / ESC c) injected into the focused emulator's parser.
+// No alt-screen guard — the parser's RIS handler decides what to wipe.
+struct ResetTerminal
+{
+};
+
 using Any = std::variant<
     NewTab, CloseTab, ActivateTabRelative, ActivateTab,
     SplitPane, ClosePane, ZoomPane, FocusPane, AdjustPaneSize,
@@ -229,7 +274,8 @@ using Any = std::variant<
     FocusPopup, ReloadConfig, ScriptAction,
     PasteSelection,
     MoveTab, SwapPane, RotatePanes,
-    Clear>;
+    Clear,
+    SendString, SendKey, Nop, DisableDefaultAssignment, ActivateLastTab, ResetTerminal>;
 
 // Action type identity is the variant index.
 using TypeIndex = std::size_t;

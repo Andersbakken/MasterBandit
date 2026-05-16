@@ -90,6 +90,10 @@ let _rootContainer = null;
 let _tabBarNode    = null;
 let _tabsStackNode = null;
 
+// stackUuid → previously-active child Uuid. Updated on every
+// _activateTabAndFocus so activate_last_tab can flip back.
+const _lastActiveByStack = new Map();
+
 (() => {
     const tabsStack = mb.layout.getRoot();
     if (!tabsStack) {
@@ -177,6 +181,13 @@ function _tabUuidByIndex(idx) {
 // notifyPaneFocusChange (CSI ?1004, paneFocusChanged listeners, title).
 function _activateTabAndFocus(tabUuid) {
     if (!tabUuid) return;
+    const node = mb.layout.node(tabUuid);
+    if (node && node.parent) {
+        const parent = mb.layout.node(node.parent);
+        if (parent && parent.activeChild && parent.activeChild !== tabUuid) {
+            _lastActiveByStack.set(node.parent, parent.activeChild);
+        }
+    }
     mb.layout.activateTab(tabUuid);
     let focusTarget = mb.layout.rememberedFocusInSubtree(tabUuid);
     if (!focusTarget) {
@@ -350,6 +361,21 @@ mb.actions.register('activateTabRelative', ({stack: stackArg, delta}) => {
     const newIdx = curIdx + delta;
     if (newIdx < 0 || newIdx >= stack.children.length) return;
     _activateTabAndFocus(stack.children[newIdx].id);
+});
+
+mb.actions.register('activateLastTab', ({stack: stackArg}) => {
+    const stackId = stackArg || _tabsStackNode;
+    if (!stackId) return;
+    const prev = _lastActiveByStack.get(stackId);
+    if (!prev) return;
+    const stack = mb.layout.node(stackId);
+    if (!stack || !stack.children) return;
+    const stillExists = stack.children.some(c => c.id === prev);
+    if (!stillExists) {
+        _lastActiveByStack.delete(stackId);
+        return;
+    }
+    _activateTabAndFocus(prev);
 });
 
 mb.actions.register('splitPane', ({dir}) => {

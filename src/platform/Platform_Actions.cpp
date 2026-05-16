@@ -678,6 +678,105 @@ void PlatformDawn::executeAction(const Action::Any &action)
                        }
                        // Notification to JS listeners happens via ActionRouter::dispatch
                    },
+                   [&](const Action::SendString &a)
+                   {
+                       Terminal *term = activeTerm();
+                       if (term && !a.text.empty()) {
+                           term->writeText(a.text);
+                       }
+                   },
+                   [&](const Action::SendKey &a)
+                   {
+                       TerminalEmulator *term = static_cast<TerminalEmulator *>(activeTerm());
+                       if (!term || a.key == Key_unknown) {
+                           return;
+                       }
+                       KeyEvent ev;
+                       ev.key       = a.key;
+                       ev.modifiers = a.mods;
+                       ev.action    = KeyAction_Press;
+                       ev.count     = 1;
+
+                       // For printable ASCII keys, keyPressEvent's legacy
+                       // switch only fills `text` for the named keys
+                       // (Enter/Tab/arrows/F1-12/...). Plain letters/digits
+                       // need text supplied here, matching the relevant
+                       // branches of InputController::onKey: ctrl+letter →
+                       // control byte; otherwise the lowercase/shifted ASCII
+                       // char. Kitty mode wants the unmodified character;
+                       // legacy mode wants either the control byte or the
+                       // shifted char. We synthesize legacy form and let
+                       // keyPressEvent's kitty path re-encode if active —
+                       // for kitty mode it normalizes ctrl+letter back to
+                       // the lowercase letter (Keyboard.cpp uses ev.text
+                       // verbatim for the kitty payload), so emit lowercase
+                       // here when the terminal is in kitty mode.
+                       const bool ctrl      = (a.mods & CtrlModifier) != 0;
+                       const bool shift     = (a.mods & ShiftModifier) != 0;
+                       const bool alt       = (a.mods & AltModifier) != 0;
+                       const bool isLetter  = (a.key >= Key_A && a.key <= Key_Z);
+                       const bool kittyMode = term->kittyFlags() != 0;
+                       if (isLetter) {
+                           char ch = static_cast<char>(a.key - Key_A + (shift ? 'A' : 'a'));
+                           if (!kittyMode && ctrl) {
+                               char ctrlByte = static_cast<char>((a.key - Key_A) + 1);
+                               ev.text       = alt ? std::string("\x1b") + ctrlByte
+                                                   : std::string(1, ctrlByte);
+                           } else if (!ctrl) {
+                               ev.text = alt ? std::string("\x1b") + ch
+                                             : std::string(1, ch);
+                           } else {
+                               // kittyMode + ctrl: encoder reads ev.text as
+                               // the lowercase letter and emits CSI u with
+                               // modifier bits separately.
+                               ev.text = std::string(1, static_cast<char>(a.key - Key_A + 'a'));
+                           }
+                       } else if (a.key >= Key_0 && a.key <= Key_9) {
+                           char ch = static_cast<char>('0' + (a.key - Key_0));
+                           ev.text = alt ? std::string("\x1b") + ch : std::string(1, ch);
+                       }
+                       // All other keys (special: arrows, F-keys, Enter,
+                       // etc.) leave ev.text empty so keyPressEvent's switch
+                       // produces the layout-correct sequence.
+                       if (alt) {
+                           ev.modifiers |= OptionAsAltModifier;
+                       }
+                       term->keyPressEvent(&ev);
+                   },
+                   [&](const Action::Nop &)
+                   {
+                       // Bound key consumed, no action.
+                   },
+                   [&](const Action::DisableDefaultAssignment &)
+                   {
+                       // mergeKeyBindings strips these before dispatch can
+                       // see them. Defensive log if one somehow survives.
+                       spdlog::warn("DisableDefaultAssignment dispatched — merge logic regression?");
+                   },
+                   [&](const Action::ActivateLastTab &a)
+                   {
+                       const std::string stackStr = a.stack.isNil() ? std::string {} : a.stack.toString();
+                       invokeOrLog("activateLastTab", [stackStr](JSContext *ctx)
+                                   {
+                                       JSValue o = JS_NewObject(ctx);
+                                       if (!stackStr.empty()) {
+                                           JS_SetPropertyStr(ctx, o, "stack", JS_NewStringLen(ctx, stackStr.data(), stackStr.size()));
+                                       }
+                                       return o;
+                                   });
+                   },
+                   [&](const Action::ResetTerminal &)
+                   {
+                       Terminal *term = activeTerm();
+                       if (!term) {
+                           return;
+                       }
+                       auto *emu                    = static_cast<TerminalEmulator *>(term);
+                       static constexpr char kSeq[] = "\x1b"
+                                                      "c";
+                       emu->injectData(kSeq, sizeof(kSeq) - 1);
+                       setNeedsRedraw();
+                   },
                },
                action);
 }

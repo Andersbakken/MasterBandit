@@ -395,6 +395,45 @@ std::optional<Action::Any> parseAction(const std::string &name,
         return Action::PasteSelection {};
     }
 
+    if (name == "send_string") {
+        if (args.empty()) {
+            spdlog::warn("Bindings: send_string requires a string arg");
+            return std::nullopt;
+        }
+        return Action::SendString { args[0] };
+    }
+    if (name == "send_key") {
+        if (args.empty()) {
+            spdlog::warn("Bindings: send_key requires a keystroke arg");
+            return std::nullopt;
+        }
+        auto ks = parseKeyStroke(args[0]);
+        if (!ks) {
+            return std::nullopt;
+        }
+        return Action::SendKey { ks->key, ks->mods };
+    }
+    if (name == "nop") {
+        return Action::Nop {};
+    }
+    if (name == "disable_default_assignment") {
+        return Action::DisableDefaultAssignment {};
+    }
+    if (name == "activate_last_tab") {
+        Uuid stack;
+        if (!args.empty()) {
+            stack = Uuid::fromString(args[0]);
+            if (stack.isNil()) {
+                spdlog::warn("Bindings: activate_last_tab bad stackUuid '{}'", args[0]);
+                return std::nullopt;
+            }
+        }
+        return Action::ActivateLastTab { stack };
+    }
+    if (name == "reset_terminal") {
+        return Action::ResetTerminal {};
+    }
+
     // Script actions: any name containing a '.' is treated as namespace.action
     if (name.find('.') != std::string::npos) {
         return Action::ScriptAction { name, args };
@@ -629,7 +668,14 @@ std::vector<Binding> mergeKeyBindings(std::vector<Binding> defaults,
             result.push_back(std::move(d));
         }
     }
+    // DisableDefaultAssignment is a marker that drops the matching default and
+    // leaves the stroke unbound (falls through to PTY). The shadowing pass
+    // above already removed the default; here we just skip emitting the user
+    // entry so the stroke isn't bound to anything.
     for (auto &u : user) {
+        if (std::holds_alternative<Action::DisableDefaultAssignment>(u.action)) {
+            continue;
+        }
         result.push_back(std::move(u));
     }
     return result;

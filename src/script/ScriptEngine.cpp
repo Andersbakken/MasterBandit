@@ -2763,21 +2763,18 @@ static int64_t currentDecorationValue(TerminalEmulator *emu, uint64_t decoration
         return static_cast<int64_t>(sampleAnimScalar(a.desc, nowMs));
     }
     // Fall back to the decoration's static style.
-    for (const auto &dec : emu->decorations()) {
-        if (dec.id != decorationId) {
-            continue;
-        }
+    if (const Decoration *dec = emu->decorationById(decorationId)) {
         switch (prop) {
             case AnimProp::Bg:
-                return static_cast<int64_t>(dec.style.bg.value_or(0));
+                return static_cast<int64_t>(dec->style.bg.value_or(0));
             case AnimProp::Fg:
-                return static_cast<int64_t>(dec.style.fg.value_or(0));
+                return static_cast<int64_t>(dec->style.fg.value_or(0));
             case AnimProp::UnderlineColor:
-                return dec.style.underline ? static_cast<int64_t>(dec.style.underline->color) : 0;
+                return dec->style.underline ? static_cast<int64_t>(dec->style.underline->color) : 0;
             case AnimProp::BgInflateX:
-                return static_cast<int64_t>(dec.style.bgInflateX);
+                return static_cast<int64_t>(dec->style.bgInflateX);
             case AnimProp::BgInflateY:
-                return static_cast<int64_t>(dec.style.bgInflateY);
+                return static_cast<int64_t>(dec->style.bgInflateY);
             case AnimProp::Count:
                 return 0;
         }

@@ -34,9 +34,6 @@ const HIGHLIGHT_BG       = 0xFF00D7FF; // yellow
 const HIGHLIGHT_FG       = 0xFF000000; // black text over yellow
 const CURRENT_BG         = 0xFF008CFF; // orange
 const CURRENT_FG         = 0xFF000000; // black text over orange
-// Hard cap on rendered decorations. Beyond this, results are findable in
-// principle but not all painted — keeps the snapshot composition cheap.
-const MAX_DECORATIONS    = 1000;
 
 const theme = createTheme({
     bg:     '#0d1b2a',
@@ -57,8 +54,7 @@ function paintBulk(pane, matches) {
     const batch = pane.createDecorationBatch();
     batch.clearDecorations("search");
     if (matches && matches.length > 0) {
-        const cap = Math.min(matches.length, MAX_DECORATIONS);
-        for (let i = 0; i < cap; i++) {
+        for (let i = 0; i < matches.length; i++) {
             const m = matches[i];
             batch.addDecoration({
                 startRowId: m.startRowId, startCol: m.startCol,
@@ -134,7 +130,7 @@ mb.addEventListener("action", "search.open", () => {
         const n = matches.value.length;
         if (!query.value) return "";
         if (n === 0) return " 0 matches";
-        return ` ${current.value + 1}/${n}` + (n >= MAX_DECORATIONS ? "+" : "");
+        return ` ${current.value + 1}/${n}`;
     });
 
     // Per-invocation "alive" flag so effects survive the popup's destruction
@@ -193,7 +189,7 @@ mb.addEventListener("action", "search.open", () => {
             regex: false,
             caseSensitive: false,
             wholeWord: false,
-            limit: MAX_DECORATIONS,
+            limit: 0, // 0 = no cap; bulk paint is capped separately in paintBulk.
         };
         // Detect simple regex-ish patterns: needle starts/ends with `/`.
         // Lightweight heuristic — full regex toggle UI is a follow-up.

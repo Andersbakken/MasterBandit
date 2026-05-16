@@ -801,11 +801,47 @@ void TerminalEmulator::setSelectedCommand(std::optional<uint64_t> commandId)
     publishAndFireEvent(static_cast<int>(Update));
 }
 
+void TerminalEmulator::indexAddDecorationLocked(const Decoration &d)
+{
+    mDecIdToIdx[d.id] = mDecorations.size() - 1;
+    if (d.startLineId == d.endLineId) {
+        mDecsByStartLine[d.startLineId].push_back(d.id);
+    } else {
+        mMultiLineDecIds.push_back(d.id);
+    }
+}
+
+void TerminalEmulator::rebuildDecorationIndexesLocked()
+{
+    mDecIdToIdx.clear();
+    mDecsByStartLine.clear();
+    mMultiLineDecIds.clear();
+    for (size_t i = 0; i < mDecorations.size(); ++i) {
+        const Decoration &d = mDecorations[i];
+        mDecIdToIdx[d.id]   = i;
+        if (d.startLineId == d.endLineId) {
+            mDecsByStartLine[d.startLineId].push_back(d.id);
+        } else {
+            mMultiLineDecIds.push_back(d.id);
+        }
+    }
+}
+
+const Decoration *TerminalEmulator::decorationById(uint64_t id) const
+{
+    auto it = mDecIdToIdx.find(id);
+    if (it == mDecIdToIdx.end()) {
+        return nullptr;
+    }
+    return &mDecorations[it->second];
+}
+
 uint64_t TerminalEmulator::addDecoration(Decoration spec)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     spec.id = mNextDecorationId++;
     mDecorations.push_back(std::move(spec));
+    indexAddDecorationLocked(mDecorations.back());
     uint64_t id = mDecorations.back().id;
     // Publish a fresh snapshot so the render thread picks up the new
     // decoration on the next frame. Without this, the published snapshot
@@ -842,15 +878,15 @@ static void drainAnimsForDecoration(std::unordered_map<uint64_t, Animation> &tab
 bool TerminalEmulator::removeDecoration(uint64_t id, std::vector<uint64_t> *cancelledAnimHandlesOut)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    for (auto it = mDecorations.begin(); it != mDecorations.end(); ++it) {
-        if (it->id == id) {
-            mDecorations.erase(it);
-            drainAnimsForDecoration(mAnimations, id, cancelledAnimHandlesOut);
-            buildAndPublishSnapshotLocked();
-            return true;
-        }
+    auto idxIt = mDecIdToIdx.find(id);
+    if (idxIt == mDecIdToIdx.end()) {
+        return false;
     }
-    return false;
+    mDecorations.erase(mDecorations.begin() + static_cast<std::ptrdiff_t>(idxIt->second));
+    drainAnimsForDecoration(mAnimations, id, cancelledAnimHandlesOut);
+    rebuildDecorationIndexesLocked();
+    buildAndPublishSnapshotLocked();
+    return true;
 }
 
 size_t TerminalEmulator::clearUserDecorations(std::string_view tag,
@@ -873,6 +909,7 @@ size_t TerminalEmulator::clearUserDecorations(std::string_view tag,
         mDecorations.end());
     size_t cleared = before - mDecorations.size();
     if (cleared > 0) {
+        rebuildDecorationIndexesLocked();
         buildAndPublishSnapshotLocked();
     }
     return cleared;
@@ -884,7 +921,8 @@ std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<Decorat
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     std::vector<uint64_t> ids;
     ids.reserve(ops.size());
-    bool changed = false;
+    bool changed     = false;
+    bool needRebuild = false;
     for (auto &op : ops) {
         if (op.kind == DecorationBatchOp::Kind::Clear) {
             const std::string &tag = op.clearTag;
@@ -903,14 +941,24 @@ std::vector<uint64_t> TerminalEmulator::applyDecorationBatch(std::vector<Decorat
                                }),
                 mDecorations.end());
             if (mDecorations.size() != before) {
-                changed = true;
+                changed     = true;
+                needRebuild = true;
             }
         } else {
             op.spec.id = mNextDecorationId++;
             mDecorations.push_back(std::move(op.spec));
             ids.push_back(mDecorations.back().id);
+            // Incremental index update is safe ONLY when no prior Clear op
+            // in this batch shifted vector positions — once that happens
+            // the id → idx map is stale and a tail rebuild is required.
+            if (!needRebuild) {
+                indexAddDecorationLocked(mDecorations.back());
+            }
             changed = true;
         }
+    }
+    if (needRebuild) {
+        rebuildDecorationIndexesLocked();
     }
     if (changed) {
         buildAndPublishSnapshotLocked();
@@ -985,14 +1033,13 @@ void TerminalEmulator::applyAnimResultToTarget(AnimTargetKind kind, uint64_t tar
                                                AnimProp prop, int64_t value)
 {
     switch (kind) {
-        case AnimTargetKind::Decoration:
-            for (auto &dec : mDecorations) {
-                if (dec.id == targetId) {
-                    applyAnimValueToStyle(dec.style, prop, value);
-                    return;
-                }
+        case AnimTargetKind::Decoration: {
+            auto it = mDecIdToIdx.find(targetId);
+            if (it != mDecIdToIdx.end()) {
+                applyAnimValueToStyle(mDecorations[it->second].style, prop, value);
             }
             return;
+        }
     }
 }
 

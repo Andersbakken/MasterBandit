@@ -691,6 +691,28 @@ public:
 
     const std::vector<Decoration> &decorations() const { return mDecorations; }
 
+    // O(1) id → Decoration lookup. Returns nullptr when the id is unknown.
+    // Replaces the linear-scan pattern at every decoration-by-id callsite
+    // (animation final-value sampler, JS handle getters, removeDecoration).
+    const Decoration *decorationById(uint64_t id) const;
+
+    // Per-line index of single-line User decorations (startLineId ==
+    // endLineId). Snapshot construction walks visible lineIds and looks
+    // up here, so the per-frame cost is O(visible_rows) rather than
+    // O(total_decorations). Multi-line decorations are listed separately
+    // in `multiLineDecorationIds()` and always scanned (count is bounded
+    // by user actions, not search).
+    const std::unordered_map<uint64_t, std::vector<uint64_t>> &
+    decorationsByStartLine() const
+    {
+        return mDecsByStartLine;
+    }
+
+    const std::vector<uint64_t> &multiLineDecorationIds() const
+    {
+        return mMultiLineDecIds;
+    }
+
     // Resolve a single decoration to abs-row coordinates. Returns empty
     // when an anchor has evicted past the archive cap. Used by the snapshot
     // mirror.
@@ -958,6 +980,20 @@ private:
     // populates it from `*this`, swaps it into the channel. Caller must
     // hold mMutex.
     void buildAndPublishSnapshotLocked();
+
+    // Decoration-index maintenance. Caller must hold mMutex.
+    //
+    // indexAddDecorationLocked: append-side incremental maintenance. Called
+    // after pushing the Decoration onto mDecorations; classifies it as
+    // single- or multi-line and updates the right index.
+    //
+    // rebuildDecorationIndexesLocked: full rebuild from mDecorations.
+    // Called after any erase that shifts vector positions (since the id →
+    // idx map keys those positions). Tracking shifts incrementally is
+    // complexity for no perf win — erases are user-driven (search-clear
+    // tag, JS clearDecorations) and the vector pass already costs O(N).
+    void indexAddDecorationLocked(const Decoration &d);
+    void rebuildDecorationIndexesLocked();
 
 protected:
     // Publish a fresh snapshot and then fire the given event. Use at any
@@ -1300,6 +1336,30 @@ private:
     // render-time composition, not in storage).
     std::vector<Decoration> mDecorations;
     uint64_t mNextDecorationId { 1 };
+
+    // Lookup indexes maintained alongside mDecorations to keep the per-frame
+    // snapshot cost bounded by visible rows rather than total decoration
+    // count. Without these, TerminalSnapshot iterates every Decoration and
+    // calls resolveDecoration on each, which is O(N_total) per frame — a
+    // search that paints 1000 highlights costs 1000 firstAbsOfLine hash
+    // lookups per snapshot, every snapshot, even when nothing's on screen.
+    //
+    //   mDecIdToIdx       — O(1) id → mDecorations index (replaces linear
+    //                       scans in removeDecoration / animation lookups).
+    //   mDecsByStartLine  — single-line decorations (startLineId ==
+    //                       endLineId), grouped by anchor lineId. Snapshot
+    //                       walks visible lineIds and gathers from this map.
+    //   mMultiLineDecIds  — decorations whose anchor span crosses logical
+    //                       lines (CommandRegion, multi-line Selection, JS-
+    //                       owned ranges). Always scanned in the snapshot —
+    //                       count is bounded by user actions, not search.
+    //
+    // Single-line buckets and mMultiLineDecIds keep ids in insertion order
+    // (== id order, since ids are monotonic). Erase-shifts in mDecorations
+    // trigger a full index rebuild via rebuildDecorationIndexesLocked.
+    std::unordered_map<uint64_t, size_t> mDecIdToIdx;
+    std::unordered_map<uint64_t, std::vector<uint64_t>> mDecsByStartLine;
+    std::vector<uint64_t> mMultiLineDecIds;
 
     // Animation registry — see animations() and start/finish/cancelAnimation.
     // Cleaned up alongside affected decorations in removeDecoration /

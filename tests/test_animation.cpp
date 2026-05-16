@@ -22,6 +22,7 @@ namespace {
 struct MonoGuard
 {
     MonoGuard(uint64_t t) { TerminalEmulator::setMonoForTest(t); }
+
     ~MonoGuard() { TerminalEmulator::setMonoForTest(0); }
 };
 
@@ -125,11 +126,11 @@ TEST_CASE("animProgress: clamps to [0, 1] across the duration window")
     d.startMs    = 1000;
     d.durationMs = 200;
 
-    CHECK(animProgress(d, 500) == doctest::Approx(0.0f));   // before start
-    CHECK(animProgress(d, 1000) == doctest::Approx(0.0f));  // at start
-    CHECK(animProgress(d, 1100) == doctest::Approx(0.5f));  // halfway
-    CHECK(animProgress(d, 1200) == doctest::Approx(1.0f));  // at end
-    CHECK(animProgress(d, 9999) == doctest::Approx(1.0f));  // past end
+    CHECK(animProgress(d, 500) == doctest::Approx(0.0f));  // before start
+    CHECK(animProgress(d, 1000) == doctest::Approx(0.0f)); // at start
+    CHECK(animProgress(d, 1100) == doctest::Approx(0.5f)); // halfway
+    CHECK(animProgress(d, 1200) == doctest::Approx(1.0f)); // at end
+    CHECK(animProgress(d, 9999) == doctest::Approx(1.0f)); // past end
 }
 
 TEST_CASE("animProgress: zero duration is instantly 1.0")
@@ -203,11 +204,11 @@ TEST_CASE("sampleAnimColor: t=1 returns endValue exactly")
 TEST_CASE("sampleAnimColor: alpha lerps linearly across the midpoint")
 {
     AnimDescriptor d {};
-    d.startMs    = 1000;
-    d.durationMs = 200;
-    d.startValue = 0x00000000; // fully transparent
-    d.endValue   = 0xFF000000; // fully opaque black
-    d.ease       = Ease::Linear;
+    d.startMs        = 1000;
+    d.durationMs     = 200;
+    d.startValue     = 0x00000000; // fully transparent
+    d.endValue       = 0xFF000000; // fully opaque black
+    d.ease           = Ease::Linear;
     uint32_t mid     = sampleAnimColor(d, 1100);
     uint8_t midAlpha = (mid >> 24) & 0xFF;
     CHECK(midAlpha >= 126);
@@ -222,7 +223,7 @@ TEST_CASE("startAnimation: no replacement on empty slot returns 0")
 {
     TestTerminal t;
     uint64_t decId = addBareDecoration(t);
-    auto a = makeAnim(/*handleId=*/1, decId, AnimProp::Bg, 0xFF000000, 0xFFFFFFFF, 1000, 200);
+    auto a         = makeAnim(/*handleId=*/1, decId, AnimProp::Bg, 0xFF000000, 0xFFFFFFFF, 1000, 200);
     uint64_t prior = t.term.startAnimation(a);
     CHECK(prior == 0);
     CHECK(t.term.animations().size() == 1);
@@ -411,4 +412,191 @@ TEST_CASE("snapshot: animations vector mirrors emulator's registry")
     CHECK(snap.animations[0].prop == AnimProp::Bg);
     CHECK(snap.animations[0].desc.startMs == 1000);
     CHECK(snap.animations[0].desc.durationMs == 200);
+}
+
+// ============================================================================
+// Decoration lookup indexes (mDecIdToIdx, mDecsByStartLine, mMultiLineDecIds)
+// ============================================================================
+
+TEST_CASE("decorationById: O(1) lookup matches linear scan over decorations()")
+{
+    TestTerminal t;
+    Decoration d;
+    d.kind            = DecorationKind::User;
+    d.startLineId     = 5;
+    d.startCellOffset = 0;
+    d.endLineId       = 5;
+    d.endCellOffset   = 3;
+    d.tag             = "x";
+    uint64_t id       = t.term.addDecoration(std::move(d));
+
+    const Decoration *got = t.term.decorationById(id);
+    REQUIRE(got != nullptr);
+    CHECK(got->id == id);
+    CHECK(got->tag == "x");
+    CHECK(t.term.decorationById(999999) == nullptr);
+}
+
+TEST_CASE("decoration index: single-line decorations bucket by startLineId")
+{
+    TestTerminal t;
+    Decoration d;
+    d.kind            = DecorationKind::User;
+    d.startLineId     = 42;
+    d.startCellOffset = 0;
+    d.endLineId       = 42;
+    d.endCellOffset   = 1;
+    uint64_t id       = t.term.addDecoration(std::move(d));
+
+    const auto &byLine = t.term.decorationsByStartLine();
+    auto it            = byLine.find(42);
+    REQUIRE(it != byLine.end());
+    REQUIRE(it->second.size() == 1);
+    CHECK(it->second[0] == id);
+    CHECK(t.term.multiLineDecorationIds().empty());
+}
+
+TEST_CASE("decoration index: multi-line decorations land in mMultiLineDecIds, not per-line bucket")
+{
+    TestTerminal t;
+    Decoration d;
+    d.kind            = DecorationKind::User;
+    d.startLineId     = 10;
+    d.startCellOffset = 0;
+    d.endLineId       = 12; // spans 3 logical lines
+    d.endCellOffset   = 5;
+    uint64_t id       = t.term.addDecoration(std::move(d));
+
+    CHECK(t.term.decorationsByStartLine().empty());
+    REQUIRE(t.term.multiLineDecorationIds().size() == 1);
+    CHECK(t.term.multiLineDecorationIds()[0] == id);
+}
+
+TEST_CASE("decoration index: removeDecoration keeps indexes consistent")
+{
+    TestTerminal t;
+    Decoration d;
+    d.kind            = DecorationKind::User;
+    d.startLineId     = 7;
+    d.startCellOffset = 0;
+    d.endLineId       = 7;
+    d.endCellOffset   = 1;
+    d.tag             = "a";
+    uint64_t a        = t.term.addDecoration(d);
+    uint64_t b        = t.term.addDecoration(d);
+
+    CHECK(t.term.decorationsByStartLine().at(7).size() == 2);
+    CHECK(t.term.removeDecoration(a));
+
+    const auto &byLine = t.term.decorationsByStartLine();
+    REQUIRE(byLine.count(7) == 1);
+    REQUIRE(byLine.at(7).size() == 1);
+    CHECK(byLine.at(7)[0] == b);
+    CHECK(t.term.decorationById(a) == nullptr);
+    REQUIRE(t.term.decorationById(b) != nullptr);
+    CHECK(t.term.decorationById(b)->id == b);
+}
+
+TEST_CASE("decoration index: clearUserDecorations empties all indexes")
+{
+    TestTerminal t;
+    Decoration single;
+    single.kind        = DecorationKind::User;
+    single.startLineId = 3;
+    single.endLineId   = 3;
+    single.tag         = "k";
+    t.term.addDecoration(single);
+
+    Decoration multi;
+    multi.kind        = DecorationKind::User;
+    multi.startLineId = 4;
+    multi.endLineId   = 6;
+    multi.tag         = "k";
+    t.term.addDecoration(multi);
+
+    CHECK(t.term.clearUserDecorations({}) == 2);
+    CHECK(t.term.decorationsByStartLine().empty());
+    CHECK(t.term.multiLineDecorationIds().empty());
+}
+
+TEST_CASE("decoration index: applyDecorationBatch maintains indexes across clear+add ops")
+{
+    TestTerminal t;
+    // Pre-populate with one decoration.
+    Decoration old;
+    old.kind        = DecorationKind::User;
+    old.startLineId = 1;
+    old.endLineId   = 1;
+    old.tag         = "search";
+    t.term.addDecoration(old);
+
+    // Batch: clear tag "search", then add two fresh ones on different lines.
+    std::vector<DecorationBatchOp> ops;
+    {
+        DecorationBatchOp c;
+        c.kind     = DecorationBatchOp::Kind::Clear;
+        c.clearTag = "search";
+        ops.push_back(std::move(c));
+    }
+    {
+        DecorationBatchOp a;
+        a.kind             = DecorationBatchOp::Kind::Add;
+        a.spec.kind        = DecorationKind::User;
+        a.spec.tag         = "search";
+        a.spec.startLineId = 100;
+        a.spec.endLineId   = 100;
+        ops.push_back(std::move(a));
+    }
+    {
+        DecorationBatchOp a;
+        a.kind             = DecorationBatchOp::Kind::Add;
+        a.spec.kind        = DecorationKind::User;
+        a.spec.tag         = "search";
+        a.spec.startLineId = 101;
+        a.spec.endLineId   = 101;
+        ops.push_back(std::move(a));
+    }
+    auto ids = t.term.applyDecorationBatch(std::move(ops));
+    REQUIRE(ids.size() == 2);
+
+    const auto &byLine = t.term.decorationsByStartLine();
+    REQUIRE(byLine.count(100) == 1);
+    REQUIRE(byLine.count(101) == 1);
+    CHECK(byLine.at(100)[0] == ids[0]);
+    CHECK(byLine.at(101)[0] == ids[1]);
+    CHECK(byLine.count(1) == 0); // old one cleared
+    CHECK(t.term.decorations().size() == 2);
+}
+
+TEST_CASE("snapshot: only resolves decorations whose anchor is on a visible line")
+{
+    TestTerminal t(40, 4);
+    // Push enough content that early lines fall into scrollback.
+    for (int i = 0; i < 10; ++i) {
+        t.feed("line\r\n");
+    }
+    // First line is in scrollback now; lineId 1 anchors there.
+    Decoration off;
+    off.kind        = DecorationKind::User;
+    off.startLineId = 1;
+    off.endLineId   = 1;
+    off.tag         = "off";
+    t.term.addDecoration(std::move(off));
+
+    // Anchor a second decoration on a visible line.
+    uint64_t visibleLineId = t.term.document().lineIdForAbs(t.term.document().historySize());
+    REQUIRE(visibleLineId != 0);
+    Decoration on;
+    on.kind        = DecorationKind::User;
+    on.startLineId = visibleLineId;
+    on.endLineId   = visibleLineId;
+    on.tag         = "on";
+    uint64_t onId  = t.term.addDecoration(std::move(on));
+
+    TerminalSnapshot snap;
+    snap.update(t.term);
+
+    // Only the visible-anchor decoration should appear in snapshot.decorations.
+    REQUIRE(snap.decorations.size() == 1);
+    CHECK(snap.decorations[0].id == onId);
 }

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <span>
+#include <unordered_set>
 
 const TerminalSnapshot::Segment *TerminalSnapshot::segmentAtPixelY(int y, float cellH) const
 {
@@ -265,11 +266,54 @@ bool TerminalSnapshot::update(TerminalEmulator &term)
         }
     };
 
-    // User-kind decorations from live storage.
+    // Live-storage decorations, routed via the per-line index so the cost
+    // here is O(visible_rows + multi_line_decs) rather than O(total_decs).
+    // Without this, a search painting 50k highlights would resolveDecoration
+    // 50k times every frame even when nothing is on screen.
+    //
+    // Single-line decorations: walk unique visible lineIds, pull candidate
+    // ids from mDecsByStartLine. Multi-line decorations (CommandRegion,
+    // multi-line user ranges) bypass the per-line index — their span isn't
+    // expressible as a single key — and are scanned in full, but their
+    // count is bounded by user actions, not search.
+    //
+    // Candidate ids are deduped (a soft-wrapped logical line maps the same
+    // lineId to several segments) and processed in ascending id order so
+    // the renderer's stable_sort tiebreak (insertion order) lands the same
+    // composition as the previous flat-walk implementation.
     {
-        const auto &live = term.decorations();
-        for (const auto &dec : live) {
-            auto resolved = term.resolveDecoration(dec);
+        std::unordered_set<uint64_t> visibleLineIds;
+        visibleLineIds.reserve(segments.size());
+        for (const auto &seg : segments) {
+            if (seg.lineId != 0) {
+                visibleLineIds.insert(seg.lineId);
+            }
+        }
+
+        std::vector<uint64_t> candidateIds;
+        const auto &byLine = term.decorationsByStartLine();
+        for (uint64_t lid : visibleLineIds) {
+            auto it = byLine.find(lid);
+            if (it == byLine.end()) {
+                continue;
+            }
+            for (uint64_t id : it->second) {
+                candidateIds.push_back(id);
+            }
+        }
+        const auto &multi = term.multiLineDecorationIds();
+        candidateIds.insert(candidateIds.end(), multi.begin(), multi.end());
+
+        std::sort(candidateIds.begin(), candidateIds.end());
+        candidateIds.erase(std::unique(candidateIds.begin(), candidateIds.end()),
+                           candidateIds.end());
+
+        for (uint64_t id : candidateIds) {
+            const Decoration *dec = term.decorationById(id);
+            if (!dec) {
+                continue;
+            }
+            auto resolved = term.resolveDecoration(*dec);
             if (!resolved) {
                 continue;
             }

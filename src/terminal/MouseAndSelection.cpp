@@ -2,6 +2,7 @@
 #include "Utf8.h"
 #include <algorithm>
 #include <cstdio>
+#include <spdlog/spdlog.h>
 
 void TerminalEmulator::focusEvent(bool focused)
 {

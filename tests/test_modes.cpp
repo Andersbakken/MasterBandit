@@ -75,20 +75,22 @@ TEST_CASE("alt screen restores cursor position on exit")
 TEST_CASE("alt screen does not leak mode changes back to main")
 {
     TestTerminal t;
-    // Set a handful of modes on main. An app that enters alt must not be able
-    // to leave these modified once it exits.
+    // Set channel-level features on main. They inherit on alt entry, but any
+    // changes made on alt must NOT leak back to main on exit.
     t.csi("?1000h"); // mouse reporting
     t.csi("?2004h"); // bracketed paste
     REQUIRE(t.term.mouseReportingActive());
     REQUIRE(t.term.bracketedPaste());
 
     t.csi("?1049h");
-    // Alt starts clean — modes reset to defaults.
-    CHECK_FALSE(t.term.mouseReportingActive());
-    CHECK_FALSE(t.term.bracketedPaste());
-    // App on alt turns these off AND on again (then crashes without cleanup).
+    // Inherited from main.
+    CHECK(t.term.mouseReportingActive());
+    CHECK(t.term.bracketedPaste());
+    // App on alt flips them.
     t.csi("?1000l");
-    t.csi("?2004h");
+    t.csi("?2004l");
+    REQUIRE_FALSE(t.term.mouseReportingActive());
+    REQUIRE_FALSE(t.term.bracketedPaste());
 
     t.csi("?1049l");
     // Main's modes are intact, regardless of what alt did.
@@ -134,12 +136,14 @@ static int queryMode(TestTerminal &t, int mode)
     return std::stoi(out.substr(start, end - start));
 }
 
-TEST_CASE("alt screen isolates DECRQM-queryable modes")
+TEST_CASE("alt screen inherits channel-level modes from main on entry")
 {
+    // Channel-level features (bracketed paste, sync output, color preference
+    // reporting, mouse tracking, focus reporting) are input/output protocol
+    // modes — an app may enable them once on main and expect them to apply
+    // on alt too. Trigger case: mpv's vo_kitty enables ?1003h, then ?1049h,
+    // and silently lost mouse events when alt reset the channel state.
     TestTerminal t;
-    // Modes supported by DECRQM in this terminal: 1049, 2004, 2026, 2031.
-    // 1049 is the screen itself — can't meaningfully test it here, so we
-    // stick to the app-settable app-mode flags.
     t.csi("?2004h"); // bracketed paste
     t.csi("?2026h"); // synchronized output
     t.csi("?2031h"); // color preference reporting
@@ -148,20 +152,53 @@ TEST_CASE("alt screen isolates DECRQM-queryable modes")
     REQUIRE(queryMode(t, 2031) == 1);
 
     t.csi("?1049h");
-    CHECK(queryMode(t, 2004) == 2);
-    CHECK(queryMode(t, 2026) == 2);
-    CHECK(queryMode(t, 2031) == 2);
-
-    // Alt flips them to the opposite of main.
-    t.csi("?2004l");
-    t.csi("?2026h");
-    t.csi("?2031h");
-
-    t.csi("?1049l");
-    // Main's state is intact regardless of what alt did.
+    // Alt inherits.
     CHECK(queryMode(t, 2004) == 1);
     CHECK(queryMode(t, 2026) == 1);
     CHECK(queryMode(t, 2031) == 1);
+
+    // Mode changes on alt don't leak back to main.
+    t.csi("?2004l");
+    t.csi("?2026l");
+    t.csi("?2031l");
+    CHECK(queryMode(t, 2004) == 2);
+
+    t.csi("?1049l");
+    CHECK(queryMode(t, 2004) == 1);
+    CHECK(queryMode(t, 2026) == 1);
+    CHECK(queryMode(t, 2031) == 1);
+}
+
+TEST_CASE("alt screen inherits mouse modes from main on entry")
+{
+    // The mpv -vo=kitty trigger case: enable 1003 before entering alt screen.
+    // Mouse motion events must still be emitted on alt — without the
+    // inheritance the OSC overlay never fires because mpv sees no events.
+    TestTerminal t;
+    t.csi("?1003h"); // any-event mouse tracking on main
+
+    t.csi("?1049h");
+
+    // After alt entry, simulate hover motion. With 1003 carried across,
+    // the emulator should emit a legacy mouse-tracking sequence.
+    MouseEvent ev {};
+    ev.x         = 10;
+    ev.y         = 5;
+    ev.pixelX    = 80;
+    ev.pixelY    = 50;
+    ev.button    = NoButton;
+    ev.modifiers = 0;
+    t.clearOutput();
+    t.term.mouseMoveEvent(&ev);
+    const std::string &out = t.output();
+    REQUIRE(out.size() >= 6);
+    // Legacy X10 format: ESC [ M Cb Cx Cy with each byte +32. Motion adds
+    // 32 to button, no-button == 3, so Cb = 3 + 32 + 32 = 67. Cx = 10+1+32,
+    // Cy = 5+1+32.
+    CHECK(out.substr(0, 3) == std::string("\x1b[M", 3));
+    CHECK(static_cast<unsigned char>(out[3]) == 67);
+    CHECK(static_cast<unsigned char>(out[4]) == 43); // 10+1+32
+    CHECK(static_cast<unsigned char>(out[5]) == 38); // 5+1+32
 }
 
 TEST_CASE("alt screen isolates cursor shape (DECSCUSR)")

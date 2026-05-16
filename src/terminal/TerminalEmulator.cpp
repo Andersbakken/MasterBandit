@@ -1956,37 +1956,30 @@ void TerminalEmulator::processCSI(const char *buf, int len)
         }
         case HVP:
         case CUP: {
+            // ECMA-48 / xterm: row and column default to 1, parameter value 0
+            // is equivalent to 1, params beyond the second are ignored.
             char *end;
             action.x = action.y   = 1;
             action.type           = Action::CursorPosition;
             const unsigned long x = parseUL(buf + 1, &end);
             if (end == buf + len - 1) {
-                if (len != 2) {
-                    if (!x) {
-                        sLog().error("Invalid CSI CUP error 1");
-                        action.type = Action::Invalid;
-                    } else {
-                        action.x = x;
-                    }
+                // Single-param form: "CSI <n> H" or bare "CSI H".
+                if (len != 2 && x > 0) {
+                    action.x = x;
                 }
             } else if (*end == ';') {
-                if (buf[1] != ';') {
-                    if (x == 0) {
-                        sLog().error("Invalid CSI CUP error 2");
-                        action.type = Action::Invalid;
-                        break;
-                    }
+                // Two-or-more-param form. First param is row; an empty first
+                // param ("CSI ;<col> H") keeps the row at its default of 1.
+                if (buf[1] != ';' && x > 0) {
                     action.x = x;
                 }
                 if (end + 1 < buf + len - 1) {
                     const unsigned long y = parseUL(end + 1, &end);
-                    if (end != buf + len - 1 || !y) {
-                        sLog().error("Invalid CSI CUP error 3");
-                        action.type = Action::Invalid;
-                        break;
-                    } else {
+                    if (y > 0) {
                         action.y = y;
                     }
+                    // Any data after the second param (e.g. "CSI 1;1;1 H")
+                    // is silently discarded.
                 }
             }
             break;
@@ -2841,7 +2834,25 @@ void TerminalEmulator::onAction(const Action *action)
                     // Main state is preserved intact in mMainState — on 1049 l we
                     // just flip mState back, no field-by-field restore needed.
                     resetToDefault(mAltState);
-                    mState = &mAltState;
+                    // Channel-level features (mouse tracking, focus reporting,
+                    // bracketed paste, sync output, color preference reporting)
+                    // are input/output protocol modes — apps may enable them
+                    // once and expect them to apply on either screen. Inherit
+                    // from main on alt-screen entry. Per-screen state
+                    // (autowrap, scroll region, SGR pen, cursor, charset)
+                    // stays at defaults. Kitty keyboard flags are explicitly
+                    // per-screen by protocol (mKittyStackAlt is separate) so
+                    // they're not inherited.
+                    mAltState.mouseMode1000            = mMainState.mouseMode1000;
+                    mAltState.mouseMode1002            = mMainState.mouseMode1002;
+                    mAltState.mouseMode1003            = mMainState.mouseMode1003;
+                    mAltState.mouseMode1006            = mMainState.mouseMode1006;
+                    mAltState.mouseMode1016            = mMainState.mouseMode1016;
+                    mAltState.focusReporting           = mMainState.focusReporting;
+                    mAltState.bracketedPaste           = mMainState.bracketedPaste;
+                    mAltState.syncOutput               = mMainState.syncOutput;
+                    mAltState.colorPreferenceReporting = mMainState.colorPreferenceReporting;
+                    mState                             = &mAltState;
                     mBracketedPasteAtomic.store(mState->bracketedPaste, std::memory_order_release);
                     syncMouseReportingAtomic();
                     mUsingAltScreen = true;

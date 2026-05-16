@@ -1106,7 +1106,6 @@ void InputController::onCursorPos(double x, double y)
     if (!term) {
         return;
     }
-
     const float contentScaleX = platform_->contentScaleX_;
     const float contentScaleY = platform_->contentScaleY_;
     const float charWidth     = platform_->charWidth_;

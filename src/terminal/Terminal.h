@@ -546,15 +546,19 @@ private:
     // kReadBufferLow. Atomic: set by the PtyMux thread (in
     // readFromFD) and CAS-cleared by the worker (in maybeResumeRead).
     std::atomic<bool> mReadPaused { false };
-    // High/low watermarks tuned so a single parser apply holds
-    // mMutex for at most ~50 ms even at the worst observed parser
-    // throughput (~1 MB/s under sustained scrollback growth). Other
-    // threads wanting mMutex (input handlers, render snapshot,
-    // resize) will see at most that wait. Smaller values reduce
-    // worst-case latency further but pay more PTY-poll round-trips
-    // and slightly hurt throughput on bursty workloads.
-    static constexpr size_t kReadBufferHigh = 64 * 1024; // 64 KiB
-    static constexpr size_t kReadBufferLow  = 16 * 1024; // 16 KiB
+    // High/low watermarks trade input-latency vs throughput. Each
+    // hit of the high-water disarms POLLIN, makes the producer
+    // block in write(2), and pays a kqueue/epoll rearm round-trip
+    // once the parser drains below low-water. For megabyte-per-
+    // frame producers (e.g. mpv -vo=kitty with t=d, ~5.4 MiB per
+    // frame at 1080p RGB24) a 64 KiB high-water meant ~85 rearm
+    // round-trips per frame and capped throughput well below what
+    // the parser could chew. 1 MiB cuts that to ~6 per frame.
+    // Cost: at sustained flooding workloads the parser can hold
+    // mMutex up to ~chunk_size / throughput; input/snapshot/resize
+    // wait that long worst-case.
+    static constexpr size_t kReadBufferHigh = 1024 * 1024; // 1 MiB
+    static constexpr size_t kReadBufferLow  = 256 * 1024;  // 256 KiB
 
 public:
     // Called by the parse worker after each batch of injectData

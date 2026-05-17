@@ -1337,44 +1337,48 @@ void InputController::onCursorPos(double x, double y)
         } else {
             platform_->setDragCursorX(static_cast<float>(sx));
         }
-        // Hit-test cursor X against the originating bar's colRanges, ignoring
-        // Y entirely so the strip still slides aside when the cursor wanders
-        // above or below the bar (a fully-lifted drag mid-air should still
-        // make room for itself). Cursor X past either end of the strip clamps
-        // to the nearest occupied tab. Cross-stack drag isn't supported in
-        // v1 — only the originating bar is consulted.
-        int hitIdx              = -1;
+        // Midpoint-trigger reorder, Chrome-style. Swap with a neighbor only
+        // when the cursor crosses *that neighbor's* midpoint, not when the
+        // cursor moves into the neighbor's range. With asymmetric tab widths
+        // an edge-based test causes dither: the dragged tab swaps into a
+        // wider neighbor's range, the wider neighbor's new range straddles
+        // the cursor in the opposite direction, and the next motion swaps
+        // back. Midpoint-based has hysteresis — once swapped, the cursor is
+        // on the just-vacated side of the trigger line, so further small
+        // motions don't oscillate. One swap max per motion event; fast
+        // cursor motion catches up over a few events. Y is ignored so the
+        // strip still slides when the cursor wanders above/below the bar.
+        int currentIdx          = td->currentIndex();
+        int newIdx              = currentIdx;
         const auto &bars        = platform_->renderThread_->renderState().tabBars;
         float tabBarCharWidth   = platform_->tabBarCharWidth_;
         for (const TabBarRender &br : bars) {
             if (br.id != td->barId()) {
                 continue;
             }
-            for (size_t k = 0; k < br.colRanges.size(); ++k) {
-                int s = br.colRanges[k].first;
-                int e = br.colRanges[k].second;
+            auto midpointOf = [&](int idx) -> std::optional<float>
+            {
+                if (idx < 0 || idx >= static_cast<int>(br.colRanges.size())) {
+                    return std::nullopt;
+                }
+                int s = br.colRanges[idx].first;
+                int e = br.colRanges[idx].second;
                 if (s < 0 || e <= s) {
-                    continue;
+                    return std::nullopt;
                 }
-                float left  = static_cast<float>(br.rect.x) + static_cast<float>(s) * tabBarCharWidth;
-                float right = static_cast<float>(br.rect.x) + static_cast<float>(e) * tabBarCharWidth;
-                if (sx < left) {
-                    if (hitIdx < 0) {
-                        hitIdx = static_cast<int>(k); // clamp left
-                    }
-                    break;
-                }
-                hitIdx = static_cast<int>(k);
-                if (sx < right) {
-                    break;
-                }
+                return static_cast<float>(br.rect.x) + (static_cast<float>(s + e) / 2.0f) * tabBarCharWidth;
+            };
+            if (auto leftMid = midpointOf(currentIdx - 1); leftMid && sx < *leftMid) {
+                newIdx = currentIdx - 1;
+            } else if (auto rightMid = midpointOf(currentIdx + 1); rightMid && sx > *rightMid) {
+                newIdx = currentIdx + 1;
             }
             break;
         }
-        if (hitIdx >= 0 && hitIdx != td->currentIndex()) {
-            int delta = hitIdx - td->currentIndex();
+        if (newIdx != currentIdx) {
+            int delta = newIdx - currentIdx;
             if (platform_->scriptEngine_.layoutTree().moveChild(td->stackId(), td->draggedTabId(), delta)) {
-                td->setCurrentIndex(hitIdx);
+                td->setCurrentIndex(newIdx);
                 platform_->tabBarDirty_ = true;
                 platform_->setNeedsRedraw();
             }

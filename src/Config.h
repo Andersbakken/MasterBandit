@@ -77,11 +77,7 @@ struct TabBarConfig
     bool progress_bar          = true;      // show progress bar line at top of pane
     std::string progress_color = "#0099ff"; // progress bar color
     float progress_height      = 3.0f;      // progress bar height in points
-    // Horizontal pixel distance the cursor must travel from the mouse-down
-    // point before a tab-bar press converts from "click to activate" into
-    // a drag-to-reorder gesture. Set to 0 to enter drag mode immediately on
-    // press (no separate activate-only click).
-    int drag_threshold_px      = 4;
+    int drag_threshold_px      = 4;         // px before tab click → drag
     TabBarColors colors;
 
     struct glaze
@@ -206,6 +202,7 @@ struct Config
     std::vector<MouseBindingConfig> mousebindings;
     std::string divider_color         = "#3d3d3d";
     int divider_width                 = 1;
+    int divider_hit_pad               = 4;  // hit-test pad on each side
     std::string inactive_pane_tint    = "#000000";
     float inactive_pane_tint_alpha    = 0.3f;
     std::string active_pane_tint      = "#000000";
@@ -248,8 +245,6 @@ struct Config
     // set that env var directly.
     std::vector<std::string> shell_integration_features;
     NotificationsConfig notifications;
-    // Prefix prepended to the OS window title. Final form is
-    // `<window_title_prefix><pane title>`. Empty string disables the prefix.
     std::string window_title_prefix = "mb: ";
 
     struct glaze
@@ -268,6 +263,7 @@ struct Config
             "mousebinding", &T::mousebindings,
             "divider_color", &T::divider_color,
             "divider_width", &T::divider_width,
+            "divider_hit_pad", &T::divider_hit_pad,
             "inactive_pane_tint", &T::inactive_pane_tint,
             "inactive_pane_tint_alpha", &T::inactive_pane_tint_alpha,
             "active_pane_tint", &T::active_pane_tint,

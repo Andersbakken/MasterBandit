@@ -927,9 +927,9 @@ interface MbConfigTabBarColors {
     active_fg:   string;
     inactive_bg: string;
     inactive_fg: string;
-    /** Background of a tab currently being dragged for reorder. */
+    /** Bg of a tab being dragged. */
     drag_bg:     string;
-    /** Foreground (text) of a tab currently being dragged for reorder. */
+    /** Fg of a tab being dragged. */
     drag_fg:     string;
 }
 
@@ -944,11 +944,7 @@ interface MbConfigTabBar {
     progress_bar: boolean;
     progress_color: string;
     progress_height: number;
-    /**
-     * Horizontal pixel distance the cursor must travel from a tab-bar
-     * mouse-down before the press converts from "click to activate" into
-     * a drag-to-reorder gesture. 0 = enter drag mode immediately.
-     */
+    /** Px before tab click → drag. */
     drag_threshold_px: number;
     colors: MbConfigTabBarColors;
 }
@@ -1003,6 +999,8 @@ interface MbConfig extends MbConfigMutations {
     mousebinding: MbMousebinding[];
     divider_color: string;
     divider_width: number;
+    /** Hit-test pad on each side of a split divider, in px. */
+    divider_hit_pad: number;
     inactive_pane_tint: string;
     inactive_pane_tint_alpha: number;
     active_pane_tint: string;
@@ -1027,11 +1025,7 @@ interface MbConfig extends MbConfigMutations {
      */
     confirm_close: "never" | "if_busy" | "always";
     notifications: MbConfigNotifications;
-    /**
-     * Prefix prepended to the OS window title. Final form is
-     * `<window_title_prefix><pane title>`. Empty string disables the prefix.
-     * Default: "mb: ".
-     */
+    /** Prefix prepended to the OS window title. */
     window_title_prefix: string;
 }
 

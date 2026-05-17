@@ -1,6 +1,7 @@
 #include "InputController.h"
 
 #include "AnimationScheduler.h"
+#include "DividerResizeDrag.h"
 #include "LayoutTree.h"
 #include "PlatformDawn.h"
 #include "RenderThread.h"
@@ -461,11 +462,15 @@ MouseRegion InputController::hitTest(double sx, double sy)
     // When zoomed, dividerRects returns nothing: the tree's rect map skips
     // non-zoomed siblings, so no dividers emit from dividersIn. Safe to drop
     // the explicit !isZoomed guard.
+    //
+    // `divider_hit_pad` from config expands the hit rect on every side so a
+    // 1-px-wide divider is easy to grab for resize. Visual rect is unchanged.
     const int divPx = eng.dividerPixels();
     if (divPx > 0) {
+        const int pad = std::max(0, platform_->lastConfig().divider_hit_pad);
         for (const auto &r : eng.tabDividerRects(*tab, divPx)) {
-            if (sx >= r.x && sx < r.x + r.w &&
-                sy >= r.y && sy < r.y + r.h) {
+            if (sx >= r.x - pad && sx < r.x + r.w + pad &&
+                sy >= r.y - pad && sy < r.y + r.h + pad) {
                 return MouseRegion::Divider;
             }
         }
@@ -554,6 +559,14 @@ void InputController::onMouseButton(int button, int action, int mods)
     double sx = lastCursorX_ * contentScaleX;
     double sy = lastCursorY_ * contentScaleY;
 
+    // Clear divider-resize drag on release. resizeEdgeAlongAxis already
+    // applied each pixel delta incrementally, so the final state is in
+    // place; just drop the handler.
+    if (action == static_cast<int>(KeyAction_Release) && dynamic_cast<DividerResizeDrag *>(activeDrag_.get())) {
+        activeDrag_.reset();
+        return;
+    }
+
     // Clear tab-drag on release. Moves already happened mid-drag via
     // LayoutTree::moveChild, so the release path just tears down the
     // highlight and drops the handler. Returns early — the rest of this
@@ -610,6 +623,45 @@ void InputController::onMouseButton(int button, int action, int mods)
     // click detector (would poison subsequent double/triple-click timing),
     // don't start selection, don't forward to terminal mouse reporting.
     if (region == MouseRegion::Divider) {
+        // Left-press on a divider installs a DividerResizeDrag. The motion
+        // path in onCursorPos drives resizeTabPaneEdge with per-event pixel
+        // deltas along the divider's axis. Convert `button` via
+        // buttonToMouseButton — the int parameter uses the bitmask `Button`
+        // enum (LeftButton=0x1) while MouseButton is a separate enum class
+        // with Left=0; a raw static_cast would silently misclassify.
+        if (action == static_cast<int>(KeyAction_Press) && buttonToMouseButton(button) == MouseButton::Left) {
+            const int divPx = eng.dividerPixels();
+            if (divPx > 0) {
+                const int pad = std::max(0, platform_->lastConfig().divider_hit_pad);
+                Uuid ownerPaneId;
+                SplitDir axis = SplitDir::Horizontal;
+                bool found    = false;
+                for (const auto &[paneId, r] : eng.tabDividersWithOwnerPanes(*tab, divPx)) {
+                    if (sx >= r.x - pad && sx < r.x + r.w + pad && sy >= r.y - pad && sy < r.y + r.h + pad) {
+                        ownerPaneId = paneId;
+                        // Vertical-strip divider (w < h) sits between
+                        // left/right siblings — parent split is Horizontal.
+                        // Horizontal-strip divider (h < w) sits between
+                        // top/bottom siblings — parent split is Vertical.
+                        axis        = (r.w < r.h) ? SplitDir::Horizontal : SplitDir::Vertical;
+                        found       = true;
+                        break;
+                    }
+                }
+                if (found) {
+                    activeDrag_ = std::make_unique<DividerResizeDrag>(
+                        sx,
+                        sy,
+                        buttonToMouseButton(button),
+                        ownerPaneId,
+                        *tab,
+                        axis);
+                    if (window) {
+                        window->setCursorStyle(activeDrag_->cursorStyle());
+                    }
+                }
+            }
+        }
         return;
     }
 
@@ -1214,6 +1266,23 @@ void InputController::onCursorPos(double x, double y)
         MouseRegion region = hitTest(sx, sy);
         if (region == MouseRegion::TabBar) {
             window->setCursorStyle(Window::CursorStyle::Arrow);
+        } else if (region == MouseRegion::Divider) {
+            // Distinguish vertical vs horizontal divider strips by aspect:
+            // w < h → vertical line between left/right panes → horizontal
+            // resize arrows; h < w → horizontal line between top/bottom
+            // panes → vertical resize arrows.
+            Window::CursorStyle cs = Window::CursorStyle::Arrow;
+            const int divPx        = eng.dividerPixels();
+            if (divPx > 0) {
+                const int pad = std::max(0, platform_->lastConfig().divider_hit_pad);
+                for (const auto &r : eng.tabDividerRects(*tab, divPx)) {
+                    if (sx >= r.x - pad && sx < r.x + r.w + pad && sy >= r.y - pad && sy < r.y + r.h + pad) {
+                        cs = (r.w < r.h) ? Window::CursorStyle::ResizeH : Window::CursorStyle::ResizeV;
+                        break;
+                    }
+                }
+            }
+            window->setCursorStyle(cs);
         } else if (wouldOpenHyperlinkAt(sx, sy)) {
             window->setCursorStyle(Window::CursorStyle::Pointer);
         } else {
@@ -1348,10 +1417,10 @@ void InputController::onCursorPos(double x, double y)
         // motions don't oscillate. One swap max per motion event; fast
         // cursor motion catches up over a few events. Y is ignored so the
         // strip still slides when the cursor wanders above/below the bar.
-        int currentIdx          = td->currentIndex();
-        int newIdx              = currentIdx;
-        const auto &bars        = platform_->renderThread_->renderState().tabBars;
-        float tabBarCharWidth   = platform_->tabBarCharWidth_;
+        int currentIdx        = td->currentIndex();
+        int newIdx            = currentIdx;
+        const auto &bars      = platform_->renderThread_->renderState().tabBars;
+        float tabBarCharWidth = platform_->tabBarCharWidth_;
         for (const TabBarRender &br : bars) {
             if (br.id != td->barId()) {
                 continue;
@@ -1382,6 +1451,38 @@ void InputController::onCursorPos(double x, double y)
                 platform_->tabBarDirty_ = true;
                 platform_->setNeedsRedraw();
             }
+        }
+        return;
+    }
+
+    // 1b. Divider resize drag. Compute incremental pixel delta along the
+    // drag's axis and apply via resizeTabPaneEdge. Per-event deltas avoid
+    // integral drift (the resize helper adds to current stretch hints, not
+    // to a captured-at-press-time baseline).
+    if (auto *dr = dynamic_cast<DividerResizeDrag *>(activeDrag_.get())) {
+        int delta = (dr->axis() == SplitDir::Horizontal)
+            ? static_cast<int>(std::lround(sx - dr->lastSx()))
+            : static_cast<int>(std::lround(sy - dr->lastSy()));
+        if (delta != 0) {
+            if (platform_->scriptEngine_.resizeTabPaneEdge(
+                    dr->subtreeRoot(),
+                    dr->ownerPaneId(),
+                    dr->axis(),
+                    delta)) {
+                // dividersDirty_ (member) is what reaches renderState_ via
+                // buildRenderFrameState's merge; pending_.dividersDirty set
+                // by refreshDividers (called later, from runLayoutIfDirty)
+                // gets wiped by pending_.clear() before snapshotUnderLock.
+                // Without this, the renderer skips the divider-VB update
+                // path and dividers render at stale geometry. Same pattern
+                // as Action::SwapPane (Platform_Actions.cpp:284).
+                platform_->dividersDirty_ = true;
+                platform_->setNeedsRedraw();
+            }
+            dr->setLast(sx, sy);
+        }
+        if (window) {
+            window->setCursorStyle(dr->cursorStyle());
         }
         return;
     }
@@ -1682,10 +1783,27 @@ void InputController::refreshPointerShape()
     // focused pane's cursor shape — matches the hover path in onMouseMove.
     // Without this, clicking a tab triggers a focus change and applies the
     // focused pane's IBeam even though the pointer is still in the tab bar.
-    double sx = lastCursorX_ * platform_->contentScaleX_;
-    double sy = lastCursorY_ * platform_->contentScaleY_;
-    if (hitTest(sx, sy) == MouseRegion::TabBar) {
+    double sx          = lastCursorX_ * platform_->contentScaleX_;
+    double sy          = lastCursorY_ * platform_->contentScaleY_;
+    MouseRegion region = hitTest(sx, sy);
+    if (region == MouseRegion::TabBar) {
         window->setCursorStyle(Window::CursorStyle::Arrow);
+        return;
+    }
+    if (region == MouseRegion::Divider) {
+        Script::Engine &eng    = platform_->scriptEngine_;
+        Window::CursorStyle cs = Window::CursorStyle::Arrow;
+        const int divPx        = eng.dividerPixels();
+        if (divPx > 0) {
+            const int pad = std::max(0, platform_->lastConfig().divider_hit_pad);
+            for (const auto &r : eng.tabDividerRects(*tab, divPx)) {
+                if (sx >= r.x - pad && sx < r.x + r.w + pad && sy >= r.y - pad && sy < r.y + r.h + pad) {
+                    cs = (r.w < r.h) ? Window::CursorStyle::ResizeH : Window::CursorStyle::ResizeV;
+                    break;
+                }
+            }
+        }
+        window->setCursorStyle(cs);
         return;
     }
     if (wouldOpenHyperlinkAt(sx, sy)) {

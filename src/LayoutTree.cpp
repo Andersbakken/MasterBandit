@@ -1042,8 +1042,19 @@ bool LayoutTree::resizeEdgeAlongAxis(Uuid target, SplitDir axis, int pixelDelta,
         int axisB = (axis == SplitDir::Horizontal) ? rb->second.w : rb->second.h;
 
         int signedDelta = useTrailing ? pixelDelta : -pixelDelta;
-        int newA        = std::max(1, axisA + signedDelta);
-        int newB        = std::max(1, axisB - signedDelta);
+        // Minimum pane size: one cell. Avoids shrink-to-invisible and the
+        // grab-back-fails-because-divider-is-1px corner.
+        int minSize     = std::max(1, (axis == SplitDir::Horizontal) ? cellW : cellH);
+        int totalAB     = axisA + axisB;
+        if (totalAB < 2 * minSize) {
+            return false; // pair can't even hold two minimums; refuse rather than collapse
+        }
+        // Clamp newA to a range that keeps newA + newB == totalAB. Without
+        // this, hitting the floor on one side lets the other side keep
+        // absorbing the full delta — stretch inflates and recovery drags
+        // pixel-by-stretch-unit, not pixel-by-pixel.
+        int newA = std::clamp(axisA + signedDelta, minSize, totalAB - minSize);
+        int newB = totalAB - newA;
 
         Node *pMut = node(n->parent);
         if (!pMut) {

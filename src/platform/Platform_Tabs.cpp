@@ -129,7 +129,7 @@ void PlatformDawn::updateWindowTitle()
     std::string iconStr     = fp->icon().value_or("");
     std::string windowTitle = iconStr.empty() ? title : iconStr + " " + title;
     if (window_) {
-        window_->setTitle("mb: " + windowTitle);
+        window_->setTitle(lastConfig_.window_title_prefix + windowTitle);
     }
 }
 

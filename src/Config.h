@@ -238,6 +238,9 @@ struct Config
     // set that env var directly.
     std::vector<std::string> shell_integration_features;
     NotificationsConfig notifications;
+    // Prefix prepended to the OS window title. Final form is
+    // `<window_title_prefix><pane title>`. Empty string disables the prefix.
+    std::string window_title_prefix = "mb: ";
 
     struct glaze
     {
@@ -270,7 +273,8 @@ struct Config
             "confirm_close", &T::confirm_close,
             "shell_integration", &T::shell_integration,
             "shell_integration_features", &T::shell_integration_features,
-            "notifications", &T::notifications);
+            "notifications", &T::notifications,
+            "window_title_prefix", &T::window_title_prefix);
     };
 };
 

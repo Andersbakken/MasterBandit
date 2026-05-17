@@ -1017,6 +1017,12 @@ interface MbConfig extends MbConfigMutations {
      */
     confirm_close: "never" | "if_busy" | "always";
     notifications: MbConfigNotifications;
+    /**
+     * Prefix prepended to the OS window title. Final form is
+     * `<window_title_prefix><pane title>`. Empty string disables the prefix.
+     * Default: "mb: ".
+     */
+    window_title_prefix: string;
 }
 
 /**

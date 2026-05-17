@@ -133,6 +133,22 @@ void PlatformDawn::updateWindowTitle()
     }
 }
 
+void PlatformDawn::setDraggedTab(Uuid barId, Uuid tabId)
+{
+    draggedBarId_ = barId;
+    draggedTabId_ = tabId;
+    tabBarDirty_  = true;
+    setNeedsRedraw();
+}
+
+void PlatformDawn::clearDraggedTab()
+{
+    draggedBarId_ = Uuid {};
+    draggedTabId_ = Uuid {};
+    tabBarDirty_  = true;
+    setNeedsRedraw();
+}
+
 void PlatformDawn::addPtyPoll(int fd, Terminal *term)
 {
     // Reads: dedicated PtyMux thread. The cb runs there. After appending

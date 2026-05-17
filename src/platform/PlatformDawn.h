@@ -139,6 +139,16 @@ public:
 
     void setNeedsRedraw();
 
+    // Tab-drag bookkeeping for TabReorderDrag. Marks tabBarDirty so the
+    // next frame's populateTabBars stamps TabBarRender::draggedTabIdx and
+    // buildBarCells picks the drag color pair.
+    void setDraggedTab(Uuid barId, Uuid tabId);
+    void clearDraggedTab();
+
+    // Last applied Config (post-load, post-JS-merge). InputController reads
+    // tab_bar.drag_threshold_px from here at press time.
+    const Config &lastConfig() const { return lastConfig_; }
+
     bool shouldClose()
     {
         if (isHeadless()) {
@@ -458,6 +468,14 @@ private:
     int tabBarAnimFrame_        = 0;
     uint64_t lastAnimTick_      = 0;
 
+    // Tab-drag state, written by InputController's TabReorderDrag handler
+    // via setDraggedTab/clearDraggedTab (declared in the public block above).
+    // Both nil when no drag is in progress. populateTabBars consults these
+    // to set TabBarRender::draggedTabIdx so buildBarCells picks the drag
+    // color pair for the affected tab.
+    Uuid draggedBarId_;
+    Uuid draggedTabId_;
+
     // Pane divider colors
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;
     int dividerWidth_             = 1;
@@ -479,6 +497,8 @@ private:
     uint32_t tbActiveFgColor_   = 0xFF261a1b;
     uint32_t tbInactiveBgColor_ = 0xFF3b2824;
     uint32_t tbInactiveFgColor_ = 0xFF895f56;
+    uint32_t tbDragBgColor_     = 0xFFf79abb;
+    uint32_t tbDragFgColor_     = 0xFF261a1b;
     float progressColorR_ = 0.0f, progressColorG_ = 0.6f, progressColorB_ = 1.0f;
     float progressBarHeight_ = 3.0f;
 

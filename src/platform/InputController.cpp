@@ -6,6 +6,7 @@
 #include "RenderThread.h"
 #include "ScriptEngine.h"
 #include "SelectionDrag.h"
+#include "TabReorderDrag.h"
 #include "Terminal.h"
 #include "Utf8.h"
 
@@ -163,6 +164,26 @@ void InputController::onKey(int key, int scancode, int action, int mods)
 
     Key k = static_cast<Key>(key);
     spdlog::debug("onKey: key=0x{:x} controlPressed={}", static_cast<int>(k), controlPressed_);
+
+    // Tab-drag cancel. Escape during an in-progress reorder rewinds via a
+    // single moveChild back to the starting index, drops the highlight, and
+    // consumes the key so it doesn't also dispatch a keybinding / Esc-defocus /
+    // selected-command-clear below. Press/repeat only; release is irrelevant.
+    if (action != static_cast<int>(KeyAction_Release) && k == Key_Escape) {
+        if (auto *td = dynamic_cast<TabReorderDrag *>(activeDrag_.get())) {
+            if (td->started()) {
+                int delta = td->dragStartIndex() - td->currentIndex();
+                if (delta != 0) {
+                    platform_->scriptEngine_.layoutTree().moveChild(td->stackId(), td->draggedTabId(), delta);
+                    platform_->tabBarDirty_ = true;
+                    platform_->setNeedsRedraw();
+                }
+            }
+            platform_->clearDraggedTab();
+            activeDrag_.reset();
+            return;
+        }
+    }
 
     // Bindings only on press/repeat (NOT release). Mask off
     // OptionAsAltModifier — it's an internal signal for the ESC-prefix
@@ -533,6 +554,16 @@ void InputController::onMouseButton(int button, int action, int mods)
     double sx = lastCursorX_ * contentScaleX;
     double sy = lastCursorY_ * contentScaleY;
 
+    // Clear tab-drag on release. Moves already happened mid-drag via
+    // LayoutTree::moveChild, so the release path just tears down the
+    // highlight and drops the handler. Returns early — the rest of this
+    // method assumes a Terminal-pane mouse interaction.
+    if (action == static_cast<int>(KeyAction_Release) && dynamic_cast<TabReorderDrag *>(activeDrag_.get())) {
+        platform_->clearDraggedTab();
+        activeDrag_.reset();
+        return;
+    }
+
     // Clear selection drag on release and finalize selection
     if (action == static_cast<int>(KeyAction_Release) && dynamic_cast<SelectionDrag *>(activeDrag_.get())) {
         activeDrag_.reset();
@@ -818,6 +849,45 @@ void InputController::onMouseButton(int button, int action, int mods)
         mouseCtx_.tabBarClickIndex = (region == MouseRegion::TabBar)
             ? resolveTabBarClickIndex(sx, sy, &mouseCtx_.tabBarClickBarId)
             : -1;
+
+        // Tab-bar left-press: install a TabReorderDrag for drag-to-reorder.
+        // No state changes here — `started_` only flips on motion past the
+        // configured threshold, so a plain click without motion falls through
+        // to the existing ActivateTab path below unchanged.
+        if (region == MouseRegion::TabBar && mb == MouseButton::Left && !mouseCtx_.tabBarClickBarId.isNil() && mouseCtx_.tabBarClickIndex >= 0) {
+            LayoutTree &tree = platform_->scriptEngine_.layoutTree();
+            const Node *bar  = tree.node(mouseCtx_.tabBarClickBarId);
+            Uuid stackId, draggedTabId;
+            if (bar) {
+                if (auto *tb = std::get_if<TabBarData>(&bar->data)) {
+                    stackId           = tb->boundStack;
+                    const Node *stack = tree.node(stackId);
+                    if (stack) {
+                        if (auto *sd = std::get_if<StackData>(&stack->data)) {
+                            if (mouseCtx_.tabBarClickIndex < static_cast<int>(sd->children.size())) {
+                                draggedTabId = sd->children[mouseCtx_.tabBarClickIndex].id;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!stackId.isNil() && !draggedTabId.isNil()) {
+                int threshold = platform_->lastConfig().tab_bar.drag_threshold_px;
+                if (threshold < 0) {
+                    threshold = 0;
+                }
+                activeDrag_ = std::make_unique<TabReorderDrag>(
+                    sx,
+                    sy,
+                    mb,
+                    platform_,
+                    mouseCtx_.tabBarClickBarId,
+                    stackId,
+                    draggedTabId,
+                    mouseCtx_.tabBarClickIndex,
+                    threshold);
+            }
+        }
 
         // Sub-bar clicks: resolve barId+index to the Stack-child Uuid and
         // dispatch ActivateTab / CloseTab with `target` set. The executor
@@ -1233,6 +1303,38 @@ void InputController::onCursorPos(double x, double y)
         }
         return ev;
     };
+
+    // 1a. Tab-bar drag-to-reorder. Threshold-gated: bare press + small jitter
+    // doesn't enter drag mode (so a normal click on a tab still activates).
+    // Once `started_`, each cursor motion hit-tests against the current strip
+    // and calls LayoutTree::moveChild when the cursor crosses into another
+    // tab's slot — the dragged tab slides to the new position next frame.
+    // Drops out of this branch when activeDrag_ is some other kind.
+    if (auto *td = dynamic_cast<TabReorderDrag *>(activeDrag_.get())) {
+        if (!td->started()) {
+            double dx     = sx - td->originX();
+            int threshold = td->thresholdPx();
+            if (std::abs(dx) < static_cast<double>(threshold)) {
+                return;
+            }
+            td->setStarted(true);
+            platform_->setDraggedTab(td->barId(), td->draggedTabId());
+        }
+        Uuid hitBar;
+        int hitIdx = resolveTabBarClickIndex(sx, sy, &hitBar);
+        // Only reorder while the cursor remains over the originating bar.
+        // Outside the bar (vertical lift, jump to a different bar) the tab
+        // stays put — v1 doesn't support cross-stack drag.
+        if (!hitBar.isNil() && hitBar == td->barId() && hitIdx >= 0 && hitIdx != td->currentIndex()) {
+            int delta = hitIdx - td->currentIndex();
+            if (platform_->scriptEngine_.layoutTree().moveChild(td->stackId(), td->draggedTabId(), delta)) {
+                td->setCurrentIndex(hitIdx);
+                platform_->tabBarDirty_ = true;
+                platform_->setNeedsRedraw();
+            }
+        }
+        return;
+    }
 
     // 1. If a selection drag is active, forward directly to terminal.
     // (Other DragHandler kinds are handled inline by their owners; selection

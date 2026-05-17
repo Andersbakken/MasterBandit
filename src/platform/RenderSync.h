@@ -110,7 +110,8 @@ struct TabBarRender
     Uuid id;                         // TabBar node uuid (key)
     Rect rect;                       // pixel rect this frame
     std::vector<RenderTabInfo> tabs; // per-tab metadata
-    int activeTabIdx = -1;           // index into `tabs`
+    int activeTabIdx  = -1;          // index into `tabs`
+    int draggedTabIdx = -1;          // index into `tabs`, -1 = no active drag in this bar
     std::vector<TabBarCell> cells;   // one per column, post-layout
     int cols = 0;
     std::vector<std::pair<int, int>> colRanges; // per-tab [startCol, endCol)
@@ -153,6 +154,7 @@ struct RenderFrameState
     // Tab bar config values needed by renderTabBar
     uint32_t tbBgColor = 0, tbActiveBgColor = 0, tbActiveFgColor = 0;
     uint32_t tbInactiveBgColor = 0, tbInactiveFgColor = 0;
+    uint32_t tbDragBgColor = 0, tbDragFgColor = 0;
     float progressColorR = 0, progressColorG = 0.6f, progressColorB = 1.0f;
     float progressBarHeight  = 3.0f;
     bool progressBarEnabled  = false;

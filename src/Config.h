@@ -49,6 +49,8 @@ struct TabBarColors
     std::string active_fg   = "#1a1b26";
     std::string inactive_bg = "#24283b";
     std::string inactive_fg = "#565f89";
+    std::string drag_bg     = "#bb9af7";
+    std::string drag_fg     = "#1a1b26";
 
     struct glaze
     {
@@ -58,7 +60,9 @@ struct TabBarColors
             "active_bg", &T::active_bg,
             "active_fg", &T::active_fg,
             "inactive_bg", &T::inactive_bg,
-            "inactive_fg", &T::inactive_fg);
+            "inactive_fg", &T::inactive_fg,
+            "drag_bg", &T::drag_bg,
+            "drag_fg", &T::drag_fg);
     };
 };
 
@@ -73,6 +77,11 @@ struct TabBarConfig
     bool progress_bar          = true;      // show progress bar line at top of pane
     std::string progress_color = "#0099ff"; // progress bar color
     float progress_height      = 3.0f;      // progress bar height in points
+    // Horizontal pixel distance the cursor must travel from the mouse-down
+    // point before a tab-bar press converts from "click to activate" into
+    // a drag-to-reorder gesture. Set to 0 to enter drag mode immediately on
+    // press (no separate activate-only click).
+    int drag_threshold_px      = 4;
     TabBarColors colors;
 
     struct glaze
@@ -88,6 +97,7 @@ struct TabBarConfig
             "progress_bar", &T::progress_bar,
             "progress_color", &T::progress_color,
             "progress_height", &T::progress_height,
+            "drag_threshold_px", &T::drag_threshold_px,
             "colors", &T::colors);
     };
 };

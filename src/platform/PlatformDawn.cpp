@@ -321,11 +321,17 @@ void buildBarCells(TabBarRender &bar, const RenderFrameState &fs, float charWidt
     for (int i = 0; i < static_cast<int>(bar.tabs.size()); ++i) {
         const RenderTabInfo &rtab = bar.tabs[i];
         bool isActive             = (i == bar.activeTabIdx);
+        bool isDragged            = (i == bar.draggedTabIdx);
         TI ti {};
         ti.isActive = isActive;
-        ti.bgColor  = isActive ? fs.tbActiveBgColor : fs.tbInactiveBgColor;
-        ti.fgColor  = isActive ? fs.tbActiveFgColor : fs.tbInactiveFgColor;
-        ti.prefix   = " ";
+        if (isDragged) {
+            ti.bgColor = fs.tbDragBgColor;
+            ti.fgColor = fs.tbDragFgColor;
+        } else {
+            ti.bgColor = isActive ? fs.tbActiveBgColor : fs.tbInactiveBgColor;
+            ti.fgColor = isActive ? fs.tbActiveFgColor : fs.tbInactiveFgColor;
+        }
+        ti.prefix = " ";
         if (fs.progressIconEnabled) {
             std::string pg = progressGlyphFor(rtab, fs.tabBarAnimFrame);
             if (!pg.empty()) {
@@ -472,13 +478,20 @@ void PlatformDawn::populateTabBars()
         bar.id   = barId;
         bar.rect = rect;
 
+        const bool barIsDragSource = (!draggedBarId_.isNil() && barId == draggedBarId_ && !draggedTabId_.isNil());
+
         if (barId == primary) {
             // Primary bar — tabs are the top-level tab subtree roots.
             // Mirrors the pre-refactor sourcing: prefer JS-set
             // tabTitle/tabIcon, then the remembered-focus terminal's
             // OSC title/icon, then its foreground process name.
             bar.tabs.reserve(allTabRoots.size());
+            int subIdx = 0;
             for (Uuid sub : allTabRoots) {
+                if (barIsDragSource && sub == draggedTabId_) {
+                    bar.draggedTabIdx = subIdx;
+                }
+                ++subIdx;
                 RenderTabInfo rti;
                 rti.focusedPaneId = scriptEngine_.focusedPaneInSubtree(sub);
                 Terminal *fp      = scriptEngine_.rememberedFocusTerminalInSubtree(sub);
@@ -528,6 +541,9 @@ void PlatformDawn::populateTabBars()
                 const Uuid childId = sd->children[i].id;
                 if (childId == sd->activeChild) {
                     activeIdx = static_cast<int>(i);
+                }
+                if (barIsDragSource && childId == draggedTabId_) {
+                    bar.draggedTabIdx = static_cast<int>(i);
                 }
 
                 // Same metadata-sourcing policy as the primary bar above:
@@ -616,6 +632,8 @@ void PlatformDawn::buildRenderFrameState()
     renderThread_->renderState().tbActiveFgColor     = tbActiveFgColor_;
     renderThread_->renderState().tbInactiveBgColor   = tbInactiveBgColor_;
     renderThread_->renderState().tbInactiveFgColor   = tbInactiveFgColor_;
+    renderThread_->renderState().tbDragBgColor       = tbDragBgColor_;
+    renderThread_->renderState().tbDragFgColor       = tbDragFgColor_;
     renderThread_->renderState().progressColorR      = progressColorR_;
     renderThread_->renderState().progressColorG      = progressColorG_;
     renderThread_->renderState().progressColorB      = progressColorB_;
@@ -1973,6 +1991,8 @@ void PlatformDawn::initTabBar(const TabBarConfig &cfg)
     tbActiveFgColor_   = parseTabBarHexColor(cfg.colors.active_fg);
     tbInactiveBgColor_ = parseTabBarHexColor(cfg.colors.inactive_bg);
     tbInactiveFgColor_ = parseTabBarHexColor(cfg.colors.inactive_fg);
+    tbDragBgColor_     = parseTabBarHexColor(cfg.colors.drag_bg);
+    tbDragFgColor_     = parseTabBarHexColor(cfg.colors.drag_fg);
 
     // Parse progress bar settings
     progressBarHeight_ = cfg.progress_height * contentScaleX_;

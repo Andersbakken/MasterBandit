@@ -133,11 +133,13 @@ void PlatformDawn::updateWindowTitle()
     }
 }
 
-void PlatformDawn::setDraggedTab(Uuid barId, Uuid tabId)
+void PlatformDawn::setDraggedTab(Uuid barId, Uuid tabId, float cursorX, float dragOffsetXInTab)
 {
     draggedBarId_ = barId;
     draggedTabId_ = tabId;
-    tabBarDirty_  = true;
+    dragCursorX_.store(cursorX, std::memory_order_relaxed);
+    dragOffsetXInTab_.store(dragOffsetXInTab, std::memory_order_relaxed);
+    tabBarDirty_ = true;
     setNeedsRedraw();
 }
 
@@ -146,6 +148,13 @@ void PlatformDawn::clearDraggedTab()
     draggedBarId_ = Uuid {};
     draggedTabId_ = Uuid {};
     tabBarDirty_  = true;
+    setNeedsRedraw();
+}
+
+void PlatformDawn::setDragCursorX(float cursorX)
+{
+    dragCursorX_.store(cursorX, std::memory_order_relaxed);
+    tabBarDirty_ = true;
     setNeedsRedraw();
 }
 

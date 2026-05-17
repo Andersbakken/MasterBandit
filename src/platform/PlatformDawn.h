@@ -142,8 +142,19 @@ public:
     // Tab-drag bookkeeping for TabReorderDrag. Marks tabBarDirty so the
     // next frame's populateTabBars stamps TabBarRender::draggedTabIdx and
     // buildBarCells picks the drag color pair.
-    void setDraggedTab(Uuid barId, Uuid tabId);
+    //
+    // dragOffsetXInTab: pixel X within the dragged tab where the cursor
+    // pressed at drag-start. Used to keep the cursor at the same horizontal
+    // position within the floating tab as it follows the cursor.
+    void setDraggedTab(Uuid barId, Uuid tabId, float cursorX, float dragOffsetXInTab);
     void clearDraggedTab();
+
+    // Hot path: called from InputController::onCursorPos on every motion
+    // while a TabReorderDrag is started_. Stores the cursor X atomically so
+    // the next populateTabBars pass copies it into the drag bar's render
+    // state. Also marks tabBarDirty + setNeedsRedraw so the next frame
+    // re-runs the cell build (cursor X feeds the float's pane_origin_x).
+    void setDragCursorX(float cursorX);
 
     // Last applied Config (post-load, post-JS-merge). InputController reads
     // tab_bar.drag_threshold_px from here at press time.
@@ -469,12 +480,20 @@ private:
     uint64_t lastAnimTick_      = 0;
 
     // Tab-drag state, written by InputController's TabReorderDrag handler
-    // via setDraggedTab/clearDraggedTab (declared in the public block above).
-    // Both nil when no drag is in progress. populateTabBars consults these
-    // to set TabBarRender::draggedTabIdx so buildBarCells picks the drag
-    // color pair for the affected tab.
+    // via setDraggedTab/clearDraggedTab/setDragCursorX (declared in the
+    // public block above). Both Uuids nil when no drag is in progress.
+    // populateTabBars consults these to set TabBarRender::draggedTabIdx /
+    // draggedFloatX so buildBarCells stashes the float cells and the
+    // renderTabBar second pass picks the right offset.
+    //
+    // dragCursorX_ and dragOffsetXInTab_ are atomics because setDragCursorX
+    // is called from the cursor-pos thread (the event loop thread today,
+    // but read by populateTabBars under the render-thread mutex). Both are
+    // pixel values in the framebuffer coordinate system, post-DPI-scale.
     Uuid draggedBarId_;
     Uuid draggedTabId_;
+    std::atomic<float> dragCursorX_ { 0.0f };
+    std::atomic<float> dragOffsetXInTab_ { 0.0f };
 
     // Pane divider colors
     float dividerR_ = 0.24f, dividerG_ = 0.24f, dividerB_ = 0.24f, dividerA_ = 1.0f;

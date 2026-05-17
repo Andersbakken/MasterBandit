@@ -750,6 +750,23 @@ void RenderEngine::renderTabBar()
             mix(c.fgColor);
             mix(c.bgColor);
         }
+        // Fold the drag float into the hash so cursor motion invalidates
+        // the cache and the second dispatch repositions every frame.
+        if (bar.draggedTabIdx >= 0 && bar.draggedFloatCols > 0) {
+            mix(static_cast<uint32_t>(bar.draggedTabIdx));
+            // Quantize to integer pixels — sub-pixel cursor jitter doesn't
+            // need to retrigger the rebuild.
+            int32_t qx = static_cast<int32_t>(std::lround(bar.draggedFloatX));
+            mix(static_cast<uint32_t>(qx));
+            for (const auto &c : bar.draggedFloatCells) {
+                for (unsigned char b : c.ch) {
+                    mix(b);
+                }
+                mix(0xff);
+                mix(c.fgColor);
+                mix(c.bgColor);
+            }
+        }
         auto hashIt = tabBarHashes_.find(bar.id);
         auto texIt  = tabBarTextures_.find(bar.id);
         if (hashIt != tabBarHashes_.end() && hashIt->second == h && texIt != tabBarTextures_.end() && texIt->second) {
@@ -761,9 +778,11 @@ void RenderEngine::renderTabBar()
         std::vector<ResolvedCell> cells(static_cast<size_t>(cols));
         std::vector<GlyphEntry> tabBarGlyphs;
 
-        for (int col = 0; col < cols; ++col) {
-            const auto &tbc   = bar.cells[col];
-            ResolvedCell &rc  = cells[static_cast<size_t>(col)];
+        // Resolves one TabBarCell into a ResolvedCell + (optional) GlyphEntry.
+        // Used for both the strip and the drag-float passes — shared so the
+        // procedural-vs-shaped glyph logic stays in one place.
+        auto resolveTabBarCell = [&](const TabBarCell &tbc, ResolvedCell &rc, std::vector<GlyphEntry> &glyphs)
+        {
             rc.glyph_offset   = 0;
             rc.glyph_count    = 0;
             rc.fg_color       = tbc.fgColor;
@@ -772,7 +791,7 @@ void RenderEngine::renderTabBar()
             rc.bg_inflate     = 0;
 
             if (tbc.ch.empty()) {
-                continue;
+                return;
             }
 
             int consumed = 0;
@@ -789,10 +808,10 @@ void RenderEngine::renderTabBar()
                 entry.upem         = 0;
                 entry.x_offset     = 0;
                 entry.y_offset     = 0;
-                rc.glyph_offset    = static_cast<uint32_t>(tabBarGlyphs.size());
+                rc.glyph_offset    = static_cast<uint32_t>(glyphs.size());
                 rc.glyph_count     = 1;
-                tabBarGlyphs.push_back(entry);
-                continue;
+                glyphs.push_back(entry);
+                return;
             }
 
             const ShapedText &shaped = platform_->textSystem_.shapeText(
@@ -800,11 +819,11 @@ void RenderEngine::renderTabBar()
                 tbc.ch,
                 frameState_.tabBarFontSize);
             if (shaped.glyphs.empty()) {
-                continue;
+                return;
             }
             GlyphInfo gi;
             if (!resolveCellGlyph(*font, shaped.glyphs[0].glyphId, static_cast<char32_t>(cp), false, getTabBarReplacementGlyph, gi)) {
-                continue;
+                return;
             }
             GlyphEntry entry;
             entry.atlas_offset = gi.atlas_offset;
@@ -815,9 +834,13 @@ void RenderEngine::renderTabBar()
             entry.upem         = gi.upem;
             entry.x_offset     = 0.0f;
             entry.y_offset     = 0.0f;
-            rc.glyph_offset    = static_cast<uint32_t>(tabBarGlyphs.size());
+            rc.glyph_offset    = static_cast<uint32_t>(glyphs.size());
             rc.glyph_count     = 1;
-            tabBarGlyphs.push_back(entry);
+            glyphs.push_back(entry);
+        };
+
+        for (int col = 0; col < cols; ++col) {
+            resolveTabBarCell(bar.cells[col], cells[static_cast<size_t>(col)], tabBarGlyphs);
         }
 
         ComputeState *cs      = renderer_.computePool().acquire(static_cast<uint32_t>(cols));
@@ -872,9 +895,63 @@ void RenderEngine::renderTabBar()
                            ? frameState_.activeTint
                            : frameState_.inactiveTint;
         renderer_.renderToPane(encoder, queue_, frameState_.tabBarFontName, params, cs, newTexture->view, windowTint, Renderer::DimParams {}, {});
+
+        // Drag-float pass: stamps the dragged tab's actual cells on top of
+        // the (empty-slot) strip texture at `bar.draggedFloatX`. Cells were
+        // captured by buildBarCells with the real drag colors; the strip
+        // pass at that slot rendered bg-only. Same compute pipeline, same
+        // target texture, clearTarget=false so the first pass survives.
+        ComputeState *csFloat = nullptr;
+        if (bar.draggedTabIdx >= 0 && bar.draggedFloatCols > 0) {
+            const int floatCols = bar.draggedFloatCols;
+            std::vector<ResolvedCell> floatCells(static_cast<size_t>(floatCols));
+            std::vector<GlyphEntry> floatGlyphs;
+            for (int col = 0; col < floatCols; ++col) {
+                resolveTabBarCell(bar.draggedFloatCells[static_cast<size_t>(col)],
+                                  floatCells[static_cast<size_t>(col)],
+                                  floatGlyphs);
+            }
+
+            csFloat                  = renderer_.computePool().acquire(static_cast<uint32_t>(floatCols));
+            uint32_t floatGlyphCount = std::max(static_cast<uint32_t>(floatGlyphs.size()), 1u);
+            renderer_.computePool().ensureGlyphCapacity(csFloat, floatGlyphCount);
+
+            uint32_t floatBgEmit = 0;
+            for (const ResolvedCell &rc : floatCells) {
+                if (rc.bg_color != 0 && rc.bg_inflate == 0) {
+                    ++floatBgEmit;
+                }
+            }
+            uint32_t floatProcCount = 0;
+            for (const GlyphEntry &ge : floatGlyphs) {
+                if (ge.atlas_offset & 0x80000000u) {
+                    ++floatProcCount;
+                }
+            }
+            uint32_t floatRectVerts = floatBgEmit * 6 + floatProcCount * 48 + 48;
+            renderer_.computePool().ensureRectCapacity(csFloat, floatRectVerts, 6u);
+
+            renderer_.uploadResolvedCells(queue_, csFloat, floatCells.data(), static_cast<uint32_t>(floatCols));
+            if (!floatGlyphs.empty()) {
+                renderer_.uploadGlyphs(queue_, csFloat, floatGlyphs.data(), static_cast<uint32_t>(floatGlyphs.size()));
+            }
+
+            TerminalComputeParams floatParams      = params;
+            floatParams.cols                       = static_cast<uint32_t>(floatCols);
+            floatParams.pane_origin_x              = bar.draggedFloatX;
+            floatParams.max_text_vertices          = csFloat->maxTextVertices;
+            floatParams.max_rect_vertices          = csFloat->maxRectVertices;
+            floatParams.max_inflated_rect_vertices = csFloat->maxInflatedRectVertices;
+
+            renderer_.renderToPane(encoder, queue_, frameState_.tabBarFontName, floatParams, csFloat, newTexture->view, windowTint, Renderer::DimParams {}, {}, 0, false);
+        }
+
         wgpu::CommandBuffer commands = encoder.Finish();
         queue_.Submit(1, &commands);
         pendingComputeRelease_.push_back(cs);
+        if (csFloat) {
+            pendingComputeRelease_.push_back(csFloat);
+        }
 
         // Swap into the per-bar texture map; old texture (if any) goes to
         // pendingTabBarRelease_ for deferred release after the frame.

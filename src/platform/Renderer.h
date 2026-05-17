@@ -86,6 +86,10 @@ public:
     // pane_tint: RGBA multiplier applied to all rendered content (1,1,1,1 = no tint).
     // imageCmds must be sorted by zIndex. splitBelowText is the index where
     // z >= 0 starts (i.e., [0, splitBelowText) renders below text, [splitBelowText, size) above).
+    // clearTarget: if true (default), the first sub-pass clears the target to
+    // black; if false, it loads existing contents. Used by the tab bar to
+    // dispatch a second draw on top of an already-rendered bar texture for
+    // the drag-to-reorder floating tab.
     void renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
                       const std::string &fontName,
                       const TerminalComputeParams &params,
@@ -94,7 +98,8 @@ public:
                       const float pane_tint[4],
                       const DimParams &dim,
                       const std::vector<ImageDrawCmd> &imageCmds = {},
-                      size_t imgSplitText                        = 0);
+                      size_t imgSplitText                        = 0,
+                      bool clearTarget                           = true);
 
     // Composite entry: a rendered pane texture and where to place it on the swapchain.
     // srcX/srcY let a single texture be composited as multiple vertical strips —

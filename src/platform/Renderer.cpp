@@ -987,7 +987,8 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
                             const float pane_tint[4],
                             const DimParams &dim,
                             const std::vector<ImageDrawCmd> &imageCmds,
-                            size_t imgSplitText)
+                            size_t imgSplitText,
+                            bool clearTarget)
 {
     if (!computeInitialized_) {
         return;
@@ -1083,7 +1084,7 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
     {
         wgpu::RenderPassColorAttachment att = {};
         att.view                            = target;
-        att.loadOp                          = wgpu::LoadOp::Clear;
+        att.loadOp                          = clearTarget ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
         att.storeOp                         = wgpu::StoreOp::Store;
         att.clearValue                      = { 0.0, 0.0, 0.0, 1.0 };
         wgpu::RenderPassDescriptor rpDesc   = {};

@@ -116,6 +116,17 @@ struct TabBarRender
     int cols = 0;
     std::vector<std::pair<int, int>> colRanges; // per-tab [startCol, endCol)
     bool dirty = true;
+
+    // Drag-to-reorder floating overlay. Populated by buildBarCells when
+    // draggedTabIdx >= 0: the dragged tab's actual cells (text + colors), the
+    // pixel X within the bar where the float should render, and the float's
+    // pixel width. The strip's `cells` for that tab's slot are bg-filled
+    // (visually empty); these draggedFloat* fields drive a second
+    // renderToPane dispatch in RenderEngine::renderTabBar that stamps the
+    // float on top at draggedFloatX.
+    std::vector<TabBarCell> draggedFloatCells;
+    float draggedFloatX  = 0.0f; // bar-relative pixel X for the float's left edge
+    int draggedFloatCols = 0;    // number of cells in draggedFloatCells
 };
 
 struct RenderFrameState

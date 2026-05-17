@@ -927,6 +927,10 @@ interface MbConfigTabBarColors {
     active_fg:   string;
     inactive_bg: string;
     inactive_fg: string;
+    /** Background of a tab currently being dragged for reorder. */
+    drag_bg:     string;
+    /** Foreground (text) of a tab currently being dragged for reorder. */
+    drag_fg:     string;
 }
 
 interface MbConfigTabBar {
@@ -940,6 +944,12 @@ interface MbConfigTabBar {
     progress_bar: boolean;
     progress_color: string;
     progress_height: number;
+    /**
+     * Horizontal pixel distance the cursor must travel from a tab-bar
+     * mouse-down before the press converts from "click to activate" into
+     * a drag-to-reorder gesture. 0 = enter drag mode immediately.
+     */
+    drag_threshold_px: number;
     colors: MbConfigTabBarColors;
 }
 

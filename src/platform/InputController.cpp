@@ -876,6 +876,20 @@ void InputController::onMouseButton(int button, int action, int mods)
                 if (threshold < 0) {
                     threshold = 0;
                 }
+                // Capture cursor X within the dragged tab so the float
+                // follows the cursor with the press point pinned at the
+                // same horizontal position. Read the tab's pixel left edge
+                // from the render state's colRanges.
+                float tabBarCharWidth  = platform_->tabBarCharWidth_;
+                float dragOffsetXInTab = 0.0f;
+                const auto &bars       = platform_->renderThread_->renderState().tabBars;
+                for (const TabBarRender &br : bars) {
+                    if (br.id == mouseCtx_.tabBarClickBarId && mouseCtx_.tabBarClickIndex < static_cast<int>(br.colRanges.size())) {
+                        float tabLeftPx  = static_cast<float>(br.rect.x) + static_cast<float>(br.colRanges[mouseCtx_.tabBarClickIndex].first) * tabBarCharWidth;
+                        dragOffsetXInTab = static_cast<float>(sx) - tabLeftPx;
+                        break;
+                    }
+                }
                 activeDrag_ = std::make_unique<TabReorderDrag>(
                     sx,
                     sy,
@@ -885,7 +899,8 @@ void InputController::onMouseButton(int button, int action, int mods)
                     stackId,
                     draggedTabId,
                     mouseCtx_.tabBarClickIndex,
-                    threshold);
+                    threshold,
+                    dragOffsetXInTab);
             }
         }
 
@@ -1318,14 +1333,45 @@ void InputController::onCursorPos(double x, double y)
                 return;
             }
             td->setStarted(true);
-            platform_->setDraggedTab(td->barId(), td->draggedTabId());
+            platform_->setDraggedTab(td->barId(), td->draggedTabId(), static_cast<float>(sx), td->dragOffsetXInTab());
+        } else {
+            platform_->setDragCursorX(static_cast<float>(sx));
         }
-        Uuid hitBar;
-        int hitIdx = resolveTabBarClickIndex(sx, sy, &hitBar);
-        // Only reorder while the cursor remains over the originating bar.
-        // Outside the bar (vertical lift, jump to a different bar) the tab
-        // stays put — v1 doesn't support cross-stack drag.
-        if (!hitBar.isNil() && hitBar == td->barId() && hitIdx >= 0 && hitIdx != td->currentIndex()) {
+        // Hit-test cursor X against the originating bar's colRanges, ignoring
+        // Y entirely so the strip still slides aside when the cursor wanders
+        // above or below the bar (a fully-lifted drag mid-air should still
+        // make room for itself). Cursor X past either end of the strip clamps
+        // to the nearest occupied tab. Cross-stack drag isn't supported in
+        // v1 — only the originating bar is consulted.
+        int hitIdx              = -1;
+        const auto &bars        = platform_->renderThread_->renderState().tabBars;
+        float tabBarCharWidth   = platform_->tabBarCharWidth_;
+        for (const TabBarRender &br : bars) {
+            if (br.id != td->barId()) {
+                continue;
+            }
+            for (size_t k = 0; k < br.colRanges.size(); ++k) {
+                int s = br.colRanges[k].first;
+                int e = br.colRanges[k].second;
+                if (s < 0 || e <= s) {
+                    continue;
+                }
+                float left  = static_cast<float>(br.rect.x) + static_cast<float>(s) * tabBarCharWidth;
+                float right = static_cast<float>(br.rect.x) + static_cast<float>(e) * tabBarCharWidth;
+                if (sx < left) {
+                    if (hitIdx < 0) {
+                        hitIdx = static_cast<int>(k); // clamp left
+                    }
+                    break;
+                }
+                hitIdx = static_cast<int>(k);
+                if (sx < right) {
+                    break;
+                }
+            }
+            break;
+        }
+        if (hitIdx >= 0 && hitIdx != td->currentIndex()) {
             int delta = hitIdx - td->currentIndex();
             if (platform_->scriptEngine_.layoutTree().moveChild(td->stackId(), td->draggedTabId(), delta)) {
                 td->setCurrentIndex(hitIdx);

@@ -436,18 +436,81 @@ void buildBarCells(TabBarRender &bar, const RenderFrameState &fs, float charWidt
     const std::string SEP_RIGHT = "\xee\x82\xb0";
 
     bar.colRanges.assign(bar.tabs.size(), { -1, -1 });
+    bar.draggedFloatCells.clear();
+    bar.draggedFloatCols = 0;
+    bar.draggedFloatX    = 0.0f;
+    // SEP_RIGHT (U+E0B0) reused as the float's leading cell with the
+    // colors inverted (fg = bar bg, bg = drag tab bg). That paints the
+    // right-pointing triangle in bar-bg, carving a notch into the tab's
+    // left edge that's the negative-space complement of the previous
+    // tab's right separator — i.e., the shape that an E0B0 slot would
+    // fit into.
     for (int i = visStart; i < visEnd; ++i) {
-        auto &ti      = tabInfos[i];
-        int startCol  = col;
+        auto &ti          = tabInfos[i];
+        const bool isDrag = (i == bar.draggedTabIdx);
+        // When the tab is being dragged, the strip slot renders as
+        // background-only (cells with bg = tbBgColor, no glyph). The Powerline
+        // separator emitted at the right edge uses fg = tbBgColor so its slant
+        // transitions cleanly from the empty slot into the next tab. The real
+        // dragged-tab content (with drag colors) is captured into
+        // bar.draggedFloatCells for the second renderToPane dispatch.
+        uint32_t slotBg = isDrag ? fs.tbBgColor : ti.bgColor;
+        uint32_t slotFg = isDrag ? fs.tbBgColor : ti.fgColor;
+        int startCol    = col;
+        if (isDrag) {
+            // Left edge of the float: SEP_RIGHT with colors inverted so the
+            // triangle is bar-bg-colored over a tab-bg cell, carving the
+            // matching slot shape on the left side of the float. NOT placed
+            // into the strip — the strip's slot has no left separator
+            // either, since the previous tab's right separator served that
+            // role.
+            TabBarCell leftSep;
+            leftSep.ch      = SEP_RIGHT;
+            leftSep.fgColor = fs.tbBgColor;
+            leftSep.bgColor = ti.bgColor;
+            bar.draggedFloatCells.push_back(std::move(leftSep));
+        }
         const char *p = ti.text.c_str();
         while (*p && col < cols) {
             int len = utf8::seqLen(static_cast<uint8_t>(*p));
             std::string ch(p, static_cast<size_t>(len));
-            placeCell(col, ch, ti.fgColor, ti.bgColor);
+            if (isDrag) {
+                TabBarCell fc;
+                fc.ch      = ch;
+                fc.fgColor = ti.fgColor;
+                fc.bgColor = ti.bgColor;
+                bar.draggedFloatCells.push_back(std::move(fc));
+                placeCell(col, std::string {}, slotFg, slotBg);
+            } else {
+                placeCell(col, ch, ti.fgColor, ti.bgColor);
+            }
             p += len;
         }
-        uint32_t nextBg = (i + 1 < visEnd) ? tabInfos[i + 1].bgColor : fs.tbBgColor;
-        placeCell(col, SEP_RIGHT, ti.bgColor, nextBg);
+        if (isDrag) {
+            // Append the dragged tab's own right-side Powerline separator
+            // to the float so it visually slants out of the tab into the
+            // surrounding bar background. The strip's separator at the
+            // slot's right edge (placeCell below) uses slotBg → nextBg so
+            // it slants out of the now-empty slot, independent of this.
+            TabBarCell sepFc;
+            sepFc.ch             = SEP_RIGHT;
+            sepFc.fgColor        = ti.bgColor;
+            sepFc.bgColor        = fs.tbBgColor;
+            bar.draggedFloatCells.push_back(std::move(sepFc));
+            bar.draggedFloatCols = static_cast<int>(bar.draggedFloatCells.size());
+        }
+        // The separator slants slotBg → nextBg. If the next tab is the
+        // dragged one, its strip slot is rendered empty (tbBgColor), so the
+        // separator must transition into bar bg, not into the drag color
+        // (which only lives on the floating cells, not in the strip).
+        uint32_t nextBg;
+        if (i + 1 < visEnd) {
+            bool nextIsDrag = (i + 1 == bar.draggedTabIdx);
+            nextBg          = nextIsDrag ? fs.tbBgColor : tabInfos[i + 1].bgColor;
+        } else {
+            nextBg = fs.tbBgColor;
+        }
+        placeCell(col, SEP_RIGHT, slotBg, nextBg);
         bar.colRanges[i] = { startCol, col };
     }
     if (overflowRight && col + 2 <= cols) {
@@ -589,6 +652,17 @@ void PlatformDawn::populateTabBars()
         }
 
         buildBarCells(bar, rs, tabBarCharWidth_);
+        if (bar.draggedTabIdx >= 0) {
+            float cursorX     = dragCursorX_.load(std::memory_order_relaxed);
+            float offset      = dragOffsetXInTab_.load(std::memory_order_relaxed);
+            // Bar-relative pixel X of the float's left edge — fed to the
+            // compute shader as pane_origin_x for the second dispatch.
+            // Subtract one tabBarCharWidth_ because draggedFloatCells leads
+            // with the SEP_LEFT cell; without the shift the cursor would
+            // sit over the separator instead of over the text where the
+            // user clicked.
+            bar.draggedFloatX = cursorX - offset - static_cast<float>(bar.rect.x) - tabBarCharWidth_;
+        }
         rs.tabBars.push_back(std::move(bar));
     }
 }

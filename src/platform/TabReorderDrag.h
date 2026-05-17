@@ -29,7 +29,7 @@ class TabReorderDrag : public DragHandler
 public:
     TabReorderDrag(double sx, double sy, MouseButton button, PlatformDawn *platform,
                    Uuid barId, Uuid stackId, Uuid draggedTabId,
-                   int dragStartIndex, int thresholdPx)
+                   int dragStartIndex, int thresholdPx, float dragOffsetXInTab)
         : DragHandler(sx, sy, button)
         , platform_(platform)
         , barId_(barId)
@@ -38,6 +38,7 @@ public:
         , dragStartIndex_(dragStartIndex)
         , currentIndex_(dragStartIndex)
         , thresholdPx_(thresholdPx)
+        , dragOffsetXInTab_(dragOffsetXInTab)
     {
     }
 
@@ -57,6 +58,8 @@ public:
 
     int thresholdPx() const { return thresholdPx_; }
 
+    float dragOffsetXInTab() const { return dragOffsetXInTab_; }
+
 private:
     PlatformDawn *platform_;
     Uuid barId_;
@@ -65,4 +68,5 @@ private:
     int dragStartIndex_;
     int currentIndex_;
     int thresholdPx_;
+    float dragOffsetXInTab_;
 };

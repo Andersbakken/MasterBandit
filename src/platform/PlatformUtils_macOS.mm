@@ -20,6 +20,15 @@
 // Independent of the per-notification OSC 99 o= gate (handled at send time).
 static std::atomic<bool> g_showWhenForeground{true};
 
+// Unread-notification dock badge. Incremented inside platformSendNotification
+// when the notification is allowed by the o= gate AND the app is not active
+// at send time. Reset to 0 when the app becomes active. Main-thread only.
+static uint64_t g_unreadCount = 0;
+static id g_appActiveObserver = nil;
+// iTerm2's cap (PseudoTerminal.m:12254) — past 999 the label overflows the
+// pill visually anyway.
+static constexpr uint64_t kUnreadBadgeCap = 999;
+
 // Provided by Window_cocoa.mm. Returns the active CocoaWindow's NSWindow*
 // (cast to void*) or nullptr if no window is alive yet (headless / pre-create).
 extern "C" void* macActiveNSWindow();
@@ -105,6 +114,21 @@ void forgetInFlight(const std::string& identifier)
     for (auto it = g_inflightOrder.begin(); it != g_inflightOrder.end(); ++it) {
         if (*it == identifier) { g_inflightOrder.erase(it); break; }
     }
+}
+
+void writeDockBadgeLabel()
+{
+    NSDockTile* tile = [NSApp dockTile];
+    if (g_unreadCount == 0) {
+        tile.badgeLabel = nil;
+    } else {
+        uint64_t shown = g_unreadCount > kUnreadBadgeCap ? kUnreadBadgeCap : g_unreadCount;
+        tile.badgeLabel = [NSString stringWithFormat:@"%llu", (unsigned long long)shown];
+    }
+    // kitty cocoa_window.m:1373 calls -display after setBadgeLabel:. Apple's
+    // docs say the Dock redraws automatically, but reports of stale tiles
+    // exist; defensive call is cheap.
+    [tile display];
 }
 
 // kitty notifications.py:955-962 parity. Returns true if the notification
@@ -216,13 +240,26 @@ void platformInitNotifications()
     center.delegate = g_notifDelegate;
     if (!g_categories) g_categories = [NSMutableSet set];
 
+    if (!g_appActiveObserver) {
+        g_appActiveObserver = [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSApplicationDidBecomeActiveNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification*) {
+                        g_unreadCount = 0;
+                        writeDockBadgeLabel();
+                    }];
+    }
+
     // iTerm2-style: only prompt when status is NotDetermined. Avoids the
     // re-prompt-on-every-launch behavior the original always-request had,
     // and avoids triggering the system dialog at all when the user
     // previously declined.
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* s) {
         if (s.authorizationStatus == UNAuthorizationStatusNotDetermined) {
-            UNAuthorizationOptions opts = UNAuthorizationOptionAlert | UNAuthorizationOptionSound;
+            // Badge is a separate permission — without it [NSDockTile setBadgeLabel:]
+            // retains the property but the Dock silently suppresses the badge.
+            UNAuthorizationOptions opts = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
             [center requestAuthorizationWithOptions:opts
                 completionHandler:^(BOOL granted, NSError* error) {
                     if (granted) {
@@ -350,6 +387,11 @@ void platformSendNotification(const std::string& sourceTag,
     }
 
     std::string identifier = buildIdentifier(sourceTag, clientId);
+
+    if (![NSApp isActive]) {
+        if (g_unreadCount < kUnreadBadgeCap) ++g_unreadCount;
+        writeDockBadgeLabel();
+    }
 
     // Fire c=1 close-response immediately — UN doesn't deliver swipe-away
     // or auto-expiry callbacks, so we follow kitty's "supports_close_events

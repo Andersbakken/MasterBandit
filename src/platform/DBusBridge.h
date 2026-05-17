@@ -48,6 +48,11 @@ public:
     // it after sending). cb may be empty for fire-and-forget.
     void sendAsync(DBusMessage *msg, ReplyCb cb);
 
+    // One-way send. Steals the message reference. Use for signals and any
+    // method call where the reply isn't interesting — bypasses the pending-
+    // call machinery (signals have no reply, so sendAsync would warn).
+    void sendOneWay(DBusMessage *msg);
+
     // Add a signal-match rule (e.g.
     // "type='signal',interface='org.freedesktop.portal.Settings',"
     // "member='SettingChanged'"). Posts an AddMatch to the bus. The

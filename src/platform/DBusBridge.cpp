@@ -208,6 +208,28 @@ void DBusBridge::sendAsync(DBusMessage *msg, ReplyCb cb)
     [[maybe_unused]] auto n = write(wakeFd_, &one, sizeof(one));
 }
 
+void DBusBridge::sendOneWay(DBusMessage *msg)
+{
+    if (!conn_) {
+        if (msg) {
+            dbus_message_unref(msg);
+        }
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(outMu_);
+        outbox_.push_back([this, msg]()
+                          {
+                              if (!dbus_connection_send(conn_, msg, nullptr)) {
+                                  spdlog::warn("DBusBridge: dbus_connection_send failed (out of memory or disconnected)");
+                              }
+                              dbus_message_unref(msg);
+                          });
+    }
+    uint64_t one            = 1;
+    [[maybe_unused]] auto n = write(wakeFd_, &one, sizeof(one));
+}
+
 void DBusBridge::addSignalMatch(const std::string &matchRule, SignalCb cb)
 {
     if (!conn_) {

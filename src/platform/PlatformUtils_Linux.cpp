@@ -426,6 +426,68 @@ DBusMessage *buildSettingsReadCall()
 std::atomic<bool> g_windowFocused { true };
 std::atomic<bool> g_windowVisible { true };
 
+// Unread-notification badge. Incremented inside platformSendNotification
+// when allowed by o= AND the window is unfocused; reset on focus-gain.
+// Emitted via com.canonical.Unity.LauncherEntry.Update — honored by KDE
+// Plasma, Unity, Pantheon, elementary's Wingpanel, and GNOME's
+// Dash-to-Dock extension. Plain GNOME Shell ignores it. Consumers that
+// resolve icons via the .desktop file (most of them) will only render a
+// badge once share/applications/it.masterband.mb.desktop is installed —
+// see TODO.md "Ship a mb.desktop file" entry.
+uint64_t g_unreadCount                        = 0;
+constexpr uint64_t kUnreadBadgeCap            = 999;
+constexpr const char *kLauncherEntryPath      = "/com/canonical/unity/launcherentry/mb";
+constexpr const char *kLauncherEntryInterface = "com.canonical.Unity.LauncherEntry";
+constexpr const char *kLauncherEntryMember    = "Update";
+constexpr const char *kLauncherEntryAppUri    = "application://it.masterband.mb.desktop";
+
+void emitLauncherBadge(uint64_t count)
+{
+    if (!g_bridge || !g_bridge->connected()) {
+        return;
+    }
+    DBusMessage *sig = dbus_message_new_signal(kLauncherEntryPath,
+                                               kLauncherEntryInterface,
+                                               kLauncherEntryMember);
+    if (!sig) {
+        spdlog::warn("emitLauncherBadge: dbus_message_new_signal failed");
+        return;
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(sig, &args);
+    const char *appUri = kLauncherEntryAppUri;
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &appUri);
+
+    DBusMessageIter dict;
+    dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &dict);
+    {
+        DBusMessageIter entry, variant;
+        const char *k  = "count";
+        dbus_int64_t v = (count > kUnreadBadgeCap) ? (dbus_int64_t)kUnreadBadgeCap : (dbus_int64_t)count;
+        dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
+        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &k);
+        dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "x", &variant);
+        dbus_message_iter_append_basic(&variant, DBUS_TYPE_INT64, &v);
+        dbus_message_iter_close_container(&entry, &variant);
+        dbus_message_iter_close_container(&dict, &entry);
+    }
+    {
+        DBusMessageIter entry, variant;
+        const char *k = "count-visible";
+        dbus_bool_t v = (count > 0) ? TRUE : FALSE;
+        dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
+        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &k);
+        dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "b", &variant);
+        dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &v);
+        dbus_message_iter_close_container(&entry, &variant);
+        dbus_message_iter_close_container(&dict, &entry);
+    }
+    dbus_message_iter_close_container(&args, &dict);
+
+    g_bridge->sendOneWay(sig);
+}
+
 // kitty is_notification_allowed parity (notifications.py:955-962). Returns
 // true if the notification should be shown. Empty/unknown → always allow.
 bool isAllowedByOnlyWhen(const std::string &onlyWhen)
@@ -580,8 +642,12 @@ void platformSetNotificationsShowWhenForeground(bool /*show*/)
 
 void platformSetNotificationWindowState(bool focused, bool visible)
 {
-    g_windowFocused.store(focused, std::memory_order_relaxed);
+    bool wasFocused = g_windowFocused.exchange(focused, std::memory_order_relaxed);
     g_windowVisible.store(visible, std::memory_order_relaxed);
+    if (focused && !wasFocused && g_unreadCount != 0) {
+        g_unreadCount = 0;
+        emitLauncherBadge(0);
+    }
 }
 
 // Forward decl — the reply handler may chain into another dispatch.
@@ -803,6 +869,13 @@ void platformSendNotification(const std::string &sourceTag,
                      "dropping notification: {}",
                      title);
         return;
+    }
+
+    if (!g_windowFocused.load(std::memory_order_relaxed)) {
+        if (g_unreadCount < kUnreadBadgeCap) {
+            ++g_unreadCount;
+        }
+        emitLauncherBadge(g_unreadCount);
     }
 
     // Untracked path: no replace bookkeeping, just send. Suitable for

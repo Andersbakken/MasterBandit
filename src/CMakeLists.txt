@@ -32,7 +32,7 @@ if(APPLE)
     set_target_properties(mb PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "MasterBandit"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.jhanssen.masterbandit"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "it.masterband.mb"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1"
         MACOSX_BUNDLE_BUNDLE_VERSION "1"
         MACOSX_BUNDLE_INFO_STRING "MasterBandit terminal"
@@ -71,9 +71,16 @@ if(APPLE)
     # is declared at the top of the top-level CMakeLists.txt; CI disables it
     # when running a full Developer ID + notarization pipeline so the proper
     # signature isn't immediately overwritten.
+    #
+    # --identifier must be passed explicitly: without it codesign inherits
+    # the identifier already embedded in the Mach-O, which silently drifts
+    # from Info.plist's CFBundleIdentifier after a rename. macOS keys
+    # notification permissions off the codesign identifier, so a stale
+    # embedded id causes new permission grants to be filed under the wrong
+    # bucket and never surface.
     if(MB_ADHOC_SIGN)
         add_custom_command(TARGET mb POST_BUILD
-            COMMAND codesign --sign - --force --deep "$<TARGET_BUNDLE_DIR:mb>"
+            COMMAND codesign --sign - --force --deep --identifier "it.masterband.mb" "$<TARGET_BUNDLE_DIR:mb>"
             VERBATIM
         )
     endif()

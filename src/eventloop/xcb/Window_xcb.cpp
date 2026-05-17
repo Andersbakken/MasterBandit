@@ -516,6 +516,23 @@ bool XCBWindow::create(int width, int height, const std::string &title)
     xcb_set_input_focus(conn_, XCB_INPUT_FOCUS_POINTER_ROOT, window_, XCB_CURRENT_TIME);
     xcb_flush(conn_);
 
+    // Push an initial focus state. The X server hasn't sent us a FocusIn
+    // yet — under "focus stealing prevention" (Mutter, KWin with the
+    // setting on) the SetInputFocus above may have been denied by the WM,
+    // in which case no FocusIn ever arrives and a cached default would
+    // misreport our state. GetInputFocus is a round-trip that flushes
+    // pending requests; the reply reflects whatever the WM ended up with.
+    {
+        auto cookie = xcb_get_input_focus(conn_);
+        if (auto *r = xcb_get_input_focus_reply(conn_, cookie, nullptr)) {
+            bool focused = (r->focus == window_);
+            free(r);
+            if (onFocus) {
+                onFocus(focused);
+            }
+        }
+    }
+
     // Query actual geometry — a tiling WM may have already forced a
     // different size during mapping, without sending a ConfigureNotify.
     auto geomCookie = xcb_get_geometry(conn_, window_);

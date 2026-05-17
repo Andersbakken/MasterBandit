@@ -2,7 +2,16 @@
 
 Operating rules for AI agents working on this repository.
 
-## 1. Always format C/C++ before committing
+## 1. Keep comments brief
+
+Comments should rarely span more than two lines unless it's in a
+documentation file.
+
+Don't refer to what the code looked like before your change, that's
+that's a transient artifact of the diff, not relevant to future readers.
+Also consider if the comment is worth inserting in the first place.
+
+## 2. Always format C/C++ before committing
 
 Run `clang-format -i` on every C/C++ file you create or modify. The
 canonical style is in `.clang-format` at the repo root (WebKit-derived,
@@ -22,7 +31,7 @@ find src tests -type f \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \
 
 `.mm` files are skipped — `.clang-format` is `Language: Cpp` only.
 
-## 2. Pipe test output to a file; grep the file
+## 3. Pipe test output to a file; grep the file
 
 Never grep the live process output. Tests can emit binary bytes, ANSI
 escapes, or huge logs that confuse interactive piping. Always redirect
@@ -91,7 +100,7 @@ To regenerate reference PNGs after an intentional visual change:
 MB_UPDATE_REFS=1 ./build/bin/mb-tests "[render]" > /tmp/refs.out 2>&1
 ```
 
-## 3. Keep `TODO.md` in sync
+## 4. Keep `TODO.md` in sync
 
 `TODO.md` at the repo root tracks open work and shipped features as
 checkbox items (`- [ ]` / `- [x]`). When a change touches anything
@@ -105,7 +114,7 @@ Don't silently ship a feature listed there without updating its line.
 The file is the source of truth for "what's done"; out-of-date entries
 mislead the next reader (human or agent).
 
-## 4. Keep `types/mb.d.ts` in sync with the JS API
+## 5. Keep `types/mb.d.ts` in sync with the JS API
 
 `types/mb.d.ts` is the public TypeScript declaration for the `mb` global
 and every JS-exposed object (`Pane`, `Popup`, `EmbeddedTerminal`, `Tab`,
@@ -135,4 +144,4 @@ Verify by reading the diff of `types/mb.d.ts` against your C++ change
 side-by-side. The file lives under `types/` and is the only `.d.ts` in
 the repo.
 
-## 4. Build with -j$(nproc) or -j$(sysctl -n hw.logicalcpu)
+## 6. Build with -j$(nproc) or -j$(sysctl -n hw.logicalcpu)

@@ -240,7 +240,7 @@ public:
     std::string currentPointerShape() const
     {
         const auto &s = mUsingAltScreen ? mPointerShapeStackAlt : mPointerShapeStackMain;
-        return s.empty() ? std::string {} : s.back();
+        return s.empty() ? std::string { } : s.back();
     }
 
     // True if `name` is a CSS pointer name we recognise (or a kitty/X11 alias).
@@ -352,8 +352,9 @@ public:
         Update,
         ScrollbackChanged,
         VisibleBell,
-        CommandComplete,        // payload: const CommandRecord*
-        CommandSelectionChanged // payload: nullptr; read selectedCommandId() for new value
+        CommandComplete,         // payload: const CommandRecord*
+        CommandSelectionChanged, // payload: nullptr; read selectedCommandId() for new value
+        AltScreenChanged         // payload: nullptr; read usingAltScreen() for new value
     };
 
     // Semantic mode transitioned by OSC 133 A/B/C/D; tracks "what is the terminal
@@ -651,7 +652,7 @@ public:
     // User decoration (system kinds untouched). Returns count removed.
     // `cancelledAnimHandlesOut` aggregates handleIds across every removed
     // decoration (same semantics as removeDecoration).
-    size_t clearUserDecorations(std::string_view tag                           = {},
+    size_t clearUserDecorations(std::string_view tag                           = { },
                                 std::vector<uint64_t> *cancelledAnimHandlesOut = nullptr);
 
     // Apply a queued sequence of Add / Clear ops atomically: one mMutex
@@ -890,13 +891,13 @@ public:
         int rows        = 0;
     };
 
-    virtual void collectEmbeddedAnchors(std::vector<EmbeddedAnchor> & /*out*/) const {}
+    virtual void collectEmbeddedAnchors(std::vector<EmbeddedAnchor> & /*out*/) const { }
 
     // Called from RIS (full reset) before scrollback / line ids are wiped, so
     // subclasses can hand off document-anchored children (embedded terminals
     // on Terminal) for orderly teardown. Default no-op. Called under the
     // terminal mutex.
-    virtual void onFullReset() {}
+    virtual void onFullReset() { }
 
     // Push enough rows from the top of the document into history so that the
     // cursor sits at or above viewport row `viewportRows - 1 - rowsBelow`,
@@ -938,7 +939,7 @@ public:
     void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const;
 
 protected:
-    virtual void writeToOutput(const char *data, size_t len) {}
+    virtual void writeToOutput(const char *data, size_t len) { }
 
     // Reads the shadow atomic so main-thread callers (Terminal::pasteText)
     // don't race with the parse worker mutating mState->bracketedPaste
@@ -1312,8 +1313,8 @@ private:
     // Kitty keyboard protocol
     static constexpr int KITTY_STACK_MAX = 8;
     uint8_t mKittyFlags { 0 };
-    uint8_t mKittyStackMain[KITTY_STACK_MAX] {};
-    uint8_t mKittyStackAlt[KITTY_STACK_MAX] {};
+    uint8_t mKittyStackMain[KITTY_STACK_MAX] { };
+    uint8_t mKittyStackAlt[KITTY_STACK_MAX] { };
     int mKittyStackDepthMain { 0 };
     int mKittyStackDepthAlt { 0 };
 

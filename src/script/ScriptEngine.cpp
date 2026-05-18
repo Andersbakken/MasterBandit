@@ -69,24 +69,24 @@ static std::string resolveAndValidate(const std::string &path, const std::string
     // Resolve the allowed directory to a canonical path
     auto canonicalAllowed = fs::canonical(allowedDir, ec);
     if (ec) {
-        return {};
+        return { };
     }
 
     // Check if the target exists (without following the final symlink yet)
     if (!fs::exists(path, ec) || ec) {
-        return {};
+        return { };
     }
 
     // Resolve to canonical path (resolves all symlinks)
     auto canonicalPath = fs::canonical(path, ec);
     if (ec) {
-        return {};
+        return { };
     }
 
     // Verify the resolved path is under the allowed directory
     auto rel = canonicalPath.lexically_relative(canonicalAllowed);
     if (rel.empty() || rel.string().starts_with("..")) {
-        return {};
+        return { };
     }
 
     return canonicalPath.string();
@@ -284,10 +284,32 @@ static void jsPaneFinalize(JSRuntime *, JSValue val)
 
 static JSClassDef jsPaneClassDef = { "Pane", jsPaneFinalize };
 
+// Memoised per-uuid (per-ctx) — returns the same JS object on every call
+// for a given PaneId so listeners and other per-pane state attach to a
+// stable identity. Two `mb.activePane` reads in a row are `===`. The cache
+// lives at `__pane_proxies` on the global; cleared per pane in
+// `cleanupPane`. The cached entry holds one ref, so the JS object survives
+// until cleanupPane fires (or the ctx is torn down with the script).
 static JSValue jsPaneNew(JSContext *ctx, PaneId id)
 {
+    std::string key = id.toString();
+    JSValue global  = JS_GetGlobalObject(ctx);
+    JSValue cache   = JS_GetPropertyStr(ctx, global, "__pane_proxies");
+    if (JS_IsUndefined(cache)) {
+        cache = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, global, "__pane_proxies", JS_DupValue(ctx, cache));
+    }
+    JS_FreeValue(ctx, global);
+    JSValue existing = JS_GetPropertyStr(ctx, cache, key.c_str());
+    if (!JS_IsUndefined(existing)) {
+        JS_FreeValue(ctx, cache);
+        return existing;
+    }
+    JS_FreeValue(ctx, existing);
     JSValue obj = JS_NewObjectClass(ctx, jsPaneClassId);
     JS_SetOpaque(obj, new JsPaneData { id, true });
+    JS_SetPropertyStr(ctx, cache, key.c_str(), JS_DupValue(ctx, obj));
+    JS_FreeValue(ctx, cache);
     return obj;
 }
 
@@ -1203,6 +1225,7 @@ static JSValue jsPaneGetProp(JSContext *ctx, JSValueConst this_val, int magic)
             return info.nodeId.empty()
                 ? JS_NULL
                 : JS_NewStringLen(ctx, info.nodeId.data(), info.nodeId.size());
+        case 18: return JS_NewBool(ctx, info.usingAltScreen);
         default: return JS_UNDEFINED;
     }
 }
@@ -1280,6 +1303,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("mousePosition", jsPaneGetProp, nullptr, 15),
     JS_CGETSET_MAGIC_DEF("selectedCommandId", jsPaneGetProp, nullptr, 16),
     JS_CGETSET_MAGIC_DEF("nodeId", jsPaneGetProp, nullptr, 17),
+    JS_CGETSET_MAGIC_DEF("usingAltScreen", jsPaneGetProp, nullptr, 18),
     JS_CFUNC_DEF("selectCommand", 1, jsPaneSelectCommand),
 };
 
@@ -1589,11 +1613,11 @@ static JSValue jsPaneCreatePopup(JSContext *ctx, JSValueConst this_val,
 
     Uuid paneId = pane->id;
     bool ok     = eng->callbacks().createPopup(paneId, popupId, x, y, w, h, [eng, paneId, popupId](const char *data, size_t len)
-                                           {
+                                               {
                                                // Deliver input to popup listeners
                                                std::string regKey = paneId.toString() + ":" + popupId;
                                                eng->deliverPopupInput(regKey, data, len);
-                                           });
+                                               });
 
     if (!ok) {
         return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
@@ -2172,7 +2196,7 @@ static bool parseDecorationSpec(JSContext *ctx, JSValueConst specVal,
         JS_ThrowTypeError(ctx, "%s requires (spec)", who);
         return false;
     }
-    d      = Decoration {};
+    d      = Decoration { };
     d.kind = DecorationKind::User;
 
     auto readInt64 = [&](const char *name, int64_t &out) -> bool
@@ -2931,11 +2955,11 @@ static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
     // Arm the completion timer. On fire: settle as "completed".
     EventLoop *loop                = eng->loop();
     EventLoop::TimerId tid         = loop->addTimer(static_cast<uint64_t>(durationMs), false, [eng, handleId]()
-                                            {
+                                                    {
                                                 eng->settleDecorationAnimation(handleId, "completed",
                                                                                /*snapToEnd=*/true,
                                                                                TerminalEmulator::mono());
-                                            });
+                                                    });
     inserted.first->second.timerId = tid;
 
     // If startAnimation replaced a prior animation on the same target/prop
@@ -5554,14 +5578,14 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
         if (id == 0) {
             return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
-        return { LoadResult::Status::Loaded, id, {} };
+        return { LoadResult::Status::Loaded, id, { } };
     }
 
     std::string hash = crypto::sha256Hex(content);
 
     if (allowlist_.isDenied(path, hash)) {
         sLog().info("ScriptEngine: script '{}' is permanently denied", path);
-        return { LoadResult::Status::Denied, 0, {} };
+        return { LoadResult::Status::Denied, 0, { } };
     }
 
     const auto *entry = allowlist_.check(path, hash);
@@ -5573,7 +5597,7 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
                 if (id == 0) {
                     return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
                 }
-                return { LoadResult::Status::Loaded, id, {} };
+                return { LoadResult::Status::Loaded, id, { } };
             }
             sLog().info("ScriptEngine: module files changed for '{}', re-prompting", path);
         }
@@ -5582,11 +5606,11 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
 
     // Store pending script and notify JS to show permission prompt
     std::string pendingKey      = path; // keyed by path
-    pendingScripts_[pendingKey] = { path, content, hash, requestedPerms, "", Uuid {} };
+    pendingScripts_[pendingKey] = { path, content, hash, requestedPerms, "", Uuid { } };
 
     // Fire scriptPermissionRequired event on mb
     notifyPermissionRequired(path, permissionsToString(requestedPerms), hash);
-    return { LoadResult::Status::Pending, 0, {} };
+    return { LoadResult::Status::Pending, 0, { } };
 }
 
 InstanceId Engine::loadScriptInternal(const std::string &path, const std::string &content,
@@ -5706,7 +5730,7 @@ Engine::LoadResult Engine::approveScript(const std::string &path, char response)
         if (id == 0) {
             return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
-        return { LoadResult::Status::Loaded, id, {} };
+        return { LoadResult::Status::Loaded, id, { } };
     };
 
     switch (response) {
@@ -5725,12 +5749,12 @@ Engine::LoadResult Engine::approveScript(const std::string &path, char response)
             allowlist_.deny(pending.path, pending.hash);
             allowlist_.save();
             sLog().info("ScriptEngine: permanently denied '{}'", pending.path);
-            return { LoadResult::Status::Denied, 0, {} };
+            return { LoadResult::Status::Denied, 0, { } };
         case 'n':
         case 'N':
         default:
             sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
-            return { LoadResult::Status::Denied, 0, {} };
+            return { LoadResult::Status::Denied, 0, { } };
     }
 }
 
@@ -6643,6 +6667,33 @@ void Engine::notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> 
     }
 }
 
+void Engine::notifyAltScreenChanged(PaneId pane, bool usingAltScreen)
+{
+    IterGuard guard(this);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
+
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_altScreenChanged");
+            JSValue arg = JS_NewBool(inst.ctx, usingAltScreen ? 1 : 0);
+            enqueueListeners(inst.ctx, arr, 1, &arg);
+            JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
 void Engine::deliverInput(const char *registryName, uint32_t key,
                           const char *data, size_t len)
 {
@@ -7189,6 +7240,17 @@ void Engine::cleanupPane(PaneId pane)
         }
         JS_FreeValue(inst.ctx, paneObj);
         JS_FreeValue(inst.ctx, registry);
+
+        // Also drop the memoised JS proxy so a future pane allocated to
+        // the same uuid (post-recycle) gets a fresh JS object instead of
+        // a stale one with `data->alive == false`.
+        JSValue global2 = JS_GetGlobalObject(inst.ctx);
+        JSValue cache   = JS_GetPropertyStr(inst.ctx, global2, "__pane_proxies");
+        JS_FreeValue(inst.ctx, global2);
+        if (!JS_IsUndefined(cache)) {
+            JS_SetPropertyStr(inst.ctx, cache, pane.toString().c_str(), JS_UNDEFINED);
+        }
+        JS_FreeValue(inst.ctx, cache);
     }
 }
 

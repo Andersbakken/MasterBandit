@@ -128,8 +128,8 @@ TerminalEmulator::TerminalEmulator(TerminalCallbacks callbacks)
 {
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
     memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
-    applyColorScheme(ColorScheme {}); // initialize from config defaults
-    pushEraseBlank();                 // BCE: seed grids with default-bg blank
+    applyColorScheme(ColorScheme { }); // initialize from config defaults
+    pushEraseBlank();                  // BCE: seed grids with default-bg blank
 }
 
 TerminalEmulator::~TerminalEmulator()
@@ -1384,7 +1384,7 @@ void TerminalEmulator::scanLogicalLineForUrls(uint64_t lineId)
         std::string uri  = text.substr(m.byteStart, m.byteEnd - m.byteStart);
 
         uint32_t hid            = mNextHyperlinkId++;
-        mHyperlinkRegistry[hid] = { std::move(uri), {} };
+        mHyperlinkRegistry[hid] = { std::move(uri), { } };
 
         int prevDirtyRow = -1;
         for (int off = startCellOff; off < endCellOff; ++off) {
@@ -1756,6 +1756,9 @@ void TerminalEmulator::applyEsc(char finalByte)
                 mUsingAltScreen = false;
                 mUsingAltScreenAtomic.store(false, std::memory_order_release);
                 mDocument.markAllDirty();
+                if (mCallbacks.event) {
+                    mCallbacks.event(this, static_cast<int>(AltScreenChanged), nullptr);
+                }
             }
             mImageRegistry.clear();
             mNextImageId      = 1;
@@ -2916,6 +2919,9 @@ void TerminalEmulator::onAction(const Action *action)
                     // OSC 133 command selection is a main-screen concept; clear it
                     // so scripts don't see a stale id while the alt screen is up.
                     mSelectedCommandId.reset();
+                    if (mCallbacks.event) {
+                        mCallbacks.event(this, static_cast<int>(AltScreenChanged), nullptr);
+                    }
                     break;
                 case 1004: mState->focusReporting = true; break;
                 case 2004:
@@ -2983,6 +2989,9 @@ void TerminalEmulator::onAction(const Action *action)
                     mDocument.markAllDirty();
                     clearSelection();
                     pushEraseBlank(); // mState swapped back to main; refresh blanks
+                    if (mCallbacks.event) {
+                        mCallbacks.event(this, static_cast<int>(AltScreenChanged), nullptr);
+                    }
                     break;
                 case 1004: mState->focusReporting = false; break;
                 case 2004:

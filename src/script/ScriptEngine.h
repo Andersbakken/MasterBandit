@@ -136,6 +136,7 @@ struct AppCallbacks
         // Empty when the Terminal isn't attached to a tree node (shouldn't
         // happen in production but stays empty safely).
         std::string nodeId;
+        bool usingAltScreen = false;
     };
 
     std::function<PaneInfo(PaneId)> paneInfo;
@@ -464,7 +465,7 @@ public:
     // mb.d.ts). For built-in actions there are no args, so the default
     // covers that case.
     void notifyAction(const std::string &actionName,
-                      const std::vector<std::string> &args = {});
+                      const std::vector<std::string> &args = { });
     // Fired from PlatformDawn::applyConfig after a successful hot-reload.
     // No payload — listeners re-read whatever they care about via the
     // relevant `mb.*` getters (e.g. `mb.tabBarPosition`).
@@ -474,7 +475,7 @@ public:
     // nodeId is the UUID of the destroyed Terminal's tree node — passed through
     // so listeners can correlate with handles they captured from paneCreated.
     // Empty UUID is allowed (paths that don't have the UUID handy still work).
-    void notifyPaneDestroyed(PaneId pane, Uuid nodeId = {});
+    void notifyPaneDestroyed(PaneId pane, Uuid nodeId = { });
     // Tab create/destroy events. `tab` is the Uuid of the Container or Stack
     // that became (or was) a direct child of `parentStack`. parentStack ==
     // layoutRootStack_ marks the event as top-level; anything else is a
@@ -492,7 +493,7 @@ public:
     // Fired before the native cleanup cascade so listeners see the live
     // pane/tab state. Exit code / signal are not plumbed yet — the v1
     // payload is {paneId, paneNodeId}.
-    void notifyTerminalExited(PaneId pane, Uuid nodeId = {});
+    void notifyTerminalExited(PaneId pane, Uuid nodeId = { });
     void notifyPaneResized(PaneId pane, int cols, int rows);
     void notifyOSC(PaneId pane, int oscNum, const std::string &payload);
     void notifyForegroundProcessChanged(PaneId pane, const std::string &processName);
@@ -505,6 +506,9 @@ public:
     // keyboard nav, Escape, or script API). Payload is the new command
     // id, or null when cleared.
     void notifyCommandSelectionChanged(PaneId pane, std::optional<uint64_t> commandId);
+    // Fires when a pane enters or leaves the alternate screen (DECSET 1049
+    // toggle or RIS reset while on alt). Payload is the new boolean state.
+    void notifyAltScreenChanged(PaneId pane, bool usingAltScreen);
     // Fires when a logical-line id is evicted from a pane's scrollback
     // past the archive cap. Payload is the evicted lineId. Listeners
     // tracking specific row ids (e.g. for prompt anchoring) can treat
@@ -804,7 +808,7 @@ public:
     // children only — TabBar has no children to descend into. Order is
     // implementation-defined tree-walk order; callers needing a specific
     // ordering should sort/filter on the returned UUIDs.
-    std::vector<Uuid> queryNodesByKind(NodeKind kind, Uuid subtreeRoot = {}) const;
+    std::vector<Uuid> queryNodesByKind(NodeKind kind, Uuid subtreeRoot = { }) const;
 
     // Find the first node (BFS from root) whose label exactly equals
     // `label`. Returns nil if none. Empty `label` always returns nil so

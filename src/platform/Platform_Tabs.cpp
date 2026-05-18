@@ -26,11 +26,11 @@
 Uuid PlatformDawn::tabSubtreeRootAt(int idx) const
 {
     if (idx < 0) {
-        return {};
+        return { };
     }
     auto roots = scriptEngine_.tabSubtreeRoots();
     if (idx >= static_cast<int>(roots.size())) {
-        return {};
+        return { };
     }
     return roots[idx];
 }
@@ -145,8 +145,8 @@ void PlatformDawn::setDraggedTab(Uuid barId, Uuid tabId, float cursorX, float dr
 
 void PlatformDawn::clearDraggedTab()
 {
-    draggedBarId_ = Uuid {};
-    draggedTabId_ = Uuid {};
+    draggedBarId_ = Uuid { };
+    draggedTabId_ = Uuid { };
     tabBarDirty_  = true;
     setNeedsRedraw();
 }
@@ -398,7 +398,7 @@ void PlatformDawn::closeTab(Uuid target)
         // setOnNodeDestroyed callback wired in Engine ctor.
         tree.removeChild(stackId, target);
         tree.destroyNode(target);
-        scriptEngine_.setFocusedTerminalNodeId({});
+        scriptEngine_.setFocusedTerminalNodeId({ });
 
         // Activate a surviving sibling within the same Stack (prefer the
         // one before the closed position, else the first remaining).
@@ -606,7 +606,7 @@ void PlatformDawn::spawnTerminalForPane(Uuid nodeId, Uuid subtreeRoot, const std
     // the pane sits at top level or inside a sub-bar — exactly what we
     // want here.
     Uuid scopeTab = scriptEngine_.findTabSubtreeRootForNode(nodeId);
-    Rect pr       = scopeTab.isNil() ? Rect {} : scriptEngine_.nodeRectInSubtree(scopeTab, nodeId);
+    Rect pr       = scopeTab.isNil() ? Rect { } : scriptEngine_.nodeRectInSubtree(scopeTab, nodeId);
     int cols      = (pr.w > 0 && charWidth > 0) ? static_cast<int>((pr.w - padLeft - padRight) / charWidth) : 80;
     int rows      = (pr.h > 0 && lineHeight > 0) ? static_cast<int>((pr.h - padTop - padBottom) / lineHeight) : 24;
     cols          = std::max(cols, 1);
@@ -683,7 +683,7 @@ Uuid PlatformDawn::createEmptyTab()
 {
     const bool headless = isHeadless();
     if (!window_ && !headless) {
-        return {};
+        return { };
     }
 
     Uuid subRoot = scriptEngine_.createTabSubtree();
@@ -909,7 +909,7 @@ bool PlatformDawn::removeNode(Uuid nodeId)
     }
 
     resizeAllPanesInTab(*tab);
-    notifyPaneFocusChange(*tab, Uuid {}, scriptEngine_.focusedPaneInSubtree(*tab));
+    notifyPaneFocusChange(*tab, Uuid { }, scriptEngine_.focusedPaneInSubtree(*tab));
     tabBarDirty_ = true;
     if (*tab == scriptEngine_.activeTabSubtreeRoot()) {
         updateWindowTitle();
@@ -994,6 +994,16 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                                      scriptEngine_.notifyCommandSelectionChanged(paneId, id);
                                  });
                 break;
+            case TerminalEmulator::AltScreenChanged:
+                eventLoop_->post([this, paneId]
+                                 {
+                                     Terminal *te = scriptEngine_.terminal(paneId);
+                                     if (!te) {
+                                         return;
+                                     }
+                                     scriptEngine_.notifyAltScreenChanged(paneId, te->usingAltScreen());
+                                 });
+                break;
         }
     };
 
@@ -1029,13 +1039,13 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
             eventLoop_->post([this, src, p]() mutable
                              {
                                  if (!window_) {
-                                     p->set_value({});
+                                     p->set_value({ });
                                      return;
                                  }
                                  window_->requestSelection(src,
                                                            [p](std::optional<std::string> text) mutable
                                                            {
-                                                               p->set_value(text.value_or(std::string {}));
+                                                               p->set_value(text.value_or(std::string { }));
                                                            });
                              });
             return fut.get();
@@ -1046,7 +1056,7 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         };
         cbs.pasteFromClipboard = [](ClipboardTarget) -> std::string
         {
-            return {};
+            return { };
         };
     }
 

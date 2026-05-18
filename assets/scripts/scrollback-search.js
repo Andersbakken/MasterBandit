@@ -123,6 +123,13 @@ mb.addEventListener("action", "search.open", () => {
         return;
     }
 
+    // Find searches the Document (main-screen scrollback + visible grid);
+    // alt-screen contents live in a separate grid that findText cannot see.
+    // Running on alt screen would highlight whatever main-screen text
+    // happens to lie underneath the vim/less/htop UI, which is wrong.
+    // Alt-screen apps typically have their own in-app search anyway.
+    if (pane.usingAltScreen) return;
+
     const query    = signal("");
     const matches  = signal([]);
     const current  = signal(0);
@@ -284,6 +291,17 @@ mb.addEventListener("action", "search.open", () => {
     };
     popup.addEventListener("input", inputCb);
 
+    // If the pane switches to alt screen while search is open (user pops
+    // into vim/less without closing the bar first), tear down: findText is
+    // searching the wrong buffer at that point and any highlights painted
+    // against the main-screen Document are no longer what the user sees.
+    const altCb = (usingAltScreen) => {
+        if (usingAltScreen && ui) {
+            ui.destroy();
+        }
+    };
+    pane.addEventListener("altScreenChanged", altCb);
+
     ui = render(popup, buildRoot(), {
         theme,
         // tui's destroy() runs popup.close() before invoking this hook, so
@@ -295,6 +313,7 @@ mb.addEventListener("action", "search.open", () => {
         onDestroy: () => {
             alive = false;
             ui = null;
+            try { pane.removeEventListener("altScreenChanged", altCb); } catch (_) {}
             try { pane.clearDecorations("search"); } catch (_) {}
             try { pane.clearDecorations("current-match"); } catch (_) {}
         },

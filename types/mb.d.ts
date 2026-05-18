@@ -557,6 +557,15 @@ interface MbPane extends MbTerminal {
      * `shell.commands`.
      */
     readonly commands: readonly MbCommand[];
+    /**
+     * `true` while the pane's emulator is on the alternate screen (DECSET
+     * 1049 active — vim, less, htop, etc.). Subscribe to `altScreenChanged`
+     * for a push signal. Scrollback APIs (`findText`, `getTextFromRows`,
+     * `getLinksFromRows`, `linkAt`) always operate on the main-screen
+     * document and ignore alt-screen contents; gate those calls on this
+     * flag if your script's UX depends on what the user actually sees.
+     */
+    readonly usingAltScreen: boolean;
 
     /**
      * Extract plain UTF-8 text from a stable row-id range (inclusive on
@@ -740,6 +749,12 @@ interface MbPane extends MbTerminal {
      * Payload is the new selected command id or `null` when cleared.
      */
     addEventListener(event: "commandSelectionChanged", fn: (commandId: number | null) => void): void;
+    /**
+     * Fires when the pane enters or leaves the alternate screen (DECSET
+     * 1049 toggle, or RIS reset while alt was active). Payload is the new
+     * `usingAltScreen` boolean.
+     */
+    addEventListener(event: "altScreenChanged", fn: (usingAltScreen: boolean) => void): void;
     /**
      * Fires when a logical-line id is evicted past the archive cap.
      * After this, the id is invalid for any text/link/selection query

@@ -61,7 +61,7 @@ public:
     // Initialize without a PTY or child process. For script-driven applets.
     bool initHeadless(const TerminalOptions &options);
 
-    void setEventLoop(EventLoop *loop) { mEventLoop = loop; }
+    void setEventLoop(EventLoop *loop);
 
     void setPtyMux(PtyMux *mux) { mPtyMux = mux; }
 
@@ -491,6 +491,11 @@ private:
     // Fires when the shell process exits. Tear down in destructor and
     // in markExited (in case PTY EOF wins the race).
     int mPidFd { -1 };
+    // Shared "alive" gate captured by the pidfd watch lambda. Set to
+    // false before the Terminal is torn down so a still-queued cb
+    // (Remove is async — see FdPollerEpoll) can no-op instead of
+    // dereferencing freed `this`.
+    std::shared_ptr<std::atomic<bool>> mPidWatchAlive;
 #endif
 #ifdef __APPLE__
     // Detached helper thread blocks on waitpid(mShellPid) and post()s

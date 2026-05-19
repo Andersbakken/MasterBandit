@@ -91,6 +91,10 @@ Terminal::~Terminal()
     if (mPtyMux && mMasterFD >= 0) {
         mPtyMux->remove(mMasterFD);
     }
+    // The pidfd watch / macOS waitpid helper captures `this`; tear it
+    // down before any other state so it can't fire on a half-destroyed
+    // Terminal. Idempotent and safe when never armed.
+    stopShellPidWatch();
     if (mWritePollActive && mEventLoop && mMasterFD >= 0) {
         mEventLoop->removeFd(mMasterFD);
         mWritePollActive = false;
@@ -876,13 +880,34 @@ void Terminal::markExited()
     }
 }
 
+void Terminal::setEventLoop(EventLoop *loop)
+{
+    mEventLoop = loop;
+    // The shell-pid watch needs the loop. spawnTerminalForPane calls init()
+    // (which forks and tries to arm the watch) before addPtyPoll wires the
+    // loop, so re-arm here once the loop is available. Idempotent.
+    if (mEventLoop && mShellPid > 0) {
+        startShellPidWatch();
+    }
+}
+
 void Terminal::startShellPidWatch()
 {
     if (mShellPid <= 0) {
         return;
     }
+    // Need an event loop to deliver the exit notification. If init() ran
+    // before setEventLoop(), the caller will re-arm via setEventLoop once
+    // the loop is wired in. Bail before touching kernel resources.
+    if (!mEventLoop) {
+        return;
+    }
 
 #ifdef __linux__
+    // Already armed — setEventLoop may be called more than once.
+    if (mPidFd >= 0) {
+        return;
+    }
     // pidfd_open requires Linux 5.3+. On older kernels we silently
     // skip the watch — falls back to PTY-EOF-only behavior, which is
     // what mb had before. Not worth a runtime warning; the user can't
@@ -903,26 +928,24 @@ void Terminal::startShellPidWatch()
         fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
     }
     mPidFd = fd;
-    if (!mEventLoop) {
-        // No event loop yet (test / headless path). Close the pidfd —
-        // the caller wasn't going to get exit notifications anyway.
-        ::close(mPidFd);
-        mPidFd = -1;
-        return;
+    if (!mPidWatchAlive) {
+        mPidWatchAlive = std::make_shared<std::atomic<bool>>(true);
     }
-    // Watch as readable. pidfd is "readable" iff the process has exited
-    // and the kernel is ready to return its status. The callback fires
-    // on the main thread (EventLoop is main-thread-only), so calling
-    // markExited from there is safe wrt the rest of the teardown.
-    mEventLoop->watchFd(mPidFd, EventLoop::FdEvents::Readable, [this](EventLoop::FdEvents)
+    // Capture by value: pid + alive flag. EventLoop::removeFd is async
+    // (queues a Remove op in FdPollerEpoll), so a cb can still fire
+    // after ~Terminal queued the removal. The alive gate makes that
+    // a no-op instead of a UAF on `this`.
+    auto alive = mPidWatchAlive;
+    pid_t pid  = mShellPid;
+    mEventLoop->watchFd(mPidFd, EventLoop::FdEvents::Readable, [this, alive, pid](EventLoop::FdEvents)
                         {
-                            // Reap so the pid doesn't linger as a zombie.
-                            // WNOHANG is sufficient because pidfd "readable"
-                            // means waitpid will succeed without blocking.
+                            if (!alive->load(std::memory_order_acquire)) {
+                                return;
+                            }
                             int status = 0;
-                            ::waitpid(mShellPid, &status, WNOHANG);
+                            ::waitpid(pid, &status, WNOHANG);
                             spdlog::info("Terminal: shell pid {} exited (status={})",
-                                         mShellPid,
+                                         pid,
                                          status);
                             markExited();
                         });
@@ -938,8 +961,8 @@ void Terminal::startShellPidWatch()
     // re-checks ownerDead before dereferencing `owner`, because the
     // Terminal can die between the helper's check and the lambda
     // running on the main thread.
-    if (!mEventLoop) {
-        return;
+    if (mPidWatch) {
+        return; // already armed
     }
     mPidWatch        = std::make_shared<PidWatch>();
     mPidWatch->loop  = mEventLoop;
@@ -975,6 +998,12 @@ void Terminal::startShellPidWatch()
 void Terminal::stopShellPidWatch()
 {
 #ifdef __linux__
+    // Flip the alive gate first so any cb still in flight no-ops
+    // before touching `this`. The shared_ptr keeps the flag alive
+    // past Terminal destruction.
+    if (mPidWatchAlive) {
+        mPidWatchAlive->store(false, std::memory_order_release);
+    }
     if (mPidFd >= 0) {
         if (mEventLoop) {
             mEventLoop->removeFd(mPidFd);

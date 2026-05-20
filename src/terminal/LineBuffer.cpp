@@ -302,14 +302,19 @@ void LineBuffer::appendLine(const Cell *cells, int len,
     // existing block, sealed-then-restart on overflow, fresh new block)
     // produce a new meta_ entry at internal index meta_.size()-1, which is
     // firstValidLine() + numLines() - 1 for the back block.
+    //
+    // try_emplace, not assign: when a logical line is too long for one block
+    // we seal and restart in a fresh block with the SAME lineId. The index
+    // must keep pointing at the FIRST block so firstAbsOfLine returns the
+    // line's actual first row; overwriting on each continuation made
+    // firstAbsOfLine report the row where the last continuation starts.
     if (!(appended && extendsLast)) {
         const int blockIdx    = static_cast<int>(blocks_.size()) - 1;
         const auto &back      = blocks_.back();
         const int internalIdx = back.firstValidLine() + back.numLines() - 1;
-        lineIdIndex_[lineId]  = LineLocation {
-            firstBlockSeq_ + static_cast<uint64_t>(blockIdx),
-            internalIdx
-        };
+        lineIdIndex_.try_emplace(lineId, LineLocation {
+                                             firstBlockSeq_ + static_cast<uint64_t>(blockIdx),
+                                             internalIdx });
     }
 
     totalCells_ += len;
@@ -809,10 +814,6 @@ void LineBuffer::enforceLimits()
         const bool blockEmpty    = head.dropFront(1);
         totalLines_ -= 1;
         totalCells_ -= len;
-        lineIdIndex_.erase(evictedId);
-        if (onLineIdEvicted_) {
-            onLineIdEvicted_(evictedId);
-        }
         if (blockEmpty) {
             blocks_.pop_front();
             // firstBlockSeq_ tracks blocks_.front()'s seq. Bump it so that
@@ -820,6 +821,25 @@ void LineBuffer::enforceLimits()
             // continue to map to the correct deque index via blockSeq -
             // firstBlockSeq_.
             ++firstBlockSeq_;
+        }
+        // Multi-block continuation: a logical line too big for one block is
+        // split across consecutive blocks, each with the same lineId as its
+        // first line. If the evicted entry was the first part of such a line
+        // and a continuation survives, re-point the index instead of erasing
+        // (the line still exists in scrollback).
+        bool continued = false;
+        if (!blocks_.empty()) {
+            const auto &nb = blocks_.front();
+            if (nb.numLines() > 0 && nb.lineId(0) == evictedId) {
+                lineIdIndex_[evictedId] = LineLocation { firstBlockSeq_, nb.firstValidLine() };
+                continued               = true;
+            }
+        }
+        if (!continued) {
+            lineIdIndex_.erase(evictedId);
+            if (onLineIdEvicted_) {
+                onLineIdEvicted_(evictedId);
+            }
         }
     }
 }

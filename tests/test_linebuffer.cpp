@@ -610,6 +610,71 @@ TEST_CASE("LineBuffer: resolveLogicalIndex correct after eviction")
     }
 }
 
+TEST_CASE("LineBuffer: findLine on a line that spans multiple blocks points at the first block")
+{
+    // Regression: a logical line too long for one block is split across
+    // consecutive blocks (each new continuation gets the same lineId).
+    // The line-id index must point at the FIRST such block so firstAbsOfLine
+    // returns the line's actual first row, not the start of the last
+    // continuation.
+    LineBuffer lb;
+    const uint64_t id = 42;
+    // Seed the buffer with a few short lines so the multi-block line isn't
+    // the first thing in scrollback. Without this, firstAbsOfLine would
+    // happen to return 0 either way.
+    for (int i = 0; i < 3; ++i) {
+        auto r = row("xx");
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()),
+                          static_cast<uint64_t>(i + 1), 0, nullptr);
+    }
+    // Open the long line as a partial soft-wrapped seed.
+    auto seed = row("abcdefghij");
+    lb.appendLine(seed.data(), static_cast<int>(seed.size()),
+                  LineMeta::EolSoft, /*partial*/ true, /*extendsLast*/ false,
+                  id, 0, nullptr);
+    // Extend it with enough data to force at least one block split. The
+    // extension path tolerates up to 2*kCellCapacity (1364) before rejecting,
+    // so multiple smaller extensions guarantee a seal-and-restart somewhere.
+    std::string chunk(500, 'a');
+    auto ext = row(chunk);
+    for (int i = 0; i < 6; ++i) {
+        lb.appendLine(ext.data(), static_cast<int>(ext.size()),
+                      LineMeta::EolSoft, /*partial*/ true, /*extendsLast*/ true,
+                      id, 0, nullptr);
+    }
+    // Seal with a final non-partial extension.
+    lb.appendLine(ext.data(), static_cast<int>(ext.size()),
+                  LineMeta::EolHard, /*partial*/ false, /*extendsLast*/ true,
+                  id, 0, nullptr);
+
+    // Sanity: the line really did span more than one block.
+    int blocksWithId = 0;
+    for (int bi = 0; bi < lb.blockCount(); ++bi) {
+        const auto &b = lb.block(bi);
+        for (int li = 0; li < b.numLines(); ++li) {
+            if (b.lineId(li) == id) {
+                ++blocksWithId;
+                break;
+            }
+        }
+    }
+    REQUIRE(blocksWithId >= 2);
+
+    auto loc = lb.findLine(id);
+    REQUIRE(loc.has_value());
+    // Walk back from loc and confirm no earlier block also holds this id;
+    // if found, that's the block findLine should have returned.
+    for (int bi = 0; bi < loc->blockIdx; ++bi) {
+        const auto &b = lb.block(bi);
+        for (int li = 0; li < b.numLines(); ++li) {
+            CHECK(b.lineId(li) != id);
+        }
+    }
+    // And the indexed block must indeed contain the id.
+    const auto &b = lb.block(loc->blockIdx);
+    CHECK(b.lineId(loc->externalLineIdx) == id);
+}
+
 TEST_CASE("LineBuffer: incremental sum cache stays valid across width queries interleaved with appends")
 {
     // Drives the selection-drag scenario: render thread asks numWrappedRows

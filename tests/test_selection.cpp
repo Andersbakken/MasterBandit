@@ -420,3 +420,55 @@ TEST_CASE("triple-click on a wrapped line selects the whole logical line")
 
     CHECK(t.term.selectedText() == "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
 }
+
+TEST_CASE("first visual row of a wrapped line in scrollback is selectable")
+{
+    // Repro: a wrapped logical line that's been scrolled back into history.
+    // Clicking on its FIRST visual row and dragging within it (or onto it)
+    // must produce a selection that highlights that row.
+    TestTerminal t(10, 5);
+    // 50 chars wrap to 5 rows on a 10-col terminal, then we push them all
+    // into scrollback with extra lines, then scroll back to bring the
+    // wrapped line back into view.
+    t.feed("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEE\r\n");
+    for (int i = 0; i < 5; ++i) {
+        t.feed("filler\r\n");
+    }
+    int history = t.term.document().historySize();
+    REQUIRE(history >= 5);
+    t.term.scrollViewport(history);
+
+    // The wrapped line's first visual row is at absRow 0 (it was pushed
+    // into scrollback first). Find it explicitly so the test doesn't
+    // depend on exact scrollback geometry.
+    int firstWrappedAbs = -1;
+    for (int abs = 0; abs < history + t.term.height(); ++abs) {
+        uint64_t id = t.term.document().lineIdForAbs(abs);
+        if (id != 0 && t.term.document().firstAbsOfLine(id) == abs) {
+            const Cell *row = (abs < t.term.document().historySize())
+                ? t.term.document().historyRow(abs)
+                : t.term.grid().row(abs - t.term.document().historySize());
+            if (row && row[0].wc == U'A') {
+                firstWrappedAbs = abs;
+                break;
+            }
+        }
+    }
+    REQUIRE(firstWrappedAbs >= 0);
+
+    int viewportOff = t.term.viewportOffset();
+    int viewRow     = firstWrappedAbs - (t.term.document().historySize() - viewportOff);
+    REQUIRE(viewRow >= 0);
+    REQUIRE(viewRow < t.term.height());
+
+    // Click at col 2 of the first visual row, drag to col 5 within same row.
+    auto press = makeMouseEvent(2, viewRow);
+    auto move  = makeMouseEvent(5, viewRow, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(5, viewRow, LeftButton, /*xRightHalf=*/true);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.hasSelection());
+    CHECK(t.term.selectedText() == "AAAA");
+}

@@ -851,14 +851,29 @@ int Document::lastAbsOfLine(uint64_t id) const
     if (lastScreen >= 0) {
         return historySize() + lastScreen;
     }
-    // Scrollback. Same O(1) findLine; "last" is firstAbs + (line's wrap rows) - 1.
+    // Scrollback. The index points at the FIRST block holding this line
+    // (so firstAbsOfLine works correctly), so the last row is the start of
+    // that line's first continuation, plus that continuation's wrap rows,
+    // plus any further continuations in subsequent blocks (a logical line
+    // too long for one block is split across consecutive blocks, each with
+    // the same lineId as its first line).
     if (auto loc = scrollback_.findLine(id)) {
         int wrappedRow = scrollback_.numWrappedRowsBeforeBlock(loc->blockIdx, cols_);
         const auto &b  = scrollback_.block(loc->blockIdx);
         for (int li = 0; li < loc->externalLineIdx; ++li) {
             wrappedRow += b.numWrappedRowsForLine(li, cols_);
         }
-        return wrappedRow + b.numWrappedRowsForLine(loc->externalLineIdx, cols_) - 1;
+        wrappedRow += b.numWrappedRowsForLine(loc->externalLineIdx, cols_);
+        int blockIdx = loc->blockIdx + 1;
+        while (blockIdx < scrollback_.blockCount()) {
+            const auto &nb = scrollback_.block(blockIdx);
+            if (nb.numLines() == 0 || nb.lineId(0) != id) {
+                break;
+            }
+            wrappedRow += nb.numWrappedRowsForLine(0, cols_);
+            ++blockIdx;
+        }
+        return wrappedRow - 1;
     }
     return -1;
 }

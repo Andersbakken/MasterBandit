@@ -148,6 +148,14 @@ public:
 
     int maxTotalCells() const { return maxTotalCells_; }
 
+    // Diagnostic: total number of per-block entries rebuilt by
+    // ensureSumCache / ensureLogicalCache since construction. Counts the
+    // sum of `nb` across every full rebuild. Steady-state streaming MUST
+    // not increase this — that's the regression guard for the prefix-sum
+    // moving-base scheme. Width changes / explicit invalidation do trigger
+    // rebuilds; those bumps are expected.
+    uint64_t cacheRebuildEntries() const { return cacheRebuildEntries_; }
+
     // Append a row's used cells. The combination (wasContinued, isLastRowSoft)
     // is encoded by the caller into eol + extendsLast:
     //   - extendsLast: this line continues a partial scrollback line.
@@ -227,6 +235,13 @@ public:
     // chain, and for the visible-grid restore-from-scrollback path).
     bool lastLineIsPartial() const;
 
+    // O(1) lineId of the newest logical line in scrollback. Returns 0 when
+    // the buffer is empty. Distinct from lineIdAtLogicalIndex(totalLogicalLines()-1)
+    // which goes through the logical-prefix-sum cache; this reads straight
+    // from blocks_.back() so it never triggers a cache rebuild — critical for
+    // pushVisibleRowToScrollback's extendsLast check which fires on every LF.
+    uint64_t lastLineId() const;
+
     // Line-ID resolution.
     //
     // logicalIndex = 0 means oldest line, totalLogicalLines()-1 = newest.
@@ -287,27 +302,46 @@ private:
 
     std::function<void(uint64_t)> onLineIdEvicted_;
 
-    // Width-keyed cumulative wrap-row cache. cachedBlockEndCum_[i] = sum of
-    // wrapped rows in blocks_[0..i] at cachedSumWidth_. Lets numWrappedRows()
-    // be O(1) and wrappedRowAt() be O(log blocks + lines_per_block).
+    // Width-keyed cumulative wrap-row cache.
     //
-    // Validity: cachedSumWidth_ == -1 means cache is fully invalid. When
-    // valid, cachedBlockEndCum_.size() == blocks_.size().
-    mutable int cachedSumWidth_         = -1;
-    mutable int cachedTotalWrappedRows_ = 0;
-    mutable std::vector<int> cachedBlockEndCum_;
+    // Invariant: cachedBlockEndCum_[i] = total wrapped rows in *all* blocks
+    // ever inserted at indices [0, sumBaseBlocks_ + i] at width
+    // cachedSumWidth_ — i.e. it's a prefix sum in an absolute coordinate
+    // frame anchored at "everything ever evicted plus what's still live".
+    //
+    // sumBaseOffset_ = total wrapped rows of *fully evicted* head blocks
+    // (and dropped-but-block-not-empty head lines).
+    // sumBaseBlocks_ = count of blocks ever popped from the front.
+    //
+    // To get the "real" prefix sum (rows before block i in the current
+    // live deque), use cachedBlockEndCum_[i] - sumBaseOffset_.
+    //
+    // Live entry count equals blocks_.size(): on pop_front we pop_front the
+    // cache too. On new block we push_back. Front-pop is O(1) regardless of
+    // total scrollback size — critical for sustained streaming at cap.
+    //
+    // Validity: cachedSumWidth_ == -1 means cache is fully invalid (rebuild
+    // from scratch on next ensureSumCache).
+    // Stored entries use int64_t even though per-block contributions are
+    // int-sized: at sustained high streaming rates the absolute prefix sum
+    // (which includes everything ever evicted) can exceed INT_MAX in a
+    // single long session. ~2.1B logical lines = ~6 hours at 100k lines/s,
+    // which is within reach of compile-log floods at the user's no-cap
+    // setting. int64_t is overkill for live block count but the right type
+    // for the absolute frame.
+    mutable int cachedSumWidth_             = -1;
+    mutable int64_t cachedTotalWrappedRows_ = 0;
+    mutable std::deque<int64_t> cachedBlockEndCum_;
+    mutable int64_t sumBaseOffset_ = 0;
 
-    // Width-independent cumulative logical-line-count cache.
-    // cachedBlockEndLogical_[i] = sum_{j<=i} blocks_[j].numLines().
-    // Lets resolveLogicalIndex() be O(log blocks) instead of O(blocks).
-    //
-    // Separate validity flag because logical line counts don't depend on
-    // width — querying at a new width should not invalidate this cache.
-    // Front evictions and back-only mutations are handled the same way as
-    // the wrap-rows cache (full invalidate on front eviction; incremental
-    // update via afterBackBlockMutation on back-only changes).
+    // Width-independent cumulative logical-line-count cache. Same scheme:
+    // cachedBlockEndLogical_[i] - logicalBaseOffset_ = lines before block i.
     mutable bool cachedLogicalValid_ = false;
-    mutable std::vector<int> cachedBlockEndLogical_;
+    mutable std::deque<int64_t> cachedBlockEndLogical_;
+    mutable int64_t logicalBaseOffset_ = 0;
+
+    // Diagnostic counter; see cacheRebuildEntries().
+    mutable uint64_t cacheRebuildEntries_ = 0;
 
     // O(1) lineId → location index. Each entry stores the block's *stable*
     // seq plus the line's *internal* meta_-array index, so the entry survives
@@ -335,6 +369,10 @@ private:
     {
         cachedSumWidth_     = -1;
         cachedLogicalValid_ = false;
+        cachedBlockEndCum_.clear();
+        cachedBlockEndLogical_.clear();
+        sumBaseOffset_     = 0;
+        logicalBaseOffset_ = 0;
     }
 
     // Called after a back-of-deque mutation (append / pop-last) and after

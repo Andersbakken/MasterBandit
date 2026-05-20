@@ -458,6 +458,11 @@ public:
     // a use-after-free.
     std::shared_ptr<std::atomic<bool>> outputFilterFlag(PaneId pane);
     std::shared_ptr<std::atomic<bool>> inputFilterFlag(PaneId pane);
+    // Pre-created at pane registration so the bridging lambda can capture
+    // the shared_ptr once. The flag is initially false; flips true when
+    // the first rowEvicted listener subscribes, back to false when the
+    // last one unsubscribes.
+    std::shared_ptr<std::atomic<bool>> rowEvictedFlag(PaneId pane);
 
     // --- Async events (enqueued as microtasks) ---
     // `args` flow through to script-registered handlers as positional
@@ -465,7 +470,7 @@ public:
     // mb.d.ts). For built-in actions there are no args, so the default
     // covers that case.
     void notifyAction(const std::string &actionName,
-                      const std::vector<std::string> &args = { });
+                      const std::vector<std::string> &args = {});
     // Fired from PlatformDawn::applyConfig after a successful hot-reload.
     // No payload — listeners re-read whatever they care about via the
     // relevant `mb.*` getters (e.g. `mb.tabBarPosition`).
@@ -475,7 +480,7 @@ public:
     // nodeId is the UUID of the destroyed Terminal's tree node — passed through
     // so listeners can correlate with handles they captured from paneCreated.
     // Empty UUID is allowed (paths that don't have the UUID handy still work).
-    void notifyPaneDestroyed(PaneId pane, Uuid nodeId = { });
+    void notifyPaneDestroyed(PaneId pane, Uuid nodeId = {});
     // Tab create/destroy events. `tab` is the Uuid of the Container or Stack
     // that became (or was) a direct child of `parentStack`. parentStack ==
     // layoutRootStack_ marks the event as top-level; anything else is a
@@ -493,7 +498,7 @@ public:
     // Fired before the native cleanup cascade so listeners see the live
     // pane/tab state. Exit code / signal are not plumbed yet — the v1
     // payload is {paneId, paneNodeId}.
-    void notifyTerminalExited(PaneId pane, Uuid nodeId = { });
+    void notifyTerminalExited(PaneId pane, Uuid nodeId = {});
     void notifyPaneResized(PaneId pane, int cols, int rows);
     void notifyOSC(PaneId pane, int oscNum, const std::string &payload);
     void notifyForegroundProcessChanged(PaneId pane, const std::string &processName);
@@ -583,6 +588,8 @@ public:
     void addPaneOutputFilter(PaneId pane, InstanceId instId);
     void addPaneInputFilter(PaneId pane, InstanceId instId);
     void addPaneMouseMoveListener(PaneId pane, InstanceId instId);
+    void addPaneRowEvictedListener(PaneId pane, InstanceId instId);
+    void removePaneRowEvictedListener(PaneId pane, InstanceId instId);
 
     uint32_t nextTimer() { return nextTimerId_++; }
 
@@ -678,6 +685,7 @@ public:
         std::vector<PaneId> paneOutputFilters; // panes with output filters from this instance
         std::vector<PaneId> paneInputFilters;
         std::vector<PaneId> paneMouseMoveListeners;
+        std::vector<PaneId> paneRowEvictedListeners;
     };
 
     Instance *findInstanceByCtx(JSContext *ctx);
@@ -808,7 +816,7 @@ public:
     // children only — TabBar has no children to descend into. Order is
     // implementation-defined tree-walk order; callers needing a specific
     // ordering should sort/filter on the returned UUIDs.
-    std::vector<Uuid> queryNodesByKind(NodeKind kind, Uuid subtreeRoot = { }) const;
+    std::vector<Uuid> queryNodesByKind(NodeKind kind, Uuid subtreeRoot = {}) const;
 
     // Find the first node (BFS from root) whose label exactly equals
     // `label`. Returns nil if none. Empty `label` always returns nil so
@@ -1030,6 +1038,7 @@ private:
     std::unordered_map<PaneId, int, UuidHash> paneOutputFilterCount_;
     std::unordered_map<PaneId, int, UuidHash> paneInputFilterCount_;
     std::unordered_map<PaneId, int, UuidHash> paneMouseMoveCount_;
+    std::unordered_map<PaneId, int, UuidHash> paneRowEvictedCount_;
     // Mirrors of the above counts as atomic-bool shared_ptrs. Read by
     // the parse worker (output) / writeToOutput path (input) without
     // locking; written by the main thread alongside the count maps.
@@ -1040,6 +1049,13 @@ private:
         paneOutputFilterFlag_;
     std::unordered_map<PaneId, std::shared_ptr<std::atomic<bool>>, UuidHash>
         paneInputFilterFlag_;
+    // Per-pane flag: any JS listener subscribed to rowEvicted? Read by
+    // the parse worker (LineBuffer eviction callback) wait-free so it
+    // can skip the main-thread bounce + per-instance QuickJS lookup when
+    // nobody is listening — critical for streaming-at-cap throughput
+    // since the eviction callback fires once per LF at cap.
+    std::unordered_map<PaneId, std::shared_ptr<std::atomic<bool>>, UuidHash>
+        paneRowEvictedFlag_;
 
     JSContext *createContext();
     void setupGlobals(JSContext *ctx, InstanceId id);

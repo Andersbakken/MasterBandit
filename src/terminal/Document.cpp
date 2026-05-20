@@ -244,10 +244,11 @@ void Document::pushVisibleRowToScrollback(int screenRow, int physical)
          ? screenLineId_[screenRow]
          : ++nextLineId_;
     // If the row's line ID matches scrollback's last partial-line ID, this
-    // row continues that line.
+    // row continues that line. lastLineId() is O(1) (reads blocks_.back()
+    // directly); lineIdAtLogicalIndex goes through the prefix-sum cache and
+    // dominated profiles on streaming-at-cap.
     const bool extendsLast = scrollback_.lastLineIsPartial() &&
-        (scrollback_.totalLogicalLines() > 0) &&
-        (scrollback_.lineIdAtLogicalIndex(scrollback_.totalLogicalLines() - 1) == lineId);
+        scrollback_.lastLineId() == lineId;
 
     const auto &extras = ringExtras_[physical];
     scrollback_.appendLine(r, len, eol, /*partial*/ soft, extendsLast, lineId, static_cast<uint8_t>(flags & ~Continued), extras.empty() ? nullptr : &extras);
@@ -881,10 +882,7 @@ int Document::lastAbsOfLine(uint64_t id) const
 uint64_t Document::newestLineId() const
 {
     if (screenLineId_.empty()) {
-        if (scrollback_.totalLogicalLines() > 0) {
-            return scrollback_.lineIdAtLogicalIndex(scrollback_.totalLogicalLines() - 1);
-        }
-        return 0;
+        return scrollback_.lastLineId();
     }
     return screenLineId_.back();
 }
@@ -1087,14 +1085,12 @@ void Document::resizeReflow(int newCols, int newRows, CursorTrack *cursor)
         // and the cursor offset includes the cells of that scrollback line.
         int prefixCells = 0;
         if (scrollback_.lastLineIsPartial() &&
-            scrollback_.totalLogicalLines() > 0 &&
-            scrollback_.lineIdAtLogicalIndex(scrollback_.totalLogicalLines() - 1) == cursorLineId) {
-            // Find the partial line's length.
-            int li       = scrollback_.totalLogicalLines() - 1;
-            int blockIdx = 0, lineInBlock = 0;
-            if (scrollback_.resolveLogicalIndex(li, &blockIdx, &lineInBlock)) {
-                prefixCells = scrollback_.block(blockIdx).lineLength(lineInBlock);
-            }
+            scrollback_.lastLineId() == cursorLineId) {
+            // The partial line is the last line of the last block — read
+            // its length directly to avoid the prefix-sum lookup.
+            const int blockIdx = scrollback_.blockCount() - 1;
+            const auto &b      = scrollback_.block(blockIdx);
+            prefixCells        = b.lineLength(b.numLines() - 1);
         }
         for (int r = cursorChainStart; r < cursorScreenRow; ++r) {
             // Cells of row r within its chain — Continued rows take cols_,

@@ -624,28 +624,21 @@ TEST_CASE("LineBuffer: findLine on a line that spans multiple blocks points at t
     // happen to return 0 either way.
     for (int i = 0; i < 3; ++i) {
         auto r = row("xx");
-        lb.appendHardLine(r.data(), static_cast<int>(r.size()),
-                          static_cast<uint64_t>(i + 1), 0, nullptr);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(i + 1), 0, nullptr);
     }
     // Open the long line as a partial soft-wrapped seed.
     auto seed = row("abcdefghij");
-    lb.appendLine(seed.data(), static_cast<int>(seed.size()),
-                  LineMeta::EolSoft, /*partial*/ true, /*extendsLast*/ false,
-                  id, 0, nullptr);
+    lb.appendLine(seed.data(), static_cast<int>(seed.size()), LineMeta::EolSoft, /*partial*/ true, /*extendsLast*/ false, id, 0, nullptr);
     // Extend it with enough data to force at least one block split. The
     // extension path tolerates up to 2*kCellCapacity (1364) before rejecting,
     // so multiple smaller extensions guarantee a seal-and-restart somewhere.
     std::string chunk(500, 'a');
     auto ext = row(chunk);
     for (int i = 0; i < 6; ++i) {
-        lb.appendLine(ext.data(), static_cast<int>(ext.size()),
-                      LineMeta::EolSoft, /*partial*/ true, /*extendsLast*/ true,
-                      id, 0, nullptr);
+        lb.appendLine(ext.data(), static_cast<int>(ext.size()), LineMeta::EolSoft, /*partial*/ true, /*extendsLast*/ true, id, 0, nullptr);
     }
     // Seal with a final non-partial extension.
-    lb.appendLine(ext.data(), static_cast<int>(ext.size()),
-                  LineMeta::EolHard, /*partial*/ false, /*extendsLast*/ true,
-                  id, 0, nullptr);
+    lb.appendLine(ext.data(), static_cast<int>(ext.size()), LineMeta::EolHard, /*partial*/ false, /*extendsLast*/ true, id, 0, nullptr);
 
     // Sanity: the line really did span more than one block.
     int blocksWithId = 0;
@@ -683,7 +676,7 @@ TEST_CASE("LineBuffer: incremental sum cache stays valid across width queries in
     // We can't measure that directly from the public API, but we CAN verify
     // the cache stays correct.
     LineBuffer lb;
-    const int width = 19;
+    const int width  = 19;
     std::string base = "hello world this is a moderately long line to force wrapping";
     for (int i = 0; i < 3000; ++i) {
         auto r = row(base);
@@ -695,4 +688,89 @@ TEST_CASE("LineBuffer: incremental sum cache stays valid across width queries in
             CHECK_MESSAGE(cached == fresh, "diverged at i=", i);
         }
     }
+}
+
+TEST_CASE("LineBuffer: streaming at cap performs no O(blocks) walks")
+{
+    // Regression guard for the moving-base prefix-sum scheme. At the
+    // eviction cap, every appended line evicts one old line; the prior
+    // implementation invalidated the prefix-sum caches on every eviction
+    // and rebuilt them by walking every block on the next query
+    // (dominated `perf` profiles when streaming into a large scrollback).
+    //
+    // With moving-base offsets eviction is O(1) and no rebuild should
+    // happen. We verify by reading the rebuild-entries counter before/after
+    // a long streaming burst at the cap and asserting zero growth.
+    //
+    // The setup walks the cache once first to put it in the warm state we
+    // care about (no width change, no explicit invalidation, no resize).
+    const int cap   = 500;
+    const int width = 40;
+    LineBuffer lb(cap, /*maxCells*/ 0);
+    std::string base = "the quick brown fox jumps over the lazy dog and a few more chars";
+
+    // Warm up: fill exactly to cap. Touch the caches so they're hot.
+    for (int i = 0; i < cap; ++i) {
+        auto r = row(base);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), static_cast<uint64_t>(i + 1), 0, nullptr);
+    }
+    (void)lb.numWrappedRows(width);
+    int blockIdx = 0, lineInBlock = 0;
+    (void)lb.resolveLogicalIndex(0, &blockIdx, &lineInBlock);
+    CHECK(lb.totalLogicalLines() == cap);
+
+    const uint64_t baseline = lb.cacheRebuildEntries();
+
+    // Stream 10x the cap. Every line evicts one. Touch both caches on
+    // every iteration the way the production hot path does:
+    //   - lastLineId() (from Document::pushVisibleRowToScrollback)
+    //   - numWrappedRows (from Document::historySize)
+    //   - resolveLogicalIndex (from firstAbsOfLine / lineIdAt)
+    const int streamCount = cap * 10;
+    for (int i = 0; i < streamCount; ++i) {
+        const uint64_t id = static_cast<uint64_t>(cap + i + 1);
+        auto r            = row(base);
+        lb.appendHardLine(r.data(), static_cast<int>(r.size()), id, 0, nullptr);
+        // Production hot-path queries:
+        (void)lb.lastLineId();
+        (void)lb.numWrappedRows(width);
+        int bi = 0, li = 0;
+        (void)lb.resolveLogicalIndex(0, &bi, &li);
+    }
+    CHECK(lb.totalLogicalLines() == cap);
+    CHECK_MESSAGE(lb.cacheRebuildEntries() == baseline,
+                  "Streaming at cap rebuilt the prefix-sum cache; "
+                  "expected O(1) eviction maintenance to keep the count flat. "
+                  "Delta=",
+                  lb.cacheRebuildEntries() - baseline);
+
+    // Sanity: the cached numWrappedRows still matches a fresh walk.
+    CHECK(lb.numWrappedRows(width) == freshNumWrappedRows(lb, width));
+}
+
+TEST_CASE("LineBuffer: lastLineId returns newest, O(1)-style")
+{
+    // Functional check of the O(1) lastLineId() accessor used by
+    // Document::pushVisibleRowToScrollback.
+    LineBuffer lb(0, 0);
+    CHECK(lb.lastLineId() == 0);
+    auto a = row("first");
+    lb.appendHardLine(a.data(), static_cast<int>(a.size()), 100, 0, nullptr);
+    CHECK(lb.lastLineId() == 100);
+    auto b = row("second");
+    lb.appendHardLine(b.data(), static_cast<int>(b.size()), 200, 0, nullptr);
+    CHECK(lb.lastLineId() == 200);
+
+    // After eviction, lastLineId still points at the newest surviving line.
+    LineBuffer lb2(2, 0);
+    auto x = row("x");
+    lb2.appendHardLine(x.data(), 1, 1, 0, nullptr);
+    lb2.appendHardLine(x.data(), 1, 2, 0, nullptr);
+    lb2.appendHardLine(x.data(), 1, 3, 0, nullptr); // evicts id=1
+    CHECK(lb2.totalLogicalLines() == 2);
+    CHECK(lb2.lastLineId() == 3);
+
+    // After clear, back to 0.
+    lb2.clear();
+    CHECK(lb2.lastLineId() == 0);
 }

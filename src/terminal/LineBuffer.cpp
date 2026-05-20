@@ -312,9 +312,7 @@ void LineBuffer::appendLine(const Cell *cells, int len,
         const int blockIdx    = static_cast<int>(blocks_.size()) - 1;
         const auto &back      = blocks_.back();
         const int internalIdx = back.firstValidLine() + back.numLines() - 1;
-        lineIdIndex_.try_emplace(lineId, LineLocation {
-                                             firstBlockSeq_ + static_cast<uint64_t>(blockIdx),
-                                             internalIdx });
+        lineIdIndex_.try_emplace(lineId, LineLocation { firstBlockSeq_ + static_cast<uint64_t>(blockIdx), internalIdx });
     }
 
     totalCells_ += len;
@@ -380,36 +378,37 @@ LineBuffer::PoppedLine LineBuffer::popLastLine()
     return result;
 }
 
+// Cache scheme overview
+// ---------------------
+// Both prefix-sum caches use the SAME scheme: cachedBlockEndCum_[i] (or
+// cachedBlockEndLogical_[i]) stores the running prefix sum in an absolute
+// frame that includes everything ever evicted from the front. The "live"
+// prefix sum for block i is `cachedBlockEndCum_[i] - sumBaseOffset_`.
+//
+// Front-eviction is therefore O(1): pop_front the cache, add the popped
+// entry's contribution to the base offset, and every surviving cache entry
+// continues to point at the correct logical value via subtraction.
+//
+// Back-block mutations (append) update only the back entry: O(1).
+//
+// Width change forces a full rebuild of the wrap cache only. That rebuild
+// resets sumBaseOffset_ to 0 because we're choosing a new coordinate frame.
+
 void LineBuffer::ensureSumCache(int width) const
 {
-    // Three states on entry:
-    //  (a) Hot at this width and length matches → return.
-    //  (b) Hot at a different width → invalidate, rebuild from scratch.
-    //  (c) Width matches but the cache is shorter than blocks_ (new blocks
-    //      since last validate) → extend the tail.
-    //
-    // State (c) is the selection-drag hot path: parse worker appends a few
-    // blocks while the user drags, the next render-thread query just walks
-    // the new tail entries instead of recomputing every block's wrap count.
-    // Before the incremental extend, every cache miss walked the entire
-    // deque, which dominated the perf profile during selection drags.
-    //
-    // Front-side mutations (eviction, popLastLine emptying the back block)
-    // never reach state (c): afterBackBlockMutation full-invalidates on
-    // eviction, and back-block truncation goes through the same helper.
-    // So when sizes differ here, the existing prefix is still valid and
-    // new blocks are at the tail.
-
     const size_t nb = blocks_.size();
     if (cachedSumWidth_ == width && cachedBlockEndCum_.size() == nb) {
 #ifndef NDEBUG
-        // Debug-only paranoia: verify the cache fully on every hot read.
-        // Release builds skip and trust the cache. If incremental
-        // maintenance ever drifts, this catches it at the next query.
-        int verifyTotal = 0;
+        // Paranoia: in debug builds, verify the live prefix sums against a
+        // ground-truth walk every time we hit the warm path. If incremental
+        // maintenance ever drifts (eviction failed to update the offset,
+        // append failed to bump the back entry, etc.), this fires at the
+        // next query rather than corrupting downstream rendering.
+        int64_t verifyTotal = 0;
         for (size_t i = 0; i < nb; ++i) {
             verifyTotal += blocks_[i].numWrappedRows(width);
-            assert(cachedBlockEndCum_[i] == verifyTotal &&
+            const int64_t live = cachedBlockEndCum_[i] - sumBaseOffset_;
+            assert(live == verifyTotal &&
                    "LineBuffer sum cache out of sync (wrapped prefix)");
         }
         assert(cachedTotalWrappedRows_ == verifyTotal &&
@@ -418,24 +417,17 @@ void LineBuffer::ensureSumCache(int width) const
         return;
     }
 
-    size_t start;
-    int total;
-    if (cachedSumWidth_ == width && cachedBlockEndCum_.size() < nb) {
-        // Incremental extend.
-        start = cachedBlockEndCum_.size();
-        total = cachedBlockEndCum_.empty() ? 0 : cachedBlockEndCum_.back();
-    } else {
-        // Full rebuild: width changed or cache was invalidated.
-        start = 0;
-        total = 0;
-    }
-    cachedBlockEndCum_.resize(nb);
-    for (size_t i = start; i < nb; ++i) {
+    // Width changed or cache was invalidated: full rebuild, new frame.
+    cachedBlockEndCum_.clear();
+    sumBaseOffset_ = 0;
+    int64_t total  = 0;
+    for (size_t i = 0; i < nb; ++i) {
         total += blocks_[i].numWrappedRows(width);
-        cachedBlockEndCum_[i] = total;
+        cachedBlockEndCum_.push_back(total);
     }
     cachedTotalWrappedRows_ = total;
     cachedSumWidth_         = width;
+    cacheRebuildEntries_ += nb;
 }
 
 void LineBuffer::ensureLogicalCache() const
@@ -443,102 +435,93 @@ void LineBuffer::ensureLogicalCache() const
     const size_t nb = blocks_.size();
     if (cachedLogicalValid_ && cachedBlockEndLogical_.size() == nb) {
 #ifndef NDEBUG
-        int verifyTotal = 0;
+        int64_t verifyTotal = 0;
         for (size_t i = 0; i < nb; ++i) {
             verifyTotal += blocks_[i].numLines();
-            assert(cachedBlockEndLogical_[i] == verifyTotal &&
+            const int64_t live = cachedBlockEndLogical_[i] - logicalBaseOffset_;
+            assert(live == verifyTotal &&
                    "LineBuffer logical cache out of sync");
         }
 #endif
         return;
     }
 
-    size_t start;
-    int total;
-    if (cachedLogicalValid_ && cachedBlockEndLogical_.size() < nb) {
-        // Incremental extend (same hot path as the wrap cache: parse worker
-        // adds blocks while logical-index queries are warm).
-        start = cachedBlockEndLogical_.size();
-        total = cachedBlockEndLogical_.empty() ? 0 : cachedBlockEndLogical_.back();
-    } else {
-        start = 0;
-        total = 0;
-    }
-    cachedBlockEndLogical_.resize(nb);
-    for (size_t i = start; i < nb; ++i) {
+    cachedBlockEndLogical_.clear();
+    logicalBaseOffset_ = 0;
+    int64_t total      = 0;
+    for (size_t i = 0; i < nb; ++i) {
         total += blocks_[i].numLines();
-        cachedBlockEndLogical_[i] = total;
+        cachedBlockEndLogical_.push_back(total);
     }
     cachedLogicalValid_ = true;
+    cacheRebuildEntries_ += nb;
 }
 
-void LineBuffer::afterBackBlockMutation(int preBlockCount, bool evicted)
+void LineBuffer::afterBackBlockMutation(int preBlockCount, bool /*evicted*/)
 {
-    // Eviction shifts every prefix sum — fall back to full invalidation
-    // for both caches.
-    if (evicted) {
-        invalidateSumCache();
-        return;
-    }
+    // Eviction maintenance is done inline in enforceLimits, not here. By
+    // the time this runs, both caches are already consistent with respect
+    // to any front-pops that happened. Our job is only to reconcile
+    // back-side mutations: in-place back-block grow, or one or more new
+    // blocks pushed at the back.
+    //
+    // Note preBlockCount predates BOTH the back-side append AND any
+    // front-side eviction. To know how many blocks were popped from the
+    // front we'd have to track it separately — but we don't need to,
+    // because the cache deques have already been pop_front'd by
+    // enforceLimits. We only care about back-side reconciliation here.
 
     const size_t nb = blocks_.size();
 
-    // Wrap-rows cache: incremental update only if it was valid AND its
-    // current length matches preBlockCount (i.e. the front-eviction path
-    // wasn't taken elsewhere).
-    if (cachedSumWidth_ != -1 &&
-        cachedBlockEndCum_.size() == static_cast<size_t>(preBlockCount)) {
-        if (nb == static_cast<size_t>(preBlockCount)) {
-            // Same block count → back block was mutated in place.
-            if (nb == 0) {
-                cachedTotalWrappedRows_ = 0;
-            } else {
-                const int newBackRows     = blocks_.back().numWrappedRows(cachedSumWidth_);
-                const int prevCum         = (nb >= 2) ? cachedBlockEndCum_[nb - 2] : 0;
-                const int newCum          = prevCum + newBackRows;
-                cachedBlockEndCum_.back() = newCum;
-                cachedTotalWrappedRows_   = newCum;
-            }
-        } else if (nb > static_cast<size_t>(preBlockCount)) {
-            cachedBlockEndCum_.resize(nb);
-            int total = (preBlockCount == 0) ? 0 : cachedBlockEndCum_[preBlockCount - 1];
-            for (size_t i = static_cast<size_t>(preBlockCount); i < nb; ++i) {
-                total += blocks_[i].numWrappedRows(cachedSumWidth_);
-                cachedBlockEndCum_[i] = total;
-            }
-            cachedTotalWrappedRows_ = total;
-        } else {
-            // nb < preBlockCount — back blocks truncated (popLastLine
-            // emptied the tail).
-            cachedBlockEndCum_.resize(nb);
-            cachedTotalWrappedRows_ = nb == 0 ? 0 : cachedBlockEndCum_.back();
+    // Wrap-rows cache.
+    if (cachedSumWidth_ != -1) {
+        // If the cache deque is shorter than blocks_, new blocks were
+        // pushed at the back since the last reconcile. Extend.
+        while (cachedBlockEndCum_.size() < nb) {
+            const size_t i     = cachedBlockEndCum_.size();
+            const int64_t prev = cachedBlockEndCum_.empty()
+                ? sumBaseOffset_
+                : cachedBlockEndCum_.back();
+            cachedBlockEndCum_.push_back(prev + blocks_[i].numWrappedRows(cachedSumWidth_));
         }
-    } else {
-        cachedSumWidth_ = -1;
+        // If the cache deque is longer than blocks_, the back was
+        // truncated (popLastLine emptied the trailing block(s)).
+        while (cachedBlockEndCum_.size() > nb) {
+            cachedBlockEndCum_.pop_back();
+        }
+        // The back block itself may have grown/shrunk in place. Recompute
+        // its entry from the previous one.
+        if (!cachedBlockEndCum_.empty()) {
+            const size_t last  = cachedBlockEndCum_.size() - 1;
+            const int64_t prev = (last == 0) ? sumBaseOffset_ : cachedBlockEndCum_[last - 1];
+            cachedBlockEndCum_[last] =
+                prev + blocks_[last].numWrappedRows(cachedSumWidth_);
+        }
+        cachedTotalWrappedRows_ =
+            cachedBlockEndCum_.empty()
+            ? 0
+            : (cachedBlockEndCum_.back() - sumBaseOffset_);
     }
 
     // Logical-count cache: same shape, width-independent.
-    if (cachedLogicalValid_ &&
-        cachedBlockEndLogical_.size() == static_cast<size_t>(preBlockCount)) {
-        if (nb == static_cast<size_t>(preBlockCount)) {
-            if (nb > 0) {
-                const int newBackLines        = blocks_.back().numLines();
-                const int prevLog             = (nb >= 2) ? cachedBlockEndLogical_[nb - 2] : 0;
-                cachedBlockEndLogical_.back() = prevLog + newBackLines;
-            }
-        } else if (nb > static_cast<size_t>(preBlockCount)) {
-            cachedBlockEndLogical_.resize(nb);
-            int total = (preBlockCount == 0) ? 0 : cachedBlockEndLogical_[preBlockCount - 1];
-            for (size_t i = static_cast<size_t>(preBlockCount); i < nb; ++i) {
-                total += blocks_[i].numLines();
-                cachedBlockEndLogical_[i] = total;
-            }
-        } else {
-            cachedBlockEndLogical_.resize(nb);
+    if (cachedLogicalValid_) {
+        while (cachedBlockEndLogical_.size() < nb) {
+            const size_t i     = cachedBlockEndLogical_.size();
+            const int64_t prev = cachedBlockEndLogical_.empty()
+                ? logicalBaseOffset_
+                : cachedBlockEndLogical_.back();
+            cachedBlockEndLogical_.push_back(prev + blocks_[i].numLines());
         }
-    } else {
-        cachedLogicalValid_ = false;
+        while (cachedBlockEndLogical_.size() > nb) {
+            cachedBlockEndLogical_.pop_back();
+        }
+        if (!cachedBlockEndLogical_.empty()) {
+            const size_t last            = cachedBlockEndLogical_.size() - 1;
+            const int64_t prev           = (last == 0) ? logicalBaseOffset_ : cachedBlockEndLogical_[last - 1];
+            cachedBlockEndLogical_[last] = prev + blocks_[last].numLines();
+        }
     }
+    (void)preBlockCount;
 }
 
 int LineBuffer::numWrappedRows(int width) const
@@ -547,7 +530,11 @@ int LineBuffer::numWrappedRows(int width) const
         return 0;
     }
     ensureSumCache(width);
-    return cachedTotalWrappedRows_;
+    // Live total is bounded by maxLogicalLines × max wrap factor —
+    // always fits in int; assert in debug builds.
+    assert(cachedTotalWrappedRows_ <= std::numeric_limits<int>::max() &&
+           "live wrapped-row count overflowed int");
+    return static_cast<int>(cachedTotalWrappedRows_);
 }
 
 bool LineBuffer::wrappedRowAt(int wrappedRow, int width, WrappedLineRef *out) const
@@ -556,17 +543,21 @@ bool LineBuffer::wrappedRowAt(int wrappedRow, int width, WrappedLineRef *out) co
         return false;
     }
     ensureSumCache(width);
-    if (wrappedRow >= cachedTotalWrappedRows_) {
+    if (static_cast<int64_t>(wrappedRow) >= cachedTotalWrappedRows_) {
         return false;
     }
 
-    // Binary search: first block whose cumulative end > wrappedRow.
-    auto it           = std::upper_bound(cachedBlockEndCum_.begin(),
+    // Binary search: first block whose live cumulative end > wrappedRow.
+    // Live values are stored values minus sumBaseOffset_. Add the offset
+    // to the search key (in int64 space) instead of subtracting from every
+    // entry.
+    const int64_t searchKey = static_cast<int64_t>(wrappedRow) + sumBaseOffset_;
+    auto it                 = std::upper_bound(cachedBlockEndCum_.begin(),
                                cachedBlockEndCum_.end(),
-                               wrappedRow);
-    const int bi      = static_cast<int>(it - cachedBlockEndCum_.begin());
-    const int prevCum = (bi == 0) ? 0 : cachedBlockEndCum_[bi - 1];
-    int localRem      = wrappedRow - prevCum;
+                               searchKey);
+    const int bi            = static_cast<int>(it - cachedBlockEndCum_.begin());
+    const int64_t prevCum   = (bi == 0) ? sumBaseOffset_ : cachedBlockEndCum_[bi - 1];
+    int localRem            = static_cast<int>(static_cast<int64_t>(wrappedRow) - (prevCum - sumBaseOffset_));
 
     const auto &b = blocks_[bi];
     for (int li = 0; li < b.numLines(); ++li) {
@@ -615,6 +606,19 @@ bool LineBuffer::lastLineIsPartial() const
         return false;
     }
     return blocks_.back().lastIsPartial();
+}
+
+uint64_t LineBuffer::lastLineId() const
+{
+    if (blocks_.empty()) {
+        return 0;
+    }
+    const auto &b = blocks_.back();
+    const int n   = b.numLines();
+    if (n <= 0) {
+        return 0;
+    }
+    return b.lineId(n - 1);
 }
 
 uint64_t LineBuffer::lineIdAtLogicalIndex(int idx) const
@@ -671,7 +675,13 @@ int LineBuffer::numWrappedRowsBeforeBlock(int blockIdx, int width) const
     ensureSumCache(width);
     const int last = std::min(blockIdx - 1,
                               static_cast<int>(cachedBlockEndCum_.size()) - 1);
-    return last >= 0 ? cachedBlockEndCum_[last] : 0;
+    if (last < 0) {
+        return 0;
+    }
+    const int64_t live = cachedBlockEndCum_[last] - sumBaseOffset_;
+    assert(live <= std::numeric_limits<int>::max() &&
+           "live wrapped-row prefix overflowed int");
+    return static_cast<int>(live);
 }
 
 bool LineBuffer::resolveLogicalIndex(int idx, int *blockIdx, int *lineInBlock) const
@@ -680,19 +690,19 @@ bool LineBuffer::resolveLogicalIndex(int idx, int *blockIdx, int *lineInBlock) c
         return false;
     }
     ensureLogicalCache();
-    // Binary-search the cumulative logical-line-count prefix array.
-    // cachedBlockEndLogical_[i] = number of logical lines in blocks_[0..i].
-    // The first block whose cumulative end > idx contains line `idx`.
-    auto it = std::upper_bound(cachedBlockEndLogical_.begin(),
+    // Binary-search the cumulative logical-line-count prefix array in the
+    // shifted (int64) frame: stored values include logicalBaseOffset_.
+    const int64_t searchKey = static_cast<int64_t>(idx) + logicalBaseOffset_;
+    auto it                 = std::upper_bound(cachedBlockEndLogical_.begin(),
                                cachedBlockEndLogical_.end(),
-                               idx);
+                               searchKey);
     if (it == cachedBlockEndLogical_.end()) {
         return false; // idx >= total lines
     }
-    const int bi      = static_cast<int>(it - cachedBlockEndLogical_.begin());
-    const int prevCum = (bi == 0) ? 0 : *(it - 1);
-    *blockIdx         = bi;
-    *lineInBlock      = idx - prevCum;
+    const int bi          = static_cast<int>(it - cachedBlockEndLogical_.begin());
+    const int64_t prevLog = (bi == 0) ? logicalBaseOffset_ : *(it - 1);
+    *blockIdx             = bi;
+    *lineInBlock          = static_cast<int>(static_cast<int64_t>(idx) - (prevLog - logicalBaseOffset_));
     return true;
 }
 
@@ -807,13 +817,43 @@ void LineBuffer::enforceLimits()
         if (head.empty()) {
             blocks_.pop_front();
             ++firstBlockSeq_;
+            // Cache deques shadow blocks_: pop the now-stale front entry.
+            // No base-offset bump needed: an empty block contributed 0 to
+            // both prefix sums when it was pushed, so its stored prefix is
+            // equal to the previous block's, and removing it doesn't change
+            // any other entry's meaning.
+            if (!cachedBlockEndCum_.empty()) {
+                cachedBlockEndCum_.pop_front();
+            }
+            if (!cachedBlockEndLogical_.empty()) {
+                cachedBlockEndLogical_.pop_front();
+            }
             continue;
         }
-        const uint64_t evictedId = head.lineId(0);
-        const int len            = head.lineLength(0);
-        const bool blockEmpty    = head.dropFront(1);
+        const uint64_t evictedId   = head.lineId(0);
+        const int len              = head.lineLength(0);
+        // Capture the line's wrapped-row contribution at the current cache
+        // width BEFORE dropping it; we need it to bump sumBaseOffset_ so
+        // the surviving cache entries continue to resolve to the correct
+        // live values.
+        int evictedLineWrappedRows = 0;
+        if (cachedSumWidth_ != -1) {
+            evictedLineWrappedRows = head.numWrappedRowsForLine(0, cachedSumWidth_);
+        }
+        const bool blockEmpty = head.dropFront(1);
         totalLines_ -= 1;
         totalCells_ -= len;
+
+        // Maintain the prefix-sum caches incrementally in their absolute
+        // frame: anything that gets evicted is folded into the base offset
+        // so surviving stored values keep their meaning.
+        if (cachedSumWidth_ != -1) {
+            sumBaseOffset_ += evictedLineWrappedRows;
+        }
+        if (cachedLogicalValid_) {
+            logicalBaseOffset_ += 1;
+        }
+
         if (blockEmpty) {
             blocks_.pop_front();
             // firstBlockSeq_ tracks blocks_.front()'s seq. Bump it so that
@@ -821,6 +861,15 @@ void LineBuffer::enforceLimits()
             // continue to map to the correct deque index via blockSeq -
             // firstBlockSeq_.
             ++firstBlockSeq_;
+            // The popped block's cache entry equals the new base offset
+            // exactly (since after the loop above, sumBaseOffset_ has been
+            // bumped by the block's full contribution): drop it.
+            if (!cachedBlockEndCum_.empty()) {
+                cachedBlockEndCum_.pop_front();
+            }
+            if (!cachedBlockEndLogical_.empty()) {
+                cachedBlockEndLogical_.pop_front();
+            }
         }
         // Multi-block continuation: a logical line too big for one block is
         // split across consecutive blocks, each with the same lineId as its
@@ -841,6 +890,14 @@ void LineBuffer::enforceLimits()
                 onLineIdEvicted_(evictedId);
             }
         }
+    }
+    // Re-derive total live wrapped rows from the (now possibly shrunken)
+    // back cache entry minus the (now possibly increased) base offset. O(1).
+    if (cachedSumWidth_ != -1) {
+        cachedTotalWrappedRows_ =
+            cachedBlockEndCum_.empty()
+            ? 0
+            : (cachedBlockEndCum_.back() - sumBaseOffset_);
     }
 }
 

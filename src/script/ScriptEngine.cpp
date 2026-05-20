@@ -69,24 +69,24 @@ static std::string resolveAndValidate(const std::string &path, const std::string
     // Resolve the allowed directory to a canonical path
     auto canonicalAllowed = fs::canonical(allowedDir, ec);
     if (ec) {
-        return { };
+        return {};
     }
 
     // Check if the target exists (without following the final symlink yet)
     if (!fs::exists(path, ec) || ec) {
-        return { };
+        return {};
     }
 
     // Resolve to canonical path (resolves all symlinks)
     auto canonicalPath = fs::canonical(path, ec);
     if (ec) {
-        return { };
+        return {};
     }
 
     // Verify the resolved path is under the allowed directory
     auto rel = canonicalPath.lexically_relative(canonicalAllowed);
     if (rel.empty() || rel.string().starts_with("..")) {
-        return { };
+        return {};
     }
 
     return canonicalPath.string();
@@ -454,6 +454,7 @@ static JSValue jsPaneAddEventListener(JSContext *ctx, JSValueConst this_val,
             return JS_ThrowTypeError(ctx, "permission denied: pane.read not granted");
         }
         prop = std::string("__evt_") + event;
+        eng->addPaneRowEvictedListener(pane->id, instId);
         registerInGlobal(ctx, "__pane_registry", pane->id.toString(), this_val);
     } else {
         prop = std::string("__evt_") + event;
@@ -489,6 +490,7 @@ static JSValue jsPaneRemoveEventListener(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
     std::string prop;
+    bool isRowEvicted = false;
     if (strcmp(event, "output") == 0) {
         prop = "__output_filters";
     } else if (strcmp(event, "input") == 0) {
@@ -496,11 +498,34 @@ static JSValue jsPaneRemoveEventListener(JSContext *ctx, JSValueConst this_val,
     } else if (strcmp(event, "mouse") == 0) {
         prop = "__mouse_listeners";
     } else {
-        prop = std::string("__evt_") + event;
+        prop         = std::string("__evt_") + event;
+        isRowEvicted = (strcmp(event, "rowEvicted") == 0);
     }
     JS_FreeCString(ctx, event);
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    // Capture pre-remove length to detect whether anything actually
+    // matched — we only decrement the row-eviction counter on a real
+    // removal (matches the existing semantics of removeFromJSArray
+    // which is idempotent when the listener isn't registered).
+    int preLen  = 0;
+    if (isRowEvicted) {
+        JSValue lenVal = JS_GetPropertyStr(ctx, arr, "length");
+        JS_ToInt32(ctx, &preLen, lenVal);
+        JS_FreeValue(ctx, lenVal);
+    }
     removeFromJSArray(ctx, arr, argv[1]);
+    if (isRowEvicted) {
+        JSValue lenVal = JS_GetPropertyStr(ctx, arr, "length");
+        int postLen    = 0;
+        JS_ToInt32(ctx, &postLen, lenVal);
+        JS_FreeValue(ctx, lenVal);
+        if (postLen < preLen) {
+            Engine *eng       = engineFromCtx(ctx);
+            auto *inst        = instanceFromCtx(ctx);
+            InstanceId instId = inst ? inst->id : 0;
+            eng->removePaneRowEvictedListener(pane->id, instId);
+        }
+    }
     JS_FreeValue(ctx, arr);
     return JS_UNDEFINED;
 }
@@ -1613,11 +1638,11 @@ static JSValue jsPaneCreatePopup(JSContext *ctx, JSValueConst this_val,
 
     Uuid paneId = pane->id;
     bool ok     = eng->callbacks().createPopup(paneId, popupId, x, y, w, h, [eng, paneId, popupId](const char *data, size_t len)
-                                               {
+                                           {
                                                // Deliver input to popup listeners
                                                std::string regKey = paneId.toString() + ":" + popupId;
                                                eng->deliverPopupInput(regKey, data, len);
-                                               });
+                                           });
 
     if (!ok) {
         return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
@@ -2196,7 +2221,7 @@ static bool parseDecorationSpec(JSContext *ctx, JSValueConst specVal,
         JS_ThrowTypeError(ctx, "%s requires (spec)", who);
         return false;
     }
-    d      = Decoration { };
+    d      = Decoration {};
     d.kind = DecorationKind::User;
 
     auto readInt64 = [&](const char *name, int64_t &out) -> bool
@@ -2955,11 +2980,11 @@ static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
     // Arm the completion timer. On fire: settle as "completed".
     EventLoop *loop                = eng->loop();
     EventLoop::TimerId tid         = loop->addTimer(static_cast<uint64_t>(durationMs), false, [eng, handleId]()
-                                                    {
+                                            {
                                                 eng->settleDecorationAnimation(handleId, "completed",
                                                                                /*snapToEnd=*/true,
                                                                                TerminalEmulator::mono());
-                                                    });
+                                            });
     inserted.first->second.timerId = tid;
 
     // If startAnimation replaced a prior animation on the same target/prop
@@ -5467,6 +5492,16 @@ void Engine::unload(InstanceId id)
                 paneMouseMoveCount_.erase(fc);
             }
         }
+        for (auto pane : it->paneRowEvictedListeners) {
+            auto fc = paneRowEvictedCount_.find(pane);
+            if (fc != paneRowEvictedCount_.end() && --fc->second <= 0) {
+                paneRowEvictedCount_.erase(fc);
+                if (auto fl = paneRowEvictedFlag_.find(pane);
+                    fl != paneRowEvictedFlag_.end()) {
+                    fl->second->store(false, std::memory_order_release);
+                }
+            }
+        }
 
         // 5. Remove registered actions owned by this instance. Owner is
         // tracked in the map value; previously this matched by namespace
@@ -5578,14 +5613,14 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
         if (id == 0) {
             return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
-        return { LoadResult::Status::Loaded, id, { } };
+        return { LoadResult::Status::Loaded, id, {} };
     }
 
     std::string hash = crypto::sha256Hex(content);
 
     if (allowlist_.isDenied(path, hash)) {
         sLog().info("ScriptEngine: script '{}' is permanently denied", path);
-        return { LoadResult::Status::Denied, 0, { } };
+        return { LoadResult::Status::Denied, 0, {} };
     }
 
     const auto *entry = allowlist_.check(path, hash);
@@ -5597,7 +5632,7 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
                 if (id == 0) {
                     return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
                 }
-                return { LoadResult::Status::Loaded, id, { } };
+                return { LoadResult::Status::Loaded, id, {} };
             }
             sLog().info("ScriptEngine: module files changed for '{}', re-prompting", path);
         }
@@ -5606,11 +5641,11 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
 
     // Store pending script and notify JS to show permission prompt
     std::string pendingKey      = path; // keyed by path
-    pendingScripts_[pendingKey] = { path, content, hash, requestedPerms, "", Uuid { } };
+    pendingScripts_[pendingKey] = { path, content, hash, requestedPerms, "", Uuid {} };
 
     // Fire scriptPermissionRequired event on mb
     notifyPermissionRequired(path, permissionsToString(requestedPerms), hash);
-    return { LoadResult::Status::Pending, 0, { } };
+    return { LoadResult::Status::Pending, 0, {} };
 }
 
 InstanceId Engine::loadScriptInternal(const std::string &path, const std::string &content,
@@ -5730,7 +5765,7 @@ Engine::LoadResult Engine::approveScript(const std::string &path, char response)
         if (id == 0) {
             return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
-        return { LoadResult::Status::Loaded, id, { } };
+        return { LoadResult::Status::Loaded, id, {} };
     };
 
     switch (response) {
@@ -5749,12 +5784,12 @@ Engine::LoadResult Engine::approveScript(const std::string &path, char response)
             allowlist_.deny(pending.path, pending.hash);
             allowlist_.save();
             sLog().info("ScriptEngine: permanently denied '{}'", pending.path);
-            return { LoadResult::Status::Denied, 0, { } };
+            return { LoadResult::Status::Denied, 0, {} };
         case 'n':
         case 'N':
         default:
             sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
-            return { LoadResult::Status::Denied, 0, { } };
+            return { LoadResult::Status::Denied, 0, {} };
     }
 }
 
@@ -7340,6 +7375,44 @@ void Engine::addPaneMouseMoveListener(PaneId pane, InstanceId instId)
     if (auto *inst = findInstance(instId)) {
         inst->paneMouseMoveListeners.push_back(pane);
     }
+}
+
+void Engine::addPaneRowEvictedListener(PaneId pane, InstanceId instId)
+{
+    paneRowEvictedCount_[pane]++;
+    auto fl = rowEvictedFlag(pane);
+    fl->store(true, std::memory_order_release);
+    if (auto *inst = findInstance(instId)) {
+        inst->paneRowEvictedListeners.push_back(pane);
+    }
+}
+
+void Engine::removePaneRowEvictedListener(PaneId pane, InstanceId instId)
+{
+    auto fc = paneRowEvictedCount_.find(pane);
+    if (fc != paneRowEvictedCount_.end() && --fc->second <= 0) {
+        paneRowEvictedCount_.erase(fc);
+        if (auto fl = paneRowEvictedFlag_.find(pane);
+            fl != paneRowEvictedFlag_.end()) {
+            fl->second->store(false, std::memory_order_release);
+        }
+    }
+    if (auto *inst = findInstance(instId)) {
+        auto &v  = inst->paneRowEvictedListeners;
+        auto pos = std::find(v.begin(), v.end(), pane);
+        if (pos != v.end()) {
+            v.erase(pos);
+        }
+    }
+}
+
+std::shared_ptr<std::atomic<bool>> Engine::rowEvictedFlag(PaneId pane)
+{
+    auto &slot = paneRowEvictedFlag_[pane];
+    if (!slot) {
+        slot = std::make_shared<std::atomic<bool>>(false);
+    }
+    return slot;
 }
 
 bool Engine::setNamespace(InstanceId id, const std::string &ns)

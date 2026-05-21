@@ -107,6 +107,45 @@ TEST_CASE("reflow: height-only grow adds rows at bottom")
     CHECK(t.rowText(4) == "");
 }
 
+TEST_CASE("reflow: height-only grow with non-empty scrollback tracks cursor")
+{
+    // Regression: when a stacked pane is closed and the surviving pane grows,
+    // resizeReflow pulls scrollback lines back into the visible grid. The
+    // cursor's logical line lands at a new screen row; previously cursorY
+    // stayed at its pre-resize value, so the next print overwrote a row in
+    // the middle of the now-larger pane.
+    TestTerminal t(10, 3);
+    // Fill the viewport and scroll: emit 6 lines so 3 spill into scrollback.
+    t.feed("L0\r\n");
+    t.feed("L1\r\n");
+    t.feed("L2\r\n");
+    t.feed("L3\r\n");
+    t.feed("L4\r\n");
+    t.feed("L5"); // cursor on row 2 of viewport, after "L5"
+    CHECK(t.term.document().historySize() == 3);
+    CHECK(t.term.cursorY() == 2);
+    CHECK(t.rowText(2) == "L5");
+
+    // Grow height: scrollback lines should be pulled back, cursor must follow.
+    t.term.resize(10, 6);
+
+    // All 6 logical lines are now visible (rows 0..5), cursor on row 5.
+    CHECK(t.rowText(0) == "L0");
+    CHECK(t.rowText(1) == "L1");
+    CHECK(t.rowText(2) == "L2");
+    CHECK(t.rowText(3) == "L3");
+    CHECK(t.rowText(4) == "L4");
+    CHECK(t.rowText(5) == "L5");
+    CHECK(t.term.cursorY() == 5);
+    CHECK(t.term.cursorX() == 2); // after "L5"
+
+    // The original bug: next print would land at the stale cursor row (2),
+    // overwriting "L2". Verify printing continues correctly at row 5.
+    t.feed("X");
+    CHECK(t.rowText(5) == "L5X");
+    CHECK(t.rowText(2) == "L2"); // unchanged
+}
+
 TEST_CASE("reflow: empty terminal resize")
 {
     TestTerminal t(10, 3);

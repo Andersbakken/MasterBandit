@@ -128,8 +128,8 @@ TerminalEmulator::TerminalEmulator(TerminalCallbacks callbacks)
 {
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
     memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
-    applyColorScheme(ColorScheme { }); // initialize from config defaults
-    pushEraseBlank();                  // BCE: seed grids with default-bg blank
+    applyColorScheme(ColorScheme {}); // initialize from config defaults
+    pushEraseBlank();                 // BCE: seed grids with default-bg blank
 }
 
 TerminalEmulator::~TerminalEmulator()
@@ -289,7 +289,27 @@ void TerminalEmulator::resize(int width, int height)
         int newHistSize = mDocument.historySize();
         mState->cursorX = std::min(ct.dstX, width - 1);
         mState->cursorY = std::max(0, std::min(ct.dstY - newHistSize, height - 1));
+    } else if (!mUsingAltScreen) {
+        // Height-only change on main screen. Document::resizeReflow pushes
+        // visible rows into scrollback, then pops logical lines back into
+        // the new grid — the cursor's logical line may land on a different
+        // screen row (e.g. on a grow with non-empty scrollback, content
+        // re-emitted from history shifts the cursor's line down). Trust
+        // ct.dstY from the document for the new screen row.
+        int oldHistSize = mDocument.historySize();
+        Document::CursorTrack ct;
+        ct.srcX = mState->cursorX;
+        ct.srcY = oldHistSize + mState->cursorY;
+        ct.dstX = mState->cursorX;
+        ct.dstY = oldHistSize + mState->cursorY;
+        mDocument.resize(width, height, &ct);
+        int newHistSize = mDocument.historySize();
+        mState->cursorX = std::min(ct.dstX, width - 1);
+        mState->cursorY = std::max(0, std::min(ct.dstY - newHistSize, height - 1));
     } else {
+        // Alt screen: no scrollback / reflow. Document::resize is still
+        // called for the main grid's bookkeeping, but cursor lives on the
+        // alt grid. Just clamp to the new bounds.
         int oldHistSize = mDocument.historySize();
         Document::CursorTrack ct;
         ct.srcX = mState->cursorX;
@@ -297,15 +317,6 @@ void TerminalEmulator::resize(int width, int height)
         ct.dstX = 0;
         ct.dstY = 0;
         mDocument.resize(width, height, &ct);
-        if (oldCols == width) {
-            // Height-only shrink: top rows pushed to history, adjust cursor to track content.
-            // Height-only grow: don't adjust — the shell tracks its own cursor position and
-            // the history rows reappearing at the top shouldn't shift the cursor.
-            int histDelta = oldHistSize - mDocument.historySize();
-            if (histDelta < 0) {
-                mState->cursorY += histDelta;
-            }
-        }
         mState->cursorX = std::min(mState->cursorX, width - 1);
         mState->cursorY = std::max(0, std::min(mState->cursorY, height - 1));
     }
@@ -1384,7 +1395,7 @@ void TerminalEmulator::scanLogicalLineForUrls(uint64_t lineId)
         std::string uri  = text.substr(m.byteStart, m.byteEnd - m.byteStart);
 
         uint32_t hid            = mNextHyperlinkId++;
-        mHyperlinkRegistry[hid] = { std::move(uri), { } };
+        mHyperlinkRegistry[hid] = { std::move(uri), {} };
 
         int prevDirtyRow = -1;
         for (int off = startCellOff; off < endCellOff; ++off) {

@@ -1014,6 +1014,7 @@ int PlatformDawn::exec()
         scriptEngine_.loadController(scriptsDir + "command-palette.js");
         scriptEngine_.loadController(scriptsDir + "scrollback-search.js");
         scriptEngine_.loadController(scriptsDir + "set-title.js");
+        scriptEngine_.loadController(scriptsDir + "activate-pane.js");
         if (scriptEngine_.loadController(scriptsDir + "default-ui.js") == 0) {
             spdlog::critical("failed to load default-ui.js from '{}'", scriptsDir);
             std::exit(1);

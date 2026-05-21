@@ -98,6 +98,17 @@ struct TerminalSnapshot
     // renderer's per-row shape cache invalidation.
     std::vector<uint8_t> rowDirty;
 
+    // Per-row content hash covering shape-relevant fields only (wc + bold/
+    // italic/wideSpacer + combiningCps). Decoration / fg / bg / underline
+    // are excluded — they don't affect glyph identity, so the renderer's
+    // pass-2 shape cache stays valid across e.g. selection/cursor-blink
+    // updates. Computed during update() for rows that were re-copied;
+    // unchanged rows keep last frame's hash so the renderer can short-
+    // circuit re-shaping even when a coarse upstream signal forced a full
+    // resnapshot (e.g. terminal apps that repaint every row per animation
+    // tick instead of touching only the cells that changed).
+    std::vector<uint64_t> rowShapeHash;
+
     // Per-row sorted extras. Only populated for rows that have any extras in
     // the underlying grid; otherwise the inner vector is empty.
     struct RowExtras

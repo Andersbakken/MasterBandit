@@ -327,10 +327,6 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
     };
 
     auto &rowCache = rs.rowShapingCache[row];
-    rowCache.glyphs.clear();
-    rowCache.cellGlyphRanges.assign(cols, { 0, 0 });
-    rowCache.colrDrawCmds.clear();
-    rowCache.colrRasterCmds.clear();
 
     // Pass 1: Resolve per-cell decorations (fg, bg, underline)
     for (int col = 0; col < cols; ++col) {
@@ -385,6 +381,30 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
         rc.underline_info = ulInfo;
         rc.bg_inflate     = 0;
     }
+
+    // Shape cache hit: skip pass 2 entirely. The previous frame's
+    // rowCache.glyphs / cellGlyphRanges / colrDrawCmds / colrRasterCmds are
+    // still valid because (a) glyph identity is keyed by rowShapeHash —
+    // unchanged content means unchanged shaping output, (b) atlas_offset is
+    // immutable in the FontData glyph map between compactions and fontEpoch
+    // catches compaction, (c) fontSize matches so cached pixel offsets are
+    // current, (d) pixelOrigin matches so cached colrDrawCmds' absolute
+    // coordinates are current. No font.mutex traffic, no glyph map
+    // lookups, no shaper calls for this row.
+    if (rowCache.valid &&
+        row < static_cast<int>(snap.rowShapeHash.size()) &&
+        rowCache.shapeHash == snap.rowShapeHash[row] &&
+        rowCache.fontSize == frameState_.fontSize &&
+        rowCache.fontEpoch == rs.fontEpoch &&
+        rowCache.pixelOriginX == pixelOriginX &&
+        rowCache.pixelOriginY == pixelOriginY) {
+        return;
+    }
+
+    rowCache.glyphs.clear();
+    rowCache.cellGlyphRanges.assign(cols, { 0, 0 });
+    rowCache.colrDrawCmds.clear();
+    rowCache.colrRasterCmds.clear();
 
     // Pass 2: Build runs and shape
     GlyphInfo replacementGlyph {};
@@ -664,7 +684,12 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
         col = runEnd;
     }
 
-    rowCache.valid = true;
+    rowCache.valid        = true;
+    rowCache.shapeHash    = (row < static_cast<int>(snap.rowShapeHash.size())) ? snap.rowShapeHash[row] : 0;
+    rowCache.fontSize     = frameState_.fontSize;
+    rowCache.fontEpoch    = rs.fontEpoch;
+    rowCache.pixelOriginX = pixelOriginX;
+    rowCache.pixelOriginY = pixelOriginY;
 }
 
 void RenderEngine::renderTabBar()
@@ -1306,9 +1331,23 @@ void RenderEngine::renderFrame()
     constexpr uint32_t kAtlasBudgetVirtualTexels = 6u * 1024u * 1024u;
     constexpr uint32_t kAtlasTargetVirtualTexels = 4u * 1024u * 1024u;
     platform_->textSystem_.beginFontFrame(frameState_.fontName);
-    platform_->textSystem_.compactFontAtlasLRU(frameState_.fontName,
-                                               kAtlasBudgetVirtualTexels,
-                                               kAtlasTargetVirtualTexels);
+    const bool atlasCompacted = platform_->textSystem_.compactFontAtlasLRU(frameState_.fontName,
+                                                                           kAtlasBudgetVirtualTexels,
+                                                                           kAtlasTargetVirtualTexels);
+    // Compaction rewrites every surviving glyph's atlas_offset, so every
+    // RowGlyphCache::glyphs entry's atlas_offset is now stale. Bump each
+    // pane's fontEpoch so the shape-cache key comparison forces a re-shape.
+    if (atlasCompacted) {
+        for (auto &[id, rs] : paneRenderPrivate_) {
+            rs.fontEpoch++;
+        }
+        for (auto &[key, rs] : popupRenderPrivate_) {
+            rs.fontEpoch++;
+        }
+        for (auto &[key, rs] : embeddedRenderPrivate_) {
+            rs.fontEpoch++;
+        }
+    }
 
     float scale = frameState_.fontSize / font->baseSize;
 

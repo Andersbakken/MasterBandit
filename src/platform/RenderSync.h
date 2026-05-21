@@ -284,10 +284,27 @@ struct PaneRenderPrivate
         std::vector<std::pair<uint32_t, uint32_t>> cellGlyphRanges;
         std::vector<Renderer::ColrDrawCmd> colrDrawCmds;
         std::vector<Renderer::ColrRasterCmd> colrRasterCmds;
-        bool valid = false;
+        bool valid         = false;
+        // Shape-cache key. Hit iff shapeHash == snap.rowShapeHash[row] AND
+        // fontSize / fontEpoch / pane pixel origin match the current frame's.
+        // Mismatch forces a re-shape; match lets the worker skip pass 2
+        // entirely (no font.mutex traffic, no glyph map lookups, no shaper
+        // calls). pixelOriginX/Y are baked into the cached colrDrawCmds'
+        // absolute coordinates, so a pane move must invalidate the cache —
+        // typically rare and usually accompanied by rs.dirty anyway.
+        uint64_t shapeHash = 0;
+        float fontSize     = 0.0f;
+        uint64_t fontEpoch = 0;
+        float pixelOriginX = 0.0f;
+        float pixelOriginY = 0.0f;
     };
 
     std::vector<RowGlyphCache> rowShapingCache;
+
+    // Bumped when something invalidates every cached glyph for this pane
+    // (font atlas compaction, full-cache-invalidate path). Compared against
+    // RowGlyphCache::fontEpoch on each frame.
+    uint64_t fontEpoch = 0;
 
     bool dirty = true;
 };

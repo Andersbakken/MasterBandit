@@ -83,10 +83,26 @@ bool TerminalSnapshot::update(TerminalEmulator &term)
     cells.resize(cellCount);
     rowDirty.assign(static_cast<size_t>(rows), 0);
     rowExtras.resize(static_cast<size_t>(rows));
+    // Resize but keep prior hashes for non-dirty rows (their content is
+    // identical to last frame, so the cached glyphs are still valid). New
+    // rows added by a resize get zero, which will mismatch any cached hash
+    // and force a re-shape.
+    rowShapeHash.resize(static_cast<size_t>(rows), 0);
 
     IGrid &grid            = term.grid();
     const Document &doc    = term.document();
     const bool onAltScreen = (&grid != static_cast<const IGrid *>(&doc));
+
+    // FNV-1a 64-bit. Cheap, well-distributed for the small spans we mix.
+    auto hashMix = [](uint64_t h, uint64_t v) -> uint64_t
+    {
+        constexpr uint64_t prime = 0x100000001b3ull;
+        for (int b = 0; b < 8; ++b) {
+            h ^= (v >> (b * 8)) & 0xff;
+            h *= prime;
+        }
+        return h;
+    };
 
     for (int r = 0; r < rows; ++r) {
         const bool rowIsDirty = structuralChange || grid.isRowDirty(r);
@@ -118,6 +134,35 @@ bool TerminalSnapshot::update(TerminalEmulator &term)
                           return a.first < b.first;
                       });
         }
+
+        // Shape-relevant hash: codepoint + bold/italic/wideSpacer per cell,
+        // plus per-row extras' combiningCps. Fg/bg/underline/strikethrough/
+        // dim/inverse/blink are pure-decoration and excluded — pass-1
+        // decoration writes still pick them up every frame.
+        uint64_t h = 0xcbf29ce484222325ull; // FNV-1a offset basis
+        for (int c = 0; c < cols; ++c) {
+            const Cell &cell = dst[c];
+            h                = hashMix(h, static_cast<uint64_t>(cell.wc));
+            uint64_t styleBits =
+                (cell.attrs.bold() ? 1u : 0u) |
+                (cell.attrs.italic() ? 2u : 0u) |
+                (cell.attrs.wideSpacer() ? 4u : 0u) |
+                (cell.attrs.wide() ? 8u : 0u);
+            h = hashMix(h, styleBits);
+        }
+        for (const auto &[col, extra] : re.entries) {
+            // Only combiningCps affect shaping. Other CellExtra fields
+            // (hyperlinkId, underlineColor, imageId, ...) are decoration /
+            // metadata, not glyph identity.
+            if (!extra.combiningCps.empty()) {
+                h = hashMix(h, static_cast<uint64_t>(col));
+                for (char32_t cp : extra.combiningCps) {
+                    h = hashMix(h, static_cast<uint64_t>(cp));
+                }
+                h = hashMix(h, 0xfeed); // separator so adjacent rows can't alias
+            }
+        }
+        rowShapeHash[static_cast<size_t>(r)] = h;
 
         rowDirty[static_cast<size_t>(r)] = 1;
     }

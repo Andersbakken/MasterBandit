@@ -9,12 +9,14 @@ set(GRAPHEME_GEN_UTIL ${LIBGRAPHEME_DIR}/gen/util.c)
 
 set(GRAPHEME_GENERATORS character word sentence line bidirectional case)
 set(GRAPHEME_GEN_OUTPUTS)
+add_library(grapheme_gen_util OBJECT ${GRAPHEME_GEN_UTIL})
+target_compile_options(grapheme_gen_util PRIVATE -Wno-discarded-qualifiers)
 foreach(GEN ${GRAPHEME_GENERATORS})
   add_executable(grapheme_gen_${GEN}
     ${LIBGRAPHEME_DIR}/gen/${GEN}.c
-    ${GRAPHEME_GEN_UTIL}
   )
   target_include_directories(grapheme_gen_${GEN} PRIVATE ${LIBGRAPHEME_DIR})
+  target_link_libraries(grapheme_gen_${GEN} PRIVATE grapheme_gen_util)
 
   add_custom_command(
     OUTPUT ${LIBGRAPHEME_DIR}/gen/${GEN}.h
@@ -41,6 +43,7 @@ add_library(grapheme STATIC
   ${LIBGRAPHEME_DIR}/src/word.c
 )
 target_include_directories(grapheme PUBLIC ${LIBGRAPHEME_DIR})
+target_compile_options(grapheme PRIVATE -Wno-discarded-qualifiers)
 set_target_properties(grapheme PROPERTIES
   C_STANDARD 99
   POSITION_INDEPENDENT_CODE ON

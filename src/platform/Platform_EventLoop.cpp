@@ -27,10 +27,10 @@ int PlatformDawn::exec()
                                                {
                                                    auto t = activeTab();
                                                    if (!t) {
-                                                       return std::string { };
+                                                       return std::string {};
                                                    }
                                                    Terminal *pane = scriptEngine_.focusedTerminalInSubtree(*t);
-                                                   return pane ? gridToJson(pane->id()) : std::string { };
+                                                   return pane ? gridToJson(pane->id()) : std::string {};
                                                },
                                                [this](int id)
                                                {
@@ -89,7 +89,7 @@ int PlatformDawn::exec()
                 return std::string("config JSON parse error: ") + glz::format_error(err, json);
             }
             scheduleApplyConfig(std::move(draft));
-            return { };
+            return {};
         };
         scbs.writePaneToShell = [this](Script::PaneId paneId, const std::string &data)
         {
@@ -143,7 +143,7 @@ int PlatformDawn::exec()
                 Script::AppCallbacks::PaneInfo info {
                     p->width(),
                     p->height(),
-                    p->title().value_or(std::string { }),
+                    p->title().value_or(std::string {}),
                     paneProcessCWD(p),
                     p->masterFD() >= 0,
                     isFocused,
@@ -195,7 +195,7 @@ int PlatformDawn::exec()
                 }
                 return info;
             }
-            return { };
+            return {};
         };
         scbs.paneCommands = [this](Script::PaneId paneId, int limit) -> std::vector<Script::CommandInfo>
         {
@@ -259,13 +259,46 @@ int PlatformDawn::exec()
             }
             return false;
         };
+        scbs.paneSetCustomTitle = [this](Script::PaneId paneId, std::optional<std::string> t)
+        {
+            Terminal *p = scriptEngine_.terminal(paneId);
+            if (!p) {
+                return;
+            }
+            // The override field is read on the main thread (tab-bar
+            // build, window title resolution) and from
+            // Platform_EventLoop's paneInfo callback (under the parse
+            // mutex). Mutate under the same recursive mutex used by
+            // the parser so paneInfo / tab-bar builds see a coherent
+            // value for the duration of their batch.
+            {
+                std::lock_guard<std::recursive_mutex> _lk(p->mutex());
+                p->setCustomTitle(std::move(t));
+            }
+            // Push the change through the existing dirty-tab-bar +
+            // window-title + JS-titleChanged path. The std::nullopt
+            // arg matches the "the title-as-seen-by-the-platform may
+            // have changed, please re-pull" contract of the existing
+            // OSC-driven callback (which also ignores the payload).
+            auto tab = findTabForPane(paneId);
+            if (!tab) {
+                scriptEngine_.notifyPaneTitleChanged(paneId, p->title().value_or(std::string {}));
+                return;
+            }
+            tabBarDirty_ = true;
+            setNeedsRedraw();
+            if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId && *tab == scriptEngine_.activeTabSubtreeRoot()) {
+                updateWindowTitle();
+            }
+            scriptEngine_.notifyPaneTitleChanged(paneId, p->title().value_or(std::string {}));
+        };
         scbs.paneGetText = [this](Script::PaneId paneId, uint64_t startLineId, int startCol, uint64_t endLineId, int endCol) -> std::string
         {
             if (Terminal *p = scriptEngine_.terminal(paneId)) {
                 std::lock_guard<std::recursive_mutex> _lk(p->mutex());
                 return p->document().getTextFromLines(startLineId, endLineId, startCol, endCol);
             }
-            return { };
+            return {};
         };
         scbs.paneLineIdAt = [this](Script::PaneId paneId, int screenRow) -> std::optional<uint64_t>
         {
@@ -372,11 +405,11 @@ int PlatformDawn::exec()
         {
             Uuid p = Uuid::fromString(parentNodeId);
             if (p.isNil()) {
-                return { { }, false };
+                return { {}, false };
             }
             Uuid n;
             bool ok = createTerminalInContainer(p, cwd, &n);
-            return { n.isNil() ? std::string { } : n.toString(), ok };
+            return { n.isNil() ? std::string {} : n.toString(), ok };
         };
         scbs.splitPaneByNodeId = [this](const std::string &existingNodeId,
                                         const std::string &dir,
@@ -386,14 +419,14 @@ int PlatformDawn::exec()
         {
             Uuid p = Uuid::fromString(existingNodeId);
             if (p.isNil()) {
-                return { { }, false };
+                return { {}, false };
             }
             SplitDir d = (dir == "vertical" || dir == "v")
                 ? SplitDir::Vertical
                 : SplitDir::Horizontal;
             Uuid n;
             bool ok = splitPaneByNodeId(p, d, /*ratio=*/0.5f, newIsFirst, cwd, &n);
-            return { n.isNil() ? std::string { } : n.toString(), ok };
+            return { n.isNil() ? std::string {} : n.toString(), ok };
         };
         scbs.adjustPaneSize = [this](const std::string &paneNodeId,
                                      const std::string &dir,
@@ -793,14 +826,14 @@ int PlatformDawn::exec()
         {
             Terminal *te = scriptEngine_.terminal(paneId);
             if (!te) {
-                return { };
+                return {};
             }
             // Document + hyperlink registry are parse-mutated.
             std::lock_guard<std::recursive_mutex> _lk(te->mutex());
             const auto &doc = te->document();
             int abs         = doc.firstAbsOfLine(lineId);
             if (abs < 0) {
-                return { };
+                return {};
             }
             int screenRow       = abs - doc.historySize();
             // getExtra works on screen rows; for history rows we need historyExtras
@@ -822,7 +855,7 @@ int PlatformDawn::exec()
                     return *uri;
                 }
             }
-            return { };
+            return {};
         };
         scbs.paneGetLinksFromRows = [this](Script::PaneId paneId, uint64_t startLineId, uint64_t endLineId, int limit)
             -> std::vector<Script::AppCallbacks::LinkInfo>
@@ -898,7 +931,7 @@ int PlatformDawn::exec()
                                        done)
         {
             if (!window_) {
-                done({ });
+                done({});
                 return;
             }
             auto src = (source == "primary") ? Window::SelectionSource::Primary
@@ -906,7 +939,7 @@ int PlatformDawn::exec()
             window_->requestSelection(src,
                                       [done = std::move(done)](std::optional<std::string> text)
                                       {
-                                          done(text.value_or(std::string { }));
+                                          done(text.value_or(std::string {}));
                                       });
         };
         scbs.setClipboard = [this](const std::string &source, const std::string &text)
@@ -980,6 +1013,7 @@ int PlatformDawn::exec()
         scriptEngine_.loadController(scriptsDir + "applet-loader.js");
         scriptEngine_.loadController(scriptsDir + "command-palette.js");
         scriptEngine_.loadController(scriptsDir + "scrollback-search.js");
+        scriptEngine_.loadController(scriptsDir + "set-title.js");
         if (scriptEngine_.loadController(scriptsDir + "default-ui.js") == 0) {
             spdlog::critical("failed to load default-ui.js from '{}'", scriptsDir);
             std::exit(1);
@@ -1021,7 +1055,7 @@ int PlatformDawn::exec()
             if (!jsPath.empty() && std::filesystem::exists(jsPath, ec) && !ec) {
                 return jsPath;
             }
-            return { };
+            return {};
         };
         std::string initialPath = resolveConfigScriptPath();
         if (!initialPath.empty()) {
@@ -1040,7 +1074,7 @@ int PlatformDawn::exec()
                 eventLoop_->removeTimer(configJsDebounceTimer_);
             }
             configJsDebounceTimer_  = eventLoop_->addTimer(300, false, [this, resolveConfigScriptPath]()
-                                                           {
+                                                          {
                                                               configJsDebounceActive_ = false;
                                                               std::string currentPath = resolveConfigScriptPath();
                                                               if (currentPath.empty()) {
@@ -1068,7 +1102,7 @@ int PlatformDawn::exec()
                                                               } else {
                                                                   scriptEngine_.reevalInstance(configJsInstanceId_, currentPath);
                                                               }
-                                                           });
+                                                          });
             configJsDebounceActive_ = true;
         };
         if (!jsPath.empty()) {

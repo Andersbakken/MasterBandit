@@ -1255,6 +1255,44 @@ static JSValue jsPaneGetProp(JSContext *ctx, JSValueConst this_val, int magic)
     }
 }
 
+// Settable pane properties. Currently only `title` (magic 3) is
+// writable; assigning null/undefined clears the override and falls back
+// to OSC. Returns JS_EXCEPTION on permission denial, JS_UNDEFINED on
+// success (QuickJS treats undefined-from-setter as "set succeeded").
+static JSValue jsPaneSetProp(JSContext *ctx, JSValueConst this_val,
+                             JSValueConst val, int magic)
+{
+    auto *pane = jsPaneGet(ctx, this_val);
+    if (!pane || !pane->alive) {
+        // Match the property/method idiom — silent for a destroyed pane.
+        return JS_UNDEFINED;
+    }
+    Engine *eng = engineFromCtx(ctx);
+    switch (magic) {
+        case 3: {
+            // pane.title = "..."  → set override (empty string IS a valid
+            //                       custom title; show it as-is).
+            // pane.title = null/undefined → clear override; reads fall
+            //                               back to OSC then fg process.
+            std::optional<std::string> t;
+            if (!JS_IsNull(val) && !JS_IsUndefined(val)) {
+                size_t len;
+                const char *s = JS_ToCStringLen(ctx, &len, val);
+                if (!s) {
+                    return JS_EXCEPTION;
+                }
+                t = std::string(s, len);
+                JS_FreeCString(ctx, s);
+            }
+            if (eng->callbacks().paneSetCustomTitle) {
+                eng->callbacks().paneSetCustomTitle(pane->id, std::move(t));
+            }
+            return JS_UNDEFINED;
+        }
+        default: return JS_UNDEFINED;
+    }
+}
+
 static JSValue jsPaneSelectCommand(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
     auto *pane = jsPaneGet(ctx, this_val);
@@ -1312,7 +1350,10 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     // duplicate entry at magic 0 returned the engine PaneId string —
     // unreachable due to QuickJS last-write-wins on duplicate prop
     // names, and semantically wrong (PaneId ≠ tree node UUID). Removed.
-    JS_CGETSET_MAGIC_DEF("title", jsPaneGetProp, nullptr, 3),
+    // pane.title is read/write: getter returns the override if set,
+    // otherwise the OSC stack top. Setter writes the override; assigning
+    // null/undefined clears it. Fires a titleChanged event on the pane.
+    JS_CGETSET_MAGIC_DEF("title", jsPaneGetProp, jsPaneSetProp, 3),
     JS_CGETSET_MAGIC_DEF("cwd", jsPaneGetProp, nullptr, 4),
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
     JS_CGETSET_MAGIC_DEF("focused", jsPaneGetProp, nullptr, 6),
@@ -6356,6 +6397,33 @@ void Engine::notifyForegroundProcessChanged(PaneId pane, const std::string &proc
         if (!JS_IsUndefined(paneObj)) {
             JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_foregroundProcessChanged");
             JSValue arg = JS_NewString(inst.ctx, processName.c_str());
+            enqueueListeners(inst.ctx, arr, 1, &arg);
+            JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyPaneTitleChanged(PaneId pane, const std::string &title)
+{
+    IterGuard guard(this);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
+
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_titleChanged");
+            JSValue arg = JS_NewStringLen(inst.ctx, title.data(), title.size());
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);
             JS_FreeValue(inst.ctx, arr);

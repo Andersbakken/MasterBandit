@@ -504,8 +504,22 @@ interface MbPane extends MbTerminal {
      * `node`. Ungated — `mb.layout` mutations carry their own permissions.
      */
     readonly nodeId: string;
-    /** OSC 2 title set by the shell. */
-    readonly title: string;
+    /**
+     * Effective pane title. Reads return the script-supplied override
+     * if one is set (via assignment), otherwise the OSC 0/2 title the
+     * shell wrote, otherwise `""`.
+     *
+     * Assigning a string sets a custom override that takes precedence
+     * over OSC titles — empty string is a valid (empty) custom title.
+     * Assigning `null` or `undefined` clears the override; the next
+     * read returns whatever OSC title is currently active.
+     *
+     * The override is window-local state attached to the pane; it is
+     * not persisted and disappears with the pane. Subscribe to
+     * `"titleChanged"` for a push signal whenever the effective title
+     * changes (shell-driven or script-driven).
+     */
+    title: string | null;
     /** Working directory reported via OSC 7. */
     readonly cwd: string;
     readonly hasPty: boolean;
@@ -725,6 +739,13 @@ interface MbPane extends MbTerminal {
     addEventListener(event: "destroyed", fn: () => void): void;
     /** Fired when the pane's foreground process changes (e.g. shell → vim). */
     addEventListener(event: "foregroundProcessChanged", fn: (processName: string) => void): void;
+    /**
+     * Fired when the pane's effective title changes — either because the
+     * shell wrote a new OSC 0/2 title (or popped the stack), or because
+     * a script assigned to `pane.title`. Payload is the new effective
+     * title (override if set, else OSC, else `""`).
+     */
+    addEventListener(event: "titleChanged", fn: (title: string) => void): void;
     /** Fired on mouse movement within the pane. Requires `ui`. */
     addEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
     /** Fired when the pane gains or loses focus. */
@@ -771,6 +792,7 @@ interface MbPane extends MbTerminal {
     removeEventListener(event: "resized", fn: (cols: number, rows: number) => void): void;
     removeEventListener(event: "destroyed", fn: () => void): void;
     removeEventListener(event: "foregroundProcessChanged", fn: (processName: string) => void): void;
+    removeEventListener(event: "titleChanged", fn: (title: string) => void): void;
     removeEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
     removeEventListener(event: "focusChanged", fn: (focused: boolean) => void): void;
     removeEventListener(event: "focusedPopupChanged", fn: (popupId: string | null) => void): void;

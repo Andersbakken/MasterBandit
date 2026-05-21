@@ -156,8 +156,26 @@ public:
 
     // --- Title, icon, progress, CWD ---
     // title/icon are pull-model: reads the emulator's XTWINOPS stack.
-    // nullopt means "no OSC-set title" — callers decide the fallback.
-    std::optional<std::string> title() const { return currentTitle(); }
+    // nullopt means "no title in effect" — callers decide the fallback.
+    // A JS-set custom title (mCustomTitle) wins over the OSC stack;
+    // when set, OSC 0/2 writes still update the underlying stack so the
+    // original title returns once the override is cleared.
+    std::optional<std::string> title() const
+    {
+        if (mCustomTitle.has_value()) {
+            return mCustomTitle;
+        }
+        return currentTitle();
+    }
+
+    // OSC-only title, ignoring any JS override. Internal callers that
+    // need the "real" shell-supplied title use this.
+    std::optional<std::string> oscTitle() const { return currentTitle(); }
+
+    // JS-set per-pane title override. nullopt clears.
+    void setCustomTitle(std::optional<std::string> t) { mCustomTitle = std::move(t); }
+
+    const std::optional<std::string> &customTitle() const { return mCustomTitle; }
 
     std::optional<std::string> icon() const { return currentIcon(); }
 
@@ -593,6 +611,10 @@ private:
     int mProgressState { 0 };
     int mProgressPct { 0 };
     std::string mCWD;
+    // JS-set title override. When engaged, Terminal::title() returns this
+    // instead of the OSC stack top. Set via pane.title = "..." and cleared
+    // by pane.title = null/undefined.
+    std::optional<std::string> mCustomTitle;
 
     // Popup children — headless child terminals at cell coordinates
     std::vector<std::unique_ptr<Terminal>> mPopups;

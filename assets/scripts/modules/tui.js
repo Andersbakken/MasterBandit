@@ -820,7 +820,25 @@ class RenderInstance {
                 return;
             }
 
-            // Any other key (arrows, Enter, etc.) — forward to first list in the tree
+            // Enter on a focused input: if the caller supplied an onSubmit
+            // callback, invoke it with the current value and stop. This is
+            // the canonical "type, press Enter to commit" hook — without it,
+            // applets resort to popup-level input listeners that double-fire
+            // alongside tui's focused-button Enter handling.
+            if (data === '\r' || data === '\n') {
+                const sig = focused.props.value;
+                const cur = sig && typeof sig.value !== 'undefined' ? sig.value : '';
+                if (typeof focused.props.onSubmit === 'function') {
+                    focused.props.onSubmit(cur);
+                    return;
+                }
+                // Fall through to the list-forwarding fallback below.
+            }
+
+            // Any other key (arrows, Enter without onSubmit) — forward to
+            // first list in the tree. This is the legacy behavior that
+            // lets command-palette-style applets type into the input and
+            // step the list with arrow keys / pick with Enter.
             const listNode = this._focusables.find(f => f.type === 'list');
             if (listNode) {
                 const sel   = listNode.props.selected;

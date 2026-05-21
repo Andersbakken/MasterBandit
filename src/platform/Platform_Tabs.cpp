@@ -1097,6 +1097,16 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                              if (scriptEngine_.rememberedFocusInSubtree(*tab) == paneId && *tab == scriptEngine_.activeTabSubtreeRoot()) {
                                  updateWindowTitle();
                              }
+                             // Forward to JS listeners on the pane. The
+                             // effective title (override if set, else OSC)
+                             // is what scripts care about; if the override
+                             // is engaged, an OSC change is invisible to
+                             // the user but we still fire so listeners can
+                             // observe via pane.oscTitle if they want — for
+                             // now, payload is just the effective title.
+                             if (Terminal *p = scriptEngine_.terminal(paneId)) {
+                                 scriptEngine_.notifyPaneTitleChanged(paneId, p->title().value_or(std::string {}));
+                             }
                          });
     };
 

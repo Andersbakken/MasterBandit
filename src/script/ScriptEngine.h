@@ -147,6 +147,12 @@ struct AppCallbacks
     // Returns false if the command id is not present in the ring or the pane
     // is not found.
     std::function<bool(PaneId, std::optional<uint64_t>)> paneSetSelectedCommand;
+    // Set or clear the pane's JS-supplied custom title override.
+    // nullopt clears the override (subsequent reads fall back to OSC).
+    // The platform side fires the same tab-bar/window-title refresh path
+    // as an OSC title change, and the engine notifies "titleChanged"
+    // listeners with the effective title (override if set, else OSC).
+    std::function<void(PaneId, std::optional<std::string>)> paneSetCustomTitle;
     // Extract plain text from a row-id range in a pane's or overlay's document.
     // startCol/endCol bound which columns are included on the first/last row;
     // pass 0 and INT_MAX (or std::numeric_limits<int>::max()) for full rows.
@@ -502,6 +508,11 @@ public:
     void notifyPaneResized(PaneId pane, int cols, int rows);
     void notifyOSC(PaneId pane, int oscNum, const std::string &payload);
     void notifyForegroundProcessChanged(PaneId pane, const std::string &processName);
+    // Fires when a pane's effective title changes — either because the
+    // shell wrote a new OSC 0/2 title (or popped the stack), or because
+    // a script set/cleared pane.title. Payload is the new effective
+    // title (may be empty if neither override nor OSC is set).
+    void notifyPaneTitleChanged(PaneId pane, const std::string &title);
     void notifyPaneFocusChanged(PaneId pane, bool focused);
     void notifyFocusedPopupChanged(PaneId pane, const std::string &popupId);
     void notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, int pixelY);

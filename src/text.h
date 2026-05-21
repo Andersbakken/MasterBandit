@@ -4,11 +4,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <gtl/phmap.hpp>
 
 struct hb_blob_t;
 struct hb_face_t;
@@ -27,17 +30,9 @@ struct GlyphInfo
     bool is_empty;      // true for whitespace/no-contour glyphs
     bool is_colr;       // true if this is a COLRv1 color glyph
     uint32_t numTexels; // virtual atlas texels occupied (0 for is_empty/is_colr)
-    // LRU bookkeeping: bumped to FontData::currentGen on every cache
-    // hit. Multiple WorkerPool threads concurrently shape rows and
-    // each calls ensureGlyphEncoded → fast-path LRU touch under
-    // shared_lock; the writes don't synchronize with each other. A
-    // lost update at most makes a glyph appear slightly colder
-    // (acceptable for LRU). Accessed via std::atomic_ref<uint32_t>
-    // with relaxed ordering at every read/write site, AND via the
-    // custom copy ctor / operator= below so the implicit struct copy
-    // performed by `out = it->second;` (resolveCellGlyph) and
-    // `glyphs[key] = info;` (ensureGlyphEncoded) doesn't race with
-    // concurrent LRU touches from other workers.
+    // Touched on cache hits via atomic_ref<uint32_t> (relaxed). The custom
+    // copy ctor below uses atomic_ref too so a struct copy under if_contains
+    // doesn't race with another worker's LRU touch. Lost updates ok for LRU.
     uint32_t lastUsedGen { 0 };
 
     GlyphInfo() = default;
@@ -94,8 +89,17 @@ struct FontData
     // resolveRow set GlyphInfo::lastUsedGen = currentGen on access.
     uint32_t currentGen = 0;
 
-    // Glyph ID key = (fontIndex << 32) | glyphId
-    std::unordered_map<uint64_t, GlyphInfo> glyphs;
+    // Key = (fontIndex << 32) | glyphId. 16 submaps × shared_mutex so
+    // concurrent if_contains() readers on the same submap don't serialize;
+    // modify_if/lazy_emplace_l/erase_if take the unique side.
+    using GlyphMap = gtl::parallel_flat_hash_map<
+        uint64_t, GlyphInfo,
+        gtl::priv::hash_default_hash<uint64_t>,
+        gtl::priv::hash_default_eq<uint64_t>,
+        std::allocator<std::pair<const uint64_t, GlyphInfo>>,
+        4,
+        std::shared_mutex>;
+    GlyphMap glyphs;
 
     // HarfBuzz font entries (primary + fallbacks + styled variants)
     struct HBEntry
@@ -117,13 +121,20 @@ struct FontData
     // Which font index covers each codepoint (for shaping font selection)
     std::unordered_map<uint32_t, uint32_t> codepointToFontIndex;
 
-    // COLRv1 glyph data: keyed by same glyphKey as glyphs map
-    std::unordered_map<uint64_t, ColrGlyphData> colrGlyphs;
+    // COLR paint data; node map gives pointer stability for ColrRasterCmd::data,
+    // which is captured under if_contains and consumed post-dispatch.
+    using ColrMap = gtl::parallel_node_hash_map<
+        uint64_t, ColrGlyphData,
+        gtl::priv::hash_default_hash<uint64_t>,
+        gtl::priv::hash_default_eq<uint64_t>,
+        std::allocator<std::pair<const uint64_t, ColrGlyphData>>,
+        4,
+        std::shared_mutex>;
+    ColrMap colrGlyphs;
     bool hasColrPaint = false; // cached result of hb_ot_color_has_paint()
 
-    // Protects glyphs, atlasData, atlasUsed, hbFonts, styledVariants, codepointToFontIndex.
-    // Read lock for lookups, write lock for insertions (new glyphs, fallback fonts, styled variants).
-    // Not movable — FontData must be constructed in-place in the fonts_ map.
+    // Protects atlasData, atlasUsed, hbFonts, styledVariants, codepointToFontIndex.
+    // `glyphs` and `colrGlyphs` use their own per-submap locking.
     mutable std::shared_mutex mutex;
 
     // Destructor frees HarfBuzz resources held by hbFonts. With shared_ptr
@@ -138,7 +149,124 @@ struct FontData
     // current and re-upload can be skipped. See RENDER_THREADING.md §Atlas
     // Dirty Tracking.
     std::atomic<uint64_t> atlasVersion { 0 };
+
+    // Bumped when a cached GlyphInfo could be stale (atlas repack / eviction).
+    // Per-thread caches stamp slots with this and invalidate on mismatch.
+    std::atomic<uint64_t> evictionVersion { 0 };
 };
+
+// Per-worker glyph cache shared by resolveCellGlyph (RenderEngine.cpp) and
+// ensureGlyphEncoded (text.cpp). Keyed by (FontData*, glyphId) + version
+// stamp; multi-font scenarios cannot collide. Hits skip the shared map's
+// per-submap rwlock entirely.
+struct GlyphTlsCache
+{
+    static constexpr size_t kBits  = 11;
+    static constexpr size_t kSize  = size_t { 1 } << kBits;
+    static constexpr size_t kMask  = kSize - 1;
+    static constexpr int kMaxProbe = 8;
+
+    struct Slot
+    {
+        const FontData *font = nullptr;
+        uint64_t key         = 0;
+        uint64_t version     = 0;
+        GlyphInfo info {};
+        bool is_empty = false;
+    };
+
+    std::array<Slot, kSize> slots {};
+
+    static size_t mix(const FontData *f, uint64_t k)
+    {
+        uint64_t h = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(f));
+        h ^= k + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
+        h = (h ^ (h >> 33)) * 0xff51afd7ed558ccdULL;
+        h = (h ^ (h >> 33)) * 0xc4ceb9fe1a85ec53ULL;
+        return static_cast<size_t>(h ^ (h >> 33));
+    }
+
+    enum class GetResult
+    {
+        Miss,
+        HitHave,
+        HitEmpty
+    };
+
+    GetResult tryGet(const FontData *f, uint64_t key, uint64_t curVersion, GlyphInfo &out)
+    {
+        size_t i = mix(f, key) & kMask;
+        for (int p = 0; p < kMaxProbe; ++p) {
+            Slot &s = slots[i];
+            if (s.font == nullptr) {
+                return GetResult::Miss;
+            }
+            if (s.font == f && s.key == key) {
+                if (s.version != curVersion) {
+                    s.font = nullptr;
+                    return GetResult::Miss;
+                }
+                if (s.is_empty) {
+                    return GetResult::HitEmpty;
+                }
+                out = s.info;
+                return GetResult::HitHave;
+            }
+            i = (i + 1) & kMask;
+        }
+        return GetResult::Miss;
+    }
+
+    // Lighter variant: only confirms presence + version match (no payload copy).
+    GetResult probe(const FontData *f, uint64_t key, uint64_t curVersion)
+    {
+        size_t i = mix(f, key) & kMask;
+        for (int p = 0; p < kMaxProbe; ++p) {
+            Slot &s = slots[i];
+            if (s.font == nullptr) {
+                return GetResult::Miss;
+            }
+            if (s.font == f && s.key == key) {
+                if (s.version != curVersion) {
+                    s.font = nullptr;
+                    return GetResult::Miss;
+                }
+                return s.is_empty ? GetResult::HitEmpty : GetResult::HitHave;
+            }
+            i = (i + 1) & kMask;
+        }
+        return GetResult::Miss;
+    }
+
+    void put(const FontData *f, uint64_t key, uint64_t curVersion, const GlyphInfo *info, bool empty)
+    {
+        size_t i = mix(f, key) & kMask;
+        for (int p = 0; p < kMaxProbe; ++p) {
+            Slot &s = slots[i];
+            if (s.font == nullptr || (s.font == f && s.key == key)) {
+                s.font     = f;
+                s.key      = key;
+                s.version  = curVersion;
+                s.is_empty = empty;
+                if (!empty && info) {
+                    s.info = *info;
+                }
+                return;
+            }
+            i = (i + 1) & kMask;
+        }
+        Slot &s    = slots[mix(f, key) & kMask];
+        s.font     = f;
+        s.key      = key;
+        s.version  = curVersion;
+        s.is_empty = empty;
+        if (!empty && info) {
+            s.info = *info;
+        }
+    }
+};
+
+inline thread_local GlyphTlsCache g_glyphTlsCache;
 
 struct ShapedGlyph
 {

@@ -85,76 +85,93 @@ void TextSystem::ensureGlyphEncoded(FontData &font, uint32_t fontIndex, uint32_t
 {
     uint64_t key = glyphKey(fontIndex, glyphId);
 
-    // Fast path: read lock check
+    const uint64_t curEv = font.evictionVersion.load(std::memory_order_acquire);
     {
-        std::shared_lock lock(font.mutex);
-        auto it = font.glyphs.find(key);
-        if (it != font.glyphs.end()) {
-            // LRU touch under shared_lock — multiple workers may write
-            // concurrently. atomic_ref + relaxed makes it formally
-            // race-free; lost updates still only mis-age a glyph slightly
-            // (which is the explicit acceptable outcome for LRU).
-            std::atomic_ref<uint32_t>(it->second.lastUsedGen)
-                .store(font.currentGen, std::memory_order_relaxed);
-            // If glyph is cached but COLR status unknown, check now
-            if (font.hasColrPaint && !it->second.is_colr) {
-                hb_face_t *face = font.hbFonts[fontIndex].hbFace;
-                if (hb_ot_color_glyph_has_paint(face, glyphId)) {
-                    lock.unlock();
-                    // Upgrade to write lock to set is_colr and encode paint
-                    std::unique_lock wlock(font.mutex);
-                    auto wit = font.glyphs.find(key);
-                    if (wit != font.glyphs.end() && !wit->second.is_colr) {
-                        wit->second.is_colr = true;
-                        sLog().info("COLR: late-detected colr glyph gid={} fi={}", glyphId, fontIndex);
-                    }
-                    wlock.unlock();
-                    // Encode paint graph
-                    hb_font_t *hbFont;
-                    hb_face_t *hbFace;
-                    {
-                        std::shared_lock rlock(font.mutex);
-                        hbFont = font.hbFonts[fontIndex].hbFont;
-                        hbFace = font.hbFonts[fontIndex].hbFace;
-                    }
-                    ColrEncoder::GlyphResolver resolver = [this, &font, fontIndex](
-                                                              hb_font_t *,
-                                                              hb_codepoint_t clipGlyph,
-                                                              float *eminx,
-                                                              float *eminy,
-                                                              float *emaxx,
-                                                              float *emaxy) -> uint32_t
-                    {
-                        ensureGlyphEncoded(font, fontIndex, clipGlyph);
-                        uint64_t clipKey = glyphKey(fontIndex, clipGlyph);
-                        std::shared_lock lock2(font.mutex);
-                        auto cit = font.glyphs.find(clipKey);
-                        if (cit == font.glyphs.end() || cit->second.is_empty) {
-                            *eminx = *eminy = *emaxx = *emaxy = 0;
-                            return 0;
-                        }
-                        *eminx = cit->second.ext_min_x;
-                        *eminy = cit->second.ext_min_y;
-                        *emaxx = cit->second.ext_max_x;
-                        *emaxy = cit->second.ext_max_y;
-                        return cit->second.atlas_offset;
-                    };
-                    auto encoded = ColrEncoder::encode(hbFont, glyphId, 0, HB_COLOR(0, 0, 0, 255), resolver);
-                    if (!encoded.instructions.empty()) {
-                        std::unique_lock wlock2(font.mutex);
-                        font.colrGlyphs[key] = ColrGlyphData {
-                            std::move(encoded.instructions),
-                            std::move(encoded.colorStops)
-                        };
-                        sLog().info("COLR: encoded paint graph for gid={} fi={} ({} instructions)",
-                                    glyphId,
-                                    fontIndex,
-                                    font.colrGlyphs[key].instructions.size());
-                    }
-                }
-            }
+        GlyphInfo tlsInfo;
+        const GlyphTlsCache::GetResult r = g_glyphTlsCache.tryGet(&font, key, curEv, tlsInfo);
+        if (r == GlyphTlsCache::GetResult::HitEmpty) {
             return;
         }
+        if (r == GlyphTlsCache::GetResult::HitHave && (!font.hasColrPaint || tlsInfo.is_colr)) {
+            return;
+        }
+    }
+
+    bool needColrCheck = false;
+    bool present       = font.glyphs.if_contains(key, [&](const auto &kv)
+                                           {
+                                               std::atomic_ref<uint32_t>(const_cast<uint32_t &>(kv.second.lastUsedGen))
+                                                   .store(font.currentGen, std::memory_order_relaxed);
+                                               needColrCheck = font.hasColrPaint && !kv.second.is_colr;
+                                           });
+    if (present) {
+        if (needColrCheck) {
+            hb_face_t *face = font.hbFonts[fontIndex].hbFace;
+            if (hb_ot_color_glyph_has_paint(face, glyphId)) {
+                bool flipped = false;
+                font.glyphs.modify_if(key, [&](auto &kv)
+                                      {
+                                          if (!kv.second.is_colr) {
+                                              kv.second.is_colr = true;
+                                              flipped           = true;
+                                          }
+                                      });
+                if (flipped) {
+                    sLog().info("COLR: late-detected colr glyph gid={} fi={}", glyphId, fontIndex);
+                }
+                hb_font_t *hbFont;
+                hb_face_t *hbFace;
+                {
+                    std::shared_lock rlock(font.mutex);
+                    hbFont = font.hbFonts[fontIndex].hbFont;
+                    hbFace = font.hbFonts[fontIndex].hbFace;
+                }
+                ColrEncoder::GlyphResolver resolver = [this, &font, fontIndex](
+                                                          hb_font_t *,
+                                                          hb_codepoint_t clipGlyph,
+                                                          float *eminx,
+                                                          float *eminy,
+                                                          float *emaxx,
+                                                          float *emaxy) -> uint32_t
+                {
+                    ensureGlyphEncoded(font, fontIndex, clipGlyph);
+                    uint64_t clipKey = glyphKey(fontIndex, clipGlyph);
+                    uint32_t offset  = 0;
+                    *eminx = *eminy = *emaxx = *emaxy = 0;
+                    font.glyphs.if_contains(clipKey, [&](const auto &kv)
+                                            {
+                                                if (kv.second.is_empty) {
+                                                    return;
+                                                }
+                                                *eminx = kv.second.ext_min_x;
+                                                *eminy = kv.second.ext_min_y;
+                                                *emaxx = kv.second.ext_max_x;
+                                                *emaxy = kv.second.ext_max_y;
+                                                offset = kv.second.atlas_offset;
+                                            });
+                    return offset;
+                };
+                auto encoded = ColrEncoder::encode(hbFont, glyphId, 0, HB_COLOR(0, 0, 0, 255), resolver);
+                if (!encoded.instructions.empty()) {
+                    size_t instructionCount = encoded.instructions.size();
+                    font.colrGlyphs.lazy_emplace_l(
+                        key,
+                        [&](auto &kv)
+                        {
+                            kv.second = ColrGlyphData { std::move(encoded.instructions), std::move(encoded.colorStops) };
+                        },
+                        [&](const auto &ctor)
+                        {
+                            ctor(key, ColrGlyphData { std::move(encoded.instructions), std::move(encoded.colorStops) });
+                        });
+                    sLog().info("COLR: encoded paint graph for gid={} fi={} ({} instructions)",
+                                glyphId,
+                                fontIndex,
+                                instructionCount);
+                }
+            }
+        }
+        return;
     }
 
     // Cache miss — extract glyph data without holding any lock.
@@ -235,14 +252,14 @@ void TextSystem::ensureGlyphEncoded(FontData &font, uint32_t fontIndex, uint32_t
             info.ext_max_x    = 0;
             info.ext_max_y    = 0;
         }
-        {
-            std::unique_lock lock(font.mutex);
-            if (!font.glyphs.count(key)) {
-                info.numTexels   = 0; // empty/COLR placeholder occupies no atlas storage
-                info.lastUsedGen = font.currentGen;
-                font.glyphs[key] = info;
-            }
-        }
+        info.numTexels   = 0;
+        info.lastUsedGen = font.currentGen;
+        font.glyphs.try_emplace_l(
+            key,
+            [](auto &)
+            {
+            },
+            info);
         hb_gpu_draw_recycle_blob(g, blob);
         if (!isColr) {
             return;
@@ -259,117 +276,120 @@ void TextSystem::ensureGlyphEncoded(FontData &font, uint32_t fontIndex, uint32_t
         uint32_t numInt16  = blobLen / sizeof(int16_t);
         uint32_t numTexels = (numInt16 + 3) / 4;
 
+        bool inserted     = false;
+        uint32_t prevUsed = 0;
         {
             std::unique_lock lock(font.mutex);
-            if (font.glyphs.count(key)) {
-                hb_gpu_draw_recycle_blob(g, blob);
-                return;
-            }
-
-            // Atlas layout: storage holds two int16 per i32 component (8 i16 per
-            // vec4<i32> texel), halving the GPU buffer size. atlasUsed is the
-            // count of "virtual" 4-int16 texels the shader sees; storage size
-            // is (atlasUsed + 1) / 2 vec4<i32> texels. Each glyph must start
-            // on a storage-texel boundary (even virtual offset) so the shader's
-            // hb_gpu_fetch can round offset/2 cleanly.
-            if (font.atlasUsed & 1u) {
-                font.atlasUsed++;
-            }
-
-            info.atlas_offset           = font.atlasUsed;
-            uint32_t glyphStorageBase   = font.atlasUsed / 2;
-            uint32_t glyphStorageTexels = (numTexels + 1) / 2;
-            uint32_t neededI32          = (glyphStorageBase + glyphStorageTexels) * 4;
-            if (font.atlasData.size() < neededI32) {
-                font.atlasData.resize(neededI32 * 2, 0);
-            }
-
-            for (uint32_t s = 0; s < glyphStorageTexels; s++) {
-                for (uint32_t c = 0; c < 4; c++) {
-                    uint32_t lowIdx  = s * 8 + c;
-                    uint32_t highIdx = s * 8 + 4 + c;
-                    uint32_t lo      = (lowIdx < numInt16) ? static_cast<uint16_t>(src[lowIdx]) : 0u;
-                    uint32_t hi      = (highIdx < numInt16) ? static_cast<uint16_t>(src[highIdx]) : 0u;
-                    font.atlasData[(glyphStorageBase + s) * 4 + c] =
-                        static_cast<int32_t>(lo | (hi << 16));
-                }
-            }
-            uint32_t prevUsed = font.atlasUsed;
-            font.atlasUsed += numTexels;
-
-            info.numTexels   = numTexels;
-            info.lastUsedGen = font.currentGen;
-            font.glyphs[key] = info;
-            font.atlasVersion.fetch_add(1, std::memory_order_release);
-
-            // Log on every 1M-virtual-texel growth boundary to track atlas inflation.
-            // Storage is (atlasUsed + 1) / 2 vec4<i32> texels = packed-int16 layout.
-            constexpr uint32_t logStep = 1u << 20;
-            if (prevUsed / logStep != font.atlasUsed / logStep) {
-                uint64_t storageBytes = (static_cast<uint64_t>(font.atlasUsed) + 1) / 2 * 16;
-                sLog().warn("FontAtlas '{}' atlasUsed crossed {} virtual texels ({} MB GPU storage), glyphs={}, hbFonts={}, last glyph=(fi={}, gid={}, blobLen={})",
-                            font.name,
-                            font.atlasUsed,
-                            storageBytes / (1024 * 1024),
-                            font.glyphs.size(),
-                            font.hbFonts.size(),
-                            fontIndex,
-                            glyphId,
-                            blobLen);
-
-                // Break down atlas occupancy by fontIndex/style.
-                // Glyph blobs are appended sequentially, so per-glyph size = next_offset - this_offset.
-                std::vector<std::pair<uint32_t, uint32_t>> entries; // (atlas_offset, fontIndex)
-                entries.reserve(font.glyphs.size());
-                for (const auto &[k, gi] : font.glyphs) {
-                    if (gi.is_empty || gi.is_colr) {
-                        continue;
-                    }
-                    entries.push_back({ gi.atlas_offset, static_cast<uint32_t>(k >> 32) });
-                }
-                std::sort(entries.begin(), entries.end());
-
-                struct Bucket
+            font.glyphs.lazy_emplace_l(
+                key,
+                [](auto &)
                 {
-                    uint64_t texels = 0;
-                    uint32_t glyphs = 0;
-                };
-
-                Bucket primary, primaryStyled, fallback, fallbackStyled;
-                for (size_t i = 0; i < entries.size(); i++) {
-                    uint32_t off     = entries[i].first;
-                    uint32_t fi      = entries[i].second;
-                    uint32_t nextOff = (i + 1 < entries.size()) ? entries[i + 1].first : font.atlasUsed;
-                    uint32_t sz      = (nextOff > off) ? (nextOff - off) : 0;
-                    if (fi >= font.hbFonts.size()) {
-                        continue;
-                    }
-                    bool styled    = font.hbFonts[fi].style != FontStyle {};
-                    bool isPrimary = (font.hbFonts[fi].baseFontIndex == 0 && (fi == 0 || styled));
-                    Bucket &b      = isPrimary ? (styled ? primaryStyled : primary)
-                                               : (styled ? fallbackStyled : fallback);
-                    b.texels += sz;
-                    b.glyphs++;
-                }
-                // Storage MB per virtual-texel count: (texels+1)/2 storage texels * 16 bytes.
-                auto mb = [](uint64_t t)
+                },
+                [&](const auto &ctor)
                 {
-                    return ((t + 1) / 2 * 16) / (1024 * 1024);
-                };
-                sLog().warn("  breakdown: primary={} MB ({} glyphs), primary-styled={} MB ({} glyphs), fallback={} MB ({} glyphs), fallback-styled={} MB ({} glyphs)",
-                            mb(primary.texels),
-                            primary.glyphs,
-                            mb(primaryStyled.texels),
-                            primaryStyled.glyphs,
-                            mb(fallback.texels),
-                            fallback.glyphs,
-                            mb(fallbackStyled.texels),
-                            fallbackStyled.glyphs);
+                    // Storage packs two int16 per i32 (8 per vec4<i32>); glyphs must
+                    // start on even virtual offsets so hb_gpu_fetch rounds cleanly.
+                    if (font.atlasUsed & 1u) {
+                        font.atlasUsed++;
+                    }
+
+                    info.atlas_offset           = font.atlasUsed;
+                    uint32_t glyphStorageBase   = font.atlasUsed / 2;
+                    uint32_t glyphStorageTexels = (numTexels + 1) / 2;
+                    uint32_t neededI32          = (glyphStorageBase + glyphStorageTexels) * 4;
+                    if (font.atlasData.size() < neededI32) {
+                        font.atlasData.resize(neededI32 * 2, 0);
+                    }
+
+                    for (uint32_t s = 0; s < glyphStorageTexels; s++) {
+                        for (uint32_t c = 0; c < 4; c++) {
+                            uint32_t lowIdx  = s * 8 + c;
+                            uint32_t highIdx = s * 8 + 4 + c;
+                            uint32_t lo      = (lowIdx < numInt16) ? static_cast<uint16_t>(src[lowIdx]) : 0u;
+                            uint32_t hi      = (highIdx < numInt16) ? static_cast<uint16_t>(src[highIdx]) : 0u;
+                            font.atlasData[(glyphStorageBase + s) * 4 + c] =
+                                static_cast<int32_t>(lo | (hi << 16));
+                        }
+                    }
+                    prevUsed = font.atlasUsed;
+                    font.atlasUsed += numTexels;
+
+                    info.numTexels   = numTexels;
+                    info.lastUsedGen = font.currentGen;
+                    ctor(key, info);
+                    inserted = true;
+                });
+            if (inserted) {
+                font.atlasVersion.fetch_add(1, std::memory_order_release);
+
+                constexpr uint32_t logStep = 1u << 20;
+                if (prevUsed / logStep != font.atlasUsed / logStep) {
+                    uint64_t storageBytes = (static_cast<uint64_t>(font.atlasUsed) + 1) / 2 * 16;
+                    sLog().warn("FontAtlas '{}' atlasUsed crossed {} virtual texels ({} MB GPU storage), glyphs={}, hbFonts={}, last glyph=(fi={}, gid={}, blobLen={})",
+                                font.name,
+                                font.atlasUsed,
+                                storageBytes / (1024 * 1024),
+                                font.glyphs.size(),
+                                font.hbFonts.size(),
+                                fontIndex,
+                                glyphId,
+                                blobLen);
+
+                    // Glyph blobs are appended sequentially, so per-glyph size = next_offset - this_offset.
+                    std::vector<std::pair<uint32_t, uint32_t>> entries;
+                    entries.reserve(font.glyphs.size());
+                    font.glyphs.for_each([&](const auto &kv)
+                                         {
+                                             if (kv.second.is_empty || kv.second.is_colr) {
+                                                 return;
+                                             }
+                                             entries.push_back({ kv.second.atlas_offset, static_cast<uint32_t>(kv.first >> 32) });
+                                         });
+                    std::sort(entries.begin(), entries.end());
+
+                    struct Bucket
+                    {
+                        uint64_t texels = 0;
+                        uint32_t glyphs = 0;
+                    };
+
+                    Bucket primary, primaryStyled, fallback, fallbackStyled;
+                    for (size_t i = 0; i < entries.size(); i++) {
+                        uint32_t off     = entries[i].first;
+                        uint32_t fi      = entries[i].second;
+                        uint32_t nextOff = (i + 1 < entries.size()) ? entries[i + 1].first : font.atlasUsed;
+                        uint32_t sz      = (nextOff > off) ? (nextOff - off) : 0;
+                        if (fi >= font.hbFonts.size()) {
+                            continue;
+                        }
+                        bool styled    = font.hbFonts[fi].style != FontStyle {};
+                        bool isPrimary = (font.hbFonts[fi].baseFontIndex == 0 && (fi == 0 || styled));
+                        Bucket &b      = isPrimary ? (styled ? primaryStyled : primary)
+                                                   : (styled ? fallbackStyled : fallback);
+                        b.texels += sz;
+                        b.glyphs++;
+                    }
+                    auto mb = [](uint64_t t)
+                    {
+                        return ((t + 1) / 2 * 16) / (1024 * 1024);
+                    };
+                    sLog().warn("  breakdown: primary={} MB ({} glyphs), primary-styled={} MB ({} glyphs), fallback={} MB ({} glyphs), fallback-styled={} MB ({} glyphs)",
+                                mb(primary.texels),
+                                primary.glyphs,
+                                mb(primaryStyled.texels),
+                                primaryStyled.glyphs,
+                                mb(fallback.texels),
+                                fallback.glyphs,
+                                mb(fallbackStyled.texels),
+                                fallbackStyled.glyphs);
+                }
             }
         }
         hb_gpu_draw_recycle_blob(g, blob);
+        if (!inserted) {
+            return;
+        }
 
-        // Check for COLRv1 paint data on non-empty outline glyphs
         if (!(font.hasColrPaint &&
               hb_ot_color_has_paint(hbFace) &&
               hb_ot_color_glyph_has_paint(hbFace, glyphId))) {
@@ -392,32 +412,39 @@ void TextSystem::ensureGlyphEncoded(FontData &font, uint32_t fontIndex, uint32_t
         {
             ensureGlyphEncoded(font, fontIndex, clipGlyph);
             uint64_t clipKey = glyphKey(fontIndex, clipGlyph);
-            std::shared_lock lock(font.mutex);
-            auto it = font.glyphs.find(clipKey);
-            if (it == font.glyphs.end() || it->second.is_empty) {
-                *eminx = *eminy = *emaxx = *emaxy = 0;
-                return 0;
-            }
-            *eminx = it->second.ext_min_x;
-            *eminy = it->second.ext_min_y;
-            *emaxx = it->second.ext_max_x;
-            *emaxy = it->second.ext_max_y;
-            return it->second.atlas_offset;
+            uint32_t offset  = 0;
+            *eminx = *eminy = *emaxx = *emaxy = 0;
+            font.glyphs.if_contains(clipKey, [&](const auto &kv)
+                                    {
+                                        if (kv.second.is_empty) {
+                                            return;
+                                        }
+                                        *eminx = kv.second.ext_min_x;
+                                        *eminy = kv.second.ext_min_y;
+                                        *emaxx = kv.second.ext_max_x;
+                                        *emaxy = kv.second.ext_max_y;
+                                        offset = kv.second.atlas_offset;
+                                    });
+            return offset;
         };
 
         auto encoded = ColrEncoder::encode(hbFont, glyphId, 0, HB_COLOR(0, 0, 0, 255), resolver);
 
         if (!encoded.instructions.empty()) {
-            std::unique_lock lock(font.mutex);
-            font.colrGlyphs[key] = ColrGlyphData {
-                std::move(encoded.instructions),
-                std::move(encoded.colorStops)
-            };
-            // Mark the glyph as COLR
-            auto git = font.glyphs.find(key);
-            if (git != font.glyphs.end()) {
-                git->second.is_colr = true;
-            }
+            font.colrGlyphs.lazy_emplace_l(
+                key,
+                [&](auto &kv)
+                {
+                    kv.second = ColrGlyphData { std::move(encoded.instructions), std::move(encoded.colorStops) };
+                },
+                [&](const auto &ctor)
+                {
+                    ctor(key, ColrGlyphData { std::move(encoded.instructions), std::move(encoded.colorStops) });
+                });
+            font.glyphs.modify_if(key, [](auto &kv)
+                                  {
+                                      kv.second.is_colr = true;
+                                  });
         }
     }
 }
@@ -638,94 +665,103 @@ bool TextSystem::compactFontAtlasLRU(const std::string &name,
     size_t prevGlyphs      = font.glyphs.size();
     size_t prevColr        = font.colrGlyphs.size();
 
-    // Build a list of (lastUsedGen, key) for non-empty / non-COLR glyphs that
-    // actually consume atlas storage. Empty + COLR placeholder glyphs stay —
-    // they cost nothing and dropping them just churns later re-encodes.
+    // Keep non-empty / non-COLR glyphs that consume atlas storage. Empty and
+    // COLR placeholder entries stay — cost nothing and dropping them churns.
     std::vector<std::pair<uint32_t, uint64_t>> entries;
     entries.reserve(font.glyphs.size());
-    for (const auto &[k, gi] : font.glyphs) {
-        if (gi.is_empty || gi.is_colr || gi.numTexels == 0) {
-            continue;
-        }
-        entries.push_back({ gi.lastUsedGen, k });
-    }
-    // Sort by lastUsedGen DESCENDING — newest first, oldest at the back.
+    font.glyphs.for_each([&](const auto &kv)
+                         {
+                             const GlyphInfo &gi = kv.second;
+                             if (gi.is_empty || gi.is_colr || gi.numTexels == 0) {
+                                 return;
+                             }
+                             entries.push_back({ gi.lastUsedGen, kv.first });
+                         });
     std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b)
               {
                   return a.first > b.first;
               });
 
-    // Walk from newest, accumulating size. Keep glyphs while accumulated
-    // texels stay under targetTexels. Past that, mark for eviction.
     std::unordered_set<uint64_t> keep;
     keep.reserve(entries.size());
     uint64_t kept_texels = 1; // sentinel slot 0
     for (const auto &[gen, key] : entries) {
-        const auto &gi = font.glyphs.at(key);
-        if (kept_texels + gi.numTexels > targetTexels) {
+        bool stop = false;
+        font.glyphs.if_contains(key, [&](const auto &kv)
+                                {
+                                    if (kept_texels + kv.second.numTexels > targetTexels) {
+                                        stop = true;
+                                        return;
+                                    }
+                                    kept_texels += kv.second.numTexels;
+                                    keep.insert(key);
+                                });
+        if (stop) {
             break;
         }
-        kept_texels += gi.numTexels;
-        keep.insert(key);
     }
 
-    // Defragment atlasData: pack kept glyph blobs back-to-back starting at
-    // virtual offset 1. Storage is two virtual texels per vec4<i32>. Each
-    // glyph still requires even-virtual alignment.
-    // Use a temporary destination vector to avoid in-place overlap pitfalls
-    // (a kept glyph's source range could be below its new dest range).
+    // Pack into a temp buffer (in-place would overlap when src < dst);
+    // newest-first so hot glyphs land at the front for cache locality.
     std::vector<int32_t> newData((font.atlasData.size()), 0);
     uint32_t newAtlasUsed = 1;
 
-    // Iterate in newest-first order (entries) so hot glyphs land near the
-    // front of the new atlas (better cache locality for next-frame access).
     for (const auto &[gen, key] : entries) {
         if (!keep.count(key)) {
             continue;
         }
-        auto mit = font.glyphs.find(key);
-        if (mit == font.glyphs.end()) {
-            continue;
-        }
-        GlyphInfo &gi = mit->second;
-
-        // Align new offset to even virtual texel.
-        if (newAtlasUsed & 1u) {
-            newAtlasUsed++;
-        }
-
-        uint32_t srcStorageBase = gi.atlas_offset / 2;
-        uint32_t dstStorageBase = newAtlasUsed / 2;
-        uint32_t storageTexels  = (gi.numTexels + 1) / 2;
-
-        std::copy_n(font.atlasData.data() + srcStorageBase * 4,
-                    storageTexels * 4,
-                    newData.data() + dstStorageBase * 4);
-
-        gi.atlas_offset = newAtlasUsed;
-        newAtlasUsed += gi.numTexels;
+        font.glyphs.modify_if(key, [&](auto &kv)
+                              {
+                                  GlyphInfo &gi = kv.second;
+                                  if (newAtlasUsed & 1u) {
+                                      newAtlasUsed++;
+                                  }
+                                  uint32_t srcStorageBase = gi.atlas_offset / 2;
+                                  uint32_t dstStorageBase = newAtlasUsed / 2;
+                                  uint32_t storageTexels  = (gi.numTexels + 1) / 2;
+                                  std::copy_n(font.atlasData.data() + srcStorageBase * 4,
+                                              storageTexels * 4,
+                                              newData.data() + dstStorageBase * 4);
+                                  gi.atlas_offset = newAtlasUsed;
+                                  newAtlasUsed += gi.numTexels;
+                              });
     }
 
-    // Erase evicted glyphs. We preserved kept glyphs above; everything else
-    // with non-zero numTexels that wasn't kept goes.
-    for (auto it2 = font.glyphs.begin(); it2 != font.glyphs.end();) {
-        const GlyphInfo &gi = it2->second;
-        if (!gi.is_empty && !gi.is_colr && gi.numTexels > 0 && !keep.count(it2->first)) {
-            it2 = font.glyphs.erase(it2);
-        } else {
-            ++it2;
-        }
+    std::vector<uint64_t> toErase;
+    font.glyphs.for_each([&](const auto &kv)
+                         {
+                             const GlyphInfo &gi = kv.second;
+                             if (!gi.is_empty && !gi.is_colr && gi.numTexels > 0 && !keep.count(kv.first)) {
+                                 toErase.push_back(kv.first);
+                             }
+                         });
+    for (uint64_t k : toErase) {
+        font.glyphs.erase_if(k, [](auto &)
+                             {
+                                 return true;
+                             });
     }
 
-    // COLR paint graphs encode atlas offsets of clip glyphs; defrag invalidates
-    // those offsets. Drop the cache entirely — they re-encode lazily.
-    font.colrGlyphs.clear();
+    // COLR paint graphs encode atlas offsets that defrag invalidates;
+    // drop the cache and let it re-encode lazily.
+    std::vector<uint64_t> colrToErase;
+    font.colrGlyphs.for_each([&](const auto &kv)
+                             {
+                                 colrToErase.push_back(kv.first);
+                             });
+    for (uint64_t k : colrToErase) {
+        font.colrGlyphs.erase_if(k, [](auto &)
+                                 {
+                                     return true;
+                                 });
+    }
 
     font.atlasData = std::move(newData);
     font.atlasUsed = newAtlasUsed;
     // Drives the renderer to detect the wrap-back (atlasUsed < uploadedSize)
     // and force a full reupload.
     font.atlasVersion.fetch_add(1, std::memory_order_release);
+    font.evictionVersion.fetch_add(1, std::memory_order_release);
 
     sLog().info("FontAtlas '{}' compacted: kept {}/{} glyphs, dropped {} COLR entries, {} -> {} virtual texels ({} MB -> {} MB storage)",
                 name,

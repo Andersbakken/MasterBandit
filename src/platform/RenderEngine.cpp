@@ -27,11 +27,6 @@ static void appendUtf8(std::string &s, uint32_t cp)
     utf8::append(s, cp);
 }
 
-// Resolve `glyphId` in `font`, falling back to a font-specific replacement
-// glyph (typically U+FFFD shaped against the same font) when the lookup
-// misses for a renderable codepoint. Returns false when the cell should not
-// be drawn: gid==0, missing entry for a substitution / null / whitespace
-// codepoint, or no replacement available.
 template <typename ReplacementFn>
 static bool resolveCellGlyph(FontData &font,
                              uint64_t glyphId,
@@ -43,28 +38,44 @@ static bool resolveCellGlyph(FontData &font,
     if ((glyphId & 0xFFFFFFFFu) == 0u) {
         return false;
     }
-    {
-        std::shared_lock lock(font.mutex);
-        auto it = font.glyphs.find(glyphId);
-        if (it != font.glyphs.end()) {
-            // LRU touch under shared_lock — atomic_ref + relaxed (see
-            // GlyphInfo::lastUsedGen). `out = it->second;` is a plain
-            // copy of all the other fields which the unique-locked
-            // insert path established before publishing the entry.
-            std::atomic_ref<uint32_t>(it->second.lastUsedGen)
-                .store(font.currentGen, std::memory_order_relaxed);
-            // is_empty means the font intentionally provides this glyph as
-            // invisible (e.g. NotoColorEmoji's gid=1 .null that GSUB leaves
-            // behind after consuming a VS16). Return false — do NOT fall
-            // through to the FFFD replacement; the font's answer is "draw
-            // nothing here," and FFFD-ing it produces a stray rectangle next
-            // to the emoji.
-            if (it->second.is_empty) {
-                return false;
-            }
-            out = it->second;
+
+    const uint64_t curEv = font.evictionVersion.load(std::memory_order_acquire);
+    switch (g_glyphTlsCache.tryGet(&font, glyphId, curEv, out)) {
+        case GlyphTlsCache::GetResult::HitHave:
             return true;
-        }
+        case GlyphTlsCache::GetResult::HitEmpty:
+            return false;
+        case GlyphTlsCache::GetResult::Miss:
+            break;
+    }
+
+    enum class Hit
+    {
+        Miss,
+        Empty,
+        Have
+    };
+    Hit hit = Hit::Miss;
+    font.glyphs.if_contains(glyphId, [&](const auto &kv)
+                            {
+                                std::atomic_ref<uint32_t>(const_cast<uint32_t &>(kv.second.lastUsedGen))
+                                    .store(font.currentGen, std::memory_order_relaxed);
+                                // is_empty: font intentionally draws nothing for this gid (e.g. the
+                                // .null GSUB leaves behind after consuming a VS16). Don't FFFD it.
+                                if (kv.second.is_empty) {
+                                    hit = Hit::Empty;
+                                    return;
+                                }
+                                out = kv.second;
+                                hit = Hit::Have;
+                            });
+    if (hit == Hit::Have) {
+        g_glyphTlsCache.put(&font, glyphId, curEv, &out, false);
+        return true;
+    }
+    if (hit == Hit::Empty) {
+        g_glyphTlsCache.put(&font, glyphId, curEv, nullptr, true);
+        return false;
     }
     if (isSubstitution || codepoint == 0 || unicode::isSpace(codepoint)) {
         return false;
@@ -419,12 +430,15 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
         if (rep.glyphs.empty()) {
             return nullptr;
         }
-        std::shared_lock lock(font->mutex);
-        auto it = font->glyphs.find(rep.glyphs[0].glyphId);
-        if (it == font->glyphs.end() || it->second.is_empty) {
+        bool ok = font->glyphs.if_contains(rep.glyphs[0].glyphId, [&](const auto &kv)
+                                           {
+                                               if (!kv.second.is_empty) {
+                                                   replacementGlyph = kv.second;
+                                               }
+                                           });
+        if (!ok || replacementGlyph.is_empty) {
             return nullptr;
         }
-        replacementGlyph = it->second;
         return &replacementGlyph;
     };
 
@@ -603,23 +617,18 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
 
                 auto result = renderer_.colrAtlas().acquireTile(colrKey, frameState_.fontSize);
                 if (result.tile) {
-                    auto *tile                    = result.tile;
-                    const ColrGlyphData *colrData = nullptr;
-                    {
-                        std::shared_lock lock(font->mutex);
-                        auto cit = font->colrGlyphs.find(colrKey);
-                        if (cit != font->colrGlyphs.end()) {
-                            colrData = &cit->second;
-                        }
-                    }
-                    if (colrData) {
-                        Renderer::ColrRasterCmd rcmd;
-                        rcmd.data        = colrData;
-                        rcmd.tile        = *tile;
-                        rcmd.em_origin_x = gi.ext_min_x;
-                        rcmd.em_origin_y = gi.ext_min_y;
-                        rcmd.em_width    = gi.ext_max_x - gi.ext_min_x;
-                        rcmd.em_height   = gi.ext_max_y - gi.ext_min_y;
+                    auto *tile = result.tile;
+                    Renderer::ColrRasterCmd rcmd;
+                    bool haveData = font->colrGlyphs.if_contains(colrKey, [&](const auto &kv)
+                                                                 {
+                                                                     rcmd.data        = &kv.second;
+                                                                     rcmd.tile        = *tile;
+                                                                     rcmd.em_origin_x = gi.ext_min_x;
+                                                                     rcmd.em_origin_y = gi.ext_min_y;
+                                                                     rcmd.em_width    = gi.ext_max_x - gi.ext_min_x;
+                                                                     rcmd.em_height   = gi.ext_max_y - gi.ext_min_y;
+                                                                 });
+                    if (haveData) {
                         rowCache.colrRasterCmds.push_back(rcmd);
                     }
                 }
@@ -723,12 +732,15 @@ void RenderEngine::renderTabBar()
         if (rep.glyphs.empty()) {
             return nullptr;
         }
-        std::shared_lock lock(font->mutex);
-        auto it = font->glyphs.find(rep.glyphs[0].glyphId);
-        if (it == font->glyphs.end() || it->second.is_empty) {
+        bool ok = font->glyphs.if_contains(rep.glyphs[0].glyphId, [&](const auto &kv)
+                                           {
+                                               if (!kv.second.is_empty) {
+                                                   tabBarReplacementGlyph = kv.second;
+                                               }
+                                           });
+        if (!ok || tabBarReplacementGlyph.is_empty) {
             return nullptr;
         }
-        tabBarReplacementGlyph = it->second;
         return &tabBarReplacementGlyph;
     };
 

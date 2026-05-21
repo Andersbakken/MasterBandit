@@ -10,6 +10,7 @@
         "doctest",
         "cxxopts",
         "quickjs-ng",
-        "re2"
+        "re2",
+        "gtl"
     ]
 }

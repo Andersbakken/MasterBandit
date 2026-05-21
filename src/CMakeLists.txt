@@ -9,6 +9,10 @@ find_package(Stb REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
 find_package(qjs CONFIG REQUIRED)
 
+# gtl (greg7mdp/gtl) is header-only; its vcpkg port ships no CMake config.
+# vcpkg's toolchain puts the install include dir on the global search path,
+# so `#include <gtl/phmap.hpp>` resolves without any per-target wiring.
+
 add_subdirectory(terminal)
 add_subdirectory(platform)
 add_subdirectory(eventloop)

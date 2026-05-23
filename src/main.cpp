@@ -3,6 +3,7 @@
 #include "PlatformDawn.h"
 #include "Resources.h"
 #include "Terminfo.h"
+#include "Version.h"
 #include <cstdio>
 #include <cstring>
 #include <cxxopts.hpp>
@@ -128,7 +129,7 @@ int main(int argc, char **argv)
     }
 
     cxxopts::Options opts("mb", "MasterBandit Terminal");
-    opts.add_options()("v,verbose", "Increase verbosity (repeatable)")("log", "Set subsystem log level: name=level[,name=level] (subsystems: script,js,render,terminal,input,font)", cxxopts::value<std::string>())("s,shell", "Shell to use", cxxopts::value<std::string>())("test", "Headless test mode (no window, no config)")("ipc", "Enable debug IPC socket")("font", "Font path (test mode)", cxxopts::value<std::string>())("emoji-font", "Emoji font path (test mode)", cxxopts::value<std::string>())("fallback-font", "Additional fallback font path (test mode)", cxxopts::value<std::string>())("cols", "Terminal columns (test mode)", cxxopts::value<int>()->default_value("80"))("rows", "Terminal rows (test mode)", cxxopts::value<int>()->default_value("24"))("font-size", "Font size (test mode)", cxxopts::value<float>()->default_value("16"))("emit-terminfo", "Emit terminfo source for xterm-mb to stdout and exit")("h,help", "Print usage");
+    opts.add_options()("v,verbose", "Increase verbosity (repeatable)")("log", "Set subsystem log level: name=level[,name=level] (subsystems: script,js,render,terminal,input,font)", cxxopts::value<std::string>())("s,shell", "Shell to use", cxxopts::value<std::string>())("test", "Headless test mode (no window, no config)")("ipc", "Enable debug IPC socket")("font", "Font path (test mode)", cxxopts::value<std::string>())("emoji-font", "Emoji font path (test mode)", cxxopts::value<std::string>())("fallback-font", "Additional fallback font path (test mode)", cxxopts::value<std::string>())("cols", "Terminal columns (test mode)", cxxopts::value<int>()->default_value("80"))("rows", "Terminal rows (test mode)", cxxopts::value<int>()->default_value("24"))("font-size", "Font size (test mode)", cxxopts::value<float>()->default_value("16"))("emit-terminfo", "Emit terminfo source for xterm-mb to stdout and exit")("V,version", "Print version and exit")("h,help", "Print usage");
     opts.allow_unrecognised_options();
 
     cxxopts::ParseResult result;
@@ -142,6 +143,11 @@ int main(int argc, char **argv)
 
     if (result.count("help")) {
         printf("%s\n", opts.help().c_str());
+        return 0;
+    }
+
+    if (result.count("version")) {
+        printf("mb %s\n", mb::kVersion);
         return 0;
     }
 
@@ -231,6 +237,8 @@ int main(int argc, char **argv)
         makeLogger(kSubsystems[i], globalLevel);
     }
     makeLogger("js", globalLevel < spdlog::level::info ? globalLevel : spdlog::level::info);
+
+    spdlog::info("mb {}", mb::kVersion);
 
     if (result.count("log")) {
         std::string spec = result["log"].as<std::string>();

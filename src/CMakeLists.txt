@@ -92,7 +92,20 @@ target_include_directories(mb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/platform
     ${CMAKE_CURRENT_SOURCE_DIR}/script
     ${CMAKE_CURRENT_SOURCE_DIR}/eventloop
+    ${CMAKE_BINARY_DIR}/generated
 )
+
+set(MB_VERSION_HEADER ${CMAKE_BINARY_DIR}/generated/Version.h)
+add_custom_target(generate_version ALL
+    COMMAND ${CMAKE_COMMAND}
+        -D OUTPUT_FILE=${MB_VERSION_HEADER}
+        -D SOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/cmake/GenerateVersion.cmake
+    BYPRODUCTS ${MB_VERSION_HEADER}
+    COMMENT "Generating Version.h"
+    VERBATIM
+)
+add_dependencies(mb generate_version)
 
 target_link_libraries(mb PRIVATE terminal platform eventloop glaze::glaze cxxopts::cxxopts qjs whiteout)
 

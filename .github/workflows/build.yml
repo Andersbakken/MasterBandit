@@ -69,8 +69,17 @@ jobs:
           "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
 
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: ccache-${{ matrix.name }}
+          max-size: 500M
+
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: |
+          cmake --preset ${{ matrix.preset }} \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel 2

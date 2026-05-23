@@ -122,9 +122,6 @@ jobs:
           BIN="$APP/Contents/MacOS/mb"
           dsymutil "$BIN" -o "$RUNNER_TEMP/mb.dSYM"
           strip -S "$BIN"
-          # strip invalidates the cmake-time ad-hoc signature; re-apply so
-          # unsigned-path artifacts (PR / master push) still have a valid
-          # ad-hoc sig. Proper-sign step overwrites this when it runs.
           codesign --sign - --force --identifier "it.masterband.mb" "$APP"
           ( cd "$RUNNER_TEMP" && tar -czf mb-macos-arm64.dSYM.tar.gz mb.dSYM && rm -rf mb.dSYM )
           ls -lh "$BIN" "$RUNNER_TEMP/mb-macos-arm64.dSYM.tar.gz"

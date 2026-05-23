@@ -37,20 +37,18 @@
 // sig_atomic_t because it's read from a signal handler.
 static volatile sig_atomic_t g_socketCleanupOnExit = 0;
 
-// Crash-log staging: directory created at startup (mkdir is not
-// signal-safe), filename composed and opened in the handler (open is).
+// Crash-log directory, populated by composeCrashLogDir at startup.
 static char g_crashLogDir[512];
 static bool g_crashLogDirReady = false;
 
-// Build-id (Linux: GNU build-id; macOS: LC_UUID) captured at startup
-// and embedded in the crash log so the decoder can pick the matching
-// sidecar.
+// Build-id (GNU build-id on Linux, LC_UUID on macOS) as lowercase hex.
 static char g_buildIdHex[80];
 static bool g_buildIdReady = false;
 
-// Dedicated stack for fatal-signal handlers so SIGSEGV from stack
-// overflow can still run the handler.
-static uint8_t g_altStack[SIGSTKSZ + 16384];
+// Alt-stack so the fatal-signal handler can run when the main stack is
+// exhausted.
+static constexpr size_t kAltStackSize = 128 * 1024;
+static uint8_t g_altStack[kAltStackSize];
 
 // Async-signal-safe removal of the per-pid IPC socket. snprintf is not
 // formally on POSIX's signal-safe list, but every libc implementation
@@ -217,15 +215,8 @@ static void writeCrashHeader(int fd, int sig)
     }
 }
 
-// Fatal-signal handler: writes a self-contained crash log (build-id,
-// load map, raw backtrace) to both stderr and a file under
-// g_crashLogDir, then re-raises with the default handler to get the
-// correct exit status (and a core file if rlimits allow).
-//
-// Uses backtrace_symbols_fd, not backtrace_symbols, because the latter
-// calls malloc — not async-signal-safe. After a SIGSEGV the allocator
-// state can be arbitrarily corrupt, and calling malloc would risk
-// deadlock or a second crash that swallows the original trace.
+// Writes the crash payload (header, load map, backtrace) to stderr and
+// to a crash-log file under g_crashLogDir, then re-raises.
 static void crashSignalHandler(int sig, siginfo_t *, void *)
 {
     int fd = -1;
@@ -250,6 +241,7 @@ static void crashSignalHandler(int sig, siginfo_t *, void *)
         constexpr int kMaxFrames = 128;
         void *frames[kMaxFrames];
         int count = backtrace(frames, kMaxFrames);
+        // _fd variant only: backtrace_symbols calls malloc.
         backtrace_symbols_fd(frames, count, dst);
     }
 
@@ -264,8 +256,6 @@ static void crashSignalHandler(int sig, siginfo_t *, void *)
         removeIpcSocket();
     }
 
-    // SA_RESETHAND restored SIG_DFL on entry; re-raise to get the real
-    // exit status and a core file if ulimits allow.
     raise(sig);
 }
 

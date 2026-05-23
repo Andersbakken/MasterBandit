@@ -70,6 +70,12 @@ jobs:
           "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
 
+      - name: Cache Dawn tarball
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.build_dir }}/3rdparty/dawn
+          key: dawn-${{ matrix.name }}-${{ hashFiles('3rdparty/dawn/CMakeLists.txt') }}
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:

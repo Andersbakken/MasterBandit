@@ -10,8 +10,6 @@ on:
     - cron: '23 7 * * *'
   workflow_dispatch:
 
-env:
-  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
 
 jobs:
   build:
@@ -37,8 +35,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Create vcpkg binary cache dir
-        run: mkdir -p "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
+      - name: Set vcpkg binary cache path
+        run: |
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-bincache" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/vcpkg-bincache"
 
       - name: Restore vcpkg binary cache
         uses: actions/cache@v5

@@ -24,18 +24,19 @@ if(Git_FOUND)
     if(_hash_rc EQUAL 0 AND _hash)
         set(GIT_HASH "${_hash}")
 
-        # `--ignore-submodules=all` keeps build-generated files in submodules
-        # (e.g. 3rdparty/libgrapheme/gen/*.h) from flipping the parent repo to
-        # dirty. Submodule pointer bumps are committed changes and would be
-        # reflected in the hash itself.
+        # Only flag tracked-file modifications. `git status --porcelain`
+        # also lists untracked files, which would falsely flip the hash to
+        # `-dirty` for unrelated workspace junk (vcpkg binary caches,
+        # editor backups, etc.). `diff-index --quiet` returns non-zero iff
+        # a tracked file differs from HEAD, which is the actual definition
+        # of "the build was made from modified source".
         execute_process(
-            COMMAND ${GIT_EXECUTABLE} status --porcelain --ignore-submodules=all
+            COMMAND ${GIT_EXECUTABLE} diff-index --quiet HEAD --
             WORKING_DIRECTORY ${SOURCE_DIR}
-            OUTPUT_VARIABLE _status
-            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _diff_rc
             ERROR_QUIET
         )
-        if(_status)
+        if(NOT _diff_rc EQUAL 0)
             set(GIT_DIRTY "-dirty")
         endif()
     endif()

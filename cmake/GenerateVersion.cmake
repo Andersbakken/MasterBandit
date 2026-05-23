@@ -24,8 +24,12 @@ if(Git_FOUND)
     if(_hash_rc EQUAL 0 AND _hash)
         set(GIT_HASH "${_hash}")
 
+        # `--ignore-submodules=all` keeps build-generated files in submodules
+        # (e.g. 3rdparty/libgrapheme/gen/*.h) from flipping the parent repo to
+        # dirty. Submodule pointer bumps are committed changes and would be
+        # reflected in the hash itself.
         execute_process(
-            COMMAND ${GIT_EXECUTABLE} status --porcelain
+            COMMAND ${GIT_EXECUTABLE} status --porcelain --ignore-submodules=all
             WORKING_DIRECTORY ${SOURCE_DIR}
             OUTPUT_VARIABLE _status
             OUTPUT_STRIP_TRAILING_WHITESPACE

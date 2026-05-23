@@ -88,15 +88,17 @@ jobs:
       - name: Package Linux binary
         if: runner.os == 'Linux'
         run: |
-          cd ${{ matrix.build_dir }}/bin
-          tar -czf mb-linux-x64.tar.gz mb
+          tar -czf mb-linux-x64.tar.gz \
+              --transform 's,^bin,mb,' \
+              --exclude='bin/mb-tests' \
+              -C ${{ matrix.build_dir }} bin
 
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
           name: mb-linux-x64
-          path: ${{ matrix.build_dir }}/bin/mb-linux-x64.tar.gz
+          path: mb-linux-x64.tar.gz
 
       - name: Upload artifact (macOS)
         if: runner.os == 'macOS'

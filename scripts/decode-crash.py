@@ -24,7 +24,7 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-DEFAULT_REPO = os.environ.get("MB_REPO", "jhanssen/MasterBandit")
+DEFAULT_REPO = os.environ.get("MB_REPO", "Andersbakken/MasterBandit")
 DEFAULT_RELEASE = "nightly"
 DEFAULT_CACHE = Path.home() / ".cache" / "mb-decode"
 

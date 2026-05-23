@@ -10,7 +10,9 @@ set(GRAPHEME_GEN_UTIL ${LIBGRAPHEME_DIR}/gen/util.c)
 set(GRAPHEME_GENERATORS character word sentence line bidirectional case)
 set(GRAPHEME_GEN_OUTPUTS)
 add_library(grapheme_gen_util OBJECT ${GRAPHEME_GEN_UTIL})
-target_compile_options(grapheme_gen_util PRIVATE -Wno-discarded-qualifiers)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(grapheme_gen_util PRIVATE -Wno-discarded-qualifiers)
+endif()
 foreach(GEN ${GRAPHEME_GENERATORS})
   add_executable(grapheme_gen_${GEN}
     ${LIBGRAPHEME_DIR}/gen/${GEN}.c
@@ -43,7 +45,9 @@ add_library(grapheme STATIC
   ${LIBGRAPHEME_DIR}/src/word.c
 )
 target_include_directories(grapheme PUBLIC ${LIBGRAPHEME_DIR})
-target_compile_options(grapheme PRIVATE -Wno-discarded-qualifiers)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(grapheme PRIVATE -Wno-discarded-qualifiers)
+endif()
 set_target_properties(grapheme PROPERTIES
   C_STANDARD 99
   POSITION_INDEPENDENT_CODE ON

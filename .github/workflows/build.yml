@@ -95,6 +95,7 @@ jobs:
           tar -czf mb-linux-x64.tar.gz \
               --transform 's,^bin,mb,' \
               --exclude='bin/mb-tests' \
+              --exclude='bin/grapheme_gen_*' \
               -C ${{ matrix.build_dir }} bin
 
       - name: Upload artifact (Linux)

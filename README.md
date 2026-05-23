@@ -50,4 +50,4 @@ cmake --preset macos-release -DMB_ADHOC_SIGN=OFF
 
 ## Protocol extensions
 
-- [Selective Mouse Reporting](SELECTIVE-MOUSE-REPORTING.md) — `CSI = w` / `CSI ? w` lets a TUI declare which mouse buttons and event types it wants forwarded, leaving the rest for the terminal's native selection.
+- [Selective Mouse Reporting](docs/specs/selective-mouse-reporting.md) — `CSI = w` / `CSI ? w` lets a TUI declare which mouse buttons and event types it wants forwarded, leaving the rest for the terminal's native selection.

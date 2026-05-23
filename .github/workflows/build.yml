@@ -6,6 +6,8 @@ on:
     tags: ['v*']
   pull_request:
     branches: [master]
+  schedule:
+    - cron: '23 7 * * *'
   workflow_dispatch:
 
 env:
@@ -132,3 +134,34 @@ jobs:
             artifacts/mb-linux-x64.tar.gz
             artifacts/mb-macos-arm64.zip
           generate_release_notes: true
+
+  nightly:
+    name: Nightly Release
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Move nightly tag
+        run: |
+          git tag -f nightly
+          git push -f origin nightly
+
+      - name: Publish nightly prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: nightly
+          name: "Nightly build"
+          body: "Rolling build from master. Updated daily. Not a stable release."
+          prerelease: true
+          files: |
+            artifacts/mb-linux-x64.tar.gz
+            artifacts/mb-macos-arm64.zip

@@ -86,7 +86,8 @@ jobs:
         run: |
           cmake --preset ${{ matrix.preset }} \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DMB_ADHOC_SIGN=${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'OFF' || 'ON' }}
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel 2
@@ -100,6 +101,62 @@ jobs:
           echo "exit=$status"
           grep -a -E 'Status:|FAIL|test cases:' /tmp/mb-tests.out || true
           grep -a -q 'Status: SUCCESS!' /tmp/mb-tests.out
+
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_SIGNING_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+        run: |
+          set -e
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          echo "$CERT_P12_BASE64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" \
+              -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+              -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Sign mb.app
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        run: |
+          set -e
+          APP="${{ matrix.build_dir }}/bin/mb.app"
+          codesign --force --options runtime --timestamp \
+              --sign "Developer ID Application: Jan E Hanssen (277JTPGVHJ)" \
+              "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+      - name: Notarize and staple
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_API_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_API_ISSUER_ID }}
+        run: |
+          set -e
+          APP="${{ matrix.build_dir }}/bin/mb.app"
+          echo "$NOTARY_KEY_BASE64" | base64 -d > "$RUNNER_TEMP/AuthKey.p8"
+          SUBMISSION_ZIP="$RUNNER_TEMP/mb-notarize.zip"
+          ditto -c -k --keepParent "$APP" "$SUBMISSION_ZIP"
+          xcrun notarytool submit "$SUBMISSION_ZIP" \
+              --key "$RUNNER_TEMP/AuthKey.p8" \
+              --key-id "$NOTARY_KEY_ID" \
+              --issuer "$NOTARY_ISSUER_ID" \
+              --wait
+          xcrun stapler staple "$APP"
+          spctl --assess --type execute --verbose=2 "$APP"
+          rm "$RUNNER_TEMP/AuthKey.p8" "$SUBMISSION_ZIP"
+
+      - name: Clean up keychain
+        if: runner.os == 'macOS' && always() && env.KEYCHAIN_PATH != ''
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Package macOS .app
         if: runner.os == 'macOS'

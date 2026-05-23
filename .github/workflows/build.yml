@@ -31,12 +31,12 @@ jobs:
             artifact_path: build-release/bin/mb.app
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Export GHA cache tokens for vcpkg
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -93,14 +93,14 @@ jobs:
 
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mb-linux-x64
           path: ${{ matrix.build_dir }}/bin/mb-linux-x64.tar.gz
 
       - name: Upload artifact (macOS)
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mb-macos-arm64
           path: ${{ matrix.build_dir }}/bin/mb-macos-arm64.zip
@@ -113,13 +113,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/mb-linux-x64.tar.gz

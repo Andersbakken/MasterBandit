@@ -49,7 +49,11 @@ public:
 
     // Called by MBView / MBWindowDelegate for input events
     void dispatchKey(int key, int scancode, int action, int mods);
-    void dispatchChar(uint32_t codepoint);
+    void dispatchChar(uint32_t codepoint, uint32_t unshiftedCodepoint = 0);
+    // Layout-unshifted (modifier-state=0) codepoint for a physical keycode.
+    // Returns 0 if unavailable. Used by insertText: to compute the
+    // unshifted half of the (codepoint, unshifted) pair.
+    uint32_t unshiftedKeyCodepoint(int keycode) const;
     void dispatchMouseButton(int button, int action, int mods);
     void dispatchCursorPos(double x, double y);
     void dispatchScroll(double dx, double dy);

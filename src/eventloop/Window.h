@@ -111,7 +111,10 @@ public:
     // Input callbacks — set by PlatformDawn before create()
     // key/scancode/action/mods use platform-independent Key/Mod constants (see InputTypes.h)
     std::function<void(int key, int scancode, int action, int mods)> onKey;
-    std::function<void(uint32_t codepoint)> onChar;
+    // codepoint: the text the user typed (shift / dead-key composition / etc. all applied).
+    // unshiftedCodepoint: same key with all modifiers stripped — used as the kitty CSI-u keyCode.
+    // For Shift+A on US: codepoint='A' (0x41), unshiftedCodepoint='a' (0x61). 0 = unavailable.
+    std::function<void(uint32_t codepoint, uint32_t unshiftedCodepoint)> onChar;
     std::function<void(int w, int h)> onFramebufferResize;
     std::function<void(float scaleX, float scaleY)> onContentScale;
     std::function<void(int button, int action, int mods)> onMouseButton;

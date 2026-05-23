@@ -583,6 +583,14 @@ bool XCBWindow::create(int width, int height, const std::string &title)
         return false;
     }
 
+    // Clean state on the same keymap — no modifiers applied. Used for
+    // kitty CSI-u unshifted keyCode. We only sync the layout group on
+    // updates; depressed/latched/locked are kept at zero.
+    xkbCleanState_ = xkb_state_new(xkbKeymap_);
+    if (!xkbCleanState_) {
+        spdlog::warn("XCBWindow: xkb_state_new(clean) failed; unshifted keyCode disabled");
+    }
+
     // Default-rules keymap for kitty `base_layout_key`. Built once from
     // empty xkb_rule_names so XKB resolves to the system default
     // (XKB_DEFAULT_LAYOUT, typically "us"). Failure is non-fatal — we just
@@ -658,6 +666,10 @@ void XCBWindow::destroy()
     if (xkbState_) {
         xkb_state_unref(xkbState_);
         xkbState_ = nullptr;
+    }
+    if (xkbCleanState_) {
+        xkb_state_unref(xkbCleanState_);
+        xkbCleanState_ = nullptr;
     }
     if (xkbKeymap_) {
         xkb_keymap_unref(xkbKeymap_);
@@ -931,6 +943,12 @@ void XCBWindow::processEvents()
                                               xkbEvent->baseGroup,
                                               xkbEvent->latchedGroup,
                                               xkbEvent->lockedGroup);
+                        // Keep the clean state's group in sync — modifiers
+                        // stay at zero so xkb_state_key_get_utf32 reports
+                        // the layout-unshifted codepoint.
+                        if (xkbCleanState_) {
+                            xkb_state_update_mask(xkbCleanState_, 0, 0, 0, xkbEvent->baseGroup, xkbEvent->latchedGroup, xkbEvent->lockedGroup);
+                        }
                     }
                 }
                 break;
@@ -976,7 +994,15 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t *ev, bool isRepeat)
     if (onChar && !(mods & CtrlModifier) && !(mods & MetaModifier)) {
         uint32_t cp = xkb_state_key_get_utf32(xkbState_, keycode);
         if (cp >= 0x20 && cp != 0x7f) {
-            onChar(cp);
+            // Unshifted codepoint from the clean state (no modifiers
+            // applied; layout group tracked). This is the kitty CSI-u
+            // keyCode per spec — Shift+A reports keyCode='a', shifted='A'.
+            // 0 = unavailable (clean state failed to construct).
+            uint32_t unshifted = xkbCleanState_ ? xkb_state_key_get_utf32(xkbCleanState_, keycode) : 0;
+            if (unshifted < 0x20 || unshifted == 0x7f) {
+                unshifted = 0;
+            }
+            onChar(cp, unshifted);
         }
     }
 }

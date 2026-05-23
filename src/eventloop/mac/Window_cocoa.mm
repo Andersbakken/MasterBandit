@@ -363,6 +363,17 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     (void)range;
     NSString* s = [string isKindOfClass:[NSAttributedString class]]
                 ? [(NSAttributedString*)string string] : (NSString*)string;
+    // Look up the unshifted codepoint for the originating keycode via the
+    // current layout. NSApp.currentEvent is the NSEvent that drove this
+    // insertText: (interpretKeyEvents: forwards synchronously for plain
+    // ASCII). Falls back to 0 if unavailable — Keyboard.cpp's encoder
+    // then has to fall back to the shifted codepoint, accepting the bug
+    // we're fixing rather than crashing.
+    NSEvent* current = [NSApp currentEvent];
+    uint32_t unshifted = 0;
+    if (current && current.type == NSEventTypeKeyDown) {
+        unshifted = _cppWindow->unshiftedKeyCodepoint(static_cast<int>(current.keyCode));
+    }
     for (NSUInteger i = 0; i < s.length; ) {
         UTF32Char cp;
         NSRange r = [s rangeOfComposedCharacterSequenceAtIndex:i];
@@ -371,7 +382,7 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
         // Skip C0 and C1 control characters — they are handled by keyDown → dispatchKey
         // (matches GLFW's _glfwInputChar filter)
         if (cp >= 32 && !(cp > 126 && cp < 160))
-            _cppWindow->dispatchChar(static_cast<uint32_t>(cp));
+            _cppWindow->dispatchChar(static_cast<uint32_t>(cp), unshifted);
         i += r.length;
     }
     [_markedText setAttributedString:[[NSAttributedString alloc] init]];
@@ -776,9 +787,35 @@ void CocoaWindow::dispatchKey(int key, int scancode, int action, int mods)
 {
     if (onKey) onKey(key, scancode, action, mods);
 }
-void CocoaWindow::dispatchChar(uint32_t cp)
+void CocoaWindow::dispatchChar(uint32_t cp, uint32_t unshifted)
 {
-    if (onChar) onChar(cp);
+    if (onChar) onChar(cp, unshifted);
+}
+
+uint32_t CocoaWindow::unshiftedKeyCodepoint(int keycode) const
+{
+    // UCKeyTranslate with modifier state = 0 returns the layout-level-0
+    // codepoint — used as the kitty CSI-u keyCode.
+    TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
+    CFDataRef layoutData = static_cast<CFDataRef>(
+        TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+    if (!layoutData) { CFRelease(source); return 0; }
+    const UCKeyboardLayout* layout =
+        reinterpret_cast<const UCKeyboardLayout*>(CFDataGetBytePtr(layoutData));
+    UInt32 deadKeyState = 0;
+    UniChar chars[8];
+    UniCharCount len = 0;
+    UCKeyTranslate(layout, static_cast<UInt16>(keycode),
+                    kUCKeyActionDisplay, 0, LMGetKbdType(),
+                    kUCKeyTranslateNoDeadKeysBit, &deadKeyState, 8, &len, chars);
+    CFRelease(source);
+    if (len == 0) return 0;
+    uint32_t cp = chars[0];
+    if (len >= 2 && (chars[0] & 0xFC00) == 0xD800 && (chars[1] & 0xFC00) == 0xDC00) {
+        cp = 0x10000 + ((static_cast<uint32_t>(chars[0] & 0x03FF) << 10) | (chars[1] & 0x03FF));
+    }
+    if (cp < 0x20 || cp == 0x7f) return 0;
+    return cp;
 }
 void CocoaWindow::dispatchMouseButton(int button, int action, int mods)
 {

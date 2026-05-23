@@ -440,18 +440,20 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
         ? static_cast<uint32_t>(KeyAction_Press)
         : static_cast<uint32_t>(ev.action);
 
-    // Determine key code. Per kitty (key_encoding.c via xkb_glfw.c:949 —
-    // `glfw_ev.key = ... ?: xkb_state_key_get_utf32(...)`) the keycode is
-    // the *current layout's* codepoint for the keystroke, not the physical
-    // PC-101 position. So when text is available it wins over the
-    // `Key_A → 'a'` shortcut: a Russian-layout user pressing the physical
-    // A key produces text="ф" (U+0444), which becomes keyCode=1092. The
-    // base_layout_key field carries 'a' separately.
+    // Determine key code. Per kitty (xkb_glfw.c:881-889), the keyCode is
+    // the *unshifted* codepoint from the current layout — Shift+A reports
+    // keyCode='a', not 'A'. The shifted variant goes in ev.shiftedKey
+    // (emitted only when REPORT_ALTERNATE_KEYS is set). ev.unshiftedKey
+    // is populated by the platform layer (Window_xcb.cpp / Window_cocoa.mm)
+    // from the layout's level-0 codepoint; falling back to ev.text covers
+    // legacy paths and tests that didn't set it.
     uint32_t funcCode = kittyFunctionalCode(ev.key);
     uint32_t keyCode  = 0;
 
     if (funcCode != 0) {
         keyCode = funcCode;
+    } else if (ev.unshiftedKey != 0) {
+        keyCode = ev.unshiftedKey;
     } else if (!ev.text.empty()) {
         int consumed = 0;
         keyCode      = utf8::decode(ev.text.c_str(), static_cast<int>(ev.text.size()), consumed);
@@ -529,8 +531,17 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
                     }
                 }
             }
+        } else if (kittyMods == 1 && eventType == 1 && !ev.text.empty() && !reportAlternate) {
+            // Shift-alone + press on a printable text key, no alternate-key
+            // reporting. Per kitty (key_encoding.c:306-315) DISAMBIGUATE
+            // alone does NOT route bare shift through CSI-u — it emits
+            // the shifted text directly ('A' for Shift+a). When
+            // REPORT_ALTERNATE_KEYS is also set, kitty does emit CSI-u
+            // so the `:shifted_key` field can be conveyed; that case
+            // falls through to the next branch.
+            return ev.text;
         } else if (kittyMods != 0 || eventType != 1) {
-            // Text key with modifiers or non-press event
+            // Text key with modifiers other than bare shift, or a non-press event
             useCsiU = true;
         } else {
             // Plain text key, no modifiers, press: send as text

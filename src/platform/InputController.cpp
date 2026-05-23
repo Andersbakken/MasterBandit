@@ -392,7 +392,7 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     }
 }
 
-void InputController::onChar(uint32_t codepoint)
+void InputController::onChar(uint32_t codepoint, uint32_t unshiftedCodepoint)
 {
     std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
     TerminalEmulator *term = static_cast<TerminalEmulator *>(platform_->activeTerm());
@@ -400,7 +400,7 @@ void InputController::onChar(uint32_t codepoint)
         return;
     }
 
-    spdlog::debug("onChar: codepoint=U+{:04X} controlPressed={}", codepoint, controlPressed_);
+    spdlog::debug("onChar: codepoint=U+{:04X} unshifted=U+{:04X} controlPressed={}", codepoint, unshiftedCodepoint, controlPressed_);
     term->resetViewport();
     if (platform_->animScheduler_) {
         platform_->animScheduler_->resetBlink();
@@ -428,11 +428,19 @@ void InputController::onChar(uint32_t codepoint)
     }
 
     KeyEvent ev;
-    ev.key       = Key_unknown;
-    ev.text      = codepointToUtf8(codepoint);
+    ev.key          = Key_unknown;
+    ev.text         = codepointToUtf8(codepoint);
+    ev.unshiftedKey = unshiftedCodepoint;
+    // shiftedKey is the codepoint with shift applied. The OS-composed
+    // codepoint IS the shifted variant when shift is held and it differs
+    // from the unshifted form. Populate so REPORT_ALTERNATE_KEYS emits
+    // the `keycode:shifted_key` form for non-functional keys.
+    if ((lastMods_ & ShiftModifier) && unshiftedCodepoint != 0 && codepoint != unshiftedCodepoint) {
+        ev.shiftedKey = codepoint;
+    }
     ev.modifiers = lastMods_;
     ev.action    = KeyAction_Press;
-    spdlog::debug("onChar: sending text='{}' ({} bytes)", ev.text, ev.text.size());
+    spdlog::debug("onChar: sending text='{}' ({} bytes) unshifted=U+{:04X}", ev.text, ev.text.size(), unshiftedCodepoint);
     ev.count      = 1;
     ev.autoRepeat = false;
     term->keyPressEvent(&ev);

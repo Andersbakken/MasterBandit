@@ -225,13 +225,15 @@ struct TestTerminal
                  KeyAction action        = KeyAction_Press,
                  const std::string &text = "",
                  uint32_t shiftedKey     = 0,
-                 uint32_t baseLayoutKey  = 0)
+                 uint32_t baseLayoutKey  = 0,
+                 uint32_t unshiftedKey   = 0)
     {
         KeyEvent ev;
         ev.key           = key;
         ev.modifiers     = mods;
         ev.action        = action;
         ev.text          = text;
+        ev.unshiftedKey  = unshiftedKey;
         ev.shiftedKey    = shiftedKey;
         ev.baseLayoutKey = baseLayoutKey;
         ev.count         = 1;

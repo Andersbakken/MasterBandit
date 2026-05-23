@@ -43,7 +43,7 @@ public:
 
     // Raw input handlers (called from Window callbacks in PlatformDawn).
     void onKey(int key, int scancode, int action, int mods);
-    void onChar(uint32_t codepoint);
+    void onChar(uint32_t codepoint, uint32_t unshiftedCodepoint = 0);
     void onMouseButton(int button, int action, int mods);
     void onCursorPos(double x, double y);
 

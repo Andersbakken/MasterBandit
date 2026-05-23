@@ -1116,3 +1116,71 @@ TEST_CASE("kitty: without report_alternate_key suppresses base_layout_key")
     t.term.keyPressEvent(&ev);
     CHECK(t.output() == "\x1b[1092;5u"); // no alternates field
 }
+
+// === unshifted keyCode under shift (the bug "shift doesn't produce
+// uppercase in apps that gate on the unshifted CSI-u keycode") ===
+
+TEST_CASE("kitty: disambiguate shift+A sends raw text (kitty parity)")
+{
+    TestTerminal t;
+    t.csi(">1u"); // DISAMBIGUATE only — no REPORT_ALTERNATE_KEYS
+    t.clearOutput();
+    // Per kitty key_encoding.c:306-315, bare-shift-plus-printable under
+    // DISAMBIGUATE emits the shifted text directly, not CSI-u. Production
+    // path: ev.text="A", ev.unshiftedKey='a'. Output: "A".
+    t.sendKey(Key_unknown, ShiftModifier, KeyAction_Press, "A", /*shifted=*/0, /*base=*/0, /*unshifted=*/97);
+    CHECK(t.output() == "A");
+}
+
+TEST_CASE("kitty: disambiguate shift+1 sends raw text on US layout")
+{
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    // Shift+1 → '!' on US English. ev.text="!", ev.unshiftedKey='1'.
+    // Output: "!".
+    t.sendKey(Key_unknown, ShiftModifier, KeyAction_Press, "!", 0, 0, /*unshifted=*/49);
+    CHECK(t.output() == "!");
+}
+
+TEST_CASE("kitty: disambiguate ctrl+shift+a still uses CSI u")
+{
+    TestTerminal t;
+    t.csi(">1u");
+    t.clearOutput();
+    // Ctrl+Shift+a — Ctrl is the gate that promotes to CSI-u even when
+    // shift is also held. mods = ShiftModifier | CtrlModifier → kittyMods=5,
+    // wireMods=6. unshifted='a'=97.
+    t.sendKey(Key_unknown, ShiftModifier | CtrlModifier, KeyAction_Press, "", 0, 0, /*unshifted=*/97);
+    CHECK(t.output() == "\x1b[97;6u");
+}
+
+TEST_CASE("kitty: report_alternate_key shift+A emits keycode:shifted_key")
+{
+    TestTerminal t;
+    t.csi(">5u"); // DISAMBIGUATE | REPORT_ALTERNATE_KEYS
+    t.clearOutput();
+    // Synthesize what InputController::onChar would produce when shift
+    // is held: ev.shiftedKey = 'A' (since codepoint != unshifted under shift).
+    KeyEvent ev;
+    ev.key          = Key_unknown;
+    ev.modifiers    = ShiftModifier;
+    ev.action       = KeyAction_Press;
+    ev.text         = "A";
+    ev.unshiftedKey = 97;
+    ev.shiftedKey   = 65;
+    ev.count        = 1;
+    t.term.keyPressEvent(&ev);
+    CHECK(t.output() == "\x1b[97:65;2u");
+}
+
+TEST_CASE("kitty: legacy mode (no flags) shift+A still sends raw text")
+{
+    TestTerminal t;
+    // No kitty flags pushed — encoder falls through "no flags" branch and
+    // returns ev.text unchanged. The user-visible character ('A') is what
+    // the shell should see.
+    t.clearOutput();
+    t.sendKey(Key_unknown, ShiftModifier, KeyAction_Press, "A", 0, 0, 97);
+    CHECK(t.output() == "A");
+}

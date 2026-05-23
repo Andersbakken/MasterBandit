@@ -105,6 +105,14 @@ private:
     xkb_keymap *xkbDefaultKeymap_ = nullptr;
     xkb_state *xkbDefaultState_   = nullptr;
 
+    // Clean state on the *current* keymap: layout group tracked, but no
+    // modifiers depressed/latched/locked. Used to read the unshifted /
+    // un-modified codepoint for a keycode, which is the kitty CSI-u
+    // keyCode (per kitty's `clean_state`, xkb_glfw.c:881). Without this,
+    // Shift+A would emit keyCode=65 ('A') instead of 97 ('a'), and apps
+    // gating on the unshifted codepoint drop the keystroke.
+    xkb_state *xkbCleanState_ = nullptr;
+
     // XKB mod indices (for mapping X11 ev->state to xkb mod mask)
     struct
     {

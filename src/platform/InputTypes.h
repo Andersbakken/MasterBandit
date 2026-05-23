@@ -719,6 +719,7 @@ struct KeyEvent
 {
     Key key { Key_unknown };
     std::string text;
+    uint32_t unshiftedKey { 0 };  // Current-layout codepoint at level 0 — primary keyCode for kitty CSI-u encoding. Shift+A on US has unshiftedKey='a' (97); ev.text="A" carries the user-visible variant for legacy mode.
     uint32_t shiftedKey { 0 };    // Kitty protocol: Unicode codepoint of shifted variant (e.g. 'C' for 'c') in the *current* layout
     uint32_t baseLayoutKey { 0 }; // Kitty protocol "alternate_key" / spec "base_layout_key": codepoint in the system default (typically US ANSI) layout. Used by non-US users to match physical-key shortcuts.
     size_t count { 1 };

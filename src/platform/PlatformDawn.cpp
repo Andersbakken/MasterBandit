@@ -936,9 +936,9 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
             {
                 inputController_->onKey(key, scancode, action, mods);
             };
-            window_->onChar = [this](uint32_t cp)
+            window_->onChar = [this](uint32_t cp, uint32_t unshifted)
             {
-                inputController_->onChar(cp);
+                inputController_->onChar(cp, unshifted);
             };
             window_->onFramebufferResize = [this](int w, int h)
             {

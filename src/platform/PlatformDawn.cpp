@@ -454,9 +454,9 @@ void buildBarCells(TabBarRender &bar, const RenderFrameState &fs, float charWidt
         // transitions cleanly from the empty slot into the next tab. The real
         // dragged-tab content (with drag colors) is captured into
         // bar.draggedFloatCells for the second renderToPane dispatch.
-        uint32_t slotBg = isDrag ? fs.tbBgColor : ti.bgColor;
-        uint32_t slotFg = isDrag ? fs.tbBgColor : ti.fgColor;
-        int startCol    = col;
+        uint32_t slotBg   = isDrag ? fs.tbBgColor : ti.bgColor;
+        uint32_t slotFg   = isDrag ? fs.tbBgColor : ti.fgColor;
+        int startCol      = col;
         if (isDrag) {
             // Left edge of the float: SEP_RIGHT with colors inverted so the
             // triangle is bar-bg-colored over a tab-bg cell, carving the
@@ -493,9 +493,9 @@ void buildBarCells(TabBarRender &bar, const RenderFrameState &fs, float charWidt
             // slot's right edge (placeCell below) uses slotBg → nextBg so
             // it slants out of the now-empty slot, independent of this.
             TabBarCell sepFc;
-            sepFc.ch             = SEP_RIGHT;
-            sepFc.fgColor        = ti.bgColor;
-            sepFc.bgColor        = fs.tbBgColor;
+            sepFc.ch      = SEP_RIGHT;
+            sepFc.fgColor = ti.bgColor;
+            sepFc.bgColor = fs.tbBgColor;
             bar.draggedFloatCells.push_back(std::move(sepFc));
             bar.draggedFloatCols = static_cast<int>(bar.draggedFloatCells.size());
         }
@@ -1028,7 +1028,7 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
                     }
                 }
                 if (targetPopup) {
-                    if (targetPopup->mouseReportingActive()) {
+                    if (targetPopup->wheelEmissionActive()) {
                         MouseEvent mev;
                         mev.x         = popupRelCol;
                         mev.y         = popupRelRow;
@@ -1061,7 +1061,7 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
                     int emRelCol = 0, emRelRow = 0, emRelPx = 0, emRelPy = 0;
                     if (hp->liveSegmentHitTest(relX, relY, static_cast<float>(charWidth_), lineHeight_, hitLineId, emRelCol, emRelRow, emRelPx, emRelPy)) {
                         if (Terminal *em = hp->findEmbedded(hitLineId)) {
-                            if (em->mouseReportingActive()) {
+                            if (em->wheelEmissionActive()) {
                                 MouseEvent mev;
                                 mev.x         = emRelCol;
                                 mev.y         = emRelRow;
@@ -1104,7 +1104,7 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
                     delta);
                 scriptEngine_.executePendingJobs();
 
-                if (hp->mouseReportingActive()) {
+                if (hp->wheelEmissionActive()) {
                     MouseEvent mev;
                     mev.x         = cellCol;
                     mev.y         = cellRow;

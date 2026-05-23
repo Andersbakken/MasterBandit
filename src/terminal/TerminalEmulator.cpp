@@ -2365,6 +2365,34 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                 }
             }
             break;
+        case 'w': {
+            // Selective Mouse Reporting — see SELECTIVE-MOUSE-REPORTING.md.
+            //   CSI = <bmask> ; <emask> w  — set masks
+            //   CSI ? w                    — query; reply with current masks
+            if (isEquals) {
+                uint16_t bmask = 0;
+                uint8_t emask  = 0;
+                if (len > 3) {
+                    char *end;
+                    unsigned long b = parseUL(buf + 2, &end);
+                    bmask           = static_cast<uint16_t>(b & 0x07FFu); // 11 defined bits
+                    if (*end == ';') {
+                        unsigned long e = parseUL(end + 1, &end);
+                        emask           = static_cast<uint8_t>(e & 0x0Fu); // 4 defined bits
+                    }
+                }
+                mState->selMouseButtonMask = bmask;
+                mState->selMouseEventMask  = emask;
+                syncMouseReportingAtomic();
+            } else if (isPrivate && len == 3) {
+                char response[32];
+                int rlen = snprintf(response, sizeof(response), "\x1b[?%u;%u w", static_cast<unsigned>(mState->selMouseButtonMask), static_cast<unsigned>(mState->selMouseEventMask));
+                writeToOutput(response, rlen);
+            } else {
+                sLog().warn("Ignoring CSI w variant: {}", toPrintable(buf, len));
+            }
+            break;
+        }
         case 'x': {
             // CSI Ps x with no intermediate is DECREQTPARM (Request Terminal Parameters).
             // With an intermediate ($, *, ' ...) it is a different command (DECFRA/DECSACE/etc).
@@ -2499,6 +2527,8 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                 mState->mouseMode1003      = preserved.mouseMode1003;
                 mState->mouseMode1006      = preserved.mouseMode1006;
                 mState->mouseMode1016      = preserved.mouseMode1016;
+                mState->selMouseButtonMask = preserved.selMouseButtonMask;
+                mState->selMouseEventMask  = preserved.selMouseEventMask;
                 mState->focusReporting     = preserved.focusReporting;
                 mState->bracketedPaste     = preserved.bracketedPaste;
                 mBracketedPasteAtomic.store(preserved.bracketedPaste, std::memory_order_release);
@@ -2909,6 +2939,8 @@ void TerminalEmulator::onAction(const Action *action)
                     mAltState.mouseMode1003            = mMainState.mouseMode1003;
                     mAltState.mouseMode1006            = mMainState.mouseMode1006;
                     mAltState.mouseMode1016            = mMainState.mouseMode1016;
+                    mAltState.selMouseButtonMask       = mMainState.selMouseButtonMask;
+                    mAltState.selMouseEventMask        = mMainState.selMouseEventMask;
                     mAltState.focusReporting           = mMainState.focusReporting;
                     mAltState.bracketedPaste           = mMainState.bracketedPaste;
                     mAltState.syncOutput               = mMainState.syncOutput;

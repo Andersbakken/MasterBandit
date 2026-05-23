@@ -1175,3 +1175,285 @@ TEST_CASE("DECRQM reports mode 6 state")
     t.csi("?6$p");
     CHECK(t.output() == "\x1b[?6;1$y"); // set
 }
+
+// ── Selective Mouse Reporting (CSI = w) ───────────────────────────────────────
+// See SELECTIVE-MOUSE-REPORTING.md.
+
+// Bit layout shorthands. Button: 0x1=L, 0x2=M, 0x4=R, 0x8=WheelU, 0x10=WheelD.
+// Event: 0x1=Press, 0x2=Release, 0x4=Motion, 0x8=Drag.
+
+TEST_CASE("CSI = w sets masks; CSI ? w reports them")
+{
+    TestTerminal t;
+    t.clearOutput();
+    t.csi("?w"); // query before any set: both zero
+    CHECK(t.output() == "\x1b[?0;0 w");
+
+    t.csi("=24;1w"); // wheel up + wheel down, press only
+    t.clearOutput();
+    t.csi("?w");
+    CHECK(t.output() == "\x1b[?24;1 w");
+}
+
+TEST_CASE("CSI = w with missing second param defaults to 0")
+{
+    TestTerminal t;
+    t.csi("=7w"); // only bmask, no emask
+    t.clearOutput();
+    t.csi("?w");
+    CHECK(t.output() == "\x1b[?7;0 w");
+}
+
+TEST_CASE("CSI = 0;0 w disables selective reporting")
+{
+    TestTerminal t;
+    t.csi("=24;1w");
+    REQUIRE(t.term.selectiveMouseActive());
+    t.csi("=0;0w");
+    CHECK_FALSE(t.term.selectiveMouseActive());
+}
+
+TEST_CASE("selectiveMouseActive requires both masks non-zero")
+{
+    TestTerminal t;
+    t.csi("=24;0w"); // buttons set, no events
+    CHECK_FALSE(t.term.selectiveMouseActive());
+    t.csi("=0;1w"); // events set, no buttons
+    CHECK_FALSE(t.term.selectiveMouseActive());
+    t.csi("=24;1w");
+    CHECK(t.term.selectiveMouseActive());
+}
+
+TEST_CASE("selective wheel emits SGR press; click emits nothing")
+{
+    TestTerminal t;
+    t.csi("=24;1w"); // wheel up + wheel down, press
+
+    MouseEvent ev {};
+    ev.x      = 4;
+    ev.y      = 2;
+    ev.pixelX = 40;
+    ev.pixelY = 30;
+
+    // Wheel up: code 64, press → "\x1b[<64;5;3M"
+    ev.button = WheelUp;
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    CHECK(t.output() == "\x1b[<64;5;3M");
+
+    // Wheel down: code 65
+    ev.button = WheelDown;
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    CHECK(t.output() == "\x1b[<65;5;3M");
+
+    // Left click: not masked in → no output
+    ev.button = LeftButton;
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    CHECK(t.output() == "");
+}
+
+TEST_CASE("selective press+release for left button")
+{
+    TestTerminal t;
+    t.csi("=1;3w"); // left button, press+release
+
+    MouseEvent press {};
+    press.x       = 0;
+    press.y       = 0;
+    press.button  = LeftButton;
+    press.buttons = LeftButton;
+    t.clearOutput();
+    t.term.mousePressEvent(&press);
+    CHECK(t.output() == "\x1b[<0;1;1M");
+
+    MouseEvent release {};
+    release.x      = 0;
+    release.y      = 0;
+    release.button = LeftButton;
+    t.clearOutput();
+    t.term.mouseReleaseEvent(&release);
+    CHECK(t.output() == "\x1b[<0;1;1m");
+}
+
+TEST_CASE("selective release bit can be off independently")
+{
+    TestTerminal t;
+    t.csi("=1;1w"); // left button, press only (no release)
+
+    MouseEvent press {};
+    press.button  = LeftButton;
+    press.buttons = LeftButton;
+    t.clearOutput();
+    t.term.mousePressEvent(&press);
+    CHECK(t.output() == "\x1b[<0;1;1M"); // press fired
+
+    MouseEvent release {};
+    release.button = LeftButton;
+    t.clearOutput();
+    t.term.mouseReleaseEvent(&release);
+    CHECK(t.output() == ""); // release suppressed
+}
+
+TEST_CASE("legacy ?1000 takes precedence over selective masks")
+{
+    TestTerminal t;
+    t.csi("=24;1w"); // wheel up + wheel down
+    t.csi("?1000h"); // legacy on
+    REQUIRE(t.term.mouseReportingActive());
+    CHECK_FALSE(t.term.selectiveMouseActive());
+
+    // With legacy on, a left click should now report (legacy reports all
+    // buttons regardless of selective mask).
+    MouseEvent ev {};
+    ev.x      = 0;
+    ev.y      = 0;
+    ev.button = LeftButton;
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    // Legacy without 1006 emits X10 format.
+    REQUIRE(t.output().size() == 6);
+    CHECK(t.output().substr(0, 3) == std::string("\x1b[M", 3));
+
+    // Disable legacy → selective takes over.
+    t.csi("?1000l");
+    CHECK(t.term.selectiveMouseActive());
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    CHECK(t.output() == ""); // left button no longer masked in
+}
+
+TEST_CASE("DECRQM does not recognize 8077 or any selective-mode number")
+{
+    TestTerminal t;
+    // The protocol intentionally does not register a DECSET mode, so DECRQM
+    // must return 0 (unrecognized) for the slot.
+    CHECK(queryMode(t, 8077) == 0);
+}
+
+TEST_CASE("RIS clears selective masks")
+{
+    TestTerminal t;
+    t.csi("=24;1w");
+    REQUIRE(t.term.selectiveMouseActive());
+    t.esc("c"); // RIS
+    CHECK_FALSE(t.term.selectiveMouseActive());
+    t.clearOutput();
+    t.csi("?w");
+    CHECK(t.output() == "\x1b[?0;0 w");
+}
+
+TEST_CASE("DECSTR preserves selective masks")
+{
+    TestTerminal t;
+    t.csi("=24;1w");
+    REQUIRE(t.term.selectiveMouseActive());
+    t.csi("!p"); // DECSTR
+    CHECK(t.term.selectiveMouseActive());
+    t.clearOutput();
+    t.csi("?w");
+    CHECK(t.output() == "\x1b[?24;1 w");
+}
+
+TEST_CASE("alt-screen inherits selective masks from main")
+{
+    TestTerminal t;
+    t.csi("=24;1w");
+    t.csi("?1049h"); // enter alt
+    CHECK(t.term.selectiveMouseActive());
+    t.clearOutput();
+    t.csi("?w");
+    CHECK(t.output() == "\x1b[?24;1 w");
+}
+
+TEST_CASE("alt-screen mask changes don't leak back to main")
+{
+    TestTerminal t;
+    t.csi("=24;1w");
+    t.csi("?1049h");
+    t.csi("=1;3w");  // change on alt
+    t.csi("?1049l"); // back to main
+    t.clearOutput();
+    t.csi("?w");
+    CHECK(t.output() == "\x1b[?24;1 w");
+}
+
+TEST_CASE("shift bypasses selective reporting (native selection)")
+{
+    TestTerminal t;
+    t.csi("=24;1w");
+    MouseEvent ev {};
+    ev.button    = WheelUp;
+    ev.modifiers = ShiftModifier;
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    CHECK(t.output() == ""); // shift overrode reporting
+}
+
+TEST_CASE("malformed CSI w sequences are no-ops")
+{
+    TestTerminal t;
+    t.csi("=24;1w"); // baseline
+    REQUIRE(t.term.selectiveMouseActive());
+
+    // CSI w (no params, no intermediate) — warned and ignored
+    t.csi("w");
+    CHECK(t.term.selectiveMouseActive()); // unchanged
+    t.clearOutput();
+    t.csi("?w");
+    CHECK(t.output() == "\x1b[?24;1 w");
+
+    // CSI > w (wrong intermediate)
+    t.csi(">w");
+    CHECK(t.term.selectiveMouseActive());
+
+    // CSI < w (wrong intermediate)
+    t.csi("<w");
+    CHECK(t.term.selectiveMouseActive());
+}
+
+TEST_CASE("hydra wheel-only example")
+{
+    // From SELECTIVE-MOUSE-REPORTING.md: button_mask=0x18, event_mask=0x1.
+    TestTerminal t;
+    t.csi("=24;1w");
+
+    MouseEvent ev {};
+    ev.x      = 10;
+    ev.y      = 5;
+    ev.button = WheelUp;
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    CHECK(t.output() == "\x1b[<64;11;6M");
+
+    // Other buttons fall through to terminal selection.
+    ev.button = RightButton;
+    t.clearOutput();
+    t.term.mousePressEvent(&ev);
+    CHECK(t.output() == "");
+}
+
+TEST_CASE("wheelEmissionActive: legacy mouse, no selective")
+{
+    TestTerminal t;
+    CHECK_FALSE(t.term.wheelEmissionActive());
+    t.csi("?1000h");
+    CHECK(t.term.wheelEmissionActive());
+    t.csi("?1000l");
+    CHECK_FALSE(t.term.wheelEmissionActive());
+}
+
+TEST_CASE("wheelEmissionActive: selective only fires when wheel+press bits set")
+{
+    TestTerminal t;
+    // Left-button only, press only: wheel NOT in mask
+    t.csi("=1;1w");
+    CHECK_FALSE(t.term.wheelEmissionActive());
+    // Add wheel up
+    t.csi("=9;1w");
+    CHECK(t.term.wheelEmissionActive());
+    // Wheel up but no press bit
+    t.csi("=8;2w");
+    CHECK_FALSE(t.term.wheelEmissionActive());
+}

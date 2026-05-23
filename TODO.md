@@ -38,6 +38,7 @@
 - [x] REP (`CSI b`) — Repeat preceding character N times.
 - [x] Mode 2026 — Synchronized output. Defers rendering while active so intermediate states aren't shown.
 - [x] DECRQSS (`DCS $ q ... ST`) — Query current terminal state. Supports `" q"` (cursor shape), `m` (current SGR), `r` (scroll margins / DECSTBM). Used by Vim/Neovim to restore cursor shape on exit.
+- [x] Selective Mouse Reporting (`CSI = w` / `CSI ? w`) — Per-button + per-event-type mouse filter. App declares a 16-bit button mask (left/mid/right/wheel-V/wheel-H/buttons 8-11) and a 4-bit event mask (press/release/motion/drag); the terminal forwards only events that match both, otherwise handles them natively (selection, scrollback). Legacy ?1000/?1002/?1003 take precedence when any is set. Per-screen state, RIS clears, DECSTR preserves, alt-screen inherits from main. Feature-detect via `CSI ? w` + DA1 barrier. Spec: SELECTIVE-MOUSE-REPORTING.md.
 - [ ] Color stack (OSC 30001/30101) — Push/pop entire color state. Apps can safely change colors and restore.
 - [ ] Sixel graphics — DEC-era raster image protocol. Broad legacy tool support.
 - [x] Cursor blink (`CSI ? 12 h/l`) — Toggle cursor blinking. ATT610 mode 12 set/reset wired to `cursorBlinkEnabled` in SetMode/ResetMode.

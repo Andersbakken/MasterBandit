@@ -224,6 +224,9 @@ public:
         bool mouseMode1003 { false };
         bool mouseMode1006 { false };
         bool mouseMode1016 { false }; // SGR-Pixel
+        // Selective Mouse Reporting (CSI = w). See SELECTIVE-MOUSE-REPORTING.md.
+        uint16_t selMouseButtonMask { 0 };
+        uint8_t selMouseEventMask { 0 };
     };
 
     int cursorX() const { return mState->cursorX; }
@@ -240,7 +243,7 @@ public:
     std::string currentPointerShape() const
     {
         const auto &s = mUsingAltScreen ? mPointerShapeStackAlt : mPointerShapeStackMain;
-        return s.empty() ? std::string { } : s.back();
+        return s.empty() ? std::string {} : s.back();
     }
 
     // True if `name` is a CSS pointer name we recognise (or a kitty/X11 alias).
@@ -481,6 +484,18 @@ public:
     // directly under mMutex.
     bool mouseReportingActive() const { return mMouseReportingActiveAtomic.load(std::memory_order_acquire); }
 
+    // True when CSI = w state would cause an event to be reported for *some*
+    // (button, event) pair. Legacy ?1000/?1002/?1003 take precedence: this
+    // returns false while any of them is set, even if the selective masks
+    // are non-zero. See SELECTIVE-MOUSE-REPORTING.md.
+    bool selectiveMouseActive() const { return mSelectiveMouseActiveAtomic.load(std::memory_order_acquire); }
+
+    // True when a wheel-up or wheel-down notch would be emitted to the PTY.
+    // Used by the platform layer's wheel router to decide whether to forward
+    // to mousePressEvent (and suppress scrollback) or fall through to native
+    // scrollback. Same race shape as mMouseReportingActiveAtomic.
+    bool wheelEmissionActive() const { return mWheelEmissionActiveAtomic.load(std::memory_order_acquire); }
+
     // Pull-model title/icon: returns the top of the XTWINOPS stack, or
     // nullopt when the stack is empty (no OSC 0/2 has set one, or it's been
     // fully popped away). Push duplicates the current top and is a no-op on
@@ -652,7 +667,7 @@ public:
     // User decoration (system kinds untouched). Returns count removed.
     // `cancelledAnimHandlesOut` aggregates handleIds across every removed
     // decoration (same semantics as removeDecoration).
-    size_t clearUserDecorations(std::string_view tag                           = { },
+    size_t clearUserDecorations(std::string_view tag                           = {},
                                 std::vector<uint64_t> *cancelledAnimHandlesOut = nullptr);
 
     // Apply a queued sequence of Add / Clear ops atomically: one mMutex
@@ -891,13 +906,13 @@ public:
         int rows        = 0;
     };
 
-    virtual void collectEmbeddedAnchors(std::vector<EmbeddedAnchor> & /*out*/) const { }
+    virtual void collectEmbeddedAnchors(std::vector<EmbeddedAnchor> & /*out*/) const {}
 
     // Called from RIS (full reset) before scrollback / line ids are wiped, so
     // subclasses can hand off document-anchored children (embedded terminals
     // on Terminal) for orderly teardown. Default no-op. Called under the
     // terminal mutex.
-    virtual void onFullReset() { }
+    virtual void onFullReset() {}
 
     // Push enough rows from the top of the document into history so that the
     // cursor sits at or above viewport row `viewportRows - 1 - rowsBelow`,
@@ -939,7 +954,7 @@ public:
     void color256ToRGB(int idx, uint8_t &r, uint8_t &g, uint8_t &b) const;
 
 protected:
-    virtual void writeToOutput(const char *data, size_t len) { }
+    virtual void writeToOutput(const char *data, size_t len) {}
 
     // Reads the shadow atomic so main-thread callers (Terminal::pasteText)
     // don't race with the parse worker mutating mState->bracketedPaste
@@ -1063,10 +1078,24 @@ private:
     // path one atomic load — input is the hot path here.
     std::atomic<bool> mMouseReportingActiveAtomic { false };
 
+    // Shadow of selectiveMouseActive(): true when no legacy mouse mode is
+    // set and either selective mask is non-zero. Same race shape as
+    // mMouseReportingActiveAtomic.
+    std::atomic<bool> mSelectiveMouseActiveAtomic { false };
+
+    // Shadow of wheelEmissionActive(): true when *any* path would emit a
+    // wheel event — legacy or selective-with-wheel-bits-press-set.
+    std::atomic<bool> mWheelEmissionActiveAtomic { false };
+
     void syncMouseReportingAtomic()
     {
-        const bool v = mState->mouseMode1000 || mState->mouseMode1002 || mState->mouseMode1003;
-        mMouseReportingActiveAtomic.store(v, std::memory_order_release);
+        const bool legacy = mState->mouseMode1000 || mState->mouseMode1002 || mState->mouseMode1003;
+        mMouseReportingActiveAtomic.store(legacy, std::memory_order_release);
+        const bool selective = !legacy && (mState->selMouseButtonMask != 0) && (mState->selMouseEventMask != 0);
+        mSelectiveMouseActiveAtomic.store(selective, std::memory_order_release);
+        // Wheel-up bit 0x0008, wheel-down bit 0x0010; press bit 0x1.
+        const bool wheelSel = selective && (mState->selMouseButtonMask & 0x0018) && (mState->selMouseEventMask & 0x1);
+        mWheelEmissionActiveAtomic.store(legacy || wheelSel, std::memory_order_release);
     }
 
     // Integer row-count viewport anchor. `scrollUpInRegion` compensates by
@@ -1291,7 +1320,9 @@ private:
 
     // Mouse reporting
     void sendMouseEvent(int button, bool press, bool motion, int cx, int cy, uint32_t modifiers);
-    void sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers);
+    // forceSgr=true overrides the X10 fallback when ?1006 is not set. Used by
+    // Selective Mouse Reporting, which is defined to emit SGR regardless.
+    void sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers, bool forceSgr = false);
 
     int mMouseButtonDown { -1 };
     int mLastMouseX { -1 }, mLastMouseY { -1 };
@@ -1313,8 +1344,8 @@ private:
     // Kitty keyboard protocol
     static constexpr int KITTY_STACK_MAX = 8;
     uint8_t mKittyFlags { 0 };
-    uint8_t mKittyStackMain[KITTY_STACK_MAX] { };
-    uint8_t mKittyStackAlt[KITTY_STACK_MAX] { };
+    uint8_t mKittyStackMain[KITTY_STACK_MAX] {};
+    uint8_t mKittyStackAlt[KITTY_STACK_MAX] {};
     int mKittyStackDepthMain { 0 };
     int mKittyStackDepthAlt { 0 };
 

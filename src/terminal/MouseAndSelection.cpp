@@ -27,7 +27,7 @@ void TerminalEmulator::sendMouseEvent(int button, bool press, bool motion, int c
     sendMouseEventPixel(button, press, motion, cx, cy, -1, -1, modifiers);
 }
 
-void TerminalEmulator::sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers)
+void TerminalEmulator::sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers, bool forceSgr)
 {
     // Encode modifier bits into button code
     int cb = button;
@@ -49,7 +49,7 @@ void TerminalEmulator::sendMouseEventPixel(int button, bool press, bool motion, 
         char buf[64];
         int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", cb, px + 1, py + 1, press ? 'M' : 'm');
         writeToOutput(buf, n);
-    } else if (mState->mouseMode1006) {
+    } else if (mState->mouseMode1006 || forceSgr) {
         // SGR format: \x1b[<Cb;Cx;CyM (press) or m (release)
         // 1-based cell coordinates
         char buf[64];
@@ -85,6 +85,20 @@ static int buttonToCode(Button button)
     }
 }
 
+// Selective Mouse Reporting bit for a platform Button. Returns 0 for
+// buttons that have no selective-mask slot. See SELECTIVE-MOUSE-REPORTING.md.
+static uint16_t selectiveButtonBit(Button button)
+{
+    switch (button) {
+        case LeftButton: return 0x0001;
+        case MidButton: return 0x0002;
+        case RightButton: return 0x0004;
+        case WheelUp: return 0x0008;
+        case WheelDown: return 0x0010;
+        default: return 0;
+    }
+}
+
 void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
@@ -101,6 +115,24 @@ void TerminalEmulator::mousePressEvent(const MouseEvent *ev)
         }
         sendMouseEventPixel(btn, true, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         return;
+    }
+
+    // Selective Mouse Reporting (CSI = w). Legacy mouse modes win above; this
+    // branch only runs when none of ?1000/?1002/?1003 is set.
+    if (!forceSelect && selectiveMouseActive()) {
+        uint16_t bbit = selectiveButtonBit(ev->button);
+        if (bbit && (mState->selMouseButtonMask & bbit) && (mState->selMouseEventMask & 0x1)) {
+            int btn      = buttonToCode(ev->button);
+            bool isWheel = (ev->button == WheelUp || ev->button == WheelDown);
+            if (!isWheel) {
+                mMouseButtonDown = btn;
+                mLastMouseX      = ev->x;
+                mLastMouseY      = ev->y;
+            }
+            sendMouseEventPixel(btn, true, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers, true);
+            return;
+        }
+        // Button isn't masked in — fall through to native selection.
     }
 
     // Arm pending selection — actual selection starts only when the mouse moves
@@ -144,6 +176,22 @@ void TerminalEmulator::mouseReleaseEvent(const MouseEvent *ev)
         mMouseButtonDown = -1;
         mLastMouseX      = -1;
         mLastMouseY      = -1;
+        return;
+    }
+
+    // Selective Mouse Reporting release path. mMouseButtonDown was set in
+    // the corresponding mousePressEvent branch above; if it's not set the
+    // press wasn't reported and there's nothing to release.
+    if (selectiveMouseActive() && mMouseButtonDown >= 0) {
+        uint16_t bbit = selectiveButtonBit(ev->button);
+        if (bbit && (mState->selMouseButtonMask & bbit) && (mState->selMouseEventMask & 0x2)) {
+            int btn = buttonToCode(ev->button);
+            // Selective always emits SGR; 1016 still selects pixel coords.
+            sendMouseEventPixel(btn, false, false, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers, true);
+        }
+        mMouseButtonDown = -1;
+        mLastMouseX      = -1;
+        mLastMouseY      = -1;
     }
 }
 
@@ -177,8 +225,44 @@ void TerminalEmulator::mouseMoveEvent(const MouseEvent *ev)
         sendMouseEventPixel(btn, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
         mLastMouseX = ev->x;
         mLastMouseY = ev->y;
-    } else if (mState->mouseMode1002 && mMouseButtonDown >= 0) {
+        return;
+    }
+    if (mState->mouseMode1002 && mMouseButtonDown >= 0) {
         sendMouseEventPixel(mMouseButtonDown, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers);
+        mLastMouseX = ev->x;
+        mLastMouseY = ev->y;
+        return;
+    }
+
+    // Selective Mouse Reporting motion path. Two cases:
+    //   - drag (button held, emask bit 0x8): reports if the held button is
+    //     masked in.
+    //   - any-motion (no button, emask bit 0x4): reports button code 3 (none).
+    if (selectiveMouseActive()) {
+        uint8_t need = (mMouseButtonDown >= 0) ? 0x8 : 0x4;
+        if ((mState->selMouseEventMask & need) == 0) {
+            return;
+        }
+        if (mMouseButtonDown >= 0) {
+            // Drag: only if the held button class is masked in. mMouseButtonDown
+            // is the SGR button code (0/1/2) set on press; reconstruct the bit.
+            uint16_t bbit = 0;
+            switch (mMouseButtonDown) {
+                case 0: bbit = 0x0001; break;
+                case 1: bbit = 0x0002; break;
+                case 2: bbit = 0x0004; break;
+                default: break;
+            }
+            if (bbit && (mState->selMouseButtonMask & bbit)) {
+                sendMouseEventPixel(mMouseButtonDown, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers, true);
+                mLastMouseX = ev->x;
+                mLastMouseY = ev->y;
+            }
+            return;
+        }
+        // Any-motion: code 3 (no button). No button-mask check — motion is
+        // not associated with a button class.
+        sendMouseEventPixel(3, true, true, ev->x, ev->y, ev->pixelX, ev->pixelY, ev->modifiers, true);
         mLastMouseX = ev->x;
         mLastMouseY = ev->y;
     }

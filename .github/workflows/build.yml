@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
 
 jobs:
   build:
@@ -35,12 +35,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Export GHA cache tokens for vcpkg
-        uses: actions/github-script@v9
+      - name: Create vcpkg binary cache dir
+        run: mkdir -p "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v5
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ matrix.name }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'overlay-ports/**', 'overlay-triplets/**') }}
+          restore-keys: |
+            vcpkg-${{ matrix.name }}-
 
       - name: Install Linux prerequisites
         if: runner.os == 'Linux'

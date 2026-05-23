@@ -102,6 +102,29 @@ jobs:
           grep -a -E 'Status:|FAIL|test cases:' /tmp/mb-tests.out || true
           grep -a -q 'Status: SUCCESS!' /tmp/mb-tests.out
 
+      - name: Split Linux debug info
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          BIN=${{ matrix.build_dir }}/bin/mb
+          objcopy --only-keep-debug "$BIN" "$RUNNER_TEMP/mb.debug"
+          objcopy --strip-debug --strip-unneeded "$BIN"
+          ( cd "$RUNNER_TEMP" && objcopy --add-gnu-debuglink=mb.debug "$GITHUB_WORKSPACE/$BIN" )
+          gzip -9 "$RUNNER_TEMP/mb.debug"
+          mv "$RUNNER_TEMP/mb.debug.gz" "$RUNNER_TEMP/mb-linux-x64.debug.gz"
+          ls -lh "$BIN" "$RUNNER_TEMP/mb-linux-x64.debug.gz"
+
+      - name: Extract macOS dSYM
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          APP=${{ matrix.build_dir }}/bin/mb.app
+          BIN="$APP/Contents/MacOS/mb"
+          dsymutil "$BIN" -o "$RUNNER_TEMP/mb.dSYM"
+          strip -S "$BIN"
+          ( cd "$RUNNER_TEMP" && tar -czf mb-macos-arm64.dSYM.tar.gz mb.dSYM && rm -rf mb.dSYM )
+          ls -lh "$BIN" "$RUNNER_TEMP/mb-macos-arm64.dSYM.tar.gz"
+
       - name: Import Developer ID certificate
         if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
@@ -187,6 +210,20 @@ jobs:
           name: mb-macos-arm64
           path: ${{ matrix.build_dir }}/bin/mb-macos-arm64.zip
 
+      - name: Upload Linux debug sidecar
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mb-linux-x64-debug
+          path: ${{ runner.temp }}/mb-linux-x64.debug.gz
+
+      - name: Upload macOS dSYM sidecar
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mb-macos-arm64-dsym
+          path: ${{ runner.temp }}/mb-macos-arm64.dSYM.tar.gz
+
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -205,7 +242,9 @@ jobs:
         with:
           files: |
             artifacts/mb-linux-x64.tar.gz
+            artifacts/mb-linux-x64.debug.gz
             artifacts/mb-macos-arm64.zip
+            artifacts/mb-macos-arm64.dSYM.tar.gz
           generate_release_notes: true
 
   nightly:
@@ -237,4 +276,6 @@ jobs:
           prerelease: true
           files: |
             artifacts/mb-linux-x64.tar.gz
+            artifacts/mb-linux-x64.debug.gz
             artifacts/mb-macos-arm64.zip
+            artifacts/mb-macos-arm64.dSYM.tar.gz

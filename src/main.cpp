@@ -4,23 +4,53 @@
 #include "Resources.h"
 #include "Terminfo.h"
 #include "Version.h"
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <cxxopts.hpp>
 #include <execinfo.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <signal.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <elf.h>
+#include <link.h>
+#endif
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#endif
 
 // Sticky flag flipped by main() once it commits to the headless/IPC code
 // path. The signal handlers consult it to decide whether they also need
 // to remove the IPC socket file before re-raising. Marked volatile +
 // sig_atomic_t because it's read from a signal handler.
 static volatile sig_atomic_t g_socketCleanupOnExit = 0;
+
+// Crash-log staging: directory created at startup (mkdir is not
+// signal-safe), filename composed and opened in the handler (open is).
+static char g_crashLogDir[512];
+static bool g_crashLogDirReady = false;
+
+// Build-id (Linux: GNU build-id; macOS: LC_UUID) captured at startup
+// and embedded in the crash log so the decoder can pick the matching
+// sidecar.
+static char g_buildIdHex[80];
+static bool g_buildIdReady = false;
+
+// Dedicated stack for fatal-signal handlers so SIGSEGV from stack
+// overflow can still run the handler.
+static uint8_t g_altStack[SIGSTKSZ + 16384];
 
 // Async-signal-safe removal of the per-pid IPC socket. snprintf is not
 // formally on POSIX's signal-safe list, but every libc implementation
@@ -33,47 +63,209 @@ static void removeIpcSocket()
     unlink(path);
 }
 
-// Async-signal-safe write of a NUL-terminated string. Used by the crash
-// handler in place of fprintf / spdlog, neither of which is safe to
-// call from a signal handler.
+// Async-signal-safe write that retries on EINTR and short writes.
+static void writeAllSig(int fd, const char *s, size_t len)
+{
+    size_t written = 0;
+    while (written < len) {
+        ssize_t r = write(fd, s + written, len - written);
+        if (r > 0) {
+            written += static_cast<size_t>(r);
+        } else if (r < 0 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+}
+
 static void writeStrSig(int fd, const char *s)
 {
+    if (!s) {
+        return;
+    }
     size_t len = 0;
     while (s[len]) {
         ++len;
     }
-    [[maybe_unused]] auto n = write(fd, s, len);
+    writeAllSig(fd, s, len);
 }
 
-// Fatal-signal handler: dumps a backtrace to stderr, cleans up the IPC
-// socket if applicable, then re-raises with the default handler to get
-// the correct exit status (and a core file if rlimits allow).
+#ifdef __linux__
+namespace {
+struct BuildIdProbe
+{
+    int idx;
+    char *out;
+    size_t outSize;
+    bool found;
+};
+} // namespace
+
+static int buildIdPhdrCallback(struct dl_phdr_info *info, size_t, void *data)
+{
+    auto *probe = static_cast<BuildIdProbe *>(data);
+    if (probe->idx++ != 0) {
+        return 1; // only inspect the main image (index 0)
+    }
+    for (uint16_t i = 0; i < info->dlpi_phnum; ++i) {
+        const ElfW(Phdr) *phdr = &info->dlpi_phdr[i];
+        if (phdr->p_type != PT_NOTE) {
+            continue;
+        }
+        const uint8_t *base = reinterpret_cast<const uint8_t *>(info->dlpi_addr + phdr->p_vaddr);
+        size_t off          = 0;
+        while (off + sizeof(ElfW(Nhdr)) <= phdr->p_memsz) {
+            const ElfW(Nhdr) *nhdr = reinterpret_cast<const ElfW(Nhdr) *>(base + off);
+            size_t nameOff         = off + sizeof(ElfW(Nhdr));
+            size_t descOff         = nameOff + ((nhdr->n_namesz + 3) & ~3u);
+            if (nhdr->n_type == NT_GNU_BUILD_ID && nhdr->n_namesz == 4 && memcmp(base + nameOff, "GNU", 4) == 0 && descOff + nhdr->n_descsz <= phdr->p_memsz) {
+                const uint8_t *desc = base + descOff;
+                size_t descLen      = nhdr->n_descsz;
+                if (descLen * 2 + 1 > probe->outSize) {
+                    descLen = (probe->outSize - 1) / 2;
+                }
+                for (size_t k = 0; k < descLen; ++k) {
+                    snprintf(probe->out + k * 2, 3, "%02x", desc[k]);
+                }
+                probe->out[descLen * 2] = '\0';
+                probe->found            = true;
+                return 1;
+            }
+            off = descOff + ((nhdr->n_descsz + 3) & ~3u);
+        }
+    }
+    return 1;
+}
+
+static void captureBuildId()
+{
+    BuildIdProbe probe { 0, g_buildIdHex, sizeof(g_buildIdHex), false };
+    dl_iterate_phdr(buildIdPhdrCallback, &probe);
+    g_buildIdReady = probe.found;
+}
+#endif // __linux__
+
+#ifdef __APPLE__
+static void captureBuildId()
+{
+    const auto *hdr = reinterpret_cast<const struct mach_header_64 *>(_dyld_get_image_header(0));
+    if (!hdr) {
+        return;
+    }
+    const uint8_t *cmds = reinterpret_cast<const uint8_t *>(hdr + 1);
+    size_t off          = 0;
+    for (uint32_t i = 0; i < hdr->ncmds; ++i) {
+        const auto *lc = reinterpret_cast<const struct load_command *>(cmds + off);
+        if (lc->cmd == LC_UUID) {
+            const auto *uc = reinterpret_cast<const struct uuid_command *>(lc);
+            for (int k = 0; k < 16; ++k) {
+                snprintf(g_buildIdHex + k * 2, 3, "%02x", uc->uuid[k]);
+            }
+            g_buildIdHex[32] = '\0';
+            g_buildIdReady   = true;
+            return;
+        }
+        off += lc->cmdsize;
+    }
+}
+#endif // __APPLE__
+
+static void dumpLoadMap(int fd)
+{
+#ifdef __linux__
+    int mapsFd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+    if (mapsFd < 0) {
+        writeStrSig(fd, "(/proc/self/maps unavailable)\n");
+        return;
+    }
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(mapsFd, buf, sizeof(buf))) > 0) {
+        writeAllSig(fd, buf, static_cast<size_t>(n));
+    }
+    close(mapsFd);
+#elif defined(__APPLE__)
+    writeStrSig(fd, "images:\n");
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; ++i) {
+        const char *name = _dyld_get_image_name(i);
+        intptr_t slide   = _dyld_get_image_vmaddr_slide(i);
+        const auto *hdr  = _dyld_get_image_header(i);
+        char line[1024];
+        int len = snprintf(line, sizeof(line), "  base=%p slide=0x%lx %s\n", reinterpret_cast<const void *>(hdr), static_cast<unsigned long>(slide), name ? name : "(unknown)");
+        if (len > 0 && len < static_cast<int>(sizeof(line))) {
+            writeAllSig(fd, line, static_cast<size_t>(len));
+        }
+    }
+#else
+    (void)fd;
+#endif
+}
+
+static void writeCrashHeader(int fd, int sig)
+{
+    writeStrSig(fd, "=== mb crash ===\nversion: ");
+    writeStrSig(fd, mb::kVersion);
+    writeStrSig(fd, "\nbuild-id: ");
+    writeStrSig(fd, g_buildIdReady ? g_buildIdHex : "(unavailable)");
+    writeStrSig(fd, "\n");
+    char numbuf[64];
+    int n = snprintf(numbuf, sizeof(numbuf), "signal: %d\npid: %d\n", sig, getpid());
+    if (n > 0) {
+        writeAllSig(fd, numbuf, static_cast<size_t>(n));
+    }
+}
+
+// Fatal-signal handler: writes a self-contained crash log (build-id,
+// load map, raw backtrace) to both stderr and a file under
+// g_crashLogDir, then re-raises with the default handler to get the
+// correct exit status (and a core file if rlimits allow).
 //
 // Uses backtrace_symbols_fd, not backtrace_symbols, because the latter
 // calls malloc — not async-signal-safe. After a SIGSEGV the allocator
 // state can be arbitrarily corrupt, and calling malloc would risk
 // deadlock or a second crash that swallows the original trace.
-static void crashSignalHandler(int sig)
+static void crashSignalHandler(int sig, siginfo_t *, void *)
 {
-    writeStrSig(STDERR_FILENO, "\nmb: fatal signal ");
-    char numbuf[32];
-    int n = snprintf(numbuf, sizeof(numbuf), "%d\nstack trace:\n", sig);
-    if (n > 0) {
-        [[maybe_unused]] auto w = write(STDERR_FILENO, numbuf, static_cast<size_t>(n));
+    int fd = -1;
+    char path[768];
+    if (g_crashLogDirReady) {
+        int n = snprintf(path, sizeof(path), "%s/crash-%lld-%d.log", g_crashLogDir, static_cast<long long>(time(nullptr)), getpid());
+        if (n > 0 && n < static_cast<int>(sizeof(path))) {
+            fd = open(path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
+        }
     }
 
-    constexpr int kMaxFrames = 128;
-    void *frames[kMaxFrames];
-    int count = backtrace(frames, kMaxFrames);
-    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+    int sinks[2] = { STDERR_FILENO, fd };
+    for (int s = 0; s < 2; ++s) {
+        int dst = sinks[s];
+        if (dst < 0) {
+            continue;
+        }
+        writeStrSig(dst, "\n");
+        writeCrashHeader(dst, sig);
+        dumpLoadMap(dst);
+        writeStrSig(dst, "backtrace:\n");
+        constexpr int kMaxFrames = 128;
+        void *frames[kMaxFrames];
+        int count = backtrace(frames, kMaxFrames);
+        backtrace_symbols_fd(frames, count, dst);
+    }
+
+    if (fd >= 0) {
+        writeStrSig(STDERR_FILENO, "mb: crash log written to ");
+        writeStrSig(STDERR_FILENO, path);
+        writeStrSig(STDERR_FILENO, "\n");
+        close(fd);
+    }
 
     if (g_socketCleanupOnExit) {
         removeIpcSocket();
     }
 
-    // Re-raise under the default handler so the exit status reflects
-    // the real signal (and a core file gets written if ulimit permits).
-    signal(sig, SIG_DFL);
+    // SA_RESETHAND restored SIG_DFL on entry; re-raise to get the real
+    // exit status and a core file if ulimits allow.
     raise(sig);
 }
 
@@ -89,16 +281,72 @@ static void cleanupSocketAndExit(int sig)
     raise(sig);
 }
 
+static void composeCrashLogDir()
+{
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) {
+        if (struct passwd *pw = getpwuid(getuid())) {
+            home = pw->pw_dir;
+        }
+    }
+    if (!home || !home[0]) {
+        g_crashLogDirReady = false;
+        return;
+    }
+
+#ifdef __APPLE__
+    int n = snprintf(g_crashLogDir, sizeof(g_crashLogDir), "%s/Library/Logs/mb", home);
+#else
+    int n = snprintf(g_crashLogDir, sizeof(g_crashLogDir), "%s/.cache/mb/crashes", home);
+#endif
+    if (n <= 0 || n >= static_cast<int>(sizeof(g_crashLogDir))) {
+        g_crashLogDirReady = false;
+        return;
+    }
+
+    char tmp[sizeof(g_crashLogDir)];
+    snprintf(tmp, sizeof(tmp), "%s", g_crashLogDir);
+    for (char *p = tmp + 1; *p; ++p) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(tmp, 0700);
+            *p = '/';
+        }
+    }
+    mkdir(tmp, 0700);
+
+    struct stat st;
+    g_crashLogDirReady = (stat(g_crashLogDir, &st) == 0) && S_ISDIR(st.st_mode);
+}
+
 static void installCrashSignalHandlers()
 {
-    // Install for every signal that indicates a programming error or
-    // hardware fault. SIGABRT covers assert() / abort() / std::terminate
-    // and so is one of the most useful in practice.
-    signal(SIGSEGV, crashSignalHandler);
-    signal(SIGBUS, crashSignalHandler);
-    signal(SIGABRT, crashSignalHandler);
-    signal(SIGILL, crashSignalHandler);
-    signal(SIGFPE, crashSignalHandler);
+    composeCrashLogDir();
+    captureBuildId();
+
+    stack_t ss {};
+    ss.ss_sp    = g_altStack;
+    ss.ss_size  = sizeof(g_altStack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, nullptr);
+
+    struct sigaction sa {};
+    sa.sa_sigaction = crashSignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sigaddset(&sa.sa_mask, SIGSEGV);
+    sigaddset(&sa.sa_mask, SIGBUS);
+    sigaddset(&sa.sa_mask, SIGABRT);
+    sigaddset(&sa.sa_mask, SIGILL);
+    sigaddset(&sa.sa_mask, SIGFPE);
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+
+    // SIGSEGV/SIGBUS = memory faults; SIGABRT covers assert/abort/
+    // std::terminate; SIGILL/SIGFPE catch the rest of the hardware traps.
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
+    sigaction(SIGILL, &sa, nullptr);
+    sigaction(SIGFPE, &sa, nullptr);
 }
 
 static std::string defaultShell(const std::string &user)

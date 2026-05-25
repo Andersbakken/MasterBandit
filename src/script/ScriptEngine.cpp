@@ -3340,11 +3340,66 @@ static JSValue jsPaneGetEmbeddeds(JSContext *ctx, JSValueConst this_val)
 // mb global — controller API
 // ============================================================================
 
+// Read a JS value into an Action::ArgValue, applying obvious type
+// translation: number -> int64_t (when integral, else double), bool ->
+// bool, string -> string. null/undefined -> empty. Other shapes
+// (objects, arrays) collapse to a string for forward-compat. Arrays
+// could become ArgValueList eventually; no action uses them yet.
+static Action::ArgValue jsValueToArg(JSContext *ctx, JSValueConst val)
+{
+    if (JS_IsNull(val) || JS_IsUndefined(val)) {
+        return Action::ArgValue {};
+    }
+    if (JS_IsBool(val)) {
+        return Action::ArgValue { JS_ToBool(ctx, val) != 0 };
+    }
+    if (JS_IsNumber(val)) {
+        double d;
+        JS_ToFloat64(ctx, &d, val);
+        if (d == static_cast<int64_t>(d)) {
+            return Action::ArgValue { static_cast<int64_t>(d) };
+        }
+        return Action::ArgValue { d };
+    }
+    if (JS_IsString(val)) {
+        size_t len;
+        const char *s = JS_ToCStringLen(ctx, &len, val);
+        if (!s) {
+            return Action::ArgValue {};
+        }
+        Action::ArgValue out { std::string(s, len) };
+        JS_FreeCString(ctx, s);
+        return out;
+    }
+    // Object / array fallback: serialize to JSON and stash as string.
+    JSValue stringified = JS_JSONStringify(ctx, val, JS_UNDEFINED, JS_UNDEFINED);
+    if (JS_IsString(stringified)) {
+        const char *s = JS_ToCString(ctx, stringified);
+        Action::ArgValue out { s ? std::string(s) : std::string {} };
+        if (s) {
+            JS_FreeCString(ctx, s);
+        }
+        JS_FreeValue(ctx, stringified);
+        return out;
+    }
+    JS_FreeValue(ctx, stringified);
+    return Action::ArgValue {};
+}
+
+// mb.invokeAction(name, args) — args is either:
+//   - an object: { direction: "left", amount: 3 } — new typed form.
+//   - a string (variadic): positional args, back-compat with the
+//     pre-2026-05 API. mb.invokeAction("split_pane", "right") and
+//     mb.invokeAction("send_string", "foo", "bar") both work.
+// The shape choice is per-call. mb.d.ts only exposes the object form
+// so TS-aware callers are pushed toward typed args, but the runtime
+// keeps the positional path alive for JS legacy + the command-palette
+// passthrough.
 static JSValue jsMbInvokeAction(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv)
 {
     if (argc < 1) {
-        return JS_ThrowTypeError(ctx, "invokeAction requires (name, ...args)");
+        return JS_ThrowTypeError(ctx, "invokeAction requires (name, ...args) or (name, argsObject)");
     }
     REQUIRE_PERM(ctx, ActionsInvoke);
     Engine *eng      = engineFromCtx(ctx);
@@ -3352,18 +3407,50 @@ static JSValue jsMbInvokeAction(JSContext *ctx, JSValueConst this_val,
     if (!name) {
         return JS_EXCEPTION;
     }
+    std::string nameStr(name);
+    JS_FreeCString(ctx, name);
 
-    uint32_t extraPerm = actionPermission(std::string(name));
+    uint32_t extraPerm = actionPermission(nameStr);
     if (extraPerm && !checkPerm(ctx, extraPerm)) {
-        JS_FreeCString(ctx, name);
         return JS_ThrowTypeError(ctx, "permission denied: action requires additional permissions");
     }
 
     if (eng->callbacks().hasActiveTab && !eng->callbacks().hasActiveTab()) {
-        JS_FreeCString(ctx, name);
         return JS_ThrowTypeError(ctx, "no active tab");
     }
 
+    // Typed object form: exactly one trailing arg, an object that is
+    // NOT a string. (Strings are objects in JS, but JS_IsString catches
+    // them; JS_IsArray-typed values are tolerated as the variadic-style
+    // input even though they're objects.) Two-arg calls are common
+    // enough that this single-arg restriction matches "you meant
+    // typed args" with high precision; positional callers passing one
+    // string are unambiguous.
+    if (argc == 2 && JS_IsObject(argv[1]) && !JS_IsArray(argv[1])) {
+        Action::ArgsValue typed;
+        JSPropertyEnum *props = nullptr;
+        uint32_t count        = 0;
+        if (JS_GetOwnPropertyNames(ctx, &props, &count, argv[1], JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+            for (uint32_t i = 0; i < count; ++i) {
+                const char *k = JS_AtomToCString(ctx, props[i].atom);
+                if (!k) {
+                    continue;
+                }
+                JSValue v = JS_GetProperty(ctx, argv[1], props[i].atom);
+                typed.emplace(std::string(k), jsValueToArg(ctx, v));
+                JS_FreeCString(ctx, k);
+                JS_FreeValue(ctx, v);
+            }
+            for (uint32_t i = 0; i < count; ++i) {
+                JS_FreeAtom(ctx, props[i].atom);
+            }
+            js_free(ctx, props);
+        }
+        bool ok = eng->callbacks().invokeActionTyped && eng->callbacks().invokeActionTyped(nameStr, typed);
+        return JS_NewBool(ctx, ok);
+    }
+
+    // Positional form (back-compat).
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
         const char *arg = JS_ToCString(ctx, argv[i]);
@@ -3372,8 +3459,7 @@ static JSValue jsMbInvokeAction(JSContext *ctx, JSValueConst this_val,
             JS_FreeCString(ctx, arg);
         }
     }
-    bool ok = eng->callbacks().invokeAction(std::string(name), args);
-    JS_FreeCString(ctx, name);
+    bool ok = eng->callbacks().invokeAction(nameStr, args);
     return JS_NewBool(ctx, ok);
 }
 
@@ -3611,37 +3697,84 @@ static std::string toLabel(std::string_view name)
 static JSValue jsMbActionsRegister(JSContext *, JSValueConst, int, JSValueConst *);
 static JSValue jsMbActionsUnregister(JSContext *, JSValueConst, int, JSValueConst *);
 
-// mb.actions -> array of {name, label, builtin, args?} objects plus
-// register/unregister methods for handler ownership of JS-owned actions.
+// Forward-declared; defined down by notifyAction (where the inverse
+// jsValueToArg already lives).
+static JSValue argValueToJs(JSContext *ctx, const Action::ArgValue &v);
+
+// Translate a C++ ActionSchema into a JS object mirroring
+// types/mb.d.ts MbActionSchema. Cheap to build; called once per
+// mb.actions access (which is itself rare — palette open and a few
+// scripts that introspect the action set).
+static JSValue actionSchemaToJs(JSContext *ctx, const Action::ActionSchema &schema)
+{
+    JSValue obj  = JS_NewObject(ctx);
+    JSValue args = JS_NewArray(ctx);
+    uint32_t idx = 0;
+    for (const auto &spec : schema.args) {
+        JSValue a = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, a, "name", JS_NewStringLen(ctx, spec.name.data(), spec.name.size()));
+        if (!spec.label.empty()) {
+            JS_SetPropertyStr(ctx, a, "label", JS_NewStringLen(ctx, spec.label.data(), spec.label.size()));
+        }
+        const char *kindStr = "string";
+        switch (spec.kind) {
+            case Action::ArgKind::String: kindStr = "string"; break;
+            case Action::ArgKind::Int: kindStr = "int"; break;
+            case Action::ArgKind::Bool: kindStr = "bool"; break;
+            case Action::ArgKind::Enum: kindStr = "enum"; break;
+            case Action::ArgKind::Direction: kindStr = "direction"; break;
+            case Action::ArgKind::Uuid: kindStr = "uuid"; break;
+        }
+        JS_SetPropertyStr(ctx, a, "kind", JS_NewString(ctx, kindStr));
+        JS_SetPropertyStr(ctx, a, "required", JS_NewBool(ctx, spec.required ? 1 : 0));
+        if (!spec.valuesProvider.empty()) {
+            JS_SetPropertyStr(ctx, a, "provider", JS_NewStringLen(ctx, spec.valuesProvider.data(), spec.valuesProvider.size()));
+        }
+        if (!spec.enumValues.empty()) {
+            JSValue vals = JS_NewArray(ctx);
+            for (size_t i = 0; i < spec.enumValues.size(); ++i) {
+                JSValue ve = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, ve, "value", JS_NewStringLen(ctx, spec.enumValues[i].value.data(), spec.enumValues[i].value.size()));
+                JS_SetPropertyStr(ctx, ve, "label", JS_NewStringLen(ctx, spec.enumValues[i].label.data(), spec.enumValues[i].label.size()));
+                JS_SetPropertyUint32(ctx, vals, static_cast<uint32_t>(i), ve);
+            }
+            JS_SetPropertyStr(ctx, a, "values", vals);
+        }
+        if (!spec.defaultValue.isNull()) {
+            JS_SetPropertyStr(ctx, a, "default", argValueToJs(ctx, spec.defaultValue));
+        }
+        JS_SetPropertyUint32(ctx, args, idx++, a);
+    }
+    JS_SetPropertyStr(ctx, obj, "args", args);
+    return obj;
+}
+
+// mb.actions -> array of {name, label, builtin, schema} objects plus
+// register/unregister methods for handler ownership of JS-owned
+// actions.
+//
+// Each entry exposes a `schema` field (object: `{ args: [...] }`) the
+// palette uses to decide between inline-expansion (closed-value args
+// where the cross-product is small) and prompting (free-form / large
+// provider-backed args). Empty `schema.args` means no args; the
+// palette dispatches such actions on selection.
+//
+// Previously this getter expanded direction-style actions inline (one
+// entry per variant) via an in-file `argVariants` map. That responsibility
+// now lives in the palette since it can introspect any schema, not just
+// direction-style.
 static JSValue jsMbGetActions(JSContext *ctx, JSValueConst, int, JSValueConst *)
 {
     Engine *eng = engineFromCtx(ctx);
-
-    // Directional arg expansions for actions that take Direction
-    struct ArgVariant
-    {
-        const char *arg;
-        const char *labelSuffix;
-    };
-
-    static const std::unordered_map<std::string_view, std::vector<ArgVariant>> argVariants = {
-        { "SplitPane", { { "right", "Right" }, { "down", "Down" }, { "left", "Left" }, { "up", "Up" } } },
-        { "FocusPane", { { "next", "Next" }, { "prev", "Previous" }, { "left", "Left" }, { "right", "Right" }, { "up", "Up" }, { "down", "Down" } } },
-        { "AdjustPaneSize", { { "left", "Left" }, { "right", "Right" }, { "up", "Up" }, { "down", "Down" } } },
-        { "ScrollToPrompt", { { "-1", "Previous" }, { "1", "Next" } } },
-        { "ActivateTabRelative", { { "-1", "Left" }, { "1", "Right" } } },
-        { "MoveTab", { { "left", "Left" }, { "right", "Right" } } },
-        { "SwapPane", { { "left", "Left" }, { "right", "Right" }, { "up", "Up" }, { "down", "Down" }, { "next", "Next" }, { "prev", "Previous" } } },
-        { "RotatePanes", { { "cw", "Clockwise" }, { "ccw", "Counterclockwise" } } },
-        { "Clear", { { "scrollback", "Scrollback" }, { "all", "All" } } },
-    };
 
     JSValue arr  = JS_NewArray(ctx);
     uint32_t idx = 0;
 
     for (Action::TypeIndex i = 0; i < Action::count; ++i) {
         auto pascalName = Action::nameTable[i];
-        // Skip ScriptAction — script actions come from the registered set below
+        // Skip ScriptAction — script actions come from the registered
+        // set below; the placeholder ScriptAction variant has no
+        // user-facing meaning.
         if (pascalName == "ScriptAction") {
             continue;
         }
@@ -3649,27 +3782,20 @@ static JSValue jsMbGetActions(JSContext *ctx, JSValueConst, int, JSValueConst *)
         std::string snakeName = toSnakeCase(pascalName);
         std::string baseLabel = toLabel(pascalName);
 
-        auto vit = argVariants.find(pascalName);
-        if (vit != argVariants.end()) {
-            // Expand into one entry per variant
-            for (const auto &v : vit->second) {
-                JSValue obj = JS_NewObject(ctx);
-                JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, snakeName.c_str()));
-                std::string label = baseLabel + " " + v.labelSuffix;
-                JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, label.c_str()));
-                JS_SetPropertyStr(ctx, obj, "builtin", JS_TRUE);
-                JSValue args = JS_NewArray(ctx);
-                JS_SetPropertyUint32(ctx, args, 0, JS_NewString(ctx, v.arg));
-                JS_SetPropertyStr(ctx, obj, "args", args);
-                JS_SetPropertyUint32(ctx, arr, idx++, obj);
-            }
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, snakeName.c_str()));
+        JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, baseLabel.c_str()));
+        JS_SetPropertyStr(ctx, obj, "builtin", JS_TRUE);
+        if (const auto *schema = Action::schemaFor(pascalName)) {
+            JS_SetPropertyStr(ctx, obj, "schema", actionSchemaToJs(ctx, *schema));
         } else {
-            JSValue obj = JS_NewObject(ctx);
-            JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, snakeName.c_str()));
-            JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, baseLabel.c_str()));
-            JS_SetPropertyStr(ctx, obj, "builtin", JS_TRUE);
-            JS_SetPropertyUint32(ctx, arr, idx++, obj);
+            // Schema lookup failure means the action exists in the
+            // variant but no schema was registered. Treat as nullary.
+            JSValue empty = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, empty, "args", JS_NewArray(ctx));
+            JS_SetPropertyStr(ctx, obj, "schema", empty);
         }
+        JS_SetPropertyUint32(ctx, arr, idx++, obj);
     }
 
     // Script actions
@@ -3678,13 +3804,21 @@ static JSValue jsMbGetActions(JSContext *ctx, JSValueConst, int, JSValueConst *)
         JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, fullName.c_str()));
         JS_SetPropertyStr(ctx, obj, "label", JS_NewString(ctx, fullName.c_str()));
         JS_SetPropertyStr(ctx, obj, "builtin", JS_FALSE);
+        const Action::ActionSchema *schema = eng->scriptActionSchema(fullName);
+        if (schema) {
+            JS_SetPropertyStr(ctx, obj, "schema", actionSchemaToJs(ctx, *schema));
+        } else {
+            JSValue empty = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, empty, "args", JS_NewArray(ctx));
+            JS_SetPropertyStr(ctx, obj, "schema", empty);
+        }
         JS_SetPropertyUint32(ctx, arr, idx++, obj);
     }
 
-    // Attach handler-registry methods to the returned array. The array is
-    // regenerated on every `mb.actions` access, but consumers that capture it
-    // into a local (`const a = mb.actions; a.register(...)`) still have the
-    // methods bound.
+    // Attach handler-registry methods to the returned array. The array
+    // is regenerated on every `mb.actions` access, but consumers that
+    // capture it into a local (`const a = mb.actions; a.register(...)`)
+    // still have the methods bound.
     JS_SetPropertyStr(ctx, arr, "register", JS_NewCFunction(ctx, jsMbActionsRegister, "register", 2));
     JS_SetPropertyStr(ctx, arr, "unregister", JS_NewCFunction(ctx, jsMbActionsUnregister, "unregister", 1));
 
@@ -4125,6 +4259,188 @@ static JSValue jsMbSetNamespace(JSContext *ctx, JSValueConst, int argc, JSValueC
 }
 
 // mb.registerAction(name) — register a script action as "namespace.name"
+// Parse a JS schema descriptor into an Action::ActionSchema. Best-
+// effort: unknown kinds become String, missing fields become empty.
+// Schema shape (mirrors types/mb.d.ts MbActionSchema):
+//   { args: [
+//       { name: "direction", kind: "direction", required: true },
+//       { name: "amount",    kind: "int",       default: 1 },
+//       { name: "mode",      kind: "enum",      values: ["all", "scrollback"] },
+//       { name: "target",    kind: "string",    provider: "panes" },
+//   ]}
+static Action::ActionSchema jsParseActionSchema(JSContext *ctx, JSValueConst val)
+{
+    Action::ActionSchema schema;
+    if (!JS_IsObject(val)) {
+        return schema;
+    }
+    JSValue argsArr = JS_GetPropertyStr(ctx, val, "args");
+    if (!JS_IsArray(argsArr)) {
+        JS_FreeValue(ctx, argsArr);
+        return schema;
+    }
+    JSValue lenVal = JS_GetPropertyStr(ctx, argsArr, "length");
+    int32_t len    = 0;
+    JS_ToInt32(ctx, &len, lenVal);
+    JS_FreeValue(ctx, lenVal);
+    schema.args.reserve(len);
+    for (int32_t i = 0; i < len; ++i) {
+        JSValue entry = JS_GetPropertyUint32(ctx, argsArr, i);
+        if (!JS_IsObject(entry)) {
+            JS_FreeValue(ctx, entry);
+            continue;
+        }
+        Action::ActionArg arg;
+        auto readString = [&](const char *k) -> std::string
+        {
+            JSValue v = JS_GetPropertyStr(ctx, entry, k);
+            std::string out;
+            if (JS_IsString(v)) {
+                const char *s = JS_ToCString(ctx, v);
+                if (s) {
+                    out = s;
+                    JS_FreeCString(ctx, s);
+                }
+            }
+            JS_FreeValue(ctx, v);
+            return out;
+        };
+        auto readBool = [&](const char *k) -> bool
+        {
+            JSValue v = JS_GetPropertyStr(ctx, entry, k);
+            bool out  = JS_ToBool(ctx, v) != 0;
+            JS_FreeValue(ctx, v);
+            return out;
+        };
+
+        arg.name           = readString("name");
+        arg.label          = readString("label");
+        std::string kind   = readString("kind");
+        arg.required       = readBool("required");
+        arg.valuesProvider = readString("provider");
+        if (kind == "int") {
+            arg.kind = Action::ArgKind::Int;
+        } else if (kind == "bool") {
+            arg.kind = Action::ArgKind::Bool;
+        } else if (kind == "enum") {
+            arg.kind = Action::ArgKind::Enum;
+        } else if (kind == "direction") {
+            arg.kind       = Action::ArgKind::Direction;
+            // Direction inherits the canonical 6-token enum from
+            // Action.cpp via the directionArg helper — but here we
+            // mirror it manually since we don't link that helper. The
+            // adapter only cares about enumValues containing the
+            // tokens; label is cosmetic.
+            arg.enumValues = {
+                { "left", "Left" },
+                { "right", "Right" },
+                { "up", "Up" },
+                { "down", "Down" },
+                { "next", "Next" },
+                { "prev", "Previous" },
+            };
+        } else if (kind == "uuid") {
+            arg.kind = Action::ArgKind::Uuid;
+        } else {
+            arg.kind = Action::ArgKind::String;
+        }
+        // Enum/Direction may carry a custom `values: [string|{value,label}]`.
+        JSValue valsArr = JS_GetPropertyStr(ctx, entry, "values");
+        if (JS_IsArray(valsArr)) {
+            JSValue vlen = JS_GetPropertyStr(ctx, valsArr, "length");
+            int32_t vn   = 0;
+            JS_ToInt32(ctx, &vn, vlen);
+            JS_FreeValue(ctx, vlen);
+            if (vn > 0) {
+                arg.enumValues.clear();
+                arg.enumValues.reserve(vn);
+                for (int32_t j = 0; j < vn; ++j) {
+                    JSValue ve = JS_GetPropertyUint32(ctx, valsArr, j);
+                    Action::ValueOption opt;
+                    if (JS_IsString(ve)) {
+                        const char *s = JS_ToCString(ctx, ve);
+                        if (s) {
+                            opt.value = s;
+                            opt.label = s;
+                            JS_FreeCString(ctx, s);
+                        }
+                    } else if (JS_IsObject(ve)) {
+                        JSValue v = JS_GetPropertyStr(ctx, ve, "value");
+                        JSValue l = JS_GetPropertyStr(ctx, ve, "label");
+                        if (JS_IsString(v)) {
+                            const char *s = JS_ToCString(ctx, v);
+                            if (s) {
+                                opt.value = s;
+                                JS_FreeCString(ctx, s);
+                            }
+                        }
+                        if (JS_IsString(l)) {
+                            const char *s = JS_ToCString(ctx, l);
+                            if (s) {
+                                opt.label = s;
+                                JS_FreeCString(ctx, s);
+                            }
+                        } else {
+                            opt.label = opt.value;
+                        }
+                        JS_FreeValue(ctx, v);
+                        JS_FreeValue(ctx, l);
+                    }
+                    if (!opt.value.empty()) {
+                        arg.enumValues.push_back(std::move(opt));
+                    }
+                    JS_FreeValue(ctx, ve);
+                }
+            }
+        }
+        JS_FreeValue(ctx, valsArr);
+
+        // Default value — accept any scalar JS type.
+        JSValue def = JS_GetPropertyStr(ctx, entry, "default");
+        if (!JS_IsUndefined(def) && !JS_IsNull(def)) {
+            arg.defaultValue = jsValueToArg(ctx, def);
+        }
+        JS_FreeValue(ctx, def);
+
+        if (arg.label.empty()) {
+            arg.label = arg.name;
+        }
+        schema.args.push_back(std::move(arg));
+        JS_FreeValue(ctx, entry);
+    }
+    JS_FreeValue(ctx, argsArr);
+    return schema;
+}
+
+// mb.actionValues(providerName) -> [{ value, label }, ...]
+// Query a registered value provider by name. Used by the command
+// palette (and other applets) to enumerate suggestions for
+// provider-backed action args. Returns an empty array if the provider
+// is unknown — the palette interprets that as "no static
+// suggestions; prompt with a free-text input." Ungated; provider
+// results expose state that's already visible via other queries
+// (panes, tabs, etc.).
+static JSValue jsMbActionValues(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_NewArray(ctx);
+    }
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+    auto values = Action::queryValueProvider(name);
+    JS_FreeCString(ctx, name);
+    JSValue arr = JS_NewArray(ctx);
+    for (size_t i = 0; i < values.size(); ++i) {
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "value", JS_NewStringLen(ctx, values[i].value.data(), values[i].value.size()));
+        JS_SetPropertyStr(ctx, obj, "label", JS_NewStringLen(ctx, values[i].label.data(), values[i].label.size()));
+        JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), obj);
+    }
+    return arr;
+}
+
 static JSValue jsMbRegisterAction(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     REQUIRE_PERM(ctx, ActionsInvoke);
@@ -4139,13 +4455,18 @@ static JSValue jsMbRegisterAction(JSContext *ctx, JSValueConst, int argc, JSValu
     std::string nameStr(name);
     JS_FreeCString(ctx, name);
 
+    Action::ActionSchema schema;
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        schema = jsParseActionSchema(ctx, argv[1]);
+    }
+
     Engine *eng = engineFromCtx(ctx);
     auto *inst  = instanceFromCtx(ctx);
     if (!inst) {
         return JS_ThrowTypeError(ctx, "no script instance");
     }
 
-    if (!eng->registerAction(inst->id, nameStr)) {
+    if (!eng->registerAction(inst->id, nameStr, std::move(schema))) {
         return JS_ThrowTypeError(ctx, "registerAction failed: namespace not set, "
                                       "or action already registered by a different instance");
     }
@@ -5269,6 +5590,7 @@ void Engine::setupGlobals(JSContext *ctx, InstanceId id)
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue mb     = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, mb, "invokeAction", JS_NewCFunction(ctx, jsMbInvokeAction, "invokeAction", 1));
+    JS_SetPropertyStr(ctx, mb, "actionValues", JS_NewCFunction(ctx, jsMbActionValues, "actionValues", 1));
     JS_SetPropertyStr(ctx, mb, "addEventListener", JS_NewCFunction(ctx, jsMbAddEventListener, "addEventListener", 2));
     JS_SetPropertyStr(ctx, mb, "removeEventListener", JS_NewCFunction(ctx, jsMbRemoveEventListener, "removeEventListener", 2));
     JS_SetPropertyStr(ctx, mb, "removeAllListeners", JS_NewCFunction(ctx, jsMbRemoveAllListeners, "removeAllListeners", 0));
@@ -5549,7 +5871,7 @@ void Engine::unload(InstanceId id)
         // prefix, but since two instances could share a namespace we now
         // erase only what's actually ours.
         for (auto ait = registeredActions_.begin(); ait != registeredActions_.end();) {
-            if (ait->second == id) {
+            if (ait->second.instance == id) {
                 ait = registeredActions_.erase(ait);
             } else {
                 ++ait;
@@ -6038,11 +6360,61 @@ bool Engine::runPaneFilters(PaneId pane, const char *filterProp, std::string &da
 // Async notifications
 // ============================================================================
 
+// Translate an ArgValue back into a JS value with native types
+// preserved. Inverse of jsValueToArg. Used by the schema-aware
+// handler-delivery path.
+static JSValue argValueToJs(JSContext *ctx, const Action::ArgValue &v)
+{
+    using namespace Action;
+    if (v.isNull()) {
+        return JS_NULL;
+    }
+    if (auto *b = v.get_if<bool>()) {
+        return JS_NewBool(ctx, *b ? 1 : 0);
+    }
+    if (auto *i = v.get_if<int64_t>()) {
+        // QuickJS only has 32-bit JS_NewInt32 / 64-bit JS_NewBigInt64;
+        // numbers fit safely in double for the typical action arg
+        // range. Use double for cross-compat with TS `number`.
+        return JS_NewFloat64(ctx, static_cast<double>(*i));
+    }
+    if (auto *d = v.get_if<double>()) {
+        return JS_NewFloat64(ctx, *d);
+    }
+    if (auto *s = v.get_if<std::string>()) {
+        return JS_NewStringLen(ctx, s->data(), s->size());
+    }
+    return JS_NULL;
+}
+
 void Engine::notifyAction(const std::string &actionName,
                           const std::vector<std::string> &args)
 {
     IterGuard guard(this);
     std::string prop = std::string("__evt_action_") + actionName;
+
+    // Schema-aware delivery: if this script action has a non-empty
+    // schema, build a single object-arg payload by mapping positional
+    // strings onto the schema's arg order (the adapter coerces each
+    // entry into its declared kind). Schema-less actions keep the
+    // legacy positional-strings delivery. Built-in C++ actions never
+    // come through here (they're dispatched via Platform_Actions.cpp's
+    // typed visit), so this only affects script actions.
+    const Action::ActionSchema *schema = scriptActionSchema(actionName);
+    bool useObjectShape                = schema && !schema->args.empty();
+
+    Action::ArgsValue coerced;
+    if (useObjectShape) {
+        std::string err;
+        auto built = Action::coercePositional(*schema, args, err);
+        if (!built) {
+            sLog().warn("ScriptEngine: action '{}': {}", actionName, err);
+            useObjectShape = false; // fall back to positional
+        } else {
+            coerced = std::move(*built);
+        }
+    }
+
     for (auto &inst : instances_) {
         if (!inst.ctx) {
             continue;
@@ -6052,20 +6424,35 @@ void Engine::notifyAction(const std::string &actionName,
         JSValue mb     = JS_GetPropertyStr(inst.ctx, global, "mb");
         JSValue arr    = JS_GetPropertyStr(inst.ctx, mb, prop.c_str());
 
-        // Build per-instance string args. Each JSValue belongs to inst.ctx
-        // and is freed after enqueue — enqueueListeners dups them into the
-        // microtask payload so the originals are safe to release here.
-        std::vector<JSValue> argv;
-        argv.reserve(args.size());
-        for (const auto &s : args) {
-            argv.push_back(JS_NewString(inst.ctx, s.c_str()));
-        }
-        enqueueListeners(inst.ctx,
-                         arr,
-                         static_cast<int>(argv.size()),
-                         argv.empty() ? nullptr : argv.data());
-        for (auto v : argv) {
-            JS_FreeValue(inst.ctx, v);
+        if (useObjectShape) {
+            // Build a single object holding every declared arg. Values
+            // come from the coerced ArgsValue (which already has
+            // defaults applied for omitted optionals). Missing args
+            // simply don't get a property.
+            JSValue obj = JS_NewObject(inst.ctx);
+            for (const auto &spec : schema->args) {
+                auto it = coerced.find(spec.name);
+                if (it == coerced.end() || it->second.isNull()) {
+                    continue;
+                }
+                JS_SetPropertyStr(inst.ctx, obj, spec.name.c_str(), argValueToJs(inst.ctx, it->second));
+            }
+            enqueueListeners(inst.ctx, arr, 1, &obj);
+            JS_FreeValue(inst.ctx, obj);
+        } else {
+            // Legacy positional-string delivery.
+            std::vector<JSValue> argv;
+            argv.reserve(args.size());
+            for (const auto &s : args) {
+                argv.push_back(JS_NewString(inst.ctx, s.c_str()));
+            }
+            enqueueListeners(inst.ctx,
+                             arr,
+                             static_cast<int>(argv.size()),
+                             argv.empty() ? nullptr : argv.data());
+            for (auto v : argv) {
+                JS_FreeValue(inst.ctx, v);
+            }
         }
 
         JS_FreeValue(inst.ctx, arr);
@@ -7508,7 +7895,8 @@ bool Engine::setNamespace(InstanceId id, const std::string &ns)
     return true;
 }
 
-bool Engine::registerAction(InstanceId id, const std::string &name)
+bool Engine::registerAction(InstanceId id, const std::string &name,
+                            Action::ActionSchema schema)
 {
     auto *inst = findInstance(id);
     if (!inst) {
@@ -7523,11 +7911,17 @@ bool Engine::registerAction(InstanceId id, const std::string &name)
     if (it != registeredActions_.end()) {
         // Already registered. Idempotent for the same instance (this is
         // what enables config.js to be re-eval'd in the same context on
-        // hot-reload); fail for a different instance so we don't quietly
-        // hand off ownership.
-        return it->second == id;
+        // hot-reload); fail for a different instance so we don't
+        // quietly hand off ownership. The schema is replaced on
+        // re-register from the same instance, so a script can evolve
+        // its arg shape across reloads.
+        if (it->second.instance != id) {
+            return false;
+        }
+        it->second.schema = std::move(schema);
+        return true;
     }
-    registeredActions_.emplace(fullName, id);
+    registeredActions_.emplace(fullName, RegisteredAction { id, std::move(schema) });
     sLog().info("ScriptEngine: registered action '{}'", fullName);
     return true;
 }
@@ -7537,11 +7931,20 @@ bool Engine::isActionRegistered(const std::string &fullName) const
     return registeredActions_.count(fullName) > 0;
 }
 
+const Action::ActionSchema *Engine::scriptActionSchema(const std::string &fullName) const
+{
+    auto it = registeredActions_.find(fullName);
+    if (it == registeredActions_.end()) {
+        return nullptr;
+    }
+    return &it->second.schema;
+}
+
 std::vector<std::string> Engine::registeredActions() const
 {
     std::vector<std::string> names;
     names.reserve(registeredActions_.size());
-    for (const auto &[name, id] : registeredActions_) {
+    for (const auto &[name, action] : registeredActions_) {
         names.push_back(name);
     }
     return names;

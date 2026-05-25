@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Action.h"
 #include "Decoration.h"
 #include "LayoutTree.h"
 #include "ScriptPermissions.h"
@@ -103,8 +104,11 @@ struct AppCallbacks
     std::function<bool(PaneId)> paneHasPty;
     // Check if there is an active tab
     std::function<bool()> hasActiveTab;
-    // Invoke an action by name
+    // Invoke an action by name (positional string args; back-compat).
     std::function<bool(const std::string &, const std::vector<std::string> &)> invokeAction;
+    // Invoke an action by name with typed named args. Used by the JS
+    // object-arg form of mb.invokeAction.
+    std::function<bool(const std::string &, const Action::ArgsValue &)> invokeActionTyped;
 
     // Query pane info
     struct PaneInfo
@@ -704,8 +708,14 @@ public:
 
     // Script action registration
     bool setNamespace(InstanceId id, const std::string &ns);
-    bool registerAction(InstanceId id, const std::string &name);
+    bool registerAction(InstanceId id, const std::string &name,
+                        Action::ActionSchema schema = {});
     bool isActionRegistered(const std::string &fullName) const;
+    // Returns the schema for a registered script action, or nullptr if
+    // unregistered or schema-less. Used by notifyAction to decide
+    // between object-shape and positional-shape handler delivery, and
+    // by mb.actions to expose the schema.
+    const Action::ActionSchema *scriptActionSchema(const std::string &fullName) const;
     // Returns the registered action names ("namespace.action" form). The
     // owning instance id is tracked internally for cleanup-on-unload but
     // intentionally not exposed; callers that need it can use
@@ -1016,11 +1026,24 @@ private:
 
     std::unordered_map<std::string, PendingScript> pendingScripts_;
 
-    // "namespace.action" → owning InstanceId. Re-registering the same
-    // name from the same instance is idempotent (used by config.js
-    // hot-reload); from a different instance it fails so unload cleanup
-    // doesn't accidentally drop another instance's action.
-    std::unordered_map<std::string, InstanceId> registeredActions_;
+    // "namespace.action" → metadata: owning instance and optional
+    // schema. Re-registering the same name from the same instance is
+    // idempotent (used by config.js hot-reload); from a different
+    // instance it fails so unload cleanup doesn't accidentally drop
+    // another instance's action.
+    //
+    // Schemas are declared via the second arg to mb.registerAction.
+    // When present, the engine delivers object-shaped args to the
+    // handler and exposes the schema in mb.actions; when absent, the
+    // legacy positional-string delivery is used and the action shows
+    // up in mb.actions with an empty schema.
+    struct RegisteredAction
+    {
+        InstanceId instance;
+        Action::ActionSchema schema; // empty == no schema declared
+    };
+
+    std::unordered_map<std::string, RegisteredAction> registeredActions_;
     // XTGETTCAP name → value. Read by parser worker threads (via the
     // customTcapLookup callback bound in PlatformDawn::buildTerminalCallbacks);
     // written only by main-thread JS callbacks (mb.registerTcap /

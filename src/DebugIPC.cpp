@@ -230,12 +230,14 @@ static const struct lws_protocols sProtocols[] = {
 };
 
 DebugIPC::DebugIPC(EventLoop *loop, TerminalCallback termCb, GridCallback gridCb,
-                   StatsCallback statsCb, ActionCallback actionCb)
+                   StatsCallback statsCb, ActionCallback actionCb,
+                   ActionTypedCallback actionTypedCb)
     : loop_(loop)
     , termCb_(std::move(termCb))
     , gridCb_(std::move(gridCb))
     , statsCb_(std::move(statsCb))
     , actionCb_(std::move(actionCb))
+    , actionTypedCb_(std::move(actionTypedCb))
 {
     socketPath_ = "/tmp/mb-" + std::to_string(getpid()) + ".sock";
 
@@ -288,7 +290,10 @@ void DebugIPC::drainLogQueue()
 
 void DebugIPC::serviceFd(int fd, EventLoop::FdEvents fired)
 {
-    struct lws_pollfd pfd {};
+    struct lws_pollfd pfd
+    {
+    };
+
     pfd.fd      = fd;
     pfd.events  = POLLIN | POLLOUT;
     pfd.revents = 0;
@@ -353,20 +358,36 @@ void DebugIPC::handleMessage(struct lws *wsi, const std::string &msg)
         cmdStats(wsi, id);
     } else if (cmd == "action") {
         std::string action = jsonStr(j, "action");
-        std::vector<std::string> args;
+        // Args can be one of three shapes:
+        //   - absent / null: nullary action.
+        //   - array of strings: positional, back-compat.
+        //   - object: named typed args, new in 2026-05.
+        // The object form goes through actionTypedCb_ which coerces
+        // each value into ArgValue and calls parseActionTyped on the
+        // C++ side. The array form keeps the existing positional path.
         if (auto *obj = std::get_if<glz::generic::object_t>(&j.data)) {
             auto it = obj->find("args");
             if (it != obj->end()) {
                 if (auto *arr = std::get_if<glz::generic::array_t>(&it->second.data)) {
+                    std::vector<std::string> args;
+                    args.reserve(arr->size());
                     for (const auto &a : *arr) {
                         if (auto *s = std::get_if<std::string>(&a.data)) {
                             args.push_back(*s);
                         }
                     }
+                    cmdAction(wsi, id, action, args);
+                } else if (std::holds_alternative<glz::generic::object_t>(it->second.data)) {
+                    cmdActionTyped(wsi, id, action, it->second);
+                } else {
+                    cmdAction(wsi, id, action, {});
                 }
+            } else {
+                cmdAction(wsi, id, action, {});
             }
+        } else {
+            cmdAction(wsi, id, action, {});
         }
-        cmdAction(wsi, id, action, args);
     } else if (cmd == "inject") {
         std::string data = jsonStr(j, "data");
         cmdInject(wsi, id, data);
@@ -682,6 +703,25 @@ void DebugIPC::cmdAction(struct lws *wsi, int id, const std::string &action,
     sendResponse(wsi, dumpObj(resp));
 }
 
+void DebugIPC::cmdActionTyped(struct lws *wsi, int id, const std::string &action,
+                              const glz::generic &args)
+{
+    if (!actionTypedCb_) {
+        sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "typed-action dispatch not available" } }));
+        return;
+    }
+
+    bool ok = actionTypedCb_(action, args);
+    glz::generic::object_t resp;
+    resp["type"] = "action";
+    resp["id"]   = static_cast<double>(id);
+    resp["ok"]   = ok;
+    if (!ok) {
+        resp["msg"] = std::string("unknown action: " + action);
+    }
+    sendResponse(wsi, dumpObj(resp));
+}
+
 // ============================================================================
 // Command: inject
 // ============================================================================
@@ -857,7 +897,11 @@ void DebugIPC::cmdFeed(struct lws *wsi, int id, const std::string &path, uint32_
         sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", std::string("open failed: ") + strerror(errno) } }));
         return;
     }
-    struct stat st {};
+
+    struct stat st
+    {
+    };
+
     if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         ::close(fd);
         sendResponse(wsi, dumpObj({ { "type", "error" }, { "id", static_cast<double>(id) }, { "msg", "not a regular file" } }));

@@ -44,6 +44,45 @@ int PlatformDawn::exec()
                                                    }
                                                    dispatchAction(*parsed);
                                                    return true;
+                                               },
+                                               // Typed args: JSON object → Action::ArgsValue → parseActionTyped.
+                                               [this](const std::string &action, const glz::generic &args) -> bool
+                                               {
+                                                   Action::ArgsValue typed;
+                                                   if (auto *obj = std::get_if<glz::generic::object_t>(&args.data)) {
+                                                       for (const auto &[k, v] : *obj) {
+                                                           // genericToArg lives in Bindings.cpp; we
+                                                           // re-implement the scalar mapping inline
+                                                           // here to avoid widening the Bindings API.
+                                                           // Same set of types handled by the JS
+                                                           // jsValueToArg adapter.
+                                                           std::visit([&](const auto &val)
+                                                                      {
+                                                                          using T = std::decay_t<decltype(val)>;
+                                                                          if constexpr (std::is_same_v<T, std::nullptr_t>) {
+                                                                              typed[k] = Action::ArgValue {};
+                                                                          } else if constexpr (std::is_same_v<T, bool>) {
+                                                                              typed[k] = Action::ArgValue { val };
+                                                                          } else if constexpr (std::is_same_v<T, double>) {
+                                                                              double d = val;
+                                                                              if (d == static_cast<int64_t>(d)) {
+                                                                                  typed[k] = Action::ArgValue { static_cast<int64_t>(d) };
+                                                                              } else {
+                                                                                  typed[k] = Action::ArgValue { d };
+                                                                              }
+                                                                          } else if constexpr (std::is_same_v<T, std::string>) {
+                                                                              typed[k] = Action::ArgValue { val };
+                                                                          }
+                                                                      },
+                                                                      v.data);
+                                                       }
+                                                   }
+                                                   auto parsed = parseActionTyped(action, typed);
+                                                   if (!parsed) {
+                                                       return false;
+                                                   }
+                                                   dispatchAction(*parsed);
+                                                   return true;
                                                });
         if (debugSink_) {
             debugSink_->setIPC(debugIPC_.get());
@@ -117,6 +156,15 @@ int PlatformDawn::exec()
         scbs.invokeAction = [this](const std::string &action, const std::vector<std::string> &args) -> bool
         {
             auto parsed = parseAction(action, args);
+            if (!parsed) {
+                return false;
+            }
+            dispatchAction(*parsed);
+            return true;
+        };
+        scbs.invokeActionTyped = [this](const std::string &action, const Action::ArgsValue &args) -> bool
+        {
+            auto parsed = parseActionTyped(action, args);
             if (!parsed) {
                 return false;
             }
@@ -967,6 +1015,76 @@ int PlatformDawn::exec()
             return platformSpawnDetached(req.path, req.argv, opts);
         };
         scriptEngine_.setCallbacks(std::move(scbs));
+    }
+
+    // Register built-in action-arg value providers. These are queried
+    // by the command palette (via mb.actionValues) when expanding or
+    // prompting for an arg whose schema declares `provider: "<name>"`.
+    // Providers run on the main thread inside JS event handling so the
+    // layout tree reads here are safe; the snapshots they return are
+    // cheap (string lists) and may go stale between palette open and
+    // user submit — that's fine, the dispatcher re-validates the
+    // chosen value against the live state.
+    {
+        // "panes" — current panes' effective titles (override > OSC).
+        // Empty titles are dropped; duplicates kept so the user sees
+        // every match candidate even if titles collide.
+        Action::registerValueProvider("panes", [this]()
+                                      {
+                                          std::vector<Action::ValueOption> out;
+                                          LayoutTree &tree = scriptEngine_.layoutTree();
+                                          std::vector<Uuid> leaves;
+                                          // Walk the whole tree (start = nil = tree root) for every
+                                          // Terminal leaf, visible or not. Visibility doesn't matter
+                                          // for "activate this pane by name" — the dispatcher handles
+                                          // sub-tab activation as part of focusing the leaf.
+                                          tree.terminalLeavesIn(Uuid {}, /*onlyActiveStack=*/false, leaves);
+                                          for (const auto &id : leaves) {
+                                              if (Terminal *p = scriptEngine_.terminal(id)) {
+                                                  std::string title = p->title().value_or("");
+                                                  if (title.empty()) {
+                                                      title = p->foregroundProcess();
+                                                  }
+                                                  if (title.empty()) {
+                                                      continue;
+                                                  }
+                                                  out.push_back({ title, title });
+                                              }
+                                          }
+                                          return out;
+                                      });
+        // "tabs" — top-level tab subtree roots, labeled by their
+        // remembered-focus pane's effective title (best human-readable
+        // hint we have for "which tab is this"). The value is the
+        // UUID string, so activate_tab / close_tab consumers can pass
+        // it straight through.
+        Action::registerValueProvider("tabs", [this]()
+                                      {
+                                          std::vector<Action::ValueOption> out;
+                                          LayoutTree &tree = scriptEngine_.layoutTree();
+                                          Uuid rootStack   = scriptEngine_.layoutRootStack();
+                                          const Node *root = tree.node(rootStack);
+                                          if (!root) {
+                                              return out;
+                                          }
+                                          if (auto *sd = std::get_if<StackData>(&root->data)) {
+                                              for (size_t i = 0; i < sd->children.size(); ++i) {
+                                                  const Uuid &tabId = sd->children[i].id;
+                                                  std::string label;
+                                                  if (Terminal *fp = scriptEngine_.rememberedFocusTerminalInSubtree(tabId)) {
+                                                      label = fp->title().value_or("");
+                                                      if (label.empty()) {
+                                                          label = fp->foregroundProcess();
+                                                      }
+                                                  }
+                                                  if (label.empty()) {
+                                                      label = "Tab " + std::to_string(i + 1);
+                                                  }
+                                                  out.push_back({ tabId.toString(), label });
+                                              }
+                                          }
+                                          return out;
+                                      });
     }
 
     // Hook action dispatcher to notify script engine

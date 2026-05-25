@@ -16,13 +16,21 @@ class Terminal;
 class DebugIPC
 {
 public:
-    using GridCallback     = std::function<std::string(int id)>;
-    using StatsCallback    = std::function<std::string(int id)>;
-    using TerminalCallback = std::function<Terminal *()>;
-    using ActionCallback   = std::function<bool(const std::string &action, const std::vector<std::string> &args)>;
+    using GridCallback        = std::function<std::string(int id)>;
+    using StatsCallback       = std::function<std::string(int id)>;
+    using TerminalCallback    = std::function<Terminal *()>;
+    using ActionCallback      = std::function<bool(const std::string &action, const std::vector<std::string> &args)>;
+    // Typed-args entry point. Accepts a JSON object whose keys are
+    // argument names and values are scalars/strings. The C++ side
+    // coerces each value to Action::ArgValue and dispatches via
+    // parseActionTyped. Independent of the positional callback so the
+    // legacy IPC contract stays intact.
+    using ActionTypedCallback = std::function<bool(const std::string &action,
+                                                   const glz::generic &args)>;
 
     DebugIPC(EventLoop *loop, TerminalCallback termCb, GridCallback gridCb,
-             StatsCallback statsCb = {}, ActionCallback actionCb = {});
+             StatsCallback statsCb = {}, ActionCallback actionCb = {},
+             ActionTypedCallback actionTypedCb = {});
     ~DebugIPC();
 
     // Stop lws thread and destroy lws context.
@@ -72,6 +80,8 @@ private:
     void cmdWaitIdle(struct lws *wsi, int id, uint64_t timeoutMs, uint64_t settleMs);
     void cmdAction(struct lws *wsi, int id, const std::string &action,
                    const std::vector<std::string> &args);
+    void cmdActionTyped(struct lws *wsi, int id, const std::string &action,
+                        const glz::generic &args);
     void cmdSubscribeLogs(struct lws *wsi, int id);
     void cmdUnsubscribeLogs(struct lws *wsi, int id);
     // Test-only animation control. Bypasses the JS handle / completion-
@@ -88,6 +98,7 @@ private:
     GridCallback gridCb_;
     StatsCallback statsCb_;
     ActionCallback actionCb_;
+    ActionTypedCallback actionTypedCb_;
 
     struct PerConnection
     {

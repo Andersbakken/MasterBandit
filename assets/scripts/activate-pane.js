@@ -26,7 +26,24 @@
 //   - From C++ Bindings:  Action::ScriptAction { "pane.activate_by_name", { "claude" } }
 
 mb.setNamespace("pane");
-mb.registerAction("activate_by_name");
+mb.registerAction("activate_by_name", {
+    args: [
+        {
+            // `name` accepts either an exact (case-insensitive) match
+            // against a pane's effective title, or "/regex/flags" for
+            // regex matching. The "panes" value provider feeds the
+            // command palette with current pane titles so the user can
+            // pick from a list without typing; bypass the list by
+            // submitting a "/.../" regex via the action form's text
+            // entry.
+            name:     "name",
+            label:    "Pane name",
+            kind:     "string",
+            required: true,
+            provider: "panes",
+        },
+    ],
+});
 
 // Parse "/pattern/flags" into a RegExp, or null if the input isn't in
 // regex form. Flags default to "i" (case-insensitive) — matches the
@@ -78,7 +95,7 @@ function activateAncestors(nodeId) {
     }
 }
 
-mb.addEventListener("action", "pane.activate_by_name", (name) => {
+mb.addEventListener("action", "pane.activate_by_name", ({ name }) => {
     if (typeof name !== "string" || name.length === 0) {
         console.log("pane.activate_by_name: missing or empty name arg");
         return;

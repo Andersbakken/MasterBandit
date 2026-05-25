@@ -44,9 +44,21 @@ struct Binding
 // Parse a single key string like "ctrl+shift+t" → KeyStroke.
 std::optional<KeyStroke> parseKeyStroke(const std::string &s);
 
-// Parse an action name + args → Action::Any.
+// Parse an action name + positional string args → Action::Any. Args
+// are coerced via the schema adapter into typed ArgsValue, then the
+// schema-registered builder constructs the variant. Snake-case names
+// translate to Pascal; aliases handled inline. Returns nullopt with a
+// warning logged on unknown action or coercion failure.
 std::optional<Action::Any> parseAction(const std::string &name,
                                        const std::vector<std::string> &args);
+
+// Same as parseAction but with already-typed named args. Used by the
+// JS object-arg path and the TOML named-table arg form. Skips the
+// positional adapter; goes straight to the schema-driven builder. The
+// caller is responsible for snake_case→Pascal translation when needed
+// (parseActionTyped wraps that bit too).
+std::optional<Action::Any> parseActionTyped(const std::string &snakeName,
+                                            const Action::ArgsValue &args);
 
 // Parse a mouse-only action name + args → MouseAction::Any. Recognizes the
 // names that need cell context: "mouse_selection [normal|word|line|extend|

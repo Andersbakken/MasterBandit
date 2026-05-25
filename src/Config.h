@@ -1,8 +1,29 @@
 #pragma once
 
-#include <glaze/core/common.hpp>
+#include <glaze/glaze.hpp>
 #include <string>
+#include <unordered_map>
+#include <variant>
 #include <vector>
+
+// `args` in a [[keybinding]] / [[mousebinding]] TOML entry accepts two
+// shapes:
+//   1. Positional: `args = ["right", "3"]` — string-only list, the
+//      original format. Coerced via the schema adapter into typed
+//      ArgsValue at dispatch time.
+//   2. Named (post-2026-05): `args = { direction = "right", amount = 3 }`
+//      — table whose values are arbitrary TOML scalars (string, int,
+//      bool, float). Values arrive as glz::generic so we don't lose
+//      type information at parse; the schema-driven dispatcher then
+//      coerces each entry into ArgValue.
+//
+// Glaze decodes std::variant by trying alternatives in order; for TOML
+// the first alternative that matches the document structure wins. The
+// positional form is listed first so existing configs keep their
+// fast-path; an explicit table form falls through to the second
+// alternative.
+using BindingArgsTable = std::unordered_map<std::string, glz::generic>;
+using BindingArgs      = std::variant<std::vector<std::string>, BindingArgsTable>;
 
 struct MouseBindingConfig
 {
@@ -11,7 +32,7 @@ struct MouseBindingConfig
     std::string mode;   // "ungrabbed", "grabbed", "any" (default: "ungrabbed")
     std::string region; // "any", "tab_bar", "pane", "divider" (default: "any")
     std::string action;
-    std::vector<std::string> args;
+    BindingArgs args;
 
     struct glaze
     {
@@ -30,7 +51,7 @@ struct BindingConfig
 {
     std::vector<std::string> keys;
     std::string action;
-    std::vector<std::string> args;
+    BindingArgs args;
 
     struct glaze
     {
@@ -202,7 +223,7 @@ struct Config
     std::vector<MouseBindingConfig> mousebindings;
     std::string divider_color         = "#3d3d3d";
     int divider_width                 = 1;
-    int divider_hit_pad               = 4;  // hit-test pad on each side
+    int divider_hit_pad               = 4; // hit-test pad on each side
     std::string inactive_pane_tint    = "#000000";
     float inactive_pane_tint_alpha    = 0.3f;
     std::string active_pane_tint      = "#000000";

@@ -20,6 +20,7 @@ set(TEST_SOURCES
     test_shaping.cpp
     test_font_fallback.cpp
     test_bindings.cpp
+    test_action_args.cpp
     ../src/Bindings.cpp
     ../src/Action.cpp
     test_kitty_keyboard.cpp

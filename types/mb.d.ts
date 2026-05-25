@@ -1113,13 +1113,61 @@ interface MbConfigMutations {
 // Action registry
 // ============================================================================
 
+/**
+ * Built-in action arg kinds. `direction` is sugar for an enum with the
+ * canonical six direction tokens (`left`, `right`, `up`, `down`, `next`,
+ * `prev`).
+ */
+type MbArgKind = "string" | "int" | "bool" | "enum" | "direction" | "uuid";
+
+/**
+ * Static or dynamic value suggestion for an enum / provider-backed arg.
+ * `value` is the canonical wire form sent to the action. `label` is
+ * what the palette / form shows the user; defaults to `value`.
+ */
+interface MbActionValueOption {
+    value: string;
+    label?: string;
+}
+
+/**
+ * One declared argument on an action. Authored both by C++ (built-in
+ * actions) and JS (`mb.registerAction(name, schema)`). The fields
+ * mirror the runtime ActionArg struct.
+ */
+interface MbActionArg {
+    name: string;
+    label?: string;
+    kind: MbArgKind;
+    required?: boolean;
+    /** Default value when omitted. Read as-is by the dispatcher. */
+    default?: string | number | boolean;
+    /** Static value set for `kind === "enum"`. Strings may shortcut as `["a","b"]`. */
+    values?: ReadonlyArray<MbActionValueOption | string>;
+    /**
+     * Dynamic value provider name. Looked up at palette-open time via
+     * `mb.actionValues(provider)`. Built-in providers: `"panes"` (live
+     * pane titles), `"tabs"` (top-level tab UUIDs labeled by title).
+     */
+    provider?: string;
+}
+
+/**
+ * Argument schema for an action. The palette uses this to decide
+ * inline-expansion vs. form-prompt; the dispatcher uses it to coerce
+ * positional / typed-object input into typed values.
+ */
+interface MbActionSchema {
+    args: ReadonlyArray<MbActionArg>;
+}
+
 interface MbActionInfo {
     name: string;
     label: string;
     /** True for C++-defined actions, false for script-registered ones. */
     builtin: boolean;
-    /** Optional args the action accepts (e.g. `["right","left"]` for directional). */
-    args?: string[];
+    /** Schema declared by the action. `args` is empty for nullary actions. */
+    schema: MbActionSchema;
 }
 
 /**
@@ -1127,11 +1175,93 @@ interface MbActionInfo {
  * Capturing into a local works; the array regenerates on every access.
  */
 interface MbActions extends ReadonlyArray<MbActionInfo> {
-    /** Register a handler for `name`. Requires `layout.modify`. */
-    register(name: string, fn: (...args: string[]) => void): void;
+    /**
+     * Register a handler for `name`. The handler receives the action's
+     * typed args object (matching the action's declared schema). For
+     * schema-less actions, the handler receives positional string args
+     * — this back-compat shape is intentionally not typed here; declare
+     * a schema to get object-arg typing.
+     */
+    register(name: string, fn: (args: any) => void): void;
     /** Drop a previously-registered handler. Requires `layout.modify`. */
     unregister(name: string): void;
 }
+
+// ============================================================================
+// Typed action map
+// ============================================================================
+//
+// Authoritative per-action arg shapes for built-in C++ actions. Used by
+// `invokeAction(name, args)` and `addEventListener("action", name, fn)`
+// overloads below to give compile-time typing. User scripts that
+// register their own actions extend this map via TS module
+// augmentation:
+//
+//   declare module "mb" {
+//     interface MbActionMap {
+//       "myns.myaction": { foo: string; count?: number };
+//     }
+//   }
+//
+// Note: the *runtime* keeps accepting positional string args
+// (`mb.invokeAction("split_pane", "right")`), but the d.ts intentionally
+// only exposes the object-arg form so TS-aware callers are pushed
+// toward typed input.
+
+type MbDirection = "left" | "right" | "up" | "down" | "next" | "prev";
+
+interface MbActionMap {
+    "new_tab":                      {};
+    "close_tab":                    { target?: string };
+    "activate_tab_relative":        { delta: number; stack?: string };
+    "activate_tab":                 { target: string };
+    "split_pane":                   { direction: MbDirection };
+    "close_pane":                   {};
+    "zoom_pane":                    {};
+    "focus_pane":                   { direction: MbDirection };
+    "adjust_pane_size":             { direction: MbDirection; amount?: number };
+    "copy":                         {};
+    "paste":                        {};
+    "scroll_up":                    { lines?: number };
+    "scroll_down":                  { lines?: number };
+    "scroll_page_up":               {};
+    "scroll_page_down":             {};
+    "scroll_to_top":                {};
+    "scroll_to_bottom":             {};
+    "increase_font_size":           {};
+    "decrease_font_size":           {};
+    "reset_font_size":              {};
+    "scroll_to_prompt":             { direction: "prev" | "next" };
+    "select_command_output":        {};
+    "copy_last_command":            {};
+    "copy_selected_command_output": {};
+    "copy_document":                {};
+    "focus_popup":                  {};
+    "reload_config":                {};
+    "paste_selection":              {};
+    "move_tab":                     { direction?: "left" | "right" };
+    "swap_pane":                    { direction?: MbDirection };
+    "rotate_panes":                 { direction?: "cw" | "ccw" };
+    "clear":                        { mode?: "all" | "scrollback" };
+    "send_string":                  { text: string };
+    "send_key":                     { key: string };
+    "nop":                          {};
+    "disable_default_assignment":   {};
+    "activate_last_tab":            { stack?: string };
+    "reset_terminal":               {};
+    // Built-in script-action aliases for the bundled applets. Augment
+    // MbActionMap from a config script to type your own actions.
+    "palette.open":                 {};
+    "search.open":                  {};
+    "title.set":                    {};
+    "pane.activate_by_name":        { name: string };
+}
+
+/**
+ * Convenience type for the args of a specific action. Resolves to the
+ * declared object shape, or `never` if the action isn't declared.
+ */
+type MbActionArgs<K extends keyof MbActionMap> = MbActionMap[K];
 
 /**
  * Payload for `terminalExited`. Emitted after a Terminal node's PTY child
@@ -1179,11 +1309,47 @@ interface MbGlobal {
     readonly config: MbConfig;
 
     // --- Actions ---
-    invokeAction(name: string, ...args: string[]): boolean;
+    /**
+     * Invoke an action by name with typed object args. The args shape
+     * is constrained by `MbActionMap[K]`; assigning a malformed object
+     * is a TS error.
+     *
+     * Empty-args actions take an explicit `{}` to keep the call shape
+     * uniform: `mb.invokeAction("new_tab", {})`.
+     *
+     * Runtime back-compat: the engine still accepts the old positional
+     * form (`mb.invokeAction("split_pane", "right")`), but that overload
+     * is not exposed here on purpose — declare a schema and use the
+     * typed object form when authoring TS.
+     *
+     * Returns `false` for unknown actions or coercion failures.
+     */
+    invokeAction<K extends keyof MbActionMap>(name: K, args: MbActionMap[K]): boolean;
+    /**
+     * Untyped fallback for dynamically-named actions (e.g. registered
+     * by a script not statically known to your TS code). Prefer the
+     * typed overload above when the action name is a literal.
+     */
+    invokeAction(name: string, args?: Record<string, unknown>): boolean;
+    /**
+     * Query the named dynamic value provider for an action arg. Used
+     * by the command palette and the action-form module to enumerate
+     * provider-backed args.
+     *
+     * Built-in providers: `"panes"` (current pane effective titles),
+     * `"tabs"` (top-level tab UUIDs labeled by their remembered-focus
+     * pane). Unknown providers return `[]`.
+     */
+    actionValues(provider: string): ReadonlyArray<{ value: string; label: string }>;
     /** Set this script's action namespace. Can only be called once per instance. */
     setNamespace(namespace: string): boolean;
-    /** Register `<namespace>.<name>` as a script action. */
-    registerAction(name: string): boolean;
+    /**
+     * Register `<namespace>.<name>` as a script action. The optional
+     * second arg declares an argument schema; when provided, the
+     * action's handler receives typed object args and the action
+     * shows up in the command palette with the right argument UI.
+     */
+    registerAction(name: string, schema?: MbActionSchema): boolean;
 
     // --- Script management ---
     /**
@@ -1329,10 +1495,27 @@ interface MbGlobal {
     /** Fires when any action is invoked, with the action's full name. */
     addEventListener(event: "action", fn: (actionName: string) => void): void;
     /**
-     * Fires on the specific action name. Built-in scripts receive every action;
-     * user scripts only receive actions in their own namespace.
+     * Fires on the specific action name. Handler receives the action's
+     * typed args object as declared in `MbActionMap`. Built-in scripts
+     * receive every action; user scripts only receive actions in their
+     * own namespace.
+     *
+     * Runtime back-compat: actions registered without a schema still
+     * deliver positional string args to the handler. That untyped
+     * shape is not exposed here on purpose — declare a schema in
+     * `mb.registerAction(name, schema)` to opt into typed delivery.
      */
-    addEventListener(event: "action", actionName: string, fn: (...args: string[]) => void): void;
+    addEventListener<K extends keyof MbActionMap>(
+        event: "action",
+        actionName: K,
+        fn: (args: MbActionMap[K]) => void
+    ): void;
+    /** Untyped fallback for dynamically-named actions. */
+    addEventListener(
+        event: "action",
+        actionName: string,
+        fn: (args: Record<string, unknown>) => void
+    ): void;
     /**
      * Fired when a user script is trying to load and the allowlist lacks a
      * matching entry. Built-in scripts only. Respond via `mb.approveScript`.
@@ -1358,7 +1541,16 @@ interface MbGlobal {
     removeEventListener(event: "terminalExited", fn: (ev: MbTerminalExitedEvent) => void): void;
     removeEventListener(event: "configChanged", fn: () => void): void;
     removeEventListener(event: "action", fn: (actionName: string) => void): void;
-    removeEventListener(event: "action", actionName: string, fn: (...args: string[]) => void): void;
+    removeEventListener<K extends keyof MbActionMap>(
+        event: "action",
+        actionName: K,
+        fn: (args: MbActionMap[K]) => void
+    ): void;
+    removeEventListener(
+        event: "action",
+        actionName: string,
+        fn: (args: Record<string, unknown>) => void
+    ): void;
     removeEventListener(
         event: "scriptPermissionRequired",
         fn: (path: string, permissions: string, hash: string) => void

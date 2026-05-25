@@ -557,8 +557,17 @@ function _renderInput(node, buf, focused, theme) {
     for (let i = 0; i < val.length && cx < x + w; i++, cx++)
         buf.set(cx, y, val[i], fg, bg, col.bold, col.italic, col.underline);
 
-    if (focused && cx < x + w)
-        buf.set(cx, y, ' ', bg || '39', fg || '49', false, false, false);
+    // Caret on the focused input. Painted as a solid block in the
+    // input's fg color rather than a reverse-video space — the block
+    // glyph reads as a caret unambiguously across themes and doesn't
+    // depend on whether the terminal's bg paints under cell text. When
+    // the value fills the row, overwrite the last character cell with
+    // the caret so users still know which field is focused; a single
+    // overdrawn char is preferable to a focused-but-invisible state.
+    if (focused) {
+        const caretX = cx < x + w ? cx : x + w - 1;
+        buf.set(caretX, y, '\u2588', fg, bg, false, false, false);
+    }
 }
 
 function _renderList(node, buf, focused, theme) {

@@ -1,6 +1,6 @@
 // set-title.js — set a custom title override on the focused pane.
 //
-// Bound to a keybinding via the `title.set` script action. Opens a
+// Bound to a keybinding via the `pane.set_title` script action. Opens a
 // centered popup with a text input pre-filled with the pane's current
 // effective title and three buttons: Set (commits the input as the
 // override), Cancel (closes without changes), and Clear (removes any
@@ -17,8 +17,8 @@
 
 import { signal, render, createTheme, box, text, input, row, button, measure } from "mb:tui";
 
-mb.setNamespace("title");
-mb.registerAction("set");
+mb.setNamespace("pane");
+mb.registerAction("set_title");
 
 const theme = createTheme({
     bg:     '#1a1b26',
@@ -33,7 +33,7 @@ const theme = createTheme({
 
 let ui = null;
 
-mb.addEventListener("action", "title.set", () => {
+mb.addEventListener("action", "pane.set_title", () => {
     const pane = mb.activePane;
     if (!pane) return;
 

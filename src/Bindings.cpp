@@ -17,6 +17,70 @@ static std::string toLower(std::string s)
     return s;
 }
 
+// snake_case → PascalCase. Inverse of ScriptEngine.cpp's toSnakeCase.
+// "activate_tab_relative" → "ActivateTabRelative".
+static std::string snakeToPascal(std::string_view snake)
+{
+    std::string out;
+    out.reserve(snake.size());
+    bool capNext = true;
+    for (char c : snake) {
+        if (c == '_') {
+            capNext = true;
+            continue;
+        }
+        if (capNext) {
+            out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            capNext = false;
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+// Aliases for action names that aren't a clean snake_case translation
+// of the Pascal variant. Each entry maps an alias (TOML / JS-visible
+// name) to (Pascal name, baked positional args that complete the
+// invocation). The baked args are concatenated *before* user-supplied
+// args, so e.g. `scroll_to_previous_prompt` resolves to
+// (`ScrollToPrompt`, {"prev"}) and any user args follow — which is
+// vacuous for these zero-arg aliases.
+struct ActionAlias
+{
+    std::string_view pascal;
+    std::vector<std::string> bakedArgs;
+};
+
+static const std::unordered_map<std::string, ActionAlias> &actionAliases()
+{
+    static const std::unordered_map<std::string, ActionAlias> m = {
+        { "scroll_to_previous_prompt", { "ScrollToPrompt", { "prev" } } },
+        { "scroll_to_next_prompt", { "ScrollToPrompt", { "next" } } },
+    };
+    return m;
+}
+
+// One-time wiring: hand Action.cpp our keystroke parser so the SendKey
+// schema-driven builder can resolve "ctrl+a" → Key+mods without
+// importing Bindings into Action.cpp.
+namespace {
+struct SendKeyParserInit
+{
+    SendKeyParserInit()
+    {
+        Action::setSendKeyParser([](const std::string &ks) -> Action::SendKey
+                                 {
+                                     auto parsed = parseKeyStroke(ks);
+                                     if (!parsed) {
+                                         return Action::SendKey { Key_unknown, 0 };
+                                     }
+                                     return Action::SendKey { parsed->key, parsed->mods };
+                                 });
+    }
+} sendKeyParserInit;
+} // namespace
+
 std::optional<KeyStroke> parseKeyStroke(const std::string &s)
 {
     // Split on '+', last token is the key name, earlier tokens are modifiers.
@@ -119,328 +183,93 @@ std::optional<KeyStroke> parseKeyStroke(const std::string &s)
 std::optional<Action::Any> parseAction(const std::string &name,
                                        const std::vector<std::string> &args)
 {
-    if (name == "new_tab") {
-        return Action::NewTab {};
-    }
-    if (name == "close_tab") {
-        Uuid target;
-        int idx = -1;
-        if (!args.empty()) {
-            try {
-                idx = std::stoi(args[0]);
-            } catch (...) {
-                target = Uuid::fromString(args[0]);
-                if (target.isNil()) {
-                    spdlog::warn("Bindings: close_tab arg '{}' not an int or UUID", args[0]);
-                    return std::nullopt;
-                }
-            }
-        }
-        return Action::CloseTab { target, idx };
-    }
-
-    if (name == "activate_tab_relative") {
-        if (args.empty()) {
-            spdlog::warn("Bindings: activate_tab_relative requires an arg");
-            return std::nullopt;
-        }
-        int delta = 0;
-        try {
-            delta = std::stoi(args[0]);
-        } catch (...) {
-            spdlog::warn("Bindings: bad arg for activate_tab_relative");
-            return std::nullopt;
-        }
-        Uuid stack;
-        if (args.size() >= 2) {
-            stack = Uuid::fromString(args[1]);
-            if (stack.isNil()) {
-                spdlog::warn("Bindings: activate_tab_relative bad stackUuid '{}'", args[1]);
-                return std::nullopt;
-            }
-        }
-        return Action::ActivateTabRelative { stack, delta };
-    }
-    if (name == "activate_tab") {
-        if (args.empty()) {
-            spdlog::warn("Bindings: activate_tab requires an arg");
-            return std::nullopt;
-        }
-        Uuid target;
-        int idx = -1;
-        try {
-            idx = std::stoi(args[0]);
-        } catch (...) {
-            target = Uuid::fromString(args[0]);
-            if (target.isNil()) {
-                spdlog::warn("Bindings: activate_tab arg '{}' not an int or UUID", args[0]);
-                return std::nullopt;
-            }
-        }
-        return Action::ActivateTab { target, idx };
-    }
-    if (name == "split_pane") {
-        if (args.empty()) {
-            spdlog::warn("Bindings: split_pane requires a direction arg (\"right\", \"down\", \"left\", \"up\")");
-            return std::nullopt;
-        }
-        std::string d = toLower(args[0]);
-        if (d == "right") {
-            return Action::SplitPane { Action::Direction::Right };
-        }
-        if (d == "down") {
-            return Action::SplitPane { Action::Direction::Down };
-        }
-        if (d == "left") {
-            return Action::SplitPane { Action::Direction::Left };
-        }
-        if (d == "up") {
-            return Action::SplitPane { Action::Direction::Up };
-        }
-        spdlog::warn("Bindings: unknown split_pane direction '{}'", args[0]);
-        return std::nullopt;
-    }
-    if (name == "close_pane") {
-        return Action::ClosePane {};
-    }
-    if (name == "zoom_pane") {
-        return Action::ZoomPane {};
-    }
-
-    if (name == "focus_pane") {
-        if (args.empty()) {
-            spdlog::warn("Bindings: focus_pane requires a direction arg");
-            return std::nullopt;
-        }
-        std::string d = toLower(args[0]);
-        if (d == "left") {
-            return Action::FocusPane { Action::Direction::Left };
-        }
-        if (d == "right") {
-            return Action::FocusPane { Action::Direction::Right };
-        }
-        if (d == "up") {
-            return Action::FocusPane { Action::Direction::Up };
-        }
-        if (d == "down") {
-            return Action::FocusPane { Action::Direction::Down };
-        }
-        if (d == "next") {
-            return Action::FocusPane { Action::Direction::Next };
-        }
-        if (d == "prev") {
-            return Action::FocusPane { Action::Direction::Prev };
-        }
-        spdlog::warn("Bindings: unknown focus_pane direction '{}'", args[0]);
-        return std::nullopt;
-    }
-    if (name == "adjust_pane_size") {
-        if (args.empty()) {
-            spdlog::warn("Bindings: adjust_pane_size requires a direction arg");
-            return std::nullopt;
-        }
-        std::string d = toLower(args[0]);
-        int amount    = 1;
-        if (args.size() >= 2) {
-            try {
-                amount = std::stoi(args[1]);
-            } catch (...) {
-            }
-        }
-        if (d == "left") {
-            return Action::AdjustPaneSize { Action::Direction::Left, amount };
-        }
-        if (d == "right") {
-            return Action::AdjustPaneSize { Action::Direction::Right, amount };
-        }
-        if (d == "up") {
-            return Action::AdjustPaneSize { Action::Direction::Up, amount };
-        }
-        if (d == "down") {
-            return Action::AdjustPaneSize { Action::Direction::Down, amount };
-        }
-        spdlog::warn("Bindings: unknown adjust_pane_size direction '{}'", args[0]);
-        return std::nullopt;
-    }
-
-    // Reorder actions. Each takes an optional direction string; missing args
-    // fall back to a sensible default ("right"/"next"/"cw").
-    if (name == "move_tab") {
-        std::string d = args.empty() ? "right" : toLower(args[0]);
-        if (d == "left" || d == "prev") {
-            return Action::MoveTab { -1 };
-        }
-        if (d == "right" || d == "next") {
-            return Action::MoveTab { +1 };
-        }
-        spdlog::warn("Bindings: unknown move_tab direction '{}'", args[0]);
-        return std::nullopt;
-    }
-    if (name == "swap_pane") {
-        std::string d = args.empty() ? "next" : toLower(args[0]);
-        if (d == "left") {
-            return Action::SwapPane { Action::Direction::Left };
-        }
-        if (d == "right") {
-            return Action::SwapPane { Action::Direction::Right };
-        }
-        if (d == "up") {
-            return Action::SwapPane { Action::Direction::Up };
-        }
-        if (d == "down") {
-            return Action::SwapPane { Action::Direction::Down };
-        }
-        if (d == "next") {
-            return Action::SwapPane { Action::Direction::Next };
-        }
-        if (d == "prev") {
-            return Action::SwapPane { Action::Direction::Prev };
-        }
-        spdlog::warn("Bindings: unknown swap_pane direction '{}'", args.empty() ? "" : args[0]);
-        return std::nullopt;
-    }
-    if (name == "rotate_panes") {
-        std::string d = args.empty() ? "cw" : toLower(args[0]);
-        if (d == "cw" || d == "clockwise" || d == "next") {
-            return Action::RotatePanes { +1 };
-        }
-        if (d == "ccw" || d == "counterclockwise" || d == "prev") {
-            return Action::RotatePanes { -1 };
-        }
-        spdlog::warn("Bindings: unknown rotate_panes direction '{}'", args[0]);
-        return std::nullopt;
-    }
-
-    if (name == "focus_popup") {
-        return Action::FocusPopup {};
-    }
-
-    if (name == "copy") {
-        return Action::Copy {};
-    }
-    if (name == "paste") {
-        return Action::Paste {};
-    }
-
-    if (name == "scroll_up") {
-        int lines = args.empty() ? 3 : std::stoi(args[0]);
-        return Action::ScrollUp { lines };
-    }
-    if (name == "scroll_down") {
-        int lines = args.empty() ? 3 : std::stoi(args[0]);
-        return Action::ScrollDown { lines };
-    }
-    if (name == "scroll_page_up") {
-        return Action::ScrollPageUp {};
-    }
-    if (name == "scroll_page_down") {
-        return Action::ScrollPageDown {};
-    }
-    if (name == "scroll_to_top") {
-        return Action::ScrollToTop {};
-    }
-    if (name == "scroll_to_bottom") {
-        return Action::ScrollToBottom {};
-    }
-    if (name == "increase_font_size") {
-        return Action::IncreaseFontSize {};
-    }
-    if (name == "decrease_font_size") {
-        return Action::DecreaseFontSize {};
-    }
-    if (name == "reset_font_size") {
-        return Action::ResetFontSize {};
-    }
-    if (name == "scroll_to_previous_prompt") {
-        return Action::ScrollToPrompt { -1 };
-    }
-    if (name == "scroll_to_next_prompt") {
-        return Action::ScrollToPrompt { 1 };
-    }
-    if (name == "select_command_output") {
-        return Action::SelectCommandOutput {};
-    }
-    if (name == "copy_last_command") {
-        return Action::CopyLastCommand {};
-    }
-    if (name == "copy_selected_command_output") {
-        return Action::CopySelectedCommandOutput {};
-    }
-    if (name == "copy_document") {
-        return Action::CopyDocument {};
-    }
-    if (name == "reload_config") {
-        return Action::ReloadConfig {};
-    }
-    if (name == "clear") {
-        // Modes: "scrollback" (drop history; live grid + cursor untouched),
-        // "all" (lift the in-progress prompt span to row 0, wipe everything
-        // else in the live grid, drop scrollback). Default is "all" — the
-        // `clear(1)` mental model.
-        std::string m = args.empty() ? "all" : toLower(args[0]);
-        if (m == "scrollback") {
-            return Action::Clear { Action::ClearMode::Scrollback };
-        }
-        if (m == "all") {
-            return Action::Clear { Action::ClearMode::All };
-        }
-        spdlog::warn("Bindings: unknown clear mode '{}'", args[0]);
-        return std::nullopt;
-    }
-
-    // mouse_selection / open_hyperlink / select_command moved to
-    // parseMouseAction — they need cell context so they live in
-    // MouseAction::Any and only resolve via the mouse-binding path.
-    if (name == "paste_selection") {
-        return Action::PasteSelection {};
-    }
-
-    if (name == "send_string") {
-        if (args.empty()) {
-            spdlog::warn("Bindings: send_string requires a string arg");
-            return std::nullopt;
-        }
-        return Action::SendString { args[0] };
-    }
-    if (name == "send_key") {
-        if (args.empty()) {
-            spdlog::warn("Bindings: send_key requires a keystroke arg");
-            return std::nullopt;
-        }
-        auto ks = parseKeyStroke(args[0]);
-        if (!ks) {
-            return std::nullopt;
-        }
-        return Action::SendKey { ks->key, ks->mods };
-    }
-    if (name == "nop") {
-        return Action::Nop {};
-    }
-    if (name == "disable_default_assignment") {
-        return Action::DisableDefaultAssignment {};
-    }
-    if (name == "activate_last_tab") {
-        Uuid stack;
-        if (!args.empty()) {
-            stack = Uuid::fromString(args[0]);
-            if (stack.isNil()) {
-                spdlog::warn("Bindings: activate_last_tab bad stackUuid '{}'", args[0]);
-                return std::nullopt;
-            }
-        }
-        return Action::ActivateLastTab { stack };
-    }
-    if (name == "reset_terminal") {
-        return Action::ResetTerminal {};
-    }
-
-    // Script actions: any name containing a '.' is treated as namespace.action
+    // Script actions: any name containing a '.' is treated as
+    // namespace.action — never goes through the schema registry. The
+    // args are forwarded verbatim; the script side validates against
+    // its own (optional) schema at dispatch time.
     if (name.find('.') != std::string::npos) {
         return Action::ScriptAction { name, args };
     }
 
-    spdlog::warn("Bindings: unknown action '{}'", name);
-    return std::nullopt;
+    // Resolve aliases (e.g. scroll_to_previous_prompt → ScrollToPrompt
+    // with "prev" baked in). Aliases supply additional positional
+    // args that prepend the caller's args before coercion.
+    std::vector<std::string> effectiveArgs = args;
+    std::string pascal;
+    if (auto it = actionAliases().find(name); it != actionAliases().end()) {
+        pascal                            = std::string(it->second.pascal);
+        std::vector<std::string> combined = it->second.bakedArgs;
+        combined.insert(combined.end(), args.begin(), args.end());
+        effectiveArgs = std::move(combined);
+    } else {
+        pascal = snakeToPascal(name);
+    }
+
+    // Delegate to the schema-driven typed builder. The adapter applies
+    // ArgKind coercion (Int parse, Direction validate, etc.) and
+    // calls the variant constructor co-located with each schema in
+    // Action.cpp.
+    std::string error;
+    auto built = Action::buildActionFromPositional(pascal, effectiveArgs, error);
+    if (!built) {
+        spdlog::warn("Bindings: {}", error);
+        return std::nullopt;
+    }
+    return built;
+}
+
+std::optional<Action::Any> parseActionTyped(const std::string &snakeName,
+                                            const Action::ArgsValue &args)
+{
+    // Script actions pass through verbatim with their args flattened
+    // into a positional string list (the legacy ScriptAction wire
+    // format). Script actions with a JS-side schema are handled on
+    // the JS side (engine builds the object-arg payload before
+    // delivering to the JS handler); the C++ ScriptAction variant
+    // doesn't need to know about it.
+    if (snakeName.find('.') != std::string::npos) {
+        std::vector<std::string> positional;
+        positional.reserve(args.size());
+        for (const auto &[k, v] : args) {
+            if (auto *s = v.template get_if<std::string>()) {
+                positional.push_back(*s);
+            } else if (auto *i = v.template get_if<int64_t>()) {
+                positional.push_back(std::to_string(*i));
+            } else if (auto *b = v.template get_if<bool>()) {
+                positional.push_back(*b ? "true" : "false");
+            }
+        }
+        return Action::ScriptAction { snakeName, std::move(positional) };
+    }
+    std::string pascal;
+    if (auto it = actionAliases().find(snakeName); it != actionAliases().end()) {
+        pascal                              = std::string(it->second.pascal);
+        // Aliased actions baked positional values; merge them into
+        // the typed args, treating each as the schema's first N args
+        // by position. Rare path; just go through the positional
+        // adapter for these so we don't fight glaze types here.
+        std::vector<std::string> positional = it->second.bakedArgs;
+        for (const auto &[k, v] : args) {
+            if (auto *s = v.template get_if<std::string>()) {
+                positional.push_back(*s);
+            }
+        }
+        std::string error;
+        auto built = Action::buildActionFromPositional(pascal, positional, error);
+        if (!built) {
+            spdlog::warn("Bindings: {}", error);
+            return std::nullopt;
+        }
+        return built;
+    }
+    pascal = snakeToPascal(snakeName);
+    std::string error;
+    auto built = Action::buildActionFromArgs(pascal, args, error);
+    if (!built) {
+        spdlog::warn("Bindings: {}", error);
+        return std::nullopt;
+    }
+    return built;
 }
 
 std::optional<MouseAction::Any> parseMouseAction(const std::string &name,
@@ -479,6 +308,86 @@ std::optional<MouseAction::Any> parseMouseAction(const std::string &name,
     return std::nullopt;
 }
 
+// Convert a glz::generic scalar (loaded from a TOML table-form `args`
+// entry) into an Action::ArgValue. TOML scalars come through as
+// glz::json_t's `data` variant: string, double (TOML int/float collapse
+// to double in glaze's generic), bool, null. Arrays and nested objects
+// are not supported in action args yet; if encountered they collapse
+// to a string of the JSON form (best-effort, mostly for forward
+// compat).
+static Action::ArgValue genericToArg(const glz::generic &g)
+{
+    using Var = glz::generic::val_t;
+    return std::visit([](const auto &v) -> Action::ArgValue
+                      {
+                          using T = std::decay_t<decltype(v)>;
+                          if constexpr (std::is_same_v<T, std::nullptr_t>) {
+                              return Action::ArgValue {};
+                          } else if constexpr (std::is_same_v<T, bool>) {
+                              return Action::ArgValue { v };
+                          } else if constexpr (std::is_same_v<T, double>) {
+                              // TOML ints arrive as doubles through glaze's generic.
+                              // Cast to int64_t when integral; otherwise carry as
+                              // double (the schema's ArgKind decides reinterpretation
+                              // at coerce time).
+                              double d = v;
+                              if (d == static_cast<int64_t>(d)) {
+                                  return Action::ArgValue { static_cast<int64_t>(d) };
+                              }
+                              return Action::ArgValue { d };
+                          } else if constexpr (std::is_same_v<T, std::string>) {
+                              return Action::ArgValue { v };
+                          } else {
+                              // Arrays, objects — collapse to a JSON-ish string. Not
+                              // a real use case for current actions; keeps the path
+                              // total instead of dropping silently.
+                              std::string s;
+                              (void)glz::write_json(v, s);
+                              return Action::ArgValue { s };
+                          }
+                      },
+                      g.data);
+}
+
+// Translate a TOML BindingArgs into either positional strings or a
+// typed ArgsValue, then through to a typed Action::Any.
+static std::optional<Action::Any> parseActionFromBindingArgs(const std::string &name,
+                                                             const BindingArgs &args)
+{
+    if (auto *pos = std::get_if<std::vector<std::string>>(&args)) {
+        return parseAction(name, *pos);
+    }
+    const auto &tbl = std::get<BindingArgsTable>(args);
+    Action::ArgsValue typed;
+    typed.reserve(tbl.size());
+    for (const auto &[k, v] : tbl) {
+        typed.emplace(k, genericToArg(v));
+    }
+    return parseActionTyped(name, typed);
+}
+
+// Flatten BindingArgs into positional strings for callers that still
+// require the old shape (parseMouseAction's mouse-only action coercer,
+// which has its own micro-grammar and hasn't moved to schemas yet).
+static std::vector<std::string> bindingArgsToPositional(const BindingArgs &args)
+{
+    if (auto *pos = std::get_if<std::vector<std::string>>(&args)) {
+        return *pos;
+    }
+    // Named form to positional: dump string values in declaration
+    // order. This is best-effort for the mouse-action path which
+    // typically takes 0-1 args.
+    const auto &tbl = std::get<BindingArgsTable>(args);
+    std::vector<std::string> out;
+    out.reserve(tbl.size());
+    for (const auto &[k, v] : tbl) {
+        if (auto *s = std::get_if<std::string>(&v.data)) {
+            out.push_back(*s);
+        }
+    }
+    return out;
+}
+
 std::vector<Binding> parseBindings(const std::vector<BindingConfig> &configs)
 {
     std::vector<Binding> result;
@@ -487,7 +396,7 @@ std::vector<Binding> parseBindings(const std::vector<BindingConfig> &configs)
             spdlog::warn("Bindings: binding with action '{}' has no keys, skipping", cfg.action);
             continue;
         }
-        auto action = parseAction(cfg.action, cfg.args);
+        auto action = parseActionFromBindingArgs(cfg.action, cfg.args);
         if (!action) {
             continue;
         }
@@ -862,14 +771,19 @@ std::vector<MouseBinding> parseMouseBindings(const std::vector<MouseBindingConfi
             }
         }
 
-        // Mouse-only names (mouse_selection, open_hyperlink, select_command)
-        // resolve via parseMouseAction; everything else is a keyboard-style
-        // Action::Any. The split keeps cell-context-bearing types separate
-        // from the generic dispatcher's input.
+        // Mouse-only names (mouse_selection, open_hyperlink,
+        // select_command) resolve via parseMouseAction; everything
+        // else is a keyboard-style Action::Any via parseAction. The
+        // split keeps cell-context-bearing types separate from the
+        // generic dispatcher's input. parseMouseAction still takes
+        // positional args (the mouse-only grammar hasn't been moved
+        // to schemas yet — see TODO.md); flatten the BindingArgs
+        // variant for it.
         MouseBindingResult result_action;
-        if (auto ma = parseMouseAction(cfg.action, cfg.args)) {
+        std::vector<std::string> positional = bindingArgsToPositional(cfg.args);
+        if (auto ma = parseMouseAction(cfg.action, positional)) {
             result_action = *ma;
-        } else if (auto ka = parseAction(cfg.action, cfg.args)) {
+        } else if (auto ka = parseActionFromBindingArgs(cfg.action, cfg.args)) {
             result_action = *ka;
         } else {
             continue;

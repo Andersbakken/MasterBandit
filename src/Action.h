@@ -6,14 +6,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
 namespace Action {
 
-// Spatial directions + cyclic navigation
+// Spatial directions + cyclic navigation. Defined before the schema
+// infrastructure because ArgKind::Direction translation helpers below
+// reference this enum.
 enum class Direction
 {
     Left,
@@ -23,6 +27,197 @@ enum class Direction
     Next,
     Prev
 };
+
+// ---------------------------------------------------------------------------
+// Typed action arguments (post-2026-05 rework)
+//
+// Every action declares an ActionSchema listing its arguments by name and
+// kind. The schema is the single source of truth used by:
+//   - the TOML / JS "positional adapter" that coerces string-only inputs
+//     into typed values for back-compat with the old positional API;
+//   - the JS object-arg path (mb.invokeAction("name", {a, b, c}));
+//   - the command palette to render appropriate input UI per arg;
+//   - the type-generation that backs MbActionMap in mb.d.ts (hand-written
+//     today, but the schema is the closed source set if we ever generate).
+//
+// `ArgValue` is purpose-built. It is NOT a general JSON value — the type
+// set is exactly what action arguments can be. Uuid is carried as a
+// string (the canonical 36-char form); the ArgKind::Uuid declaration in
+// the schema triggers parse-on-validate. There is no nested map shape
+// because object-of-objects argument shapes have not come up.
+// ---------------------------------------------------------------------------
+
+class ArgValue;
+using ArgValueList = std::vector<ArgValue>;
+
+class ArgValue
+{
+public:
+    using Storage = std::variant<
+        std::monostate, // missing / null
+        bool,
+        int64_t,
+        double,
+        std::string, // also holds Uuid strings; ArgKind decides
+        ArgValueList>;
+
+    ArgValue() = default;
+
+    ArgValue(bool v)
+        : v_(v)
+    {
+    }
+
+    ArgValue(int v)
+        : v_(static_cast<int64_t>(v))
+    {
+    }
+
+    ArgValue(int64_t v)
+        : v_(v)
+    {
+    }
+
+    ArgValue(double v)
+        : v_(v)
+    {
+    }
+
+    ArgValue(const char *v)
+        : v_(std::string(v))
+    {
+    }
+
+    ArgValue(std::string v)
+        : v_(std::move(v))
+    {
+    }
+
+    ArgValue(ArgValueList v)
+        : v_(std::move(v))
+    {
+    }
+
+    bool isNull() const { return std::holds_alternative<std::monostate>(v_); }
+
+    template <typename T>
+    bool is() const
+    {
+        return std::holds_alternative<T>(v_);
+    }
+
+    template <typename T>
+    const T *get_if() const
+    {
+        return std::get_if<T>(&v_);
+    }
+
+    template <typename T>
+    const T &get() const
+    {
+        return std::get<T>(v_);
+    }
+
+    const Storage &storage() const { return v_; }
+
+private:
+    Storage v_;
+};
+
+// Map keyed by ArgKind::name in the schema. Lookups for missing keys
+// return ArgValue{} (null), so optional args naturally read as null.
+using ArgsValue = std::unordered_map<std::string, ArgValue>;
+
+// What kind of value an ActionArg accepts. The kind drives:
+//   - palette UI (string -> input, enum -> list, bool -> two-button row)
+//   - adapter coercion (the positional adapter applies kind-specific
+//     parsing per arg: stoi for Int, fromString for Uuid, etc.)
+//   - TS type emission (each kind maps to one of: string, number, boolean,
+//     enum union, "uuid-string").
+enum class ArgKind : uint8_t
+{
+    String,    // free-form string
+    Int,       // signed 64-bit; bound to Int64 internally
+    Bool,      // true / false
+    Enum,      // value must be one of `enumValues` (static, case-sensitive)
+    Direction, // syntactic sugar for Enum with the six direction tokens
+    Uuid,      // 36-char canonical UUID string
+};
+
+// Source of dynamic value suggestions for a Provider-backed arg. Empty
+// means the arg has no provider (palette free-text or static Enum).
+//
+// Lookup is in two registries: a built-in C++ registry seeded at startup
+// (e.g. "panes" -> current pane titles), and a JS-side registry registered
+// via mb.registerActionValueProvider. The "js:" prefix is reserved for
+// the latter to keep the namespaces disjoint.
+struct ValueOption
+{
+    std::string value; // canonical value sent to the action
+    std::string label; // human-readable label for UI; defaults to value
+};
+
+struct ActionArg
+{
+    std::string name;
+    std::string label; // human-readable; defaults to name when empty
+    ArgKind kind  = ArgKind::String;
+    bool required = false;
+    // Default value for optional args. Used when:
+    //  - palette user submits a form without touching the field
+    //  - positional adapter sees a short args list
+    // Null when no default (then optional args read as missing).
+    ArgValue defaultValue;
+    // Static enum values for ArgKind::Enum. ArgKind::Direction implicitly
+    // populates this with the six tokens at schema-construction time, so
+    // downstream code can treat Direction as a special-case Enum.
+    std::vector<ValueOption> enumValues;
+    // Named provider for dynamic value suggestions ("" if none).
+    std::string valuesProvider;
+};
+
+struct ActionSchema
+{
+    std::vector<ActionArg> args;
+};
+
+// Look up the schema for a built-in C++ action by its Pascal name
+// (Action::nameOf(idx)). Returns nullptr for actions without registered
+// schemas; treat those as "no args declared".
+const ActionSchema *schemaFor(std::string_view pascalName);
+
+// Look up a value provider by name. Returns an empty list if the
+// provider isn't registered, which the palette treats as "no
+// suggestions; free-text prompt".
+using ValueProviderFn = std::function<std::vector<ValueOption>()>;
+void registerValueProvider(std::string name, ValueProviderFn fn);
+std::vector<ValueOption> queryValueProvider(std::string_view name);
+
+// Direction <-> string. The Direction ArgKind treats values as strings on
+// the wire ("left", "right", "up", "down", "next", "prev"); these helpers
+// bridge to the typed enum.
+std::optional<Direction> parseDirection(std::string_view s);
+std::string_view directionToString(Direction d);
+
+// Positional-string back-compat adapter. Given an action's schema and a
+// list of positional string args (TOML or JS variadic), coerce them into
+// an ArgsValue. On success returns the typed args. On error returns
+// nullopt and sets `errorOut` to a human-readable reason. Schemas whose
+// args are typed-but-have-no-default-and-no-positional cause an error
+// when required.
+std::optional<ArgsValue> coercePositional(const ActionSchema &schema,
+                                          const std::vector<std::string> &positional,
+                                          std::string &errorOut);
+
+// Read an ArgValue out of an ArgsValue, applying the field's kind to
+// coerce a string-typed entry (TOML rarely sends bools/ints; everything
+// is strings on the wire from there). Used both at dispatch validation
+// time and by Bindings.cpp parseAction during the transitional period.
+// Returns nullopt + errorOut on coercion failure.
+std::optional<ArgValue> readArg(const ActionSchema &schema,
+                                const ArgsValue &args,
+                                const std::string &name,
+                                std::string &errorOut);
 
 struct NewTab
 {
@@ -351,6 +546,56 @@ inline constexpr TypeIndex indexOfName(std::string_view name)
     }
     return count;
 }
+
+// Build a typed Action::Any from a Pascal-cased action name and a
+// typed-args map. Returns nullopt if:
+//   - the name is not a registered built-in action, OR
+//   - the schema validation fails (errorOut set to a human-readable
+//     reason).
+//
+// Schema is the source of truth for argument coercion: ArgKind::Int
+// strings get stoi-coerced, ArgKind::Direction strings get translated
+// via parseDirection, etc. Each registered action declares (a) the
+// schema describing wire shape, and (b) a builder callback that
+// consumes the validated ArgsValue and produces the variant. Schema
+// and builder are co-located in Action.cpp so they stay in lockstep.
+//
+// For "ScriptAction", call `buildScriptAction(name, args)` instead;
+// the name carries the script-action namespace and is not a built-in
+// Pascal identifier.
+//
+// Builder return value: optional<Any>. nullopt means the builder
+// rejected the input even though the schema accepted it — e.g. an
+// invalid keystroke string passed to SendKey, where the structural
+// schema (ArgKind::String) cannot capture the semantic constraint.
+// Builders that always succeed (the majority) just return `Any { … }`.
+using ActionBuilder = std::function<std::optional<Any>(const ArgsValue &)>;
+
+std::optional<Any> buildActionFromArgs(std::string_view pascalName,
+                                       const ArgsValue &args,
+                                       std::string &errorOut);
+
+// Convenience: combine adapter + builder. Coerces positional strings
+// using the schema, then builds the variant. Returns nullopt with
+// errorOut set on any failure.
+std::optional<Any> buildActionFromPositional(std::string_view pascalName,
+                                             const std::vector<std::string> &positional,
+                                             std::string &errorOut);
+
+// Internal — registers a (name, schema, builder) triple. Called by
+// Action.cpp's registerBuiltinSchemas().
+void registerAction(std::string_view pascalName,
+                    ActionSchema schema,
+                    ActionBuilder builder);
+
+// Trampoline registration: SendKey's schema-driven builder needs to
+// parse keystroke strings ("ctrl+a", "f1") but the parser lives in
+// Bindings.cpp. Bindings.cpp::parseKeyStroke depends on Action.h, so
+// importing Bindings.cpp into Action.cpp would form a layering cycle.
+// Bindings.cpp calls setSendKeyParser() once during static init,
+// supplying the SendKey factory.
+struct SendKey; // forward
+void setSendKeyParser(std::function<SendKey(const std::string &)> fn);
 
 // Listener called after an action is dispatched.
 using Listener = std::function<void(TypeIndex, const Any &)>;

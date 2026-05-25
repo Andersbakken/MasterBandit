@@ -1253,7 +1253,7 @@ interface MbActionMap {
     // MbActionMap from a config script to type your own actions.
     "palette.open":                 {};
     "search.open":                  {};
-    "title.set":                    {};
+    "pane.set_title":               {};
     "pane.activate_by_name":        { name: string };
 }
 

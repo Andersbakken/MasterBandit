@@ -473,10 +473,10 @@ std::vector<Binding> defaultBindings()
         // popup toggles it closed.
         { { *parseKeyStroke("meta+f") }, Action::ScriptAction { "search.open", {} } },
         // Set custom pane title. The built-in `set-title.js` applet
-        // registers `title.set`; a centered popup edits an override
+        // registers `pane.set_title`; a centered popup edits an override
         // that takes precedence over OSC 0/2. Toggles closed on
         // re-invocation while open.
-        { { *parseKeyStroke("meta+alt+t") }, Action::ScriptAction { "title.set", {} } },
+        { { *parseKeyStroke("meta+alt+t") }, Action::ScriptAction { "pane.set_title", {} } },
         // Tab / pane reorder
         { { *parseKeyStroke("meta+shift+pageup") }, Action::MoveTab { -1 } },
         { { *parseKeyStroke("meta+shift+pagedown") }, Action::MoveTab { +1 } },
@@ -551,10 +551,10 @@ std::vector<Binding> defaultBindings()
         // popup toggles it closed.
         { { *parseKeyStroke("ctrl+shift+f") }, Action::ScriptAction { "search.open", {} } },
         // Set custom pane title. The built-in `set-title.js` applet
-        // registers `title.set`; a centered popup edits an override
+        // registers `pane.set_title`; a centered popup edits an override
         // that takes precedence over OSC 0/2. Toggles closed on
         // re-invocation while open.
-        { { *parseKeyStroke("ctrl+alt+t") }, Action::ScriptAction { "title.set", {} } },
+        { { *parseKeyStroke("ctrl+alt+t") }, Action::ScriptAction { "pane.set_title", {} } },
         // Tab / pane reorder
         { { *parseKeyStroke("ctrl+alt+pageup") }, Action::MoveTab { -1 } },
         { { *parseKeyStroke("ctrl+alt+pagedown") }, Action::MoveTab { +1 } },

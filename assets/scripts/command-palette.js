@@ -35,7 +35,7 @@ const theme = createTheme({
 });
 
 mb.setNamespace("palette");
-mb.registerAction("open");
+mb.registerAction("toggle");
 
 // Cap for inline expansion. If an action's schema would produce more
 // than this many combinations, fall back to the form prompt — a long
@@ -179,7 +179,7 @@ function buildPaletteEntries(allActions) {
 
 let ui = null;
 
-mb.addEventListener("action", "palette.open", () => {
+mb.addEventListener("action", "palette.toggle", () => {
     const pane = mb.activePane;
     if (!pane) return;
 

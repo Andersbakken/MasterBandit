@@ -70,6 +70,7 @@ mb.addEventListener("action", "pane.set_title", () => {
     const setBtn = button({
         label:   labels.set,
         primary: true,
+        default: true,
         width:   labels.set.length,
         onClick: () => finish("set"),
     });

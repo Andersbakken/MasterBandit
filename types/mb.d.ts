@@ -1251,8 +1251,8 @@ interface MbActionMap {
     "reset_terminal":               {};
     // Built-in script-action aliases for the bundled applets. Augment
     // MbActionMap from a config script to type your own actions.
-    "palette.open":                 {};
-    "search.open":                  {};
+    "palette.toggle":               {};
+    "search.toggle":                {};
     "pane.set_title":               {};
     "pane.activate_by_name":        { name: string };
 }

@@ -74,9 +74,18 @@ export function confirm(opts) {
         // Pin each button's width to its label length so the row layout doesn't
         // floor() the flex split and clip wider labels (e.g. "[ always ]" gets
         // 9 cells when 10 are needed).
+        // `defaultIndex` doubles as: initial focus AND the default
+        // action fired by Enter from any non-button-focused widget
+        // (today the dialog has no inputs/lists, so this only matters
+        // if a caller swaps the message body for something focusable;
+        // declaring it costs nothing and future-proofs the API).
+        const _diNormalized = (typeof defaultIndex === 'number'
+                               && defaultIndex >= 0
+                               && defaultIndex < buttons.length) ? defaultIndex : 0;
         const buttonNodes = buttons.map((b, i) => button({
             label:      labels[i],
             primary:    !!b.primary,
+            default:    i === _diNormalized,
             color:      b.color,
             width:      labels[i].length,
             selectedFg: b.selectedFg,
@@ -140,11 +149,11 @@ export function confirm(opts) {
             onDestroy: () => finish(-1),
         });
 
-        // Move initial focus to the requested default button (Cancel typically).
-        const di = (typeof defaultIndex === 'number'
-                   && defaultIndex >= 0
-                   && defaultIndex < buttonNodes.length) ? defaultIndex : 0;
-        ui.focus(buttonNodes[di]);
+        // Move initial focus to the requested default button (Cancel
+        // typically). The same index is wired as the default-on-Enter
+        // button above; both pointers stay in sync through
+        // _diNormalized.
+        ui.focus(buttonNodes[_diNormalized]);
 
         // Host pane disappearance (PTY exit, tab close from elsewhere) — bail.
         // The popup is destroyed with its pane; tui.onDestroy will fire and

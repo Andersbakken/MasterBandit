@@ -128,7 +128,7 @@ function buildForm(schema, fields, focusIdx) {
     children.push(text({ value: '' }));
     children.push(row({ gap: 2, justify: 'center' }, [
         button({ label: '[ Cancel ]', width: 10, onClick: fields._cancel }),
-        button({ label: '[   OK   ]', width: 10, primary: true, onClick: fields._ok }),
+        button({ label: '[   OK   ]', width: 10, primary: true, default: true, onClick: fields._ok }),
     ]));
 
     return box({ border: 'round', padding: 1 }, children);

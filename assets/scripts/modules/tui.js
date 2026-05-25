@@ -359,11 +359,26 @@ export function list(props) {
     };
 }
 
-// button({label, onClick, onMouseEnter, onMouseLeave, color, primary, width,
-//         selectedFg, selectedBg, hoverFg, hoverBg}) — convenience constructor
-// for a clickable single-line button. Activates on mouse release when the
-// press landed on the same node. Keyboard activation (Enter/Space) is not yet
-// distinguished from text input — see the deferred press/release split.
+// button({label, onClick, onMouseEnter, onMouseLeave, color, primary, default,
+//         width, selectedFg, selectedBg, hoverFg, hoverBg}) — convenience
+// constructor for a clickable single-line button. Activates on mouse release
+// when the press landed on the same node. Keyboard activation (Enter/Space)
+// fires onClick when this button is focused.
+//
+// `default: true` registers the button as the dialog's default action: Enter
+// from any non-focusable context (e.g. focus parked on a plain text node)
+// invokes its onClick. When an input with onSubmit has focus, the input's
+// own Enter handling still wins — the default button only fires when the
+// focused widget doesn't itself consume Enter.
+//
+// Declare at most one default button per tree. Multiple defaults: the first
+// in tree order wins; the others are silently ignored. (No throw — the
+// focusables walk is in a hot path on every keystroke.)
+//
+// `primary` is a pure color hint (bolds the label); independent from
+// `default`. Most dialogs want both set on the same button, but red /
+// destructive defaults stay clean: `button({ default: true, color: 'red' })`.
+//
 // selectedFg/Bg/hoverFg/Bg override the theme's text.selectedFg/Bg/hoverFg/Bg
 // for this button only — useful for action-coded buttons (e.g. green allow,
 // red deny). `width` pins the button to a specific cell width inside a row
@@ -383,6 +398,9 @@ export function button(props) {
         onClick:      p.onClick,
         onMouseEnter: p.onMouseEnter,
         onMouseLeave: p.onMouseLeave,
+        // Propagated to the text node so the focusables walker can find
+        // it (text nodes don't have a button kind of their own).
+        defaultButton: !!p.default,
     });
 }
 
@@ -750,6 +768,14 @@ class RenderInstance {
         this._focusables = [];
         collectFocusables(this._root, this._focusables);
         this._focusIdx = Math.min(this._focusIdx, Math.max(0, this._focusables.length - 1));
+        // Cache the default button (text-with-onClick AND
+        // props.defaultButton). Multiple defaults: first in tree order
+        // wins; later ones are silently ignored. Cached at layout time
+        // because the focusables walk happens here anyway; lookup is
+        // O(1) on every Enter keystroke.
+        this._defaultButton = this._focusables.find(
+            f => f.type === 'text' && f.props && f.props.defaultButton && f.props.onClick
+        ) || null;
     }
 
     _runEffect() {
@@ -844,21 +870,29 @@ class RenderInstance {
                 // Fall through to the list-forwarding fallback below.
             }
 
-            // Any other key (arrows, Enter without onSubmit) — forward to
-            // first list in the tree. This is the legacy behavior that
-            // lets command-palette-style applets type into the input and
-            // step the list with arrow keys / pick with Enter.
+            // Any other key (arrows, Enter without onSubmit) — forward
+            // to first list in the tree. This is the legacy behavior
+            // that lets command-palette-style applets type into the
+            // input and step the list with arrow keys / pick with
+            // Enter. If no list exists, an unconsumed Enter falls
+            // through to the default button (if declared).
             const listNode = this._focusables.find(f => f.type === 'list');
             if (listNode) {
                 const sel   = listNode.props.selected;
                 const items = getValue(listNode.props.items) ?? [];
                 if (data === '\x1b[A') {
                     if (sel && sel.value > 0) sel.value = sel.value - 1;
+                    return;
                 } else if (data === '\x1b[B') {
                     if (sel && sel.value < items.length - 1) sel.value = sel.value + 1;
+                    return;
                 } else if (data === '\r' || data === '\n') {
                     listNode.props.onSelect?.(getValue(listNode.props.selected) ?? 0);
+                    return;
                 }
+            }
+            if ((data === '\r' || data === '\n') && this._defaultButton) {
+                this._defaultButton.props.onClick?.(null);
             }
             return;
         }
@@ -868,10 +902,22 @@ class RenderInstance {
             const items = getValue(focused.props.items) ?? [];
             if (data === '\x1b[A') { // up
                 if (sel && sel.value > 0) sel.value = sel.value - 1;
-            } else if (data === '\x1b[B') { // down
+                return;
+            }
+            if (data === '\x1b[B') { // down
                 if (sel && sel.value < items.length - 1) sel.value = sel.value + 1;
-            } else if (data === '\r' || data === '\n') {
-                focused.props.onSelect?.(getValue(focused.props.selected) ?? 0);
+                return;
+            }
+            if (data === '\r' || data === '\n') {
+                // Prefer the list's own onSelect; fall back to the
+                // default button only when the list has no items or no
+                // selection handler (e.g. an info list).
+                if (typeof focused.props.onSelect === 'function' && items.length > 0) {
+                    focused.props.onSelect(getValue(focused.props.selected) ?? 0);
+                } else if (this._defaultButton) {
+                    this._defaultButton.props.onClick?.(null);
+                }
+                return;
             }
         }
     }

@@ -1,6 +1,6 @@
 // scrollback-search.js — in-pane scrollback search applet.
 //
-// Bound to Cmd+F (macOS) / Ctrl+Shift+F (Linux) via the `search.open`
+// Bound to Cmd+F (macOS) / Ctrl+Shift+F (Linux) via the `search.toggle`
 // script action. Opens a small input bar at the top of the focused pane;
 // each keystroke runs `pane.findText(needle, opts)` and paints highlight
 // decorations for every match, plus a higher-zPriority "current match"
@@ -20,7 +20,7 @@
 import { signal, computed, effect, render, createTheme, box, text, input, measure } from "mb:tui";
 
 mb.setNamespace("search");
-mb.registerAction("open");
+mb.registerAction("toggle");
 
 // Decoration colors (packed 0xAABBGGRR — alpha in MSB).
 //
@@ -114,7 +114,7 @@ function paintCurrent(pane, matches, currentIdx) {
     }
 }
 
-mb.addEventListener("action", "search.open", () => {
+mb.addEventListener("action", "search.toggle", () => {
     const pane = mb.activePane;
     if (!pane) return;
 
@@ -249,7 +249,18 @@ mb.addEventListener("action", "search.open", () => {
         return box({ border: "round" }, [
             // Prompt is intentionally not "/" — `/foo/` is the regex-mode
             // syntax, and rendering it as " / /foo/" reads as duplicated.
-            input({ value: query, prompt: " > " }),
+            input({
+                value:    query,
+                prompt:   " > ",
+                // Enter advances to the next match. Routed through
+                // tui's input.onSubmit hook rather than a popup-level
+                // input listener so we don't ride alongside tui's own
+                // focused-button Enter handling — important now that
+                // dialogs can declare default buttons (the search bar
+                // doesn't have one, but adding one later wouldn't
+                // double-fire this).
+                onSubmit: () => step(+1),
+            }),
             text({
                 value: status,
                 align: "right",
@@ -273,15 +284,15 @@ mb.addEventListener("action", "search.open", () => {
     const popup = pane.createPopup({ id: "scrollback-search", x: d.x, y: d.y, w: d.w, h: d.h });
     if (!popup) return;
 
-    // Custom input listener intercepts navigation keys (Up/Down/Enter).
-    // tui's built-in input widget swallows printables + backspace into
-    // `query`, and forwards other keys (arrows, Enter) to "the first list
-    // in the tree" — we don't have a list, so those keys are effectively
-    // dropped by tui and our listener is the sole consumer. Esc reaches
-    // tui's RenderInstance handler which calls destroy().
+    // Popup-level listener for arrow Up/Down only. Enter is now
+    // routed through input.onSubmit (see the input() call above);
+    // arrows still go here because tui's input branch forwards
+    // arrows to "the first list in the tree" — we have no list, so
+    // tui's path is a no-op and this listener is the sole consumer.
+    // Esc reaches tui's RenderInstance handler which calls destroy().
     const inputCb = (data) => {
-        if (data === "\r" || data === "\n" || data === "\x1b[B") {
-            step(+1); // Enter / Down → next match
+        if (data === "\x1b[B") {
+            step(+1); // Down → next match
             return;
         }
         if (data === "\x1b[A") {
@@ -308,7 +319,7 @@ mb.addEventListener("action", "search.open", () => {
         // by the time we get here the popup is already !alive — calling
         // popup.removeEventListener would throw "popup is destroyed". The
         // listener registration is gone with the popup anyway. Likewise,
-        // clear ui and `alive` FIRST so a subsequent search.open invocation
+        // clear ui and `alive` FIRST so a subsequent search.toggle invocation
         // can re-open even if a later step throws.
         onDestroy: () => {
             alive = false;

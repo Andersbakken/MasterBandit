@@ -458,7 +458,7 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("meta+]") }, Action::FocusPane { Action::Direction::Next } },
         { { *parseKeyStroke("meta+[") }, Action::FocusPane { Action::Direction::Prev } },
         // Command palette
-        { { *parseKeyStroke("meta+shift+p") }, Action::ScriptAction { "palette.open", {} } },
+        { { *parseKeyStroke("meta+shift+p") }, Action::ScriptAction { "palette.toggle", {} } },
         // Popup focus cycling
         { { *parseKeyStroke("meta+shift+i") }, Action::FocusPopup {} },
         // Prompt navigation
@@ -469,9 +469,9 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("ctrl+pagedown") }, Action::ScrollPageDown {} },
         // Scrollback search (in-pane, decoration-overlay-driven). The
         // built-in `scrollback-search.js` applet registers
-        // `search.open`; opening it on a pane that already has a search
-        // popup toggles it closed.
-        { { *parseKeyStroke("meta+f") }, Action::ScriptAction { "search.open", {} } },
+        // `search.toggle`; invoking it on a pane that already has a
+        // search popup closes it.
+        { { *parseKeyStroke("meta+f") }, Action::ScriptAction { "search.toggle", {} } },
         // Set custom pane title. The built-in `set-title.js` applet
         // registers `pane.set_title`; a centered popup edits an override
         // that takes precedence over OSC 0/2. Toggles closed on
@@ -536,7 +536,7 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("ctrl+shift+n") }, Action::FocusPane { Action::Direction::Next } },
         { { *parseKeyStroke("ctrl+shift+p") }, Action::FocusPane { Action::Direction::Prev } },
         // Command palette
-        { { *parseKeyStroke("ctrl+shift+p") }, Action::ScriptAction { "palette.open", {} } },
+        { { *parseKeyStroke("ctrl+shift+p") }, Action::ScriptAction { "palette.toggle", {} } },
         // Popup focus cycling
         { { *parseKeyStroke("ctrl+shift+i") }, Action::FocusPopup {} },
         // Prompt navigation
@@ -547,9 +547,9 @@ std::vector<Binding> defaultBindings()
         { { *parseKeyStroke("ctrl+pagedown") }, Action::ScrollPageDown {} },
         // Scrollback search (in-pane, decoration-overlay-driven). The
         // built-in `scrollback-search.js` applet registers
-        // `search.open`; opening it on a pane that already has a search
-        // popup toggles it closed.
-        { { *parseKeyStroke("ctrl+shift+f") }, Action::ScriptAction { "search.open", {} } },
+        // `search.toggle`; invoking it on a pane that already has a
+        // search popup closes it.
+        { { *parseKeyStroke("ctrl+shift+f") }, Action::ScriptAction { "search.toggle", {} } },
         // Set custom pane title. The built-in `set-title.js` applet
         // registers `pane.set_title`; a centered popup edits an override
         // that takes precedence over OSC 0/2. Toggles closed on

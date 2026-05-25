@@ -880,11 +880,26 @@ class RenderInstance {
             if (listNode) {
                 const sel   = listNode.props.selected;
                 const items = getValue(listNode.props.items) ?? [];
+                // Page size = the list's visible row count. Falls back
+                // to 10 if `height` is unset (rare).
+                const page  = listNode.props.height || 10;
                 if (data === '\x1b[A') {
                     if (sel && sel.value > 0) sel.value = sel.value - 1;
                     return;
                 } else if (data === '\x1b[B') {
                     if (sel && sel.value < items.length - 1) sel.value = sel.value + 1;
+                    return;
+                } else if (data === '\x1b[5~') { // PgUp
+                    if (sel) sel.value = Math.max(0, sel.value - page);
+                    return;
+                } else if (data === '\x1b[6~') { // PgDn
+                    if (sel) sel.value = Math.min(items.length - 1, sel.value + page);
+                    return;
+                } else if (data === '\x1b[H') { // Home
+                    if (sel) sel.value = 0;
+                    return;
+                } else if (data === '\x1b[F') { // End
+                    if (sel) sel.value = Math.max(0, items.length - 1);
                     return;
                 } else if (data === '\r' || data === '\n') {
                     listNode.props.onSelect?.(getValue(listNode.props.selected) ?? 0);
@@ -900,12 +915,29 @@ class RenderInstance {
         if (focused.type === 'list') {
             const sel   = focused.props.selected;
             const items = getValue(focused.props.items) ?? [];
+            const page  = focused.props.height || 10;
             if (data === '\x1b[A') { // up
                 if (sel && sel.value > 0) sel.value = sel.value - 1;
                 return;
             }
             if (data === '\x1b[B') { // down
                 if (sel && sel.value < items.length - 1) sel.value = sel.value + 1;
+                return;
+            }
+            if (data === '\x1b[5~') { // PgUp
+                if (sel) sel.value = Math.max(0, sel.value - page);
+                return;
+            }
+            if (data === '\x1b[6~') { // PgDn
+                if (sel) sel.value = Math.min(items.length - 1, sel.value + page);
+                return;
+            }
+            if (data === '\x1b[H') { // Home
+                if (sel) sel.value = 0;
+                return;
+            }
+            if (data === '\x1b[F') { // End
+                if (sel) sel.value = Math.max(0, items.length - 1);
                 return;
             }
             if (data === '\r' || data === '\n') {

@@ -32,28 +32,41 @@ else()
     set(WAYLAND_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/wayland-generated")
     file(MAKE_DIRECTORY "${WAYLAND_GEN_DIR}")
 
-    # Stage 1 needs xdg-shell only; further protocols (cursor-shape,
-    # fractional-scale, primary-selection, ...) join this list as stages land.
-    set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/xdg-shell/xdg-shell.xml")
-    set(XDG_SHELL_HEADER "${WAYLAND_GEN_DIR}/xdg-shell-client-protocol.h")
-    set(XDG_SHELL_SOURCE "${WAYLAND_GEN_DIR}/xdg-shell-protocol.c")
-    add_custom_command(
-        OUTPUT "${XDG_SHELL_HEADER}"
-        COMMAND "${WAYLAND_SCANNER_BIN}" client-header "${XDG_SHELL_XML}" "${XDG_SHELL_HEADER}"
-        DEPENDS "${XDG_SHELL_XML}"
-        VERBATIM
-    )
-    add_custom_command(
-        OUTPUT "${XDG_SHELL_SOURCE}"
-        COMMAND "${WAYLAND_SCANNER_BIN}" private-code "${XDG_SHELL_XML}" "${XDG_SHELL_SOURCE}"
-        DEPENDS "${XDG_SHELL_XML}"
-        VERBATIM
-    )
+    # Per-protocol codegen helper. wayland-scanner ships two passes:
+    #   client-header -> <name>-client-protocol.h (forward decls + listener structs)
+    #   private-code  -> <name>-protocol.c        (wire-format dispatch tables)
+    # Each protocol XML produces one of each.
+    function(mb_wayland_scan basename xml_path)
+        set(_h "${WAYLAND_GEN_DIR}/${basename}-client-protocol.h")
+        set(_c "${WAYLAND_GEN_DIR}/${basename}-protocol.c")
+        add_custom_command(
+            OUTPUT "${_h}"
+            COMMAND "${WAYLAND_SCANNER_BIN}" client-header "${xml_path}" "${_h}"
+            DEPENDS "${xml_path}"
+            VERBATIM
+        )
+        add_custom_command(
+            OUTPUT "${_c}"
+            COMMAND "${WAYLAND_SCANNER_BIN}" private-code "${xml_path}" "${_c}"
+            DEPENDS "${xml_path}"
+            VERBATIM
+        )
+        list(APPEND EVENTLOOP_SOURCES "${_h}" "${_c}")
+        set(EVENTLOOP_SOURCES "${EVENTLOOP_SOURCES}" PARENT_SCOPE)
+    endfunction()
 
-    list(APPEND EVENTLOOP_SOURCES
-        "${XDG_SHELL_SOURCE}"
-        "${XDG_SHELL_HEADER}"
-    )
+    mb_wayland_scan(xdg-shell
+        "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/xdg-shell/xdg-shell.xml")
+
+    # cursor-shape-v1: lets the compositor pick the right themed cursor from
+    # a CSS-style enum (Stage 3). Its private-code references
+    # zwp_tablet_tool_v2_interface (cursor-shape has a get_tablet_tool_v2
+    # variant we never call), so we must also codegen tablet-v2 to satisfy
+    # the linker even though no tablet code path exists.
+    mb_wayland_scan(cursor-shape-v1
+        "${WAYLAND_PROTOCOLS_PKGDATADIR}/staging/cursor-shape/cursor-shape-v1.xml")
+    mb_wayland_scan(tablet-v2
+        "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/tablet/tablet-v2.xml")
 endif()
 
 add_library(eventloop OBJECT ${EVENTLOOP_SOURCES})

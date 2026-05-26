@@ -11,6 +11,7 @@ struct wl_registry;
 struct wl_compositor;
 struct wl_seat;
 struct wl_keyboard;
+struct wl_pointer;
 struct wl_surface;
 struct xdg_wm_base;
 struct xdg_surface;
@@ -18,14 +19,17 @@ struct xdg_toplevel;
 struct xkb_context;
 struct xkb_keymap;
 struct xkb_state;
+struct wp_cursor_shape_manager_v1;
+struct wp_cursor_shape_device_v1;
 
-// Stage 1-2 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
+// Stage 1-3 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
 // Wayland events from the EpollEventLoop fd, hands the surface to Dawn via
-// SurfaceSourceWaylandSurface (Stage 1), and processes keyboard input
+// SurfaceSourceWaylandSurface (Stage 1), processes keyboard input
 // (xkbcommon-backed keymap, modifiers, client-synthesized key repeat) via
-// wl_seat + wl_keyboard (Stage 2).
+// wl_seat + wl_keyboard (Stage 2), and handles pointer events + cursor
+// shape via wl_pointer + wp_cursor_shape_v1 (Stage 3).
 //
-// Stage 3+ (pointer, clipboard, scale) lands in later patches.
+// Stage 4+ (clipboard, scale) lands in later patches.
 class WaylandWindow : public Window
 {
 public:
@@ -55,6 +59,8 @@ public:
     uint32_t shiftedKeyCodepoint(int keycode) const override;
     uint32_t baseLayoutKeyCodepoint(int keycode) const override;
 
+    void setCursorStyle(CursorStyle shape) override;
+
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
 
     // Called by EpollEventLoop when wl_display fd is readable.
@@ -69,6 +75,7 @@ private:
     static const struct xdg_toplevel_listener kToplevelListener;
     static const struct wl_seat_listener kSeatListener;
     static const struct wl_keyboard_listener kKeyboardListener;
+    static const struct wl_pointer_listener kPointerListener;
 
     static void onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version);
     static void onRegistryGlobalRemove(void *data, wl_registry *registry, uint32_t name);
@@ -89,6 +96,16 @@ private:
     static void onKeyboardModifiers(void *data, wl_keyboard *keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group);
     static void onKeyboardRepeatInfo(void *data, wl_keyboard *keyboard, int32_t rate, int32_t delay);
 
+    static void onPointerEnter(void *data, wl_pointer *pointer, uint32_t serial, wl_surface *surface, int32_t /*wl_fixed_t*/ surfaceX, int32_t /*wl_fixed_t*/ surfaceY);
+    static void onPointerLeave(void *data, wl_pointer *pointer, uint32_t serial, wl_surface *surface);
+    static void onPointerMotion(void *data, wl_pointer *pointer, uint32_t time, int32_t /*wl_fixed_t*/ surfaceX, int32_t /*wl_fixed_t*/ surfaceY);
+    static void onPointerButton(void *data, wl_pointer *pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state);
+    static void onPointerAxis(void *data, wl_pointer *pointer, uint32_t time, uint32_t axis, int32_t /*wl_fixed_t*/ value);
+    static void onPointerFrame(void *data, wl_pointer *pointer);
+    static void onPointerAxisSource(void *data, wl_pointer *pointer, uint32_t axis_source);
+    static void onPointerAxisStop(void *data, wl_pointer *pointer, uint32_t time, uint32_t axis);
+    static void onPointerAxisDiscrete(void *data, wl_pointer *pointer, uint32_t axis, int32_t discrete);
+
     // Drive the libwayland dispatch state machine from the epoll callback.
     // Pattern is the canonical prepare_read / read_events / dispatch_pending
     // sequence from the wayland-book; see processEvents() in the .cpp for the
@@ -102,6 +119,13 @@ private:
     void cancelKeyRepeat();
     void ensureDefaultKeymap();
 
+    // Cursor helpers. Cursor-shape-v1 is the only path; if the compositor
+    // doesn't advertise the protocol, applyCursorShape becomes a no-op and
+    // the cursor renders as whatever the compositor's default is.
+    void attachPointer(wl_pointer *pointer);
+    void releasePointer();
+    void applyCursorShape();
+
     EventLoop &loop_;
 
     wl_display *display_       = nullptr;
@@ -110,6 +134,23 @@ private:
     xdg_wm_base *wmBase_       = nullptr;
     wl_seat *seat_             = nullptr;
     wl_keyboard *keyboard_     = nullptr;
+    wl_pointer *pointer_       = nullptr;
+
+    // cursor-shape-v1: per-pointer "tell the compositor which themed cursor
+    // to draw" API. Manager comes from the registry (optional global);
+    // device is created when a wl_pointer attaches. If the protocol isn't
+    // advertised, both stay null and the cursor is whatever the compositor
+    // assigns by default.
+    wp_cursor_shape_manager_v1 *cursorShapeMgr_ = nullptr;
+    wp_cursor_shape_device_v1 *cursorShapeDev_  = nullptr;
+
+    // Set true between pointer.enter and pointer.leave on our surface.
+    // Cursor shape can only be set with the latest enter serial, so we
+    // record it and re-apply on every enter (compositors may reset the
+    // shape across enter/leave boundaries).
+    bool hasPointerFocus_        = false;
+    uint32_t pointerEnterSerial_ = 0;
+    CursorStyle currentCursor_   = CursorStyle::IBeam;
 
     wl_surface *surface_     = nullptr;
     xdg_surface *xdgSurface_ = nullptr;

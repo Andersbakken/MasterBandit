@@ -238,7 +238,7 @@ bool Terminal::removeOutputCapture(const std::string &path)
         return false;
     }
 
-    stopCaptureLocked(taken.get(), CaptureStopReason::Explicit, std::string {});
+    stopCaptureLocked(taken.get(), CaptureStopReason::Explicit, std::string { });
     return true;
 }
 
@@ -587,7 +587,7 @@ bool Terminal::init(const TerminalOptions &options)
     // (often 0x0) and the child may read the wrong size before SIGWINCH
     // from flushPendingResize() arrives.
     if (this->width() > 0 && this->height() > 0) {
-        struct winsize ws = {};
+        struct winsize ws = { };
         ws.ws_col         = static_cast<unsigned short>(this->width());
         ws.ws_row         = static_cast<unsigned short>(this->height());
         ioctl(slaveFD, TIOCSWINSZ, &ws);
@@ -816,7 +816,7 @@ void Terminal::flushPendingResize()
         return;
     }
     mResizePending    = false;
-    struct winsize ws = {};
+    struct winsize ws = { };
     ws.ws_col         = static_cast<unsigned short>(this->width());
     ws.ws_row         = static_cast<unsigned short>(this->height());
     auto &cbs         = callbacks();
@@ -970,7 +970,7 @@ void Terminal::startShellPidWatch()
     mPidWatch->owner = this;
     auto watch       = mPidWatch;
     mPidWatchThread  = std::thread([watch]()
-                                  {
+                                   {
                                       int status = 0;
                                       pid_t r;
                                       do {
@@ -991,7 +991,7 @@ void Terminal::startShellPidWatch()
                                                                   status);
                                                      watch->owner->markExited();
                                                  });
-                                  });
+                                   });
 #endif
 }
 
@@ -1409,7 +1409,7 @@ bool Terminal::fgPollDue() const noexcept
     const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             clock::now().time_since_epoch())
                             .count();
-    int64_t prev = mLastFgPollNs.load(std::memory_order_relaxed);
+    int64_t prev      = mLastFgPollNs.load(std::memory_order_relaxed);
     if (prev != 0 && (now - prev) < kFgPollMinNs) {
         return false;
     }
@@ -1424,7 +1424,7 @@ namespace {
 std::string lookupFgProcessName(pid_t pgid)
 {
     if (pgid < 0) {
-        return {};
+        return { };
     }
 
 #ifdef __APPLE__
@@ -1433,15 +1433,15 @@ std::string lookupFgProcessName(pid_t pgid)
         const char *slash = strrchr(pathbuf, '/');
         return slash ? slash + 1 : pathbuf;
     }
-    return {};
+    return { };
 #else
     char comm[256];
     snprintf(comm, sizeof(comm), "/proc/%d/comm", static_cast<int>(pgid));
     FILE *f = fopen(comm, "r");
     if (!f) {
-        return {};
+        return { };
     }
-    char name[256] = {};
+    char name[256] = { };
     if (fgets(name, sizeof(name), f)) {
         size_t len = strlen(name);
         if (len > 0 && name[len - 1] == '\n') {

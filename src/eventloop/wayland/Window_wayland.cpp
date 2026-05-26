@@ -9,8 +9,10 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "cursor-shape-v1-client-protocol.h"
+#include "primary-selection-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
+#include <fcntl.h>
 #include <linux/input-event-codes.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -37,7 +39,36 @@ constexpr uint32_t kXdgWmBaseClientVersion      = 5;
 // current upstream version and adds `wl_pointer.frame` etc. Bind v7 if the
 // compositor advertises it so Stage 3 (pointer) doesn't need a re-bind.
 constexpr uint32_t kSeatClientVersion           = 7;
-constexpr uint32_t kCursorShapeMgrClientVersion = 1;
+constexpr uint32_t kCursorShapeMgrClientVersion = 2;
+constexpr uint32_t kDataDeviceMgrClientVersion  = 3;
+constexpr uint32_t kPrimarySelMgrClientVersion  = 1;
+
+// MIME types we offer when we own a selection, and the priority order we
+// pick from when consuming someone else's. Listed best-first.
+constexpr const char *kMimeUtf8      = "text/plain;charset=utf-8";
+constexpr const char *kMimePlain     = "text/plain";
+constexpr const char *kMimeUtf8X11   = "UTF8_STRING";
+constexpr const char *kMimeStringX11 = "STRING";
+
+bool isAcceptableTextMime(const std::string &m)
+{
+    return m == kMimeUtf8 || m == kMimePlain || m == kMimeUtf8X11 || m == kMimeStringX11;
+}
+
+const char *pickBestMime(const std::vector<std::string> &mimes)
+{
+    const char *order[] = { kMimeUtf8, kMimeUtf8X11, kMimePlain, kMimeStringX11 };
+    for (const char *want : order) {
+        for (const auto &m : mimes) {
+            if (m == want) {
+                return want;
+            }
+        }
+    }
+    return nullptr;
+}
+
+constexpr uint64_t kSelectionReadTimeoutMs = 5000;
 
 // Cursor-shape-v1 enum mapping for our 12 CursorStyle values.
 uint32_t cursorStyleToShape(Window::CursorStyle s)
@@ -119,6 +150,44 @@ const wl_pointer_listener WaylandWindow::kPointerListener = {
     .axis_discrete = &WaylandWindow::onPointerAxisDiscrete,
 };
 
+const wl_data_device_listener WaylandWindow::kDataDeviceListener = {
+    .data_offer = &WaylandWindow::onDataDeviceDataOffer,
+    .enter      = &WaylandWindow::onDataDeviceEnter,
+    .leave      = &WaylandWindow::onDataDeviceLeave,
+    .motion     = &WaylandWindow::onDataDeviceMotion,
+    .drop       = &WaylandWindow::onDataDeviceDrop,
+    .selection  = &WaylandWindow::onDataDeviceSelection,
+};
+
+const wl_data_source_listener WaylandWindow::kDataSourceListener = {
+    .target             = &WaylandWindow::onDataSourceTarget,
+    .send               = &WaylandWindow::onDataSourceSend,
+    .cancelled          = &WaylandWindow::onDataSourceCancelled,
+    .dnd_drop_performed = &WaylandWindow::onDataSourceDndDropPerformed,
+    .dnd_finished       = &WaylandWindow::onDataSourceDndFinished,
+    .action             = &WaylandWindow::onDataSourceAction,
+};
+
+const wl_data_offer_listener WaylandWindow::kDataOfferListener = {
+    .offer          = &WaylandWindow::onDataOfferOffer,
+    .source_actions = &WaylandWindow::onDataOfferSourceActions,
+    .action         = &WaylandWindow::onDataOfferAction,
+};
+
+const zwp_primary_selection_device_v1_listener WaylandWindow::kPrimaryDeviceListener = {
+    .data_offer = &WaylandWindow::onPrimaryDeviceDataOffer,
+    .selection  = &WaylandWindow::onPrimaryDeviceSelection,
+};
+
+const zwp_primary_selection_source_v1_listener WaylandWindow::kPrimarySourceListener = {
+    .send      = &WaylandWindow::onPrimarySourceSend,
+    .cancelled = &WaylandWindow::onPrimarySourceCancelled,
+};
+
+const zwp_primary_selection_offer_v1_listener WaylandWindow::kPrimaryOfferListener = {
+    .offer = &WaylandWindow::onPrimaryOfferOffer,
+};
+
 void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version)
 {
     auto *self = static_cast<WaylandWindow *>(data);
@@ -136,6 +205,11 @@ void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t
         self->seat_ = static_cast<wl_seat *>(
             wl_registry_bind(registry, name, &wl_seat_interface, v));
         wl_seat_add_listener(self->seat_, &kSeatListener, self);
+        // If the data-device / primary-selection managers have already
+        // arrived, hook the per-seat devices up now.
+        if ((self->dataDeviceMgr_ && !self->dataDevice_) || (self->primarySelMgr_ && !self->primarySelDevice_)) {
+            self->attachSeatSelections();
+        }
     } else if (std::strcmp(iface, wp_cursor_shape_manager_v1_interface.name) == 0) {
         uint32_t v            = std::min(version, kCursorShapeMgrClientVersion);
         self->cursorShapeMgr_ = static_cast<wp_cursor_shape_manager_v1 *>(
@@ -146,6 +220,22 @@ void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t
         if (self->pointer_ && !self->cursorShapeDev_) {
             self->cursorShapeDev_ = wp_cursor_shape_manager_v1_get_pointer(self->cursorShapeMgr_, self->pointer_);
             self->applyCursorShape();
+        }
+    } else if (std::strcmp(iface, wl_data_device_manager_interface.name) == 0) {
+        uint32_t v           = std::min(version, kDataDeviceMgrClientVersion);
+        self->dataDeviceMgr_ = static_cast<wl_data_device_manager *>(
+            wl_registry_bind(registry, name, &wl_data_device_manager_interface, v));
+        // Same delivery-order-unspecified caveat as cursor-shape: if the
+        // seat was already bound, attach the per-seat device now.
+        if (self->seat_ && !self->dataDevice_) {
+            self->attachSeatSelections();
+        }
+    } else if (std::strcmp(iface, zwp_primary_selection_device_manager_v1_interface.name) == 0) {
+        uint32_t v           = std::min(version, kPrimarySelMgrClientVersion);
+        self->primarySelMgr_ = static_cast<zwp_primary_selection_device_manager_v1 *>(
+            wl_registry_bind(registry, name, &zwp_primary_selection_device_manager_v1_interface, v));
+        if (self->seat_ && !self->primarySelDevice_) {
+            self->attachSeatSelections();
         }
     }
 }
@@ -307,9 +397,10 @@ void WaylandWindow::onKeyboardKeymap(void *data, wl_keyboard *, uint32_t format,
     }
 }
 
-void WaylandWindow::onKeyboardEnter(void *data, wl_keyboard *, uint32_t, wl_surface *, struct wl_array *)
+void WaylandWindow::onKeyboardEnter(void *data, wl_keyboard *, uint32_t serial, wl_surface *, struct wl_array *)
 {
-    auto *self = static_cast<WaylandWindow *>(data);
+    auto *self             = static_cast<WaylandWindow *>(data);
+    self->lastInputSerial_ = serial;
     // The `keys` array carries the keycodes currently held when focus
     // arrives. We rely on the modifiers event (sent immediately after enter)
     // to resync the modifier mask; per-key state isn't needed yet because
@@ -328,9 +419,10 @@ void WaylandWindow::onKeyboardLeave(void *data, wl_keyboard *, uint32_t, wl_surf
     }
 }
 
-void WaylandWindow::onKeyboardKey(void *data, wl_keyboard *, uint32_t, uint32_t, uint32_t key, uint32_t state)
+void WaylandWindow::onKeyboardKey(void *data, wl_keyboard *, uint32_t serial, uint32_t, uint32_t key, uint32_t state)
 {
-    auto *self = static_cast<WaylandWindow *>(data);
+    auto *self             = static_cast<WaylandWindow *>(data);
+    self->lastInputSerial_ = serial;
     if (!self->xkbState_ || !self->xkbKeymap_) {
         return;
     }
@@ -489,6 +581,7 @@ void WaylandWindow::onPointerEnter(void *data, wl_pointer *, uint32_t serial, wl
     }
     self->hasPointerFocus_    = true;
     self->pointerEnterSerial_ = serial;
+    self->lastInputSerial_    = serial;
     // Always (re-)apply the cursor on enter — the compositor may have
     // reset to the default between leave/enter.
     self->applyCursorShape();
@@ -514,10 +607,11 @@ void WaylandWindow::onPointerMotion(void *data, wl_pointer *, uint32_t, int32_t 
     }
 }
 
-void WaylandWindow::onPointerButton(void *data, wl_pointer *, uint32_t, uint32_t, uint32_t button, uint32_t state)
+void WaylandWindow::onPointerButton(void *data, wl_pointer *, uint32_t serial, uint32_t, uint32_t button, uint32_t state)
 {
-    auto *self = static_cast<WaylandWindow *>(data);
-    int btn    = -1;
+    auto *self             = static_cast<WaylandWindow *>(data);
+    self->lastInputSerial_ = serial;
+    int btn                = -1;
     switch (button) {
         case BTN_LEFT: btn = static_cast<int>(LeftButton); break;
         case BTN_MIDDLE: btn = static_cast<int>(MidButton); break;
@@ -594,6 +688,473 @@ void WaylandWindow::ensureDefaultKeymap()
             xkbDefaultKeymap_ = nullptr;
         }
     }
+}
+
+// ---------- selection (clipboard + primary) ----------
+
+void WaylandWindow::attachSeatSelections()
+{
+    if (!seat_) {
+        return;
+    }
+    if (dataDeviceMgr_ && !dataDevice_) {
+        dataDevice_ = wl_data_device_manager_get_data_device(dataDeviceMgr_, seat_);
+        if (dataDevice_) {
+            wl_data_device_add_listener(dataDevice_, &kDataDeviceListener, this);
+        }
+    }
+    if (primarySelMgr_ && !primarySelDevice_) {
+        primarySelDevice_ = zwp_primary_selection_device_manager_v1_get_device(primarySelMgr_, seat_);
+        if (primarySelDevice_) {
+            zwp_primary_selection_device_v1_add_listener(primarySelDevice_, &kPrimaryDeviceListener, this);
+        }
+    }
+}
+
+void WaylandWindow::releaseSeatSelections()
+{
+    resetClipboardSource();
+    resetPrimarySource();
+    if (currentClipboardOffer_) {
+        dataOfferMimes_.erase(currentClipboardOffer_);
+        wl_data_offer_destroy(currentClipboardOffer_);
+        currentClipboardOffer_ = nullptr;
+    }
+    if (currentPrimaryOffer_) {
+        primaryOfferMimes_.erase(currentPrimaryOffer_);
+        zwp_primary_selection_offer_v1_destroy(currentPrimaryOffer_);
+        currentPrimaryOffer_ = nullptr;
+    }
+    if (dataDevice_) {
+        // wl_data_device.release was added in wl_data_device_manager v2; we
+        // always bind ≥v3. Falls back to destroy on older but the cast
+        // would still succeed.
+        wl_data_device_release(dataDevice_);
+        dataDevice_ = nullptr;
+    }
+    if (primarySelDevice_) {
+        zwp_primary_selection_device_v1_destroy(primarySelDevice_);
+        primarySelDevice_ = nullptr;
+    }
+}
+
+void WaylandWindow::resetClipboardSource()
+{
+    if (clipboardSource_) {
+        wl_data_source_destroy(clipboardSource_);
+        clipboardSource_ = nullptr;
+    }
+}
+
+void WaylandWindow::resetPrimarySource()
+{
+    if (primarySource_) {
+        zwp_primary_selection_source_v1_destroy(primarySource_);
+        primarySource_ = nullptr;
+    }
+}
+
+void WaylandWindow::writeStringToFd(int fd, const std::string &text)
+{
+    // The peer's pipe write end is non-blocking — short writes happen for
+    // small buffers and signal-interrupts. Loop until done or hard fail.
+    // Always close the fd regardless: leaking it would block the peer's
+    // read with no EOF and prevent another set_selection from succeeding.
+    const char *p = text.data();
+    size_t left   = text.size();
+    while (left > 0) {
+        ssize_t n = write(fd, p, left);
+        if (n > 0) {
+            p += static_cast<size_t>(n);
+            left -= static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        // EAGAIN here means the peer is slow; we still need to make
+        // progress without blocking the main thread. Yield via a short
+        // poll on writability would be cleaner, but for the small amounts
+        // typical of terminal selections (≤ a few KB) the kernel buffer
+        // accommodates it; the rare case where it doesn't drops the tail.
+        // Log + break.
+        spdlog::warn("WaylandWindow: selection write failed/short: {}", std::strerror(errno));
+        break;
+    }
+    close(fd);
+}
+
+void WaylandWindow::startSelectionRead(int readFd, SelectionCallback cb)
+{
+    auto entry = std::make_unique<PendingSelectionRead>();
+    entry->fd  = readFd;
+    entry->cb  = std::move(cb);
+    auto *raw  = entry.get();
+
+    // Non-blocking + close-on-exec hygiene for the read end. pipe2(O_CLOEXEC)
+    // is set at create time; flip O_NONBLOCK so the readable callback never
+    // blocks if the kernel returns early.
+    int flags = fcntl(readFd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(readFd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    loop_.watchFd(readFd, EventLoop::FdEvents::Readable, [this, raw](EventLoop::FdEvents)
+                  {
+                      // Drain whatever's available; on EOF (0) or hard error,
+                      // complete the read and pop the entry. EAGAIN means
+                      // "wait for next wake."
+                      char chunk[4096];
+                      for (;;) {
+                          ssize_t n = read(raw->fd, chunk, sizeof(chunk));
+                          if (n > 0) {
+                              raw->buf.insert(raw->buf.end(), chunk, chunk + n);
+                              continue;
+                          }
+                          if (n < 0 && errno == EINTR) {
+                              continue;
+                          }
+                          if (n < 0 && errno == EAGAIN) {
+                              return;
+                          }
+                          // EOF or hard error → complete.
+                          std::optional<std::string> result;
+                          if (n == 0 && !raw->buf.empty()) {
+                              result = std::string(raw->buf.data(), raw->buf.size());
+                          } else if (n == 0) {
+                              result = std::string { };
+                          }
+                          SelectionCallback cb = std::move(raw->cb);
+                          loop_.removeFd(raw->fd);
+                          if (raw->timeoutTimer) {
+                              loop_.removeTimer(raw->timeoutTimer);
+                          }
+                          close(raw->fd);
+                          // Erase the entry (raw is invalidated after this).
+                          for (auto it = pendingReads_.begin(); it != pendingReads_.end(); ++it) {
+                              if (it->get() == raw) {
+                                  pendingReads_.erase(it);
+                                  break;
+                              }
+                          }
+                          if (cb) {
+                              cb(result);
+                          }
+                          return;
+                      }
+                  });
+
+    entry->timeoutTimer = loop_.addTimer(kSelectionReadTimeoutMs, false, [this, raw]()
+                                         {
+                                             // Timeout: cancel the read, fire cb with nullopt.
+                                             SelectionCallback cb = std::move(raw->cb);
+                                             loop_.removeFd(raw->fd);
+                                             close(raw->fd);
+                                             raw->timeoutTimer = 0;
+                                             for (auto it = pendingReads_.begin(); it != pendingReads_.end(); ++it) {
+                                                 if (it->get() == raw) {
+                                                     pendingReads_.erase(it);
+                                                     break;
+                                                 }
+                                             }
+                                             if (cb) {
+                                                 cb(std::nullopt);
+                                             }
+                                         });
+
+    pendingReads_.push_back(std::move(entry));
+}
+
+void WaylandWindow::cancelAllSelectionReads()
+{
+    for (auto &p : pendingReads_) {
+        if (p->fd >= 0) {
+            loop_.removeFd(p->fd);
+            close(p->fd);
+        }
+        if (p->timeoutTimer) {
+            loop_.removeTimer(p->timeoutTimer);
+        }
+    }
+    pendingReads_.clear();
+}
+
+// Clipboard public API
+
+void WaylandWindow::setClipboard(const std::string &text)
+{
+    if (!dataDeviceMgr_ || !dataDevice_) {
+        // Without the manager + per-seat device we can't own the
+        // selection; nothing to do.
+        clipboardContent_ = text;
+        return;
+    }
+    clipboardContent_ = text;
+    resetClipboardSource();
+    clipboardSource_ = wl_data_device_manager_create_data_source(dataDeviceMgr_);
+    if (!clipboardSource_) {
+        return;
+    }
+    wl_data_source_add_listener(clipboardSource_, &kDataSourceListener, this);
+    wl_data_source_offer(clipboardSource_, kMimeUtf8);
+    wl_data_source_offer(clipboardSource_, kMimePlain);
+    wl_data_source_offer(clipboardSource_, kMimeUtf8X11);
+    wl_data_source_offer(clipboardSource_, kMimeStringX11);
+    wl_data_device_set_selection(dataDevice_, clipboardSource_, lastInputSerial_);
+    if (display_) {
+        wl_display_flush(display_);
+    }
+}
+
+void WaylandWindow::setPrimarySelection(const std::string &text)
+{
+    if (!primarySelMgr_ || !primarySelDevice_) {
+        primaryContent_ = text;
+        return;
+    }
+    primaryContent_ = text;
+    resetPrimarySource();
+    primarySource_ = zwp_primary_selection_device_manager_v1_create_source(primarySelMgr_);
+    if (!primarySource_) {
+        return;
+    }
+    zwp_primary_selection_source_v1_add_listener(primarySource_, &kPrimarySourceListener, this);
+    zwp_primary_selection_source_v1_offer(primarySource_, kMimeUtf8);
+    zwp_primary_selection_source_v1_offer(primarySource_, kMimePlain);
+    zwp_primary_selection_source_v1_offer(primarySource_, kMimeUtf8X11);
+    zwp_primary_selection_source_v1_offer(primarySource_, kMimeStringX11);
+    zwp_primary_selection_device_v1_set_selection(primarySelDevice_, primarySource_, lastInputSerial_);
+    if (display_) {
+        wl_display_flush(display_);
+    }
+}
+
+void WaylandWindow::requestSelection(SelectionSource src, SelectionCallback cb)
+{
+    if (!cb) {
+        return;
+    }
+
+    // Self-loop fast path: if we own the matching selection, satisfy from
+    // our cached content directly. Avoids the pipe round-trip and works
+    // even on compositors that don't deliver `selection` to the owner.
+    if (src == SelectionSource::Clipboard && clipboardSource_) {
+        cb(clipboardContent_.empty() ? std::optional<std::string> { } : clipboardContent_);
+        return;
+    }
+    if (src == SelectionSource::Primary && primarySource_) {
+        cb(primaryContent_.empty() ? std::optional<std::string> { } : primaryContent_);
+        return;
+    }
+
+    if (src == SelectionSource::Clipboard) {
+        if (!currentClipboardOffer_) {
+            cb(std::nullopt);
+            return;
+        }
+        auto it          = dataOfferMimes_.find(currentClipboardOffer_);
+        const char *mime = (it != dataOfferMimes_.end()) ? pickBestMime(it->second.mimes) : nullptr;
+        if (!mime) {
+            cb(std::nullopt);
+            return;
+        }
+        int fds[2];
+        if (pipe2(fds, O_CLOEXEC) < 0) {
+            spdlog::error("WaylandWindow: pipe2 failed for clipboard read: {}", std::strerror(errno));
+            cb(std::nullopt);
+            return;
+        }
+        wl_data_offer_receive(currentClipboardOffer_, mime, fds[1]);
+        close(fds[1]);
+        if (display_) {
+            wl_display_flush(display_);
+        }
+        startSelectionRead(fds[0], std::move(cb));
+    } else {
+        if (!currentPrimaryOffer_) {
+            cb(std::nullopt);
+            return;
+        }
+        auto it          = primaryOfferMimes_.find(currentPrimaryOffer_);
+        const char *mime = (it != primaryOfferMimes_.end()) ? pickBestMime(it->second.mimes) : nullptr;
+        if (!mime) {
+            cb(std::nullopt);
+            return;
+        }
+        int fds[2];
+        if (pipe2(fds, O_CLOEXEC) < 0) {
+            spdlog::error("WaylandWindow: pipe2 failed for primary read: {}", std::strerror(errno));
+            cb(std::nullopt);
+            return;
+        }
+        zwp_primary_selection_offer_v1_receive(currentPrimaryOffer_, mime, fds[1]);
+        close(fds[1]);
+        if (display_) {
+            wl_display_flush(display_);
+        }
+        startSelectionRead(fds[0], std::move(cb));
+    }
+}
+
+// Data device / offer / source listener bodies
+
+void WaylandWindow::onDataDeviceDataOffer(void *data, wl_data_device *, wl_data_offer *offer)
+{
+    auto *self                   = static_cast<WaylandWindow *>(data);
+    // Attach a listener so the per-offer `offer` events populate our mime
+    // map. We track the offer in dataOfferMimes_ keyed by pointer.
+    self->dataOfferMimes_[offer] = OfferMimes { };
+    wl_data_offer_add_listener(offer, &kDataOfferListener, self);
+}
+
+void WaylandWindow::onDataDeviceEnter(void *, wl_data_device *, uint32_t, wl_surface *, int32_t, int32_t, wl_data_offer *)
+{
+    // Drag-and-drop entry. Out of scope for Stage 4 (no DnD).
+}
+
+void WaylandWindow::onDataDeviceLeave(void *, wl_data_device *)
+{
+    // DnD leave. Out of scope.
+}
+
+void WaylandWindow::onDataDeviceMotion(void *, wl_data_device *, uint32_t, int32_t, int32_t)
+{
+    // DnD motion. Out of scope.
+}
+
+void WaylandWindow::onDataDeviceDrop(void *, wl_data_device *)
+{
+    // DnD drop. Out of scope.
+}
+
+void WaylandWindow::onDataDeviceSelection(void *data, wl_data_device *, wl_data_offer *offer)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    // The previous offer (if any) is being superseded; drop our tracking +
+    // destroy it. Note: when WE own the selection (clipboardSource_ set),
+    // the compositor may pass `offer == null` as a no-op, or our own
+    // proxy back — either way replace.
+    if (self->currentClipboardOffer_ && self->currentClipboardOffer_ != offer) {
+        self->dataOfferMimes_.erase(self->currentClipboardOffer_);
+        wl_data_offer_destroy(self->currentClipboardOffer_);
+    }
+    self->currentClipboardOffer_ = offer;
+}
+
+void WaylandWindow::onDataOfferOffer(void *data, wl_data_offer *offer, const char *mime)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    auto it    = self->dataOfferMimes_.find(offer);
+    if (it == self->dataOfferMimes_.end() || !mime) {
+        return;
+    }
+    if (isAcceptableTextMime(mime)) {
+        it->second.mimes.emplace_back(mime);
+    }
+}
+
+void WaylandWindow::onDataOfferSourceActions(void *, wl_data_offer *, uint32_t)
+{
+    // DnD action bitmask. Out of scope for Stage 4.
+}
+
+void WaylandWindow::onDataOfferAction(void *, wl_data_offer *, uint32_t)
+{
+    // DnD active action. Out of scope.
+}
+
+void WaylandWindow::onDataSourceTarget(void *, wl_data_source *, const char *)
+{
+    // DnD target ack. Out of scope.
+}
+
+void WaylandWindow::onDataSourceSend(void *data, wl_data_source *source, const char *mime, int32_t fd)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    (void)mime; // we only offer text MIMEs; any choice gets the same bytes
+    if (source != self->clipboardSource_) {
+        // Stale source (we already moved on). Close the fd so the peer
+        // unblocks rather than waiting for an EOF that never comes.
+        close(fd);
+        return;
+    }
+    self->writeStringToFd(fd, self->clipboardContent_);
+}
+
+void WaylandWindow::onDataSourceCancelled(void *data, wl_data_source *source)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    if (source != self->clipboardSource_) {
+        return;
+    }
+    // Another client took the selection. Drop our source + content.
+    self->resetClipboardSource();
+    self->clipboardContent_.clear();
+}
+
+void WaylandWindow::onDataSourceDndDropPerformed(void *, wl_data_source *)
+{
+    // DnD-only. Out of scope.
+}
+
+void WaylandWindow::onDataSourceDndFinished(void *, wl_data_source *)
+{
+    // DnD-only. Out of scope.
+}
+
+void WaylandWindow::onDataSourceAction(void *, wl_data_source *, uint32_t)
+{
+    // DnD-only. Out of scope.
+}
+
+void WaylandWindow::onPrimaryDeviceDataOffer(void *data, zwp_primary_selection_device_v1 *, zwp_primary_selection_offer_v1 *offer)
+{
+    auto *self                      = static_cast<WaylandWindow *>(data);
+    self->primaryOfferMimes_[offer] = OfferMimes { };
+    zwp_primary_selection_offer_v1_add_listener(offer, &kPrimaryOfferListener, self);
+}
+
+void WaylandWindow::onPrimaryDeviceSelection(void *data, zwp_primary_selection_device_v1 *, zwp_primary_selection_offer_v1 *offer)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    if (self->currentPrimaryOffer_ && self->currentPrimaryOffer_ != offer) {
+        self->primaryOfferMimes_.erase(self->currentPrimaryOffer_);
+        zwp_primary_selection_offer_v1_destroy(self->currentPrimaryOffer_);
+    }
+    self->currentPrimaryOffer_ = offer;
+}
+
+void WaylandWindow::onPrimaryOfferOffer(void *data, zwp_primary_selection_offer_v1 *offer, const char *mime)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    auto it    = self->primaryOfferMimes_.find(offer);
+    if (it == self->primaryOfferMimes_.end() || !mime) {
+        return;
+    }
+    if (isAcceptableTextMime(mime)) {
+        it->second.mimes.emplace_back(mime);
+    }
+}
+
+void WaylandWindow::onPrimarySourceSend(void *data, zwp_primary_selection_source_v1 *source, const char *mime, int32_t fd)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    (void)mime;
+    if (source != self->primarySource_) {
+        close(fd);
+        return;
+    }
+    self->writeStringToFd(fd, self->primaryContent_);
+}
+
+void WaylandWindow::onPrimarySourceCancelled(void *data, zwp_primary_selection_source_v1 *source)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    if (source != self->primarySource_) {
+        return;
+    }
+    self->resetPrimarySource();
+    self->primaryContent_.clear();
 }
 
 // ---------- lifecycle ----------
@@ -706,6 +1267,10 @@ bool WaylandWindow::create(int width, int height, const std::string &title)
 void WaylandWindow::destroy()
 {
     cancelKeyRepeat();
+    cancelAllSelectionReads();
+    releaseSeatSelections();
+    primarySelMgr_ = nullptr; // registry global; freed by wl_display_disconnect
+    dataDeviceMgr_ = nullptr; // ditto
 
     if (wlFd_ >= 0) {
         loop_.removeFd(wlFd_);

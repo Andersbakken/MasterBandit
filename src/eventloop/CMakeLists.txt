@@ -67,6 +67,8 @@ else()
         "${WAYLAND_PROTOCOLS_PKGDATADIR}/staging/cursor-shape/cursor-shape-v1.xml")
     mb_wayland_scan(tablet-v2
         "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/tablet/tablet-v2.xml")
+    mb_wayland_scan(primary-selection-unstable-v1
+        "${WAYLAND_PROTOCOLS_PKGDATADIR}/unstable/primary-selection/primary-selection-unstable-v1.xml")
 endif()
 
 add_library(eventloop OBJECT ${EVENTLOOP_SOURCES})

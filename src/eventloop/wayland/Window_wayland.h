@@ -4,7 +4,10 @@
 #include <Window.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 struct wl_display;
 struct wl_registry;
@@ -21,15 +24,25 @@ struct xkb_keymap;
 struct xkb_state;
 struct wp_cursor_shape_manager_v1;
 struct wp_cursor_shape_device_v1;
+struct wl_data_device_manager;
+struct wl_data_device;
+struct wl_data_source;
+struct wl_data_offer;
+struct zwp_primary_selection_device_manager_v1;
+struct zwp_primary_selection_device_v1;
+struct zwp_primary_selection_source_v1;
+struct zwp_primary_selection_offer_v1;
 
-// Stage 1-3 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
+// Stage 1-4 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
 // Wayland events from the EpollEventLoop fd, hands the surface to Dawn via
 // SurfaceSourceWaylandSurface (Stage 1), processes keyboard input
 // (xkbcommon-backed keymap, modifiers, client-synthesized key repeat) via
-// wl_seat + wl_keyboard (Stage 2), and handles pointer events + cursor
-// shape via wl_pointer + wp_cursor_shape_v1 (Stage 3).
+// wl_seat + wl_keyboard (Stage 2), handles pointer events + cursor shape
+// via wl_pointer + wp_cursor_shape_v1 (Stage 3), and bridges clipboard +
+// primary-selection round-trips via wl_data_device + zwp_primary_selection_v1
+// (Stage 4).
 //
-// Stage 4+ (clipboard, scale) lands in later patches.
+// Stage 5+ (HiDPI / fractional scale) lands in later patches.
 class WaylandWindow : public Window
 {
 public:
@@ -46,14 +59,9 @@ public:
     void getContentScale(float &x, float &y) const override;
     void getScreenSize(int &w, int &h) const override;
 
-    void setClipboard(const std::string & /*text*/) override { }
-
-    void requestSelection(SelectionSource /*src*/, SelectionCallback cb) override
-    {
-        if (cb) {
-            cb(std::nullopt);
-        }
-    }
+    void setClipboard(const std::string &text) override;
+    void setPrimarySelection(const std::string &text) override;
+    void requestSelection(SelectionSource src, SelectionCallback cb) override;
 
     std::string keyName(int keycode) const override;
     uint32_t shiftedKeyCodepoint(int keycode) const override;
@@ -76,6 +84,12 @@ private:
     static const struct wl_seat_listener kSeatListener;
     static const struct wl_keyboard_listener kKeyboardListener;
     static const struct wl_pointer_listener kPointerListener;
+    static const struct wl_data_device_listener kDataDeviceListener;
+    static const struct wl_data_source_listener kDataSourceListener;
+    static const struct wl_data_offer_listener kDataOfferListener;
+    static const struct zwp_primary_selection_device_v1_listener kPrimaryDeviceListener;
+    static const struct zwp_primary_selection_source_v1_listener kPrimarySourceListener;
+    static const struct zwp_primary_selection_offer_v1_listener kPrimaryOfferListener;
 
     static void onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version);
     static void onRegistryGlobalRemove(void *data, wl_registry *registry, uint32_t name);
@@ -106,6 +120,34 @@ private:
     static void onPointerAxisStop(void *data, wl_pointer *pointer, uint32_t time, uint32_t axis);
     static void onPointerAxisDiscrete(void *data, wl_pointer *pointer, uint32_t axis, int32_t discrete);
 
+    // Clipboard (wl_data_device)
+    static void onDataDeviceDataOffer(void *data, wl_data_device *device, wl_data_offer *offer);
+    static void onDataDeviceEnter(void *data, wl_data_device *device, uint32_t serial, wl_surface *surface, int32_t x, int32_t y, wl_data_offer *offer);
+    static void onDataDeviceLeave(void *data, wl_data_device *device);
+    static void onDataDeviceMotion(void *data, wl_data_device *device, uint32_t time, int32_t x, int32_t y);
+    static void onDataDeviceDrop(void *data, wl_data_device *device);
+    static void onDataDeviceSelection(void *data, wl_data_device *device, wl_data_offer *offer);
+
+    static void onDataOfferOffer(void *data, wl_data_offer *offer, const char *mime);
+    static void onDataOfferSourceActions(void *data, wl_data_offer *offer, uint32_t source_actions);
+    static void onDataOfferAction(void *data, wl_data_offer *offer, uint32_t dnd_action);
+
+    static void onDataSourceTarget(void *data, wl_data_source *source, const char *mime);
+    static void onDataSourceSend(void *data, wl_data_source *source, const char *mime, int32_t fd);
+    static void onDataSourceCancelled(void *data, wl_data_source *source);
+    static void onDataSourceDndDropPerformed(void *data, wl_data_source *source);
+    static void onDataSourceDndFinished(void *data, wl_data_source *source);
+    static void onDataSourceAction(void *data, wl_data_source *source, uint32_t dnd_action);
+
+    // Primary selection (zwp_primary_selection_v1)
+    static void onPrimaryDeviceDataOffer(void *data, zwp_primary_selection_device_v1 *device, zwp_primary_selection_offer_v1 *offer);
+    static void onPrimaryDeviceSelection(void *data, zwp_primary_selection_device_v1 *device, zwp_primary_selection_offer_v1 *offer);
+
+    static void onPrimaryOfferOffer(void *data, zwp_primary_selection_offer_v1 *offer, const char *mime);
+
+    static void onPrimarySourceSend(void *data, zwp_primary_selection_source_v1 *source, const char *mime, int32_t fd);
+    static void onPrimarySourceCancelled(void *data, zwp_primary_selection_source_v1 *source);
+
     // Drive the libwayland dispatch state machine from the epoll callback.
     // Pattern is the canonical prepare_read / read_events / dispatch_pending
     // sequence from the wayland-book; see processEvents() in the .cpp for the
@@ -126,6 +168,27 @@ private:
     void releasePointer();
     void applyCursorShape();
 
+    // Selection (clipboard + primary). attachSeatSelections is called once
+    // the seat is known to bind the per-seat wl_data_device +
+    // zwp_primary_selection_device_v1. setClipboard / setPrimarySelection
+    // route through writeSelectionToFd to push our content to a peer's
+    // pipe when `send` fires. requestSelection's read path uses
+    // startSelectionRead to pipe + watch + accumulate.
+    void attachSeatSelections();
+    void releaseSeatSelections();
+    void resetClipboardSource();
+    void resetPrimarySource();
+    void writeStringToFd(int fd, const std::string &text);
+    void startSelectionRead(int readFd, SelectionCallback cb);
+    void cancelAllSelectionReads();
+
+    // Per-offer mime tracking. Kept in a map keyed by the offer pointer so
+    // we can drop entries when offers are destroyed without leaking.
+    struct OfferMimes
+    {
+        std::vector<std::string> mimes;
+    };
+
     EventLoop &loop_;
 
     wl_display *display_       = nullptr;
@@ -143,6 +206,49 @@ private:
     // assigns by default.
     wp_cursor_shape_manager_v1 *cursorShapeMgr_ = nullptr;
     wp_cursor_shape_device_v1 *cursorShapeDev_  = nullptr;
+
+    // Clipboard (wl_data_device path).
+    wl_data_device_manager *dataDeviceMgr_ = nullptr;
+    wl_data_device *dataDevice_            = nullptr;
+    wl_data_source *clipboardSource_       = nullptr; // active source we own; null if no copy is live
+    wl_data_offer *currentClipboardOffer_  = nullptr; // latest offer from the compositor; null if no selection
+    std::string clipboardContent_;                    // data we hand out when `send` arrives on clipboardSource_
+
+    // Primary selection (zwp_primary_selection_v1 path). Mirrors the
+    // clipboard wiring. Both managers are optional globals — if the
+    // compositor doesn't advertise them, the corresponding setter / reader
+    // becomes a no-op + std::nullopt callback.
+    zwp_primary_selection_device_manager_v1 *primarySelMgr_ = nullptr;
+    zwp_primary_selection_device_v1 *primarySelDevice_      = nullptr;
+    zwp_primary_selection_source_v1 *primarySource_         = nullptr;
+    zwp_primary_selection_offer_v1 *currentPrimaryOffer_    = nullptr;
+    std::string primaryContent_;
+
+    // Per-offer MIME accumulators. Populated as `offer.offer` events arrive
+    // between data_offer and selection; consulted by requestSelection() to
+    // pick a MIME for the receive request. Cleared when the corresponding
+    // offer is destroyed.
+    std::unordered_map<wl_data_offer *, OfferMimes> dataOfferMimes_;
+    std::unordered_map<zwp_primary_selection_offer_v1 *, OfferMimes> primaryOfferMimes_;
+
+    // Async pipe reads driven by requestSelection. Each entry owns its read-
+    // end fd and accumulates bytes until EOF (or timeout). The callback
+    // fires exactly once and the entry is dropped.
+    struct PendingSelectionRead
+    {
+        int fd { -1 };
+        std::vector<char> buf;
+        SelectionCallback cb;
+        EventLoop::TimerId timeoutTimer { 0 };
+    };
+
+    std::vector<std::unique_ptr<PendingSelectionRead>> pendingReads_;
+
+    // Most-recent serial from any input event (keyboard.enter/.key,
+    // pointer.enter/.button). set_selection / set_primary_selection require
+    // a serial that the compositor recognises as coming from this client;
+    // we keep the freshest one.
+    uint32_t lastInputSerial_ = 0;
 
     // Set true between pointer.enter and pointer.leave on our surface.
     // Cursor shape can only be set with the latest enter serial, so we

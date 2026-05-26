@@ -45,6 +45,7 @@ struct TestTerminal
     std::vector<std::string> capturedNotifyButtons;
     std::string capturedCloseId;          // last p=close target id
     std::string capturedAliveResponderId; // last p=alive responder id
+    int desktopNotificationCalls { 0 };
     int closeNotificationCalls { 0 };
     int queryAliveCalls { 0 };
     std::string capturedPointerShape;
@@ -95,6 +96,7 @@ struct TestTerminal
                        capturedNotifyActionFocus   = n.actionFocus;
                        capturedNotifyActionReport  = n.actionReport;
                        capturedNotifyButtons       = n.buttons;
+                       ++desktopNotificationCalls;
                    };
                    cb.onCloseNotification = [this](const std::string &id)
                    {

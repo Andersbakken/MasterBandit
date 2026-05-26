@@ -699,7 +699,7 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
         case 99: // Desktop notifications (kitty protocol)
         {
             // Format: "metadata;content" where metadata is colon-separated key=value pairs
-            // Keys: i=identifier, p=title|body, d=0|1 (done)
+            // Keys: i=identifier, p=title|body, d=0|1 (done), e=0|1 (base64)
             auto payloadSemi          = payload.find(';');
             std::string_view metadata = (payloadSemi != std::string_view::npos)
                 ? payload.substr(0, payloadSemi)
@@ -710,7 +710,8 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
 
             std::string pType = "title";
             std::string nId;
-            bool done = true;
+            bool done    = true;
+            bool encoded = false;
 
             std::string_view sv = metadata;
             while (!sv.empty()) {
@@ -737,6 +738,12 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
                     done = (val != "0");
                 } else if (key == "p") {
                     pType = std::string(val);
+                } else if (key == "e") {
+                    // kitty notifications.py:283-284 — payload_is_encoded
+                    // when e=1 (base64). The Go encoder
+                    // (kittens/notify/main.go:98) sets e=1 on every data
+                    // chunk, so decode per-chunk before appending.
+                    encoded = (val == "1");
                 } else if (key == "u" && val.size() == 1) {
                     // 0=low, 1=normal, 2=critical (kitty notifications.py:132 +
                     // freedesktop urgency hint). Kitty silently ignores any
@@ -792,9 +799,9 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
                 }
             }
 
-            // p=close and p=alive are stateless commands keyed off this
+            // p=close, p=alive, p=? are stateless commands keyed off this
             // metadata's i=, not the title/body accumulator. They route to
-            // dedicated callbacks and skip the accumulator entirely.
+            // dedicated callbacks/replies and skip the accumulator entirely.
             if (pType == "close") {
                 if (mCallbacks.onCloseNotification && !nId.empty()) {
                     mCallbacks.onCloseNotification(nId);
@@ -807,31 +814,70 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
                 }
                 break;
             }
+            if (pType == "?") {
+                // Capability query (kitty notifications.py:1019-1021,
+                // 502-510). Reply with what we support and skip dispatch
+                // entirely; without this branch the unknown pType fell
+                // through and fired a blank notification (opentui sends
+                // this on startup).
+                std::string id   = nId.empty() ? std::string("0") : nId;
+                std::string resp = "\x1b]99;i=" + id + ":p=?;a=focus,report:o=always,unfocused,invisible:u=0,1,2:p=title,body,buttons:c=1:w=1\x1b\\";
+                writeToOutput(resp.data(), resp.size());
+                break;
+            }
+            // Unknown payload types: ignore (kitty silently drops them).
+            // Without this guard a non-title/body/buttons pType falls
+            // through to the done=true dispatch with an empty accumulator.
+            if (pType != "title" && pType != "body" && pType != "buttons") {
+                break;
+            }
+
+            // kitty notifications.py:402-403 — commit_data returns early
+            // on empty bytes. The Go encoder emits a terminator chunk
+            // (kittens/notify/main.go:111) with d=1 and no content;
+            // without this guard the empty text would overwrite/append
+            // nothing but would still fire dispatch via done=true below
+            // (correct for a terminator). Skipping the assignment branch
+            // here is harmless because empty text doesn't change state.
+            std::string decoded;
+            if (encoded && !text.empty()) {
+                auto bytes = base64::decode(text);
+                decoded.assign(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+            }
+            const std::string &chunk = encoded ? decoded : text;
 
             if (!nId.empty()) {
                 mNotifyId = nId;
             }
-            if (pType == "title") {
-                mNotifyTitle = text;
-            } else if (pType == "body") {
-                mNotifyBody = text;
-            } else if (pType == "buttons") {
-                // kitty notifications.py:421 — split on U+2028 (LINE
-                // SEPARATOR), drop empty entries, cap at 8.
-                constexpr const char *kU2028 = "\xE2\x80\xA8"; // UTF-8 of U+2028
-                size_t i                     = 0;
-                while (i < text.size() && mNotifyButtons.size() < 8) {
-                    size_t pos = text.find(kU2028, i);
-                    std::string label;
-                    if (pos == std::string::npos) {
-                        label = text.substr(i);
-                        i     = text.size();
-                    } else {
-                        label = text.substr(i, pos - i);
-                        i     = pos + 3; // U+2028 is 3 bytes in UTF-8
-                    }
-                    if (!label.empty()) {
-                        mNotifyButtons.push_back(std::move(label));
+            if (!chunk.empty()) {
+                if (pType == "title") {
+                    // kitty notifications.py:410 — append, not replace.
+                    // Multi-chunk titles concatenate; a final empty
+                    // terminator chunk leaves the accumulated value alone.
+                    mNotifyTitle += chunk;
+                } else if (pType == "body") {
+                    // kitty notifications.py:412.
+                    mNotifyBody += chunk;
+                } else if (pType == "buttons") {
+                    // kitty notifications.py:421 — split on U+2028 (LINE
+                    // SEPARATOR), drop empty entries, cap at 8. Buttons
+                    // accumulate across chunks just like title/body, but
+                    // each chunk is split independently.
+                    constexpr const char *kU2028 = "\xE2\x80\xA8"; // UTF-8 of U+2028
+                    size_t i                     = 0;
+                    while (i < chunk.size() && mNotifyButtons.size() < 8) {
+                        size_t pos = chunk.find(kU2028, i);
+                        std::string label;
+                        if (pos == std::string::npos) {
+                            label = chunk.substr(i);
+                            i     = chunk.size();
+                        } else {
+                            label = chunk.substr(i, pos - i);
+                            i     = pos + 3; // U+2028 is 3 bytes in UTF-8
+                        }
+                        if (!label.empty()) {
+                            mNotifyButtons.push_back(std::move(label));
+                        }
                     }
                 }
             }

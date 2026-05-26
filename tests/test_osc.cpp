@@ -644,6 +644,128 @@ TEST_CASE("OSC 99 p=alive without i= is dropped (no callback)")
     CHECK(t.queryAliveCalls == 0);
 }
 
+// ── OSC 99 p=? (capability query) ────────────────────────────────────────────
+
+// kitty notifications.py:1019-1021, 502-510. opentui (and opencode by
+// extension) sends this on startup to probe what the terminal supports.
+// Before the dedicated handler the unknown pType fell through to the
+// done=true dispatch and fired a blank notification banner.
+TEST_CASE("OSC 99 p=? does not fire a notification")
+{
+    TestTerminal t;
+    t.osc("99;i=opentui:p=?;");
+    CHECK(t.desktopNotificationCalls == 0);
+    CHECK(t.capturedNotifyTitle.empty());
+    CHECK(t.capturedNotifyBody.empty());
+}
+
+TEST_CASE("OSC 99 p=? emits an OSC 99 query response with the same id")
+{
+    TestTerminal t;
+    t.osc("99;i=opentui:p=?;");
+    // Reply format per kitty:
+    //   ESC ] 99 ; i=<id> : p=? ; <caps>... ESC \ 
+    CHECK(t.output().find("\x1b]99;i=opentui:p=?;") == 0);
+    CHECK(t.output().find("p=title,body,buttons") != std::string::npos);
+    CHECK(t.output().find("u=0,1,2") != std::string::npos);
+    CHECK(t.output().find("a=focus,report") != std::string::npos);
+    CHECK(t.output().back() == '\\'); // ST terminator
+}
+
+TEST_CASE("OSC 99 p=? without i= uses i=0 in the reply (kitty fallback)")
+{
+    TestTerminal t;
+    t.osc("99;p=?;");
+    CHECK(t.desktopNotificationCalls == 0);
+    CHECK(t.output().find("\x1b]99;i=0:p=?;") == 0);
+}
+
+// ── OSC 99 unknown payload types (silently ignored) ──────────────────────────
+
+// kitty silently drops unknown pTypes. Without this guard, a value
+// other than title/body/buttons/close/alive/? would fall through to
+// the done=true dispatch with an empty accumulator, firing a blank
+// banner. Regression test for the bug that motivated the p=? handler.
+TEST_CASE("OSC 99 unknown pType does not fire a notification")
+{
+    TestTerminal t;
+    t.osc("99;p=icon;some-data");
+    CHECK(t.desktopNotificationCalls == 0);
+    t.osc("99;p=bogus;more-data");
+    CHECK(t.desktopNotificationCalls == 0);
+}
+
+// ── OSC 99 e=1 (base64 encoded payload) ──────────────────────────────────────
+
+// kitty notifications.py:283-284, kittens/notify/main.go:98. The Go
+// encoder sets e=1 on every data chunk and base64-encodes the payload;
+// without decoding, the title rendered as base64 gibberish.
+TEST_CASE("OSC 99 e=1: title is base64 decoded")
+{
+    TestTerminal t;
+    // base64("Hello World") = "SGVsbG8gV29ybGQ="
+    t.osc("99;e=1:p=title;SGVsbG8gV29ybGQ=");
+    CHECK(t.desktopNotificationCalls == 1);
+    CHECK(t.capturedNotifyTitle == "Hello World");
+}
+
+TEST_CASE("OSC 99 e=1 chunked: base64 title across multiple chunks")
+{
+    TestTerminal t;
+    // base64("Hello") = "SGVsbG8=", base64(" World") = "IFdvcmxk"
+    // Each chunk is independently base64-decoded then concatenated.
+    t.osc("99;i=1:d=0:e=1:p=title;SGVsbG8=");
+    CHECK(t.desktopNotificationCalls == 0);
+    t.osc("99;i=1:d=1:e=1:p=title;IFdvcmxk");
+    CHECK(t.desktopNotificationCalls == 1);
+    CHECK(t.capturedNotifyTitle == "Hello World");
+}
+
+TEST_CASE("OSC 99 e=1 body is base64 decoded")
+{
+    TestTerminal t;
+    // base64("Body text") = "Qm9keSB0ZXh0"
+    t.osc("99;e=1:p=body;Qm9keSB0ZXh0");
+    CHECK(t.capturedNotifyBody == "Body text");
+}
+
+// ── OSC 99 title/body chunking (append, not replace) ─────────────────────────
+
+// kitty notifications.py:410, 412 — chunks of the same payload type
+// concatenate. The previous implementation replaced (=) which meant
+// multi-chunk titles only retained the last chunk.
+TEST_CASE("OSC 99 title chunks concatenate, not replace")
+{
+    TestTerminal t;
+    t.osc("99;i=1:d=0:p=title;Part 1 ");
+    t.osc("99;i=1:d=0:p=title;Part 2 ");
+    t.osc("99;i=1:d=1:p=title;Part 3");
+    CHECK(t.capturedNotifyTitle == "Part 1 Part 2 Part 3");
+}
+
+TEST_CASE("OSC 99 body chunks concatenate, not replace")
+{
+    TestTerminal t;
+    t.osc("99;i=1:d=0:p=body;Line 1\n");
+    t.osc("99;i=1:d=1:p=body;Line 2");
+    CHECK(t.capturedNotifyBody == "Line 1\nLine 2");
+}
+
+// kitty notifications.py:402-403 — commit_data returns early on empty
+// bytes. The Go encoder emits a final terminator chunk
+// (kittens/notify/main.go:111) with no content; before the
+// commit_data-equivalent empty-skip, this would assign "" over the
+// buffered title.
+TEST_CASE("OSC 99 empty terminator chunk preserves accumulated title")
+{
+    TestTerminal t;
+    t.osc("99;i=1:d=0:p=title;Accumulated");
+    // Terminator: no p=, no content, just d=1 \u2014 used to blank the title.
+    t.osc("99;i=1:d=1;");
+    CHECK(t.desktopNotificationCalls == 1);
+    CHECK(t.capturedNotifyTitle == "Accumulated");
+}
+
 // ── OSC 99 a= (action set) ───────────────────────────────────────────────────
 
 // kitty notifications.py:232 — actions defaults to {focus}.

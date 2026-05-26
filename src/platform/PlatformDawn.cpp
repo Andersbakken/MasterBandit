@@ -15,6 +15,7 @@
 #include <mach-o/dyld.h>
 #elif defined(__linux__)
 #include <epoll/EventLoop_epoll.h>
+#include <wayland/Window_wayland.h>
 #include <xcb/Window_xcb.h>
 #endif
 #include <chrono>
@@ -927,8 +928,39 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
             eventLoop_ = std::make_unique<NSAppEventLoop>();
             window_    = std::make_unique<CocoaWindow>();
 #elif defined(__linux__)
-            eventLoop_ = std::make_unique<EpollEventLoop>();
-            window_.reset(new XCBWindow(*eventLoop_));
+            eventLoop_              = std::make_unique<EpollEventLoop>();
+            // Backend selection precedence:
+            //   1. --x11 / --wayland (FlagForceX11 / FlagForceWayland)
+            //   2. WAYLAND_DISPLAY  → Wayland
+            //   3. DISPLAY          → X11
+            //   4. neither          → log + use XCB so the existing error
+            //                         path at PlatformDawn.cpp:1172 fires
+            //                         with a clear "Failed to create window".
+            //
+            // XWayland sessions set BOTH WAYLAND_DISPLAY and DISPLAY; we
+            // prefer Wayland to give the new backend exposure once it can
+            // actually drive the terminal. Users wanting XWayland fallback
+            // pass --x11.
+            const bool forceX11     = hasFlag(FlagForceX11);
+            const bool forceWayland = hasFlag(FlagForceWayland);
+            bool useWayland         = false;
+            if (forceWayland) {
+                useWayland = true;
+            } else if (forceX11) {
+                useWayland = false;
+            } else {
+                const char *wl = std::getenv("WAYLAND_DISPLAY");
+                useWayland     = (wl && wl[0]);
+            }
+            if (useWayland) {
+                spdlog::info("PlatformDawn: using Wayland window backend{}",
+                             forceWayland ? " (--wayland)" : "");
+                window_.reset(new WaylandWindow(*eventLoop_));
+            } else {
+                spdlog::info("PlatformDawn: using X11 (XCB) window backend{}",
+                             forceX11 ? " (--x11)" : "");
+                window_.reset(new XCBWindow(*eventLoop_));
+            }
 #endif
 
             // Wire up Window callbacks

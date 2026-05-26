@@ -14,6 +14,7 @@ else()
         epoll/EventLoop_epoll.cpp
         epoll/FdPoller_epoll.cpp
         xcb/Window_xcb.cpp
+        wayland/Window_wayland.cpp
     )
 endif()
 
@@ -48,14 +49,26 @@ else()
     pkg_check_modules(XKBCOMMON REQUIRED xkbcommon xkbcommon-x11)
     pkg_check_modules(X11 REQUIRED x11 x11-xcb)
 
+    # Wayland backend lives alongside the XCB one and is always built on
+    # Linux. Selection happens at runtime (see PlatformDawn.cpp).
+    # wayland-protocols >= 1.32 is needed for cursor-shape-v1 +
+    # fractional-scale-v1; required upfront so users hit the version error
+    # at configure rather than later in the port. wayland-cursor will be
+    # added when the cursor code lands, if we don't end up using
+    # wp_cursor_shape_v1 exclusively.
+    pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
+    pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED "wayland-protocols >= 1.32")
+
     target_include_directories(eventloop PRIVATE
         ${XCB_INCLUDE_DIRS}
         ${XKBCOMMON_INCLUDE_DIRS}
         ${X11_INCLUDE_DIRS}
+        ${WAYLAND_CLIENT_INCLUDE_DIRS}
     )
     target_link_libraries(eventloop PUBLIC
         ${XCB_LIBRARIES}
         ${XKBCOMMON_LIBRARIES}
         ${X11_LIBRARIES}
+        ${WAYLAND_CLIENT_LIBRARIES}
     )
 endif()

@@ -103,9 +103,14 @@ class PlatformDawn
 public:
     enum Flag : uint32_t
     {
-        FlagNone     = 0,
-        FlagHeadless = 1 << 0,
-        FlagIPC      = 1 << 1,
+        FlagNone         = 0,
+        FlagHeadless     = 1 << 0,
+        FlagIPC          = 1 << 1,
+        // Linux window-backend overrides. Mutually exclusive; neither set
+        // means auto-detect (WAYLAND_DISPLAY → Wayland, else DISPLAY → X11).
+        // Set by --x11 / --wayland command-line flags. Ignored on macOS.
+        FlagForceX11     = 1 << 2,
+        FlagForceWayland = 1 << 3,
     };
 
     PlatformDawn(int argc, char **argv, uint32_t flags = FlagNone);

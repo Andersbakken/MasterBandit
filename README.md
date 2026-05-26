@@ -16,8 +16,14 @@ export VCPKG_ROOT=/path/to/vcpkg
 ```sh
 sudo apt install pkg-config libxcb1-dev libxcb-util-dev libxcb-sync-dev \
     libxcb-xkb-dev libxcb-cursor-dev libxkbcommon-dev libxkbcommon-x11-dev \
-    libx11-dev libx11-xcb-dev libfontconfig-dev libdbus-1-dev
+    libx11-dev libx11-xcb-dev libfontconfig-dev libdbus-1-dev \
+    libwayland-dev wayland-protocols
 ```
+
+`libwayland-dev` provides `libwayland-cursor.so` and the
+`wayland-cursor` pkg-config module. `wayland-protocols` must be `>= 1.32`
+(Ubuntu 24.04 LTS has 1.34, Debian trixie has 1.36; older distros need a
+backport).
 
 ### Build presets
 

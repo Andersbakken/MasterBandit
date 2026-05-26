@@ -885,8 +885,17 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
             if (done) {
                 if (mCallbacks.onDesktopNotification) {
                     TerminalCallbacks::DesktopNotification n;
-                    n.title                  = mNotifyTitle;
-                    n.body                   = mNotifyBody;
+                    // Empty-title fallback: promote body to title. Most
+                    // freedesktop notification daemons render the summary
+                    // prominently and ignore body entirely if summary is
+                    // empty.
+                    if (mNotifyTitle.empty()) {
+                        n.title = mNotifyBody;
+                        n.body.clear();
+                    } else {
+                        n.title = mNotifyTitle;
+                        n.body  = mNotifyBody;
+                    }
                     n.id                     = mNotifyId;
                     n.urgency                = mNotifyUrgency;
                     n.closeResponseRequested = mNotifyCloseResponseRequested;

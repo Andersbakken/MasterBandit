@@ -721,12 +721,14 @@ TEST_CASE("OSC 99 e=1 chunked: base64 title across multiple chunks")
     CHECK(t.capturedNotifyTitle == "Hello World");
 }
 
-TEST_CASE("OSC 99 e=1 body is base64 decoded")
+TEST_CASE("OSC 99 e=1 body is base64 decoded and promoted to title (no title)")
 {
     TestTerminal t;
-    // base64("Body text") = "Qm9keSB0ZXh0"
+    // base64("Body text") = "Qm9keSB0ZXh0". With no p=title chunk, the
+    // empty-title fallback at dispatch promotes body \u2192 title.
     t.osc("99;e=1:p=body;Qm9keSB0ZXh0");
-    CHECK(t.capturedNotifyBody == "Body text");
+    CHECK(t.capturedNotifyTitle == "Body text");
+    CHECK(t.capturedNotifyBody.empty());
 }
 
 // ── OSC 99 title/body chunking (append, not replace) ─────────────────────────
@@ -746,8 +748,22 @@ TEST_CASE("OSC 99 title chunks concatenate, not replace")
 TEST_CASE("OSC 99 body chunks concatenate, not replace")
 {
     TestTerminal t;
+    // Body-only command. The chunks concatenate as body, then the
+    // empty-title fallback at dispatch moves the joined string into the
+    // title slot.
     t.osc("99;i=1:d=0:p=body;Line 1\n");
     t.osc("99;i=1:d=1:p=body;Line 2");
+    CHECK(t.capturedNotifyTitle == "Line 1\nLine 2");
+    CHECK(t.capturedNotifyBody.empty());
+}
+
+TEST_CASE("OSC 99 body chunks concatenate with explicit title (no promotion)")
+{
+    TestTerminal t;
+    t.osc("99;i=1:d=0:p=title;Heading");
+    t.osc("99;i=1:d=0:p=body;Line 1\n");
+    t.osc("99;i=1:d=1:p=body;Line 2");
+    CHECK(t.capturedNotifyTitle == "Heading");
     CHECK(t.capturedNotifyBody == "Line 1\nLine 2");
 }
 

@@ -15,6 +15,7 @@ else()
         epoll/FdPoller_epoll.cpp
         xcb/Window_xcb.cpp
         wayland/Window_wayland.cpp
+        xkb/Xkb.cpp
     )
 
     # Wayland xdg-shell codegen runs at configure-discovery time so the

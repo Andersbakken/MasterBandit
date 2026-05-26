@@ -1,10 +1,17 @@
 #include "Window_wayland.h"
 
+#include <InputTypes.h>
+#include <xkb/Xkb.h>
+
 #include <dawn/webgpu_cpp.h>
 #include <spdlog/spdlog.h>
 #include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
 
 #include "xdg-shell-client-protocol.h"
+
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -24,6 +31,10 @@ constexpr const char *kAppId = "it.masterband.mb";
 // stages need newer methods.
 constexpr uint32_t kCompositorClientVersion = 4;
 constexpr uint32_t kXdgWmBaseClientVersion  = 5;
+// wl_seat v5 added `name`; v4 added `wl_keyboard.repeat_info`. v7 is the
+// current upstream version and adds `wl_pointer.frame` etc. Bind v7 if the
+// compositor advertises it so Stage 3 (pointer) doesn't need a re-bind.
+constexpr uint32_t kSeatClientVersion       = 7;
 
 } // namespace
 
@@ -59,6 +70,20 @@ const xdg_toplevel_listener WaylandWindow::kToplevelListener = {
     .wm_capabilities  = &WaylandWindow::onXdgToplevelWmCapabilities,
 };
 
+const wl_seat_listener WaylandWindow::kSeatListener = {
+    .capabilities = &WaylandWindow::onSeatCapabilities,
+    .name         = &WaylandWindow::onSeatName,
+};
+
+const wl_keyboard_listener WaylandWindow::kKeyboardListener = {
+    .keymap      = &WaylandWindow::onKeyboardKeymap,
+    .enter       = &WaylandWindow::onKeyboardEnter,
+    .leave       = &WaylandWindow::onKeyboardLeave,
+    .key         = &WaylandWindow::onKeyboardKey,
+    .modifiers   = &WaylandWindow::onKeyboardModifiers,
+    .repeat_info = &WaylandWindow::onKeyboardRepeatInfo,
+};
+
 void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version)
 {
     auto *self = static_cast<WaylandWindow *>(data);
@@ -71,6 +96,11 @@ void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t
         self->wmBase_ = static_cast<xdg_wm_base *>(
             wl_registry_bind(registry, name, &xdg_wm_base_interface, v));
         xdg_wm_base_add_listener(self->wmBase_, &kWmBaseListener, self);
+    } else if (std::strcmp(iface, wl_seat_interface.name) == 0) {
+        uint32_t v  = std::min(version, kSeatClientVersion);
+        self->seat_ = static_cast<wl_seat *>(
+            wl_registry_bind(registry, name, &wl_seat_interface, v));
+        wl_seat_add_listener(self->seat_, &kSeatListener, self);
     }
 }
 
@@ -141,6 +171,245 @@ void WaylandWindow::onXdgToplevelWmCapabilities(void *, xdg_toplevel *, struct w
     // until we expose those operations.
 }
 
+// ---------- seat / keyboard ----------
+
+void WaylandWindow::onSeatCapabilities(void *data, wl_seat *seat, uint32_t capabilities)
+{
+    auto *self        = static_cast<WaylandWindow *>(data);
+    const bool hasKbd = (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0;
+    if (hasKbd && !self->keyboard_) {
+        self->keyboard_ = wl_seat_get_keyboard(seat);
+        if (self->keyboard_) {
+            wl_keyboard_add_listener(self->keyboard_, &kKeyboardListener, self);
+        }
+    } else if (!hasKbd && self->keyboard_) {
+        self->cancelKeyRepeat();
+        // wl_keyboard.release was added in wl_seat v3; we always bind ≥v5.
+        wl_keyboard_release(self->keyboard_);
+        self->keyboard_ = nullptr;
+    }
+}
+
+void WaylandWindow::onSeatName(void *, wl_seat *, const char *)
+{
+    // Human-readable seat name (e.g. "seat0"). Unused.
+}
+
+void WaylandWindow::onKeyboardKeymap(void *data, wl_keyboard *, uint32_t format, int32_t fd, uint32_t size)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+        spdlog::warn("WaylandWindow: unsupported keymap format {}", format);
+        close(fd);
+        return;
+    }
+
+    // Compositor passes ownership of the fd; we must close it after mmap.
+    // MAP_PRIVATE with PROT_READ is the documented invocation. Some
+    // compositors (mutter) only mmap-as-private will work; MAP_SHARED can
+    // fail with EACCES on the sealed memfd.
+    void *map = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map == MAP_FAILED) {
+        spdlog::error("WaylandWindow: mmap of keymap fd failed: {}", std::strerror(errno));
+        close(fd);
+        return;
+    }
+
+    // Release any prior keymap/state — keymap can be re-delivered when the
+    // user changes layout or plugs in a new keyboard.
+    if (self->xkbState_) {
+        xkb_state_unref(self->xkbState_);
+        self->xkbState_ = nullptr;
+    }
+    if (self->xkbCleanState_) {
+        xkb_state_unref(self->xkbCleanState_);
+        self->xkbCleanState_ = nullptr;
+    }
+    if (self->xkbKeymap_) {
+        xkb_keymap_unref(self->xkbKeymap_);
+        self->xkbKeymap_ = nullptr;
+    }
+
+    self->xkbKeymap_ = xkb_keymap_new_from_string(self->xkbCtx_,
+                                                  static_cast<const char *>(map),
+                                                  XKB_KEYMAP_FORMAT_TEXT_V1,
+                                                  XKB_KEYMAP_COMPILE_NO_FLAGS);
+    munmap(map, size);
+    close(fd);
+
+    if (!self->xkbKeymap_) {
+        spdlog::error("WaylandWindow: xkb_keymap_new_from_string failed");
+        return;
+    }
+    self->xkbState_ = xkb_state_new(self->xkbKeymap_);
+    if (!self->xkbState_) {
+        spdlog::error("WaylandWindow: xkb_state_new failed");
+        return;
+    }
+    // Clean state: modifiers always zero, layout group tracked by the
+    // modifiers handler. Used for the kitty CSI-u unshifted codepoint.
+    self->xkbCleanState_ = xkb_state_new(self->xkbKeymap_);
+    if (!self->xkbCleanState_) {
+        spdlog::warn("WaylandWindow: xkb_state_new(clean) failed; unshifted keyCode disabled");
+    }
+}
+
+void WaylandWindow::onKeyboardEnter(void *data, wl_keyboard *, uint32_t, wl_surface *, struct wl_array *)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    // The `keys` array carries the keycodes currently held when focus
+    // arrives. We rely on the modifiers event (sent immediately after enter)
+    // to resync the modifier mask; per-key state isn't needed yet because
+    // we don't track held keys for binding chord detection in this layer.
+    if (self->onFocus) {
+        self->onFocus(true);
+    }
+}
+
+void WaylandWindow::onKeyboardLeave(void *data, wl_keyboard *, uint32_t, wl_surface *)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    self->cancelKeyRepeat();
+    if (self->onFocus) {
+        self->onFocus(false);
+    }
+}
+
+void WaylandWindow::onKeyboardKey(void *data, wl_keyboard *, uint32_t, uint32_t, uint32_t key, uint32_t state)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    if (!self->xkbState_ || !self->xkbKeymap_) {
+        return;
+    }
+    // Wayland delivers raw evdev keycodes; xkbcommon uses the X11 convention
+    // of +8 (the legacy keyboard-extension offset). This is the documented
+    // mapping and matches every other Wayland client.
+    const uint32_t kc = key + 8;
+
+    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+        xkb_state_update_key(self->xkbState_, kc, XKB_KEY_DOWN);
+        self->dispatchKey(kc, /*isRepeat=*/false);
+        self->startKeyRepeat(kc);
+    } else if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+        xkb_state_update_key(self->xkbState_, kc, XKB_KEY_UP);
+        self->dispatchKeyRelease(kc);
+        if (kc == self->repeatKeycode_) {
+            self->cancelKeyRepeat();
+        }
+    }
+}
+
+void WaylandWindow::onKeyboardModifiers(void *data, wl_keyboard *, uint32_t, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    if (self->xkbState_) {
+        xkb_state_update_mask(self->xkbState_, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+    }
+    if (self->xkbCleanState_) {
+        // Clean state stays modifier-free; only the layout group is synced
+        // so xkb_state_key_get_utf32(clean, kc) yields the unshifted
+        // codepoint in the user's current layout.
+        xkb_state_update_mask(self->xkbCleanState_, 0, 0, 0, 0, 0, group);
+    }
+}
+
+void WaylandWindow::onKeyboardRepeatInfo(void *data, wl_keyboard *, int32_t rate, int32_t delay)
+{
+    auto *self         = static_cast<WaylandWindow *>(data);
+    self->repeatRate_  = rate;
+    self->repeatDelay_ = delay;
+    // rate == 0 per spec means "no repeat"; cancel anything in flight so we
+    // don't keep firing after the compositor disables it.
+    if (rate == 0) {
+        self->cancelKeyRepeat();
+    }
+}
+
+void WaylandWindow::dispatchKey(uint32_t xkbKeycode, bool isRepeat)
+{
+    Key k         = mb::xkb::keysymToKey(mb::xkb::baseKeysymForKeycode(xkbState_, xkbKeymap_, xkbKeycode));
+    uint32_t mods = mb::xkb::stateToModifiers(xkbState_);
+    KeyAction act = isRepeat ? KeyAction_Repeat : KeyAction_Press;
+    if (onKey) {
+        onKey(static_cast<int>(k), static_cast<int>(xkbKeycode), static_cast<int>(act), static_cast<int>(mods));
+    }
+    if (onChar && !(mods & CtrlModifier) && !(mods & MetaModifier)) {
+        uint32_t cp = xkb_state_key_get_utf32(xkbState_, xkbKeycode);
+        if (cp >= 0x20 && cp != 0x7f) {
+            uint32_t unshifted = xkbCleanState_ ? xkb_state_key_get_utf32(xkbCleanState_, xkbKeycode) : 0;
+            if (unshifted < 0x20 || unshifted == 0x7f) {
+                unshifted = 0;
+            }
+            onChar(cp, unshifted);
+        }
+    }
+}
+
+void WaylandWindow::dispatchKeyRelease(uint32_t xkbKeycode)
+{
+    Key k         = mb::xkb::keysymToKey(mb::xkb::baseKeysymForKeycode(xkbState_, xkbKeymap_, xkbKeycode));
+    uint32_t mods = mb::xkb::stateToModifiers(xkbState_);
+    if (onKey) {
+        onKey(static_cast<int>(k), static_cast<int>(xkbKeycode), static_cast<int>(KeyAction_Release), static_cast<int>(mods));
+    }
+}
+
+void WaylandWindow::startKeyRepeat(uint32_t xkbKeycode)
+{
+    cancelKeyRepeat();
+    if (repeatRate_ <= 0 || repeatDelay_ <= 0 || !xkbKeymap_) {
+        return;
+    }
+    if (!xkb_keymap_key_repeats(xkbKeymap_, xkbKeycode)) {
+        return;
+    }
+    repeatKeycode_          = xkbKeycode;
+    // Initial delay (one-shot). When that fires, emit one repeat and
+    // re-arm as a periodic timer at 1000/rate ms.
+    const uint64_t periodMs = 1000ull / static_cast<uint64_t>(repeatRate_);
+    repeatTimer_            = loop_.addTimer(static_cast<uint64_t>(repeatDelay_), false, [this, periodMs]()
+                                             {
+                                      // Drop the one-shot ID; it has already fired.
+                                      repeatTimer_ = 0;
+                                      dispatchKey(repeatKeycode_, /*isRepeat=*/true);
+                                      // Re-arm as periodic for subsequent fires. Use the
+                                      // captured period so a mid-repeat repeat_info change
+                                      // doesn't surprise this active session.
+                                      repeatTimer_ = loop_.addTimer(periodMs, true, [this]()
+                                                                    {
+                                                                        dispatchKey(repeatKeycode_, /*isRepeat=*/true);
+                                                                    });
+                                             });
+}
+
+void WaylandWindow::cancelKeyRepeat()
+{
+    if (repeatTimer_) {
+        loop_.removeTimer(repeatTimer_);
+        repeatTimer_ = 0;
+    }
+    repeatKeycode_ = 0;
+}
+
+void WaylandWindow::ensureDefaultKeymap()
+{
+    if (xkbDefaultKeymap_ || !xkbCtx_) {
+        return;
+    }
+    // Empty rule_names → XKB resolves to XKB_DEFAULT_LAYOUT (typically "us").
+    // Used solely for baseLayoutKeyCodepoint (kitty `base_layout_key`).
+    // Failure is non-fatal — callers return 0, which the encoder elides.
+    xkb_rule_names empty = { };
+    xkbDefaultKeymap_    = xkb_keymap_new_from_names(xkbCtx_, &empty, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (xkbDefaultKeymap_) {
+        xkbDefaultState_ = xkb_state_new(xkbDefaultKeymap_);
+        if (!xkbDefaultState_) {
+            xkb_keymap_unref(xkbDefaultKeymap_);
+            xkbDefaultKeymap_ = nullptr;
+        }
+    }
+}
+
 // ---------- lifecycle ----------
 
 bool WaylandWindow::create(int width, int height, const std::string &title)
@@ -148,10 +417,17 @@ bool WaylandWindow::create(int width, int height, const std::string &title)
     defaultWidth_  = width > 0 ? width : 800;
     defaultHeight_ = height > 0 ? height : 600;
 
+    xkbCtx_ = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!xkbCtx_) {
+        spdlog::error("WaylandWindow: xkb_context_new failed");
+        return false;
+    }
+
     display_ = wl_display_connect(nullptr);
     if (!display_) {
         spdlog::error("WaylandWindow: wl_display_connect failed (WAYLAND_DISPLAY={})",
                       std::getenv("WAYLAND_DISPLAY") ? std::getenv("WAYLAND_DISPLAY") : "<unset>");
+        destroy();
         return false;
     }
 
@@ -239,13 +515,19 @@ bool WaylandWindow::create(int width, int height, const std::string &title)
 
 void WaylandWindow::destroy()
 {
+    cancelKeyRepeat();
+
     if (wlFd_ >= 0) {
         loop_.removeFd(wlFd_);
         wlFd_ = -1;
     }
+    if (keyboard_) {
+        wl_keyboard_release(keyboard_);
+        keyboard_ = nullptr;
+    }
     // Destroy in reverse construction order; xdg_wm_base requires all of
     // its xdg_surfaces to be gone first. Registry-bound globals
-    // (compositor, wmBase) and the registry itself are released by
+    // (compositor, wmBase, seat) and the registry itself are released by
     // wl_display_disconnect.
     if (toplevel_) {
         xdg_toplevel_destroy(toplevel_);
@@ -259,12 +541,38 @@ void WaylandWindow::destroy()
         wl_surface_destroy(surface_);
         surface_ = nullptr;
     }
+    seat_       = nullptr;
     wmBase_     = nullptr;
     compositor_ = nullptr;
     registry_   = nullptr;
     if (display_) {
         wl_display_disconnect(display_);
         display_ = nullptr;
+    }
+
+    if (xkbState_) {
+        xkb_state_unref(xkbState_);
+        xkbState_ = nullptr;
+    }
+    if (xkbCleanState_) {
+        xkb_state_unref(xkbCleanState_);
+        xkbCleanState_ = nullptr;
+    }
+    if (xkbKeymap_) {
+        xkb_keymap_unref(xkbKeymap_);
+        xkbKeymap_ = nullptr;
+    }
+    if (xkbDefaultState_) {
+        xkb_state_unref(xkbDefaultState_);
+        xkbDefaultState_ = nullptr;
+    }
+    if (xkbDefaultKeymap_) {
+        xkb_keymap_unref(xkbDefaultKeymap_);
+        xkbDefaultKeymap_ = nullptr;
+    }
+    if (xkbCtx_) {
+        xkb_context_unref(xkbCtx_);
+        xkbCtx_ = nullptr;
     }
 }
 
@@ -298,6 +606,24 @@ void WaylandWindow::getScreenSize(int &w, int &h) const
     // No wl_output binding yet (Stage 5). Return 0 so PlatformDawn's clamp
     // falls through to the minimum texture-pool limit.
     w = h = 0;
+}
+
+std::string WaylandWindow::keyName(int keycode) const
+{
+    return mb::xkb::keyName(xkbState_, keycode);
+}
+
+uint32_t WaylandWindow::shiftedKeyCodepoint(int keycode) const
+{
+    return mb::xkb::shiftedKeyCodepoint(xkbState_, xkbKeymap_, keycode);
+}
+
+uint32_t WaylandWindow::baseLayoutKeyCodepoint(int keycode) const
+{
+    // Default-rules keymap is built lazily so a keyless Wayland session
+    // (no wl_keyboard.keymap delivered) still doesn't crash here.
+    const_cast<WaylandWindow *>(this)->ensureDefaultKeymap();
+    return mb::xkb::baseLayoutKeyCodepoint(xkbDefaultKeymap_, keycode);
 }
 
 // ---------- WebGPU surface ----------

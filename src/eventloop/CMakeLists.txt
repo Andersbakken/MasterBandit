@@ -16,6 +16,43 @@ else()
         xcb/Window_xcb.cpp
         wayland/Window_wayland.cpp
     )
+
+    # Wayland xdg-shell codegen runs at configure-discovery time so the
+    # generated .c can join EVENTLOOP_SOURCES before add_library is called.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED "wayland-protocols >= 1.32")
+    pkg_check_modules(WAYLAND_SCANNER REQUIRED wayland-scanner)
+    pkg_get_variable(WAYLAND_PROTOCOLS_PKGDATADIR wayland-protocols pkgdatadir)
+    pkg_get_variable(WAYLAND_SCANNER_BIN wayland-scanner wayland_scanner)
+    if(NOT WAYLAND_SCANNER_BIN)
+        find_program(WAYLAND_SCANNER_BIN wayland-scanner REQUIRED)
+    endif()
+
+    set(WAYLAND_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/wayland-generated")
+    file(MAKE_DIRECTORY "${WAYLAND_GEN_DIR}")
+
+    # Stage 1 needs xdg-shell only; further protocols (cursor-shape,
+    # fractional-scale, primary-selection, ...) join this list as stages land.
+    set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/xdg-shell/xdg-shell.xml")
+    set(XDG_SHELL_HEADER "${WAYLAND_GEN_DIR}/xdg-shell-client-protocol.h")
+    set(XDG_SHELL_SOURCE "${WAYLAND_GEN_DIR}/xdg-shell-protocol.c")
+    add_custom_command(
+        OUTPUT "${XDG_SHELL_HEADER}"
+        COMMAND "${WAYLAND_SCANNER_BIN}" client-header "${XDG_SHELL_XML}" "${XDG_SHELL_HEADER}"
+        DEPENDS "${XDG_SHELL_XML}"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${XDG_SHELL_SOURCE}"
+        COMMAND "${WAYLAND_SCANNER_BIN}" private-code "${XDG_SHELL_XML}" "${XDG_SHELL_SOURCE}"
+        DEPENDS "${XDG_SHELL_XML}"
+        VERBATIM
+    )
+
+    list(APPEND EVENTLOOP_SOURCES
+        "${XDG_SHELL_SOURCE}"
+        "${XDG_SHELL_HEADER}"
+    )
 endif()
 
 add_library(eventloop OBJECT ${EVENTLOOP_SOURCES})
@@ -44,26 +81,17 @@ if(APPLE)
         "-framework QuartzCore"
     )
 else()
-    find_package(PkgConfig REQUIRED)
     pkg_check_modules(XCB REQUIRED xcb xcb-util xcb-sync xcb-xkb xcb-cursor)
     pkg_check_modules(XKBCOMMON REQUIRED xkbcommon xkbcommon-x11)
     pkg_check_modules(X11 REQUIRED x11 x11-xcb)
-
-    # Wayland backend lives alongside the XCB one and is always built on
-    # Linux. Selection happens at runtime (see PlatformDawn.cpp).
-    # wayland-protocols >= 1.32 is needed for cursor-shape-v1 +
-    # fractional-scale-v1; required upfront so users hit the version error
-    # at configure rather than later in the port. wayland-cursor will be
-    # added when the cursor code lands, if we don't end up using
-    # wp_cursor_shape_v1 exclusively.
     pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
-    pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED "wayland-protocols >= 1.32")
 
     target_include_directories(eventloop PRIVATE
         ${XCB_INCLUDE_DIRS}
         ${XKBCOMMON_INCLUDE_DIRS}
         ${X11_INCLUDE_DIRS}
         ${WAYLAND_CLIENT_INCLUDE_DIRS}
+        "${WAYLAND_GEN_DIR}"
     )
     target_link_libraries(eventloop PUBLIC
         ${XCB_LIBRARIES}

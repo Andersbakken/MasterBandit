@@ -9,7 +9,9 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "cursor-shape-v1-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
 #include "primary-selection-unstable-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #include <fcntl.h>
@@ -33,7 +35,9 @@ constexpr const char *kAppId = "it.masterband.mb";
 // the version the compositor advertised. Stage 1 only uses v1 entry points
 // of each interface but binding higher avoids a future re-bind when later
 // stages need newer methods.
-constexpr uint32_t kCompositorClientVersion     = 4;
+// wl_compositor v6 added wl_surface.preferred_buffer_scale + .preferred_buffer_transform —
+// the integer-scale fallback used when wp_fractional_scale_v1 isn't available.
+constexpr uint32_t kCompositorClientVersion     = 6;
 constexpr uint32_t kXdgWmBaseClientVersion      = 5;
 // wl_seat v5 added `name`; v4 added `wl_keyboard.repeat_info`. v7 is the
 // current upstream version and adds `wl_pointer.frame` etc. Bind v7 if the
@@ -42,6 +46,12 @@ constexpr uint32_t kSeatClientVersion           = 7;
 constexpr uint32_t kCursorShapeMgrClientVersion = 2;
 constexpr uint32_t kDataDeviceMgrClientVersion  = 3;
 constexpr uint32_t kPrimarySelMgrClientVersion  = 1;
+constexpr uint32_t kViewporterClientVersion     = 1;
+constexpr uint32_t kFractionalScaleMgrVersion   = 1;
+
+// fractional-scale-v1 reports scale as an integer = scale × 120 (so 240 = 2.0).
+// Convert to float on the fly.
+constexpr int kFractionalScaleUnit = 120;
 
 // MIME types we offer when we own a selection, and the priority order we
 // pick from when consuming someone else's. Listed best-first.
@@ -188,6 +198,17 @@ const zwp_primary_selection_offer_v1_listener WaylandWindow::kPrimaryOfferListen
     .offer = &WaylandWindow::onPrimaryOfferOffer,
 };
 
+const wl_surface_listener WaylandWindow::kSurfaceListener = {
+    .enter                      = &WaylandWindow::onSurfaceEnter,
+    .leave                      = &WaylandWindow::onSurfaceLeave,
+    .preferred_buffer_scale     = &WaylandWindow::onSurfacePreferredBufferScale,
+    .preferred_buffer_transform = &WaylandWindow::onSurfacePreferredBufferTransform,
+};
+
+const wp_fractional_scale_v1_listener WaylandWindow::kFractionalScaleListener = {
+    .preferred_scale = &WaylandWindow::onFractionalScalePreferredScale,
+};
+
 void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version)
 {
     auto *self = static_cast<WaylandWindow *>(data);
@@ -237,6 +258,14 @@ void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t
         if (self->seat_ && !self->primarySelDevice_) {
             self->attachSeatSelections();
         }
+    } else if (std::strcmp(iface, wp_viewporter_interface.name) == 0) {
+        uint32_t v        = std::min(version, kViewporterClientVersion);
+        self->viewporter_ = static_cast<wp_viewporter *>(
+            wl_registry_bind(registry, name, &wp_viewporter_interface, v));
+    } else if (std::strcmp(iface, wp_fractional_scale_manager_v1_interface.name) == 0) {
+        uint32_t v           = std::min(version, kFractionalScaleMgrVersion);
+        self->fractionalMgr_ = static_cast<wp_fractional_scale_manager_v1 *>(
+            wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, v));
     }
 }
 
@@ -256,38 +285,42 @@ void WaylandWindow::onXdgSurfaceConfigure(void *data, xdg_surface *surface, uint
     auto *self = static_cast<WaylandWindow *>(data);
     xdg_surface_ack_configure(surface, serial);
 
-    // Resolve pending size: 0 from toplevel.configure means "client picks".
-    // First configure with 0/0 falls back to the create()-requested size;
-    // subsequent 0/0 configures keep the existing size (compositor isn't
-    // forcing a new geometry, just re-confirming).
-    int newW = self->pendingWidth_;
-    int newH = self->pendingHeight_;
+    // Resolve pending LOGICAL size: 0 from toplevel.configure means
+    // "client picks". First configure with 0/0 falls back to the
+    // create()-requested size; subsequent 0/0 configures keep the existing
+    // logical size.
+    int newW = self->pendingLogicalW_;
+    int newH = self->pendingLogicalH_;
     if (newW <= 0) {
-        newW = self->firstConfigure_ ? self->width_ : self->defaultWidth_;
+        newW = self->firstConfigure_ ? self->logicalW_ : self->defaultWidth_;
     }
     if (newH <= 0) {
-        newH = self->firstConfigure_ ? self->height_ : self->defaultHeight_;
+        newH = self->firstConfigure_ ? self->logicalH_ : self->defaultHeight_;
     }
 
-    const bool sizeChanged = (newW != self->width_) || (newH != self->height_);
-    self->width_           = newW;
-    self->height_          = newH;
+    self->logicalW_ = newW;
+    self->logicalH_ = newH;
 
     if (!self->firstConfigure_) {
         // First configure: create() is blocked in wl_display_roundtrip and
-        // will read width_/height_ after the roundtrip returns. Don't fire
-        // the resize callback yet — PlatformDawn reads via getFramebufferSize.
+        // will read width_/height_ after the roundtrip returns. applyScale
+        // computes width_/height_ from logical × scale without firing
+        // callbacks yet — PlatformDawn reads via getFramebufferSize.
         self->firstConfigure_ = true;
-    } else if (sizeChanged && self->onFramebufferResize) {
-        self->onFramebufferResize(self->width_, self->height_);
+        self->applyScale();
+    } else {
+        // Subsequent configure: applyScale recomputes physical, updates
+        // viewport / set_buffer_scale, and fires onFramebufferResize if
+        // the physical size changed.
+        self->applyScale();
     }
 }
 
 void WaylandWindow::onXdgToplevelConfigure(void *data, xdg_toplevel *, int32_t width, int32_t height, struct wl_array *)
 {
-    auto *self           = static_cast<WaylandWindow *>(data);
-    self->pendingWidth_  = width;
-    self->pendingHeight_ = height;
+    auto *self             = static_cast<WaylandWindow *>(data);
+    self->pendingLogicalW_ = width;
+    self->pendingLogicalH_ = height;
 }
 
 void WaylandWindow::onXdgToplevelClose(void *data, xdg_toplevel *)
@@ -1157,6 +1190,104 @@ void WaylandWindow::onPrimarySourceCancelled(void *data, zwp_primary_selection_s
     self->primaryContent_.clear();
 }
 
+// ---------- HiDPI / fractional scale ----------
+
+void WaylandWindow::onSurfaceEnter(void *, wl_surface *, struct wl_output *)
+{
+    // We rely on preferred_buffer_scale (wl_compositor v6+) and/or
+    // wp_fractional_scale_v1 instead of tracking which outputs we're on.
+    // Kept as a no-op to satisfy older compositors that emit enter/leave.
+}
+
+void WaylandWindow::onSurfaceLeave(void *, wl_surface *, struct wl_output *)
+{
+    // See onSurfaceEnter.
+}
+
+void WaylandWindow::onSurfacePreferredBufferScale(void *data, wl_surface *, int32_t factor)
+{
+    auto *self          = static_cast<WaylandWindow *>(data);
+    self->integerScale_ = factor > 0 ? factor : 1;
+    self->applyScale();
+}
+
+void WaylandWindow::onSurfacePreferredBufferTransform(void *, wl_surface *, uint32_t)
+{
+    // Terminals don't render at non-identity transforms; we ignore the
+    // hint and let the compositor apply the rotation server-side.
+}
+
+void WaylandWindow::onFractionalScalePreferredScale(void *data, wp_fractional_scale_v1 *, uint32_t scale120ths)
+{
+    auto *self                 = static_cast<WaylandWindow *>(data);
+    self->haveFractionalScale_ = true;
+    self->fractionalScale120_  = static_cast<int>(scale120ths);
+    self->applyScale();
+}
+
+void WaylandWindow::applyScale()
+{
+    // Resolve the scale factor. Fractional path takes precedence when both
+    // the fractional-scale protocol AND viewporter are available and the
+    // compositor has sent a preferred_scale event. Otherwise fall back to
+    // the integer scale (defaults to 1 if no preferred_buffer_scale event).
+    float newScale = 1.0f;
+    if (haveFractionalScale_ && viewport_) {
+        newScale = static_cast<float>(fractionalScale120_) / static_cast<float>(kFractionalScaleUnit);
+    } else {
+        newScale = static_cast<float>(integerScale_);
+    }
+    if (newScale <= 0.0f) {
+        newScale = 1.0f;
+    }
+
+    const bool scaleChanged = (newScale != currentScale_);
+    currentScale_           = newScale;
+
+    // Logical size may be 0 before the first configure. Skip applying
+    // anything until we know the surface size.
+    if (logicalW_ <= 0 || logicalH_ <= 0) {
+        return;
+    }
+
+    // Physical = logical × scale, rounded to the nearest integer. The
+    // viewport destination stays at logical size; Dawn renders to the
+    // physical-size surface.
+    const int newPhysW = static_cast<int>(static_cast<float>(logicalW_) * currentScale_ + 0.5f);
+    const int newPhysH = static_cast<int>(static_cast<float>(logicalH_) * currentScale_ + 0.5f);
+
+    if (haveFractionalScale_ && viewport_) {
+        // Fractional path: tell the compositor "this buffer is at the
+        // physical pixel count above, but should be rendered at the
+        // logical destination size below."
+        wp_viewport_set_destination(viewport_, logicalW_, logicalH_);
+    } else if (surface_) {
+        // Integer path: declare the buffer scale so the compositor
+        // surface-scales for HiDPI without our viewport intervention.
+        wl_surface_set_buffer_scale(surface_, integerScale_);
+    }
+
+    const bool sizeChanged = (newPhysW != width_) || (newPhysH != height_);
+    width_                 = newPhysW;
+    height_                = newPhysH;
+
+    // Don't fire during create()'s synchronous roundtrip — PlatformDawn
+    // hasn't read the initial values yet. The firstConfigure_ flag isn't
+    // sufficient on its own here because applyScale also fires from
+    // scale-change events that arrive after first configure, so we gate
+    // on both having a callback AND something useful having changed.
+    if (sizeChanged && onFramebufferResize) {
+        onFramebufferResize(width_, height_);
+    }
+    if (scaleChanged && onContentScale) {
+        onContentScale(currentScale_, currentScale_);
+    }
+
+    if (display_) {
+        wl_display_flush(display_);
+    }
+}
+
 // ---------- lifecycle ----------
 
 bool WaylandWindow::create(int width, int height, const std::string &title)
@@ -1210,6 +1341,24 @@ bool WaylandWindow::create(int width, int height, const std::string &title)
         destroy();
         return false;
     }
+    // wl_surface listener exposes preferred_buffer_scale (wl_compositor v6+)
+    // — the integer-scale fallback used when fractional-scale isn't
+    // advertised. Older compositors that don't emit this event leave
+    // integerScale_ at its default of 1.
+    wl_surface_add_listener(surface_, &kSurfaceListener, this);
+
+    // Stage 5: attach the fractional-scale device + viewport if available.
+    // Both are required for the fractional path; if only one is present we
+    // fall back to integer scaling via preferred_buffer_scale.
+    if (viewporter_) {
+        viewport_ = wp_viewporter_get_viewport(viewporter_, surface_);
+    }
+    if (fractionalMgr_ && viewport_) {
+        fractionalScale_ = wp_fractional_scale_manager_v1_get_fractional_scale(fractionalMgr_, surface_);
+        if (fractionalScale_) {
+            wp_fractional_scale_v1_add_listener(fractionalScale_, &kFractionalScaleListener, this);
+        }
+    }
 
     xdgSurface_ = xdg_wm_base_get_xdg_surface(wmBase_, surface_);
     if (!xdgSurface_) {
@@ -1259,8 +1408,15 @@ bool WaylandWindow::create(int width, int height, const std::string &title)
     if (!cursorShapeMgr_) {
         spdlog::info("WaylandWindow: wp_cursor_shape_v1 not advertised; cursor stays as compositor default");
     }
+    if (fractionalMgr_ && viewport_) {
+        spdlog::info("WaylandWindow: HiDPI path = wp_fractional_scale_v1 + wp_viewporter");
+    } else if (viewporter_ && !fractionalMgr_) {
+        spdlog::info("WaylandWindow: HiDPI path = wp_viewporter only (no fractional manager); integer-scale fallback");
+    } else if (!viewporter_) {
+        spdlog::info("WaylandWindow: HiDPI path = integer-scale only (no wp_viewporter)");
+    }
 
-    spdlog::info("WaylandWindow: created {}x{} ({})", width_, height_, title);
+    spdlog::info("WaylandWindow: created {}x{} ({}, scale={})", width_, height_, title, currentScale_);
     return true;
 }
 
@@ -1304,14 +1460,26 @@ void WaylandWindow::destroy()
         xdg_surface_destroy(xdgSurface_);
         xdgSurface_ = nullptr;
     }
+    // Per-surface scale/viewport objects must be destroyed before the
+    // surface they're attached to.
+    if (fractionalScale_) {
+        wp_fractional_scale_v1_destroy(fractionalScale_);
+        fractionalScale_ = nullptr;
+    }
+    if (viewport_) {
+        wp_viewport_destroy(viewport_);
+        viewport_ = nullptr;
+    }
     if (surface_) {
         wl_surface_destroy(surface_);
         surface_ = nullptr;
     }
-    seat_       = nullptr;
-    wmBase_     = nullptr;
-    compositor_ = nullptr;
-    registry_   = nullptr;
+    seat_          = nullptr;
+    wmBase_        = nullptr;
+    compositor_    = nullptr;
+    registry_      = nullptr;
+    viewporter_    = nullptr; // registry global; freed by wl_display_disconnect
+    fractionalMgr_ = nullptr; // ditto
     if (display_) {
         wl_display_disconnect(display_);
         display_ = nullptr;
@@ -1363,9 +1531,7 @@ void WaylandWindow::getFramebufferSize(int &w, int &h) const
 
 void WaylandWindow::getContentScale(float &x, float &y) const
 {
-    // Stage 5 wires wp_fractional_scale_v1 + wl_output.scale; until then we
-    // claim 1.0 to match the XCB backend.
-    x = y = 1.0f;
+    x = y = currentScale_;
 }
 
 void WaylandWindow::getScreenSize(int &w, int &h) const

@@ -32,17 +32,25 @@ struct zwp_primary_selection_device_manager_v1;
 struct zwp_primary_selection_device_v1;
 struct zwp_primary_selection_source_v1;
 struct zwp_primary_selection_offer_v1;
+struct wp_viewporter;
+struct wp_viewport;
+struct wp_fractional_scale_manager_v1;
+struct wp_fractional_scale_v1;
 
-// Stage 1-4 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
+// Stage 1-5 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
 // Wayland events from the EpollEventLoop fd, hands the surface to Dawn via
 // SurfaceSourceWaylandSurface (Stage 1), processes keyboard input
 // (xkbcommon-backed keymap, modifiers, client-synthesized key repeat) via
 // wl_seat + wl_keyboard (Stage 2), handles pointer events + cursor shape
-// via wl_pointer + wp_cursor_shape_v1 (Stage 3), and bridges clipboard +
+// via wl_pointer + wp_cursor_shape_v1 (Stage 3), bridges clipboard +
 // primary-selection round-trips via wl_data_device + zwp_primary_selection_v1
-// (Stage 4).
+// (Stage 4), and adapts to compositor-reported scale (integer via
+// wl_surface.preferred_buffer_scale fallback, fractional via
+// wp_fractional_scale_v1 + wp_viewporter primary path) for HiDPI displays
+// (Stage 5).
 //
-// Stage 5+ (HiDPI / fractional scale) lands in later patches.
+// Stage 6 (polish, multi-compositor verification, xdg_activation_v1) lands
+// in the final patch.
 class WaylandWindow : public Window
 {
 public:
@@ -90,6 +98,8 @@ private:
     static const struct zwp_primary_selection_device_v1_listener kPrimaryDeviceListener;
     static const struct zwp_primary_selection_source_v1_listener kPrimarySourceListener;
     static const struct zwp_primary_selection_offer_v1_listener kPrimaryOfferListener;
+    static const struct wl_surface_listener kSurfaceListener;
+    static const struct wp_fractional_scale_v1_listener kFractionalScaleListener;
 
     static void onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version);
     static void onRegistryGlobalRemove(void *data, wl_registry *registry, uint32_t name);
@@ -148,6 +158,13 @@ private:
     static void onPrimarySourceSend(void *data, zwp_primary_selection_source_v1 *source, const char *mime, int32_t fd);
     static void onPrimarySourceCancelled(void *data, zwp_primary_selection_source_v1 *source);
 
+    // HiDPI / fractional scale (Stage 5)
+    static void onSurfaceEnter(void *data, wl_surface *surface, struct wl_output *output);
+    static void onSurfaceLeave(void *data, wl_surface *surface, struct wl_output *output);
+    static void onSurfacePreferredBufferScale(void *data, wl_surface *surface, int32_t factor);
+    static void onSurfacePreferredBufferTransform(void *data, wl_surface *surface, uint32_t transform);
+    static void onFractionalScalePreferredScale(void *data, wp_fractional_scale_v1 *device, uint32_t scale120ths);
+
     // Drive the libwayland dispatch state machine from the epoll callback.
     // Pattern is the canonical prepare_read / read_events / dispatch_pending
     // sequence from the wayland-book; see processEvents() in the .cpp for the
@@ -167,6 +184,12 @@ private:
     void attachPointer(wl_pointer *pointer);
     void releasePointer();
     void applyCursorShape();
+
+    // HiDPI helpers. applyScale recomputes physical from logical * scale,
+    // updates viewport destination / set_buffer_scale as appropriate, fires
+    // onContentScale + onFramebufferResize when the values changed. It's
+    // the single funnel for scale or configure changes.
+    void applyScale();
 
     // Selection (clipboard + primary). attachSeatSelections is called once
     // the seat is known to bind the per-seat wl_data_device +
@@ -206,6 +229,23 @@ private:
     // assigns by default.
     wp_cursor_shape_manager_v1 *cursorShapeMgr_ = nullptr;
     wp_cursor_shape_device_v1 *cursorShapeDev_  = nullptr;
+
+    // HiDPI / fractional scale. The fractional-scale + viewporter pair is
+    // the modern primary path: the compositor sends a `preferred_scale`
+    // event (units = scale × 120) and we set the viewport destination to
+    // the logical size while rendering at logical × scale physical pixels.
+    // If those protocols aren't advertised, we fall back to integer scale
+    // from wl_surface.preferred_buffer_scale (since wl_compositor v6) and
+    // call wl_surface.set_buffer_scale(N). Both code paths produce the
+    // same physical framebuffer dimensions.
+    wp_viewporter *viewporter_                     = nullptr;
+    wp_viewport *viewport_                         = nullptr;
+    wp_fractional_scale_manager_v1 *fractionalMgr_ = nullptr;
+    wp_fractional_scale_v1 *fractionalScale_       = nullptr;
+    bool haveFractionalScale_                      = false; // true after first preferred_scale event
+    int fractionalScale120_                        = 120;   // last preferred_scale value (120 = 1.0)
+    int integerScale_                              = 1;     // last preferred_buffer_scale (or 1 default)
+    float currentScale_                            = 1.0f;  // resolved scale applied to physical sizing
 
     // Clipboard (wl_data_device path).
     wl_data_device_manager *dataDeviceMgr_ = nullptr;
@@ -264,12 +304,20 @@ private:
 
     int wlFd_ = -1;
 
-    int pendingWidth_  = 0;
-    int pendingHeight_ = 0;
-    int width_         = 0;
-    int height_        = 0;
-    int defaultWidth_  = 800;
-    int defaultHeight_ = 600;
+    // xdg_toplevel.configure delivers LOGICAL dimensions; with Stage 5's
+    // scale support, the physical framebuffer is logical × currentScale_.
+    // pendingLogicalW/H = latched from the most recent toplevel.configure
+    // until xdg_surface.configure acks. logicalW/H = currently-committed
+    // logical size. width_/height_ = physical pixels (what Dawn renders to
+    // and what getFramebufferSize returns).
+    int pendingLogicalW_ = 0;
+    int pendingLogicalH_ = 0;
+    int logicalW_        = 0;
+    int logicalH_        = 0;
+    int width_           = 0;
+    int height_          = 0;
+    int defaultWidth_    = 800;
+    int defaultHeight_   = 600;
 
     bool firstConfigure_ = false;
     bool shouldClose_    = false;

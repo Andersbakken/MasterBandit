@@ -69,6 +69,10 @@ else()
         "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/tablet/tablet-v2.xml")
     mb_wayland_scan(primary-selection-unstable-v1
         "${WAYLAND_PROTOCOLS_PKGDATADIR}/unstable/primary-selection/primary-selection-unstable-v1.xml")
+    mb_wayland_scan(viewporter
+        "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/viewporter/viewporter.xml")
+    mb_wayland_scan(fractional-scale-v1
+        "${WAYLAND_PROTOCOLS_PKGDATADIR}/staging/fractional-scale/fractional-scale-v1.xml")
 endif()
 
 add_library(eventloop OBJECT ${EVENTLOOP_SOURCES})

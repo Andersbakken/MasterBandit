@@ -15,6 +15,7 @@ struct wl_compositor;
 struct wl_seat;
 struct wl_keyboard;
 struct wl_pointer;
+struct wl_output;
 struct wl_surface;
 struct xdg_wm_base;
 struct xdg_surface;
@@ -101,6 +102,7 @@ private:
     static const struct zwp_primary_selection_source_v1_listener kPrimarySourceListener;
     static const struct zwp_primary_selection_offer_v1_listener kPrimaryOfferListener;
     static const struct wl_surface_listener kSurfaceListener;
+    static const struct wl_output_listener kOutputListener;
     static const struct wp_fractional_scale_v1_listener kFractionalScaleListener;
     static const struct xdg_activation_token_v1_listener kActivationTokenListener;
 
@@ -169,6 +171,18 @@ private:
     static void onFractionalScalePreferredScale(void *data, wp_fractional_scale_v1 *device, uint32_t scale120ths);
 
     static void onActivationTokenDone(void *data, xdg_activation_token_v1 *token, const char *tokenStr);
+
+    // wl_output (current monitor info). geometry/done are no-ops beyond
+    // storing what we need; mode supplies pixel dimensions of the current
+    // CRTC mode; scale supplies the integer DPI scale factor (we use
+    // wp_fractional_scale_v1 for actual rendering, but wl_output.scale is
+    // what other clients see and is good enough for getScreenSize).
+    static void onOutputGeometry(void *data, wl_output *output, int32_t x, int32_t y, int32_t physical_width, int32_t physical_height, int32_t subpixel, const char *make, const char *model, int32_t transform);
+    static void onOutputMode(void *data, wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t refresh);
+    static void onOutputDone(void *data, wl_output *output);
+    static void onOutputScale(void *data, wl_output *output, int32_t factor);
+    static void onOutputName(void *data, wl_output *output, const char *name);
+    static void onOutputDescription(void *data, wl_output *output, const char *description);
 
     // Drive the libwayland dispatch state machine from the epoll callback.
     // Pattern is the canonical prepare_read / read_events / dispatch_pending
@@ -353,6 +367,22 @@ private:
     // `done` event arrives carrying the token string, then activate.
     xdg_activation_v1 *activation_                 = nullptr;
     xdg_activation_token_v1 *pendingActivationTok_ = nullptr;
+
+    // wl_output tracking. One entry per bound output. Sole consumer is
+    // getScreenSize() — used by PlatformDawn to size the texture pool.
+    // We do not gate any rendering on this; the fractional-scale path
+    // already supplies what the renderer needs.
+    struct OutputInfo
+    {
+        wl_output *output = nullptr;
+        uint32_t name     = 0; // registry name, for onRegistryGlobalRemove
+        int width         = 0; // current mode pixel width
+        int height        = 0; // current mode pixel height
+        int scale         = 1; // wl_output.scale (integer)
+        bool entered      = false;
+    };
+
+    std::vector<OutputInfo> outputs_;
 
     // xkbcommon state. xkbCtx_ owns the keymap+state lifetimes; the keymap
     // and primary state are replaced whenever wl_keyboard.keymap fires.

@@ -50,6 +50,9 @@ constexpr uint32_t kPrimarySelMgrClientVersion  = 1;
 constexpr uint32_t kViewporterClientVersion     = 1;
 constexpr uint32_t kFractionalScaleMgrVersion   = 1;
 constexpr uint32_t kActivationClientVersion     = 1;
+// wl_output v2 adds `scale`, v3 adds `release`, v4 adds `name`/`description`.
+// Anything ≥ v2 is sufficient for getScreenSize.
+constexpr uint32_t kOutputClientVersion         = 4;
 
 // fractional-scale-v1 reports scale as an integer = scale × 120 (so 240 = 2.0).
 // Convert to float on the fly.
@@ -207,6 +210,15 @@ const wl_surface_listener WaylandWindow::kSurfaceListener = {
     .preferred_buffer_transform = &WaylandWindow::onSurfacePreferredBufferTransform,
 };
 
+const wl_output_listener WaylandWindow::kOutputListener = {
+    .geometry    = &WaylandWindow::onOutputGeometry,
+    .mode        = &WaylandWindow::onOutputMode,
+    .done        = &WaylandWindow::onOutputDone,
+    .scale       = &WaylandWindow::onOutputScale,
+    .name        = &WaylandWindow::onOutputName,
+    .description = &WaylandWindow::onOutputDescription,
+};
+
 const wp_fractional_scale_v1_listener WaylandWindow::kFractionalScaleListener = {
     .preferred_scale = &WaylandWindow::onFractionalScalePreferredScale,
 };
@@ -276,13 +288,35 @@ void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t
         uint32_t v        = std::min(version, kActivationClientVersion);
         self->activation_ = static_cast<xdg_activation_v1 *>(
             wl_registry_bind(registry, name, &xdg_activation_v1_interface, v));
+    } else if (std::strcmp(iface, wl_output_interface.name) == 0) {
+        uint32_t v   = std::min(version, kOutputClientVersion);
+        auto *output = static_cast<wl_output *>(
+            wl_registry_bind(registry, name, &wl_output_interface, v));
+        OutputInfo info;
+        info.output = output;
+        info.name   = name;
+        self->outputs_.push_back(info);
+        wl_output_add_listener(output, &kOutputListener, self);
     }
 }
 
-void WaylandWindow::onRegistryGlobalRemove(void *, wl_registry *, uint32_t)
+void WaylandWindow::onRegistryGlobalRemove(void *data, wl_registry *, uint32_t name)
 {
-    // Stage 1 ignores removals; later stages that bind dynamic globals
-    // (data devices, outputs) will need to handle them here.
+    // Outputs are the only global we currently expect to come and go at
+    // runtime (monitor hotplug). Other globals (seat, compositor, wmBase,
+    // activation, viewporter, fractional-scale, data-device-manager,
+    // primary-selection-manager, cursor-shape-manager) are typically
+    // session-lifetime — if one of those does go away we leave the
+    // matching pointer non-null and accept the eventual protocol error,
+    // matching the behaviour of every other Wayland client in this niche.
+    auto *self = static_cast<WaylandWindow *>(data);
+    for (auto it = self->outputs_.begin(); it != self->outputs_.end(); ++it) {
+        if (it->name == name) {
+            wl_output_destroy(it->output);
+            self->outputs_.erase(it);
+            return;
+        }
+    }
 }
 
 void WaylandWindow::onXdgWmBasePing(void *, xdg_wm_base *base, uint32_t serial)
@@ -557,7 +591,7 @@ void WaylandWindow::startKeyRepeat(uint32_t xkbKeycode)
     // re-arm as a periodic timer at 1000/rate ms.
     const uint64_t periodMs = 1000ull / static_cast<uint64_t>(repeatRate_);
     repeatTimer_            = loop_.addTimer(static_cast<uint64_t>(repeatDelay_), false, [this, periodMs]()
-                                             {
+                                  {
                                       // Drop the one-shot ID; it has already fired.
                                       repeatTimer_ = 0;
                                       dispatchKey(repeatKeycode_, /*isRepeat=*/true);
@@ -568,7 +602,7 @@ void WaylandWindow::startKeyRepeat(uint32_t xkbKeycode)
                                                                     {
                                                                         dispatchKey(repeatKeycode_, /*isRepeat=*/true);
                                                                     });
-                                             });
+                                  });
 }
 
 void WaylandWindow::cancelKeyRepeat()
@@ -723,7 +757,7 @@ void WaylandWindow::ensureDefaultKeymap()
     // Empty rule_names → XKB resolves to XKB_DEFAULT_LAYOUT (typically "us").
     // Used solely for baseLayoutKeyCodepoint (kitty `base_layout_key`).
     // Failure is non-fatal — callers return 0, which the encoder elides.
-    xkb_rule_names empty = { };
+    xkb_rule_names empty = {};
     xkbDefaultKeymap_    = xkb_keymap_new_from_names(xkbCtx_, &empty, XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (xkbDefaultKeymap_) {
         xkbDefaultState_ = xkb_state_new(xkbDefaultKeymap_);
@@ -866,7 +900,7 @@ void WaylandWindow::startSelectionRead(int readFd, SelectionCallback cb)
                           if (n == 0 && !raw->buf.empty()) {
                               result = std::string(raw->buf.data(), raw->buf.size());
                           } else if (n == 0) {
-                              result = std::string { };
+                              result = std::string {};
                           }
                           SelectionCallback cb = std::move(raw->cb);
                           loop_.removeFd(raw->fd);
@@ -983,11 +1017,11 @@ void WaylandWindow::requestSelection(SelectionSource src, SelectionCallback cb)
     // our cached content directly. Avoids the pipe round-trip and works
     // even on compositors that don't deliver `selection` to the owner.
     if (src == SelectionSource::Clipboard && clipboardSource_) {
-        cb(clipboardContent_.empty() ? std::optional<std::string> { } : clipboardContent_);
+        cb(clipboardContent_.empty() ? std::optional<std::string> {} : clipboardContent_);
         return;
     }
     if (src == SelectionSource::Primary && primarySource_) {
-        cb(primaryContent_.empty() ? std::optional<std::string> { } : primaryContent_);
+        cb(primaryContent_.empty() ? std::optional<std::string> {} : primaryContent_);
         return;
     }
 
@@ -1047,7 +1081,7 @@ void WaylandWindow::onDataDeviceDataOffer(void *data, wl_data_device *, wl_data_
     auto *self                   = static_cast<WaylandWindow *>(data);
     // Attach a listener so the per-offer `offer` events populate our mime
     // map. We track the offer in dataOfferMimes_ keyed by pointer.
-    self->dataOfferMimes_[offer] = OfferMimes { };
+    self->dataOfferMimes_[offer] = OfferMimes {};
     wl_data_offer_add_listener(offer, &kDataOfferListener, self);
 }
 
@@ -1154,7 +1188,7 @@ void WaylandWindow::onDataSourceAction(void *, wl_data_source *, uint32_t)
 void WaylandWindow::onPrimaryDeviceDataOffer(void *data, zwp_primary_selection_device_v1 *, zwp_primary_selection_offer_v1 *offer)
 {
     auto *self                      = static_cast<WaylandWindow *>(data);
-    self->primaryOfferMimes_[offer] = OfferMimes { };
+    self->primaryOfferMimes_[offer] = OfferMimes {};
     zwp_primary_selection_offer_v1_add_listener(offer, &kPrimaryOfferListener, self);
 }
 
@@ -1203,16 +1237,30 @@ void WaylandWindow::onPrimarySourceCancelled(void *data, zwp_primary_selection_s
 
 // ---------- HiDPI / fractional scale ----------
 
-void WaylandWindow::onSurfaceEnter(void *, wl_surface *, struct wl_output *)
+void WaylandWindow::onSurfaceEnter(void *data, wl_surface *, struct wl_output *output)
 {
-    // We rely on preferred_buffer_scale (wl_compositor v6+) and/or
-    // wp_fractional_scale_v1 instead of tracking which outputs we're on.
-    // Kept as a no-op to satisfy older compositors that emit enter/leave.
+    // Rendering scale comes from preferred_buffer_scale / wp_fractional_scale_v1,
+    // not from which output we entered. The enter/leave events are still
+    // useful for getScreenSize: we mark which outputs the surface is on so
+    // getScreenSize can prefer them.
+    auto *self = static_cast<WaylandWindow *>(data);
+    for (auto &info : self->outputs_) {
+        if (info.output == output) {
+            info.entered = true;
+            return;
+        }
+    }
 }
 
-void WaylandWindow::onSurfaceLeave(void *, wl_surface *, struct wl_output *)
+void WaylandWindow::onSurfaceLeave(void *data, wl_surface *, struct wl_output *output)
 {
-    // See onSurfaceEnter.
+    auto *self = static_cast<WaylandWindow *>(data);
+    for (auto &info : self->outputs_) {
+        if (info.output == output) {
+            info.entered = false;
+            return;
+        }
+    }
 }
 
 void WaylandWindow::onSurfacePreferredBufferScale(void *data, wl_surface *, int32_t factor)
@@ -1234,6 +1282,59 @@ void WaylandWindow::onFractionalScalePreferredScale(void *data, wp_fractional_sc
     self->haveFractionalScale_ = true;
     self->fractionalScale120_  = static_cast<int>(scale120ths);
     self->applyScale();
+}
+
+// ---------- wl_output (current monitor info) ----------
+
+void WaylandWindow::onOutputGeometry(void *, wl_output *, int32_t, int32_t, int32_t, int32_t, int32_t, const char *, const char *, int32_t)
+{
+    // physical_width / physical_height (mm) + transform are unused; the
+    // mode event supplies pixel dimensions.
+}
+
+void WaylandWindow::onOutputMode(void *data, wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t)
+{
+    // Only the WL_OUTPUT_MODE_CURRENT bit is relevant. Other modes
+    // (preferred / available) describe what the monitor could do.
+    constexpr uint32_t kCurrent = 0x1; // WL_OUTPUT_MODE_CURRENT
+    if (!(flags & kCurrent)) {
+        return;
+    }
+    auto *self = static_cast<WaylandWindow *>(data);
+    for (auto &info : self->outputs_) {
+        if (info.output == output) {
+            info.width  = width;
+            info.height = height;
+            return;
+        }
+    }
+}
+
+void WaylandWindow::onOutputScale(void *data, wl_output *output, int32_t factor)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    for (auto &info : self->outputs_) {
+        if (info.output == output) {
+            info.scale = factor > 0 ? factor : 1;
+            return;
+        }
+    }
+}
+
+void WaylandWindow::onOutputDone(void *, wl_output *)
+{
+    // `done` marks the end of a batch of property updates. Nothing else
+    // to commit — getScreenSize reads the latest values directly.
+}
+
+void WaylandWindow::onOutputName(void *, wl_output *, const char *)
+{
+    // Logical-name string (v4+); unused.
+}
+
+void WaylandWindow::onOutputDescription(void *, wl_output *, const char *)
+{
+    // Human-readable description (v4+); unused.
 }
 
 void WaylandWindow::applyScale()
@@ -1597,6 +1698,12 @@ void WaylandWindow::destroy()
         wl_surface_destroy(surface_);
         surface_ = nullptr;
     }
+    for (auto &info : outputs_) {
+        if (info.output) {
+            wl_output_destroy(info.output);
+        }
+    }
+    outputs_.clear();
     seat_          = nullptr;
     wmBase_        = nullptr;
     compositor_    = nullptr;
@@ -1660,9 +1767,34 @@ void WaylandWindow::getContentScale(float &x, float &y) const
 
 void WaylandWindow::getScreenSize(int &w, int &h) const
 {
-    // No wl_output binding yet (Stage 5). Return 0 so PlatformDawn's clamp
-    // falls through to the minimum texture-pool limit.
-    w = h = 0;
+    // Prefer an output the surface is currently on; if multiple, return
+    // the largest (treated as "the screen we'd most want to size the
+    // texture pool for"). If none have entered yet (e.g. called before
+    // the first surface.enter), fall back to the largest known output.
+    // Returns 0×0 only if no wl_output has been bound at all, in which
+    // case PlatformDawn's clamp falls through to the texture-pool floor.
+    int bestW       = 0;
+    int bestH       = 0;
+    bool anyEntered = false;
+    for (const auto &info : outputs_) {
+        if (info.entered) {
+            anyEntered = true;
+            if (info.width * info.height > bestW * bestH) {
+                bestW = info.width;
+                bestH = info.height;
+            }
+        }
+    }
+    if (!anyEntered) {
+        for (const auto &info : outputs_) {
+            if (info.width * info.height > bestW * bestH) {
+                bestW = info.width;
+                bestH = info.height;
+            }
+        }
+    }
+    w = bestW;
+    h = bestH;
 }
 
 std::string WaylandWindow::keyName(int keycode) const

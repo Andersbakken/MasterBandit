@@ -12,6 +12,7 @@
 #include "fractional-scale-v1-client-protocol.h"
 #include "primary-selection-unstable-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
+#include "xdg-activation-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #include <fcntl.h>
@@ -48,6 +49,7 @@ constexpr uint32_t kDataDeviceMgrClientVersion  = 3;
 constexpr uint32_t kPrimarySelMgrClientVersion  = 1;
 constexpr uint32_t kViewporterClientVersion     = 1;
 constexpr uint32_t kFractionalScaleMgrVersion   = 1;
+constexpr uint32_t kActivationClientVersion     = 1;
 
 // fractional-scale-v1 reports scale as an integer = scale × 120 (so 240 = 2.0).
 // Convert to float on the fly.
@@ -209,6 +211,10 @@ const wp_fractional_scale_v1_listener WaylandWindow::kFractionalScaleListener = 
     .preferred_scale = &WaylandWindow::onFractionalScalePreferredScale,
 };
 
+const xdg_activation_token_v1_listener WaylandWindow::kActivationTokenListener = {
+    .done = &WaylandWindow::onActivationTokenDone,
+};
+
 void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version)
 {
     auto *self = static_cast<WaylandWindow *>(data);
@@ -266,6 +272,10 @@ void WaylandWindow::onRegistryGlobal(void *data, wl_registry *registry, uint32_t
         uint32_t v           = std::min(version, kFractionalScaleMgrVersion);
         self->fractionalMgr_ = static_cast<wp_fractional_scale_manager_v1 *>(
             wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, v));
+    } else if (std::strcmp(iface, xdg_activation_v1_interface.name) == 0) {
+        uint32_t v        = std::min(version, kActivationClientVersion);
+        self->activation_ = static_cast<xdg_activation_v1 *>(
+            wl_registry_bind(registry, name, &xdg_activation_v1_interface, v));
     }
 }
 
@@ -316,11 +326,12 @@ void WaylandWindow::onXdgSurfaceConfigure(void *data, xdg_surface *surface, uint
     }
 }
 
-void WaylandWindow::onXdgToplevelConfigure(void *data, xdg_toplevel *, int32_t width, int32_t height, struct wl_array *)
+void WaylandWindow::onXdgToplevelConfigure(void *data, xdg_toplevel *, int32_t width, int32_t height, struct wl_array *states)
 {
     auto *self             = static_cast<WaylandWindow *>(data);
     self->pendingLogicalW_ = width;
     self->pendingLogicalH_ = height;
+    self->parseToplevelStates(states);
 }
 
 void WaylandWindow::onXdgToplevelClose(void *data, xdg_toplevel *)
@@ -1288,6 +1299,114 @@ void WaylandWindow::applyScale()
     }
 }
 
+// ---------- toplevel state parsing + xdg_activation_v1 (Stage 6) ----------
+
+void WaylandWindow::parseToplevelStates(struct wl_array *states)
+{
+    // states is a wl_array of uint32_t enum entries. We only care about
+    // three: activated (focus), suspended (compositor-paused; useful for
+    // OSC 99 o=invisible), resizing (live-resize debounce).
+    bool isActivated = false;
+    bool isSuspended = false;
+    bool isResizing  = false;
+    if (states) {
+        // wl_array stores `size` raw bytes + `data` pointer. Each entry is
+        // a uint32_t enum value per the xdg-shell protocol.
+        const auto *base = static_cast<const uint32_t *>(states->data);
+        const size_t n   = states->size / sizeof(uint32_t);
+        for (size_t i = 0; i < n; ++i) {
+            switch (base[i]) {
+                case XDG_TOPLEVEL_STATE_ACTIVATED: isActivated = true; break;
+                case XDG_TOPLEVEL_STATE_SUSPENDED: isSuspended = true; break;
+                case XDG_TOPLEVEL_STATE_RESIZING: isResizing = true; break;
+                default: break;
+            }
+        }
+    }
+
+    if (isActivated != toplevelActivated_) {
+        toplevelActivated_ = isActivated;
+        if (onFocus) {
+            // PlatformDawn dedupes via windowHasFocus_ so double-fire with
+            // wl_keyboard.enter/leave is harmless.
+            onFocus(toplevelActivated_);
+        }
+    }
+    if (isSuspended != toplevelSuspended_) {
+        toplevelSuspended_ = isSuspended;
+        if (onVisibility) {
+            onVisibility(!toplevelSuspended_);
+        }
+    }
+    if (isResizing != toplevelResizing_) {
+        // We use the XCB inLiveResize_ flag (defined in Window.h's protected
+        // member) so PlatformDawn's inLiveResize() returns true during
+        // compositor-driven resize. When the compositor stops sending
+        // RESIZING, fire onLiveResizeEnd so PlatformDawn can flush any
+        // debounced framebuffer resize work.
+        inLiveResize_          = isResizing;
+        const bool resizeEnded = (!isResizing && toplevelResizing_);
+        toplevelResizing_      = isResizing;
+        if (resizeEnded && onLiveResizeEnd) {
+            onLiveResizeEnd();
+        }
+    }
+}
+
+void WaylandWindow::onActivationTokenDone(void *data, xdg_activation_token_v1 *token, const char *tokenStr)
+{
+    auto *self = static_cast<WaylandWindow *>(data);
+    if (token != self->pendingActivationTok_) {
+        // Stale token from a superseded raise(); destroy + drop.
+        xdg_activation_token_v1_destroy(token);
+        return;
+    }
+    if (self->activation_ && self->surface_ && tokenStr) {
+        xdg_activation_v1_activate(self->activation_, tokenStr, self->surface_);
+        if (self->display_) {
+            wl_display_flush(self->display_);
+        }
+    }
+    xdg_activation_token_v1_destroy(token);
+    self->pendingActivationTok_ = nullptr;
+}
+
+void WaylandWindow::cancelPendingActivation()
+{
+    if (pendingActivationTok_) {
+        xdg_activation_token_v1_destroy(pendingActivationTok_);
+        pendingActivationTok_ = nullptr;
+    }
+}
+
+void WaylandWindow::raise()
+{
+    // No xdg_activation_v1 global → no way to ask the compositor to
+    // activate us. Compositors typically reserve activation for tokens
+    // minted in response to a user gesture (notification click, IPC
+    // launch, etc.); a self-generated token is almost always demoted to
+    // "demands attention" / urgency hint. Best-effort either way; match
+    // the XCB backend's "no-op-if-no-mechanism" stance.
+    if (!activation_ || !surface_) {
+        return;
+    }
+    cancelPendingActivation();
+    pendingActivationTok_ = xdg_activation_v1_get_activation_token(activation_);
+    if (!pendingActivationTok_) {
+        return;
+    }
+    xdg_activation_token_v1_add_listener(pendingActivationTok_, &kActivationTokenListener, this);
+    if (lastInputSerial_ && seat_) {
+        xdg_activation_token_v1_set_serial(pendingActivationTok_, lastInputSerial_, seat_);
+    }
+    xdg_activation_token_v1_set_app_id(pendingActivationTok_, kAppId);
+    xdg_activation_token_v1_set_surface(pendingActivationTok_, surface_);
+    xdg_activation_token_v1_commit(pendingActivationTok_);
+    if (display_) {
+        wl_display_flush(display_);
+    }
+}
+
 // ---------- lifecycle ----------
 
 bool WaylandWindow::create(int width, int height, const std::string &title)
@@ -1415,6 +1534,9 @@ bool WaylandWindow::create(int width, int height, const std::string &title)
     } else if (!viewporter_) {
         spdlog::info("WaylandWindow: HiDPI path = integer-scale only (no wp_viewporter)");
     }
+    if (!activation_) {
+        spdlog::info("WaylandWindow: xdg_activation_v1 not advertised; raise() is a no-op");
+    }
 
     spdlog::info("WaylandWindow: created {}x{} ({}, scale={})", width_, height_, title, currentScale_);
     return true;
@@ -1424,6 +1546,7 @@ void WaylandWindow::destroy()
 {
     cancelKeyRepeat();
     cancelAllSelectionReads();
+    cancelPendingActivation();
     releaseSeatSelections();
     primarySelMgr_ = nullptr; // registry global; freed by wl_display_disconnect
     dataDeviceMgr_ = nullptr; // ditto
@@ -1480,6 +1603,7 @@ void WaylandWindow::destroy()
     registry_      = nullptr;
     viewporter_    = nullptr; // registry global; freed by wl_display_disconnect
     fractionalMgr_ = nullptr; // ditto
+    activation_    = nullptr; // ditto
     if (display_) {
         wl_display_disconnect(display_);
         display_ = nullptr;

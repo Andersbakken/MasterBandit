@@ -73,6 +73,8 @@ else()
         "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/viewporter/viewporter.xml")
     mb_wayland_scan(fractional-scale-v1
         "${WAYLAND_PROTOCOLS_PKGDATADIR}/staging/fractional-scale/fractional-scale-v1.xml")
+    mb_wayland_scan(xdg-activation-v1
+        "${WAYLAND_PROTOCOLS_PKGDATADIR}/staging/xdg-activation/xdg-activation-v1.xml")
 endif()
 
 add_library(eventloop OBJECT ${EVENTLOOP_SOURCES})

@@ -36,21 +36,22 @@ struct wp_viewporter;
 struct wp_viewport;
 struct wp_fractional_scale_manager_v1;
 struct wp_fractional_scale_v1;
+struct xdg_activation_v1;
+struct xdg_activation_token_v1;
 
-// Stage 1-5 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
+// Stage 1-6 Wayland backend. Opens a wl_surface + xdg_toplevel, dispatches
 // Wayland events from the EpollEventLoop fd, hands the surface to Dawn via
 // SurfaceSourceWaylandSurface (Stage 1), processes keyboard input
 // (xkbcommon-backed keymap, modifiers, client-synthesized key repeat) via
 // wl_seat + wl_keyboard (Stage 2), handles pointer events + cursor shape
 // via wl_pointer + wp_cursor_shape_v1 (Stage 3), bridges clipboard +
 // primary-selection round-trips via wl_data_device + zwp_primary_selection_v1
-// (Stage 4), and adapts to compositor-reported scale (integer via
-// wl_surface.preferred_buffer_scale fallback, fractional via
-// wp_fractional_scale_v1 + wp_viewporter primary path) for HiDPI displays
-// (Stage 5).
-//
-// Stage 6 (polish, multi-compositor verification, xdg_activation_v1) lands
-// in the final patch.
+// (Stage 4), adapts to compositor-reported scale via wp_fractional_scale_v1 +
+// wp_viewporter / wl_surface.preferred_buffer_scale (Stage 5), and rounds
+// out with xdg_activation_v1 for raise() + parsed xdg_toplevel.configure
+// states (activated/suspended/resizing → onFocus / onVisibility /
+// onLiveResizeEnd) (Stage 6). Multi-compositor verification beyond Hyprland
+// is deferred.
 class WaylandWindow : public Window
 {
 public:
@@ -76,6 +77,7 @@ public:
     uint32_t baseLayoutKeyCodepoint(int keycode) const override;
 
     void setCursorStyle(CursorStyle shape) override;
+    void raise() override;
 
     wgpu::Surface createWgpuSurface(wgpu::Instance instance) override;
 
@@ -100,6 +102,7 @@ private:
     static const struct zwp_primary_selection_offer_v1_listener kPrimaryOfferListener;
     static const struct wl_surface_listener kSurfaceListener;
     static const struct wp_fractional_scale_v1_listener kFractionalScaleListener;
+    static const struct xdg_activation_token_v1_listener kActivationTokenListener;
 
     static void onRegistryGlobal(void *data, wl_registry *registry, uint32_t name, const char *iface, uint32_t version);
     static void onRegistryGlobalRemove(void *data, wl_registry *registry, uint32_t name);
@@ -165,6 +168,8 @@ private:
     static void onSurfacePreferredBufferTransform(void *data, wl_surface *surface, uint32_t transform);
     static void onFractionalScalePreferredScale(void *data, wp_fractional_scale_v1 *device, uint32_t scale120ths);
 
+    static void onActivationTokenDone(void *data, xdg_activation_token_v1 *token, const char *tokenStr);
+
     // Drive the libwayland dispatch state machine from the epoll callback.
     // Pattern is the canonical prepare_read / read_events / dispatch_pending
     // sequence from the wayland-book; see processEvents() in the .cpp for the
@@ -190,6 +195,16 @@ private:
     // onContentScale + onFramebufferResize when the values changed. It's
     // the single funnel for scale or configure changes.
     void applyScale();
+
+    // xdg_toplevel.configure delivers `states` as a wl_array of uint32_t
+    // enum values. parseToplevelStates updates activated_/suspended_/
+    // resizing_ and fires the corresponding callbacks on transition.
+    void parseToplevelStates(struct wl_array *states);
+
+    // raise() helpers — issue a fresh activation token request, then on
+    // `done` call xdg_activation_v1.activate. Async because the
+    // compositor mints the token string in response to commit().
+    void cancelPendingActivation();
 
     // Selection (clipboard + primary). attachSeatSelections is called once
     // the seat is known to bind the per-seat wl_data_device +
@@ -321,6 +336,23 @@ private:
 
     bool firstConfigure_ = false;
     bool shouldClose_    = false;
+
+    // xdg_toplevel.configure states (Stage 6). Tracked so we can fire
+    // onFocus / onVisibility / onLiveResizeEnd on transitions. activated_
+    // is redundant with wl_keyboard.enter/leave for focus signalling but
+    // PlatformDawn's onFocus is idempotent, so double-firing is harmless
+    // and the compositor's signal is the more authoritative one.
+    bool toplevelActivated_ = false;
+    bool toplevelSuspended_ = false;
+    bool toplevelResizing_  = false;
+
+    // xdg_activation_v1 (Stage 6). raise() asks the compositor for a fresh
+    // activation token (best-effort: self-generated tokens are typically
+    // demoted to an urgency hint unless they come from a recent user
+    // gesture). The token request is async — we stash it here until the
+    // `done` event arrives carrying the token string, then activate.
+    xdg_activation_v1 *activation_                 = nullptr;
+    xdg_activation_token_v1 *pendingActivationTok_ = nullptr;
 
     // xkbcommon state. xkbCtx_ owns the keymap+state lifetimes; the keymap
     // and primary state are replaced whenever wl_keyboard.keymap fires.

@@ -20,10 +20,22 @@ sudo apt install pkg-config libxcb1-dev libxcb-util-dev libxcb-sync-dev \
     libwayland-dev wayland-protocols
 ```
 
-`libwayland-dev` provides `libwayland-cursor.so` and the
-`wayland-cursor` pkg-config module. `wayland-protocols` must be `>= 1.32`
-(Ubuntu 24.04 LTS has 1.34, Debian trixie has 1.36; older distros need a
-backport).
+`libwayland-dev` provides the core Wayland client libraries.
+`wayland-protocols` must be `>= 1.32` (Ubuntu 24.04 LTS has 1.34,
+Debian trixie has 1.36; older distros need a backport). The Wayland
+backend uses `xdg-shell`, `wp_cursor_shape_v1`, `wp_viewporter`,
+`wp_fractional_scale_v1`, `zwp_primary_selection_v1`, and
+`xdg_activation_v1`; missing optional protocols degrade gracefully
+(see startup logs at `-vv`).
+
+### Linux window backend
+
+Both X11 (XCB) and Wayland backends are compiled into every Linux
+build. Selection is runtime, in this order: `--wayland` / `--x11` CLI
+flag → `$WAYLAND_DISPLAY` → `$DISPLAY`. XWayland sessions set both env
+vars; Wayland wins by default, pass `--x11` to opt back into the XCB
+backend. See [WAYLAND.md](WAYLAND.md) for details on stage status and
+known gaps.
 
 ### Build presets
 

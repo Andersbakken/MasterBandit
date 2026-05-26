@@ -76,11 +76,24 @@ struct NotificationEntry
     std::function<void(const std::string &reason)> onClosed;      // active onClosed
     std::function<void(const std::string &buttonId)> onActivated; // body/button click
     std::unique_ptr<NotificationQueued> queued;                   // payload waiting for reply
+    // Monotonic stamp used by the LRU bound. Updated on each send/reply
+    // touching this entry; oldest entries are candidates for eviction
+    // when the map grows past kEntriesMax.
+    uint64_t lastTouched = 0;
 };
 
 std::mutex g_notifyMu;
 std::unordered_map<std::string, NotificationEntry> g_entries; // key → Entry
 std::unordered_map<uint32_t, std::string> g_daemonToKey;      // daemonId → key
+uint64_t g_touchCounter = 0;
+
+// Soft cap on g_entries — long-running sessions on daemons that fail to
+// fire NotificationClosed (e.g., GNOME shell holding notifications in the
+// message tray) would otherwise grow the map without bound. When over
+// the cap, we evict the entry with the smallest lastTouched value that
+// is safe to drop (no in-flight, no queued payload, no live callbacks).
+// If no such entry exists, the cap is exceeded harmlessly.
+constexpr size_t kEntriesMax = 128;
 
 // Daemon capabilities, populated on init by GetCapabilities. False until
 // the reply lands (so the very first send may go out without buttons even
@@ -97,6 +110,44 @@ std::string makeNotifyKey(const std::string &sourceTag, const std::string &clien
     out.push_back(kNotifyKeySep);
     out.append(clientId);
     return out;
+}
+
+// Caller holds g_notifyMu. Marks the entry as just-touched for LRU.
+void touchEntry(NotificationEntry &e)
+{
+    e.lastTouched = ++g_touchCounter;
+}
+
+// Caller holds g_notifyMu. Evicts the oldest evictable entry if g_entries
+// is over the cap. "Evictable" = no in-flight, no queued, no callbacks
+// waiting on a future signal. Entries with a live daemonId mapping but no
+// outstanding work are the typical leak case (daemon never fired Closed).
+// Returns the number of entries evicted (0 or 1).
+size_t enforceLruCap()
+{
+    if (g_entries.size() <= kEntriesMax) {
+        return 0;
+    }
+    auto victim       = g_entries.end();
+    uint64_t bestSeen = UINT64_MAX;
+    for (auto it = g_entries.begin(); it != g_entries.end(); ++it) {
+        const NotificationEntry &e = it->second;
+        if (e.inFlight || e.queued || e.onClosed || e.onActivated) {
+            continue;
+        }
+        if (e.lastTouched < bestSeen) {
+            bestSeen = e.lastTouched;
+            victim   = it;
+        }
+    }
+    if (victim == g_entries.end()) {
+        return 0;
+    }
+    if (victim->second.daemonId != 0) {
+        g_daemonToKey.erase(victim->second.daemonId);
+    }
+    g_entries.erase(victim);
+    return 1;
 }
 
 const char *freedesktopReasonToText(uint32_t reason)
@@ -710,6 +761,7 @@ void onNotifyReply(const std::string &key, dbus_uint32_t replacesAtSend,
             }
             e.daemonId                 = newDaemonId;
             g_daemonToKey[newDaemonId] = key;
+            touchEntry(e);
         }
 
         if (e.queued) {
@@ -893,6 +945,8 @@ void platformSendNotification(const std::string &sourceTag,
             e.closeResponseRequested = false;
             e.onClosed               = nullptr;
             e.onActivated            = std::move(onActivated);
+            touchEntry(e);
+            enforceLruCap();
         }
         dispatchNotify(key, title, body, urgency, 0, buttons);
         return;
@@ -930,6 +984,8 @@ void platformSendNotification(const std::string &sourceTag,
             replacesId               = e.daemonId;
             sendNow                  = true;
         }
+        touchEntry(e);
+        enforceLruCap();
     }
 
     if (sendNow) {

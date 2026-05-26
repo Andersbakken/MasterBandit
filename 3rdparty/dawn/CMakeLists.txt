@@ -1,9 +1,17 @@
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(DAWN_VERSION "v20260409.162024")
-    set(DAWN_COMMIT "cbeb98c0887560232bc98c11ba582579f56557f9")
-    set(DAWN_REPO "google/dawn")
-    set(DAWN_PLATFORM "ubuntu-latest")
-    set(DAWN_LIB_DIR "lib64")
+    # Custom Dawn build: upstream 3389b73138 + two local patches on branch
+    # wayland-gcc15-3389b731 (jhanssen/dawn):
+    #   * ityp::array: avoid defaulted operator== for non-comparable Value
+    #     (GCC 15 / libstdc++ 15 unconstrained std::array operator==).
+    #   * api_cpp: add non-const member-fn-ptr specialization of CppFTraitsImpl
+    #     so mutable lambdas work as wgpu callbacks.
+    # Configured with DAWN_USE_WAYLAND=ON and DAWN_USE_X11=ON so the same
+    # static lib serves native Wayland, XWayland, and pure-X11 sessions.
+    set(DAWN_VERSION "v20260525-linux-wayland")
+    set(DAWN_COMMIT "3673db747116bd2b9206a35f139caab8319dc918")
+    set(DAWN_REPO "jhanssen/dawn")
+    set(DAWN_PLATFORM "linux-x86_64-wayland")
+    set(DAWN_LIB_DIR "lib")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # Patched Dawn: uses presentDrawable: instead of [drawable present] on Metal,
     # built with MACOSX_DEPLOYMENT_TARGET=12.0.

@@ -174,6 +174,27 @@ function _tabUuidByIndex(idx) {
     return stack.children[idx].id;
 }
 
+// Clear zoomTarget on any ancestor Stack of `targetId` whose current
+// zoomTarget would hide `targetId`. Used by operations that produce new
+// content the user expects to see (split, new tab, tab activation): if
+// the introduction site sits outside the zoomed subtree, the new node
+// would otherwise be invisible. Stacks where `zoomTarget` properly
+// contains `targetId` are left alone — the new content is already
+// visible inside the zoom.
+function _unzoomToReveal(targetId) {
+    if (!targetId) return;
+    for (let cur = targetId; cur; ) {
+        const n = mb.layout.node(cur);
+        if (!n) break;
+        if (n.kind === 'stack' && n.zoomTarget) {
+            if (!mb.layout.contains(n.zoomTarget, targetId)) {
+                mb.layout.setStackZoom(cur, null);
+            }
+        }
+        cur = n.parent;
+    }
+}
+
 // Switch the enclosing Stack's activeChild to `tabUuid` and route keyboard
 // focus to a live pane inside it (preferring the remembered focus, else
 // the first visible leaf). C++ activateTabByUuid only handles the Stack
@@ -194,7 +215,13 @@ function _activateTabAndFocus(tabUuid) {
         const leaves = mb.layout.terminalLeavesIn(tabUuid, true);
         if (leaves.length > 0) focusTarget = leaves[0];
     }
-    if (focusTarget) mb.layout.focusPane(focusTarget);
+    if (focusTarget) {
+        // If any ancestor Stack along the focus target's chain is zoomed
+        // onto a node that doesn't contain `focusTarget`, the activation
+        // would land on an invisible pane. Clear those zooms.
+        _unzoomToReveal(focusTarget);
+        mb.layout.focusPane(focusTarget);
+    }
 }
 
 // Currently active tab UUID (the chrome TabBar's bound Stack's activeChild).
@@ -222,6 +249,9 @@ mb.actions.register('newTab', () => {
     if (!tabUuid) return;
     const opts = cwd ? { cwd } : undefined;
     mb.layout.createTerminal(tabUuid, opts);
+    // _activateTabAndFocus calls _unzoomToReveal on the focused descendant,
+    // which covers any zoomed enclosing Stack (e.g. the tabs Stack itself)
+    // that would otherwise keep the new tab hidden.
     _activateTabAndFocus(tabUuid);
 });
 
@@ -385,7 +415,13 @@ mb.actions.register('splitPane', ({dir}) => {
     const cwd = pane ? (pane.cwd || '') : '';
     const opts = cwd ? { cwd } : undefined;
     const newNodeId = mb.layout.splitPane(fp.nodeId, dir, opts);
-    if (newNodeId) mb.layout.focusPane(newNodeId);
+    if (newNodeId) {
+        // The new sibling sits outside the focused pane's slot, so any
+        // ancestor Stack zoomed onto the old pane (or onto something else
+        // entirely) would hide the new sibling. Clear those zooms.
+        _unzoomToReveal(newNodeId);
+        mb.layout.focusPane(newNodeId);
+    }
 });
 
 mb.actions.register('closePane', async () => {

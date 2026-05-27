@@ -74,6 +74,23 @@ function buildMatcher(arg) {
     return (title) => title.toLowerCase() === needle;
 }
 
+// Clear zoomTarget on any ancestor Stack of `targetId` whose current
+// zoomTarget would hide `targetId`. Mirrors default-ui's helper of the
+// same name — kept inline because script files don't share scope.
+function unzoomToReveal(targetId) {
+    if (!targetId) return;
+    for (let cur = targetId; cur; ) {
+        const n = mb.layout.node(cur);
+        if (!n) break;
+        if (n.kind === "stack" && n.zoomTarget) {
+            if (!mb.layout.contains(n.zoomTarget, targetId)) {
+                mb.layout.setStackZoom(cur, null);
+            }
+        }
+        cur = n.parent;
+    }
+}
+
 // Walk the parent chain from `nodeId` up to (and excluding) the layout
 // root. For every Stack encountered, set its activeChild to the
 // previously-seen child so the pane becomes visible. activateTab fires
@@ -112,6 +129,7 @@ mb.addEventListener("action", "pane.activate_by_name", ({ name }) => {
         if (!match(title)) continue;
 
         activateAncestors(tid);
+        unzoomToReveal(tid);
         mb.layout.focusPane(tid);
         return;
     }

@@ -151,6 +151,12 @@ struct RenderFrameState
     // Visual state
     float activeTint[4]          = { 1.0f, 1.0f, 1.0f, 1.0f };
     float inactiveTint[4]        = { 1.0f, 1.0f, 1.0f, 1.0f };
+    // Window-level default bg color (RGBA8, A in MSB) and opacity scalar.
+    // The clear values used by the pane and swapchain passes are derived
+    // from these as `premultiplied = (R*a, G*a, B*a, a)` so the surface
+    // alpha-channel value matches what the compositor expects.
+    uint32_t defaultBgColor      = 0xFF000000u;
+    float backgroundOpacity      = 1.0f;
     // Coarse "rebuild every bar in `tabBars` this frame" signal. Per-bar
     // dirty tracking would let us skip unchanged bars, but in the common
     // case (1-2 bars, only the focused/active changing) it's not worth

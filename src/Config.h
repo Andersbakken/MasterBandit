@@ -121,9 +121,17 @@ struct TabBarConfig
 
 struct ColorScheme
 {
-    std::string foreground = "#dddddd";
-    std::string background = "#000000";
-    std::string cursor     = "#cccccc";
+    std::string foreground   = "#dddddd";
+    std::string background   = "#000000";
+    std::string cursor       = "#cccccc";
+    // 0.0 = fully transparent window, 1.0 = fully opaque (default).
+    // Values < 1.0 require a compositor that supports alpha surfaces; on
+    // Wayland the renderer requests Premultiplied alpha mode, on X11/macOS
+    // the path is opaque-only and the setting is ignored. Only the default
+    // background (cells whose bg is the palette default) becomes
+    // transparent — SGR-colored bg cells stay opaque, matching kitty's
+    // background_opacity semantics.
+    float background_opacity = 1.0f;
 
     // ANSI 16-color palette (0-7 normal, 8-15 bright)
     std::string color0  = "#3a3a3a"; // black (visible against #000000 background)
@@ -149,6 +157,7 @@ struct ColorScheme
         static constexpr auto value = glz::object(
             "foreground", &T::foreground,
             "background", &T::background,
+            "background_opacity", &T::background_opacity,
             "cursor", &T::cursor,
             "color0", &T::color0, "color1", &T::color1,
             "color2", &T::color2, "color3", &T::color3,

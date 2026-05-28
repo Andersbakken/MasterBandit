@@ -988,7 +988,8 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
                             const DimParams &dim,
                             const std::vector<ImageDrawCmd> &imageCmds,
                             size_t imgSplitText,
-                            bool clearTarget)
+                            bool clearTarget,
+                            const float clearColor[4])
 {
     if (!computeInitialized_) {
         return;
@@ -1086,7 +1087,9 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
         att.view                            = target;
         att.loadOp                          = clearTarget ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
         att.storeOp                         = wgpu::StoreOp::Store;
-        att.clearValue                      = { 0.0, 0.0, 0.0, 1.0 };
+        att.clearValue                      = clearColor
+                                 ? wgpu::Color { clearColor[0], clearColor[1], clearColor[2], clearColor[3] }
+                                 : wgpu::Color { 0.0, 0.0, 0.0, 1.0 };
         wgpu::RenderPassDescriptor rpDesc   = {};
         rpDesc.colorAttachmentCount         = 1;
         rpDesc.colorAttachments             = &att;
@@ -1151,9 +1154,13 @@ void Renderer::renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
 
 void Renderer::composite(wgpu::CommandEncoder &encoder,
                          wgpu::Texture swapchainTexture,
-                         const std::vector<CompositeEntry> &entries)
+                         const std::vector<CompositeEntry> &entries,
+                         const float clearColor[4])
 {
-    // Clear swapchain to black
+    // Clear swapchain to the configured default bg (premultiplied). With
+    // background_opacity == 1 this is the legacy { 0, 0, 0, 1 }; with
+    // opacity < 1 it's (bgR*a, bgG*a, bgB*a, a) — gaps in the composite
+    // (no pane covers that pixel) carry that alpha to the compositor.
     {
         wgpu::TextureViewDescriptor viewDesc = {};
         wgpu::TextureView swapView           = swapchainTexture.CreateView(&viewDesc);
@@ -1161,7 +1168,9 @@ void Renderer::composite(wgpu::CommandEncoder &encoder,
         att.view                             = swapView;
         att.loadOp                           = wgpu::LoadOp::Clear;
         att.storeOp                          = wgpu::StoreOp::Store;
-        att.clearValue                       = { 0.0, 0.0, 0.0, 1.0 };
+        att.clearValue                       = clearColor
+                                  ? wgpu::Color { clearColor[0], clearColor[1], clearColor[2], clearColor[3] }
+                                  : wgpu::Color { 0.0, 0.0, 0.0, 1.0 };
         wgpu::RenderPassDescriptor rpDesc    = {};
         rpDesc.colorAttachmentCount          = 1;
         rpDesc.colorAttachments              = &att;

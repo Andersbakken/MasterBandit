@@ -143,6 +143,7 @@
 ## Configuration
 
 - [x] Color scheme — `[colors]` config section for ANSI palette, foreground, background, cursor.
+- [x] `colors.background_opacity` (0.0–1.0, default 1.0) — semi-transparent window background under compositors that expose alpha-capable surfaces (Wayland: Hyprland, Sway, KWin, Mutter). Renderer requests `wgpu::CompositeAlphaMode::Premultiplied` on the surface (falls back to `Inherit`, else warns and stays Opaque) and clears both the pane texture and the swap surface to the configured default bg pre-multiplied by the opacity scalar. The compute shader's existing "skip emission when `bg_color == 0`" path is reused: when opacity < 1 the per-cell default-bg packing forces `defBg = 0` regardless of the configured color, so cells with the palette default fall through to the (transparent) clear; SGR-colored bg cells still emit a fully opaque rect and blend correctly over the transparent base. Live-reload via TOML triggers a surface reconfigure so the alpha mode flips without restart. X11 + macOS surfaces only advertise Opaque today — the setting is a no-op there. Wayland surfaces never set an opaque region, so the compositor sees the alpha bytes directly.
 - [x] Keybindings — configurable key mappings for tab/pane operations.
 - [x] Divider — `divider_color` (hex) and `divider_width` (pixels) in config.
 - [x] Cursor style — block/underline/bar, blink on/off, blink interval. `CursorConfig` in Config.h (`shape`, `blink`, `blink_interval`); `applyCursorConfig()` called on pane creation and on config reload.

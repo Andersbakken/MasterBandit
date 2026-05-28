@@ -309,6 +309,12 @@ private:
 
     void setTerminalOptions(TerminalOptions opts) { terminalOptions_ = std::move(opts); }
 
+    // Window background opacity (1.0 = opaque). Read by the render thread
+    // to pick the surface alpha mode and the per-frame clear color.
+    float backgroundOpacity() const { return backgroundOpacity_; }
+
+    uint32_t defaultBgColor() const { return defaultBgColor_; }
+
     std::unordered_map<int, Terminal *> &ptyPolls() { return ptyPolls_; }
 
     void addPtyPoll(int fd, Terminal *term);
@@ -514,6 +520,11 @@ private:
     // Pane tints
     float activeTint_[4]   = { 1.0f, 1.0f, 1.0f, 1.0f };
     float inactiveTint_[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+    // Window background opacity (1.0 = opaque, default). Used by the
+    // renderer to pick the surface CompositeAlphaMode and the clear
+    // value's alpha channel.
+    float backgroundOpacity_ = 1.0f;
 
     // Tab bar colors
     uint32_t tbBgColor_         = 0xFF261926;

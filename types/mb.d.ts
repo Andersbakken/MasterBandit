@@ -951,6 +951,14 @@ interface MbConfigCursor {
 interface MbConfigColors {
     foreground: string;
     background: string;
+    /**
+     * Window background opacity, 0.0 (transparent) to 1.0 (opaque, default).
+     * Effective only under compositors that expose an alpha-capable surface
+     * (Wayland: Hyprland, Sway, KWin, Mutter). X11 + macOS ignore it. Only
+     * cells with the palette default bg become transparent; SGR-colored
+     * backgrounds stay opaque.
+     */
+    background_opacity: number;
     cursor: string;
     color0:  string; color1:  string; color2:  string; color3:  string;
     color4:  string; color5:  string; color6:  string; color7:  string;

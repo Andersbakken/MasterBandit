@@ -696,6 +696,8 @@ void PlatformDawn::buildRenderFrameState()
     renderThread_->renderState().padBottom  = padBottom_;
     std::memcpy(renderThread_->renderState().activeTint, activeTint_, sizeof(activeTint_));
     std::memcpy(renderThread_->renderState().inactiveTint, inactiveTint_, sizeof(inactiveTint_));
+    renderThread_->renderState().backgroundOpacity  = backgroundOpacity_;
+    renderThread_->renderState().defaultBgColor     = defaultBgColor_;
     renderThread_->renderState().tabBarPosition     = tabBarConfig_.position;
     renderThread_->renderState().inLiveResize       = window_ && window_->inLiveResize();
     renderThread_->renderState().windowHasFocus     = windowHasFocus_;
@@ -1515,6 +1517,7 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
     };
     parseTint(options.activePaneTint, options.activePaneTintAlpha, activeTint_);
     parseTint(options.inactivePaneTint, options.inactivePaneTintAlpha, inactiveTint_);
+    backgroundOpacity_ = std::clamp(options.backgroundOpacity, 0.0f, 1.0f);
     if (!options.replacementChar.empty()) {
         replacementChar_ = options.replacementChar;
     }
@@ -1826,6 +1829,17 @@ void PlatformDawn::applyConfig(const Config &config)
     opts.activePaneTintAlpha   = config.active_pane_tint_alpha;
     opts.inactivePaneTint      = config.inactive_pane_tint;
     opts.inactivePaneTintAlpha = config.inactive_pane_tint_alpha;
+
+    // background_opacity. Live-reload reconfigures the surface so the
+    // compositor sees the new alpha mode immediately.
+    float newOpacity       = std::clamp(config.colors.background_opacity, 0.0f, 1.0f);
+    bool opacityChanged    = newOpacity != backgroundOpacity_;
+    backgroundOpacity_     = newOpacity;
+    opts.backgroundOpacity = newOpacity;
+    if (opacityChanged && renderThread_) {
+        renderThread_->pending().surfaceNeedsReconfigure = true;
+        invalidateAllRowCaches();
+    }
 
     // Padding
     float newPL         = config.padding.left * contentScaleX_;

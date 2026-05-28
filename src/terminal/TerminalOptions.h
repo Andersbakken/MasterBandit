@@ -24,6 +24,7 @@ struct TerminalOptions
     float inactivePaneTintAlpha  = 0.3f;
     std::string activePaneTint   = "#000000";
     float activePaneTintAlpha    = 0.0f;
+    float backgroundOpacity      = 1.0f;
     std::string replacementChar  = "\xEF\xBF\xBD"; // U+FFFD
     PaddingConfig padding;
     CursorConfig cursor;

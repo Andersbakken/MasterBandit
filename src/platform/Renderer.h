@@ -90,6 +90,12 @@ public:
     // black; if false, it loads existing contents. Used by the tab bar to
     // dispatch a second draw on top of an already-rendered bar texture for
     // the drag-to-reorder floating tab.
+    // `clearColor` (when clearTarget is true) is the rgba value the
+    // first sub-pass clears the target to. Pass premultiplied alpha:
+    // (R*a, G*a, B*a, a). Defaults to opaque black, which is what the
+    // tab-bar path wants. The pane path uses the configured default bg
+    // pre-multiplied by background_opacity so cells with the default bg
+    // (which the compute shader skips emission for) inherit the clear.
     void renderToPane(wgpu::CommandEncoder &encoder, wgpu::Queue &queue,
                       const std::string &fontName,
                       const TerminalComputeParams &params,
@@ -99,7 +105,8 @@ public:
                       const DimParams &dim,
                       const std::vector<ImageDrawCmd> &imageCmds = {},
                       size_t imgSplitText                        = 0,
-                      bool clearTarget                           = true);
+                      bool clearTarget                           = true,
+                      const float clearColor[4]                  = nullptr);
 
     // Composite entry: a rendered pane texture and where to place it on the swapchain.
     // srcX/srcY let a single texture be composited as multiple vertical strips —
@@ -113,10 +120,14 @@ public:
     };
 
     // Composite N pane textures onto the swapchain.
-    // Clears swapchain to black first, then copies each entry to its destination rect.
+    // Clears the swapchain to `clearColor` first (premultiplied rgba;
+    // default opaque black), then copies each entry to its destination
+    // rect. Pixels not covered by any entry remain at the clear value —
+    // that's how background_opacity < 1 reaches the compositor.
     void composite(wgpu::CommandEncoder &encoder,
                    wgpu::Texture swapchainTexture,
-                   const std::vector<CompositeEntry> &entries);
+                   const std::vector<CompositeEntry> &entries,
+                   const float clearColor[4] = nullptr);
 
     // Persistent divider support.
     // Call updateDividerViewport whenever the swapchain dimensions change.

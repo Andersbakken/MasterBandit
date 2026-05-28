@@ -4,6 +4,7 @@
 #include "Resources.h"
 #include "Terminfo.h"
 #include "Version.h"
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -539,6 +540,7 @@ int main(int argc, char **argv)
         options.inactivePaneTintAlpha    = config.inactive_pane_tint_alpha;
         options.activePaneTint           = config.active_pane_tint;
         options.activePaneTintAlpha      = config.active_pane_tint_alpha;
+        options.backgroundOpacity        = std::clamp(config.colors.background_opacity, 0.0f, 1.0f);
         options.replacementChar          = config.replacement_char;
         options.padding                  = config.padding;
         options.cursor                   = config.cursor;

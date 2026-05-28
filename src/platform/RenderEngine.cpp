@@ -192,8 +192,44 @@ void RenderEngine::configureSurface(uint32_t width, uint32_t height)
             spdlog::info("Surface present mode: {}", name);
         }
     }
-    config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
-    config.usage     = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
+    // Default to Opaque (compositor ignores alpha). When the user has
+    // configured background_opacity < 1, request Premultiplied if the
+    // surface advertises it; otherwise fall back to Opaque and the
+    // opacity setting is effectively a no-op for this platform (X11,
+    // some macOS configurations). Wayland on a modern compositor like
+    // Hyprland / Sway advertises Premultiplied via the alpha-capable
+    // visual.
+    // The renderer writes premultiplied alpha (clear and per-cell rects
+    // are all R*a, G*a, B*a, a), so only Premultiplied is correct.
+    // Inherit is a reasonable fallback on Wayland where it typically maps
+    // to the same backing behavior. Unpremultiplied is intentionally not
+    // a fallback: the compositor would multiply by alpha again, producing
+    // too-dark output.
+    config.alphaMode    = wgpu::CompositeAlphaMode::Opaque;
+    const float opacity = platform_ ? platform_->backgroundOpacity() : 1.0f;
+    if (opacity < 1.0f) {
+        wgpu::SurfaceCapabilities caps = {};
+        if (surface_.GetCapabilities(device_.GetAdapter(), &caps) == wgpu::Status::Success) {
+            bool hasPremul  = false;
+            bool hasInherit = false;
+            for (size_t i = 0; i < caps.alphaModeCount; ++i) {
+                if (caps.alphaModes[i] == wgpu::CompositeAlphaMode::Premultiplied) {
+                    hasPremul = true;
+                }
+                if (caps.alphaModes[i] == wgpu::CompositeAlphaMode::Inherit) {
+                    hasInherit = true;
+                }
+            }
+            if (hasPremul) {
+                config.alphaMode = wgpu::CompositeAlphaMode::Premultiplied;
+            } else if (hasInherit) {
+                config.alphaMode = wgpu::CompositeAlphaMode::Inherit;
+            } else {
+                spdlog::warn("background_opacity < 1 but surface does not advertise Premultiplied alpha; transparency disabled");
+            }
+        }
+    }
+    config.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
     surface_.Configure(&config);
 }
 
@@ -333,13 +369,20 @@ void RenderEngine::resolveRow(PaneRenderPrivate &rs, int row, FontData *font, fl
         ResolvedCell &rc = rs.resolvedCells[baseIdx + col];
         const Cell &cell = rowData[col];
 
-        const auto &dc = snap.defaults;
-        uint32_t defFg = static_cast<uint32_t>(dc.fgR) | (static_cast<uint32_t>(dc.fgG) << 8) | (static_cast<uint32_t>(dc.fgB) << 16) | 0xFF000000u;
-        uint32_t defBg = (dc.bgR || dc.bgG || dc.bgB)
-            ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
-            : 0x00000000u; // transparent = use clear color
-        uint32_t fg    = (cell.attrs.fgMode() == CellAttrs::Default) ? defFg : cell.attrs.packFgAsU32();
-        uint32_t bg    = (cell.attrs.bgMode() == CellAttrs::Default) ? defBg : cell.attrs.packBgAsU32();
+        const auto &dc          = snap.defaults;
+        uint32_t defFg          = static_cast<uint32_t>(dc.fgR) | (static_cast<uint32_t>(dc.fgG) << 8) | (static_cast<uint32_t>(dc.fgB) << 16) | 0xFF000000u;
+        // When background_opacity < 1, force defBg to 0 ("transparent =
+        // use clear color") even for non-black default backgrounds, so
+        // the compute shader skips emitting the per-cell rect and the
+        // pane-texture clear (which carries the configured alpha) shows
+        // through. SGR-colored cells stay opaque — they emit their own
+        // bg rect with alpha=0xFF and blend over the cleared texture.
+        bool transparentDefault = frameState_.backgroundOpacity < 1.0f;
+        uint32_t defBg          = (!transparentDefault && (dc.bgR || dc.bgG || dc.bgB))
+                     ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
+                     : 0x00000000u; // transparent = use clear color
+        uint32_t fg             = (cell.attrs.fgMode() == CellAttrs::Default) ? defFg : cell.attrs.packFgAsU32();
+        uint32_t bg             = (cell.attrs.bgMode() == CellAttrs::Default) ? defBg : cell.attrs.packBgAsU32();
         if (cell.attrs.inverse()) {
             uint32_t bgOpaque = (bg == 0u)
                 ? (static_cast<uint32_t>(dc.bgR) | (static_cast<uint32_t>(dc.bgG) << 8) | (static_cast<uint32_t>(dc.bgB) << 16) | 0xFF000000u)
@@ -2263,7 +2306,23 @@ void RenderEngine::renderFrame()
                 }
             }
 
-            renderer_.renderToPane(encoder, queue_, frameState_.fontName, params, cs, newTexture->view, tint, dim, imageCmds, imgSplitText);
+            // Pane clear: premultiplied default bg × background_opacity.
+            // The bg source is this pane's *live* default bg from the
+            // terminal state (snap.defaults), not the config-time color,
+            // so OSC 11 and reverse-video mode follow correctly. With
+            // opacity == 1 this is the legacy opaque clear.
+            float bgClear[4];
+            {
+                float a    = frameState_.backgroundOpacity;
+                float r    = static_cast<float>(snap.defaults.bgR) / 255.0f;
+                float g    = static_cast<float>(snap.defaults.bgG) / 255.0f;
+                float b    = static_cast<float>(snap.defaults.bgB) / 255.0f;
+                bgClear[0] = r * a;
+                bgClear[1] = g * a;
+                bgClear[2] = b * a;
+                bgClear[3] = a;
+            }
+            renderer_.renderToPane(encoder, queue_, frameState_.fontName, params, cs, newTexture->view, tint, dim, imageCmds, imgSplitText, true, bgClear);
 
             if (!colrDrawCmds.empty()) {
                 renderer_.renderColrQuads(encoder, queue_, newTexture->view, params.viewport_w, params.viewport_h, tint, dim, colrDrawCmds);
@@ -2427,7 +2486,19 @@ void RenderEngine::renderFrame()
     if (!compositeEntries.empty()) {
         wgpu::CommandEncoderDescriptor encDesc = {};
         wgpu::CommandEncoder encoder           = device_.CreateCommandEncoder(&encDesc);
-        renderer_.composite(encoder, compositeTarget, compositeEntries);
+        float swapClear[4];
+        {
+            float a      = frameState_.backgroundOpacity;
+            uint32_t bg  = frameState_.defaultBgColor;
+            float r      = static_cast<float>(bg & 0xFFu) / 255.0f;
+            float g      = static_cast<float>((bg >> 8) & 0xFFu) / 255.0f;
+            float b      = static_cast<float>((bg >> 16) & 0xFFu) / 255.0f;
+            swapClear[0] = r * a;
+            swapClear[1] = g * a;
+            swapClear[2] = b * a;
+            swapClear[3] = a;
+        }
+        renderer_.composite(encoder, compositeTarget, compositeEntries, swapClear);
 
         if (frameState_.dividersDirty || focusChanged) {
             const float *windowTint = frameState_.windowHasFocus
@@ -2445,7 +2516,7 @@ void RenderEngine::renderFrame()
                 if (rit == paneRenderPrivate_.end()) {
                     continue;
                 }
-                renderer_.updateDividerBuffer(queue_, rit->second.dividerVB, geom.x, geom.y, geom.w, geom.h, geom.r, geom.g, geom.b, geom.a);
+                renderer_.updateDividerBuffer(queue_, rit->second.dividerVB, geom.x, geom.y, geom.w, geom.h, geom.r, geom.g, geom.b, geom.a * frameState_.backgroundOpacity);
             }
             frameState_.dividersDirty = false;
         }
@@ -2502,10 +2573,10 @@ void RenderEngine::renderFrame()
                         pb.cellY   = popup.cellY;
                         pb.cellW   = popup.cellW;
                         pb.cellH   = popup.cellH;
-                        renderer_.updateDividerBuffer(queue_, pb.top, px - bw, py - bw, pw + 2 * bw, bw, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
-                        renderer_.updateDividerBuffer(queue_, pb.bottom, px - bw, py + ph, pw + 2 * bw, bw, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
-                        renderer_.updateDividerBuffer(queue_, pb.left, px - bw, py, bw, ph, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
-                        renderer_.updateDividerBuffer(queue_, pb.right, px + pw, py, bw, ph, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA);
+                        renderer_.updateDividerBuffer(queue_, pb.top, px - bw, py - bw, pw + 2 * bw, bw, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA * frameState_.backgroundOpacity);
+                        renderer_.updateDividerBuffer(queue_, pb.bottom, px - bw, py + ph, pw + 2 * bw, bw, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA * frameState_.backgroundOpacity);
+                        renderer_.updateDividerBuffer(queue_, pb.left, px - bw, py, bw, ph, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA * frameState_.backgroundOpacity);
+                        renderer_.updateDividerBuffer(queue_, pb.right, px + pw, py, bw, ph, frameState_.dividerR, frameState_.dividerG, frameState_.dividerB, frameState_.dividerA * frameState_.backgroundOpacity);
                         prs.popupBorders.push_back(std::move(pb));
                     }
                 }

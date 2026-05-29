@@ -1,14 +1,16 @@
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Custom Dawn build: upstream 3389b73138 + two local patches on branch
+    # Custom Dawn build: upstream 3389b73138 + three local patches on branch
     # wayland-gcc15-3389b731 (jhanssen/dawn):
     #   * ityp::array: avoid defaulted operator== for non-comparable Value
     #     (GCC 15 / libstdc++ 15 unconstrained std::array operator==).
     #   * api_cpp: add non-const member-fn-ptr specialization of CppFTraitsImpl
     #     so mutable lambdas work as wgpu callbacks.
+    #   * vulkan: honor requested CompositeAlphaMode in swapchain (non-Android
+    #     Vulkan backend was hardcoding VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR).
     # Configured with DAWN_USE_WAYLAND=ON and DAWN_USE_X11=ON so the same
     # static lib serves native Wayland, XWayland, and pure-X11 sessions.
-    set(DAWN_VERSION "v20260525-linux-wayland")
-    set(DAWN_COMMIT "3673db747116bd2b9206a35f139caab8319dc918")
+    set(DAWN_VERSION "v20260528-linux-wayland-alpha")
+    set(DAWN_COMMIT "0dbf5f6920e0d42502be3c0f3655843b068bfab3")
     set(DAWN_REPO "jhanssen/dawn")
     set(DAWN_PLATFORM "linux-x86_64-wayland")
     set(DAWN_LIB_DIR "lib")

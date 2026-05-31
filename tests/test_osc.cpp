@@ -664,7 +664,7 @@ TEST_CASE("OSC 99 p=? emits an OSC 99 query response with the same id")
     TestTerminal t;
     t.osc("99;i=opentui:p=?;");
     // Reply format per kitty:
-    //   ESC ] 99 ; i=<id> : p=? ; <caps>... ESC \ 
+    //   ESC ] 99 ; i=<id> : p=? ; <caps>... ST (ESC backslash)
     CHECK(t.output().find("\x1b]99;i=opentui:p=?;") == 0);
     CHECK(t.output().find("p=title,body,buttons") != std::string::npos);
     CHECK(t.output().find("u=0,1,2") != std::string::npos);

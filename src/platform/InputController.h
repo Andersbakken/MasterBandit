@@ -43,7 +43,7 @@ public:
 
     // Raw input handlers (called from Window callbacks in PlatformDawn).
     void onKey(int key, int scancode, int action, int mods);
-    void onChar(uint32_t codepoint, uint32_t unshiftedCodepoint = 0);
+    void onChar(uint32_t codepoint, uint32_t unshiftedCodepoint = 0, int scancode = -1);
     void onMouseButton(int button, int action, int mods);
     void onCursorPos(double x, double y);
 
@@ -154,6 +154,20 @@ private:
     bool controlPressed_ = false;
     uint32_t lastMods_   = 0;
     bool altSendsEsc_    = true;
+
+    // Last OS-composed character (from onChar), tagged with the scancode that
+    // produced it. In kitty mode onKey uses this as the text/keyCode for a
+    // printable key when the scancode matches — giving the fully-composed
+    // character (Shift/CapsLock/AltGr/dead-key) instead of the layout level-0
+    // name. macOS delivers onChar before onKey so the match lands the same
+    // keystroke; Linux delivers it after, so the scancode never matches the
+    // current onKey and it falls back to keyName (already correct there).
+    struct ComposedChar
+    {
+        int scancode       = -1;
+        uint32_t codepoint = 0;
+        uint32_t unshifted = 0;
+    } lastComposed_;
 
     // Keys swallowed while a multi-key binding is partially matched. Resent
     // to the PTY (via replayPendingSequenceKey) when the sequence aborts

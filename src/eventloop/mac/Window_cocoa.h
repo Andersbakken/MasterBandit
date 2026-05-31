@@ -49,7 +49,7 @@ public:
 
     // Called by MBView / MBWindowDelegate for input events
     void dispatchKey(int key, int scancode, int action, int mods);
-    void dispatchChar(uint32_t codepoint, uint32_t unshiftedCodepoint = 0);
+    void dispatchChar(uint32_t codepoint, uint32_t unshiftedCodepoint = 0, int scancode = -1);
     // Layout-unshifted (modifier-state=0) codepoint for a physical keycode.
     // Returns 0 if unavailable. Used by insertText: to compute the
     // unshifted half of the (codepoint, unshifted) pair.

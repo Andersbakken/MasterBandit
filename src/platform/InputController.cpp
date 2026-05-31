@@ -282,17 +282,40 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     ev.count      = 1;
 
     if (term->kittyFlags() != 0) {
-        // Kitty mode: text should be the unmodified key character — modifiers
-        // are encoded separately in the CSI u sequence. For ctrl+letter,
-        // send the lowercase letter, not the control character.
+        // Kitty mode: text is the character the key produces; modifiers are
+        // encoded separately in the CSI u sequence. For ctrl+letter, send the
+        // lowercase letter, not the control character.
         if (controlPressed_ && ((key >= Key_A && key <= Key_Z) || (key >= 0x61 && key <= 0x7a))) {
             char ch = (key >= 0x61) ? static_cast<char>(key) : static_cast<char>(key - Key_A + 'a');
             ev.text = std::string(1, ch);
         } else if (key >= Key_Space && key <= Key_AsciiTilde) {
-            std::string name = window ? window->keyName(scancode) : std::string {};
+#if defined(__APPLE__)
+            // macOS delivers onChar (the OS-composed text) *before* onKey for
+            // the same keystroke, so prefer that composed character — it
+            // reflects Shift / CapsLock / AltGr / dead-key composition, which
+            // keyName (layout level-0, modifier-independent on macOS) does not.
+            // Matched by scancode and consumed so it can't bleed into a later
+            // key; falls back to keyName when nothing matched.
+            if (scancode >= 0 && lastComposed_.scancode == scancode) {
+                ev.text                = codepointToUtf8(lastComposed_.codepoint);
+                ev.unshiftedKey        = lastComposed_.unshifted;
+                lastComposed_.scancode = -1; // consume
+            } else {
+                std::string name = window ? window->keyName(scancode) : std::string { };
+                if (!name.empty()) {
+                    ev.text = name;
+                }
+            }
+#else
+            // X11/Wayland: keyName already reflects the active modifiers via the
+            // live xkb state, and onChar arrives *after* onKey — so the stash
+            // would be a stale previous keystroke (it matches on a repeated
+            // physical key). Use keyName directly; it is current-state-correct.
+            std::string name = window ? window->keyName(scancode) : std::string { };
             if (!name.empty()) {
                 ev.text = name;
             }
+#endif
         }
         // Populate shifted_key + base_layout_key for report_alternate_key mode
         if (window) {
@@ -392,9 +415,15 @@ void InputController::onKey(int key, int scancode, int action, int mods)
     }
 }
 
-void InputController::onChar(uint32_t codepoint, uint32_t unshiftedCodepoint)
+void InputController::onChar(uint32_t codepoint, uint32_t unshiftedCodepoint, int scancode)
 {
     std::lock_guard<std::recursive_mutex> plk(platform_->renderThread_->mutex());
+    // Record the OS-composed character so a matching onKey (kitty mode) can use
+    // it as the text/keyCode instead of the layout level-0 keyName. Stashed
+    // before the kitty early-return below so it's available even though kitty
+    // mode otherwise drops the onChar text path.
+    lastComposed_ = { scancode, codepoint, unshiftedCodepoint };
+
     TerminalEmulator *term = static_cast<TerminalEmulator *>(platform_->activeTerm());
     if (!term) {
         return;
@@ -494,7 +523,7 @@ MouseRegion InputController::hitTest(double sx, double sy)
 int InputController::resolveTabBarClickIndex(double sx, double sy, Uuid *outBarId)
 {
     if (outBarId) {
-        *outBarId = {};
+        *outBarId = { };
     }
     float tbCharWidth = platform_->tabBarCharWidth_;
     if (tbCharWidth <= 0.0f) {
@@ -716,7 +745,7 @@ void InputController::onMouseButton(int button, int action, int mods)
                     // this point — re-resolve by id.
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
                     int btn          = (button == static_cast<int>(LeftButton)) ? 0
-                                 : (button == static_cast<int>(RightButton))    ? 1
+                        : (button == static_cast<int>(RightButton))             ? 1
                                                                                 : 2;
                     platform_->scriptEngine_.deliverPopupMouseEvent(
                         clickPane->id(),
@@ -795,7 +824,7 @@ void InputController::onMouseButton(int button, int action, int mods)
                     }
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
                     int btn          = (button == static_cast<int>(LeftButton)) ? 0
-                                 : (button == static_cast<int>(RightButton))    ? 1
+                        : (button == static_cast<int>(RightButton))             ? 1
                                                                                 : 2;
                     platform_->scriptEngine_.deliverEmbeddedMouseEvent(
                         clickPane->id(),
@@ -847,7 +876,7 @@ void InputController::onMouseButton(int button, int action, int mods)
             // Deliver pane mouse event to JS (non-consuming — normal flow continues)
             std::string paneEvtType = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
             int paneBtn             = (button == static_cast<int>(LeftButton)) ? 0
-                            : (button == static_cast<int>(RightButton))        ? 1
+                : (button == static_cast<int>(RightButton))                    ? 1
                                                                                : 2;
             platform_->scriptEngine_.deliverPaneMouseEvent(
                 clickPane->id(),
@@ -905,7 +934,7 @@ void InputController::onMouseButton(int button, int action, int mods)
         mouseCtx_.pixelX           = static_cast<int>(sx);
         mouseCtx_.pixelY           = static_cast<int>(sy);
         mouseCtx_.button           = mb;
-        mouseCtx_.tabBarClickBarId = {};
+        mouseCtx_.tabBarClickBarId = { };
         mouseCtx_.tabBarClickIndex = (region == MouseRegion::TabBar)
             ? resolveTabBarClickIndex(sx, sy, &mouseCtx_.tabBarClickBarId)
             : -1;
@@ -1626,9 +1655,9 @@ void InputController::startAutoScroll(int dir, int col)
         return;
     }
     autoScrollTimer_       = el->addTimer(50, true, [this]()
-                                    {
+                                          {
                                         doAutoScroll();
-                                    });
+                                          });
     autoScrollTimerActive_ = true;
 }
 
@@ -1862,7 +1891,7 @@ void InputController::replayPendingSequenceKey(const PendingKey &p)
             char ch = (p.key >= 0x61) ? static_cast<char>(p.key) : static_cast<char>(p.key - Key_A + 'a');
             ev.text = std::string(1, ch);
         } else if (p.key >= Key_Space && p.key <= Key_AsciiTilde) {
-            std::string name = window ? window->keyName(p.scancode) : std::string {};
+            std::string name = window ? window->keyName(p.scancode) : std::string { };
             if (!name.empty()) {
                 ev.text = name;
             }

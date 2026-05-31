@@ -815,7 +815,7 @@ void XCBWindow::handleKeyPress(xcb_key_press_event_t *ev, bool isRepeat)
             if (unshifted < 0x20 || unshifted == 0x7f) {
                 unshifted = 0;
             }
-            onChar(cp, unshifted);
+            onChar(cp, unshifted, static_cast<int>(keycode));
         }
     }
 }

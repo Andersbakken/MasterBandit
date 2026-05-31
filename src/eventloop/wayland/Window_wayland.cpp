@@ -563,7 +563,7 @@ void WaylandWindow::dispatchKey(uint32_t xkbKeycode, bool isRepeat)
             if (unshifted < 0x20 || unshifted == 0x7f) {
                 unshifted = 0;
             }
-            onChar(cp, unshifted);
+            onChar(cp, unshifted, static_cast<int>(xkbKeycode));
         }
     }
 }
@@ -591,7 +591,7 @@ void WaylandWindow::startKeyRepeat(uint32_t xkbKeycode)
     // re-arm as a periodic timer at 1000/rate ms.
     const uint64_t periodMs = 1000ull / static_cast<uint64_t>(repeatRate_);
     repeatTimer_            = loop_.addTimer(static_cast<uint64_t>(repeatDelay_), false, [this, periodMs]()
-                                  {
+                                             {
                                       // Drop the one-shot ID; it has already fired.
                                       repeatTimer_ = 0;
                                       dispatchKey(repeatKeycode_, /*isRepeat=*/true);
@@ -602,7 +602,7 @@ void WaylandWindow::startKeyRepeat(uint32_t xkbKeycode)
                                                                     {
                                                                         dispatchKey(repeatKeycode_, /*isRepeat=*/true);
                                                                     });
-                                  });
+                                             });
 }
 
 void WaylandWindow::cancelKeyRepeat()
@@ -757,7 +757,7 @@ void WaylandWindow::ensureDefaultKeymap()
     // Empty rule_names → XKB resolves to XKB_DEFAULT_LAYOUT (typically "us").
     // Used solely for baseLayoutKeyCodepoint (kitty `base_layout_key`).
     // Failure is non-fatal — callers return 0, which the encoder elides.
-    xkb_rule_names empty = {};
+    xkb_rule_names empty = { };
     xkbDefaultKeymap_    = xkb_keymap_new_from_names(xkbCtx_, &empty, XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (xkbDefaultKeymap_) {
         xkbDefaultState_ = xkb_state_new(xkbDefaultKeymap_);
@@ -900,7 +900,7 @@ void WaylandWindow::startSelectionRead(int readFd, SelectionCallback cb)
                           if (n == 0 && !raw->buf.empty()) {
                               result = std::string(raw->buf.data(), raw->buf.size());
                           } else if (n == 0) {
-                              result = std::string {};
+                              result = std::string { };
                           }
                           SelectionCallback cb = std::move(raw->cb);
                           loop_.removeFd(raw->fd);
@@ -1017,11 +1017,11 @@ void WaylandWindow::requestSelection(SelectionSource src, SelectionCallback cb)
     // our cached content directly. Avoids the pipe round-trip and works
     // even on compositors that don't deliver `selection` to the owner.
     if (src == SelectionSource::Clipboard && clipboardSource_) {
-        cb(clipboardContent_.empty() ? std::optional<std::string> {} : clipboardContent_);
+        cb(clipboardContent_.empty() ? std::optional<std::string> { } : clipboardContent_);
         return;
     }
     if (src == SelectionSource::Primary && primarySource_) {
-        cb(primaryContent_.empty() ? std::optional<std::string> {} : primaryContent_);
+        cb(primaryContent_.empty() ? std::optional<std::string> { } : primaryContent_);
         return;
     }
 
@@ -1081,7 +1081,7 @@ void WaylandWindow::onDataDeviceDataOffer(void *data, wl_data_device *, wl_data_
     auto *self                   = static_cast<WaylandWindow *>(data);
     // Attach a listener so the per-offer `offer` events populate our mime
     // map. We track the offer in dataOfferMimes_ keyed by pointer.
-    self->dataOfferMimes_[offer] = OfferMimes {};
+    self->dataOfferMimes_[offer] = OfferMimes { };
     wl_data_offer_add_listener(offer, &kDataOfferListener, self);
 }
 
@@ -1188,7 +1188,7 @@ void WaylandWindow::onDataSourceAction(void *, wl_data_source *, uint32_t)
 void WaylandWindow::onPrimaryDeviceDataOffer(void *data, zwp_primary_selection_device_v1 *, zwp_primary_selection_offer_v1 *offer)
 {
     auto *self                      = static_cast<WaylandWindow *>(data);
-    self->primaryOfferMimes_[offer] = OfferMimes {};
+    self->primaryOfferMimes_[offer] = OfferMimes { };
     zwp_primary_selection_offer_v1_add_listener(offer, &kPrimaryOfferListener, self);
 }
 

@@ -382,7 +382,8 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
         // Skip C0 and C1 control characters — they are handled by keyDown → dispatchKey
         // (matches GLFW's _glfwInputChar filter)
         if (cp >= 32 && !(cp > 126 && cp < 160))
-            _cppWindow->dispatchChar(static_cast<uint32_t>(cp), unshifted);
+            _cppWindow->dispatchChar(static_cast<uint32_t>(cp), unshifted,
+                                     current ? static_cast<int>(current.keyCode) : -1);
         i += r.length;
     }
     [_markedText setAttributedString:[[NSAttributedString alloc] init]];
@@ -787,9 +788,9 @@ void CocoaWindow::dispatchKey(int key, int scancode, int action, int mods)
 {
     if (onKey) onKey(key, scancode, action, mods);
 }
-void CocoaWindow::dispatchChar(uint32_t cp, uint32_t unshifted)
+void CocoaWindow::dispatchChar(uint32_t cp, uint32_t unshifted, int scancode)
 {
-    if (onChar) onChar(cp, unshifted);
+    if (onChar) onChar(cp, unshifted, scancode);
 }
 
 uint32_t CocoaWindow::unshiftedKeyCodepoint(int keycode) const

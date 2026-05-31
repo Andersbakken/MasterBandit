@@ -49,7 +49,7 @@ public:
     virtual std::string keyName(int keycode) const
     {
         (void)keycode;
-        return {};
+        return { };
     }
 
     virtual uint32_t shiftedKeyCodepoint(int keycode) const
@@ -114,7 +114,10 @@ public:
     // codepoint: the text the user typed (shift / dead-key composition / etc. all applied).
     // unshiftedCodepoint: same key with all modifiers stripped — used as the kitty CSI-u keyCode.
     // For Shift+A on US: codepoint='A' (0x41), unshiftedCodepoint='a' (0x61). 0 = unavailable.
-    std::function<void(uint32_t codepoint, uint32_t unshiftedCodepoint)> onChar;
+    // scancode: the platform keycode that produced this character, so the kitty
+    // encoder can match it back to the matching onKey event (macOS delivers
+    // onChar before onKey; Linux after — the scancode disambiguates).
+    std::function<void(uint32_t codepoint, uint32_t unshiftedCodepoint, int scancode)> onChar;
     std::function<void(int w, int h)> onFramebufferResize;
     std::function<void(float scaleX, float scaleY)> onContentScale;
     std::function<void(int button, int action, int mods)> onMouseButton;
@@ -146,7 +149,7 @@ public:
         ResizeNWSE, // CSS "nwse-resize"
     };
 
-    virtual void setCursorStyle(CursorStyle) {}
+    virtual void setCursorStyle(CursorStyle) { }
 
     // Live resize state — true while user is actively dragging a window edge.
     // macOS: set by window delegate callbacks; Linux: debounced via timestamp.
@@ -161,7 +164,7 @@ public:
     // Compositors may demote to an urgency hint (taskbar bounce / tab
     // highlight) instead of granting focus — that's the user-side policy
     // and not something we can override from the requesting side.
-    virtual void raise() {}
+    virtual void raise() { }
 
 protected:
     bool inLiveResize_ = false;

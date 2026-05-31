@@ -401,12 +401,12 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
     // Repeat events are always sent — without REPORT_EVENT_TYPES they are
     // encoded identically to press (no event type suffix).
     if (ev.action == KeyAction_Release && !reportEvents) {
-        return {};
+        return { };
     }
 
     // Modifier-only keys: only report if REPORT_ALL_KEYS
     if (isModifierKey(ev.key) && !reportAllKeys) {
-        return {};
+        return { };
     }
 
     // Compute Kitty modifier wire value
@@ -464,7 +464,7 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
     } else if (ev.key == Key_Space) {
         keyCode = ' ';
     } else {
-        return {}; // Can't encode
+        return { }; // Can't encode
     }
 
     // Determine if this should use legacy encoding or CSI u
@@ -553,7 +553,7 @@ std::string TerminalEmulator::encodeKittyKey(const KeyEvent &ev) const
     }
 
     if (!useCsiU && !reportAllKeys) {
-        return ev.text.empty() ? std::string {} : ev.text;
+        return ev.text.empty() ? std::string { } : ev.text;
     }
 
     // Build CSI u sequence

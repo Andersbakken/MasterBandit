@@ -189,7 +189,7 @@ int utf8CodepointLen(const std::string &s)
 std::string utf8TruncWithEllipsis(const std::string &s, int maxCp)
 {
     if (maxCp <= 0) {
-        return {};
+        return { };
     }
     int cp        = 0;
     const char *p = s.c_str();
@@ -275,7 +275,7 @@ std::string progressGlyphFor(const RenderTabInfo &rti, int animFrame)
     int st  = rti.progressState;
     int pct = rti.progressPct;
     if (st == 0) {
-        return {};
+        return { };
     }
     int idx;
     if (st == 3) {
@@ -285,7 +285,7 @@ std::string progressGlyphFor(const RenderTabInfo &rti, int animFrame)
     } else if (st == 1 || st == 2) {
         idx = std::clamp(pct * kAnimCount / 100, 0, kAnimCount - 1);
     } else {
-        return {};
+        return { };
     }
     return codepointToUtf8(kAnimGlyphs[idx]);
 }
@@ -323,7 +323,7 @@ void buildBarCells(TabBarRender &bar, const RenderFrameState &fs, float charWidt
         const RenderTabInfo &rtab = bar.tabs[i];
         bool isActive             = (i == bar.activeTabIdx);
         bool isDragged            = (i == bar.draggedTabIdx);
-        TI ti {};
+        TI ti { };
         ti.isActive = isActive;
         if (isDragged) {
             ti.bgColor = fs.tbDragBgColor;
@@ -481,7 +481,7 @@ void buildBarCells(TabBarRender &bar, const RenderFrameState &fs, float charWidt
                 fc.fgColor = ti.fgColor;
                 fc.bgColor = ti.bgColor;
                 bar.draggedFloatCells.push_back(std::move(fc));
-                placeCell(col, std::string {}, slotFg, slotBg);
+                placeCell(col, std::string { }, slotFg, slotBg);
             } else {
                 placeCell(col, ch, ti.fgColor, ti.bgColor);
             }
@@ -629,7 +629,7 @@ void PlatformDawn::populateTabBars()
                 }
 
                 RenderTabInfo rti;
-                rti.focusedPaneId = fp ? fp->nodeId() : Uuid {};
+                rti.focusedPaneId = fp ? fp->nodeId() : Uuid { };
                 if (const Node *child = tree.node(childId);
                     child && !child->label.empty()) {
                     rti.title = child->label;
@@ -746,7 +746,7 @@ void PlatformDawn::buildRenderFrameState()
     // the content Container while a scrollback pager is on top) don't
     // contribute.
     renderThread_->renderState().panes.clear();
-    renderThread_->renderState().focusedPaneId = {};
+    renderThread_->renderState().focusedPaneId = { };
 
     if (tab) {
         renderThread_->renderState().focusedPaneId = scriptEngine_.focusedPaneInSubtree(*tab);
@@ -970,9 +970,9 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
             {
                 inputController_->onKey(key, scancode, action, mods);
             };
-            window_->onChar = [this](uint32_t cp, uint32_t unshifted)
+            window_->onChar = [this](uint32_t cp, uint32_t unshifted, int scancode)
             {
-                inputController_->onChar(cp, unshifted);
+                inputController_->onChar(cp, unshifted, scancode);
             };
             window_->onFramebufferResize = [this](int w, int h)
             {
@@ -1152,9 +1152,9 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
                     return;
                 }
                 if (dy > 0) {
-                    hp->scrollViewport(Action::ScrollUp {}.lines);
+                    hp->scrollViewport(Action::ScrollUp { }.lines);
                 } else {
-                    hp->scrollViewport(-Action::ScrollDown {}.lines);
+                    hp->scrollViewport(-Action::ScrollDown { }.lines);
                 }
             };
             window_->onExpose = [this]()
@@ -1326,7 +1326,7 @@ void PlatformDawn::createTerminal(const TerminalOptions &options)
         std::vector<std::vector<uint8_t>> fontList = { std::move(fontData) };
 
         if (!isHeadless()) {
-            const std::string &family = options.font.empty() ? std::string {} : options.font;
+            const std::string &family = options.font.empty() ? std::string { } : options.font;
 
             // Load bold variant
             bool hasBoldFont = false;

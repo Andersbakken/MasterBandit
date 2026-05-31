@@ -128,8 +128,8 @@ TerminalEmulator::TerminalEmulator(TerminalCallbacks callbacks)
 {
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
     memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
-    applyColorScheme(ColorScheme {}); // initialize from config defaults
-    pushEraseBlank();                 // BCE: seed grids with default-bg blank
+    applyColorScheme(ColorScheme { }); // initialize from config defaults
+    pushEraseBlank();                  // BCE: seed grids with default-bg blank
 }
 
 TerminalEmulator::~TerminalEmulator()
@@ -1395,7 +1395,7 @@ void TerminalEmulator::scanLogicalLineForUrls(uint64_t lineId)
         std::string uri  = text.substr(m.byteStart, m.byteEnd - m.byteStart);
 
         uint32_t hid            = mNextHyperlinkId++;
-        mHyperlinkRegistry[hid] = { std::move(uri), {} };
+        mHyperlinkRegistry[hid] = { std::move(uri), { } };
 
         int prevDirtyRow = -1;
         for (int off = startCellOff; off < endCellOff; ++off) {
@@ -1558,7 +1558,11 @@ void TerminalEmulator::writePrintable(char32_t cp)
         mLastPrintedChar = cp;
         mGraphemeState   = 0;
         if (mState->wrapPending) {
-            advanceCursorToNewLine();
+            // DECAWM off keeps the cursor on the last column (no wrap); the
+            // flag is cleared either way so the next glyph lands correctly.
+            if (mState->autoWrap) {
+                advanceCursorToNewLine();
+            }
             mState->wrapPending = false;
         }
         if (mState->cursorX >= 0 && mState->cursorX < mWidth &&
@@ -1579,10 +1583,10 @@ void TerminalEmulator::writePrintable(char32_t cp)
         }
         mState->cursorX++;
         if (mState->cursorX >= mWidth) {
-            mState->cursorX = mWidth - 1;
-            if (mState->autoWrap) {
-                mState->wrapPending = true;
-            }
+            mState->cursorX     = mWidth - 1;
+            // Deferred-wrap (last-column) flag, set regardless of DECAWM so an
+            // erase-to-EOL after a last-column write leaves that cell intact.
+            mState->wrapPending = true;
         }
         return;
     }
@@ -1615,10 +1619,8 @@ void TerminalEmulator::writePrintable(char32_t cp)
             g.markRowHasWide(mState->cursorY);
             mState->cursorX++;
             if (mState->cursorX >= mWidth) {
-                mState->cursorX = mWidth - 1;
-                if (mState->autoWrap) {
-                    mState->wrapPending = true;
-                }
+                mState->cursorX     = mWidth - 1;
+                mState->wrapPending = true;
             }
         }
 
@@ -1631,7 +1633,11 @@ void TerminalEmulator::writePrintable(char32_t cp)
         mLastPrintedChar = cp;
         mGraphemeState   = 0;
         if (mState->wrapPending) {
-            advanceCursorToNewLine();
+            // DECAWM off keeps the cursor on the last column (no wrap); the
+            // flag is cleared either way so the next glyph lands correctly.
+            if (mState->autoWrap) {
+                advanceCursorToNewLine();
+            }
             mState->wrapPending = false;
         }
         if (mState->cursorX + 1 >= mWidth) {
@@ -1666,16 +1672,18 @@ void TerminalEmulator::writePrintable(char32_t cp)
         }
         mState->cursorX += 2;
         if (mState->cursorX >= mWidth) {
-            mState->cursorX = mWidth - 1;
-            if (mState->autoWrap) {
-                mState->wrapPending = true;
-            }
+            mState->cursorX     = mWidth - 1;
+            mState->wrapPending = true;
         }
     } else {
         mLastPrintedChar = cp;
         mGraphemeState   = 0;
         if (mState->wrapPending) {
-            advanceCursorToNewLine();
+            // DECAWM off keeps the cursor on the last column (no wrap); the
+            // flag is cleared either way so the next glyph lands correctly.
+            if (mState->autoWrap) {
+                advanceCursorToNewLine();
+            }
             mState->wrapPending = false;
         }
         if (mState->cursorX >= 0 && mState->cursorX < mWidth &&
@@ -1696,10 +1704,8 @@ void TerminalEmulator::writePrintable(char32_t cp)
         }
         mState->cursorX++;
         if (mState->cursorX >= mWidth) {
-            mState->cursorX = mWidth - 1;
-            if (mState->autoWrap) {
-                mState->wrapPending = true;
-            }
+            mState->cursorX     = mWidth - 1;
+            mState->wrapPending = true;
         }
     }
 }
@@ -2107,7 +2113,9 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                 }
                 for (int rep = 0; rep < n; ++rep) {
                     if (mState->wrapPending) {
-                        advanceCursorToNewLine();
+                        if (mState->autoWrap) {
+                            advanceCursorToNewLine();
+                        }
                         mState->wrapPending = false;
                     }
                     if (w == 2) {
@@ -2140,10 +2148,8 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                         mState->cursorX++;
                     }
                     if (mState->cursorX >= mWidth) {
-                        mState->cursorX = mWidth - 1;
-                        if (mState->autoWrap) {
-                            mState->wrapPending = true;
-                        }
+                        mState->cursorX     = mWidth - 1;
+                        mState->wrapPending = true;
                     }
                 }
             }
@@ -2782,8 +2788,9 @@ void TerminalEmulator::onAction(const Action *action)
             mState->cursorY = 0;
             break;
         case Action::ClearToEndOfScreen:
-            // Clear from cursor to end of line, then all lines below
-            g.clearRow(mState->cursorY, mState->cursorX, mWidth);
+            // Clear from cursor to end of line, then all lines below. Honour a
+            // pending deferred wrap so a just-written last column survives.
+            g.clearRow(mState->cursorY, mState->cursorX + (savedWrapPending ? 1 : 0), mWidth);
             for (int r = mState->cursorY + 1; r < g.rows(); ++r) {
                 g.clearRow(r);
             }
@@ -2807,7 +2814,9 @@ void TerminalEmulator::onAction(const Action *action)
             g.clearRow(mState->cursorY);
             break;
         case Action::ClearToEndOfLine:
-            g.clearRow(mState->cursorY, mState->cursorX, mWidth);
+            // If the last column was just written (deferred wrap pending) the
+            // cursor is logically past it, so leave that cell untouched.
+            g.clearRow(mState->cursorY, mState->cursorX + (savedWrapPending ? 1 : 0), mWidth);
             break;
         case Action::ClearToBeginningOfLine:
             g.clearRow(mState->cursorY, 0, mState->cursorX + 1);

@@ -218,6 +218,60 @@ TEST_CASE("DECAWM reset via RIS")
     CHECK(t.rowText(1) == "FGH");
 }
 
+// ── last-column write + erase-to-end (deferred wrap) ────────────────────────
+// Regression: a glyph written to the last column must survive a following
+// erase-to-end-of-line/screen, because the cursor is logically past it. This
+// is the terminal-kit / hydra pattern (DECAWM off, fill row, then \e[0K).
+
+TEST_CASE("DECAWM off: erase-to-EOL after last-column write keeps that cell")
+{
+    TestTerminal t(5, 3);
+    t.csi("?7l");    // DECAWM off (hydra's mode)
+    t.feed("ABCDE"); // 'E' lands on the last column, cursor clamped there
+    t.csi("0K");     // erase-to-end-of-line
+    CHECK(t.rowText(0) == "ABCDE");
+}
+
+TEST_CASE("DECAWM off: SGR between last-column write and erase-to-EOL keeps the cell")
+{
+    // Hydra's exact stream: ...E \e[0m \e[0K — the SGR must not clear the
+    // deferred-wrap flag, or the last column gets erased.
+    TestTerminal t(5, 3);
+    t.csi("?7l");
+    t.feed("ABCDE");
+    t.csi("0m"); // SGR reset
+    t.csi("0K");
+    CHECK(t.rowText(0) == "ABCDE");
+}
+
+TEST_CASE("DECAWM off: erase-to-end-of-screen after last-column write keeps that cell")
+{
+    TestTerminal t(5, 3);
+    t.csi("?7l");
+    t.feed("ABCDE");
+    t.csi("0J"); // erase to end of screen
+    CHECK(t.rowText(0) == "ABCDE");
+}
+
+TEST_CASE("deferred wrap: erase-to-EOL after last-column write keeps that cell (autowrap on)")
+{
+    TestTerminal t(5, 3);
+    t.feed("ABCDE"); // wrap pending at last column
+    t.csi("0K");
+    CHECK(t.rowText(0) == "ABCDE");
+}
+
+TEST_CASE("erase-to-EOL at last column WITHOUT pending wrap still erases the cell")
+{
+    // Negative control: arriving at the last column via cursor movement (not a
+    // write) leaves no deferred wrap, so erase-to-end must clear that cell.
+    TestTerminal t(5, 3);
+    t.feed("ABCDE"); // wrap pending
+    t.csi("5G");     // CHA to last column — clears the pending wrap
+    t.csi("0K");
+    CHECK(t.rowText(0) == "ABCD");
+}
+
 // ── IRM (insert mode) ───────────────────────────────────────────────────────
 
 TEST_CASE("insert mode: shifts existing text right")

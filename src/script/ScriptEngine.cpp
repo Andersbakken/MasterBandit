@@ -69,24 +69,24 @@ static std::string resolveAndValidate(const std::string &path, const std::string
     // Resolve the allowed directory to a canonical path
     auto canonicalAllowed = fs::canonical(allowedDir, ec);
     if (ec) {
-        return {};
+        return { };
     }
 
     // Check if the target exists (without following the final symlink yet)
     if (!fs::exists(path, ec) || ec) {
-        return {};
+        return { };
     }
 
     // Resolve to canonical path (resolves all symlinks)
     auto canonicalPath = fs::canonical(path, ec);
     if (ec) {
-        return {};
+        return { };
     }
 
     // Verify the resolved path is under the allowed directory
     auto rel = canonicalPath.lexically_relative(canonicalAllowed);
     if (rel.empty() || rel.string().starts_with("..")) {
-        return {};
+        return { };
     }
 
     return canonicalPath.string();
@@ -1679,11 +1679,11 @@ static JSValue jsPaneCreatePopup(JSContext *ctx, JSValueConst this_val,
 
     Uuid paneId = pane->id;
     bool ok     = eng->callbacks().createPopup(paneId, popupId, x, y, w, h, [eng, paneId, popupId](const char *data, size_t len)
-                                           {
+                                               {
                                                // Deliver input to popup listeners
                                                std::string regKey = paneId.toString() + ":" + popupId;
                                                eng->deliverPopupInput(regKey, data, len);
-                                           });
+                                               });
 
     if (!ok) {
         return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
@@ -2262,7 +2262,7 @@ static bool parseDecorationSpec(JSContext *ctx, JSValueConst specVal,
         JS_ThrowTypeError(ctx, "%s requires (spec)", who);
         return false;
     }
-    d      = Decoration {};
+    d      = Decoration { };
     d.kind = DecorationKind::User;
 
     auto readInt64 = [&](const char *name, int64_t &out) -> bool
@@ -3021,11 +3021,11 @@ static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
     // Arm the completion timer. On fire: settle as "completed".
     EventLoop *loop                = eng->loop();
     EventLoop::TimerId tid         = loop->addTimer(static_cast<uint64_t>(durationMs), false, [eng, handleId]()
-                                            {
+                                                    {
                                                 eng->settleDecorationAnimation(handleId, "completed",
                                                                                /*snapToEnd=*/true,
                                                                                TerminalEmulator::mono());
-                                            });
+                                                    });
     inserted.first->second.timerId = tid;
 
     // If startAnimation replaced a prior animation on the same target/prop
@@ -3348,7 +3348,7 @@ static JSValue jsPaneGetEmbeddeds(JSContext *ctx, JSValueConst this_val)
 static Action::ArgValue jsValueToArg(JSContext *ctx, JSValueConst val)
 {
     if (JS_IsNull(val) || JS_IsUndefined(val)) {
-        return Action::ArgValue {};
+        return Action::ArgValue { };
     }
     if (JS_IsBool(val)) {
         return Action::ArgValue { JS_ToBool(ctx, val) != 0 };
@@ -3365,7 +3365,7 @@ static Action::ArgValue jsValueToArg(JSContext *ctx, JSValueConst val)
         size_t len;
         const char *s = JS_ToCStringLen(ctx, &len, val);
         if (!s) {
-            return Action::ArgValue {};
+            return Action::ArgValue { };
         }
         Action::ArgValue out { std::string(s, len) };
         JS_FreeCString(ctx, s);
@@ -3375,7 +3375,7 @@ static Action::ArgValue jsValueToArg(JSContext *ctx, JSValueConst val)
     JSValue stringified = JS_JSONStringify(ctx, val, JS_UNDEFINED, JS_UNDEFINED);
     if (JS_IsString(stringified)) {
         const char *s = JS_ToCString(ctx, stringified);
-        Action::ArgValue out { s ? std::string(s) : std::string {} };
+        Action::ArgValue out { s ? std::string(s) : std::string { } };
         if (s) {
             JS_FreeCString(ctx, s);
         }
@@ -3383,7 +3383,7 @@ static Action::ArgValue jsValueToArg(JSContext *ctx, JSValueConst val)
         return out;
     }
     JS_FreeValue(ctx, stringified);
-    return Action::ArgValue {};
+    return Action::ArgValue { };
 }
 
 // mb.invokeAction(name, args) — args is either:
@@ -4814,15 +4814,8 @@ Engine::~Engine()
     wsDestroyEngine(this);
     // Unload each instance so its owned JSValues (timer callbacks, action
     // handlers, etc.) are freed before JS_FreeRuntime's GC-empty assert.
-    // Collect ids first; unload() mutates instances_.
-    std::vector<InstanceId> ids;
-    ids.reserve(instances_.size());
-    for (const auto &inst : instances_) {
-        ids.push_back(inst.id);
-    }
-    for (InstanceId id : ids) {
-        unload(id);
-    }
+    // No-op if the platform already drove this during shutdown.
+    unloadAllInstances();
     // Any remaining entries (dead contexts flagged during iteration) are
     // already freed; just drop the vector slots. Timer callbacks not
     // attached to an instance, plus global action-handler/timer state, get
@@ -5769,6 +5762,19 @@ bool Engine::reevalInstance(InstanceId id, const std::string &path)
     return true;
 }
 
+void Engine::unloadAllInstances()
+{
+    // Collect ids first; unload() mutates instances_.
+    std::vector<InstanceId> ids;
+    ids.reserve(instances_.size());
+    for (const auto &inst : instances_) {
+        ids.push_back(inst.id);
+    }
+    for (InstanceId id : ids) {
+        unload(id);
+    }
+}
+
 void Engine::unload(InstanceId id)
 {
     for (auto it = instances_.begin(); it != instances_.end(); ++it) {
@@ -5976,14 +5982,14 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
         if (id == 0) {
             return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
-        return { LoadResult::Status::Loaded, id, {} };
+        return { LoadResult::Status::Loaded, id, { } };
     }
 
     std::string hash = crypto::sha256Hex(content);
 
     if (allowlist_.isDenied(path, hash)) {
         sLog().info("ScriptEngine: script '{}' is permanently denied", path);
-        return { LoadResult::Status::Denied, 0, {} };
+        return { LoadResult::Status::Denied, 0, { } };
     }
 
     const auto *entry = allowlist_.check(path, hash);
@@ -5995,7 +6001,7 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
                 if (id == 0) {
                     return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
                 }
-                return { LoadResult::Status::Loaded, id, {} };
+                return { LoadResult::Status::Loaded, id, { } };
             }
             sLog().info("ScriptEngine: module files changed for '{}', re-prompting", path);
         }
@@ -6004,11 +6010,11 @@ Engine::LoadResult Engine::loadScript(const std::string &path,
 
     // Store pending script and notify JS to show permission prompt
     std::string pendingKey      = path; // keyed by path
-    pendingScripts_[pendingKey] = { path, content, hash, requestedPerms, "", Uuid {} };
+    pendingScripts_[pendingKey] = { path, content, hash, requestedPerms, "", Uuid { } };
 
     // Fire scriptPermissionRequired event on mb
     notifyPermissionRequired(path, permissionsToString(requestedPerms), hash);
-    return { LoadResult::Status::Pending, 0, {} };
+    return { LoadResult::Status::Pending, 0, { } };
 }
 
 InstanceId Engine::loadScriptInternal(const std::string &path, const std::string &content,
@@ -6128,7 +6134,7 @@ Engine::LoadResult Engine::approveScript(const std::string &path, char response)
         if (id == 0) {
             return { LoadResult::Status::Error, 0, err.empty() ? std::string("script evaluation failed") : std::move(err) };
         }
-        return { LoadResult::Status::Loaded, id, {} };
+        return { LoadResult::Status::Loaded, id, { } };
     };
 
     switch (response) {
@@ -6147,12 +6153,12 @@ Engine::LoadResult Engine::approveScript(const std::string &path, char response)
             allowlist_.deny(pending.path, pending.hash);
             allowlist_.save();
             sLog().info("ScriptEngine: permanently denied '{}'", pending.path);
-            return { LoadResult::Status::Denied, 0, {} };
+            return { LoadResult::Status::Denied, 0, { } };
         case 'n':
         case 'N':
         default:
             sLog().info("ScriptEngine: denied '{}' (one-time)", pending.path);
-            return { LoadResult::Status::Denied, 0, {} };
+            return { LoadResult::Status::Denied, 0, { } };
     }
 }
 

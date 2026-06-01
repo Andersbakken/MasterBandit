@@ -830,6 +830,19 @@ PlatformDawn::~PlatformDawn()
         window_->onVisibility        = nullptr;
     }
 
+    // Unload all script instances now, while the render thread, render
+    // engine and graveyard are still alive. ~Engine would otherwise drive
+    // this implicitly when scriptEngine_ (a value member) is destroyed
+    // after this body returns — by which point renderThread_/renderEngine_
+    // have been reset and graveyard_ drained, and the per-instance
+    // teardown callbacks (destroyPopup/destroyEmbedded) would dereference
+    // freed state. This bites when a script-owned popup is still open at
+    // quit (e.g. the "confirm quit with running processes" dialog).
+    // The render thread is stopped, so accessing its state here is
+    // single-threaded; extracted terminals land in the graveyard and are
+    // cleaned up by drainAll() below.
+    scriptEngine_.unloadAllInstances();
+
     // Render thread is joined; anything still deferred can now run its
     // destructors on the main thread with no concurrent access — but
     // first wait for any parse worker still inside injectData on a

@@ -334,13 +334,27 @@ void TerminalEmulator::resize(int width, int height)
         }
     }
 
-    mState->scrollTop        = 0;
-    mState->scrollBottom     = height;
-    mViewportOffset          = std::clamp(mViewportOffset, 0, mDocument.historySize());
-    mState->wrapPending      = false;
-    mState->savedCursorX     = std::min(mState->savedCursorX, width - 1);
-    mState->savedCursorY     = std::min(mState->savedCursorY, height - 1);
-    mState->savedWrapPending = false;
+    // Geometry-dependent per-screen state must be refreshed on BOTH the
+    // active and the inactive screen. A resize taken while one screen is
+    // up otherwise leaves the other screen's scroll region (and saved
+    // cursor) pinned to the pre-resize height; the next 1049 swap then
+    // drives scrolling/erase as if the window were still the old size.
+    // Resetting margins to the full screen on resize matches xterm.
+    for (TerminalState *s : { &mMainState, &mAltState }) {
+        s->scrollTop        = 0;
+        s->scrollBottom     = height;
+        s->wrapPending      = false;
+        s->savedCursorX     = std::min(s->savedCursorX, width - 1);
+        s->savedCursorY     = std::min(s->savedCursorY, height - 1);
+        s->savedWrapPending = false;
+        // The active screen's live cursor was already reflowed/clamped
+        // above; clamp only the inactive screen's cursor here.
+        if (s != mState) {
+            s->cursorX = std::min(s->cursorX, width - 1);
+            s->cursorY = std::min(s->cursorY, height - 1);
+        }
+    }
+    mViewportOffset = std::clamp(mViewportOffset, 0, mDocument.historySize());
     // Selection anchors are line-id based, so they survive both height and
     // width reflow — Document::firstAbsOfLine/lastAbsOfLine resolve back to
     // the post-reflow rows. No clearSelection() needed here.

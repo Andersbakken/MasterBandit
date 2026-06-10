@@ -645,6 +645,42 @@ void TerminalEmulator::clearSelection()
     }
 }
 
+void TerminalEmulator::clearSelectionIfIntersectsAltRowsSlow(int firstAltY, int lastAltY)
+{
+    // Precondition (checked by the inline caller): mUsingAltScreen == true
+    // and a selection is active/valid. We still re-check under the lock in
+    // case the parser thread races with a selection-clear from input.
+    std::lock_guard<std::recursive_mutex> _lk(mMutex);
+    if (!mUsingAltScreen) {
+        return;
+    }
+    if (!mSelection.active && !mSelection.valid) {
+        return;
+    }
+    auto resOpt = resolveSelection();
+    if (!resOpt) {
+        return;
+    }
+    int selFirst = std::min(resOpt->startAbsRow, resOpt->endAbsRow);
+    int selLast  = std::max(resOpt->startAbsRow, resOpt->endAbsRow);
+
+    int histSize = mDocument.historySize();
+    int firstAbs = histSize + firstAltY;
+    int lastAbs  = histSize + lastAltY;
+    if (firstAbs > lastAbs) {
+        std::swap(firstAbs, lastAbs);
+    }
+    if (lastAbs < selFirst || firstAbs > selLast) {
+        return;
+    }
+    bool had          = mSelection.active || mSelection.valid;
+    mSelection.active = false;
+    mSelection.valid  = false;
+    if (had) {
+        publishAndFireEvent(static_cast<int>(Update));
+    }
+}
+
 std::optional<TerminalEmulator::ResolvedSelection>
 TerminalEmulator::resolveSelection() const
 {

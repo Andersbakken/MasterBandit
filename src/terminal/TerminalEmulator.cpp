@@ -128,8 +128,8 @@ TerminalEmulator::TerminalEmulator(TerminalCallbacks callbacks)
 {
     memset(mEscapeBuffer, 0, sizeof(mEscapeBuffer));
     memset(mUtf8Buffer, 0, sizeof(mUtf8Buffer));
-    applyColorScheme(ColorScheme { }); // initialize from config defaults
-    pushEraseBlank();                  // BCE: seed grids with default-bg blank
+    applyColorScheme(ColorScheme {}); // initialize from config defaults
+    pushEraseBlank();                 // BCE: seed grids with default-bg blank
 }
 
 TerminalEmulator::~TerminalEmulator()
@@ -310,6 +310,8 @@ void TerminalEmulator::resize(int width, int height)
         // Alt screen: no scrollback / reflow. Document::resize is still
         // called for the main grid's bookkeeping, but cursor lives on the
         // alt grid. Just clamp to the new bounds.
+        // Kitty parity: wipe any alt-screen selection on resize.
+        clearSelection();
         int oldHistSize = mDocument.historySize();
         Document::CursorTrack ct;
         ct.srcX = mState->cursorX;
@@ -395,6 +397,7 @@ void TerminalEmulator::scrollUpInRegion(int n)
     if (!mUsingAltScreen && mViewportOffset > 0 && mState->scrollTop == 0) {
         mViewportOffset += n;
     }
+    clearSelectionIfIntersectsAltRows(mState->scrollTop, mState->scrollBottom - 1);
     g.scrollUp(mState->scrollTop, mState->scrollBottom, n);
     if (!mUsingAltScreen && mViewportOffset > 0) {
         mViewportOffset = std::min(mViewportOffset, mDocument.historySize());
@@ -1409,7 +1412,7 @@ void TerminalEmulator::scanLogicalLineForUrls(uint64_t lineId)
         std::string uri  = text.substr(m.byteStart, m.byteEnd - m.byteStart);
 
         uint32_t hid            = mNextHyperlinkId++;
-        mHyperlinkRegistry[hid] = { std::move(uri), { } };
+        mHyperlinkRegistry[hid] = { std::move(uri), {} };
 
         int prevDirtyRow = -1;
         for (int off = startCellOff; off < endCellOff; ++off) {
@@ -1581,6 +1584,7 @@ void TerminalEmulator::writePrintable(char32_t cp)
         }
         if (mState->cursorX >= 0 && mState->cursorX < mWidth &&
             mState->cursorY >= 0 && mState->cursorY < mHeight) {
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             if (mState->insertMode) {
                 g.insertChars(mState->cursorY, mState->cursorX, 1);
             }
@@ -1617,6 +1621,7 @@ void TerminalEmulator::writePrintable(char32_t cp)
         !grapheme_is_character_break(mLastPrintedChar, cp, &mGraphemeState)) {
         // Continuation of an existing grapheme cluster — append to the
         // base cell's combining-codepoints list.
+        clearSelectionIfIntersectsAltRow(mLastPrintedY);
         CellExtra &ex = g.ensureExtra(mLastPrintedX, mLastPrintedY);
         ex.combiningCps.push_back(cp);
 
@@ -1656,6 +1661,7 @@ void TerminalEmulator::writePrintable(char32_t cp)
         }
         if (mState->cursorX + 1 >= mWidth) {
             if (mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                clearSelectionIfIntersectsAltRow(mState->cursorY);
                 g.cell(mState->cursorX, mState->cursorY) = Cell { ' ', mState->currentAttrs };
                 g.markRowDirty(mState->cursorY);
             }
@@ -1663,6 +1669,7 @@ void TerminalEmulator::writePrintable(char32_t cp)
         }
         if (mState->cursorX >= 0 && mState->cursorX + 1 < mWidth &&
             mState->cursorY >= 0 && mState->cursorY < mHeight) {
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             if (mState->insertMode) {
                 g.insertChars(mState->cursorY, mState->cursorX, 2);
             }
@@ -1702,6 +1709,7 @@ void TerminalEmulator::writePrintable(char32_t cp)
         }
         if (mState->cursorX >= 0 && mState->cursorX < mWidth &&
             mState->cursorY >= 0 && mState->cursorY < mHeight) {
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             if (mState->insertMode) {
                 g.insertChars(mState->cursorY, mState->cursorX, 1);
             }
@@ -1881,6 +1889,7 @@ void TerminalEmulator::applyEsc(char finalByte)
         case RI:
             mState->wrapPending = false;
             if (mState->cursorY == mState->scrollTop) {
+                clearSelectionIfIntersectsAltRows(mState->scrollTop, mState->scrollBottom - 1);
                 g.scrollDown(mState->scrollTop, mState->scrollBottom, 1);
             } else if (mState->cursorY > 0) {
                 mState->cursorY--;
@@ -2135,12 +2144,14 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                     if (w == 2) {
                         if (mState->cursorX + 1 >= mWidth) {
                             if (mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                                clearSelectionIfIntersectsAltRow(mState->cursorY);
                                 g.cell(mState->cursorX, mState->cursorY) = Cell { ' ', mState->currentAttrs };
                                 g.markRowDirty(mState->cursorY);
                             }
                             advanceCursorToNewLine();
                         }
                         if (mState->cursorX >= 0 && mState->cursorX + 1 < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                            clearSelectionIfIntersectsAltRow(mState->cursorY);
                             CellAttrs wideAttrs = mState->currentAttrs;
                             wideAttrs.setWide(true);
                             g.cell(mState->cursorX, mState->cursorY) = Cell { mLastPrintedChar, wideAttrs };
@@ -2155,6 +2166,7 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                         mState->cursorX += 2;
                     } else {
                         if (mState->cursorX >= 0 && mState->cursorX < mWidth && mState->cursorY >= 0 && mState->cursorY < mHeight) {
+                            clearSelectionIfIntersectsAltRow(mState->cursorY);
                             g.cell(mState->cursorX, mState->cursorY) = Cell { mLastPrintedChar, mState->currentAttrs };
                             g.clearExtra(mState->cursorX, mState->cursorY);
                             g.markRowDirty(mState->cursorY);
@@ -2795,6 +2807,7 @@ void TerminalEmulator::onAction(const Action *action)
             break;
         }
         case Action::ClearScreen:
+            clearSelectionIfIntersectsAltRows(0, g.rows() - 1);
             for (int r = 0; r < g.rows(); ++r) {
                 g.clearRow(r);
             }
@@ -2804,6 +2817,7 @@ void TerminalEmulator::onAction(const Action *action)
         case Action::ClearToEndOfScreen:
             // Clear from cursor to end of line, then all lines below. Honour a
             // pending deferred wrap so a just-written last column survives.
+            clearSelectionIfIntersectsAltRows(mState->cursorY, g.rows() - 1);
             g.clearRow(mState->cursorY, mState->cursorX + (savedWrapPending ? 1 : 0), mWidth);
             for (int r = mState->cursorY + 1; r < g.rows(); ++r) {
                 g.clearRow(r);
@@ -2811,6 +2825,7 @@ void TerminalEmulator::onAction(const Action *action)
             break;
         case Action::ClearToBeginningOfScreen:
             // Clear from start to cursor, plus all lines above
+            clearSelectionIfIntersectsAltRows(0, mState->cursorY);
             for (int r = 0; r < mState->cursorY; ++r) {
                 g.clearRow(r);
             }
@@ -2825,36 +2840,44 @@ void TerminalEmulator::onAction(const Action *action)
             }
             break;
         case Action::ClearLine:
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             g.clearRow(mState->cursorY);
             break;
         case Action::ClearToEndOfLine:
             // If the last column was just written (deferred wrap pending) the
             // cursor is logically past it, so leave that cell untouched.
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             g.clearRow(mState->cursorY, mState->cursorX + (savedWrapPending ? 1 : 0), mWidth);
             break;
         case Action::ClearToBeginningOfLine:
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             g.clearRow(mState->cursorY, 0, mState->cursorX + 1);
             break;
         case Action::DeleteChars:
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             g.deleteChars(mState->cursorY, mState->cursorX, action->count);
             break;
         case Action::InsertChars:
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             g.insertChars(mState->cursorY, mState->cursorX, action->count);
             break;
         case Action::InsertLines:
-            // IL: insert blank lines at cursor, pushing existing lines down within scroll region
+            // IL: insert blank lines at cursor, pushing existing lines down within scroll region.
+            // Kitty clears unconditionally on IL/DL; mirror that on alt.
             if (mState->cursorY >= mState->scrollTop && mState->cursorY < mState->scrollBottom) {
+                clearSelectionIfIntersectsAltRows(mState->scrollTop, mState->scrollBottom - 1);
                 g.scrollDown(mState->cursorY, mState->scrollBottom, action->count);
             }
             break;
         case Action::DeleteLines:
-            // DL: delete lines at cursor, pulling lines up within scroll region
             if (mState->cursorY >= mState->scrollTop && mState->cursorY < mState->scrollBottom) {
+                clearSelectionIfIntersectsAltRows(mState->scrollTop, mState->scrollBottom - 1);
                 g.scrollUp(mState->cursorY, mState->scrollBottom, action->count);
             }
             break;
         case Action::EraseChars:
             // ECH: erase N chars at cursor without moving it
+            clearSelectionIfIntersectsAltRow(mState->cursorY);
             g.clearRow(mState->cursorY, mState->cursorX, std::min(mState->cursorX + action->count, mWidth));
             break;
         case Action::VerticalPositionAbsolute: {
@@ -2876,9 +2899,11 @@ void TerminalEmulator::onAction(const Action *action)
             break;
         }
         case Action::ScrollUp:
+            clearSelectionIfIntersectsAltRows(mState->scrollTop, mState->scrollBottom - 1);
             g.scrollUp(mState->scrollTop, mState->scrollBottom, action->count);
             break;
         case Action::ScrollDown:
+            clearSelectionIfIntersectsAltRows(mState->scrollTop, mState->scrollBottom - 1);
             g.scrollDown(mState->scrollTop, mState->scrollBottom, action->count);
             break;
         case Action::SaveCursorPosition:
@@ -2918,6 +2943,7 @@ void TerminalEmulator::onAction(const Action *action)
                     mState->scrollBottom = mHeight;
                     {
                         IGrid &g = grid();
+                        clearSelectionIfIntersectsAltRows(0, g.rows() - 1);
                         for (int r = 0; r < g.rows(); ++r) {
                             g.clearRow(r);
                         }
@@ -3017,6 +3043,7 @@ void TerminalEmulator::onAction(const Action *action)
                     mState->scrollBottom = mHeight;
                     {
                         IGrid &g = grid();
+                        clearSelectionIfIntersectsAltRows(0, g.rows() - 1);
                         for (int r = 0; r < g.rows(); ++r) {
                             g.clearRow(r);
                         }

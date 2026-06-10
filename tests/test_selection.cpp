@@ -493,3 +493,118 @@ TEST_CASE("first visual row of a wrapped line in scrollback is selectable")
     CHECK(t.term.hasSelection());
     CHECK(t.term.selectedText() == "AAAA");
 }
+
+// Helper: enter alt screen, paint some text, and start a selection on a
+// given alt-screen row. Returns the absRow used.
+static int paintAltAndSelect(TestTerminal &t, int altRow, int colStart, int colEnd)
+{
+    t.feed("\x1b[?1049h");
+    // Position cursor at row 1 (1-based) col 1, paint a known string.
+    t.feed("\x1b[1;1H");
+    t.feed("hello world");
+    t.feed("\x1b[2;1H");
+    t.feed("second row");
+    t.feed("\x1b[3;1H");
+    t.feed("third row");
+
+    int absRow = t.term.document().historySize() + altRow;
+    // Start + extend selection to cover [colStart..colEnd] on `altRow`.
+    auto press = makeMouseEvent(colStart, altRow);
+    t.term.startSelection(colStart, absRow);
+    auto move   = makeMouseEvent(colEnd, altRow, LeftButton, /*xRightHalf=*/true);
+    int absMove = t.term.document().historySize() + altRow;
+    t.term.updateSelection(colEnd, absMove, /*xRightHalf=*/true);
+    t.term.finalizeSelection();
+    return absRow;
+}
+
+TEST_CASE("alt screen: writing to a selected row clears the selection (kitty parity)")
+{
+    TestTerminal t(40, 5);
+    paintAltAndSelect(t, /*altRow=*/0, /*colStart=*/0, /*colEnd=*/4);
+    REQUIRE(t.term.hasSelection());
+    REQUIRE(t.term.selectedText() == "hello");
+
+    // Write into row 0 — must clear the selection.
+    t.feed("\x1b[1;1H");
+    t.feed("X");
+    CHECK_FALSE(t.term.hasSelection());
+}
+
+TEST_CASE("alt screen: writing to a different row leaves the selection intact")
+{
+    TestTerminal t(40, 5);
+    paintAltAndSelect(t, /*altRow=*/0, /*colStart=*/0, /*colEnd=*/4);
+    REQUIRE(t.term.hasSelection());
+
+    // Write into row 2 (well outside the row-0 selection) — selection survives.
+    t.feed("\x1b[3;1H");
+    t.feed("Y");
+    CHECK(t.term.hasSelection());
+    CHECK(t.term.selectedText() == "hello");
+}
+
+TEST_CASE("alt screen: EL on the selected row clears the selection")
+{
+    TestTerminal t(40, 5);
+    paintAltAndSelect(t, /*altRow=*/1, /*colStart=*/0, /*colEnd=*/5);
+    REQUIRE(t.term.hasSelection());
+
+    // Move cursor to row 2 (1-based) and EL 2 — wipes the entire row.
+    t.feed("\x1b[2;1H\x1b[2K");
+    CHECK_FALSE(t.term.hasSelection());
+}
+
+TEST_CASE("alt screen: EL on a different row leaves the selection intact")
+{
+    TestTerminal t(40, 5);
+    paintAltAndSelect(t, /*altRow=*/1, /*colStart=*/0, /*colEnd=*/5);
+    REQUIRE(t.term.hasSelection());
+
+    // EL on row 3 — selection on row 1 survives.
+    t.feed("\x1b[3;1H\x1b[2K");
+    CHECK(t.term.hasSelection());
+}
+
+TEST_CASE("alt screen: ED 2 (clear screen) wipes the selection")
+{
+    TestTerminal t(40, 5);
+    paintAltAndSelect(t, /*altRow=*/1, /*colStart=*/0, /*colEnd=*/5);
+    REQUIRE(t.term.hasSelection());
+
+    t.feed("\x1b[2J");
+    CHECK_FALSE(t.term.hasSelection());
+}
+
+TEST_CASE("alt screen: scroll within the scroll region clears an intersecting selection")
+{
+    TestTerminal t(40, 5);
+    paintAltAndSelect(t, /*altRow=*/1, /*colStart=*/0, /*colEnd=*/5);
+    REQUIRE(t.term.hasSelection());
+
+    // Force a scroll by writing past the bottom row.
+    t.feed("\x1b[5;1H\n");
+    CHECK_FALSE(t.term.hasSelection());
+}
+
+TEST_CASE("main screen: writing to selected row leaves the selection intact")
+{
+    // Main-screen behavior is unchanged — line-id anchoring keeps the
+    // selection bound to the original logical line even when the visible
+    // grid row is overwritten.
+    TestTerminal t(40, 5);
+    t.feed("hello\r\nworld\r\nthird\r\n");
+    int absRow = 0; // first scrollback row holds "hello"
+
+    t.term.startSelection(0, absRow);
+    t.term.updateSelection(4, absRow, /*xRightHalf=*/true);
+    t.term.finalizeSelection();
+    REQUIRE(t.term.hasSelection());
+    REQUIRE(t.term.selectedText() == "hello");
+
+    // Overwrite the current cursor row (which is row 3 of the visible
+    // grid, with "hello" already in scrollback). Selection is on the
+    // scrollback line; this write does not affect it.
+    t.feed("XYZ");
+    CHECK(t.term.hasSelection());
+}

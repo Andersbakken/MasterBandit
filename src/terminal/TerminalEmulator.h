@@ -1198,6 +1198,31 @@ private:
     void updateWordSelection(int col, int absRow);
     void updateLineSelection(int absRow);
 
+    // Alt-screen-only: clear the selection if it intersects any of the
+    // alt-grid rows in [firstAltY, lastAltY] (inclusive, screen-row
+    // coords). Mirrors kitty's selection-clear-on-write behavior on
+    // the alt screen — TUI redraws under the selection drop it
+    // immediately. Inline early-exits make the common case (no
+    // selection on alt) one branch on `mUsingAltScreen`. The actual
+    // intersect+clear work lives in clearSelectionIfIntersectsAltRowsSlow.
+    void clearSelectionIfIntersectsAltRowsSlow(int firstAltY, int lastAltY);
+
+    inline void clearSelectionIfIntersectsAltRows(int firstAltY, int lastAltY)
+    {
+        if (!mUsingAltScreen) {
+            return;
+        }
+        if (!mSelection.active && !mSelection.valid) {
+            return;
+        }
+        clearSelectionIfIntersectsAltRowsSlow(firstAltY, lastAltY);
+    }
+
+    inline void clearSelectionIfIntersectsAltRow(int altY)
+    {
+        clearSelectionIfIntersectsAltRows(altY, altY);
+    }
+
     // Republish mTitleShadow / mIconShadow from the current top of
     // mTitleStack / mIconStack. Caller must hold mMutex (parser
     // path always does); these acquire mTitleIconMutex internally.

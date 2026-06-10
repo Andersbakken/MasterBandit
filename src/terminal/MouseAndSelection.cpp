@@ -352,35 +352,76 @@ void TerminalEmulator::startSelection(int col, int absRow, bool xRightHalf)
 }
 
 namespace {
-// Scan left/right within `absRow` for the word boundaries surrounding `col`.
-// Returns the inclusive cell range [left, right]. Mirrors the boundary logic
-// used inside `startWordSelection`.
+// Scan left/right for the word boundaries surrounding (col, absRow), crossing
+// soft-wrap row boundaries when they belong to the same logical line. The
+// returned range is inclusive and may span multiple absolute rows.
 struct WordCells
 {
-    int left;
-    int right;
+    int leftRow;
+    int leftCol;
+    int rightRow;
+    int rightCol;
 };
 
 WordCells wordCellsAt(const TerminalEmulator &te, int col, int absRow, int width)
 {
-    int left = col, right = col;
+    const Document &doc = te.document();
+    uint64_t id         = doc.lineIdForAbs(absRow);
+    int firstAbs        = doc.firstAbsOfLine(id);
+    int lastAbs         = doc.lastAbsOfLine(id);
+    if (firstAbs < 0) {
+        firstAbs = absRow;
+    }
+    if (lastAbs < 0) {
+        lastAbs = absRow;
+    }
+
+    int leftRow = absRow, leftCol = col;
+    int rightRow = absRow, rightCol = col;
     char32_t ch = cellAt(te, col, absRow);
     bool isWord = isWordChar(ch);
-    while (left > 0) {
-        char32_t c = cellAt(te, left - 1, absRow);
+
+    // Walk left, crossing into the previous wrap row when we hit col 0 and
+    // the previous row is part of the same logical line.
+    while (true) {
+        int prevRow = leftRow;
+        int prevCol = leftCol - 1;
+        if (prevCol < 0) {
+            if (leftRow <= firstAbs) {
+                break;
+            }
+            prevRow = leftRow - 1;
+            prevCol = width - 1;
+        }
+        char32_t c = cellAt(te, prevCol, prevRow);
         if (isWordChar(c) != isWord) {
             break;
         }
-        left--;
+        leftRow = prevRow;
+        leftCol = prevCol;
     }
-    while (right < width - 1) {
-        char32_t c = cellAt(te, right + 1, absRow);
+
+    // Walk right, crossing into the next wrap row when we hit width-1 and
+    // the next row is part of the same logical line.
+    while (true) {
+        int nextRow = rightRow;
+        int nextCol = rightCol + 1;
+        if (nextCol >= width) {
+            if (rightRow >= lastAbs) {
+                break;
+            }
+            nextRow = rightRow + 1;
+            nextCol = 0;
+        }
+        char32_t c = cellAt(te, nextCol, nextRow);
         if (isWordChar(c) != isWord) {
             break;
         }
-        right++;
+        rightRow = nextRow;
+        rightCol = nextCol;
     }
-    return { left, right };
+
+    return { leftRow, leftCol, rightRow, rightCol };
 }
 } // namespace
 
@@ -390,8 +431,8 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
     WordCells w = wordCellsAt(*this, col, absRow, mWidth);
 
     uint64_t id  = mDocument.lineIdForAbs(absRow);
-    int leftOff  = boundaryOffsetWithinLine(mDocument, id, absRow, w.left, false, mWidth);
-    int rightOff = boundaryOffsetWithinLine(mDocument, id, absRow, w.right, true, mWidth);
+    int leftOff  = boundaryOffsetWithinLine(mDocument, id, w.leftRow, w.leftCol, false, mWidth);
+    int rightOff = boundaryOffsetWithinLine(mDocument, id, w.rightRow, w.rightCol, true, mWidth);
 
     mSelection.startLineId     = id;
     mSelection.startCellOffset = leftOff;
@@ -520,8 +561,8 @@ void TerminalEmulator::updateWordSelection(int col, int absRow)
 
     WordCells w     = wordCellsAt(*this, cw, absRow, mWidth);
     uint64_t curId  = mDocument.lineIdForAbs(absRow);
-    int curLeftOff  = boundaryOffsetWithinLine(mDocument, curId, absRow, w.left, false, mWidth);
-    int curRightOff = boundaryOffsetWithinLine(mDocument, curId, absRow, w.right, true, mWidth);
+    int curLeftOff  = boundaryOffsetWithinLine(mDocument, curId, w.leftRow, w.leftCol, false, mWidth);
+    int curRightOff = boundaryOffsetWithinLine(mDocument, curId, w.rightRow, w.rightCol, true, mWidth);
 
     int curFirstAbs    = mDocument.firstAbsOfLine(curId);
     int anchorFirstAbs = mDocument.firstAbsOfLine(mSelection.anchorStartLineId);

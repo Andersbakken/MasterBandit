@@ -409,6 +409,27 @@ TEST_CASE("double-click + drag left extends selection to cover earlier words")
     CHECK(t.term.selectedText() == "hello world foo");
 }
 
+TEST_CASE("double-click on a soft-wrapped word selects the whole word")
+{
+    // width=10. The word "abcdefghij" (10 chars) starts at col 4 of row 0,
+    // so it occupies cols 4..9 of row 0 and cols 0..3 of row 1 — the wrap
+    // splits a single logical word across two physical rows.
+    TestTerminal t(10, 5);
+    t.feed("foo abcdefghij klm");
+
+    // Click in the first half of the wrapped word (row 0, col 5 = 'b').
+    t.term.startWordSelection(/*col=*/5, /*absRow=*/0);
+    auto rel = makeMouseEvent(5, 0);
+    t.term.mouseReleaseEvent(&rel);
+    CHECK(t.term.selectedText() == "abcdefghij");
+
+    // And from the second half (row 1, col 1 = 'h').
+    t.term.startWordSelection(/*col=*/1, /*absRow=*/1);
+    auto rel2 = makeMouseEvent(1, 1);
+    t.term.mouseReleaseEvent(&rel2);
+    CHECK(t.term.selectedText() == "abcdefghij");
+}
+
 TEST_CASE("triple-click on a wrapped line selects the whole logical line")
 {
     TestTerminal t(10, 5);

@@ -294,6 +294,40 @@ TEST_CASE("autowrap row that exactly fills the line still joins on copy")
     CHECK(t.term.selectedText() == "HELLOWORLD");
 }
 
+TEST_CASE("trailing space on a soft-wrapped row survives copy")
+{
+    // A space in the last column of a wrapped row is real content of the
+    // logical line, not padding; trailing-space trimming must skip it.
+    TestTerminal t(10, 5);
+    t.feed("ABCDEFGHI JKL"); // row 0 = "ABCDEFGHI ", wraps; row 1 = "JKL"
+
+    auto press = makeMouseEvent(0, 0);
+    auto move  = makeMouseEvent(2, 1, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(2, 1, LeftButton, /*xRightHalf=*/true);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "ABCDEFGHI JKL");
+}
+
+TEST_CASE("trailing spaces on a non-wrapped row are still trimmed on copy")
+{
+    // Counterpart: selecting past the end of a short, hard-broken line must
+    // not pick up the blank padding cells.
+    TestTerminal t(10, 5);
+    t.feed("AB\r\nCD");
+
+    auto press = makeMouseEvent(0, 0);
+    auto move  = makeMouseEvent(9, 0, LeftButton, /*xRightHalf=*/true);
+    auto rel   = makeMouseEvent(9, 0, LeftButton, /*xRightHalf=*/true);
+    t.term.mousePressEvent(&press);
+    t.term.mouseMoveEvent(&move);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "AB");
+}
+
 // (Eviction-past-archive-cap drop is exercised by hasSelection() /
 // resolveSelection() returning empty, but a unit test for it requires
 // flooding past `maxArchiveRows` (100 000 by default), which is too slow.

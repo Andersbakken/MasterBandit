@@ -871,16 +871,19 @@ std::string TerminalEmulator::selectedText() const
     for (int absRow = r0; absRow <= r1; ++absRow) {
         const Cell *row;
         const std::unordered_map<int, CellExtra> *extras = nullptr;
+        bool rowContinued                                = false;
         if (absRow < histSize) {
-            row    = mDocument.historyRow(absRow);
-            extras = mDocument.historyExtras(absRow);
+            row          = mDocument.historyRow(absRow);
+            extras       = mDocument.historyExtras(absRow);
+            rowContinued = mDocument.isHistoryRowContinued(absRow);
         } else {
             int gridRow = absRow - histSize;
             if (gridRow < 0 || gridRow >= grid().rows()) {
                 continue;
             }
-            row    = grid().row(gridRow);
-            extras = mDocument.viewportExtras(gridRow, 0);
+            row          = grid().row(gridRow);
+            extras       = mDocument.viewportExtras(gridRow, 0);
+            rowContinued = mDocument.isRowContinued(gridRow);
         }
         if (!row) {
             continue;
@@ -920,12 +923,14 @@ std::string TerminalEmulator::selectedText() const
                 lastNonSpace = static_cast<int>(line.size()) - 1;
             }
         }
-        // Trim trailing spaces
-        if (lastNonSpace >= 0) {
-            // Find the byte position after the last non-space content
-            line.resize(lastNonSpace + 1);
-        } else {
-            line.clear();
+        // Trim trailing spaces — but not on soft-wrapped rows, where a
+        // trailing space is real content of the logical line.
+        if (!rowContinued) {
+            if (lastNonSpace >= 0) {
+                line.resize(lastNonSpace + 1);
+            } else {
+                line.clear();
+            }
         }
 
         if (absRow > r0) {

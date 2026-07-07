@@ -241,6 +241,24 @@ TEST_CASE("kitty graphics: delete all visible images")
     CHECK(t.term.imageRegistry().empty());
 }
 
+TEST_CASE("kitty graphics: delete all frees every image sharing a row")
+{
+    GraphicsTerminal t(40, 20);
+    auto px = GraphicsTerminal::solidRGBA(1, 1, 0, 0, 0);
+    // Two 1-cell images placed adjacently on the SAME row (no newline).
+    t.gfx("a=T,i=1,f=32,s=1,v=1,q=2", px);
+    t.gfx("a=T,i=2,f=32,s=1,v=1,q=2", px);
+    REQUIRE(t.term.imageRegistry().size() == 2);
+    REQUIRE(t.extra(0, 0) != nullptr);
+    REQUIRE(t.extra(1, 0) != nullptr);
+    REQUIRE(t.extra(0, 0)->imageId == 1);
+    REQUIRE(t.extra(1, 0)->imageId == 2); // both on row 0
+
+    // d=A must free both, not just the left-most on the row.
+    t.gfx("a=d,d=A");
+    CHECK(t.term.imageRegistry().empty());
+}
+
 TEST_CASE("kitty graphics: delete visible does not remove non-visible images")
 {
     GraphicsTerminal t(40, 20);

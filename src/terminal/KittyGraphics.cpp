@@ -599,7 +599,10 @@ void TerminalEmulator::processAPC(std::string_view body)
             switch (da) {
                 case 'a': // delete all visible placements
                 case 'A': {
-                    // Collect image IDs that are visible in the current grid
+                    // Collect every image ID visible in the current grid. Must
+                    // scan all cells, not stop at the first hit per row: a row
+                    // can hold more than one image, and the clear + free steps
+                    // below act on all of them.
                     std::unordered_set<uint32_t> visibleIds;
                     IGrid &dg = grid();
                     for (int r = 0; r < mHeight; r++) {
@@ -607,7 +610,6 @@ void TerminalEmulator::processAPC(std::string_view body)
                             const CellExtra *cex = dg.getExtra(c, r);
                             if (cex && cex->imageId > 0) {
                                 visibleIds.insert(cex->imageId);
-                                break;
                             }
                         }
                     }

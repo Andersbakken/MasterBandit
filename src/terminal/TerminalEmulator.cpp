@@ -2351,7 +2351,7 @@ void TerminalEmulator::processCSI(const char *buf, int len)
                 writeToOutput("\x1b[>64;2500;0c", 13);
             } else if (len == 2 || (len == 3 && buf[1] == '0')) {
                 // CSI c or CSI 0 c — Primary DA: VT420 with common features
-                writeToOutput("\x1b[?64;1;2;6;22c", 16);
+                writeToOutput("\x1b[?64;1;2;6;22c", 15);
             } else {
                 sLog().warn("Ignoring DA variant: {}", toPrintable(buf, len));
             }

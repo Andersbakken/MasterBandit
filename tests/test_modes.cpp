@@ -181,7 +181,7 @@ TEST_CASE("alt screen inherits mouse modes from main on entry")
 
     // After alt entry, simulate hover motion. With 1003 carried across,
     // the emulator should emit a legacy mouse-tracking sequence.
-    MouseEvent ev { };
+    MouseEvent ev {};
     ev.x         = 10;
     ev.y         = 5;
     ev.pixelX    = 80;
@@ -579,8 +579,11 @@ TEST_CASE("primary DA responds to CSI c")
     t.clearOutput();
     t.csi("c");
     CHECK_FALSE(t.term.capturedOutput.empty());
-    // Response starts with ESC [ ?
-    CHECK(t.term.capturedOutput.substr(0, 3) == "\x1b[?");
+    // Exact reply, with no stray trailing NUL (the byte length must match the
+    // 15-byte string, not include its terminator).
+    CHECK(t.term.capturedOutput == std::string("\x1b[?64;1;2;6;22c"));
+    CHECK(t.term.capturedOutput.size() == 15);
+    CHECK(t.term.capturedOutput.find('\0') == std::string::npos);
 }
 
 TEST_CASE("secondary DA responds to CSI > c")
@@ -1250,7 +1253,7 @@ TEST_CASE("selective wheel emits SGR press; click emits nothing")
     TestTerminal t;
     t.csi("=24;1w"); // wheel up + wheel down, press
 
-    MouseEvent ev { };
+    MouseEvent ev {};
     ev.x      = 4;
     ev.y      = 2;
     ev.pixelX = 40;
@@ -1280,7 +1283,7 @@ TEST_CASE("selective press+release for left button")
     TestTerminal t;
     t.csi("=1;3w"); // left button, press+release
 
-    MouseEvent press { };
+    MouseEvent press {};
     press.x       = 0;
     press.y       = 0;
     press.button  = LeftButton;
@@ -1289,7 +1292,7 @@ TEST_CASE("selective press+release for left button")
     t.term.mousePressEvent(&press);
     CHECK(t.output() == "\x1b[<0;1;1M");
 
-    MouseEvent release { };
+    MouseEvent release {};
     release.x      = 0;
     release.y      = 0;
     release.button = LeftButton;
@@ -1303,14 +1306,14 @@ TEST_CASE("selective release bit can be off independently")
     TestTerminal t;
     t.csi("=1;1w"); // left button, press only (no release)
 
-    MouseEvent press { };
+    MouseEvent press {};
     press.button  = LeftButton;
     press.buttons = LeftButton;
     t.clearOutput();
     t.term.mousePressEvent(&press);
     CHECK(t.output() == "\x1b[<0;1;1M"); // press fired
 
-    MouseEvent release { };
+    MouseEvent release {};
     release.button = LeftButton;
     t.clearOutput();
     t.term.mouseReleaseEvent(&release);
@@ -1327,7 +1330,7 @@ TEST_CASE("legacy ?1000 takes precedence over selective masks")
 
     // With legacy on, a left click should now report (legacy reports all
     // buttons regardless of selective mask).
-    MouseEvent ev { };
+    MouseEvent ev {};
     ev.x      = 0;
     ev.y      = 0;
     ev.button = LeftButton;
@@ -1404,7 +1407,7 @@ TEST_CASE("shift bypasses selective reporting (native selection)")
 {
     TestTerminal t;
     t.csi("=24;1w");
-    MouseEvent ev { };
+    MouseEvent ev {};
     ev.button    = WheelUp;
     ev.modifiers = ShiftModifier;
     t.clearOutput();
@@ -1440,7 +1443,7 @@ TEST_CASE("hydra wheel-only example")
     TestTerminal t;
     t.csi("=24;1w");
 
-    MouseEvent ev { };
+    MouseEvent ev {};
     ev.x      = 10;
     ev.y      = 5;
     ev.button = WheelUp;

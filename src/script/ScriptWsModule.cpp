@@ -217,8 +217,11 @@ static JSValue jsWsConnClose(JSContext *ctx, JSValueConst this_val, int, JSValue
     return JS_UNDEFINED;
 }
 
-static JSValue jsWsConnAddEventListener(JSContext *ctx, JSValueConst this_val,
-                                        int argc, JSValueConst *argv)
+// Shared by WsConnection and WsServer: append a listener to the
+// `__evt_<name>` array on this_val. Operates purely on this_val, so both
+// JS classes register it directly.
+static JSValue jsWsAddEventListener(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
 {
     if (argc < 2) {
         return JS_UNDEFINED;
@@ -249,7 +252,7 @@ static JSValue jsWsConnAddEventListener(JSContext *ctx, JSValueConst this_val,
 static const JSCFunctionListEntry jsWsConnFuncs[] = {
     JS_CFUNC_DEF("send", 1, jsWsConnSend),
     JS_CFUNC_DEF("close", 0, jsWsConnClose),
-    JS_CFUNC_DEF("addEventListener", 2, jsWsConnAddEventListener),
+    JS_CFUNC_DEF("addEventListener", 2, jsWsAddEventListener),
 };
 
 static JSValue jsWsConnNew(JSContext *ctx, WsConnection *c)
@@ -309,39 +312,10 @@ static JSValue jsWsServerGetPort(JSContext *ctx, JSValueConst this_val, int /*ma
     return JS_NewInt32(ctx, s->boundPort);
 }
 
-static JSValue jsWsServerAddEventListener(JSContext *ctx, JSValueConst this_val,
-                                          int argc, JSValueConst *argv)
-{
-    if (argc < 2) {
-        return JS_UNDEFINED;
-    }
-    const char *eventName = JS_ToCString(ctx, argv[0]);
-    if (!eventName) {
-        return JS_EXCEPTION;
-    }
-    if (!JS_IsFunction(ctx, argv[1])) {
-        JS_FreeCString(ctx, eventName);
-        return JS_UNDEFINED;
-    }
-    std::string prop = std::string("__evt_") + eventName;
-    JS_FreeCString(ctx, eventName);
-
-    JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
-    if (JS_IsUndefined(arr)) {
-        arr = JS_NewArray(ctx);
-        JS_SetPropertyStr(ctx, this_val, prop.c_str(), JS_DupValue(ctx, arr));
-    }
-    JSValue pushFn = JS_GetPropertyStr(ctx, arr, "push");
-    JS_Call(ctx, pushFn, arr, 1, &argv[1]);
-    JS_FreeValue(ctx, pushFn);
-    JS_FreeValue(ctx, arr);
-    return JS_UNDEFINED;
-}
-
 static const JSCFunctionListEntry jsWsServerFuncs[] = {
     JS_CGETSET_MAGIC_DEF("port", jsWsServerGetPort, nullptr, 0),
     JS_CFUNC_DEF("close", 0, jsWsServerClose),
-    JS_CFUNC_DEF("addEventListener", 2, jsWsServerAddEventListener),
+    JS_CFUNC_DEF("addEventListener", 2, jsWsAddEventListener),
 };
 
 // ============================================================================

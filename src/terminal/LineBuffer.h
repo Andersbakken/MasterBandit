@@ -82,10 +82,6 @@ public:
     // shifting meta_ entries).
     int firstValidLine() const { return firstValidLine_; }
 
-    // Whether more cells can fit. ~90% threshold so partial-line overflows
-    // can usually still extend at least somewhat before sealing.
-    bool atCapacity() const { return cellsUsed() >= (kCellCapacity * 9) / 10; }
-
     // Cells in use by visible (not-yet-dropped) lines. For backstop accounting.
     int cellsUsed() const { return static_cast<int>(cells_.size()) - bufferStartOffset_; }
 
@@ -385,5 +381,4 @@ private:
     void afterBackBlockMutation(int preBlockCount, bool evicted);
 
     void enforceLimits();
-    void recomputeTotals();
 };

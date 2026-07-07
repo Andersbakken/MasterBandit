@@ -35,7 +35,6 @@ public:
 
     // Advance the generation counter. Call once per frame before resolving glyphs.
     void advanceGeneration();
-    uint32_t generation() const;
 
     // Look up or allocate a tile for a glyph at a given font size.
     // Returns tile=nullptr if already cached (no rasterization needed).

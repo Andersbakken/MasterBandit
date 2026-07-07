@@ -415,35 +415,6 @@ Uuid Engine::createTabSubtree()
     return stack;
 }
 
-Uuid Engine::createPaneInTab(Uuid subtreeRoot)
-{
-    if (subtreeRoot.isNil()) {
-        return {};
-    }
-    ::LayoutTree &tree = *layoutTree_;
-
-    // subtreeRoot is a Stack; its activeChild (first child) is the content
-    // Container. Append the Terminal into the content Container so the
-    // Stack can grow additional siblings (pager overlays) later.
-    Node *rootNode = tree.node(subtreeRoot);
-    if (!rootNode) {
-        return {};
-    }
-    auto *stackData = std::get_if<StackData>(&rootNode->data);
-    if (!stackData || stackData->children.empty()) {
-        return tree.createTerminal();
-    }
-    Uuid contentRoot  = stackData->children.front().id;
-    Node *contentNode = tree.node(contentRoot);
-    if (!contentNode || !std::holds_alternative<ContainerData>(contentNode->data)) {
-        return tree.createTerminal();
-    }
-    Uuid u = tree.createTerminal();
-    tree.appendChild(contentRoot, ChildSlot { u, /*stretch=*/1 });
-    setFocusedTerminalNodeId(u);
-    return u;
-}
-
 Uuid Engine::allocatePaneNode()
 {
     return layoutTree_->createTerminal();

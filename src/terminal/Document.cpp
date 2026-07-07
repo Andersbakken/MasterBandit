@@ -939,20 +939,7 @@ std::string Document::getTextFromLines(uint64_t startLineId, uint64_t endLineId,
         while (colEnd > colStart && r[colEnd - 1].wc == 0) {
             colEnd--;
         }
-        for (int c = colStart; c < colEnd; ++c) {
-            char32_t cp = r[c].wc;
-            if (cp == 0) {
-                out += ' ';
-                continue;
-            }
-            if (cp < 0x80) {
-                out += static_cast<char>(cp);
-            } else {
-                char buf[4];
-                int n = utf8::encode(cp, buf);
-                out.append(buf, n);
-            }
-        }
+        appendCellsAsUtf8(out, r, colStart, colEnd);
         if (abs < endAbs) {
             out += '\n';
         }

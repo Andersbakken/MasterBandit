@@ -267,31 +267,17 @@ void LineBuffer::appendLine(const Cell *cells, int len,
         appended = blocks_.back().appendLine(cells, len, eol, partial, extendsLast, lineId, flags, extras);
     }
     if (!appended) {
-        if (extendsLast) {
-            // The partial-last-line lives in the existing last block (or
-            // there is no partial line). If the last block returned false
-            // for an extendsLast=true call, that's because:
-            //   (a) the block lacks a partial last line — in which case the
-            //       caller's invariant is broken; treat as a fresh line.
-            //   (b) capacity overflow on extension — we seal the block and
-            //       restart a continuation as a NEW partial line in a fresh
-            //       block (the line ID stays the same).
-            // Path (a) is recovered by calling appendLine again with
-            // extendsLast=false. Path (b) is the same code path because we
-            // open a new block and append as a new line; the only thing we
-            // need to preserve is the line ID and the wrap-context.
-            blocks_.emplace_back();
-            const bool ok = blocks_.back().appendLine(cells, len, eol, partial, false, lineId, flags, extras);
-            (void)ok;
-            assert(ok);
-            ++totalLines_;
-        } else {
-            blocks_.emplace_back();
-            const bool ok = blocks_.back().appendLine(cells, len, eol, partial, false, lineId, flags, extras);
-            (void)ok;
-            assert(ok);
-            ++totalLines_;
-        }
+        // The last block rejected the append. When extendsLast is true this
+        // means either the block had no partial last line (caller invariant
+        // recovered as a fresh line) or capacity overflow on extension (seal
+        // and restart the continuation as a new partial line in a fresh
+        // block, keeping the same line ID). Both cases, and the ordinary
+        // extendsLast=false case, open a new block and append as a new line.
+        blocks_.emplace_back();
+        const bool ok = blocks_.back().appendLine(cells, len, eol, partial, false, lineId, flags, extras);
+        (void)ok;
+        assert(ok);
+        ++totalLines_;
     } else if (!extendsLast) {
         ++totalLines_;
     }
@@ -720,20 +706,7 @@ std::string LineBuffer::lineText(int idx) const
     while (trim > 0 && p[trim - 1].wc == 0) {
         --trim;
     }
-    for (int c = 0; c < trim; ++c) {
-        char32_t cp = p[c].wc;
-        if (cp == 0) {
-            out += ' ';
-            continue;
-        }
-        if (cp < 0x80) {
-            out += static_cast<char>(cp);
-        } else {
-            char buf[4];
-            int n = utf8::encode(cp, buf);
-            out.append(buf, n);
-        }
-    }
+    appendCellsAsUtf8(out, p, 0, trim);
     return out;
 }
 
@@ -765,20 +738,7 @@ std::string LineBuffer::textInRange(int startIdx, int endIdx,
         while (to > from && p[to - 1].wc == 0) {
             --to;
         }
-        for (int c = from; c < to; ++c) {
-            char32_t cp = p[c].wc;
-            if (cp == 0) {
-                out += ' ';
-                continue;
-            }
-            if (cp < 0x80) {
-                out += static_cast<char>(cp);
-            } else {
-                char buf[4];
-                int n = utf8::encode(cp, buf);
-                out.append(buf, n);
-            }
-        }
+        appendCellsAsUtf8(out, p, from, to);
         if (idx < endIdx) {
             out += '\n';
         }
@@ -898,15 +858,5 @@ void LineBuffer::enforceLimits()
             cachedBlockEndCum_.empty()
             ? 0
             : (cachedBlockEndCum_.back() - sumBaseOffset_);
-    }
-}
-
-void LineBuffer::recomputeTotals()
-{
-    totalLines_ = 0;
-    totalCells_ = 0;
-    for (const auto &b : blocks_) {
-        totalLines_ += b.numLines();
-        totalCells_ += b.cellsUsed();
     }
 }

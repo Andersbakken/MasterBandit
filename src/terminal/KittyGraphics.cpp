@@ -563,6 +563,39 @@ void TerminalEmulator::processAPC(std::string_view body)
         case 'd': // delete
         {
             char da = cmd.deleteAction ? cmd.deleteAction : 'a';
+
+            // Clear every cell tagged with each (imageId, placementId) in
+            // `toDelete` and, when freeData is set (uppercase delete action),
+            // drop the placement — and the image entry once its last
+            // placement is gone.
+            auto drainPlacementDeletions = [this](IGrid &dg,
+                                                  const std::unordered_set<uint64_t> &toDelete,
+                                                  bool freeData)
+            {
+                for (uint64_t key : toDelete) {
+                    uint32_t imgId = static_cast<uint32_t>(key >> 32);
+                    uint32_t plId  = static_cast<uint32_t>(key & 0xFFFFFFFF);
+                    for (int r = 0; r < mHeight; r++) {
+                        for (int c = 0; c < mWidth; c++) {
+                            const CellExtra *ce = dg.getExtra(c, r);
+                            if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
+                                dg.clearExtra(c, r);
+                                dg.markRowDirty(r);
+                            }
+                        }
+                    }
+                    if (freeData) {
+                        auto it = mImageRegistry.find(imgId);
+                        if (it != mImageRegistry.end()) {
+                            it->second->placements.erase(plId);
+                            if (it->second->placements.empty()) {
+                                mImageRegistry.erase(it);
+                            }
+                        }
+                    }
+                }
+            };
+
             switch (da) {
                 case 'a': // delete all visible placements
                 case 'A': {
@@ -727,28 +760,7 @@ void TerminalEmulator::processAPC(std::string_view body)
                         }
                     }
                     // Clear cells and optionally free images
-                    for (uint64_t key : toDelete) {
-                        uint32_t imgId = static_cast<uint32_t>(key >> 32);
-                        uint32_t plId  = static_cast<uint32_t>(key & 0xFFFFFFFF);
-                        for (int r = 0; r < mHeight; r++) {
-                            for (int c = 0; c < mWidth; c++) {
-                                const CellExtra *ce = dg.getExtra(c, r);
-                                if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
-                                    dg.clearExtra(c, r);
-                                    dg.markRowDirty(r);
-                                }
-                            }
-                        }
-                        if (da >= 'A' && da <= 'Z') {
-                            auto it = mImageRegistry.find(imgId);
-                            if (it != mImageRegistry.end()) {
-                                it->second->placements.erase(plId);
-                                if (it->second->placements.empty()) {
-                                    mImageRegistry.erase(it);
-                                }
-                            }
-                        }
-                    }
+                    drainPlacementDeletions(dg, toDelete, da >= 'A' && da <= 'Z');
                     break;
                 }
                 case 'x':
@@ -778,28 +790,7 @@ void TerminalEmulator::processAPC(std::string_view body)
                             }
                         }
                     }
-                    for (uint64_t key : toDelete) {
-                        uint32_t imgId = static_cast<uint32_t>(key >> 32);
-                        uint32_t plId  = static_cast<uint32_t>(key & 0xFFFFFFFF);
-                        for (int r = 0; r < mHeight; r++) {
-                            for (int c = 0; c < mWidth; c++) {
-                                const CellExtra *ce = dg.getExtra(c, r);
-                                if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
-                                    dg.clearExtra(c, r);
-                                    dg.markRowDirty(r);
-                                }
-                            }
-                        }
-                        if (da >= 'A' && da <= 'Z') {
-                            auto it = mImageRegistry.find(imgId);
-                            if (it != mImageRegistry.end()) {
-                                it->second->placements.erase(plId);
-                                if (it->second->placements.empty()) {
-                                    mImageRegistry.erase(it);
-                                }
-                            }
-                        }
-                    }
+                    drainPlacementDeletions(dg, toDelete, da >= 'A' && da <= 'Z');
                     break;
                 }
                 case 'y':
@@ -814,28 +805,7 @@ void TerminalEmulator::processAPC(std::string_view body)
                             toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
                         }
                     }
-                    for (uint64_t key : toDelete) {
-                        uint32_t imgId = static_cast<uint32_t>(key >> 32);
-                        uint32_t plId  = static_cast<uint32_t>(key & 0xFFFFFFFF);
-                        for (int r = 0; r < mHeight; r++) {
-                            for (int c = 0; c < mWidth; c++) {
-                                const CellExtra *ce = dg.getExtra(c, r);
-                                if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
-                                    dg.clearExtra(c, r);
-                                    dg.markRowDirty(r);
-                                }
-                            }
-                        }
-                        if (da >= 'A' && da <= 'Z') {
-                            auto it = mImageRegistry.find(imgId);
-                            if (it != mImageRegistry.end()) {
-                                it->second->placements.erase(plId);
-                                if (it->second->placements.empty()) {
-                                    mImageRegistry.erase(it);
-                                }
-                            }
-                        }
-                    }
+                    drainPlacementDeletions(dg, toDelete, da >= 'A' && da <= 'Z');
                     break;
                 }
                 case 'r':
@@ -893,28 +863,7 @@ void TerminalEmulator::processAPC(std::string_view body)
                             }
                         }
                     }
-                    for (uint64_t key : toDelete) {
-                        uint32_t imgId = static_cast<uint32_t>(key >> 32);
-                        uint32_t plId  = static_cast<uint32_t>(key & 0xFFFFFFFF);
-                        for (int r = 0; r < mHeight; r++) {
-                            for (int c = 0; c < mWidth; c++) {
-                                const CellExtra *ce = dg.getExtra(c, r);
-                                if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
-                                    dg.clearExtra(c, r);
-                                    dg.markRowDirty(r);
-                                }
-                            }
-                        }
-                        if (da == 'Z') {
-                            auto it = mImageRegistry.find(imgId);
-                            if (it != mImageRegistry.end()) {
-                                it->second->placements.erase(plId);
-                                if (it->second->placements.empty()) {
-                                    mImageRegistry.erase(it);
-                                }
-                            }
-                        }
-                    }
+                    drainPlacementDeletions(dg, toDelete, da == 'Z');
                     break;
                 }
                 case 'q':
@@ -951,28 +900,7 @@ void TerminalEmulator::processAPC(std::string_view body)
                             toDelete.insert((static_cast<uint64_t>(cex->imageId) << 32) | cex->imagePlacementId);
                         }
                     }
-                    for (uint64_t key : toDelete) {
-                        uint32_t imgId = static_cast<uint32_t>(key >> 32);
-                        uint32_t plId  = static_cast<uint32_t>(key & 0xFFFFFFFF);
-                        for (int r = 0; r < mHeight; r++) {
-                            for (int c = 0; c < mWidth; c++) {
-                                const CellExtra *ce = dg.getExtra(c, r);
-                                if (ce && ce->imageId == imgId && ce->imagePlacementId == plId) {
-                                    dg.clearExtra(c, r);
-                                    dg.markRowDirty(r);
-                                }
-                            }
-                        }
-                        if (da == 'Q') {
-                            auto it = mImageRegistry.find(imgId);
-                            if (it != mImageRegistry.end()) {
-                                it->second->placements.erase(plId);
-                                if (it->second->placements.empty()) {
-                                    mImageRegistry.erase(it);
-                                }
-                            }
-                        }
-                    }
+                    drainPlacementDeletions(dg, toDelete, da == 'Q');
                     break;
                 }
                 default:

@@ -28,12 +28,6 @@ void ColrAtlas::advanceGeneration()
     currentGen_++;
 }
 
-uint32_t ColrAtlas::generation() const
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    return currentGen_;
-}
-
 ColrAtlas::TileLocation *ColrAtlas::findTile(uint64_t glyph_key, float font_size)
 {
     uint32_t bucket = bucketForSize(font_size);

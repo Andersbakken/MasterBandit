@@ -1843,24 +1843,10 @@ void TerminalEmulator::applyEsc(char finalByte)
             mState->keypadMode = false;
             break;
         case DECSC:
-            mState->savedCursorX     = mState->cursorX;
-            mState->savedCursorY     = mState->cursorY;
-            mState->savedAttrs       = mState->currentAttrs;
-            mState->savedWrapPending = mState->wrapPending;
-            mState->savedCharsetG0   = mState->charsetG0;
-            mState->savedCharsetG1   = mState->charsetG1;
-            mState->savedShiftOut    = mState->shiftOut;
-            mState->savedOriginMode  = mState->originMode;
+            mState->saveCursorSlot(mState->wrapPending);
             break;
         case DECRC:
-            mState->cursorX      = mState->savedCursorX;
-            mState->cursorY      = mState->savedCursorY;
-            mState->currentAttrs = mState->savedAttrs;
-            mState->wrapPending  = mState->savedWrapPending;
-            mState->charsetG0    = mState->savedCharsetG0;
-            mState->charsetG1    = mState->savedCharsetG1;
-            mState->shiftOut     = mState->savedShiftOut;
-            mState->originMode   = mState->savedOriginMode;
+            mState->restoreCursorSlot();
             break;
         case IND:
             mState->wrapPending = false;
@@ -2909,24 +2895,10 @@ void TerminalEmulator::onAction(const Action *action)
         case Action::SaveCursorPosition:
             // CSI s — shares the DECSC save slot so a subsequent RCP or DECRC
             // restores the same state (xterm-equivalent behavior).
-            mState->savedCursorX     = mState->cursorX;
-            mState->savedCursorY     = mState->cursorY;
-            mState->savedAttrs       = mState->currentAttrs;
-            mState->savedWrapPending = savedWrapPending;
-            mState->savedCharsetG0   = mState->charsetG0;
-            mState->savedCharsetG1   = mState->charsetG1;
-            mState->savedShiftOut    = mState->shiftOut;
-            mState->savedOriginMode  = mState->originMode;
+            mState->saveCursorSlot(savedWrapPending);
             break;
         case Action::RestoreCursorPosition:
-            mState->cursorX      = mState->savedCursorX;
-            mState->cursorY      = mState->savedCursorY;
-            mState->currentAttrs = mState->savedAttrs;
-            mState->wrapPending  = mState->savedWrapPending;
-            mState->charsetG0    = mState->savedCharsetG0;
-            mState->charsetG1    = mState->savedCharsetG1;
-            mState->shiftOut     = mState->savedShiftOut;
-            mState->originMode   = mState->savedOriginMode;
+            mState->restoreCursorSlot();
             break;
         case Action::SetMode:
             switch (action->count) {
@@ -3132,41 +3104,12 @@ const char *TerminalEmulator::Action::typeName(Type type)
         case ScrollUp: return "ScrollUp";
         case ScrollDown: return "ScrollDown";
         case VerticalPositionAbsolute: return "VerticalPositionAbsolute";
-        case SelectGraphicRendition: return "SelectGraphicRendition";
         case AUXPortOn: return "AUXPortOn";
         case AUXPortOff: return "AUXPortOff";
-        case DeviceStatusReport: return "DeviceStatusReport";
         case SaveCursorPosition: return "SaveCursorPosition";
         case RestoreCursorPosition: return "RestoreCursorPosition";
         case SetMode: return "SetMode";
         case ResetMode: return "ResetMode";
-    }
-    abort();
-    return nullptr;
-}
-
-const char *TerminalEmulator::escapeSequenceName(EscapeSequence seq)
-{
-    switch (seq) {
-        case SS2: return "SS2";
-        case SS3: return "SS3";
-        case DCS: return "DCS";
-        case CSI: return "CSI";
-        case ST: return "ST";
-        case OSX: return "OSX";
-        case SOS: return "SOS";
-        case PM: return "PM";
-        case APC: return "APC";
-        case RIS: return "RIS";
-        case VB: return "VB";
-        case DECKPAM: return "DECKPAM";
-        case DECKPNM: return "DECKPNM";
-        case DECSC: return "DECSC";
-        case DECRC: return "DECRC";
-        case IND: return "IND";
-        case NEL: return "NEL";
-        case HTS: return "HTS";
-        case RI: return "RI";
     }
     abort();
     return nullptr;

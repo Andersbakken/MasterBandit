@@ -217,11 +217,6 @@ void NSAppEventLoop::wakeup()
     CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 
-void NSAppEventLoop::tick()
-{
-    if (onTick) onTick();
-}
-
 void NSAppEventLoop::drainKqueue()
 {
     if (fdPoller_) fdPoller_->poll(0);

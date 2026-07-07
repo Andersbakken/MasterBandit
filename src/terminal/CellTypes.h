@@ -1,9 +1,11 @@
 #pragma once
 
+#include "Utf8.h"
 #include <array>
 #include <bit>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -221,6 +223,25 @@ struct Cell
 };
 
 static_assert(sizeof(Cell) == 12);
+
+// Append cells [from, to) to `out` as UTF-8. A cell with wc == 0 (blank or
+// wide-glyph trailing spacer) becomes a single space; callers that don't
+// want trailing padding trim blank cells before calling.
+inline void appendCellsAsUtf8(std::string &out, const Cell *cells, int from, int to)
+{
+    for (int c = from; c < to; ++c) {
+        char32_t cp = cells[c].wc;
+        if (cp == 0) {
+            out += ' ';
+        } else if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else {
+            char buf[4];
+            int n = utf8::encode(cp, buf);
+            out.append(buf, n);
+        }
+    }
+}
 
 // IGrid::eraseBlankIsTrivial() and the memset fast path in
 // Document::clearPhysicalRow assume that a default-constructed Cell is

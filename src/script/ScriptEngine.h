@@ -464,8 +464,6 @@ public:
     bool filterPaneOutput(PaneId pane, std::string &data);
     bool filterPaneInput(PaneId pane, std::string &data);
 
-    bool hasPaneOutputFilters(PaneId pane) const;
-    bool hasPaneInputFilters(PaneId pane) const;
     bool hasPaneMouseMoveListeners(PaneId pane) const;
 
     // Stable (lifetime-safe) pointers to atomic flags mirroring the
@@ -487,7 +485,7 @@ public:
     // mb.d.ts). For built-in actions there are no args, so the default
     // covers that case.
     void notifyAction(const std::string &actionName,
-                      const std::vector<std::string> &args = { });
+                      const std::vector<std::string> &args = {});
     // Fired from PlatformDawn::applyConfig after a successful hot-reload.
     // No payload — listeners re-read whatever they care about via the
     // relevant `mb.*` getters (e.g. `mb.tabBarPosition`).
@@ -497,7 +495,7 @@ public:
     // nodeId is the UUID of the destroyed Terminal's tree node — passed through
     // so listeners can correlate with handles they captured from paneCreated.
     // Empty UUID is allowed (paths that don't have the UUID handy still work).
-    void notifyPaneDestroyed(PaneId pane, Uuid nodeId = { });
+    void notifyPaneDestroyed(PaneId pane, Uuid nodeId = {});
     // Tab create/destroy events. `tab` is the Uuid of the Container or Stack
     // that became (or was) a direct child of `parentStack`. parentStack ==
     // layoutRootStack_ marks the event as top-level; anything else is a
@@ -515,7 +513,7 @@ public:
     // Fired before the native cleanup cascade so listeners see the live
     // pane/tab state. Exit code / signal are not plumbed yet — the v1
     // payload is {paneId, paneNodeId}.
-    void notifyTerminalExited(PaneId pane, Uuid nodeId = { });
+    void notifyTerminalExited(PaneId pane, Uuid nodeId = {});
     void notifyPaneResized(PaneId pane, int cols, int rows);
     void notifyOSC(PaneId pane, int oscNum, const std::string &payload);
     void notifyForegroundProcessChanged(PaneId pane, const std::string &processName);
@@ -716,7 +714,7 @@ public:
     // Script action registration
     bool setNamespace(InstanceId id, const std::string &ns);
     bool registerAction(InstanceId id, const std::string &name,
-                        Action::ActionSchema schema = { });
+                        Action::ActionSchema schema = {});
     bool isActionRegistered(const std::string &fullName) const;
     // Returns the schema for a registered script action, or nullptr if
     // unregistered or schema-less. Used by notifyAction to decide
@@ -844,7 +842,7 @@ public:
     // children only — TabBar has no children to descend into. Order is
     // implementation-defined tree-walk order; callers needing a specific
     // ordering should sort/filter on the returned UUIDs.
-    std::vector<Uuid> queryNodesByKind(NodeKind kind, Uuid subtreeRoot = { }) const;
+    std::vector<Uuid> queryNodesByKind(NodeKind kind, Uuid subtreeRoot = {}) const;
 
     // Find the first node (BFS from root) whose label exactly equals
     // `label`. Returns nil if none. Empty `label` always returns nil so
@@ -910,7 +908,6 @@ public:
     Uuid createTabSubtree();
 
     // Pane allocation + mutation (scoped to tab's subtree).
-    Uuid createPaneInTab(Uuid subtreeRoot);
     Uuid allocatePaneNode(); // just layoutTree().createTerminal()
     bool splitByNodeId(Uuid existingChildNodeId, SplitDir dir,
                        Uuid newChildNodeId, bool newIsFirst);

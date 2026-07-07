@@ -430,7 +430,7 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
     }
 
     switch (oscNum) {
-        case 0: processOSC_Title(payload, true); break;
+        case 0: processOSC_Title(payload); break;
         case 1:
             // Caller holds mMutex (parser path). Republish shadow so
             // per-tick currentIcon() reads stay off mMutex.
@@ -444,7 +444,7 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
                 mCallbacks.onIconChanged(std::optional<std::string>(std::string(payload)));
             }
             break;
-        case 2: processOSC_Title(payload, true); break;
+        case 2: processOSC_Title(payload); break;
         case 22: processOSC_PointerShape(payload); break;
         case 133: { // Shell integration (FinalTerm / semantic prompts / Per-Bothner spec)
             // OSC 133;<letter>[;<arg>][;<k>=<v>...]
@@ -927,19 +927,17 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
     }
 }
 
-void TerminalEmulator::processOSC_Title(std::string_view text, bool setTitle)
+void TerminalEmulator::processOSC_Title(std::string_view text)
 {
-    if (setTitle) {
-        // Caller holds mMutex (parser path).
-        if (mTitleStack.empty()) {
-            mTitleStack.emplace_back(text);
-        } else {
-            mTitleStack.back() = std::string(text);
-        }
-        publishTitle();
-        if (mCallbacks.onTitleChanged) {
-            mCallbacks.onTitleChanged(std::optional<std::string>(std::string(text)));
-        }
+    // Caller holds mMutex (parser path).
+    if (mTitleStack.empty()) {
+        mTitleStack.emplace_back(text);
+    } else {
+        mTitleStack.back() = std::string(text);
+    }
+    publishTitle();
+    if (mCallbacks.onTitleChanged) {
+        mCallbacks.onTitleChanged(std::optional<std::string>(std::string(text)));
     }
 }
 

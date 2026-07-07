@@ -227,6 +227,34 @@ public:
         // Selective Mouse Reporting (CSI = w). See SELECTIVE-MOUSE-REPORTING.md.
         uint16_t selMouseButtonMask { 0 };
         uint8_t selMouseEventMask { 0 };
+
+        // Copy the live cursor/pen/charset/origin fields into the DECSC save
+        // slot. wrapPending is passed explicitly because CSI s captures the
+        // pre-cleared value while DECSC captures the live one.
+        void saveCursorSlot(bool wrap)
+        {
+            savedCursorX     = cursorX;
+            savedCursorY     = cursorY;
+            savedAttrs       = currentAttrs;
+            savedWrapPending = wrap;
+            savedCharsetG0   = charsetG0;
+            savedCharsetG1   = charsetG1;
+            savedShiftOut    = shiftOut;
+            savedOriginMode  = originMode;
+        }
+
+        // Restore the fields saved by saveCursorSlot (DECRC / CSI u).
+        void restoreCursorSlot()
+        {
+            cursorX      = savedCursorX;
+            cursorY      = savedCursorY;
+            currentAttrs = savedAttrs;
+            wrapPending  = savedWrapPending;
+            charsetG0    = savedCharsetG0;
+            charsetG1    = savedCharsetG1;
+            shiftOut     = savedShiftOut;
+            originMode   = savedOriginMode;
+        }
     };
 
     int cursorX() const { return mState->cursorX; }
@@ -455,10 +483,8 @@ public:
             ScrollUp,
             ScrollDown,
             VerticalPositionAbsolute,
-            SelectGraphicRendition,
             AUXPortOn,
             AUXPortOff,
-            DeviceStatusReport,
             SaveCursorPosition,
             RestoreCursorPosition,
             SetMode,
@@ -1160,7 +1186,7 @@ private:
     // mEscapeBuffer / mEscapeIndex member fields directly.
     void processStringSequence(uint8_t kind, std::string_view body);
     void processDCS(std::string_view payload);
-    void processOSC_Title(std::string_view text, bool setTitle);
+    void processOSC_Title(std::string_view text);
 
     // Decode `len` bytes of pty output, appending Actions to
     // mPendingActions. No grid / mState / mDocument access — purely
@@ -1302,8 +1328,6 @@ private:
     // Cell assignments); call after any path that mutates currentAttrs or
     // swaps mState (SGR, RIS, DECSTR, alt-screen entry/exit, init).
     void pushEraseBlank();
-
-    static const char *escapeSequenceName(EscapeSequence seq);
 
     enum CSISequence
     {

@@ -1259,13 +1259,6 @@ inline constexpr uint32_t kTable[kTableSize] = {
     PG_POWERLINE(36),
 };
 
-// Backward-compat aliases for code that still references BoxDrawing::
-namespace BoxDrawingCompat {
-inline constexpr uint32_t kTableSize     = ProceduralGlyph::kTableSize;
-inline constexpr uint32_t kBaseCodepoint = ProceduralGlyph::kBoxDrawingBase;
-inline constexpr const uint32_t *kTable  = ProceduralGlyph::kTable;
-} //namespace BoxDrawingCompat
-
 #undef PG_NONE
 #undef PG_RECT
 #undef PG_QUAD

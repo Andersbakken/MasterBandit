@@ -42,8 +42,6 @@ public:
     void addFileWatch(const std::string &path, WatchCb cb) override;
     void removeFileWatch() override;
 
-    // Called by the run loop observer / tick selector
-    void tick();
     // Called when the FdPoller's kqueue fd becomes readable —
     // drains all pending fd events via fdPoller_->poll(0).
     void drainKqueue();

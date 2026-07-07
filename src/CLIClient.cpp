@@ -236,7 +236,8 @@ int runCLI(int argc, char **argv)
         if (!cellStr.empty()) {
             int x = 0, y = 0, w = 0, h = 0;
             if (sscanf(cellStr.c_str(), "%d,%d,%d,%d", &x, &y, &w, &h) == 4) {
-                reqObj["cell"] = glz::generic::object_t { { "x", x }, { "y", y }, { "w", w }, { "h", h } };
+                // Server reads the crop under "rect" (see DebugIPC cmdScreenshotPng).
+                reqObj["rect"] = glz::generic::object_t { { "x", x }, { "y", y }, { "w", w }, { "h", h } };
             }
         }
     } else if (command == "key") {

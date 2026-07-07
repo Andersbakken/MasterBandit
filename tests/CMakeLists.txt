@@ -49,9 +49,11 @@ set(TEST_SOURCES
     test_findtext.cpp
     test_url_detection.cpp
     test_animation.cpp
+    test_colr_atlas.cpp
     MBConnection.cpp
     ../src/text.cpp
     ../src/ColrEncoder.cpp
+    ../src/ColrAtlas.cpp
     ../src/LayoutTree.cpp
     ../src/Uuid.cpp
     ../src/script/ScriptEngine_Terminals.cpp

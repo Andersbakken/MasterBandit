@@ -76,7 +76,7 @@ ColrAtlas::AcquireResult ColrAtlas::acquireTile(uint64_t glyph_key, float font_s
                 return { nullptr, false };
             }
             grew = true;
-            // After growing, nextSlot is still valid — just more maxSlots available
+            // growBucket re-derived nextSlot for the new grid geometry.
         }
         // If we evicted, nextSlot was set to the evicted slot's index... but our
         // slot allocation is linear. Instead, reuse the evicted slot directly.
@@ -164,6 +164,27 @@ bool ColrAtlas::growBucket(uint32_t bucket)
     uint32_t oldDim = bs.atlasDim;
     bs.atlasDim     = newDim;
     updateBucketSlots(bucket);
+
+    // Existing tiles keep their absolute pixel positions, but the linear
+    // slot -> pixel mapping (gx = slot % tpr, gy = slot / tpr) depends on
+    // tilesPerRow, which just changed. Re-derive nextSlot so new allocations
+    // resume past the highest slot any live tile now occupies in the resized
+    // grid; leaving it unchanged would hand out pixel positions that overlap
+    // cached tiles. Slots skipped over in partially-filled rows are reclaimed
+    // later through eviction.
+    uint32_t tpr      = tilesPerRow(bucket, newDim);
+    uint32_t tileSize = BUCKET_SIZES[bucket];
+    uint32_t nextSlot = 0;
+    for (const auto &[ck, te] : cache_) {
+        if (ck.bucket != bucket) {
+            continue;
+        }
+        uint32_t slot = (te.loc.y / tileSize) * tpr + (te.loc.x / tileSize);
+        if (slot + 1 > nextSlot) {
+            nextSlot = slot + 1;
+        }
+    }
+    bs.nextSlot = nextSlot;
 
     spdlog::info("COLR atlas bucket {} ({}px tiles) grew from {}x{} to {}x{} ({} slots)",
                  bucket,

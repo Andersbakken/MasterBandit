@@ -103,8 +103,7 @@ private:
     // Grow a bucket's atlas dimension. Returns false if already at max.
     bool growBucket(uint32_t bucket);
 
-    // Remap existing tile positions after a bucket grows (positions don't change,
-    // only maxSlots increases).
+    // Recompute maxSlots for a bucket's current atlas dimension.
     void updateBucketSlots(uint32_t bucket);
 
     // Try to evict the oldest-generation tile in a bucket. Returns the evicted

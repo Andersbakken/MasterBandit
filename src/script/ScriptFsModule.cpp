@@ -446,7 +446,11 @@ static JSValue js_fs_existsSync(JSContext *ctx, JSValueConst, int argc, JSValueC
     } else {
         fs::path scriptDir = fs::path(inst->path).parent_path();
         fs::path cfgDir    = scriptConfigDir(eng, inst);
-        allowed            = isUnderDir(p, scriptDir) || isUnderDir(p, cfgDir);
+        fs::path tmpDir    = scriptTmpDir();
+        // Match checkReadPath's allow-set (incl. the shared tmp scratch dir)
+        // so existsSync doesn't reject a path readFileSync/writeFileSync allow.
+        ensureDirExists(tmpDir, "tmp dir", /*tightenPerms*/ true);
+        allowed = isUnderDir(p, scriptDir) || isUnderDir(p, cfgDir) || isUnderDir(p, tmpDir);
     }
 
     if (!allowed) {

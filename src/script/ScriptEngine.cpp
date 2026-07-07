@@ -503,11 +503,18 @@ static JSValue jsPaneRemoveEventListener(JSContext *ctx, JSValueConst this_val,
     }
     JS_FreeCString(ctx, event);
     JSValue arr = JS_GetPropertyStr(ctx, this_val, prop.c_str());
+    if (JS_IsUndefined(arr)) {
+        // No listener array for this event — nothing was ever registered, so
+        // there is nothing to remove. Reading .length off undefined below
+        // would throw and leave a pending exception on the context.
+        JS_FreeValue(ctx, arr);
+        return JS_UNDEFINED;
+    }
     // Capture pre-remove length to detect whether anything actually
     // matched — we only decrement the row-eviction counter on a real
     // removal (matches the existing semantics of removeFromJSArray
     // which is idempotent when the listener isn't registered).
-    int preLen  = 0;
+    int preLen = 0;
     if (isRowEvicted) {
         JSValue lenVal = JS_GetPropertyStr(ctx, arr, "length");
         JS_ToInt32(ctx, &preLen, lenVal);

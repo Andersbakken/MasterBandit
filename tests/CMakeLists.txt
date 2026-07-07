@@ -74,7 +74,8 @@ set(TEST_SOURCES
 )
 
 if(APPLE)
-    list(APPEND TEST_SOURCES ../src/FontResolver_CoreText.mm ../src/FontFallback_CoreText.mm)
+    list(APPEND TEST_SOURCES ../src/FontResolver_CoreText.mm ../src/FontFallback_CoreText.mm
+        test_cocoa_modifiers.cpp)
 else()
     list(APPEND TEST_SOURCES ../src/FontResolver_FontConfig.cpp ../src/FontFallback_FontConfig.cpp)
 endif()

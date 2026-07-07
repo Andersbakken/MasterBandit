@@ -1,5 +1,6 @@
 #include "Window_cocoa.h"
 
+#include "MacModifierKeys.h"
 #include <InputTypes.h>
 
 #import <AppKit/AppKit.h>
@@ -349,8 +350,11 @@ static unsigned int nsModsToModifiers(NSEventModifierFlags flags)
     if (optionConfiguredAsAlt(event.modifierFlags, _cppWindow->macosOptionAsAlt())) {
         mods |= OptionAsAltModifier;
     }
-    // Determine press vs release by checking if the modifier bit is now set
-    bool pressed = (mods != 0);
+    // Press vs release from the specific (left/right) modifier bit for this
+    // key, so releasing one of two held modifiers reports a release rather
+    // than a spurious press. Fall back to any-modifier for unknown keycodes.
+    uint64_t mmask = macModifierMaskForKeyCode(event.keyCode);
+    bool pressed = mmask ? ((event.modifierFlags & mmask) != 0) : (mods != 0);
     _cppWindow->dispatchKey(static_cast<int>(k),
                              static_cast<int>(event.keyCode),
                              static_cast<int>(pressed ? KeyAction_Press : KeyAction_Release),

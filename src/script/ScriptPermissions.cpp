@@ -197,11 +197,17 @@ std::string permissionsToString(uint32_t perms)
 
 uint32_t actionPermission(const std::string &actionName)
 {
-    // Actions that create or destroy resources need additional permissions
-    if (actionName == "NewTab" || actionName == "SplitPane") {
+    // actionName may arrive in Pascal form (internal) or snake_case — the
+    // JS-visible name that mb.invokeAction receives and that dispatch later
+    // normalizes via snakeToPascal. Match both so the gate can't be bypassed
+    // by passing the snake_case name scripts actually use (mb.getActions
+    // exposes snake_case, so that is the common path).
+    if (actionName == "NewTab" || actionName == "new_tab" ||
+        actionName == "SplitPane" || actionName == "split_pane") {
         return Perm::TabsCreate;
     }
-    if (actionName == "CloseTab" || actionName == "ClosePane") {
+    if (actionName == "CloseTab" || actionName == "close_tab" ||
+        actionName == "ClosePane" || actionName == "close_pane") {
         return Perm::TabsClose;
     }
     return 0; // safe actions need no extra permission

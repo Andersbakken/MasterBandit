@@ -323,6 +323,17 @@ TEST_CASE("actionPermission: structural-mutation actions require their bits")
     CHECK(Script::actionPermission("ClosePane") == Perm::TabsClose);
 }
 
+// mb.invokeAction receives the snake_case names that mb.getActions exposes;
+// dispatch normalizes them to Pascal only after the permission check runs, so
+// the gate must recognize the snake_case form too or it is silently bypassed.
+TEST_CASE("actionPermission: snake_case names (the JS-visible form) still gate")
+{
+    CHECK(Script::actionPermission("new_tab") == Perm::TabsCreate);
+    CHECK(Script::actionPermission("split_pane") == Perm::TabsCreate);
+    CHECK(Script::actionPermission("close_tab") == Perm::TabsClose);
+    CHECK(Script::actionPermission("close_pane") == Perm::TabsClose);
+}
+
 TEST_CASE("actionPermission: safe actions return 0 (no extra perm)")
 {
     CHECK(Script::actionPermission("CopySelection") == 0u);

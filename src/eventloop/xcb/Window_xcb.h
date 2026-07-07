@@ -186,6 +186,12 @@ private:
     xcb_keycode_t lastPressKeycode_ = 0;
     uint32_t lastPressTime_         = 0;
 
+    // One-event lookahead: the KEY_RELEASE handler peeks the next event to
+    // detect auto-repeat; when the peeked event is not the repeat pair it is
+    // stashed here so processEvents dispatches it on the next iteration
+    // instead of dropping it.
+    xcb_generic_event_t *pendingEvent_ = nullptr;
+
     // Cached themed cursors loaded by libxcb-cursor from the user's
     // freedesktop cursor theme (gtk-cursor-theme-name / Xcursor.theme).
     // Falls back to the legacy cursor-font glyph if the theme is missing

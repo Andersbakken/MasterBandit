@@ -409,7 +409,7 @@ bool XCBWindow::create(int width, int height, const std::string &title)
     // (XKB_DEFAULT_LAYOUT, typically "us"). Failure is non-fatal — we just
     // skip emitting the third CSI u field. Mirrors kitty xkb_glfw.c:594.
     {
-        xkb_rule_names defaultRules = { };
+        xkb_rule_names defaultRules = {};
         xkbDefaultKeymap_           = xkb_keymap_new_from_names(xkbCtx_, &defaultRules, XKB_KEYMAP_COMPILE_NO_FLAGS);
         if (xkbDefaultKeymap_) {
             xkbDefaultState_ = xkb_state_new(xkbDefaultKeymap_);
@@ -554,7 +554,7 @@ void XCBWindow::raise()
     // (notably some tiling WMs) ignore _NET_ACTIVE_WINDOW entirely.
     xcb_atom_t atomNetActiveWindow = internAtom("_NET_ACTIVE_WINDOW");
     if (atomNetActiveWindow != 0) {
-        xcb_client_message_event_t ev { };
+        xcb_client_message_event_t ev {};
         ev.response_type  = XCB_CLIENT_MESSAGE;
         ev.format         = 32;
         ev.window         = window_;
@@ -635,8 +635,10 @@ wgpu::Surface XCBWindow::createWgpuSurface(wgpu::Instance instance)
 void XCBWindow::processEvents()
 {
     xcb_generic_event_t *event;
-    while ((event = xcb_poll_for_event(conn_)) != nullptr) {
-        uint8_t type = event->response_type & ~0x80;
+    // Prefer a deferred lookahead event (see KEY_RELEASE) over polling.
+    while ((event = pendingEvent_ ? pendingEvent_ : xcb_poll_for_event(conn_)) != nullptr) {
+        pendingEvent_ = nullptr;
+        uint8_t type  = event->response_type & ~0x80;
         switch (type) {
             case XCB_KEY_PRESS: {
                 auto *ev          = reinterpret_cast<xcb_key_press_event_t *>(event);
@@ -651,41 +653,22 @@ void XCBWindow::processEvents()
                 auto *ev                  = reinterpret_cast<xcb_key_release_event_t *>(event);
                 // Peek: if the next event is a KeyPress with the same keycode+time, it's auto-repeat
                 xcb_generic_event_t *next = xcb_poll_for_event(conn_);
-                if (next) {
-                    uint8_t nextType = next->response_type & ~0x80;
-                    if (nextType == XCB_KEY_PRESS) {
-                        auto *nextEv = reinterpret_cast<xcb_key_press_event_t *>(next);
-                        if (nextEv->detail == ev->detail && nextEv->time == ev->time) {
-                            // Auto-repeat pair: skip the release, treat the press as repeat.
-                            lastPressKeycode_ = nextEv->detail;
-                            lastPressTime_    = nextEv->time;
-                            handleKeyPress(nextEv, true);
-                            free(next);
-                            break;
-                        }
+                if (next && (next->response_type & ~0x80) == XCB_KEY_PRESS) {
+                    auto *nextEv = reinterpret_cast<xcb_key_press_event_t *>(next);
+                    if (nextEv->detail == ev->detail && nextEv->time == ev->time) {
+                        // Auto-repeat pair: skip the release, treat the press as repeat.
+                        lastPressKeycode_ = nextEv->detail;
+                        lastPressTime_    = nextEv->time;
+                        handleKeyPress(nextEv, true);
+                        free(next);
+                        break;
                     }
-                    // Not a repeat: process the release then the next event on next iteration
-                    // Re-queue by processing the saved next event immediately
-                    handleKeyRelease(ev);
-                    // Process next now (recurse into switch by reusing the event)
-                    uint8_t nextType2 = next->response_type & ~0x80;
-                    switch (nextType2) {
-                        case XCB_KEY_PRESS: {
-                            auto *n           = reinterpret_cast<xcb_key_press_event_t *>(next);
-                            lastPressKeycode_ = n->detail;
-                            lastPressTime_    = n->time;
-                            handleKeyPress(n, false);
-                            break;
-                        }
-                        default:
-                            // Put it back indirectly by processing it here
-                            // (small duplication to avoid recursion)
-                            break;
-                    }
-                    free(next);
-                } else {
-                    handleKeyRelease(ev);
                 }
+                // Not an auto-repeat pair: deliver the release and defer the
+                // peeked event (any type, or none) to the next loop iteration
+                // so it is dispatched normally instead of dropped.
+                handleKeyRelease(ev);
+                pendingEvent_ = next;
                 break;
             }
             case XCB_BUTTON_PRESS: {
@@ -1109,7 +1092,7 @@ std::string XCBWindow::readSelectionProperty(xcb_atom_t property) const
     xcb_get_property_cookie_t c = xcb_get_property(conn_, 1 /* delete */, window_, property, XCB_ATOM_ANY, 0, UINT32_MAX);
     xcb_get_property_reply_t *r = xcb_get_property_reply(conn_, c, nullptr);
     if (!r) {
-        return { };
+        return {};
     }
     std::string result(static_cast<const char *>(xcb_get_property_value(r)),
                        xcb_get_property_value_length(r));
@@ -1119,7 +1102,7 @@ std::string XCBWindow::readSelectionProperty(xcb_atom_t property) const
 
 void XCBWindow::handleSelectionRequest(xcb_selection_request_event_t *ev)
 {
-    xcb_selection_notify_event_t notify { };
+    xcb_selection_notify_event_t notify {};
     notify.response_type = XCB_SELECTION_NOTIFY;
     notify.requestor     = ev->requestor;
     notify.selection     = ev->selection;

@@ -942,11 +942,12 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
         switch (static_cast<TerminalEmulator::Event>(ev)) {
             case TerminalEmulator::Update:
             case TerminalEmulator::ScrollbackChanged:
+                // Runs on the parse worker thread. Route the dirty-pane
+                // insert through RenderThread's worker-safe path so we
+                // don't allocate a std::function per parse batch.
                 setNeedsRedraw();
-                eventLoop_->post([this, paneId]
-                                 {
-                                     renderThread_->pending().dirtyPanes.insert(paneId);
-                                 });
+                renderThread_->markPaneDirtyFromWorker(paneId);
+                eventLoop_->wakeup();
                 break;
             case TerminalEmulator::VisibleBell:
                 break;

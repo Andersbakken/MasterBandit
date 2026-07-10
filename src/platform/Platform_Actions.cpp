@@ -59,13 +59,15 @@ void PlatformDawn::executeAction(const Action::Any &action)
                    {
                        const std::string stackStr = a.stack.isNil() ? std::string {} : a.stack.toString();
                        const int delta            = a.delta;
-                       invokeOrLog("activateTabRelative", [stackStr, delta](JSContext *ctx)
+                       const bool wrap            = a.wrap;
+                       invokeOrLog("activateTabRelative", [stackStr, delta, wrap](JSContext *ctx)
                                    {
                                        JSValue o = JS_NewObject(ctx);
                                        if (!stackStr.empty()) {
                                            JS_SetPropertyStr(ctx, o, "stack", JS_NewStringLen(ctx, stackStr.data(), stackStr.size()));
                                        }
                                        JS_SetPropertyStr(ctx, o, "delta", JS_NewInt32(ctx, delta));
+                                       JS_SetPropertyStr(ctx, o, "wrap", JS_NewBool(ctx, wrap));
                                        return o;
                                    });
                    },

@@ -313,7 +313,7 @@ mb.actions.register('activateTab', ({target, index}) => {
     _activateTabAndFocus(targetId);
 });
 
-mb.actions.register('activateTabRelative', ({stack: stackArg, delta}) => {
+mb.actions.register('activateTabRelative', ({stack: stackArg, delta, wrap}) => {
     // Cycle the activeChild of `stackArg` (when provided by the dispatcher).
     // Otherwise walk up from the focused pane to the nearest enclosing
     // *tabs-list* Stack — the Stack whose children are tab Stacks. The tree
@@ -388,8 +388,13 @@ mb.actions.register('activateTabRelative', ({stack: stackArg, delta}) => {
         if (stack.children[i].id === active) { curIdx = i; break; }
     }
     if (curIdx < 0) return;
-    const newIdx = curIdx + delta;
-    if (newIdx < 0 || newIdx >= stack.children.length) return;
+    const n = stack.children.length;
+    let newIdx = curIdx + delta;
+    if (wrap) {
+        newIdx = (newIdx % n + n) % n;
+    } else if (newIdx < 0 || newIdx >= n) {
+        return;
+    }
     _activateTabAndFocus(stack.children[newIdx].id);
 });
 

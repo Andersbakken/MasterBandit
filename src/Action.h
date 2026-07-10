@@ -240,6 +240,7 @@ struct ActivateTabRelative
 {
     Uuid stack;
     int delta = 0;
+    bool wrap = false;
 };
 
 // target = direct child of the owning Stack. target.isNil() + index >= 0

@@ -381,6 +381,19 @@ static ActionArg intArg(std::string name, bool required,
     return a;
 }
 
+static ActionArg boolArg(std::string name, bool required,
+                         std::optional<bool> defaultValue)
+{
+    ActionArg a;
+    a.name     = std::move(name);
+    a.kind     = ArgKind::Bool;
+    a.required = required;
+    if (defaultValue) {
+        a.defaultValue = ArgValue(*defaultValue);
+    }
+    return a;
+}
+
 static ActionArg stringArg(std::string name, bool required,
                            std::optional<std::string> defaultValue,
                            std::optional<std::string> providerName = std::nullopt)
@@ -437,6 +450,18 @@ static std::string strOr(const ArgsValue &a, const std::string &k, std::string f
     }
     if (auto *s = it->second.get_if<std::string>()) {
         return *s;
+    }
+    return fallback;
+}
+
+static bool boolOr(const ArgsValue &a, const std::string &k, bool fallback = false)
+{
+    auto it = a.find(k);
+    if (it == a.end()) {
+        return fallback;
+    }
+    if (auto *v = it->second.get_if<bool>()) {
+        return *v;
     }
     return fallback;
 }
@@ -532,13 +557,16 @@ static void registerBuiltinSchemas()
     registerAction("ActivateTabRelative",
                    ActionSchema {
                        { intArg("delta", true, std::nullopt),
-                         uuidArg("stack", false) },
+                         uuidArg("stack", false),
+                         boolArg("wrap", false, false) },
                    },
                    [](const ArgsValue &a)
                    {
                        auto stackStr = strOr(a, "stack");
                        Uuid stack    = stackStr.empty() ? Uuid {} : Uuid::fromString(stackStr);
-                       return Any { ActivateTabRelative { stack, static_cast<int>(intOr(a, "delta")) } };
+                       return Any { ActivateTabRelative { stack,
+                                                          static_cast<int>(intOr(a, "delta")),
+                                                          boolOr(a, "wrap") } };
                    });
 
     registerAction("ActivateTab",

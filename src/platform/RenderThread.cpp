@@ -75,6 +75,17 @@ void RenderThread::applyPendingMutations()
     // transfers pending_ into renderState_, clears pending_.
     std::lock_guard<std::recursive_mutex> plk(mutex_);
 
+    // Drain worker-thread dirty pane insertions (from the parse worker's
+    // Update event) into pending_.dirtyPanes. Held under its own small
+    // mutex so parse workers never contend on the coarse recursive mutex_.
+    {
+        std::lock_guard<std::mutex> wlk(workerDirtyMu_);
+        if (!workerDirtyPanes_.empty()) {
+            pending_.dirtyPanes.insert(workerDirtyPanes_.begin(), workerDirtyPanes_.end());
+            workerDirtyPanes_.clear();
+        }
+    }
+
     // Drain terminal exits under the lock so that terminal destruction
     // can't race the render thread's use of frameState_ term pointers.
     drainPendingExits();

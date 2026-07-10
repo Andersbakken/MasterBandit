@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 class EventLoop;
@@ -70,6 +71,20 @@ public:
         completedFrames_.fetch_add(1, std::memory_order_release);
     }
 
+    // Mark a pane dirty from any thread (typically the parse worker via the
+    // TerminalEmulator::Update event). Cheap: one small-mutex lock + hash-set
+    // insert. Drained into pending_.dirtyPanes on the next main-thread
+    // applyPendingMutations(). Replaces the previous "eventLoop_->post({
+    // dirtyPanes.insert })" hop which allocated a std::function per parse
+    // batch and paid the event loop's post-queue mutex + wakeup cost.
+    // Callers must still setNeedsRedraw() and eventLoop_->wakeup() so the
+    // main loop actually runs a tick — this method only records the pane id.
+    void markPaneDirtyFromWorker(const Uuid &paneId)
+    {
+        std::lock_guard<std::mutex> lk(workerDirtyMu_);
+        workerDirtyPanes_.insert(paneId);
+    }
+
 private:
     // Shared state accessors — available to PlatformDawn via friendship.
     // Callers must hold mutex() except where noted by the existing thread
@@ -118,4 +133,13 @@ private:
 
     // Frame-completion counter. See completedFrames() / notifyFrameCompleted().
     std::atomic<uint64_t> completedFrames_ { 0 };
+
+    // Worker-thread-writable dirty pane set. Populated by
+    // markPaneDirtyFromWorker() (currently only from parse-worker Update
+    // events), drained under workerDirtyMu_ at the start of
+    // applyPendingMutations() and merged into pending_.dirtyPanes. Kept
+    // separate from pending_ so the parse worker never touches pending_
+    // (which is main-thread-lock-free by contract).
+    std::mutex workerDirtyMu_;
+    std::unordered_set<Uuid, UuidHash> workerDirtyPanes_;
 };

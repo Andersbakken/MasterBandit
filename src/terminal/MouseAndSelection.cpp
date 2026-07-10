@@ -29,6 +29,12 @@ void TerminalEmulator::sendMouseEvent(int button, bool press, bool motion, int c
 
 void TerminalEmulator::sendMouseEventPixel(int button, bool press, bool motion, int cx, int cy, int px, int py, uint32_t modifiers, bool forceSgr)
 {
+    // Clamp to the grid: drag capture can carry the pointer outside the
+    // pane, and a negative parameter would produce a malformed report
+    // that breaks the application's parser.
+    cx = std::clamp(cx, 0, std::max(0, mWidth - 1));
+    cy = std::clamp(cy, 0, std::max(0, mHeight - 1));
+
     // Encode modifier bits into button code
     int cb = button;
     if (motion) {

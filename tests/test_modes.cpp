@@ -353,6 +353,30 @@ TEST_CASE("mouse mode 1003 set/reset")
     CHECK_FALSE(t.term.mouseReportingActive());
 }
 
+TEST_CASE("mouse reports clamp out-of-grid coordinates")
+{
+    // Drag capture can carry the pointer outside the pane. A negative SGR
+    // parameter (\x1b[<35;-3;7M) is malformed and leaks raw bytes into the
+    // application's input line.
+    TestTerminal t(80, 24);
+    t.csi("?1003h");
+    t.csi("?1006h");
+    t.clearOutput();
+
+    MouseEvent ev;
+    ev.x      = -3;
+    ev.y      = -2;
+    ev.button = NoButton;
+    t.term.mouseMoveEvent(&ev);
+    CHECK(t.output() == "\x1b[<35;1;1M"); // clamped to cell (0,0)
+
+    t.clearOutput();
+    ev.x = 200; // beyond an 80x24 grid
+    ev.y = 90;
+    t.term.mouseMoveEvent(&ev);
+    CHECK(t.output() == "\x1b[<35;80;24M"); // clamped to last cell
+}
+
 // ── SGR mouse reporting (mode 1006) ──────────────────────────────────────────
 
 TEST_CASE("mouse mode 1006 SGR format press/release")

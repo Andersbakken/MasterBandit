@@ -301,7 +301,7 @@ void InputController::onKey(int key, int scancode, int action, int mods)
                 ev.unshiftedKey        = lastComposed_.unshifted;
                 lastComposed_.scancode = -1; // consume
             } else {
-                std::string name = window ? window->keyName(scancode) : std::string { };
+                std::string name = window ? window->keyName(scancode) : std::string {};
                 if (!name.empty()) {
                     ev.text = name;
                 }
@@ -311,7 +311,7 @@ void InputController::onKey(int key, int scancode, int action, int mods)
             // live xkb state, and onChar arrives *after* onKey — so the stash
             // would be a stale previous keystroke (it matches on a repeated
             // physical key). Use keyName directly; it is current-state-correct.
-            std::string name = window ? window->keyName(scancode) : std::string { };
+            std::string name = window ? window->keyName(scancode) : std::string {};
             if (!name.empty()) {
                 ev.text = name;
             }
@@ -523,7 +523,7 @@ MouseRegion InputController::hitTest(double sx, double sy)
 int InputController::resolveTabBarClickIndex(double sx, double sy, Uuid *outBarId)
 {
     if (outBarId) {
-        *outBarId = { };
+        *outBarId = {};
     }
     float tbCharWidth = platform_->tabBarCharWidth_;
     if (tbCharWidth <= 0.0f) {
@@ -745,7 +745,7 @@ void InputController::onMouseButton(int button, int action, int mods)
                     // this point — re-resolve by id.
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
                     int btn          = (button == static_cast<int>(LeftButton)) ? 0
-                        : (button == static_cast<int>(RightButton))             ? 1
+                                 : (button == static_cast<int>(RightButton))    ? 1
                                                                                 : 2;
                     platform_->scriptEngine_.deliverPopupMouseEvent(
                         clickPane->id(),
@@ -824,7 +824,7 @@ void InputController::onMouseButton(int button, int action, int mods)
                     }
                     std::string type = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
                     int btn          = (button == static_cast<int>(LeftButton)) ? 0
-                        : (button == static_cast<int>(RightButton))             ? 1
+                                 : (button == static_cast<int>(RightButton))    ? 1
                                                                                 : 2;
                     platform_->scriptEngine_.deliverEmbeddedMouseEvent(
                         clickPane->id(),
@@ -876,7 +876,7 @@ void InputController::onMouseButton(int button, int action, int mods)
             // Deliver pane mouse event to JS (non-consuming — normal flow continues)
             std::string paneEvtType = (action == static_cast<int>(KeyAction_Press)) ? "press" : "release";
             int paneBtn             = (button == static_cast<int>(LeftButton)) ? 0
-                : (button == static_cast<int>(RightButton))                    ? 1
+                            : (button == static_cast<int>(RightButton))        ? 1
                                                                                : 2;
             platform_->scriptEngine_.deliverPaneMouseEvent(
                 clickPane->id(),
@@ -934,7 +934,7 @@ void InputController::onMouseButton(int button, int action, int mods)
         mouseCtx_.pixelX           = static_cast<int>(sx);
         mouseCtx_.pixelY           = static_cast<int>(sy);
         mouseCtx_.button           = mb;
-        mouseCtx_.tabBarClickBarId = { };
+        mouseCtx_.tabBarClickBarId = {};
         mouseCtx_.tabBarClickIndex = (region == MouseRegion::TabBar)
             ? resolveTabBarClickIndex(sx, sy, &mouseCtx_.tabBarClickBarId)
             : -1;
@@ -1631,9 +1631,25 @@ void InputController::onCursorPos(double x, double y)
             term->mouseMoveEvent(&ev);
         }
     } else {
-        // 4. No button held — forward to terminal for motion events (hover/tracking)
-        MouseEvent ev = buildMouseEvent();
-        term->mouseMoveEvent(&ev);
+        // 4. No button held — forward motion to the pane under the cursor
+        // (hover/tracking). Not the focused pane: a focused app with
+        // any-motion tracking must not receive reports (with out-of-range
+        // coordinates, at that) while the cursor is over a different split.
+        if (auto *ht = static_cast<TerminalEmulator *>(hp)) {
+            Rect hpr      = hp->rect();
+            // Clamp to 0: inside the pane's padding the cell-grid-relative
+            // position is slightly negative, which would knock SGR-pixel
+            // reporting (1016) down to cell format.
+            double hRelX  = std::max(0.0, sx - hpr.x - padLeft);
+            double hRelY  = std::max(0.0, sy - hpr.y - padTop);
+            MouseEvent ev = buildMouseEvent();
+            ev.x          = static_cast<int>(hRelX / charWidth);
+            ev.y          = static_cast<int>(hRelY / lineHeight);
+            ev.pixelX     = static_cast<int>(hRelX);
+            ev.pixelY     = static_cast<int>(hRelY);
+            ev.xRightHalf = (hRelX - ev.x * charWidth) >= (charWidth * 0.5);
+            ht->mouseMoveEvent(&ev);
+        }
     }
 }
 
@@ -1655,9 +1671,9 @@ void InputController::startAutoScroll(int dir, int col)
         return;
     }
     autoScrollTimer_       = el->addTimer(50, true, [this]()
-                                          {
+                                    {
                                         doAutoScroll();
-                                          });
+                                    });
     autoScrollTimerActive_ = true;
 }
 
@@ -1891,7 +1907,7 @@ void InputController::replayPendingSequenceKey(const PendingKey &p)
             char ch = (p.key >= 0x61) ? static_cast<char>(p.key) : static_cast<char>(p.key - Key_A + 'a');
             ev.text = std::string(1, ch);
         } else if (p.key >= Key_Space && p.key <= Key_AsciiTilde) {
-            std::string name = window ? window->keyName(p.scancode) : std::string { };
+            std::string name = window ? window->keyName(p.scancode) : std::string {};
             if (!name.empty()) {
                 ev.text = name;
             }

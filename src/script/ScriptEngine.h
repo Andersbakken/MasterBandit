@@ -168,10 +168,13 @@ struct AppCallbacks
     std::function<std::optional<uint64_t>(PaneId, int screenRow)> paneLineIdAt;
 
     // Scrollback text search. `needle` is a literal substring (default) or
-    // an ECMAScript regex when opts.regex is true. Matches are confined to
-    // a single logical line (`startLineId == endLineId` for every Match).
-    // startCol / endCol are cell offsets within the logical line, suitable
-    // as Decoration startCellOffset / endCellOffset.
+    // an RE2 regex when opts.regex is true. One bounded slice per call:
+    // walks newest → oldest from `fromLineId` (0 = newest line), stops at
+    // `limit` matches or `maxLines` lines examined. Matches are confined
+    // to a single logical line (`startLineId == endLineId` for every
+    // Match), newest line first. startCol / endCol are cell offsets within
+    // the logical line, suitable as Decoration startCellOffset /
+    // endCellOffset.
     struct FindMatch
     {
         uint64_t startLineId;
@@ -182,13 +185,22 @@ struct AppCallbacks
 
     struct FindOptions
     {
-        bool regex         = false;
-        bool caseSensitive = false;
-        bool wholeWord     = false;
-        int limit          = 10000;
+        bool regex          = false;
+        bool caseSensitive  = false;
+        bool wholeWord      = false;
+        int limit           = 10000;
+        uint64_t fromLineId = 0;
+        int maxLines        = 0;
     };
 
-    std::function<std::vector<FindMatch>(PaneId, const std::string &needle, const FindOptions &)> paneFindText;
+    struct FindResult
+    {
+        std::vector<FindMatch> matches;
+        uint64_t resumeLineId = 0; // 0 = search complete
+        int linesSearched     = 0;
+    };
+
+    std::function<FindResult(PaneId, const std::string &needle, const FindOptions &)> paneFindText;
 
     // Scroll the pane's viewport so the row with the given logical id is at
     // the top. Returns false if the id evicted, the id resolves into the

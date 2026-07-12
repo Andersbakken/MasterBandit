@@ -5,12 +5,24 @@
 // Document::findText is the C++ engine behind pane.findText. These tests
 // drive it directly through the Document inside a TestTerminal so we can
 // exercise scrollback + visible-grid + wrap edges without pulling in JS.
+//
+// findText is a cursor API: it walks newest → oldest from an optional
+// anchor, bounded by a match cap and a per-call line budget, and returns
+// a resume anchor for the next slice. Matches come back grouped by line,
+// newest line first, ascending column within a line.
 
 namespace {
 
 const Document &doc(TestTerminal &t)
 {
     return t.term.document();
+}
+
+// Single-slice convenience: run one findText call and return its matches.
+std::vector<Document::Match> findAll(TestTerminal &t, std::string_view needle,
+                                     Document::FindOptions opts = {})
+{
+    return doc(t).findText(needle, opts).matches;
 }
 
 bool hasMatch(const std::vector<Document::Match> &v,
@@ -31,16 +43,17 @@ TEST_CASE("findText: empty needle returns no matches")
 {
     TestTerminal t(40, 5);
     t.feed("hello world\r\n");
-    auto matches = doc(t).findText("", {});
-    CHECK(matches.empty());
+    auto res = doc(t).findText("", {});
+    CHECK(res.matches.empty());
+    CHECK(res.resumeLineId == 0);
+    CHECK(res.linesSearched == 0);
 }
 
 TEST_CASE("findText: literal substring on visible grid")
 {
     TestTerminal t(40, 5);
     t.feed("hello world");
-    Document::FindOptions opts;
-    auto matches = doc(t).findText("world", opts);
+    auto matches = findAll(t, "world");
     REQUIRE(matches.size() == 1);
     CHECK(matches[0].startCol == 6);
     CHECK(matches[0].endCol == 11);
@@ -52,7 +65,7 @@ TEST_CASE("findText: case-insensitive by default")
 {
     TestTerminal t(40, 5);
     t.feed("Hello World");
-    auto matches = doc(t).findText("hello", {});
+    auto matches = findAll(t, "hello");
     REQUIRE(matches.size() == 1);
     CHECK(matches[0].startCol == 0);
     CHECK(matches[0].endCol == 5);
@@ -64,18 +77,18 @@ TEST_CASE("findText: case-sensitive opt forces exact case")
     t.feed("Hello World");
     Document::FindOptions opts;
     opts.caseSensitive = true;
-    auto matches       = doc(t).findText("hello", opts);
+    auto matches       = findAll(t, "hello", opts);
     CHECK(matches.empty());
-    matches = doc(t).findText("Hello", opts);
+    matches = findAll(t, "Hello", opts);
     REQUIRE(matches.size() == 1);
     CHECK(matches[0].startCol == 0);
 }
 
-TEST_CASE("findText: multiple non-overlapping matches on one line")
+TEST_CASE("findText: multiple non-overlapping matches on one line, ascending cols")
 {
     TestTerminal t(40, 5);
     t.feed("foo bar foo baz foo");
-    auto matches = doc(t).findText("foo", {});
+    auto matches = findAll(t, "foo");
     REQUIRE(matches.size() == 3);
     CHECK(matches[0].startCol == 0);
     CHECK(matches[1].startCol == 8);
@@ -89,7 +102,7 @@ TEST_CASE("findText: self-overlapping needle skips past its own match")
 {
     TestTerminal t(40, 5);
     t.feed("aaaa");
-    auto matches = doc(t).findText("aa", {});
+    auto matches = findAll(t, "aa");
     // "aaaa" with needle "aa" → 2 non-overlapping matches at 0 and 2,
     // not 3 overlapping at 0/1/2.
     REQUIRE(matches.size() == 2);
@@ -99,26 +112,25 @@ TEST_CASE("findText: self-overlapping needle skips past its own match")
     CHECK(matches[1].endCol == 4);
 }
 
-TEST_CASE("findText: matches across separate logical lines come back in order")
+TEST_CASE("findText: matches across separate logical lines come back newest first")
 {
     TestTerminal t(40, 5);
     t.feed("alpha\r\n");
     t.feed("beta\r\n");
     t.feed("alpha\r\n");
     t.feed("gamma");
-    auto matches = doc(t).findText("alpha", {});
+    auto matches = findAll(t, "alpha");
     REQUIRE(matches.size() == 2);
     CHECK(matches[0].startLineId != matches[1].startLineId);
-    // First match is the older one (oldest-first walk).
-    CHECK(matches[0].startLineId < matches[1].startLineId);
+    // First match is the newer one (newest-first walk).
+    CHECK(matches[0].startLineId > matches[1].startLineId);
 }
 
-TEST_CASE("findText: walks scrollback before visible grid")
+TEST_CASE("findText: walks visible grid before scrollback")
 {
     TestTerminal t(20, 5);
-    // Push enough lines so "needle" lands in scrollback, then put it in
-    // visible grid too. With 5 visible rows + 7 lines + needle + needle
-    // again, the first needle is in scrollback and the second is on screen.
+    // Push enough lines so the first "needle" lands in scrollback, then
+    // put it in the visible grid too.
     for (int i = 0; i < 7; ++i) {
         t.feed("filler" + std::to_string(i) + "\r\n");
     }
@@ -127,10 +139,10 @@ TEST_CASE("findText: walks scrollback before visible grid")
         t.feed("more" + std::to_string(i) + "\r\n");
     }
     t.feed("needle");
-    auto matches = doc(t).findText("needle", {});
+    auto matches = findAll(t, "needle");
     REQUIRE(matches.size() == 2);
-    // Scrollback line is older → comes first.
-    CHECK(matches[0].startLineId < matches[1].startLineId);
+    // Visible-grid line is newer → comes first.
+    CHECK(matches[0].startLineId > matches[1].startLineId);
 }
 
 TEST_CASE("findText: wholeWord enforces boundaries (literal mode)")
@@ -139,7 +151,7 @@ TEST_CASE("findText: wholeWord enforces boundaries (literal mode)")
     t.feed("foo foobar barfoo foo_bar");
     Document::FindOptions opts;
     opts.wholeWord = true;
-    auto matches   = doc(t).findText("foo", opts);
+    auto matches   = findAll(t, "foo", opts);
     // Only the first "foo" is a whole word — "foobar" / "barfoo" /
     // "foo_bar" all have alphanum on at least one side. Underscore counts
     // as word-char, so "foo_bar" fails the right-boundary check.
@@ -154,7 +166,7 @@ TEST_CASE("findText: regex mode with character class")
     t.feed("error 42 warning 17 error 99");
     Document::FindOptions opts;
     opts.regex   = true;
-    auto matches = doc(t).findText("[0-9]+", opts);
+    auto matches = findAll(t, "[0-9]+", opts);
     REQUIRE(matches.size() == 3);
     CHECK(matches[0].startCol == 6);
     CHECK(matches[0].endCol == 8); // "42"
@@ -164,17 +176,18 @@ TEST_CASE("findText: regex mode with character class")
     CHECK(matches[2].endCol == 28); // "99"
 }
 
-TEST_CASE("findText: invalid regex returns empty")
+TEST_CASE("findText: invalid regex returns empty complete result")
 {
     TestTerminal t(40, 5);
     t.feed("hello");
     Document::FindOptions opts;
-    opts.regex   = true;
-    auto matches = doc(t).findText("[unclosed", opts);
-    CHECK(matches.empty());
+    opts.regex = true;
+    auto res   = doc(t).findText("[unclosed", opts);
+    CHECK(res.matches.empty());
+    CHECK(res.resumeLineId == 0);
 }
 
-TEST_CASE("findText: limit caps the number of results")
+TEST_CASE("findText: limit keeps the newest matches and reports a resume anchor")
 {
     TestTerminal t(40, 5);
     // 30 separate logical lines each containing the needle.
@@ -182,9 +195,147 @@ TEST_CASE("findText: limit caps the number of results")
         t.feed("hit" + std::to_string(i) + "\r\n");
     }
     Document::FindOptions opts;
-    opts.limit   = 5;
-    auto matches = doc(t).findText("hit", opts);
-    CHECK(matches.size() == 5);
+    opts.limit = 5;
+    auto res   = doc(t).findText("hit", opts);
+    REQUIRE(res.matches.size() == 5);
+    // Newest-first walk: the truncated-away matches are the OLDEST ones.
+    CHECK(res.matches[0].startLineId > res.matches[4].startLineId);
+    CHECK(res.resumeLineId != 0);
+
+    // Resuming picks up the remaining 25 and completes.
+    opts.limit      = 0;
+    opts.fromLineId = res.resumeLineId;
+    auto rest       = doc(t).findText("hit", opts);
+    CHECK(rest.matches.size() == 25);
+    CHECK(rest.resumeLineId == 0);
+}
+
+TEST_CASE("findText: limit never splits a line's matches")
+{
+    TestTerminal t(40, 5);
+    t.feed("foo foo foo\r\n"); // older line, 3 matches
+    t.feed("foo foo\r\n");     // newer line, 2 matches
+    Document::FindOptions opts;
+    opts.limit = 1;
+    auto res   = doc(t).findText("foo", opts);
+    // The newest matching line has 2 matches; both are returned even
+    // though the cap was hit after the first.
+    REQUIRE(res.matches.size() == 2);
+    CHECK(res.matches[0].startLineId == res.matches[1].startLineId);
+    REQUIRE(res.resumeLineId != 0);
+
+    opts.fromLineId = res.resumeLineId;
+    auto rest       = doc(t).findText("foo", opts);
+    REQUIRE(rest.matches.size() == 3);
+    CHECK(rest.matches[0].startLineId < res.matches[0].startLineId);
+}
+
+TEST_CASE("findText: maxLines bounds per-call work; resumed slices cover everything once")
+{
+    TestTerminal t(20, 5);
+    for (int i = 0; i < 30; ++i) {
+        t.feed("hit" + std::to_string(i) + "\r\n");
+    }
+    Document::FindOptions opts;
+    opts.limit       = 0;
+    opts.maxLines    = 4;
+    int totalMatches = 0;
+    int rounds       = 0;
+    uint64_t from    = 0;
+    while (true) {
+        opts.fromLineId = from;
+        auto res        = doc(t).findText("hit", opts);
+        CHECK(res.linesSearched <= 4);
+        totalMatches += static_cast<int>(res.matches.size());
+        ++rounds;
+        REQUIRE(rounds < 100);
+        if (res.resumeLineId == 0) {
+            break;
+        }
+        from = res.resumeLineId;
+    }
+    CHECK(totalMatches == 30);
+    CHECK(rounds > 1);
+}
+
+TEST_CASE("findText: maxLines makes a miss cheap")
+{
+    TestTerminal t(20, 5);
+    for (int i = 0; i < 30; ++i) {
+        t.feed("filler" + std::to_string(i) + "\r\n");
+    }
+    Document::FindOptions opts;
+    opts.maxLines = 3;
+    auto res      = doc(t).findText("zzqx", opts);
+    CHECK(res.matches.empty());
+    CHECK(res.linesSearched == 3);
+    CHECK(res.resumeLineId != 0); // more document remains
+}
+
+TEST_CASE("findText: chunked pagination equals one uncapped call")
+{
+    TestTerminal t(30, 5);
+    for (int i = 0; i < 25; ++i) {
+        t.feed("word" + std::to_string(i % 3) + " tail\r\n");
+    }
+    Document::FindOptions all;
+    all.limit  = 0;
+    auto whole = doc(t).findText("word", all).matches;
+    REQUIRE(!whole.empty());
+
+    std::vector<Document::Match> paged;
+    Document::FindOptions opts;
+    opts.limit    = 3;
+    opts.maxLines = 4;
+    uint64_t from = 0;
+    int rounds    = 0;
+    while (true) {
+        opts.fromLineId = from;
+        auto res        = doc(t).findText("word", opts);
+        paged.insert(paged.end(), res.matches.begin(), res.matches.end());
+        ++rounds;
+        REQUIRE(rounds < 100);
+        if (res.resumeLineId == 0) {
+            break;
+        }
+        from = res.resumeLineId;
+    }
+    REQUIRE(paged.size() == whole.size());
+    for (size_t i = 0; i < whole.size(); ++i) {
+        CHECK(paged[i].startLineId == whole[i].startLineId);
+        CHECK(paged[i].startCol == whole[i].startCol);
+        CHECK(paged[i].endCol == whole[i].endCol);
+    }
+}
+
+TEST_CASE("findText: fromLineId anchor is inclusive and skips newer lines")
+{
+    TestTerminal t(40, 5);
+    t.feed("mark A\r\n");
+    t.feed("mark B\r\n");
+    t.feed("mark C");
+    auto all = findAll(t, "mark");
+    REQUIRE(all.size() == 3); // newest first: C, B, A
+
+    Document::FindOptions opts;
+    opts.fromLineId = all[1].startLineId; // anchor at B
+    auto res        = doc(t).findText("mark", opts);
+    REQUIRE(res.matches.size() == 2);
+    CHECK(res.matches[0].startLineId == all[1].startLineId); // B itself
+    CHECK(res.matches[1].startLineId == all[2].startLineId); // then A
+    CHECK(res.resumeLineId == 0);
+}
+
+TEST_CASE("findText: unknown fromLineId reports completion")
+{
+    TestTerminal t(40, 5);
+    t.feed("hello world\r\n");
+    Document::FindOptions opts;
+    opts.fromLineId = 99999999ull;
+    auto res        = doc(t).findText("hello", opts);
+    CHECK(res.matches.empty());
+    CHECK(res.resumeLineId == 0);
+    CHECK(res.linesSearched == 0);
 }
 
 TEST_CASE("findText: unicode codepoints encode and search correctly")
@@ -192,7 +343,7 @@ TEST_CASE("findText: unicode codepoints encode and search correctly")
     TestTerminal t(40, 5);
     // Greek alpha (U+03B1) — 2-byte UTF-8.
     t.feed("alpha α beta α gamma");
-    auto matches = doc(t).findText("\xCE\xB1", {});
+    auto matches = findAll(t, "\xCE\xB1");
     REQUIRE(matches.size() == 2);
     CHECK(matches[0].startCol == 6);
     CHECK(matches[0].endCol == 7);
@@ -207,7 +358,7 @@ TEST_CASE("findText: match anchored by lineId survives scroll")
         t.feed("line" + std::to_string(i) + "\r\n");
     }
     t.feed("findme\r\n");
-    auto before = doc(t).findText("findme", {});
+    auto before = findAll(t, "findme");
     REQUIRE(before.size() == 1);
     uint64_t id = before[0].startLineId;
 
@@ -215,7 +366,7 @@ TEST_CASE("findText: match anchored by lineId survives scroll")
     for (int i = 0; i < 20; ++i) {
         t.feed("filler" + std::to_string(i) + "\r\n");
     }
-    auto after = doc(t).findText("findme", {});
+    auto after = findAll(t, "findme");
     REQUIRE(after.size() == 1);
     CHECK(after[0].startLineId == id); // same line ID, just scrolled
     CHECK(after[0].startCol == before[0].startCol);
@@ -230,11 +381,40 @@ TEST_CASE("findText: cell offset crosses soft-wrap boundary on visible grid")
     // decoration resolver maps back to two visual rows.
     TestTerminal t(10, 5);
     t.feed("aaaa needle bbbb"); // length 16, soft-wraps at col 10
-    auto matches = doc(t).findText("needle", {});
+    auto matches = findAll(t, "needle");
     REQUIRE(matches.size() == 1);
     // "needle" starts at logical col 5 (offset within the wrapped line).
     CHECK(matches[0].startCol == 5);
     CHECK(matches[0].endCol == 11);
+}
+
+TEST_CASE("findText: match crossing a scrollback block boundary is found")
+{
+    // A logical line longer than LogicalLineBlock::kCellCapacity (682) is
+    // split across consecutive blocks that share one lineId. The needle is
+    // placed at cells 676..682 so it straddles the first split point when
+    // the line opens a fresh block (40-col rows → 17 rows = 680 cells fit
+    // in block 0). If capacities change the needle no longer straddles,
+    // but the match itself must be found at col 676 either way.
+    TestTerminal t(40, 5);
+    std::string line(676, 'a');
+    line += "NEEDLE";
+    line.append(2000 - line.size(), 'b');
+    t.feed(line);
+    t.feed("\r\n");
+    for (int i = 0; i < 8; ++i) {
+        t.feed("filler" + std::to_string(i) + "\r\n");
+    }
+    REQUIRE(doc(t).historySize() > 0);
+
+    auto matches = findAll(t, "NEEDLE");
+    REQUIRE(matches.size() == 1);
+    CHECK(matches[0].startCol == 676);
+    CHECK(matches[0].endCol == 682);
+
+    // And the offsets must resolve through the decoration path.
+    int firstAbs = doc(t).firstAbsOfLine(matches[0].startLineId);
+    CHECK(firstAbs >= 0);
 }
 
 TEST_CASE("scrollToRow: brings matched line to viewport top")
@@ -243,7 +423,7 @@ TEST_CASE("scrollToRow: brings matched line to viewport top")
     for (int i = 0; i < 20; ++i) {
         t.feed("line" + std::to_string(i) + "\r\n");
     }
-    auto matches = doc(t).findText("line5", {});
+    auto matches = findAll(t, "line5");
     REQUIRE(matches.size() == 1);
     REQUIRE(t.term.viewportOffset() == 0);
 
@@ -280,7 +460,7 @@ TEST_CASE("findText → addDecoration → resolveDecoration: many matches on vis
     t.feed("drwxr-x---  3 jhanssen jhanssen      4096 Apr 14 12:17 .bun\r\n");
     REQUIRE(t.term.document().historySize() == 0);
 
-    auto matches = t.term.document().findText("s", {});
+    auto matches = findAll(t, "s");
     REQUIRE(matches.size() > 0);
 
     // Each match must resolve cleanly via firstAbsOfLine.
@@ -324,7 +504,7 @@ TEST_CASE("findText → addDecoration → resolveDecoration: single-cell match, 
     t.feed("hello world");
     REQUIRE(t.term.document().historySize() == 0);
 
-    auto matches = t.term.document().findText("o", {});
+    auto matches = findAll(t, "o");
     REQUIRE(matches.size() == 2); // "hello" and "world" both contain o
     // First "o" at col 4 (h-e-l-l-o), exclusive endCol 5.
     CHECK(matches[0].startCol == 4);
@@ -359,7 +539,7 @@ TEST_CASE("findText → addDecoration → resolveDecoration: single-cell match, 
     REQUIRE(t.term.document().historySize() > 0);
     int hist = t.term.document().historySize();
 
-    auto matches = t.term.document().findText("hello", {});
+    auto matches = findAll(t, "hello");
     REQUIRE(matches.size() == 1); // "hello" is on the bottom visible row only
 
     Decoration d;
@@ -385,7 +565,7 @@ TEST_CASE("scrollToRow: idempotent when already at row")
     for (int i = 0; i < 20; ++i) {
         t.feed("line" + std::to_string(i) + "\r\n");
     }
-    auto matches = doc(t).findText("line0", {});
+    auto matches = findAll(t, "line0");
     REQUIRE(matches.size() == 1);
     bool first = t.term.scrollToRow(matches[0].startLineId);
     CHECK(first);
@@ -423,7 +603,7 @@ TEST_CASE("applyDecorationBatch: empty batch is a no-op")
 {
     TestTerminal t(40, 5);
     t.feed("hello world");
-    auto m = doc(t).findText("o", {});
+    auto m = findAll(t, "o");
     REQUIRE(m.size() >= 1);
 
     auto ids = t.term.applyDecorationBatch({});
@@ -435,7 +615,7 @@ TEST_CASE("applyDecorationBatch: returns ids in queue order, ids match stored de
 {
     TestTerminal t(40, 5);
     t.feed("aaaaa");
-    auto m = doc(t).findText("a", {});
+    auto m = findAll(t, "a");
     REQUIRE(m.size() >= 3);
 
     std::vector<DecorationBatchOp> ops;
@@ -462,7 +642,7 @@ TEST_CASE("applyDecorationBatch: clear-then-add atomically replaces a tag set")
 {
     TestTerminal t(40, 5);
     t.feed("xxxxx");
-    auto m = doc(t).findText("x", {});
+    auto m = findAll(t, "x");
     REQUIRE(m.size() >= 5);
 
     // Pre-populate with 3 "search" decorations.
@@ -503,7 +683,7 @@ TEST_CASE("applyDecorationBatch: clear is tag-scoped")
 {
     TestTerminal t(40, 5);
     t.feed("aaaaa");
-    auto m = doc(t).findText("a", {});
+    auto m = findAll(t, "a");
     REQUIRE(m.size() >= 3);
 
     std::vector<DecorationBatchOp> seed;
@@ -527,7 +707,7 @@ TEST_CASE("applyDecorationBatch: empty clearTag clears all User decorations")
 {
     TestTerminal t(40, 5);
     t.feed("aaaaa");
-    auto m = doc(t).findText("a", {});
+    auto m = findAll(t, "a");
     REQUIRE(m.size() >= 3);
 
     std::vector<DecorationBatchOp> seed;

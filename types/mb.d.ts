@@ -240,6 +240,19 @@ interface MbMatch {
     readonly endCol: number;
 }
 
+/**
+ * One bounded slice of a `pane.findText` search. `matches` is grouped by
+ * line, newest line first, ascending column within a line. `resumeRowId`
+ * continues the walk toward older lines as the next call's `fromRowId`;
+ * `null` means the walk reached the oldest line.
+ */
+interface MbFindResult {
+    readonly matches: MbMatch[];
+    readonly resumeRowId: number | null;
+    /** Logical lines examined by this call. */
+    readonly linesSearched: number;
+}
+
 interface MbMouseEvent {
     /**
      * `"press"` / `"release"` for button events, `"move"` for cursor
@@ -656,33 +669,44 @@ interface MbPane extends MbTerminal {
      */
     rowIdAt(screenRow: number): number | null;
     /**
-     * Search the pane's scrollback + visible grid for `needle`. Matches
-     * are confined to a single logical line each; cell columns are
-     * cumulative within the logical line, usable as `addDecoration`
-     * offsets.
+     * Search one bounded slice of the pane's scrollback + visible grid,
+     * walking newest → oldest from `opts.fromRowId` (omitted = newest
+     * line). The call stops after `opts.limit` matches or `opts.maxLines`
+     * logical lines, whichever comes first, always finishing the boundary
+     * line (limit never splits a line's matches). Chain calls through
+     * `resumeRowId` to cover more of the document; a resume id that has
+     * evicted by the next call reports completion (everything older
+     * evicted with it). Matches are confined to a single logical line
+     * each; cell columns are cumulative within the logical line, usable
+     * as `addDecoration` offsets.
      *
      * Default: case-insensitive literal substring. `opts.regex` switches
-     * to ECMAScript regex (invalid syntax → `[]`, not a throw).
-     * `opts.caseSensitive` disables folding. `opts.wholeWord` requires
-     * word boundaries (literal mode only — regex callers use `\b`).
-     * `opts.limit` caps results.
+     * to RE2 regex — linear-time, no backreferences or lookaround; syntax
+     * close to PCRE otherwise (invalid syntax → empty complete result,
+     * not a throw). `opts.caseSensitive` disables folding.
+     * `opts.wholeWord` requires word boundaries (literal mode only —
+     * regex callers use `\b`).
      *
-     * Walks oldest → newest. Empty `needle` returns `[]`. Lines
-     * straddling the scrollback/visible-grid boundary are searched on the
-     * scrollback side only.
+     * Empty `needle` returns an empty complete result. Lines straddling
+     * the scrollback/visible-grid boundary are searched on the scrollback
+     * side only.
      *
      * Requires `pane.read`.
      */
     findText(needle: string, opts?: {
-        /** Treat `needle` as ECMAScript regex. Default `false`. */
+        /** Treat `needle` as RE2 regex. Default `false`. */
         regex?: boolean;
         /** Default `false` (i.e. case-insensitive). */
         caseSensitive?: boolean;
         /** Match only at word boundaries. Literal-mode only. Default `false`. */
         wholeWord?: boolean;
-        /** Hard cap; <= 0 means no cap. Default 10000. */
+        /** Soft cap on matches per call; <= 0 means no cap. Default 10000. */
         limit?: number;
-    }): MbMatch[];
+        /** Row id to start at (inclusive), walking older. Omitted = newest line. */
+        fromRowId?: number;
+        /** Max logical lines examined per call; <= 0 means unbounded. Default unbounded. */
+        maxLines?: number;
+    }): MbFindResult;
     /**
      * Scroll so the line with `rowId` is at the top. Returns `true` if
      * the viewport changed; `false` if the id was evicted, already

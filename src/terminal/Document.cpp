@@ -1339,25 +1339,28 @@ void Document::resizeReflow(int newCols, int newRows, CursorTrack *cursor)
 // findText
 // ----------------------------------------------------------------------------
 //
-// Searches every logical line independently. A "logical line" is the
-// shell-emitted line as a single contiguous cell run, regardless of how
-// soft-wrapping splits it across visual rows at the current width. Matches
-// span at most one logical line (`startLineId == endLineId`).
+// Searches logical lines independently, newest → oldest, one bounded slice
+// per call. A "logical line" is the shell-emitted line as a single
+// contiguous cell run, regardless of how soft-wrapping splits it across
+// visual rows at the current width. Matches span at most one logical line
+// (`startLineId == endLineId`).
 //
-// Algorithm:
-//   1. For each logical line, build a per-line UTF-8 buffer plus a parallel
-//      byte→cell-column index. (Cell columns are NOT byte offsets — wide
-//      glyphs span 2 cells but encode 1+ bytes; combining marks live in
-//      CellExtra and aren't included in the search text. Sticking to the
-//      `Cell::wc` codepoint stream matches getTextFromLines' notion of
-//      "what's on the line".)
+// Per line:
+//   1. Build a UTF-8 buffer from the line's cell fragments. (Cell columns
+//      are NOT byte offsets — wide glyphs span 2 cells but encode 1+
+//      bytes; combining marks live in CellExtra and aren't included in the
+//      search text. Sticking to the `Cell::wc` codepoint stream matches
+//      getTextFromLines' notion of "what's on the line".)
 //   2. Run substring or regex search on that buffer.
-//   3. For each hit, translate the byte range back through byteToCol to
-//      cell columns; emit a Match anchored on the line id.
+//   3. Only for lines with hits, build the parallel byte→cell-offset index
+//      in a second pass over the same fragments, then translate byte
+//      ranges to cell offsets and emit Matches anchored on the line id.
 //
-// The first visible-grid logical line is merged with the last scrollback
-// logical line when they share an id (soft-wrap straddle), so a match
-// crossing that boundary isn't missed.
+// A logical line is a list of cell fragments: one per visible-grid row for
+// on-screen lines, one per LogicalLineBlock piece for scrollback lines (a
+// line longer than one block spans consecutive blocks, each piece carrying
+// the same lineId). Fragments are concatenated before searching so a match
+// crossing a fragment boundary is found and its offsets resolve correctly.
 
 namespace {
 
@@ -1366,47 +1369,54 @@ struct LineBuf
     uint64_t lineId = 0;
     std::string text;
     // For each byte in `text`, the cell-offset within the logical line that
-    // it originated from. Length == text.size(). For multi-byte UTF-8
-    // characters every byte gets the same offset. "Cell offset" means the
-    // value Decoration::startCellOffset / endCellOffset takes — cumulative
-    // across visual-row wraps within one logical line, NOT 0..cols-1 per
-    // row. resolveDecoration() does `row = firstAbs + off/w; col = off%w`,
-    // so a match crossing a visual-wrap boundary resolves correctly.
+    // it originated from. Length == text.size() when built. For multi-byte
+    // UTF-8 characters every byte gets the same offset. "Cell offset" means
+    // the value Decoration::startCellOffset / endCellOffset takes —
+    // cumulative across visual-row wraps within one logical line, NOT
+    // 0..cols-1 per row. resolveDecoration() does `row = firstAbs + off/w;
+    // col = off%w`, so a match crossing a visual-wrap boundary resolves
+    // correctly. Built lazily — only for lines that have matches.
     std::vector<int> byteToOffset;
     // Cell offset AFTER the last appended cell — resolves to the exclusive
     // end-column for matches that end at byte == text.size().
     int byteToOffsetEnd = 0;
 };
 
-// Append cells [from..to) into `out`, growing both `text` and
-// `byteToOffset`. `baseOffset` is the cumulative cell offset within the
-// logical line at which `cells[from]` lives — for scrollback lines that's
-// always 0 (the block stores the whole logical line contiguously); for
-// visible-grid multi-row logical lines it's `(rowIdxWithinLine) * cols_`.
+// One contiguous cell run of a logical line.
+struct LineFragment
+{
+    const Cell *cells;
+    int len;
+};
+
+// Append `len` cells into `out.text` (offsets == false) or into
+// `out.byteToOffset` (offsets == true). The two modes share one loop so
+// the byte counts they produce can't drift apart — byteToOffset must have
+// exactly one entry per text byte. `baseOffset` is the cumulative cell
+// offset of `cells[0]` within the logical line.
 //
 // Wide-glyph trailing cells (wc == 0) become a single space, mirroring
 // getTextFromLines' visible-text contract.
-void appendCellsToLineBuf(LineBuf &out, const Cell *cells, int from, int to, int baseOffset)
+void appendCellsToLineBuf(LineBuf &out, const Cell *cells, int len, int baseOffset, bool offsets)
 {
-    for (int c = from; c < to; ++c) {
-        int off     = baseOffset + c;
+    for (int c = 0; c < len; ++c) {
         char32_t cp = cells[c].wc;
+        char buf[4];
+        int n = 1;
         if (cp == 0) {
-            out.text += ' ';
-            out.byteToOffset.push_back(off);
+            buf[0] = ' ';
         } else if (cp < 0x80) {
-            out.text += static_cast<char>(cp);
-            out.byteToOffset.push_back(off);
+            buf[0] = static_cast<char>(cp);
         } else {
-            char buf[4];
-            int n = utf8::encode(cp, buf);
-            for (int k = 0; k < n; ++k) {
-                out.text += buf[k];
-                out.byteToOffset.push_back(off);
-            }
+            n = utf8::encode(cp, buf);
+        }
+        if (offsets) {
+            out.byteToOffset.insert(out.byteToOffset.end(), static_cast<size_t>(n), baseOffset + c);
+        } else {
+            out.text.append(buf, static_cast<size_t>(n));
         }
     }
-    out.byteToOffsetEnd = baseOffset + to;
+    out.byteToOffsetEnd = baseOffset + len;
 }
 
 // Trim trailing nulls (cells with wc == 0 at the very end of a line are
@@ -1561,17 +1571,17 @@ void emitMatches(const LineBuf &buf,
 
 } // namespace
 
-std::vector<Document::Match>
+Document::FindResult
 Document::findText(std::string_view needle, const FindOptions &opts) const
 {
-    std::vector<Match> results;
+    FindResult res;
     if (needle.empty()) {
-        return results;
+        return res;
     }
 
-    // Build the regex up front (constant per call). Bail to empty result on
-    // syntax errors rather than throwing — the JS layer prefers a clean
-    // empty list to a try/catch dance.
+    // Build the regex up front (constant per call). Bail to an empty,
+    // complete result on syntax errors rather than throwing — the JS layer
+    // prefers a clean empty list to a try/catch dance.
     //
     // RE2 is the engine: linear-time guarantee (no catastrophic
     // backtracking), so a malicious or accidentally-pathological pattern
@@ -1585,40 +1595,21 @@ Document::findText(std::string_view needle, const FindOptions &opts) const
         reOpts.set_case_sensitive(opts.caseSensitive);
         compiled.emplace(re2::StringPiece(needle.data(), needle.size()), reOpts);
         if (!compiled->ok()) {
-            return results;
+            return res;
         }
     }
 
-    const int hardCap = opts.limit > 0 ? opts.limit : std::numeric_limits<int>::max();
-    auto remaining    = [&]() -> int
-    {
-        return std::max(0, hardCap - static_cast<int>(results.size()));
-    };
+    const int matchCap   = opts.limit > 0 ? opts.limit : std::numeric_limits<int>::max();
+    const int lineBudget = opts.maxLines > 0 ? opts.maxLines : std::numeric_limits<int>::max();
 
-    auto runOnBuffer = [&](const LineBuf &buf)
-    {
-        if (buf.text.empty()) {
-            return;
-        }
-        std::vector<std::pair<size_t, size_t>> hits;
-        if (compiled) {
-            hits = regexMatches(buf.text, *compiled, remaining());
-        } else {
-            hits = substringMatches(buf.text, needle, opts.caseSensitive, opts.wholeWord, remaining());
-        }
-        emitMatches(buf, hits, results);
-    };
-
-    // -------- Scrollback --------
-    //
-    // Iterate every logical line in scrollback in order (oldest first).
-    // The last logical line may be "partial" — soft-wrap-continued in the
-    // visible grid (the user's live edit line). The id of that partial is
-    // tracked so the visible-grid pass can skip its continuation:
-    // resolveDecoration anchors via firstAbsOfLine(id), which points into
-    // scrollback, so a visible-grid match at offset≥L_sb would resolve to
-    // the wrong abs row. Better to under-match (rare straddles) than to
-    // paint highlights on the wrong cells.
+    // The scrollback's last logical line may be "partial" — soft-wrap-
+    // continued into the visible grid (the user's live edit line). Its
+    // visible-grid continuation is skipped: resolveDecoration anchors via
+    // firstAbsOfLine(id), which points into scrollback, so a visible-grid
+    // match at offset ≥ the scrollback-side length would resolve to the
+    // wrong abs row. Better to under-match (rare straddles) than to paint
+    // highlights on the wrong cells. The scrollback side of the straddle
+    // line is searched normally.
     const int blockCount     = scrollback_.blockCount();
     const bool sbLastPartial = scrollback_.lastLineIsPartial();
     uint64_t sbLastPartialId = 0;
@@ -1630,75 +1621,217 @@ Document::findText(std::string_view needle, const FindOptions &opts) const
         }
     }
 
-    for (int bi = 0; bi < blockCount; ++bi) {
-        if (results.size() >= static_cast<size_t>(hardCap) && hardCap > 0) {
-            break;
+    // One logical line per iteration: gather its fragments, build the text
+    // buffer, search, and only on a hit build the byte→offset index in a
+    // second pass. Buffers are reused across lines.
+    LineBuf buf;
+    std::vector<LineFragment> frags;
+    auto searchLine = [&](uint64_t id)
+    {
+        buf.lineId = id;
+        buf.text.clear();
+        int base = 0;
+        for (const auto &f : frags) {
+            appendCellsToLineBuf(buf, f.cells, f.len, base, /*offsets=*/false);
+            base += f.len;
         }
-        const auto &block = scrollback_.block(bi);
-        const int n       = block.numLines();
-        for (int li = 0; li < n; ++li) {
-            const Cell *p = block.lineCells(li);
-            int len       = trimmedLen(p, block.lineLength(li));
-            uint64_t id   = block.lineId(li);
+        if (buf.text.empty()) {
+            return;
+        }
+        std::vector<std::pair<size_t, size_t>> hits;
+        if (compiled) {
+            hits = regexMatches(buf.text, *compiled, /*remainingLimit=*/0);
+        } else {
+            hits = substringMatches(buf.text, needle, opts.caseSensitive, opts.wholeWord, /*remainingLimit=*/0);
+        }
+        if (hits.empty()) {
+            return;
+        }
+        buf.byteToOffset.clear();
+        base = 0;
+        for (const auto &f : frags) {
+            appendCellsToLineBuf(buf, f.cells, f.len, base, /*offsets=*/true);
+            base += f.len;
+        }
+        emitMatches(buf, hits, res.matches);
+    };
 
-            LineBuf buf;
-            buf.lineId = id;
-            appendCellsToLineBuf(buf, p, 0, len, /*baseOffset=*/0);
-            runOnBuffer(buf);
+    auto stopNow = [&]() -> bool
+    {
+        return static_cast<int>(res.matches.size()) >= matchCap || res.linesSearched >= lineBudget;
+    };
 
-            if (results.size() >= static_cast<size_t>(hardCap) && hardCap > 0) {
-                break;
+    // Scrollback walk position: (block, line-in-block) of the FIRST
+    // fragment of the current logical line (findLine points at the first
+    // block of a multi-block line). bi < 0 = no position.
+    struct SbPos
+    {
+        int bi = -1;
+        int li = 0;
+    };
+
+    auto nextPos = [&](SbPos p) -> SbPos
+    {
+        if (p.li + 1 < scrollback_.block(p.bi).numLines()) {
+            return { p.bi, p.li + 1 };
+        }
+        int b = p.bi + 1;
+        while (b < blockCount && scrollback_.block(b).numLines() == 0) {
+            ++b;
+        }
+        if (b >= blockCount) {
+            return {};
+        }
+        return { b, 0 };
+    };
+
+    auto prevPos = [&](SbPos p) -> SbPos
+    {
+        if (p.li > 0) {
+            return { p.bi, p.li - 1 };
+        }
+        int b = p.bi - 1;
+        while (b >= 0 && scrollback_.block(b).numLines() == 0) {
+            --b;
+        }
+        if (b < 0) {
+            return {};
+        }
+        return { b, scrollback_.block(b).numLines() - 1 };
+    };
+
+    auto firstFragOf = [&](uint64_t id) -> SbPos
+    {
+        if (auto loc = scrollback_.findLine(id)) {
+            return { loc->blockIdx, loc->externalLineIdx };
+        }
+        return {};
+    };
+
+    auto newestSbLine = [&]() -> SbPos
+    {
+        if (blockCount == 0) {
+            return {};
+        }
+        return firstFragOf(scrollback_.lastLineId());
+    };
+
+    // The id to resume at when stopping above visible row `gs`: the next
+    // non-zero id upward (id 0 rows are unwritten — skip), else the newest
+    // scrollback line. 0 = nothing older exists.
+    auto visibleResumeAbove = [&](int gs) -> uint64_t
+    {
+        for (int r = gs - 1; r >= 0; --r) {
+            if (screenLineId_[r] != 0) {
+                return screenLineId_[r];
+            }
+        }
+        return blockCount > 0 ? scrollback_.lastLineId() : 0;
+    };
+
+    // -------- Anchor resolution --------
+    //
+    // fromLineId == 0 starts at the newest line (bottom of the visible
+    // grid). Otherwise the anchor is located in the visible grid first,
+    // then scrollback; an id in neither has evicted (or never existed) —
+    // and since eviction only drops the oldest lines, everything older is
+    // gone too, so the walk is complete.
+    int vgRow    = -1; // bottom row of the current visible group; -1 = not in visible phase
+    SbPos sbLine = {};
+    if (opts.fromLineId == 0) {
+        vgRow = screenHeight_ - 1;
+    } else {
+        int found = -1;
+        if (!(sbLastPartial && opts.fromLineId == sbLastPartialId)) {
+            for (int r = screenHeight_ - 1; r >= 0; --r) {
+                if (screenLineId_[r] == opts.fromLineId) {
+                    found = r;
+                    break;
+                }
+            }
+        }
+        if (found >= 0) {
+            vgRow = found;
+        } else {
+            sbLine = firstFragOf(opts.fromLineId);
+            if (sbLine.bi < 0) {
+                return res;
             }
         }
     }
 
-    // -------- Visible grid --------
-    //
-    // Walk screenLineId_ and accumulate consecutive same-id rows into one
-    // search buffer. Skip logical lines whose id matches the scrollback
-    // partial (see comment above on why straddles can't be anchored
-    // correctly via line-id decoration). Cell offsets are cumulative within
-    // the logical line: the k-th visual row of a multi-row visible-grid
-    // logical line contributes cells at offsets `k * cols_ ..
-    // k * cols_ + cols_ - 1`. resolveDecoration's `row = firstAbs + off/w`
-    // recovers the abs row.
-    if (results.size() < static_cast<size_t>(hardCap) || hardCap == 0) {
-        int i = 0;
-        while (i < screenHeight_) {
-            uint64_t id = screenLineId_[i];
-            int j       = i;
-            while (j < screenHeight_ && screenLineId_[j] == id) {
-                ++j;
-            }
-
-            // Skip straddle lines (also skips id == 0, which never has
-            // valid scrollback presence anyway — defensive).
-            if (id != 0 && sbLastPartial && id == sbLastPartialId) {
-                i = j;
-                continue;
-            }
-
-            LineBuf buf;
-            buf.lineId = id;
-            for (int sr = i; sr < j; ++sr) {
-                int phys      = screenRowToPhysical(sr);
-                const Cell *p = rowPtr(phys);
+    // -------- Visible grid, bottom → top --------
+    while (vgRow >= 0) {
+        uint64_t id = screenLineId_[vgRow];
+        int gs      = vgRow;
+        while (gs > 0 && screenLineId_[gs - 1] == id) {
+            --gs;
+        }
+        // Skip unwritten rows (id 0) and the straddle continuation.
+        bool skip = id == 0 || (sbLastPartial && id == sbLastPartialId);
+        if (!skip) {
+            frags.clear();
+            for (int sr = gs; sr <= vgRow; ++sr) {
+                const Cell *p = rowPtr(screenRowToPhysical(sr));
                 // Intermediate rows of a soft-wrap chain are full-width by
                 // construction (pushVisibleRowToScrollback keeps len=cols_
                 // for soft rows). Only the last row of the chain may have
                 // trailing nulls trimmed — matches getTextFromLines.
-                bool isLast   = (sr == j - 1);
-                int rowLen    = isLast ? trimmedLen(p, cols_) : cols_;
-                int baseOff   = (sr - i) * cols_;
-                appendCellsToLineBuf(buf, p, 0, rowLen, baseOff);
+                int rowLen    = sr == vgRow ? trimmedLen(p, cols_) : cols_;
+                frags.push_back({ p, rowLen });
             }
-            runOnBuffer(buf);
-            if (results.size() >= static_cast<size_t>(hardCap) && hardCap > 0) {
-                break;
+            searchLine(id);
+            ++res.linesSearched;
+            if (stopNow()) {
+                res.resumeLineId = visibleResumeAbove(gs);
+                return res;
             }
-            i = j;
         }
+        vgRow = gs - 1;
+    }
+    // Visible grid exhausted (or the anchor never was there): continue at
+    // the newest scrollback line. A scrollback anchor set sbLine already.
+    if (sbLine.bi < 0) {
+        sbLine = newestSbLine();
     }
 
-    return results;
+    // -------- Scrollback, newest → oldest --------
+    while (sbLine.bi >= 0) {
+        uint64_t id = scrollback_.block(sbLine.bi).lineId(sbLine.li);
+        frags.clear();
+        SbPos p = sbLine;
+        while (true) {
+            const auto &block = scrollback_.block(p.bi);
+            frags.push_back({ block.lineCells(p.li), block.lineLength(p.li) });
+            SbPos n = nextPos(p);
+            if (n.bi < 0 || scrollback_.block(n.bi).lineId(n.li) != id) {
+                break;
+            }
+            p = n;
+        }
+        // Trailing nulls are padding — trim the last fragment only.
+        frags.back().len = trimmedLen(frags.back().cells, frags.back().len);
+        searchLine(id);
+        ++res.linesSearched;
+
+        SbPos older = prevPos(sbLine);
+        uint64_t olderId =
+            older.bi >= 0 ? scrollback_.block(older.bi).lineId(older.li) : 0;
+        if (stopNow()) {
+            res.resumeLineId = olderId;
+            return res;
+        }
+        // `older` is the LAST fragment of the older line; rewind to its
+        // first fragment (a no-op except for the rare multi-block line).
+        while (older.bi >= 0) {
+            SbPos q = prevPos(older);
+            if (q.bi < 0 || scrollback_.block(q.bi).lineId(q.li) != olderId) {
+                break;
+            }
+            older = q;
+        }
+        sbLine = older;
+    }
+
+    return res;
 }

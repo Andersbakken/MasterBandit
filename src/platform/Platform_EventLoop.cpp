@@ -364,9 +364,9 @@ int PlatformDawn::exec()
         scbs.paneFindText = [this](Script::PaneId paneId,
                                    const std::string &needle,
                                    const Script::AppCallbacks::FindOptions &opts)
-            -> std::vector<Script::AppCallbacks::FindMatch>
+            -> Script::AppCallbacks::FindResult
         {
-            std::vector<Script::AppCallbacks::FindMatch> out;
+            Script::AppCallbacks::FindResult out;
             Terminal *p = scriptEngine_.terminal(paneId);
             if (!p) {
                 return out;
@@ -377,15 +377,19 @@ int PlatformDawn::exec()
             docOpts.caseSensitive = opts.caseSensitive;
             docOpts.wholeWord     = opts.wholeWord;
             docOpts.limit         = opts.limit;
-            auto matches          = p->document().findText(needle, docOpts);
-            out.reserve(matches.size());
-            for (const auto &m : matches) {
+            docOpts.fromLineId    = opts.fromLineId;
+            docOpts.maxLines      = opts.maxLines;
+            auto res              = p->document().findText(needle, docOpts);
+            out.resumeLineId      = res.resumeLineId;
+            out.linesSearched     = res.linesSearched;
+            out.matches.reserve(res.matches.size());
+            for (const auto &m : res.matches) {
                 Script::AppCallbacks::FindMatch fm;
                 fm.startLineId = m.startLineId;
                 fm.startCol    = m.startCol;
                 fm.endLineId   = m.endLineId;
                 fm.endCol      = m.endCol;
-                out.push_back(fm);
+                out.matches.push_back(fm);
             }
             return out;
         };

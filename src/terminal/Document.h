@@ -150,10 +150,18 @@ public:
     // user-typed patterns cannot hang the search thread.
     struct FindOptions
     {
-        bool regex         = false; // treat needle as RE2 regex
-        bool caseSensitive = false; // case-insensitive by default
-        bool wholeWord     = false; // literal mode only: word-boundary match (\b)
-        int limit          = 10000; // hard cap on matches returned (0 = no cap)
+        bool regex          = false; // treat needle as RE2 regex
+        bool caseSensitive  = false; // case-insensitive by default
+        bool wholeWord      = false; // literal mode only: word-boundary match (\b)
+        int limit           = 10000; // soft cap on matches per call (0 = no cap)
+        // Logical line to start at (inclusive), walking toward older lines.
+        // 0 = newest line in the document. Pass a prior call's
+        // FindResult::resumeLineId to continue where it stopped.
+        uint64_t fromLineId = 0;
+        // Max logical lines examined per call (0 = unbounded). Bounds the
+        // work of a call independently of how many matches exist, so a
+        // needle with no matches can't force a full-document walk.
+        int maxLines        = 0;
     };
 
     // One match. Anchors are logical-line ids; both ends always equal each
@@ -170,19 +178,35 @@ public:
         int endCol;
     };
 
-    // Walk every logical line in scrollback + visible grid, looking for
-    // `needle`. Each logical line is searched independently — a match
-    // cannot span lines (terminal scrollback wraps, so a "line" can already
-    // be many display rows; cross-line matching across hard newlines isn't
-    // a useful generalization). Walks oldest → newest, so the returned
-    // vector is sorted by abs-row order. Honors `opts.limit` as a hard cap;
-    // exceeding it stops the walk early.
+    struct FindResult
+    {
+        // Grouped by line, newest line first; ascending column within a
+        // line.
+        std::vector<Match> matches;
+        // Line to pass as fromLineId to continue the walk toward older
+        // lines. 0 = the walk reached the oldest line (search complete).
+        uint64_t resumeLineId = 0;
+        // Logical lines examined this call.
+        int linesSearched     = 0;
+    };
+
+    // Search one bounded slice of the document, walking newest → oldest
+    // from `opts.fromLineId` (0 = newest). Each logical line is searched
+    // independently — a match cannot span lines. The call stops after
+    // `opts.limit` matches or `opts.maxLines` lines, whichever comes
+    // first, finishing the boundary line either way (limit never splits a
+    // line's matches). FindResult::resumeLineId continues the walk; if the
+    // resume line has evicted by then, everything older has too, and the
+    // next call reports completion.
     //
-    // Empty needle returns no matches. Invalid regex (when opts.regex is
-    // set) returns no matches. Wide-glyph trailing cells (`Cell::wc == 0`)
-    // are encoded as a single space in the search text, matching
-    // getTextFromLines' behavior.
-    std::vector<Match> findText(std::string_view needle, const FindOptions &opts) const;
+    // Empty needle and invalid regex (when opts.regex is set) return an
+    // empty, complete result. A fromLineId not present in the document is
+    // treated as evicted (empty, complete). Wide-glyph trailing cells
+    // (`Cell::wc == 0`) are encoded as a single space in the search text,
+    // matching getTextFromLines' behavior. A logical line straddling the
+    // scrollback / visible-grid boundary is searched on its scrollback
+    // side only (its visible continuation can't be anchored by line id).
+    FindResult findText(std::string_view needle, const FindOptions &opts) const;
 
     // Eviction callback: fires once per dropped line ID after it's removed
     // from scrollback. Used by Terminal to destroy embedded terminals

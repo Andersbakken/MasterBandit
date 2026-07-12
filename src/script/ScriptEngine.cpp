@@ -982,13 +982,20 @@ static JSValue jsPaneRowIdAt(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt64(ctx, static_cast<int64_t>(*result));
 }
 
-// pane.findText(needle, opts?) -> Array<{startRowId, startCol, endRowId, endCol}>
+// pane.findText(needle, opts?) ->
+//   { matches: Array<{startRowId, startCol, endRowId, endCol}>,
+//     resumeRowId: number|null, linesSearched: number }
 //
-// Walks scrollback + visible grid for substring or regex hits. Each match
-// is confined to one logical line; startRowId === endRowId always. Cell
+// One bounded search slice: walks newest → oldest from opts.fromRowId
+// (omitted = the newest line), stopping at opts.limit matches or
+// opts.maxLines logical lines examined. matches is grouped by line,
+// newest line first. resumeRowId continues the walk as the next call's
+// fromRowId; null means the walk reached the oldest line. Each match is
+// confined to one logical line; startRowId === endRowId always. Cell
 // columns are logical-line offsets (cumulative across visual wraps),
 // directly usable as decoration startCol/endCol. Empty needle, missing
-// pane, or regex syntax error yield an empty array. Requires `pane.read`.
+// pane, regex syntax error, or an evicted fromRowId yield an empty
+// complete result. Requires `pane.read`.
 static JSValue jsPaneFindText(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv)
 {
@@ -1001,9 +1008,6 @@ static JSValue jsPaneFindText(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "pane is destroyed");
     }
     Engine *eng = engineFromCtx(ctx);
-    if (!eng->callbacks().paneFindText) {
-        return JS_NewArray(ctx);
-    }
 
     const char *needleC = JS_ToCString(ctx, argv[0]);
     if (!needleC) {
@@ -1022,30 +1026,51 @@ static JSValue jsPaneFindText(JSContext *ctx, JSValueConst this_val,
             }
             JS_FreeValue(ctx, v);
         };
+        auto readInt = [&](const char *name, int &out)
+        {
+            JSValue v = JS_GetPropertyStr(ctx, argv[1], name);
+            if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+                int32_t n = 0;
+                if (JS_ToInt32(ctx, &n, v) >= 0) {
+                    out = n;
+                }
+            }
+            JS_FreeValue(ctx, v);
+        };
         readBool("regex", opts.regex);
         readBool("caseSensitive", opts.caseSensitive);
         readBool("wholeWord", opts.wholeWord);
-        JSValue lv = JS_GetPropertyStr(ctx, argv[1], "limit");
-        if (!JS_IsUndefined(lv) && !JS_IsNull(lv)) {
-            int32_t n = 0;
-            if (JS_ToInt32(ctx, &n, lv) >= 0) {
-                opts.limit = n;
+        readInt("limit", opts.limit);
+        readInt("maxLines", opts.maxLines);
+        JSValue fv = JS_GetPropertyStr(ctx, argv[1], "fromRowId");
+        if (!JS_IsUndefined(fv) && !JS_IsNull(fv)) {
+            int64_t n = 0;
+            if (JS_ToInt64(ctx, &n, fv) >= 0 && n > 0) {
+                opts.fromLineId = static_cast<uint64_t>(n);
             }
         }
-        JS_FreeValue(ctx, lv);
+        JS_FreeValue(ctx, fv);
     }
 
-    auto matches = eng->callbacks().paneFindText(pane->id, needle, opts);
-    JSValue arr  = JS_NewArray(ctx);
-    for (size_t i = 0; i < matches.size(); ++i) {
-        JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(matches[i].startLineId)));
-        JS_SetPropertyStr(ctx, obj, "startCol", JS_NewInt32(ctx, matches[i].startCol));
-        JS_SetPropertyStr(ctx, obj, "endRowId", JS_NewInt64(ctx, static_cast<int64_t>(matches[i].endLineId)));
-        JS_SetPropertyStr(ctx, obj, "endCol", JS_NewInt32(ctx, matches[i].endCol));
+    Script::AppCallbacks::FindResult res;
+    if (eng->callbacks().paneFindText) {
+        res = eng->callbacks().paneFindText(pane->id, needle, opts);
+    }
+    JSValue arr = JS_NewArray(ctx);
+    for (size_t i = 0; i < res.matches.size(); ++i) {
+        const auto &m = res.matches[i];
+        JSValue obj   = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "startRowId", JS_NewInt64(ctx, static_cast<int64_t>(m.startLineId)));
+        JS_SetPropertyStr(ctx, obj, "startCol", JS_NewInt32(ctx, m.startCol));
+        JS_SetPropertyStr(ctx, obj, "endRowId", JS_NewInt64(ctx, static_cast<int64_t>(m.endLineId)));
+        JS_SetPropertyStr(ctx, obj, "endCol", JS_NewInt32(ctx, m.endCol));
         JS_SetPropertyUint32(ctx, arr, static_cast<uint32_t>(i), obj);
     }
-    return arr;
+    JSValue out = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, out, "matches", arr);
+    JS_SetPropertyStr(ctx, out, "resumeRowId", res.resumeLineId != 0 ? JS_NewInt64(ctx, static_cast<int64_t>(res.resumeLineId)) : JS_NULL);
+    JS_SetPropertyStr(ctx, out, "linesSearched", JS_NewInt32(ctx, res.linesSearched));
+    return out;
 }
 
 // pane.scrollToRow(rowId) -> boolean

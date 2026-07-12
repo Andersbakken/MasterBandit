@@ -1,11 +1,15 @@
 // scrollback-search.js — in-pane scrollback search applet.
 //
 // Bound to Cmd+F (macOS) / Ctrl+Shift+F (Linux) via the `search.toggle`
-// script action. Opens a small input bar at the top of the focused pane;
-// each keystroke runs `pane.findText(needle, opts)` and paints highlight
-// decorations for every match, plus a higher-zPriority "current match"
-// decoration that the user steps through with `n` / `N` (or Up/Down).
-// Esc clears decorations and closes the popup.
+// script action. Opens a small input bar at the top of the focused pane.
+// Typing is debounced; the search then runs as a chain of bounded
+// `pane.findText` slices (newest → oldest, MAX_LINES_PER_CHUNK logical
+// lines each) driven through setTimeout(0), so a huge scrollback never
+// blocks a keystroke — each slice paints its matches incrementally and
+// yields back to the event loop. Total highlights are capped at
+// MAX_MATCHES; the cap truncates the OLDEST matches because the walk is
+// newest-first. `n` / `N` (or Up/Down) step through matches; Esc clears
+// decorations and closes the popup.
 //
 // Decoration tags:
 //   "search"         — every match (yellow background)
@@ -22,6 +26,16 @@ import { signal, computed, effect, render, createTheme, box, text, input, measur
 mb.setNamespace("search");
 mb.registerAction("toggle");
 
+// Total highlight cap. Painting 10k decorations is cheap (per-frame cost
+// is bounded by visible rows, not decoration count); the cap exists to
+// bound match-array and decoration memory on pathological needles.
+const MAX_MATCHES = 10000;
+// Logical lines per findText slice. Keeps each synchronous call to a few
+// milliseconds even on very wide lines.
+const MAX_LINES_PER_CHUNK = 20000;
+// Keystroke debounce before a new search starts.
+const DEBOUNCE_MS = 150;
+
 // Decoration colors (packed 0xAABBGGRR — alpha in MSB).
 //
 //   yellow background, black foreground for bulk matches.
@@ -30,10 +44,10 @@ mb.registerAction("toggle");
 // These are byte-swapped from "natural" RGB: 0xAABBGGRR = (alpha<<24) |
 // (B<<16) | (G<<8) | R. So yellow (R=255, G=215, B=0) packs as 0xFF00D7FF;
 // orange (R=255, G=140, B=0) packs as 0xFF008CFF.
-const HIGHLIGHT_BG       = 0xFF00D7FF; // yellow
-const HIGHLIGHT_FG       = 0xFF000000; // black text over yellow
-const CURRENT_BG         = 0xFF008CFF; // orange
-const CURRENT_FG         = 0xFF000000; // black text over orange
+const HIGHLIGHT_BG = 0xFF00D7FF; // yellow
+const HIGHLIGHT_FG = 0xFF000000; // black text over yellow
+const CURRENT_BG   = 0xFF008CFF; // orange
+const CURRENT_FG   = 0xFF000000; // black text over orange
 
 const theme = createTheme({
     bg:     '#0d1b2a',
@@ -44,33 +58,28 @@ const theme = createTheme({
 
 let ui = null;
 
-// Repaint the bulk highlight set ("search" tag). All matches get this
-// tag — including the active one. The active match also gets a separate
-// "current-match" decoration (higher zPriority) so it composites on top.
-// Atomic via createDecorationBatch: a single snapshot publish replaces
-// the previous "search" set, so the renderer never samples a partial
-// state between clear-and-readd.
-function paintBulk(pane, matches) {
+// Append highlight decorations for one slice's matches. Adds only — the
+// bulk "search" set is cleared once when a new search starts, then grows
+// as slices stream in. One atomic batch per slice.
+function paintChunk(pane, matches) {
+    if (!matches || matches.length === 0) return;
     const batch = pane.createDecorationBatch();
-    batch.clearDecorations("search");
-    if (matches && matches.length > 0) {
-        for (let i = 0; i < matches.length; i++) {
-            const m = matches[i];
-            batch.addDecoration({
-                startRowId: m.startRowId, startCol: m.startCol,
-                endRowId:   m.endRowId,   endCol:   m.endCol,
-                style:      { fg: HIGHLIGHT_FG, bg: HIGHLIGHT_BG },
-                tag:        "search",
-                zPriority:  0,
-            });
-        }
+    for (let i = 0; i < matches.length; i++) {
+        const m = matches[i];
+        batch.addDecoration({
+            startRowId: m.startRowId, startCol: m.startCol,
+            endRowId:   m.endRowId,   endCol:   m.endCol,
+            style:      { fg: HIGHLIGHT_FG, bg: HIGHLIGHT_BG },
+            tag:        "search",
+            zPriority:  0,
+        });
     }
     batch.submit();
 }
 
 // Repaint just the active match ("current-match" tag). One clear + at
-// most one add, also atomic. Stepping with n / N hits this path only —
-// the bulk set is untouched, which is the whole point of the split.
+// most one add, atomic. Stepping with n / N hits this path only — the
+// bulk set is untouched.
 //
 // After re-adding, fire a quick "pulse" animation: the bg rect expands
 // outward by PULSE_PX, then contracts back to the cell rect. Visually
@@ -130,14 +139,22 @@ mb.addEventListener("action", "search.toggle", () => {
     // Alt-screen apps typically have their own in-app search anyway.
     if (pane.usingAltScreen) return;
 
-    const query    = signal("");
-    const matches  = signal([]);
-    const current  = signal(0);
-    const status   = computed(() => {
+    const query     = signal("");
+    // Matches accumulate newest-line-first (the findText walk order), so
+    // slice appends never shift existing indices and the "current" index
+    // stays valid while a search streams in.
+    const matches   = signal([]);
+    const current   = signal(0);
+    const searching = signal(false);
+    const capped    = signal(false);
+    const status    = computed(() => {
         const n = matches.value.length;
         if (!query.value) return "";
-        if (n === 0) return " 0 matches";
-        return ` ${current.value + 1}/${n}`;
+        if (n === 0) return searching.value ? " …" : " 0 matches";
+        // Number top-down: the oldest match is 1, the newest is n —
+        // stepping "down" through newer matches counts up.
+        const pos = n - current.value;
+        return ` ${pos}/${n}${capped.value ? "+" : ""}${searching.value ? "…" : ""}`;
     });
 
     // Per-invocation "alive" flag so effects survive the popup's destruction
@@ -148,56 +165,97 @@ mb.addEventListener("action", "search.toggle", () => {
     // tag would re-paint highlights we just cleared in onDestroy).
     let alive = true;
 
-    // Pick the initial active match: the bottom-most match whose anchor
-    // line is already visible (so a user typing "s" doesn't get yanked to
-    // the oldest occurrence in scrollback if the live viewport already
-    // shows several `s`s). Falls back to the last match overall when none
-    // are in the viewport — that's the user searching for something not
-    // currently visible, where "jump to the most recent occurrence in
-    // scrollback" is the least surprising default.
-    //
-    // `pane.rowIdAt(N)` returns the lineId at visible-screen row N. The
-    // viewport spans rows 0..pane.rows-1; matches' startRowId values are
-    // 64-bit logical line ids. Visible matches are the ones whose
-    // startRowId lies in [topId..bottomId] inclusive. lineIds are
-    // monotonic (assigned at write time, never reused), so a numeric
-    // range comparison is correct as long as both endpoints resolve.
-    function pickInitialIndex(ms) {
-        if (ms.length === 0) return 0;
+    // Search-generation token: bumped on every query change and on
+    // destroy. In-flight debounce timers and slice callbacks check it and
+    // drop out when stale, so a superseded search cancels itself.
+    let generation    = 0;
+    let debounceTimer = 0;
+    let chunkTimer    = 0;
+
+    // Whether `current` points at a match that was visible in the viewport
+    // when picked. Until one is found, later (older) slices may upgrade
+    // the pick: the user's viewport can be scrolled deep into scrollback,
+    // where the visible matches only arrive several slices in.
+    let pickedVisible = false;
+
+    // Prefer the bottom-most match already visible in the viewport (so a
+    // user typing "s" doesn't get yanked away if the viewport already
+    // shows several `s`s). Matches are newest-first, so the first match
+    // whose line falls inside [topId..bottomId] is the bottom-most visible
+    // one. Fallback while none are visible: the newest match overall
+    // (index 0) — the most recent occurrence, least surprising jump.
+    function maybePick(startIdx) {
+        if (pickedVisible) return;
+        const ms = matches.value;
+        if (ms.length === 0) return;
         const topId    = pane.rowIdAt(0);
         const bottomId = pane.rowIdAt(pane.rows - 1);
-        if (topId == null || bottomId == null) {
-            // Defensive fallback — viewport row not addressable for some
-            // reason; just pick the last match.
-            return ms.length - 1;
+        if (topId != null && bottomId != null) {
+            for (let i = startIdx; i < ms.length; i++) {
+                const r = ms[i].startRowId;
+                if (r >= topId && r <= bottomId) {
+                    current.value = i;
+                    pickedVisible = true;
+                    return;
+                }
+            }
         }
-        // Walk newest-to-oldest, pick the first hit whose lineId lands in
-        // [topId..bottomId]. Matches are returned oldest-first, so reverse
-        // iteration finds the bottom-most visible hit cheaply.
-        for (let i = ms.length - 1; i >= 0; --i) {
-            const r = ms[i].startRowId;
-            if (r >= topId && r <= bottomId) return i;
+        if (startIdx === 0) {
+            current.value = 0; // fallback until something visible shows up
         }
-        return ms.length - 1; // none visible → most recent in scrollback
     }
 
-    // Re-search whenever the query text changes. Keeping this as an effect
-    // (rather than wiring an onInput) means we don't have to know about the
-    // input widget's internals.
-    effect(() => {
-        const q = query.value;
-        if (!alive) return;
-        if (!q) {
-            matches.value = [];
-            current.value = 0;
+    function stopSearch() {
+        ++generation;
+        if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = 0; }
+        if (chunkTimer) { clearTimeout(chunkTimer); chunkTimer = 0; }
+        searching.value = false;
+    }
+
+    // One findText slice; reschedules itself via setTimeout(0) until the
+    // walk completes, the match cap fills, or the generation goes stale.
+    function runChunk(gen, needle, opts, fromRowId) {
+        chunkTimer = 0;
+        if (!alive || gen !== generation) return;
+        let res;
+        try {
+            opts.fromRowId = fromRowId; // undefined on the first slice
+            opts.limit     = MAX_MATCHES - matches.value.length;
+            res = pane.findText(needle, opts);
+        } catch (e) {
+            searching.value = false;
             return;
         }
-        const opts = {
-            regex: false,
-            caseSensitive: false,
-            wholeWord: false,
-            limit: 0, // 0 = no cap; bulk paint is capped separately in paintBulk.
-        };
+        if (res.matches.length > 0) {
+            paintChunk(pane, res.matches);
+            const prevLen = matches.value.length;
+            matches.value = matches.value.concat(res.matches);
+            maybePick(prevLen);
+        }
+        if (res.resumeRowId != null && matches.value.length < MAX_MATCHES) {
+            chunkTimer = setTimeout(() => runChunk(gen, needle, opts, res.resumeRowId), 0);
+        } else {
+            capped.value    = res.resumeRowId != null;
+            searching.value = false;
+        }
+    }
+
+    function startSearch(q) {
+        stopSearch();
+        const gen = generation;
+        // Clear previous highlights in one publish; the new set streams in
+        // per-slice on top of a clean slate.
+        const batch = pane.createDecorationBatch();
+        batch.clearDecorations("search");
+        batch.submit();
+        matches.value = [];
+        current.value = 0;
+        capped.value  = false;
+        pickedVisible = false;
+        if (!q) return;
+
+        const opts = { regex: false, caseSensitive: false, wholeWord: false,
+                       maxLines: MAX_LINES_PER_CHUNK };
         // Detect simple regex-ish patterns: needle starts/ends with `/`.
         // Lightweight heuristic — full regex toggle UI is a follow-up.
         let needle = q;
@@ -205,44 +263,51 @@ mb.addEventListener("action", "search.toggle", () => {
             opts.regex = true;
             needle = q.slice(1, -1);
         }
-        let ms = [];
-        try {
-            ms = pane.findText(needle, opts);
-        } catch (e) {
-            ms = [];
-        }
-        matches.value = ms;
-        current.value = pickInitialIndex(ms);
-    });
+        searching.value = true;
+        runChunk(gen, needle, opts, undefined);
+    }
 
-    // Bulk repaint — depends on `matches` only. A pure cursor step (n / N)
-    // doesn't change the match set, so this effect doesn't re-fire and the
-    // 600 yellow highlights stay in place.
+    // Kick a debounced search whenever the query text changes. Keeping
+    // this as an effect (rather than wiring an onInput) means we don't
+    // have to know about the input widget's internals.
     effect(() => {
-        const ms = matches.value;
+        const q = query.value;
         if (!alive) return;
-        paintBulk(pane, ms);
+        stopSearch();
+        if (!q) {
+            startSearch(""); // immediate clear, no debounce
+            return;
+        }
+        const gen     = generation;
+        debounceTimer = setTimeout(() => {
+            debounceTimer = 0;
+            if (!alive || gen !== generation) return;
+            startSearch(q);
+        }, DEBOUNCE_MS);
     });
 
     // Current-match repaint + scroll — depends on `matches` and `current`.
     // On a cursor step this is the only effect that runs: one clear + one
-    // add for the orange decoration, one snapshot publish.
+    // add for the orange decoration, one snapshot publish. It also re-fires
+    // on slice appends, but the current match is unchanged then and
+    // scrollToRow is a no-op for a visible row.
     effect(() => {
         const ms  = matches.value;
         const cur = current.value;
         if (!alive) return;
         paintCurrent(pane, ms, ms.length > 0 ? cur : -1);
         if (ms.length > 0 && cur < ms.length) {
-            // Bring the current match on screen; scrollToRow is a no-op if
-            // already visible.
             pane.scrollToRow(ms[cur].startRowId);
         }
     });
 
+    // Matches are newest-first: +1 walks OLDER (up the screen), -1 walks
+    // NEWER (down). Wraps around.
     function step(delta) {
         const n = matches.value.length;
         if (n === 0) return;
         current.value = ((current.value + delta) % n + n) % n;
+        pickedVisible = true; // manual navigation owns the cursor now
     }
 
     function buildRoot() {
@@ -252,14 +317,14 @@ mb.addEventListener("action", "search.toggle", () => {
             input({
                 value:    query,
                 prompt:   " > ",
-                // Enter advances to the next match. Routed through
-                // tui's input.onSubmit hook rather than a popup-level
-                // input listener so we don't ride alongside tui's own
-                // focused-button Enter handling — important now that
-                // dialogs can declare default buttons (the search bar
+                // Enter advances downward (toward newer matches). Routed
+                // through tui's input.onSubmit hook rather than a
+                // popup-level input listener so we don't ride alongside
+                // tui's own focused-button Enter handling — important now
+                // that dialogs can declare default buttons (the search bar
                 // doesn't have one, but adding one later wouldn't
                 // double-fire this).
-                onSubmit: () => step(+1),
+                onSubmit: () => step(-1),
             }),
             text({
                 value: status,
@@ -284,19 +349,19 @@ mb.addEventListener("action", "search.toggle", () => {
     const popup = pane.createPopup({ id: "scrollback-search", x: d.x, y: d.y, w: d.w, h: d.h });
     if (!popup) return;
 
-    // Popup-level listener for arrow Up/Down only. Enter is now
-    // routed through input.onSubmit (see the input() call above);
-    // arrows still go here because tui's input branch forwards
-    // arrows to "the first list in the tree" — we have no list, so
-    // tui's path is a no-op and this listener is the sole consumer.
-    // Esc reaches tui's RenderInstance handler which calls destroy().
+    // Popup-level listener for arrow Up/Down only. Enter is routed
+    // through input.onSubmit (see the input() call above); arrows still
+    // go here because tui's input branch forwards arrows to "the first
+    // list in the tree" — we have no list, so tui's path is a no-op and
+    // this listener is the sole consumer. Esc reaches tui's
+    // RenderInstance handler which calls destroy().
     const inputCb = (data) => {
         if (data === "\x1b[B") {
-            step(+1); // Down → next match
+            step(-1); // Down → newer match
             return;
         }
         if (data === "\x1b[A") {
-            step(-1); // Up → previous match
+            step(+1); // Up → older match
             return;
         }
     };
@@ -324,6 +389,7 @@ mb.addEventListener("action", "search.toggle", () => {
         onDestroy: () => {
             alive = false;
             ui = null;
+            stopSearch();
             try { pane.removeEventListener("altScreenChanged", altCb); } catch (_) {}
             try { pane.clearDecorations("search"); } catch (_) {}
             try { pane.clearDecorations("current-match"); } catch (_) {}

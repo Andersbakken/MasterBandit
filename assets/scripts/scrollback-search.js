@@ -34,7 +34,7 @@ const MAX_MATCHES = 10000;
 // milliseconds even on very wide lines.
 const MAX_LINES_PER_CHUNK = 20000;
 // Keystroke debounce before a new search starts.
-const DEBOUNCE_MS = 150;
+const DEBOUNCE_MS = 350;
 
 // Decoration colors (packed 0xAABBGGRR — alpha in MSB).
 //

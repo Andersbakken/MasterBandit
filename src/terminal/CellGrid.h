@@ -34,6 +34,9 @@ public:
 
     void clearRow(int row) override;
     void clearRow(int row, int startCol, int endCol) override;
+
+    bool isRowContinued(int row) const override;
+    void setRowContinued(int row, bool v) override;
     void scrollUp(int top, int bottom, int n) override;
     void scrollDown(int top, int bottom, int n) override;
     void deleteChars(int row, int col, int count) override;
@@ -53,7 +56,10 @@ private:
         // empty row is then a single pointer copy instead of allocating
         // and freeing libc++ unordered_map bucket arrays on every scroll.
         std::unique_ptr<std::unordered_map<int, CellExtra>> extras;
-        bool dirty = true;
+        bool dirty     = true;
+        // Soft-wrap continuation: this row's content autowrapped onto the
+        // next row. Lives on the Row so scroll rotation carries it along.
+        bool continued = false;
     };
 
     static std::unique_ptr<Row> makeRow(int cols);

@@ -1284,9 +1284,11 @@ std::string TerminalEmulator::serializeScrollback() const
 
 void TerminalEmulator::advanceCursorToNewLine()
 {
-    // Mark current row as continued (soft-wrapped) — main screen only
-    if (!mUsingAltScreen && mState->cursorY >= 0 && mState->cursorY < mHeight) {
-        mDocument.setRowContinued(mState->cursorY, true);
+    // Mark current row as continued (soft-wrapped). Both screens track
+    // this: copy/selection joins wrapped rows on the alt screen too
+    // (e.g. a long line displayed by less).
+    if (mState->cursorY >= 0 && mState->cursorY < mHeight) {
+        grid().setRowContinued(mState->cursorY, true);
     }
     // Line wrap: move to column 0 of next line, scrolling if needed
     mState->cursorX = 0;
@@ -1745,9 +1747,7 @@ void TerminalEmulator::applyControl(ParserAction::ControlCode code)
         case CC::CR:
             mState->cursorX     = 0;
             mState->wrapPending = false;
-            if (!mUsingAltScreen) {
-                mDocument.setRowContinued(mState->cursorY, false);
-            }
+            grid().setRowContinued(mState->cursorY, false);
             break;
         case CC::BS:
             if (mState->cursorX > 0) {
@@ -1865,12 +1865,10 @@ void TerminalEmulator::applyEsc(char finalByte)
             } else if (mState->cursorY < mHeight - 1) {
                 mState->cursorY++;
             }
-            if (!mUsingAltScreen) {
-                if (mState->cursorY > 0) {
-                    mDocument.setRowContinued(mState->cursorY - 1, false);
-                }
-                mDocument.setRowContinued(mState->cursorY, false);
+            if (mState->cursorY > 0) {
+                grid().setRowContinued(mState->cursorY - 1, false);
             }
+            grid().setRowContinued(mState->cursorY, false);
             break;
         case RI:
             mState->wrapPending = false;
@@ -2744,22 +2742,18 @@ void TerminalEmulator::onAction(const Action *action)
         case Action::CursorNextLine:
             mState->cursorY = std::min(mHeight - 1, mState->cursorY + action->count);
             mState->cursorX = 0;
-            if (!mUsingAltScreen) {
-                if (mState->cursorY > 0) {
-                    mDocument.setRowContinued(mState->cursorY - 1, false);
-                }
-                mDocument.setRowContinued(mState->cursorY, false);
+            if (mState->cursorY > 0) {
+                grid().setRowContinued(mState->cursorY - 1, false);
             }
+            grid().setRowContinued(mState->cursorY, false);
             break;
         case Action::CursorPreviousLine:
             mState->cursorY = std::max(0, mState->cursorY - action->count);
             mState->cursorX = 0;
-            if (!mUsingAltScreen) {
-                if (mState->cursorY > 0) {
-                    mDocument.setRowContinued(mState->cursorY - 1, false);
-                }
-                mDocument.setRowContinued(mState->cursorY, false);
+            if (mState->cursorY > 0) {
+                grid().setRowContinued(mState->cursorY - 1, false);
             }
+            grid().setRowContinued(mState->cursorY, false);
             break;
         case Action::CursorHorizontalAbsolute:
             mState->cursorX = std::clamp(action->count - 1, 0, mWidth - 1);
@@ -2784,11 +2778,11 @@ void TerminalEmulator::onAction(const Action *action)
             // wider width then joins the whole screen into one logical line.
             // Also clear the landing row's own flag — its old wrap-into-next
             // relationship is about to be made stale by the incoming overwrite.
-            if (mState->cursorX == 0 && !mUsingAltScreen) {
+            if (mState->cursorX == 0) {
                 if (mState->cursorY > 0) {
-                    mDocument.setRowContinued(mState->cursorY - 1, false);
+                    grid().setRowContinued(mState->cursorY - 1, false);
                 }
-                mDocument.setRowContinued(mState->cursorY, false);
+                grid().setRowContinued(mState->cursorY, false);
             }
             break;
         }
@@ -2876,11 +2870,11 @@ void TerminalEmulator::onAction(const Action *action)
             }
             // Same soft-wrap-chain break as CUP when VPA lands with cursor
             // already at col 0 — same reasoning re: top-style row overwrites.
-            if (mState->cursorX == 0 && !mUsingAltScreen) {
+            if (mState->cursorX == 0) {
                 if (mState->cursorY > 0) {
-                    mDocument.setRowContinued(mState->cursorY - 1, false);
+                    grid().setRowContinued(mState->cursorY - 1, false);
                 }
-                mDocument.setRowContinued(mState->cursorY, false);
+                grid().setRowContinued(mState->cursorY, false);
             }
             break;
         }

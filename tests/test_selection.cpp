@@ -642,3 +642,90 @@ TEST_CASE("main screen: writing to selected row leaves the selection intact")
     t.feed("XYZ");
     CHECK(t.term.hasSelection());
 }
+
+TEST_CASE("alt screen: autowrapped line copies as one logical line")
+{
+    // Same as the main-screen autowrap-join case, but on the alt screen,
+    // which tracks continuation flags in CellGrid rather than Document.
+    TestTerminal t(10, 5);
+    t.feed("\x1b[?1049h");
+    t.feed("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"); // 30 chars → alt rows 0..2
+
+    int histSize = t.term.document().historySize();
+    t.term.startSelection(0, histSize + 0);
+    t.term.updateSelection(9, histSize + 2, /*xRightHalf=*/true);
+    t.term.finalizeSelection();
+
+    const std::string sel = t.term.selectedText();
+    CHECK(sel == "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
+    CHECK(sel.find('\n') == std::string::npos);
+}
+
+TEST_CASE("alt screen: less-style space+backspace autowrap joins on copy")
+{
+    // less(1) paints a wrapped line as: fill every column, print a
+    // throwaway space (triggering the autowrap), backspace, then overwrite
+    // the space with the real character. The continuation flag on the
+    // filled row must survive the backspace and the overwrite.
+    TestTerminal t(10, 5);
+    t.feed("\x1b[?1049h");
+    t.feed("\rABCDEFGHIJ \x08KLMNO");
+
+    int histSize = t.term.document().historySize();
+    t.term.startSelection(0, histSize + 0);
+    t.term.updateSelection(4, histSize + 1, /*xRightHalf=*/true);
+    t.term.finalizeSelection();
+
+    CHECK(t.term.selectedText() == "ABCDEFGHIJKLMNO");
+}
+
+TEST_CASE("alt screen: hard-broken lines keep newlines on copy")
+{
+    // Counterpart: real \r\n breaks on the alt screen must still copy as
+    // separate lines — the alt continuation flags stay false.
+    TestTerminal t(10, 5);
+    t.feed("\x1b[?1049h");
+    t.feed("First\r\nSecond");
+
+    int histSize = t.term.document().historySize();
+    t.term.startSelection(0, histSize + 0);
+    t.term.updateSelection(5, histSize + 1, /*xRightHalf=*/true);
+    t.term.finalizeSelection();
+
+    CHECK(t.term.selectedText() == "First\nSecond");
+}
+
+TEST_CASE("alt screen: combining characters survive copy")
+{
+    // Alt-screen copy must read cell extras from the alt grid, not the
+    // hidden main screen's document.
+    TestTerminal t(10, 5);
+    t.feed("\x1b[?1049h");
+    t.feed("e\xcc\x81x"); // e + U+0301 COMBINING ACUTE ACCENT, then x
+
+    int histSize = t.term.document().historySize();
+    t.term.startSelection(0, histSize + 0);
+    t.term.updateSelection(1, histSize + 0, /*xRightHalf=*/true);
+    t.term.finalizeSelection();
+
+    CHECK(t.term.selectedText() == "e\xcc\x81x");
+}
+
+TEST_CASE("alt screen activity does not disturb main-screen continuation flags")
+{
+    // CR / cursor moves on the alt screen must mutate the alt grid's
+    // flags, not the main document's — otherwise a fullscreen app breaks
+    // the wrap chains of the screen it is hiding.
+    TestTerminal t(10, 5);
+    t.feed("ABCDEFGHIJKLMNO"); // main rows 0..1, row 0 continued
+    t.feed("\x1b[?1049h");
+    t.feed("\x1b[1;1HX\r\x1b[2;1HY\r"); // writes + CRs on wrapped rows' positions
+    t.feed("\x1b[?1049l");
+
+    int histSize = t.term.document().historySize();
+    t.term.startSelection(0, histSize + 0);
+    t.term.updateSelection(4, histSize + 1, /*xRightHalf=*/true);
+    t.term.finalizeSelection();
+
+    CHECK(t.term.selectedText() == "ABCDEFGHIJKLMNO");
+}

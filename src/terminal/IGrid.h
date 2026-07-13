@@ -35,6 +35,22 @@ public:
     virtual void clearExtra(int col, int row)                 = 0;
     virtual void clearRowExtras(int row)                      = 0;
 
+    // Per-row soft-wrap continuation flag: true when the row's content
+    // autowrapped onto the next row. Selection/copy joins such rows
+    // without a newline. Defaults are no-ops so grid implementations
+    // that don't track it report "not continued".
+    virtual bool isRowContinued(int row) const
+    {
+        (void)row;
+        return false;
+    }
+
+    virtual void setRowContinued(int row, bool v)
+    {
+        (void)row;
+        (void)v;
+    }
+
     // Mark that the row contains at least one wide cell or wide-spacer.
     // The reflow path uses this in O(1) instead of scanning each cell to
     // decide whether the row qualifies for the memcpy fast path. Default

@@ -122,7 +122,8 @@ void CellGrid::clearRow(int row)
     Row &r = *rowVec_[row];
     clearRowInternal(r, 0, cols_);
     r.extras.reset();
-    r.dirty = true;
+    r.continued = false;
+    r.dirty     = true;
 }
 
 void CellGrid::clearRow(int row, int startCol, int endCol)
@@ -146,7 +147,23 @@ void CellGrid::clearRow(int row, int startCol, int endCol)
             }
         }
     }
+    // Erasing through the right edge severs the soft-wrap into the next row.
+    if (endCol == cols_) {
+        r.continued = false;
+    }
     r.dirty = true;
+}
+
+bool CellGrid::isRowContinued(int row) const
+{
+    return row >= 0 && row < rows_ && rowVec_[row]->continued;
+}
+
+void CellGrid::setRowContinued(int row, bool v)
+{
+    if (row >= 0 && row < rows_) {
+        rowVec_[row]->continued = v;
+    }
 }
 
 void CellGrid::scrollUp(int top, int bottom, int n)
@@ -171,7 +188,8 @@ void CellGrid::scrollUp(int top, int bottom, int n)
         Row &row = *rowVec_[r];
         clearRowInternal(row, 0, cols_);
         row.extras.reset();
-        row.dirty = true;
+        row.continued = false;
+        row.dirty     = true;
     }
 }
 
@@ -191,7 +209,8 @@ void CellGrid::scrollDown(int top, int bottom, int n)
         Row &row = *rowVec_[r];
         clearRowInternal(row, 0, cols_);
         row.extras.reset();
-        row.dirty = true;
+        row.continued = false;
+        row.dirty     = true;
     }
     for (int r = top + n; r < bottom; ++r) {
         rowVec_[r]->dirty = true;

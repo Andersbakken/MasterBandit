@@ -117,8 +117,8 @@ public:
     void resize(int newCols, int newRows, CursorTrack *cursor = nullptr);
 
     // --- Per-row continuation flag (visible grid only) ---
-    bool isRowContinued(int screenRow) const;
-    void setRowContinued(int screenRow, bool v);
+    bool isRowContinued(int screenRow) const override;
+    void setRowContinued(int screenRow, bool v) override;
 
     // --- Logical-line IDs ---
     //

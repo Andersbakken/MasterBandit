@@ -876,20 +876,22 @@ std::string TerminalEmulator::selectedText() const
 
     for (int absRow = r0; absRow <= r1; ++absRow) {
         const Cell *row;
-        const std::unordered_map<int, CellExtra> *extras = nullptr;
+        const std::unordered_map<int, CellExtra> *extras = nullptr; // history rows only
+        int gridRow                                      = -1;      // >= 0: visible-grid row
         bool rowContinued                                = false;
         if (absRow < histSize) {
             row          = mDocument.historyRow(absRow);
             extras       = mDocument.historyExtras(absRow);
             rowContinued = mDocument.isHistoryRowContinued(absRow);
         } else {
-            int gridRow = absRow - histSize;
+            gridRow = absRow - histSize;
             if (gridRow < 0 || gridRow >= grid().rows()) {
                 continue;
             }
+            // grid() so alt-screen selections read the alt grid's cells,
+            // extras, and continuation flags — not the hidden main screen's.
             row          = grid().row(gridRow);
-            extras       = mDocument.viewportExtras(gridRow, 0);
-            rowContinued = mDocument.isRowContinued(gridRow);
+            rowContinued = grid().isRowContinued(gridRow);
         }
         if (!row) {
             continue;
@@ -918,12 +920,18 @@ std::string TerminalEmulator::selectedText() const
                 line += ' ';
             } else {
                 line += utf8::fromCodepoint(cell.wc);
+                const CellExtra *ex = nullptr;
                 if (extras) {
                     auto it = extras->find(col);
                     if (it != extras->end()) {
-                        for (char32_t cp : it->second.combiningCps) {
-                            line += utf8::fromCodepoint(cp);
-                        }
+                        ex = &it->second;
+                    }
+                } else if (gridRow >= 0) {
+                    ex = grid().getExtra(col, gridRow);
+                }
+                if (ex) {
+                    for (char32_t cp : ex->combiningCps) {
+                        line += utf8::fromCodepoint(cp);
                     }
                 }
                 lastNonSpace = static_cast<int>(line.size()) - 1;
@@ -947,8 +955,8 @@ std::string TerminalEmulator::selectedText() const
                 prevContinued = mDocument.isHistoryRowContinued(prevAbsRow);
             } else {
                 int prevGridRow = prevAbsRow - histSize;
-                if (prevGridRow >= 0 && prevGridRow < mDocument.rows()) {
-                    prevContinued = mDocument.isRowContinued(prevGridRow);
+                if (prevGridRow >= 0 && prevGridRow < grid().rows()) {
+                    prevContinued = grid().isRowContinued(prevGridRow);
                 }
             }
             if (!prevContinued) {

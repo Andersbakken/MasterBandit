@@ -971,7 +971,15 @@ int PlatformDawn::exec()
                                 return result;
                             }
                         }
-                        prevLinkId = 0; // reset across rows
+                        // A link running through the right edge of a
+                        // soft-wrapped row continues on the next visual row
+                        // as one logical span — only hard breaks reset.
+                        bool continued = (abs < histSize)
+                            ? doc.isHistoryRowContinued(abs)
+                            : doc.isRowContinued(abs - histSize);
+                        if (!continued) {
+                            prevLinkId = 0;
+                        }
                     }
                     return result;
                 }

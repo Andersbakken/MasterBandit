@@ -811,3 +811,50 @@ TEST_CASE("REP: wide character repeat")
     CHECK(t.wc(2, 0) == U'\u4e2d');
     CHECK(t.wc(4, 0) == U'\u4e2d');
 }
+
+TEST_CASE("OSC 133: soft-wrapped output line is captured as one logical line")
+{
+    // 15-char output at width 10 wraps across two visual rows; the captured
+    // text must join them (matching selection copy), not split mid-line.
+    TestTerminal t(10, 5);
+    osc133(t, "A");
+    t.feed("$ ");
+    osc133(t, "B");
+    t.feed("cmd");
+    osc133(t, "C");
+    t.feed("ABCDEFGHIJKLMNO\r\nsecond\r\n");
+    osc133(t, "D;0");
+
+    const auto &ring = t.term.commands();
+    REQUIRE(ring.size() == 1);
+    std::string out = recordOutputText(t.term, ring.back());
+    CHECK(out.find("ABCDEFGHIJKLMNO") != std::string::npos);
+    CHECK(out.find("second") != std::string::npos);
+}
+
+TEST_CASE("OSC 133 on the alt screen does not record commands")
+{
+    // Command records anchor to main-document line ids; markers emitted
+    // while the alt screen is active must not pollute the ring.
+    TestTerminal t(40, 5);
+    osc133(t, "A");
+    t.feed("$ ");
+    osc133(t, "B");
+    t.feed("real");
+    osc133(t, "C");
+    t.feed("out\r\n");
+    osc133(t, "D;0");
+    REQUIRE(t.term.commands().size() == 1);
+
+    t.feed("\x1b[?1049h");
+    osc133(t, "A");
+    t.feed("fake");
+    osc133(t, "C");
+    t.feed("x\r\n");
+    osc133(t, "D;1");
+    CHECK(t.term.commands().size() == 1);
+
+    t.feed("\x1b[?1049l");
+    CHECK(t.term.commands().size() == 1);
+    CHECK(t.term.commands().back().complete);
+}

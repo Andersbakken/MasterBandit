@@ -941,7 +941,13 @@ std::string Document::getTextFromLines(uint64_t startLineId, uint64_t endLineId,
         }
         appendCellsAsUtf8(out, r, colStart, colEnd);
         if (abs < endAbs) {
-            out += '\n';
+            // Soft-wrapped rows are one logical line — join them without a
+            // newline, matching selectedText()'s copy behavior.
+            bool continued = (abs < histSize) ? isHistoryRowContinued(abs)
+                                              : isRowContinued(abs - histSize);
+            if (!continued) {
+                out += '\n';
+            }
         }
     }
     return out;

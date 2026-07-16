@@ -369,18 +369,44 @@ struct WordCells
     int rightCol;
 };
 
-WordCells wordCellsAt(const TerminalEmulator &te, int col, int absRow, int width)
+// First/last absolute row of the logical line containing absRow. On the
+// main screen this is the document's line-id span (which can start in
+// scrollback). On the alt screen the document ids describe the hidden main
+// screen, so walk the active grid's continuation flags instead.
+void logicalLineExtent(const TerminalEmulator &te, int absRow, int &firstAbs, int &lastAbs)
 {
     const Document &doc = te.document();
-    uint64_t id         = doc.lineIdForAbs(absRow);
-    int firstAbs        = doc.firstAbsOfLine(id);
-    int lastAbs         = doc.lastAbsOfLine(id);
+    int histSize        = doc.historySize();
+    int gridRow         = absRow - histSize;
+    if (te.usingAltScreen() && gridRow >= 0 && gridRow < te.grid().rows()) {
+        const IGrid &g = te.grid();
+        int f          = gridRow;
+        while (f > 0 && g.isRowContinued(f - 1)) {
+            --f;
+        }
+        int l = gridRow;
+        while (l < g.rows() - 1 && g.isRowContinued(l)) {
+            ++l;
+        }
+        firstAbs = histSize + f;
+        lastAbs  = histSize + l;
+        return;
+    }
+    uint64_t id = doc.lineIdForAbs(absRow);
+    firstAbs    = doc.firstAbsOfLine(id);
+    lastAbs     = doc.lastAbsOfLine(id);
     if (firstAbs < 0) {
         firstAbs = absRow;
     }
     if (lastAbs < 0) {
         lastAbs = absRow;
     }
+}
+
+WordCells wordCellsAt(const TerminalEmulator &te, int col, int absRow, int width)
+{
+    int firstAbs, lastAbs;
+    logicalLineExtent(te, absRow, firstAbs, lastAbs);
 
     int leftRow = absRow, leftCol = col;
     int rightRow = absRow, rightCol = col;
@@ -436,21 +462,26 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
     WordCells w = wordCellsAt(*this, col, absRow, mWidth);
 
-    uint64_t id  = mDocument.lineIdForAbs(absRow);
-    int leftOff  = boundaryOffsetWithinLine(mDocument, id, w.leftRow, w.leftCol, false, mWidth);
-    int rightOff = boundaryOffsetWithinLine(mDocument, id, w.rightRow, w.rightCol, true, mWidth);
+    // Anchor each edge on its own row's line id: on the alt screen the
+    // document ids describe the hidden main screen row-by-row, so a word
+    // spanning wrapped alt rows can cross several ids. On the main screen
+    // both rows share the word's logical line id, same as before.
+    uint64_t leftId  = mDocument.lineIdForAbs(w.leftRow);
+    uint64_t rightId = mDocument.lineIdForAbs(w.rightRow);
+    int leftOff      = boundaryOffsetWithinLine(mDocument, leftId, w.leftRow, w.leftCol, false, mWidth);
+    int rightOff     = boundaryOffsetWithinLine(mDocument, rightId, w.rightRow, w.rightCol, true, mWidth);
 
-    mSelection.startLineId     = id;
+    mSelection.startLineId     = leftId;
     mSelection.startCellOffset = leftOff;
-    mSelection.endLineId       = id;
+    mSelection.endLineId       = rightId;
     mSelection.endCellOffset   = rightOff;
     mSelection.active          = true;
     mSelection.valid           = false;
     mSelection.mode            = SelectionMode::Word;
 
-    mSelection.anchorStartLineId     = id;
+    mSelection.anchorStartLineId     = leftId;
     mSelection.anchorStartCellOffset = leftOff;
-    mSelection.anchorEndLineId       = id;
+    mSelection.anchorEndLineId       = rightId;
     mSelection.anchorEndCellOffset   = rightOff;
 
     publishAndFireEvent(static_cast<int>(Update));
@@ -459,27 +490,27 @@ void TerminalEmulator::startWordSelection(int col, int absRow)
 void TerminalEmulator::startLineSelection(int absRow)
 {
     std::lock_guard<std::recursive_mutex> _lk(mMutex);
-    uint64_t id                = mDocument.lineIdForAbs(absRow);
     // Span the entire logical line, including any wrapped continuation
-    // rows. Use lastAbsOfLine to get the final visual row of this line at
-    // the current width; the end cellOffset is the last cell of that row.
-    int firstAbs               = mDocument.firstAbsOfLine(id);
-    int lastAbs                = mDocument.lastAbsOfLine(id);
-    int rowSpan                = (firstAbs < 0 || lastAbs < 0) ? 0 : (lastAbs - firstAbs);
-    int endOff                 = rowSpan * mWidth + mWidth;
-    // Line: enclose every cell of the wrapped line. End boundary is past
-    // the last cell of the last visual row.
-    mSelection.startLineId     = id;
-    mSelection.startCellOffset = 0;
-    mSelection.endLineId       = id;
+    // rows. Each end anchors on its own row's line id (they differ on the
+    // alt screen, where document ids describe the hidden main screen).
+    int firstAbs, lastAbs;
+    logicalLineExtent(*this, absRow, firstAbs, lastAbs);
+    uint64_t startId           = mDocument.lineIdForAbs(firstAbs);
+    uint64_t endId             = mDocument.lineIdForAbs(lastAbs);
+    int startOff               = boundaryOffsetWithinLine(mDocument, startId, firstAbs, 0, false, mWidth);
+    // End boundary is past the last cell of the last visual row.
+    int endOff                 = boundaryOffsetWithinLine(mDocument, endId, lastAbs, mWidth - 1, true, mWidth);
+    mSelection.startLineId     = startId;
+    mSelection.startCellOffset = startOff;
+    mSelection.endLineId       = endId;
     mSelection.endCellOffset   = endOff;
     mSelection.active          = true;
     mSelection.valid           = false;
     mSelection.mode            = SelectionMode::Line;
 
-    mSelection.anchorStartLineId     = id;
-    mSelection.anchorStartCellOffset = 0;
-    mSelection.anchorEndLineId       = id;
+    mSelection.anchorStartLineId     = startId;
+    mSelection.anchorStartCellOffset = startOff;
+    mSelection.anchorEndLineId       = endId;
     mSelection.anchorEndCellOffset   = endOff;
 
     publishAndFireEvent(static_cast<int>(Update));
@@ -565,12 +596,13 @@ void TerminalEmulator::updateWordSelection(int col, int absRow)
         absRow = 0;
     }
 
-    WordCells w     = wordCellsAt(*this, cw, absRow, mWidth);
-    uint64_t curId  = mDocument.lineIdForAbs(absRow);
-    int curLeftOff  = boundaryOffsetWithinLine(mDocument, curId, w.leftRow, w.leftCol, false, mWidth);
-    int curRightOff = boundaryOffsetWithinLine(mDocument, curId, w.rightRow, w.rightCol, true, mWidth);
+    WordCells w      = wordCellsAt(*this, cw, absRow, mWidth);
+    uint64_t leftId  = mDocument.lineIdForAbs(w.leftRow);
+    uint64_t rightId = mDocument.lineIdForAbs(w.rightRow);
+    int curLeftOff   = boundaryOffsetWithinLine(mDocument, leftId, w.leftRow, w.leftCol, false, mWidth);
+    int curRightOff  = boundaryOffsetWithinLine(mDocument, rightId, w.rightRow, w.rightCol, true, mWidth);
 
-    int curFirstAbs    = mDocument.firstAbsOfLine(curId);
+    int curFirstAbs    = mDocument.firstAbsOfLine(leftId);
     int anchorFirstAbs = mDocument.firstAbsOfLine(mSelection.anchorStartLineId);
     if (curFirstAbs < 0 || anchorFirstAbs < 0) {
         return;
@@ -589,14 +621,14 @@ void TerminalEmulator::updateWordSelection(int col, int absRow)
         (curLeftRow == anchorLeftRow && curLeftCol < anchorLeftCol);
 
     if (cursorIsBefore) {
-        mSelection.startLineId     = curId;
+        mSelection.startLineId     = leftId;
         mSelection.startCellOffset = curLeftOff;
         mSelection.endLineId       = mSelection.anchorEndLineId;
         mSelection.endCellOffset   = mSelection.anchorEndCellOffset;
     } else {
         mSelection.startLineId     = mSelection.anchorStartLineId;
         mSelection.startCellOffset = mSelection.anchorStartCellOffset;
-        mSelection.endLineId       = curId;
+        mSelection.endLineId       = rightId;
         mSelection.endCellOffset   = curRightOff;
     }
 }
@@ -607,28 +639,31 @@ void TerminalEmulator::updateLineSelection(int absRow)
         absRow = 0;
     }
 
-    uint64_t curId  = mDocument.lineIdForAbs(absRow);
-    int curFirstAbs = mDocument.firstAbsOfLine(curId);
-    int curLastAbs  = mDocument.lastAbsOfLine(curId);
-    if (curFirstAbs < 0 || curLastAbs < 0) {
-        return;
-    }
-    int curEndOff = (curLastAbs - curFirstAbs) * mWidth + mWidth;
+    int curFirstAbs, curLastAbs;
+    logicalLineExtent(*this, absRow, curFirstAbs, curLastAbs);
+    uint64_t curStartId = mDocument.lineIdForAbs(curFirstAbs);
+    uint64_t curEndId   = mDocument.lineIdForAbs(curLastAbs);
+    int curStartOff     = boundaryOffsetWithinLine(mDocument, curStartId, curFirstAbs, 0, false, mWidth);
+    int curEndOff       = boundaryOffsetWithinLine(mDocument, curEndId, curLastAbs, mWidth - 1, true, mWidth);
 
     int anchorFirstAbs = mDocument.firstAbsOfLine(mSelection.anchorStartLineId);
     if (anchorFirstAbs < 0) {
         return;
     }
+    // The anchor's visual row is its line's first row plus the stored row
+    // offset — on the alt screen the offset can be nonzero even for a
+    // line-start anchor (hidden main line wrapping under the alt row).
+    int anchorStartRow = anchorFirstAbs + mSelection.anchorStartCellOffset / std::max(1, mWidth);
 
-    if (curFirstAbs < anchorFirstAbs) {
-        mSelection.startLineId     = curId;
-        mSelection.startCellOffset = 0;
+    if (curFirstAbs < anchorStartRow) {
+        mSelection.startLineId     = curStartId;
+        mSelection.startCellOffset = curStartOff;
         mSelection.endLineId       = mSelection.anchorEndLineId;
         mSelection.endCellOffset   = mSelection.anchorEndCellOffset;
     } else {
         mSelection.startLineId     = mSelection.anchorStartLineId;
         mSelection.startCellOffset = mSelection.anchorStartCellOffset;
-        mSelection.endLineId       = curId;
+        mSelection.endLineId       = curEndId;
         mSelection.endCellOffset   = curEndOff;
     }
 }

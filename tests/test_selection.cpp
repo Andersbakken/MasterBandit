@@ -729,3 +729,73 @@ TEST_CASE("alt screen activity does not disturb main-screen continuation flags")
 
     CHECK(t.term.selectedText() == "ABCDEFGHIJKLMNO");
 }
+
+TEST_CASE("alt screen: triple-click on a wrapped line selects the whole logical line")
+{
+    TestTerminal t(10, 5);
+    t.feed("\x1b[?1049h");
+    t.feed("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"); // alt rows 0..2, soft-wrapped
+
+    int histSize = t.term.document().historySize();
+    // Click the middle physical row — the whole logical line must select.
+    t.term.startLineSelection(histSize + 1);
+    auto rel = makeMouseEvent(0, 1);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
+}
+
+TEST_CASE("alt screen: triple-click ignores the hidden main screen's wrap structure")
+{
+    // The main screen holds a 3-row wrapped line; the alt screen paints
+    // three hard-broken lines over it. Triple-click on alt row 1 must
+    // select just "two" — not span rows 0..2 because the *hidden* main
+    // line underneath happens to wrap across them.
+    TestTerminal t(10, 5);
+    t.feed("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"); // main rows 0..2, one logical line
+    t.feed("\x1b[?1049h");
+    t.feed("one\r\ntwo\r\nthree");
+
+    int histSize = t.term.document().historySize();
+    t.term.startLineSelection(histSize + 1);
+    auto rel = makeMouseEvent(0, 1);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "two");
+}
+
+TEST_CASE("alt screen: double-click on a soft-wrapped word selects the whole word")
+{
+    // width=10: "abcdefghij" occupies row 0 cols 4..9 and row 1 cols 0..3.
+    TestTerminal t(10, 5);
+    t.feed("\x1b[?1049h");
+    t.feed("foo abcdefghij klm");
+
+    int histSize = t.term.document().historySize();
+    // First half of the word (row 0, col 5 = 'b').
+    t.term.startWordSelection(/*col=*/5, histSize + 0);
+    auto rel = makeMouseEvent(5, 0);
+    t.term.mouseReleaseEvent(&rel);
+    CHECK(t.term.selectedText() == "abcdefghij");
+
+    // Second half (row 1, col 1 = 'h').
+    t.term.startWordSelection(/*col=*/1, histSize + 1);
+    auto rel2 = makeMouseEvent(1, 1);
+    t.term.mouseReleaseEvent(&rel2);
+    CHECK(t.term.selectedText() == "abcdefghij");
+}
+
+TEST_CASE("alt screen: triple-click + drag down extends by full logical lines")
+{
+    TestTerminal t(10, 5);
+    t.feed("\x1b[?1049h");
+    t.feed("ABCDEFGHIJKL\r\nxyz"); // rows 0..1 wrapped line, row 2 "xyz"
+
+    int histSize = t.term.document().historySize();
+    t.term.startLineSelection(histSize + 0);
+    t.term.updateSelection(0, histSize + 2, /*xRightHalf=*/false);
+    auto rel = makeMouseEvent(0, 2);
+    t.term.mouseReleaseEvent(&rel);
+
+    CHECK(t.term.selectedText() == "ABCDEFGHIJKL\nxyz");
+}

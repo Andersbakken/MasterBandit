@@ -598,9 +598,10 @@ interface MbPane extends MbTerminal {
      * Extract plain UTF-8 text from a stable row-id range (inclusive on
      * both ends). `startRowId`/`endRowId` map to the first/last abs row of
      * the logical line — a wrapped line is covered end-to-end at the
-     * current width. `startCol` inclusive, `endCol` exclusive. Returns
-     * empty string if the start line has been evicted past the archive
-     * cap. Requires `pane.read`.
+     * current width. `startCol` inclusive, `endCol` exclusive. Soft-wrapped
+     * rows are joined without a newline (matching selection copy); `\n`
+     * appears only at hard line breaks. Returns empty string if the start
+     * line has been evicted past the archive cap. Requires `pane.read`.
      */
     getTextFromRows(startRowId: number, startCol: number, endRowId: number, endCol: number): string;
     /**

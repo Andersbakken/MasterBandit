@@ -511,23 +511,29 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
                 ++tokenIndex;
             }
 
-            int absRow = absoluteRowFromScreen(mState->cursorY);
+            int absRow            = absoluteRowFromScreen(mState->cursorY);
+            // Command records anchor to main-document line ids; on the alt
+            // screen those ids resolve into the hidden main screen, so skip
+            // ring recording there. Semantic pen updates still apply.
+            const bool recordCmds = !mUsingAltScreen;
 
             (void)isSecondary; // currently informational; could tag CommandRecord later
             switch (kind) {
                 case 'A':
                 case 'N':
-                    if (kind == 'N' && mCommandInProgress) {
-                        // Implicit close of the in-flight command (no exit code available).
-                        finishCommand(absRow, mState->cursorX, std::nullopt);
+                    if (recordCmds) {
+                        if (kind == 'N' && mCommandInProgress) {
+                            // Implicit close of the in-flight command (no exit code available).
+                            finishCommand(absRow, mState->cursorX, std::nullopt);
+                        }
+                        startCommand(absRow, mState->cursorX);
                     }
-                    startCommand(absRow, mState->cursorX);
                     mSemanticMode = SemanticMode::Prompt;
                     mState->currentAttrs.setSemanticType(CellAttrs::Prompt);
                     break;
                 case 'P':
                     // Explicit prompt start; behave like A if no command is in progress.
-                    if (!mCommandInProgress) {
+                    if (recordCmds && !mCommandInProgress) {
                         startCommand(absRow, mState->cursorX);
                     }
                     mSemanticMode = SemanticMode::Prompt;
@@ -535,17 +541,23 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
                     break;
                 case 'B':
                 case 'I':
-                    markCommandInput(absRow, mState->cursorX);
+                    if (recordCmds) {
+                        markCommandInput(absRow, mState->cursorX);
+                    }
                     mSemanticMode = SemanticMode::Input;
                     mState->currentAttrs.setSemanticType(CellAttrs::Input);
                     break;
                 case 'C':
-                    markCommandOutput(absRow, mState->cursorX);
+                    if (recordCmds) {
+                        markCommandOutput(absRow, mState->cursorX);
+                    }
                     mSemanticMode = SemanticMode::Output;
                     mState->currentAttrs.setSemanticType(CellAttrs::Output);
                     break;
                 case 'D':
-                    finishCommand(absRow, mState->cursorX, firstArgInt);
+                    if (recordCmds) {
+                        finishCommand(absRow, mState->cursorX, firstArgInt);
+                    }
                     mSemanticMode = SemanticMode::Inactive;
                     // Reset the pen to Output — cells written between D and the next A are
                     // output-by-default. Matches WezTerm's convention.

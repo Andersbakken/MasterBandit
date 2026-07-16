@@ -33,6 +33,10 @@ void CellGrid::resize(int cols, int rows)
     if (cols != cols_) {
         for (auto &r : rowVec_) {
             r->cells.resize(static_cast<size_t>(cols));
+            // No reflow here: wrap points recorded at the old width are
+            // meaningless. Drop them rather than fake joins until the
+            // app repaints at the new size.
+            r->continued = false;
         }
     }
 

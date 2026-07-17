@@ -57,6 +57,9 @@ struct TerminalCallbacks
     std::function<bool()> isDarkMode;                                  // for mode 2031
     std::function<void(const std::string &)> onCWDChanged;             // OSC 7
     std::function<void(const std::string &)> onMouseCursorShape;       // OSC 22 (CSS pointer name; "" = default)
+    // OSC 1337 SetUserVar. Fires with the decoded value when the sequence
+    // set the key, and with nullopt when it unset the key.
+    std::function<void(const std::string & /*key*/, std::optional<std::string> /*value*/)> onUserVarChanged;
 
     // Desktop notification payload — passed to onDesktopNotification.
     // Aggregates everything the OSC 99 parser accumulated by the time
@@ -547,6 +550,13 @@ public:
     {
         std::lock_guard<std::mutex> lock(mTitleIconMutex);
         return mIconShadow;
+    }
+
+    // Snapshot of the shell-set variables (OSC 1337 SetUserVar).
+    std::unordered_map<std::string, std::string> userVars() const
+    {
+        std::lock_guard<std::mutex> lock(mUserVarsMutex);
+        return mUserVars;
     }
 
     bool syncOutputActive() const { return mState->syncOutput; }
@@ -1262,6 +1272,7 @@ private:
     void processOSC_PaletteReset(std::string_view payload);
     void processOSC_Clipboard(std::string_view payload);
     void processOSC_iTerm(std::string_view payload);
+    void processSetUserVar(std::string_view kvp);
     void processOSC_PointerShape(std::string_view payload);
     void processAPC(std::string_view body);
     void placeImageInGrid(uint32_t imageId, uint32_t placementId, int cellCols, int cellRows, bool moveCursor = true);
@@ -1524,8 +1535,17 @@ private:
     SemanticMode mSemanticMode { SemanticMode::Inactive };
     std::deque<CommandRecord> mCommandRing; // all records whose prompt row is still retained
     uint64_t mNextCommandId { 1 };
-    bool mCommandInProgress { false };          // true between A and D (or N)
-    std::string mCurrentCwd;                    // last OSC 7 value (for command records)
+    bool mCommandInProgress { false }; // true between A and D (or N)
+    std::string mCurrentCwd;           // last OSC 7 value (for command records)
+
+    // Shell-set variables (OSC 1337 SetUserVar). Guarded by its own mutex
+    // rather than mMutex so the JS-facing read doesn't block for the whole
+    // parse-apply of a flooding pane (same reasoning as mTitleIconMutex).
+    mutable std::mutex mUserVarsMutex;
+    std::unordered_map<std::string, std::string> mUserVars;
+    // Cap on distinct keys, so a hostile stream can't grow the map without
+    // bound. Updates to keys already present are always accepted.
+    static constexpr size_t USER_VARS_MAX = 256;
     std::optional<uint64_t> mSelectedCommandId; // id of command currently highlighted via click or keyboard nav
 
     int absoluteRowFromScreen(int screenRow) const;

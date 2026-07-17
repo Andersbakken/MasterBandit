@@ -147,6 +147,10 @@ struct AppCallbacks
     // Query OSC 133 command records for a pane. Returns most-recent-last, up to `limit`
     // entries (0 = all). Used by pane.commands / pane.selectedCommand JS properties.
     std::function<std::vector<CommandInfo>(PaneId, int limit)> paneCommands;
+    // Snapshot of a pane's shell-set variables (OSC 1337 SetUserVar).
+    // Kept off PaneInfo because that struct is rebuilt on every property
+    // read and most reads don't want the map.
+    std::function<std::unordered_map<std::string, std::string>(PaneId)> paneUserVars;
     // Set (or clear with nullopt) the pane's OSC 133 selected command.
     // Returns false if the command id is not present in the ring or the pane
     // is not found.
@@ -534,6 +538,9 @@ public:
     // a script set/cleared pane.title. Payload is the new effective
     // title (may be empty if neither override nor OSC is set).
     void notifyPaneTitleChanged(PaneId pane, const std::string &title);
+    // value is nullopt when the variable was unset.
+    void notifyPaneUserVarChanged(PaneId pane, const std::string &key,
+                                  const std::optional<std::string> &value);
     void notifyPaneFocusChanged(PaneId pane, bool focused);
     void notifyFocusedPopupChanged(PaneId pane, const std::string &popupId);
     void notifyPaneMouseMove(PaneId pane, int cellX, int cellY, int pixelX, int pixelY);

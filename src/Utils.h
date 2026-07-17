@@ -18,6 +18,37 @@ struct overloaded : Ts...
 
 namespace base64 {
 
+// decode() is lenient — it maps any byte outside the alphabet to zero bits —
+// so check the input first anywhere the decode result is stored rather than
+// rendered, or malformed input lands as silent garbage.
+inline bool isValid(std::string_view input)
+{
+    size_t chars = 0;
+    size_t pad   = 0;
+    for (char c : input) {
+        if (c == '\n' || c == '\r') {
+            continue;
+        }
+        if (c == '=') {
+            if (++pad > 2) {
+                return false;
+            }
+            continue;
+        }
+        if (pad > 0) {
+            return false; // padding is trailing-only
+        }
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/';
+        if (!ok) {
+            return false;
+        }
+        ++chars;
+    }
+    // A trailing group of one 6-bit char carries no whole byte, so it can't
+    // come from a real encoder.
+    return chars % 4 != 1;
+}
+
 inline std::vector<uint8_t> decode(std::string_view input)
 {
     static constexpr auto table = []()
@@ -132,6 +163,49 @@ inline bool isSpace(char32_t cp)
         default:
             return false;
     }
+}
+
+// Rejects overlong forms, surrogates and out-of-range code points, not just
+// malformed continuation bytes.
+inline bool isValidUtf8(std::string_view s)
+{
+    const auto *p   = reinterpret_cast<const uint8_t *>(s.data());
+    const auto *end = p + s.size();
+    while (p < end) {
+        const uint8_t b = *p;
+        int extra       = 0;
+        uint32_t cp     = 0;
+        if (b < 0x80) {
+            ++p;
+            continue;
+        } else if ((b & 0xE0) == 0xC0) {
+            extra = 1;
+            cp    = b & 0x1F;
+        } else if ((b & 0xF0) == 0xE0) {
+            extra = 2;
+            cp    = b & 0x0F;
+        } else if ((b & 0xF8) == 0xF0) {
+            extra = 3;
+            cp    = b & 0x07;
+        } else {
+            return false;
+        }
+        if (p + extra >= end) {
+            return false;
+        }
+        ++p;
+        for (int i = 0; i < extra; ++i, ++p) {
+            if ((*p & 0xC0) != 0x80) {
+                return false;
+            }
+            cp = (cp << 6) | (*p & 0x3F);
+        }
+        static constexpr uint32_t kMin[4] = { 0, 0x80, 0x800, 0x10000 };
+        if (cp < kMin[extra] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace unicode

@@ -463,3 +463,153 @@ TEST_CASE("OSC 1337: unknown params don't prevent image from registering")
 
     REQUIRE(t.term.imageRegistry().size() == 1);
 }
+
+// ── SetUserVar ─────────────────────────────────────────────────────────────
+
+namespace {
+
+// "SetUserVar=<key>=<base64 value>"; the value is the raw string, encoded here.
+std::string setUserVar(const std::string &key, const std::string &value)
+{
+    std::string b64 = base64::encode(reinterpret_cast<const uint8_t *>(value.data()), value.size());
+    return "1337;SetUserVar=" + key + "=" + b64;
+}
+
+std::string userVar(const TestTerminal &t, const std::string &key)
+{
+    auto vars = t.term.userVars();
+    auto it   = vars.find(key);
+    return it == vars.end() ? std::string("<unset>") : it->second;
+}
+
+} // namespace
+
+TEST_CASE("OSC 1337 SetUserVar: sets a variable and fires the callback")
+{
+    TestTerminal t;
+    t.osc(setUserVar("git_branch", "master"));
+
+    CHECK(userVar(t, "git_branch") == "master");
+    CHECK(t.capturedUserVarKey == "git_branch");
+    REQUIRE(t.capturedUserVarValue.has_value());
+    CHECK(*t.capturedUserVarValue == "master");
+    CHECK(t.userVarCallCount == 1);
+}
+
+TEST_CASE("OSC 1337 SetUserVar: a second set overwrites the value")
+{
+    TestTerminal t;
+    t.osc(setUserVar("branch", "master"));
+    t.osc(setUserVar("branch", "feature"));
+
+    CHECK(userVar(t, "branch") == "feature");
+    CHECK(t.term.userVars().size() == 1);
+    CHECK(t.userVarCallCount == 2);
+}
+
+TEST_CASE("OSC 1337 SetUserVar: no '=' unsets the key")
+{
+    TestTerminal t;
+    t.osc(setUserVar("branch", "master"));
+    REQUIRE(t.term.userVars().size() == 1);
+
+    t.osc("1337;SetUserVar=branch");
+
+    CHECK(t.term.userVars().empty());
+    CHECK(t.capturedUserVarKey == "branch");
+    CHECK(!t.capturedUserVarValue.has_value());
+}
+
+TEST_CASE("OSC 1337 SetUserVar: empty value sets an empty string, not an unset")
+{
+    TestTerminal t;
+    t.osc("1337;SetUserVar=branch=");
+
+    REQUIRE(t.term.userVars().size() == 1);
+    CHECK(userVar(t, "branch") == "");
+    REQUIRE(t.capturedUserVarValue.has_value());
+    CHECK(*t.capturedUserVarValue == "");
+}
+
+TEST_CASE("OSC 1337 SetUserVar: value may contain '=' after the first one")
+{
+    TestTerminal t;
+    // Splitting on the last '=' instead of the first would corrupt this.
+    t.osc(setUserVar("q", "a=b=c"));
+
+    CHECK(userVar(t, "q") == "a=b=c");
+}
+
+TEST_CASE("OSC 1337 SetUserVar: keys containing '.' are rejected")
+{
+    TestTerminal t;
+    t.osc(setUserVar("git.branch", "master"));
+
+    CHECK(t.term.userVars().empty());
+    CHECK(t.userVarCallCount == 0);
+}
+
+TEST_CASE("OSC 1337 SetUserVar: empty key is rejected")
+{
+    TestTerminal t;
+    t.osc(setUserVar("", "master"));
+
+    CHECK(t.term.userVars().empty());
+    CHECK(t.userVarCallCount == 0);
+}
+
+TEST_CASE("OSC 1337 SetUserVar: invalid base64 is ignored, leaving any prior value")
+{
+    TestTerminal t;
+    t.osc(setUserVar("branch", "master"));
+
+    t.osc("1337;SetUserVar=branch=!!!!");
+
+    CHECK(userVar(t, "branch") == "master");
+    CHECK(t.userVarCallCount == 1); // no second callback
+}
+
+TEST_CASE("OSC 1337 SetUserVar: base64 that decodes to invalid UTF-8 is ignored")
+{
+    TestTerminal t;
+    // 0xFF is not a legal UTF-8 byte anywhere.
+    const uint8_t raw[] = { 0xFF, 0xFE };
+    std::string b64     = base64::encode(raw, sizeof(raw));
+
+    t.osc("1337;SetUserVar=k=" + b64);
+
+    CHECK(t.term.userVars().empty());
+    CHECK(t.userVarCallCount == 0);
+}
+
+TEST_CASE("OSC 1337 SetUserVar: multi-byte UTF-8 round-trips")
+{
+    TestTerminal t;
+    t.osc(setUserVar("branch", "vývöj-主"));
+
+    CHECK(userVar(t, "branch") == "vývöj-主");
+}
+
+TEST_CASE("OSC 1337 SetUserVar: distinct keys are capped, updates still land")
+{
+    TestTerminal t;
+    for (int i = 0; i < 300; ++i) {
+        t.osc(setUserVar("k" + std::to_string(i), "v"));
+    }
+
+    CHECK(t.term.userVars().size() == 256);
+    // A key admitted before the cap can still be updated.
+    t.osc(setUserVar("k0", "updated"));
+    CHECK(userVar(t, "k0") == "updated");
+}
+
+TEST_CASE("OSC 1337 SetUserVar: does not disturb image handling")
+{
+    ITermTerminal t(40, 20);
+    t.osc(setUserVar("branch", "master"));
+    auto png = encodePng(10, 20, 255, 0, 0);
+    t.feed(osc1337("inline=1", png));
+
+    CHECK(t.term.imageRegistry().size() == 1);
+    CHECK(userVar(t, "branch") == "master");
+}

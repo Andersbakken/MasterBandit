@@ -1283,6 +1283,18 @@ static JSValue jsPaneGetProp(JSContext *ctx, JSValueConst this_val, int magic)
                 ? JS_NULL
                 : JS_NewStringLen(ctx, info.nodeId.data(), info.nodeId.size());
         case 18: return JS_NewBool(ctx, info.usingAltScreen);
+        case 19: { // userVars → { key: value } snapshot of OSC 1337 SetUserVar.
+                   // Ungated, matching .title / .cwd: the values are whatever
+                   // the user's own shell config chose to publish.
+            JSValue obj = JS_NewObject(ctx);
+            if (!eng->callbacks().paneUserVars) {
+                return obj;
+            }
+            for (const auto &[key, value] : eng->callbacks().paneUserVars(pane->id)) {
+                JS_SetPropertyStr(ctx, obj, key.c_str(), JS_NewStringLen(ctx, value.data(), value.size()));
+            }
+            return obj;
+        }
         default: return JS_UNDEFINED;
     }
 }
@@ -1387,6 +1399,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     // null/undefined clears it. Fires a titleChanged event on the pane.
     JS_CGETSET_MAGIC_DEF("title", jsPaneGetProp, jsPaneSetProp, 3),
     JS_CGETSET_MAGIC_DEF("cwd", jsPaneGetProp, nullptr, 4),
+    JS_CGETSET_MAGIC_DEF("userVars", jsPaneGetProp, nullptr, 19),
     JS_CGETSET_MAGIC_DEF("hasPty", jsPaneGetProp, nullptr, 5),
     JS_CGETSET_MAGIC_DEF("focused", jsPaneGetProp, nullptr, 6),
     JS_CGETSET_MAGIC_DEF("focusedPopupId", jsPaneGetProp, nullptr, 7),
@@ -1711,11 +1724,11 @@ static JSValue jsPaneCreatePopup(JSContext *ctx, JSValueConst this_val,
 
     Uuid paneId = pane->id;
     bool ok     = eng->callbacks().createPopup(paneId, popupId, x, y, w, h, [eng, paneId, popupId](const char *data, size_t len)
-                                           {
+                                               {
                                                // Deliver input to popup listeners
                                                std::string regKey = paneId.toString() + ":" + popupId;
                                                eng->deliverPopupInput(regKey, data, len);
-                                           });
+                                               });
 
     if (!ok) {
         return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
@@ -3053,11 +3066,11 @@ static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
     // Arm the completion timer. On fire: settle as "completed".
     EventLoop *loop                = eng->loop();
     EventLoop::TimerId tid         = loop->addTimer(static_cast<uint64_t>(durationMs), false, [eng, handleId]()
-                                            {
+                                                    {
                                                 eng->settleDecorationAnimation(handleId, "completed",
                                                                                /*snapToEnd=*/true,
                                                                                TerminalEmulator::mono());
-                                            });
+                                                    });
     inserted.first->second.timerId = tid;
 
     // If startAnimation replaced a prior animation on the same target/prop
@@ -6839,6 +6852,36 @@ void Engine::notifyPaneTitleChanged(PaneId pane, const std::string &title)
             JSValue arg = JS_NewStringLen(inst.ctx, title.data(), title.size());
             enqueueListeners(inst.ctx, arr, 1, &arg);
             JS_FreeValue(inst.ctx, arg);
+            JS_FreeValue(inst.ctx, arr);
+        }
+        JS_FreeValue(inst.ctx, paneObj);
+        JS_FreeValue(inst.ctx, registry);
+    }
+}
+
+void Engine::notifyPaneUserVarChanged(PaneId pane, const std::string &key,
+                                      const std::optional<std::string> &value)
+{
+    IterGuard guard(this);
+    for (auto &inst : instances_) {
+        if (!inst.ctx) {
+            continue;
+        }
+        JSValue global   = JS_GetGlobalObject(inst.ctx);
+        JSValue registry = JS_GetPropertyStr(inst.ctx, global, "__pane_registry");
+        JS_FreeValue(inst.ctx, global);
+        if (JS_IsUndefined(registry)) {
+            continue;
+        }
+
+        JSValue paneObj = JS_GetPropertyStr(inst.ctx, registry, pane.toString().c_str());
+        if (!JS_IsUndefined(paneObj)) {
+            JSValue arr = JS_GetPropertyStr(inst.ctx, paneObj, "__evt_userVarChanged");
+            JSValue obj = JS_NewObject(inst.ctx);
+            JS_SetPropertyStr(inst.ctx, obj, "key", JS_NewStringLen(inst.ctx, key.data(), key.size()));
+            JS_SetPropertyStr(inst.ctx, obj, "value", value ? JS_NewStringLen(inst.ctx, value->data(), value->size()) : JS_NULL);
+            enqueueListeners(inst.ctx, arr, 1, &obj);
+            JS_FreeValue(inst.ctx, obj);
             JS_FreeValue(inst.ctx, arr);
         }
         JS_FreeValue(inst.ctx, paneObj);

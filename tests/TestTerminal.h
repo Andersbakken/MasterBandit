@@ -35,6 +35,11 @@ struct TestTerminal
     std::string capturedIcon;
     bool capturedIconHasValue = false;
     std::string capturedCWD;
+    // OSC 1337 SetUserVar: last (key, value) delivered. capturedUserVarValue
+    // is nullopt when the sequence unset the key.
+    std::string capturedUserVarKey;
+    std::optional<std::string> capturedUserVarValue;
+    int userVarCallCount = 0;
     std::string capturedNotifyTitle;
     std::string capturedNotifyBody;
     std::string capturedNotifyId;
@@ -85,6 +90,12 @@ struct TestTerminal
                    cb.onCWDChanged = [this](const std::string &d)
                    {
                        capturedCWD = d;
+                   };
+                   cb.onUserVarChanged = [this](const std::string &key, std::optional<std::string> value)
+                   {
+                       capturedUserVarKey   = key;
+                       capturedUserVarValue = value;
+                       ++userVarCallCount;
                    };
                    cb.onDesktopNotification = [this](const TerminalCallbacks::DesktopNotification &n)
                    {

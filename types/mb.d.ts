@@ -535,6 +535,18 @@ interface MbPane extends MbTerminal {
     title: string | null;
     /** Working directory reported via OSC 7. */
     readonly cwd: string;
+    /**
+     * Variables the shell published via `OSC 1337 ; SetUserVar=<key>=<base64>`,
+     * as emitted by the `set_user_var` helper in a shell-integration script.
+     *
+     * Each read returns a fresh snapshot object; mutating it has no effect
+     * on the pane, and the shell is the only writer. Keys never contain a
+     * `.`; values are always UTF-8 strings (a sequence whose value isn't
+     * valid base64/UTF-8 is dropped, leaving the previous value in place).
+     * Unset keys are absent from the object rather than `undefined`-valued.
+     * Subscribe to `"userVarChanged"` for a push signal.
+     */
+    readonly userVars: Record<string, string>;
     readonly hasPty: boolean;
     readonly focused: boolean;
     /** Id of the popup that currently holds focus, or `null`. */
@@ -771,6 +783,13 @@ interface MbPane extends MbTerminal {
      * title (override if set, else OSC, else `""`).
      */
     addEventListener(event: "titleChanged", fn: (title: string) => void): void;
+    /**
+     * Fired when the shell sets or unsets a variable via
+     * `OSC 1337 ; SetUserVar`. `value` is the new string, or `null` when the
+     * variable was unset. Fires on every accepted sequence, including one
+     * that rewrites a key with the value it already had.
+     */
+    addEventListener(event: "userVarChanged", fn: (ev: { key: string; value: string | null }) => void): void;
     /** Fired on mouse movement within the pane. Requires `ui`. */
     addEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
     /** Fired when the pane gains or loses focus. */
@@ -818,6 +837,7 @@ interface MbPane extends MbTerminal {
     removeEventListener(event: "destroyed", fn: () => void): void;
     removeEventListener(event: "foregroundProcessChanged", fn: (processName: string) => void): void;
     removeEventListener(event: "titleChanged", fn: (title: string) => void): void;
+    removeEventListener(event: "userVarChanged", fn: (ev: { key: string; value: string | null }) => void): void;
     removeEventListener(event: "mousemove", fn: (ev: { cellX: number; cellY: number; pixelX: number; pixelY: number }) => void): void;
     removeEventListener(event: "focusChanged", fn: (focused: boolean) => void): void;
     removeEventListener(event: "focusedPopupChanged", fn: (popupId: string | null) => void): void;

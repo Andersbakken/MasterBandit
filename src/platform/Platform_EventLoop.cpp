@@ -245,6 +245,14 @@ int PlatformDawn::exec()
             }
             return {};
         };
+        scbs.paneUserVars = [this](Script::PaneId paneId) -> std::unordered_map<std::string, std::string>
+        {
+            // userVars() takes its own mutex, so no parse lock here.
+            if (Terminal *te = scriptEngine_.terminal(paneId)) {
+                return te->userVars();
+            }
+            return {};
+        };
         scbs.paneCommands = [this](Script::PaneId paneId, int limit) -> std::vector<Script::CommandInfo>
         {
             std::vector<Script::CommandInfo> result;
@@ -1205,7 +1213,7 @@ int PlatformDawn::exec()
                 eventLoop_->removeTimer(configJsDebounceTimer_);
             }
             configJsDebounceTimer_  = eventLoop_->addTimer(300, false, [this, resolveConfigScriptPath]()
-                                                          {
+                                                           {
                                                               configJsDebounceActive_ = false;
                                                               std::string currentPath = resolveConfigScriptPath();
                                                               if (currentPath.empty()) {
@@ -1233,7 +1241,7 @@ int PlatformDawn::exec()
                                                               } else {
                                                                   scriptEngine_.reevalInstance(configJsInstanceId_, currentPath);
                                                               }
-                                                          });
+                                                           });
             configJsDebounceActive_ = true;
         };
         if (!jsPath.empty()) {

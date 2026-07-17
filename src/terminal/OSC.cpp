@@ -168,6 +168,14 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
         return;
     }
 
+    // "SetUserVar=<key>=<base64 value>" sets a shell-supplied variable;
+    // "SetUserVar=<key>" with no value unsets it.
+    constexpr std::string_view kSetUserVarKey = "SetUserVar=";
+    if (payload.substr(0, kSetUserVarKey.size()) == kSetUserVarKey) {
+        processSetUserVar(payload.substr(kSetUserVarKey.size()));
+        return;
+    }
+
     // Format: "File=[params]:base64data". Params are ";"-separated name=value
     // pairs. Per iTerm spec, inline=1 is required for display (otherwise the
     // sequence is a "download to disk" request, which we don't implement).
@@ -310,6 +318,57 @@ void TerminalEmulator::processOSC_iTerm(std::string_view payload)
     mImageRegistry[imageId] = std::make_shared<ImageEntry>(std::move(entry));
 
     placeImageInGrid(imageId, 0, cellCols, cellRows);
+}
+
+void TerminalEmulator::processSetUserVar(std::string_view kvp)
+{
+    // Caller holds mMutex (parser path).
+    const auto eq              = kvp.find('=');
+    const std::string_view key = kvp.substr(0, eq == std::string_view::npos ? kvp.size() : eq);
+    // '.' is reserved so scripts can namespace these keys downstream.
+    if (key.empty() || key.find('.') != std::string_view::npos) {
+        spdlog::debug("OSC 1337 SetUserVar: rejected key \"{}\"", key);
+        return;
+    }
+
+    // No "=" at all means unset; "key=" (empty value) sets an empty string.
+    std::optional<std::string> value;
+    if (eq != std::string_view::npos) {
+        const std::string_view b64 = kvp.substr(eq + 1);
+        if (!base64::isValid(b64)) {
+            spdlog::debug("OSC 1337 SetUserVar: \"{}\" value is not base64", key);
+            return;
+        }
+        const auto bytes = base64::decode(b64);
+        std::string decoded(bytes.begin(), bytes.end());
+        if (!unicode::isValidUtf8(decoded)) {
+            spdlog::debug("OSC 1337 SetUserVar: \"{}\" value is not UTF-8", key);
+            return;
+        }
+        value = std::move(decoded);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mUserVarsMutex);
+        if (!value) {
+            mUserVars.erase(std::string(key));
+        } else {
+            auto it = mUserVars.find(std::string(key));
+            if (it != mUserVars.end()) {
+                it->second = *value;
+            } else {
+                if (mUserVars.size() >= USER_VARS_MAX) {
+                    spdlog::debug("OSC 1337 SetUserVar: at {} keys, dropping \"{}\"", USER_VARS_MAX, key);
+                    return;
+                }
+                mUserVars.emplace(std::string(key), *value);
+            }
+        }
+    }
+
+    if (mCallbacks.onUserVarChanged) {
+        mCallbacks.onUserVarChanged(std::string(key), value);
+    }
 }
 
 void TerminalEmulator::placeImageInGrid(uint32_t imageId, uint32_t placementId,
@@ -717,8 +776,8 @@ void TerminalEmulator::processStringSequence(uint8_t kind, std::string_view body
                 ? payload.substr(0, payloadSemi)
                 : payload;
             std::string text          = (payloadSemi != std::string_view::npos)
-                         ? std::string(payload.substr(payloadSemi + 1))
-                         : std::string {};
+                ? std::string(payload.substr(payloadSemi + 1))
+                : std::string {};
 
             std::string pType = "title";
             std::string nId;

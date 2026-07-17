@@ -1181,6 +1181,18 @@ TerminalCallbacks PlatformDawn::buildTerminalCallbacks(Uuid paneId)
                          });
     };
 
+    cbs.onUserVarChanged = [this, paneId](const std::string &key, std::optional<std::string> value)
+    {
+        // The emulator already stored it; this only forwards to JS listeners.
+        eventLoop_->post([this, paneId, key, value]
+                         {
+                             if (!findTabForPane(paneId)) {
+                                 return;
+                             }
+                             scriptEngine_.notifyPaneUserVarChanged(paneId, key, value);
+                         });
+    };
+
     if (isHeadless()) {
         cbs.onDesktopNotification = [](const TerminalCallbacks::DesktopNotification &)
         {

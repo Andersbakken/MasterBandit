@@ -34,6 +34,90 @@ the final `loaded` / `denied` ack is written after the user picks. Shells
 should treat "no ack within a generous timeout" (30s+) as "no integration
 available" and run un-integrated; humans take time on prompts.
 
+## PTY-backed popups (OSC `popup` verb)
+
+Any CLI app can open a popup on its pane and get back a filesystem endpoint —
+a pty slave device — that any process may then open and read/write. Bytes
+written to it render in the popup with full VT semantics (colors, cursor
+movement, TUI redraws); when the popup is focused (Cmd/Ctrl+Shift+I cycles),
+keyboard input is readable from the same device.
+
+```
+\e]58237;popup;id=<id>[;x=<col>][;y=<row>][;w=<cols>][;h=<rows>][;key=<secret>][;pair=1][;label=<name>]\e\\
+\e]58237;popup-close;id=<id>\e\\
+```
+
+`id` is required and unique per pane. `w`/`h` default to 40×10, `x`/`y` to
+centered; everything is clamped to the pane. Acks arrive on the requesting
+pane's PTY, one per request:
+
+```
+\e]58237;popup-result;status=created;id=<id>;tty=/dev/pts/N\e\\
+\e]58237;popup-result;status=pairing;id=<id>;pin=<4 digits>\e\\
+\e]58237;popup-result;status=paired;id=<id>;tty=/dev/pts/N;key=<secret>\e\\
+\e]58237;popup-result;status=closed;id=<id>\e\\
+\e]58237;popup-result;status=denied;id=<id>[;error=bad-key|prompt-pending]\e\\
+\e]58237;popup-result;status=error;id=<id>;error=<url-encoded>\e\\
+```
+
+Shell example:
+
+```sh
+printf '\e]58237;popup;id=log;w=60;h=12\e\\'
+# parse the ack for tty=..., then:
+tail -f build.log > /dev/pts/N &
+printf '\e]58237;popup-close;id=log\e\\'
+```
+
+Semantics worth knowing:
+
+- **Popup keys — the persistent trust mechanism.** A request presenting
+  `key=<secret>` matching a stored key creates the popup with no prompt.
+  Possession is the identity: whoever holds the key is the grantee,
+  regardless of which process is foreground. MB stores only sha256 hashes
+  (in `<configDir>/popup-permissions.json`, with a label and creation
+  date); an unknown/revoked key gets `status=denied;error=bad-key` with no
+  prompt (re-pair instead of nagging). Two ways to get a key:
+  - **User-created**: the `popup-keys.create` action (command palette)
+    prompts for a label, copies the secret to the clipboard, and shows it
+    once. Drop it in your shell env (`export MB_POPUP_KEY=...`) and
+    one-off scripts get promptless popups:
+    `printf '\e]58237;popup;id=x;key='"$MB_POPUP_KEY"'\e\\'`.
+    Revoke by label with `popup-keys.revoke`.
+  - **Pairing** (`pair=1[;label=<name>]`): MB immediately acks
+    `status=pairing;pin=<4 digits>`; the app displays the PIN; MB shows a
+    dialog with the same PIN. Matching codes tell the user the dialog
+    belongs to the app they just ran (a concurrent hostile request would
+    show a different PIN). Grant mints a key, creates the popup, and acks
+    `status=paired;tty=...;key=<secret>` — the app stores the key for
+    next time.
+- **Keyless requests always prompt** (allow / deny / never — no persistent
+  "allow always"; that's what keys are for). The prompt is keyed on the
+  foreground process's resolved executable path (`/proc/<pid>/exe` /
+  `proc_pidpath` — immune to argv0/prctl name spoofing; comm-name fallback)
+  and `never` persists, silently denying future prompts. Foreground
+  attribution is best-effort: the pty channel cannot prove *which* in-pane
+  process emitted the OSC, which is exactly why persistent trust rides on
+  keys instead. Keys are bearer tokens — same-user processes can steal
+  them; in-model per "TTY is not a security boundary" below.
+- **Prompt spam limits**: at most one permission dialog per process and per
+  pane (concurrent requests get `status=denied;error=prompt-pending`); a
+  60s cooldown after each user deny; after 3 denials the process is muted
+  for the rest of the session; at most 4 live OSC-created popups per pane
+  (`status=error;error=too-many-popups`, applies to keyed requests too).
+- MB holds its own fd on the slave, so writers can open and close freely —
+  `echo hi > /dev/pts/N` per line works; the popup never sees EOF.
+- Default termios is canonical + echo. Programs *reading* popup input from
+  the device should raw-mode it first (`stty -F /dev/pts/N raw -echo`).
+- The device reports the popup's size via `TIOCGWINSZ` and tracks
+  `popup.resize` / OSC-side resizes.
+- The popup dies on `popup-close`, when its pane or tab closes, or with MB.
+  `popup-close` only closes popups created via this OSC channel.
+- Capability discovery: `mb-query-popup` via XTGETTCAP (DCS).
+- JS equivalent: `pane.createPopup({id, x, y, w, h, pty: true})`; the slave
+  path is `popup.tty`. The JS `"input"` event does not fire for pty popups —
+  keystrokes go to the pty.
+
 ## Register everything at top level, synchronously
 
 **The single most important rule.** QuickJS runs the module's top-level code

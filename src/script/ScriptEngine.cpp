@@ -1195,6 +1195,9 @@ static JSValue jsPaneGetProp(JSContext *ctx, JSValueConst this_val, int magic)
             ? JS_NULL
             : JS_NewString(ctx, info.focusedPopupId.c_str());
         case 8: return JS_NewString(ctx, info.foregroundProcess.c_str());
+        case 20: return info.foregroundExe.empty()
+            ? JS_NULL
+            : JS_NewString(ctx, info.foregroundExe.c_str());
         case 9: { // selectedCommand — full record of the OSC 133 command currently
                   // highlighted via Cmd+click / Cmd+double-click / scroll_to_prompt,
                   // or null if no selection. Gated on shell.commands (same as .commands
@@ -1404,6 +1407,7 @@ static const JSCFunctionListEntry jsPaneProto[] = {
     JS_CGETSET_MAGIC_DEF("focused", jsPaneGetProp, nullptr, 6),
     JS_CGETSET_MAGIC_DEF("focusedPopupId", jsPaneGetProp, nullptr, 7),
     JS_CGETSET_MAGIC_DEF("foregroundProcess", jsPaneGetProp, nullptr, 8),
+    JS_CGETSET_MAGIC_DEF("foregroundExe", jsPaneGetProp, nullptr, 20),
     JS_CGETSET_DEF("popups", jsPaneGetPopups, nullptr),
     JS_CGETSET_DEF("embeddeds", jsPaneGetEmbeddeds, nullptr),
     JS_CGETSET_MAGIC_DEF("selectedCommand", jsPaneGetProp, nullptr, 9),
@@ -1595,8 +1599,9 @@ static JSValue jsPopupGetProp(JSContext *ctx, JSValueConst this_val, int magic)
             return JS_NewBool(ctx, info.focusedPopupId == popup->popupId);
         }
         case 5:
-        case 6: {
-            // x, y — look up from panePopups (cols/rows come from Terminal base).
+        case 6:
+        case 7: {
+            // x, y, tty — look up from panePopups (cols/rows come from Terminal base).
             auto popups = eng->callbacks().panePopups(popup->paneId);
             for (const auto &p : popups) {
                 if (p.id == popup->popupId) {
@@ -1605,6 +1610,9 @@ static JSValue jsPopupGetProp(JSContext *ctx, JSValueConst this_val, int magic)
                     }
                     if (magic == 6) {
                         return JS_NewInt32(ctx, p.y);
+                    }
+                    if (magic == 7) {
+                        return p.tty.empty() ? JS_NULL : JS_NewString(ctx, p.tty.c_str());
                     }
                 }
             }
@@ -1678,9 +1686,10 @@ static const JSCFunctionListEntry jsPopupProto[] = {
     JS_CGETSET_MAGIC_DEF("focused", jsPopupGetProp, nullptr, 2),
     JS_CGETSET_MAGIC_DEF("x", jsPopupGetProp, nullptr, 5),
     JS_CGETSET_MAGIC_DEF("y", jsPopupGetProp, nullptr, 6),
+    JS_CGETSET_MAGIC_DEF("tty", jsPopupGetProp, nullptr, 7),
 };
 
-// pane.createPopup({id, x, y, w, h}) -> Popup
+// pane.createPopup({id, x, y, w, h, pty}) -> Popup
 static JSValue jsPaneCreatePopup(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
 {
@@ -1718,17 +1727,20 @@ static JSValue jsPaneCreatePopup(JSContext *ctx, JSValueConst this_val,
     v = JS_GetPropertyStr(ctx, argv[0], "h");
     JS_ToInt32(ctx, &h, v);
     JS_FreeValue(ctx, v);
+    v        = JS_GetPropertyStr(ctx, argv[0], "pty");
+    bool pty = JS_ToBool(ctx, v) > 0;
+    JS_FreeValue(ctx, v);
 
     std::string popupId(id);
     JS_FreeCString(ctx, id);
 
     Uuid paneId = pane->id;
-    bool ok     = eng->callbacks().createPopup(paneId, popupId, x, y, w, h, [eng, paneId, popupId](const char *data, size_t len)
-                                               {
+    bool ok     = eng->callbacks().createPopup(paneId, popupId, x, y, w, h, pty, [eng, paneId, popupId](const char *data, size_t len)
+                                           {
                                                // Deliver input to popup listeners
                                                std::string regKey = paneId.toString() + ":" + popupId;
                                                eng->deliverPopupInput(regKey, data, len);
-                                               });
+                                           });
 
     if (!ok) {
         return JS_ThrowTypeError(ctx, "createPopup failed (duplicate id?)");
@@ -2229,7 +2241,16 @@ static JSValue jsTerminalInject(JSContext *ctx, JSValueConst this_val,
     if (!str) {
         return JS_EXCEPTION;
     }
-    emu->injectData(str, len);
+    // Every branch of resolveEmulatorFromVal returns a Terminal.
+    Terminal *term = static_cast<Terminal *>(emu);
+    if (term->masterFD() >= 0) {
+        // PTY-backed target: a parse worker may be mid-batch. Route
+        // through the coalesce buffer so the inject can't land inside
+        // an escape sequence split across worker batches.
+        term->enqueueParseBytes(str, len);
+    } else {
+        emu->injectData(str, len);
+    }
     JS_FreeCString(ctx, str);
     if (auto &cb = engineFromCtx(ctx)->callbacks().requestRedraw) {
         cb();
@@ -3066,11 +3087,11 @@ static JSValue startDecorationAnimationImpl(JSContext *ctx, JSValueConst owner,
     // Arm the completion timer. On fire: settle as "completed".
     EventLoop *loop                = eng->loop();
     EventLoop::TimerId tid         = loop->addTimer(static_cast<uint64_t>(durationMs), false, [eng, handleId]()
-                                                    {
+                                            {
                                                 eng->settleDecorationAnimation(handleId, "completed",
                                                                                /*snapToEnd=*/true,
                                                                                TerminalEmulator::mono());
-                                                    });
+                                            });
     inserted.first->second.timerId = tid;
 
     // If startAnimation replaced a prior animation on the same target/prop
@@ -3903,6 +3924,24 @@ static JSValue jsMbCreateSecureToken(JSContext *ctx, JSValueConst, int argc, JSV
         result += hex[buf[i] & 0x0F];
     }
     return JS_NewStringLen(ctx, result.data(), result.size());
+}
+
+// mb.sha256(str) — 64-char lowercase hex digest. Ungated — hashing
+// confers no capability. Used by applet-loader's popup-key store so
+// secrets are persisted only as hashes.
+static JSValue jsMbSha256(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "sha256 requires (string)");
+    }
+    size_t len;
+    const char *str = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!str) {
+        return JS_EXCEPTION;
+    }
+    std::string hex = crypto::sha256Hex(std::string_view(str, len));
+    JS_FreeCString(ctx, str);
+    return JS_NewStringLen(ctx, hex.data(), hex.size());
 }
 
 // Convert a LoadResult to a JS { status, id?, error? } object.
@@ -5623,6 +5662,13 @@ static JSValue jsMbSetClipboard(JSContext *ctx, JSValueConst, int argc, JSValueC
     return JS_UNDEFINED;
 }
 
+// mb.configDir — MB's config directory (allowlist, permission stores).
+static JSValue jsMbGetConfigDir(JSContext *ctx, JSValueConst, int, JSValueConst *)
+{
+    Engine *eng = engineFromCtx(ctx);
+    return JS_NewString(ctx, eng->configDir().c_str());
+}
+
 void Engine::setupGlobals(JSContext *ctx, InstanceId id)
 {
     JSValue global = JS_GetGlobalObject(ctx);
@@ -5642,10 +5688,12 @@ void Engine::setupGlobals(JSContext *ctx, InstanceId id)
     defineGetter("activePane", jsMbGetActivePane);
     defineGetter("actions", jsMbGetActions);
     defineGetter("config", jsMbConfig);
+    defineGetter("configDir", jsMbGetConfigDir);
     JS_SetPropertyStr(ctx, mb, "pane", JS_NewCFunction(ctx, jsMbPane, "pane", 1));
     JS_SetPropertyStr(ctx, mb, "unloadScript", JS_NewCFunction(ctx, jsMbUnloadScript, "unloadScript", 1));
     JS_SetPropertyStr(ctx, mb, "loadScript", JS_NewCFunction(ctx, jsMbLoadScript, "loadScript", 2));
     JS_SetPropertyStr(ctx, mb, "createSecureToken", JS_NewCFunction(ctx, jsMbCreateSecureToken, "createSecureToken", 1));
+    JS_SetPropertyStr(ctx, mb, "sha256", JS_NewCFunction(ctx, jsMbSha256, "sha256", 1));
     JS_SetPropertyStr(ctx, mb, "createUuid", JS_NewCFunction(ctx, jsMbCreateUuid, "createUuid", 0));
     JS_SetPropertyStr(ctx, mb, "approveScript", JS_NewCFunction(ctx, jsMbApproveScript, "approveScript", 2));
     JS_SetPropertyStr(ctx, mb, "setNamespace", JS_NewCFunction(ctx, jsMbSetNamespace, "setNamespace", 1));

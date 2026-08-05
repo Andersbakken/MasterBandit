@@ -60,12 +60,19 @@ public:
     bool init(const TerminalOptions &options);
     // Initialize without a PTY or child process. For script-driven applets.
     bool initHeadless(const TerminalOptions &options);
+    // Initialize with a PTY pair but no child process — external apps open
+    // ttyName() and read/write. We hold the slave fd open so the master
+    // never sees EOF/EIO when writers close. Used by pty-backed popups.
+    bool initPtyOnly(const TerminalOptions &options);
 
     void setEventLoop(EventLoop *loop);
 
     void setPtyMux(PtyMux *mux) { mPtyMux = mux; }
 
     int masterFD() const { return mMasterFD; }
+
+    // Slave device path ("/dev/pts/N"); empty for headless terminals.
+    const std::string &ttyName() const { return mTtyName; }
 
     bool isHeadless() const { return mHeadless; }
 
@@ -103,6 +110,28 @@ public:
         return mParseInFlight.load(std::memory_order_acquire) != 0;
     }
 
+    // parseInFlight for this Terminal plus its popup children. Pane-level
+    // graveyard sweeps use this so a worker parsing a pty-backed popup
+    // can't race the pane destructor freeing mPopups.
+    bool anyParseInFlight() const
+    {
+        if (parseInFlight()) {
+            return true;
+        }
+        for (const auto &p : mPopups) {
+            if (p->parseInFlight()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Append bytes to the read coalesce buffer and schedule a parse —
+    // same ordered byte stream as PTY reads, so script injects can't land
+    // mid-escape-sequence between worker batches. Synchronous
+    // flushReadBuffer fallback when no parse submit fn is wired.
+    void enqueueParseBytes(const char *data, size_t len);
+
     void flushWriteQueue();
     // Paste: wraps in \x1b[200~/\x1b[201~ when DECSET 2004 is active on the
     // terminal. Use for real clipboard/selection pastes so the shell's paste
@@ -115,6 +144,9 @@ public:
 
     // Query the foreground process name via tcgetpgrp + platform process lookup
     std::string foregroundProcess() const;
+    // Resolved executable path of the foreground process (spoof-resistant,
+    // unlike the comm/argv0-derived name). Empty when unresolvable.
+    std::string foregroundExe() const;
     void resize(int width, int height) override;
 
     // Deferred TIOCSWINSZ: set by resize(), consumed by flushPendingResize()
@@ -194,9 +226,10 @@ public:
     void setCWD(const std::string &d) { mCWD = d; }
 
     // --- Popup children ---
-    // Create a headless child terminal at cell coordinates.
+    // Create a child terminal at cell coordinates. Headless by default;
+    // pty=true backs it with a forkless PTY pair (see initPtyOnly).
     Terminal *createPopup(const std::string &id, int x, int y, int w, int h,
-                          PlatformCallbacks pcbs);
+                          PlatformCallbacks pcbs, bool pty = false);
     // Move a popup out for deferred destruction. Returns the moved Terminal
     // on success, or nullptr if not found.
     std::unique_ptr<Terminal> extractPopup(const std::string &id);
@@ -418,10 +451,16 @@ protected:
 
 private:
     void writeToPTY(const char *data, size_t len);
+    // Open the pty pair into mMasterFD/mSlaveFD and record mTtyName.
+    bool openPty();
     PlatformCallbacks mPlatformCbs;
     TerminalOptions mOptions;
     Uuid mNodeId;
     int mMasterFD { -1 };
+    // Open only for initPtyOnly terminals (held for the lifetime);
+    // init() closes it in the parent after fork.
+    int mSlaveFD { -1 };
+    std::string mTtyName;
     bool mHeadless { false };
     std::atomic<bool> mResizePending { false };
     // Read/written from both the main thread (flushReadBuffer fallback)
@@ -441,6 +480,7 @@ private:
     mutable std::atomic<int64_t> mLastFgPollNs { 0 };
     mutable std::shared_mutex mFgCacheMutex;
     mutable std::string mFgCache;
+    mutable std::string mFgExeCache;
     // Rate-limited rejections strand pgid changes when no further bytes
     // arrive — e.g. a child process forks, prints once, then idles. The
     // worker can't catch up on the next iteration because there isn't

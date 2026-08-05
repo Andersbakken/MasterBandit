@@ -367,6 +367,9 @@ void PlatformDawn::closeTab(Uuid target)
         removePtyPoll(panePtr->masterFD());
         pending.structuralOps.push_back(PendingMutations::DestroyPaneState { panePtr->id() });
         for (const auto &popup : panePtr->popups()) {
+            if (popup->masterFD() >= 0) {
+                removePtyPoll(popup->masterFD());
+            }
             std::string key = popupStateKey(panePtr->id(), popup->popupId());
             pending.releasePopupTextures.push_back(key);
         }
@@ -420,9 +423,11 @@ void PlatformDawn::closeTab(Uuid target)
     }
     for (auto &t : extractedTerminals) {
         Terminal *raw = t.get();
+        // anyParseInFlight: the pane destructor frees mPopups, so a worker
+        // still parsing a pty-backed popup must also be drained.
         graveyard_.defer(std::move(t), stamp, [raw]()
                          {
-                             return !raw->parseInFlight();
+                             return !raw->anyParseInFlight();
                          });
     }
 
@@ -467,6 +472,9 @@ bool PlatformDawn::killTerminal(Uuid nodeId)
     removePtyPoll(terminal->masterFD());
     pending.structuralOps.push_back(PendingMutations::DestroyPaneState { nodeId });
     for (const auto &popup : terminal->popups()) {
+        if (popup->masterFD() >= 0) {
+            removePtyPoll(popup->masterFD());
+        }
         std::string key = popupStateKey(nodeId, popup->popupId());
         pending.releasePopupTextures.push_back(key);
     }
@@ -479,9 +487,10 @@ bool PlatformDawn::killTerminal(Uuid nodeId)
     uint64_t stamp = renderThread_->completedFrames();
     if (extracted) {
         Terminal *raw = extracted.get();
+        // anyParseInFlight: also drain workers parsing pty-backed popups.
         graveyard_.defer(std::move(extracted), stamp, [raw]()
                          {
-                             return !raw->parseInFlight();
+                             return !raw->anyParseInFlight();
                          });
     }
 

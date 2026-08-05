@@ -121,6 +121,9 @@ struct AppCallbacks
         bool focused;
         std::string focusedPopupId;
         std::string foregroundProcess;
+        // Resolved executable path of the foreground process; empty when
+        // unresolvable. Spoof-resistant identity, unlike the name.
+        std::string foregroundExe;
         bool hasSelection             = false;
         uint64_t selectionStartLineId = 0;
         int selectionStartCol         = 0;
@@ -297,11 +300,15 @@ struct AppCallbacks
         int w;
         int h;
         bool focused;
+        // Slave device path for pty-backed popups; empty for headless.
+        std::string tty;
     };
 
     std::function<std::vector<PopupInfo>(PaneId)> panePopups;
-    // Create a popup on a pane. Returns false on failure.
-    std::function<bool(PaneId, const std::string &id, int x, int y, int w, int h,
+    // Create a popup on a pane. pty backs it with a forkless PTY pair
+    // whose slave path is exposed via PopupInfo::tty. Returns false on
+    // failure.
+    std::function<bool(PaneId, const std::string &id, int x, int y, int w, int h, bool pty,
                        std::function<void(const char *, size_t)> onInput)>
         createPopup;
     // Destroy a popup on a pane.

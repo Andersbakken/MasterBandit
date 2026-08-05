@@ -196,7 +196,8 @@ int PlatformDawn::exec()
                     p->masterFD() >= 0,
                     isFocused,
                     p->focusedPopupId(),
-                    p->foregroundProcess()
+                    p->foregroundProcess(),
+                    p->foregroundExe()
                 };
                 if (!p->nodeId().isNil()) {
                     info.nodeId = p->nodeId().toString();
@@ -554,12 +555,12 @@ int PlatformDawn::exec()
             if (Terminal *p = scriptEngine_.terminal(paneId)) {
                 const std::string &focusedId = p->focusedPopupId();
                 for (const auto &popup : p->popups()) {
-                    result.push_back({ popup->popupId(), popup->cellX(), popup->cellY(), popup->cellW(), popup->cellH(), popup->popupId() == focusedId });
+                    result.push_back({ popup->popupId(), popup->cellX(), popup->cellY(), popup->cellW(), popup->cellH(), popup->popupId() == focusedId, popup->ttyName() });
                 }
             }
             return result;
         };
-        scbs.createPopup = [this](Script::PaneId paneId, const std::string &popupId, int x, int y, int w, int h, std::function<void(const char *, size_t)> onInput) -> bool
+        scbs.createPopup = [this](Script::PaneId paneId, const std::string &popupId, int x, int y, int w, int h, bool pty, std::function<void(const char *, size_t)> onInput) -> bool
         {
             Terminal *p = scriptEngine_.terminal(paneId);
             if (!p) {
@@ -573,9 +574,17 @@ int PlatformDawn::exec()
             {
                 quit();
             };
-            pcbs.onInput = std::move(onInput);
-            if (!p->createPopup(popupId, x, y, w, h, std::move(pcbs))) {
+            pcbs.onInput        = std::move(onInput);
+            Terminal *popupTerm = p->createPopup(popupId, x, y, w, h, std::move(pcbs), pty);
+            if (!popupTerm) {
                 return false;
+            }
+            if (pty && popupTerm->masterFD() >= 0) {
+                // Wire event loop, PtyMux, and the parse-worker submit fn;
+                // from here the per-tick flushPendingResize sweep also
+                // covers this fd. Mirrors pane spawn.
+                addPtyPoll(popupTerm->masterFD(), popupTerm);
+                popupTerm->flushPendingResize();
             }
             // Queue popup render state creation
             renderThread_->pending().structuralOps.push_back(
@@ -607,6 +616,16 @@ int PlatformDawn::exec()
                 return;
             }
             bool wasPopupFocused = (p->focusedPopupId() == popupId);
+
+            // For pty-backed popups, drop the mux subscription first (sync;
+            // runs on main, never a mux callback). After this no new parse
+            // jobs can be submitted for the popup; the graveyard predicate
+            // below covers any batch already on a worker.
+            if (Terminal *popupTerm = p->findPopup(popupId)) {
+                if (popupTerm->masterFD() >= 0) {
+                    removePtyPoll(popupTerm->masterFD());
+                }
+            }
 
             // Extract the popup and stage it into the graveyard under
             // the render-thread mutex. The mutex ensures the render
@@ -1213,7 +1232,7 @@ int PlatformDawn::exec()
                 eventLoop_->removeTimer(configJsDebounceTimer_);
             }
             configJsDebounceTimer_  = eventLoop_->addTimer(300, false, [this, resolveConfigScriptPath]()
-                                                           {
+                                                          {
                                                               configJsDebounceActive_ = false;
                                                               std::string currentPath = resolveConfigScriptPath();
                                                               if (currentPath.empty()) {
@@ -1241,7 +1260,7 @@ int PlatformDawn::exec()
                                                               } else {
                                                                   scriptEngine_.reevalInstance(configJsInstanceId_, currentPath);
                                                               }
-                                                           });
+                                                          });
             configJsDebounceActive_ = true;
         };
         if (!jsPath.empty()) {

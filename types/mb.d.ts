@@ -553,6 +553,12 @@ interface MbPane extends MbTerminal {
     readonly focusedPopupId: string | null;
     /** Foreground process name (e.g. `"zsh"`, `"vim"`). */
     readonly foregroundProcess: string;
+    /**
+     * Resolved executable path of the foreground process (e.g.
+     * `"/usr/bin/vim"`), or `null` when unresolvable. Kernel-maintained —
+     * unlike `foregroundProcess`, it can't be spoofed via argv0/prctl.
+     */
+    readonly foregroundExe: string | null;
     /** Active popups on this pane. */
     readonly popups: MbPopupInfo[];
     /**
@@ -748,8 +754,16 @@ interface MbPane extends MbTerminal {
      * behaves like `write()`. Requires `shell.write`. Throws if no PTY.
      */
     paste(data: string): void;
-    /** Create a popup on this pane. Requires `ui.popup.create`. Returns null on failure. */
-    createPopup(opts: { id: string; x: number; y: number; w: number; h: number }): MbPopup | null;
+    /**
+     * Create a popup on this pane. Requires `ui.popup.create`. Returns
+     * null on failure. `pty: true` backs the popup with a forkless PTY
+     * pair: external apps can open `popup.tty` and write bytes that
+     * render in the popup (full VT semantics) or read the popup's
+     * keyboard input. For pty popups the `"input"` event does not fire
+     * (keystrokes go to the pty) and `inject()` is parsed in order with
+     * PTY bytes.
+     */
+    createPopup(opts: { id: string; x: number; y: number; w: number; h: number; pty?: boolean }): MbPopup | null;
 
     /**
      * Create an inline embedded terminal anchored at the current cursor
@@ -854,6 +868,8 @@ interface MbPopupInfo {
     w: number;
     h: number;
     focused: boolean;
+    /** Slave device path for pty-backed popups, else null. */
+    tty: string | null;
 }
 
 // ============================================================================
@@ -869,6 +885,13 @@ interface MbPopup extends MbTerminal {
     readonly focused: boolean;
     readonly x: number;
     readonly y: number;
+    /**
+     * Slave device path ("/dev/pts/N") when created with `pty: true`,
+     * else null. MB holds the slave open, so external writers can open
+     * and close it freely without the popup seeing EOF. While the popup
+     * is focused, keyboard input is readable from this device.
+     */
+    readonly tty: string | null;
 
     /** Resize/move the popup. Requires `ui.popup.create`. */
     resize(opts: { x: number; y: number; w: number; h: number }): void;
@@ -877,7 +900,10 @@ interface MbPopup extends MbTerminal {
     /** Close and destroy the popup. Requires `ui.popup.destroy`. */
     close(): void;
 
-    /** Keyboard events when the popup has focus. Requires `io.filter.input`. */
+    /**
+     * Keyboard events when the popup has focus. Requires `io.filter.input`.
+     * Not fired for pty-backed popups — their keystrokes go to the pty.
+     */
     addEventListener(event: "input", fn: (data: string) => void): void;
     /** Mouse press/release on the popup. Requires `ui`. */
     addEventListener(event: "mouse", fn: (ev: MbMouseEvent) => void): void;
@@ -1308,6 +1334,10 @@ interface MbActionMap {
     "search.toggle":                {};
     "pane.set_title":               {};
     "pane.activate_by_name":        { name: string };
+    /** Mint a popup key (applet-loader); shown once + copied to clipboard. */
+    "popup-keys.create":            { label: string };
+    /** Revoke all popup keys with this label (applet-loader). */
+    "popup-keys.revoke":            { label: string };
 }
 
 /**
@@ -1360,6 +1390,11 @@ interface MbGlobal {
      * `addKeybinding`, etc. — see `MbConfigMutations`).
      */
     readonly config: MbConfig;
+    /**
+     * MB's config directory (where the script allowlist and permission
+     * stores live). Useful for built-in scripts persisting state.
+     */
+    readonly configDir: string;
 
     // --- Actions ---
     /**
@@ -1439,6 +1474,8 @@ interface MbGlobal {
      * Ungated.
      */
     createSecureToken(length?: number): string;
+    /** SHA-256 of a string, as a 64-char lowercase hex digest. Ungated. */
+    sha256(data: string): string;
     /** Generate a random UUID v4 (36-char canonical string). Ungated. */
     createUuid(): string;
 

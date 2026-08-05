@@ -110,6 +110,9 @@ Terminal::~Terminal()
     if (mMasterFD != -1) {
         ::close(mMasterFD);
     }
+    if (mSlaveFD != -1) {
+        ::close(mSlaveFD);
+    }
 
     // Close any still-open output captures. Skip the onCaptureStopped
     // callback during teardown — the engine that registered them is
@@ -238,7 +241,7 @@ bool Terminal::removeOutputCapture(const std::string &path)
         return false;
     }
 
-    stopCaptureLocked(taken.get(), CaptureStopReason::Explicit, std::string { });
+    stopCaptureLocked(taken.get(), CaptureStopReason::Explicit, std::string {});
     return true;
 }
 
@@ -539,12 +542,8 @@ void Terminal::stopCaptureLocked(CaptureEntry *entry,
     }
 }
 
-bool Terminal::init(const TerminalOptions &options)
+bool Terminal::openPty()
 {
-    mOptions = options;
-    // Re-initialize document with configured scrollback capacity
-    resetScrollback(mOptions.resolvedScrollback());
-
     mMasterFD = posix_openpt(O_RDWR | O_NOCTTY);
     if (mMasterFD == -1) {
         spdlog::critical("Failed to posix_openpt -> {} {}", errno, strerror(errno));
@@ -573,24 +572,36 @@ bool Terminal::init(const TerminalOptions &options)
         std::abort();
         return false;
     }
+    // ptsname returns a static buffer — copy immediately.
+    mTtyName = slaveName;
 
-    int slaveFD;
-    EINTRWRAP(slaveFD, open(slaveName, O_RDWR | O_NOCTTY));
-    if (slaveFD == -1) {
+    EINTRWRAP(mSlaveFD, open(slaveName, O_RDWR | O_NOCTTY));
+    if (mSlaveFD == -1) {
         spdlog::critical("Failed to open slave fd -> {} {}", errno, strerror(errno));
         std::abort();
         return false;
     }
 
-    // Set the initial PTY size before fork so the child process starts with
-    // the correct dimensions. Without this, the kernel assigns a default
-    // (often 0x0) and the child may read the wrong size before SIGWINCH
-    // from flushPendingResize() arrives.
+    // Set the initial PTY size up front so readers of the slave (a child
+    // process pre-exec, or external apps on a pty popup) see the correct
+    // dimensions instead of the kernel default (often 0x0).
     if (this->width() > 0 && this->height() > 0) {
-        struct winsize ws = { };
+        struct winsize ws = {};
         ws.ws_col         = static_cast<unsigned short>(this->width());
         ws.ws_row         = static_cast<unsigned short>(this->height());
-        ioctl(slaveFD, TIOCSWINSZ, &ws);
+        ioctl(mSlaveFD, TIOCSWINSZ, &ws);
+    }
+    return true;
+}
+
+bool Terminal::init(const TerminalOptions &options)
+{
+    mOptions = options;
+    // Re-initialize document with configured scrollback capacity
+    resetScrollback(mOptions.resolvedScrollback());
+
+    if (!openPty()) {
+        return false;
     }
 
     // Decide pre-fork whether to inject shell integration so the child branch
@@ -650,14 +661,14 @@ bool Terminal::init(const TerminalOptions &options)
         case 0:
             EINTRWRAP(ret, ::close(mMasterFD));
             setsid();
-            if (ioctl(slaveFD, TIOCSCTTY, NULL) == -1) {
+            if (ioctl(mSlaveFD, TIOCSCTTY, NULL) == -1) {
                 spdlog::critical("Failed to ioctl slave fd in slave -> {} {}", errno, strerror(errno));
                 std::abort();
                 return false;
             }
 
             for (int i = 0; i < 3; ++i) {
-                EINTRWRAP(ret, dup2(slaveFD, i));
+                EINTRWRAP(ret, dup2(mSlaveFD, i));
                 if (ret == -1) {
                     spdlog::critical("Failed to dup2({}) slave fd in slave -> {} {}", i, errno, strerror(errno));
                     std::abort();
@@ -665,7 +676,7 @@ bool Terminal::init(const TerminalOptions &options)
                 }
             }
 
-            EINTRWRAP(ret, ::close(slaveFD));
+            EINTRWRAP(ret, ::close(mSlaveFD));
 
             // Pick a sane starting directory. When launched via Launch Services
             // (open mb.app), the inherited cwd is "/", which is never what a user
@@ -750,7 +761,8 @@ bool Terminal::init(const TerminalOptions &options)
             std::abort();
             return false;
         default:
-            EINTRWRAP(ret, ::close(slaveFD));
+            EINTRWRAP(ret, ::close(mSlaveFD));
+            mSlaveFD  = -1;
             mShellPid = pid;
             // Watch the shell pid for exit. Without this we'd only learn
             // about shell death via PTY master EOF, which requires every
@@ -771,6 +783,16 @@ bool Terminal::initHeadless(const TerminalOptions &options)
     resetScrollback(mOptions.resolvedScrollback());
     // No PTY, no fork. mMasterFD stays -1.
     return true;
+}
+
+bool Terminal::initPtyOnly(const TerminalOptions &options)
+{
+    mOptions = options;
+    resetScrollback(mOptions.resolvedScrollback());
+    // PTY pair, no fork, no shell integration. mSlaveFD stays open for
+    // our lifetime so the master never reads EOF/EIO (-> markExited)
+    // when the last external writer closes the slave.
+    return openPty();
 }
 
 void Terminal::resize(int width, int height)
@@ -816,7 +838,7 @@ void Terminal::flushPendingResize()
         return;
     }
     mResizePending    = false;
-    struct winsize ws = { };
+    struct winsize ws = {};
     ws.ws_col         = static_cast<unsigned short>(this->width());
     ws.ws_row         = static_cast<unsigned short>(this->height());
     auto &cbs         = callbacks();
@@ -970,7 +992,7 @@ void Terminal::startShellPidWatch()
     mPidWatch->owner = this;
     auto watch       = mPidWatch;
     mPidWatchThread  = std::thread([watch]()
-                                   {
+                                  {
                                       int status = 0;
                                       pid_t r;
                                       do {
@@ -991,7 +1013,7 @@ void Terminal::startShellPidWatch()
                                                                   status);
                                                      watch->owner->markExited();
                                                  });
-                                   });
+                                  });
 #endif
 }
 
@@ -1151,6 +1173,21 @@ void Terminal::flushReadBuffer()
     // are syscalls; tryRefreshForegroundProcess rate-limits and updates the
     // cached value that all readers (render thread, tab title, JS) consume.
     pollAndNotifyForegroundProcess();
+}
+
+void Terminal::enqueueParseBytes(const char *data, size_t len)
+{
+    {
+        std::lock_guard<std::mutex> lk(mReadBufferMutex);
+        mReadCoalesceBuffer.insert(mReadCoalesceBuffer.end(), data, data + len);
+    }
+    if (mParseSubmit) {
+        // False return means a parse is already in flight — the worker
+        // loop picks up the new bytes at the end of its current batch.
+        queueParse();
+    } else {
+        flushReadBuffer();
+    }
 }
 
 bool Terminal::queueParse(const ParseSubmitFn &submit)
@@ -1409,7 +1446,7 @@ bool Terminal::fgPollDue() const noexcept
     const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             clock::now().time_since_epoch())
                             .count();
-    int64_t prev      = mLastFgPollNs.load(std::memory_order_relaxed);
+    int64_t prev = mLastFgPollNs.load(std::memory_order_relaxed);
     if (prev != 0 && (now - prev) < kFgPollMinNs) {
         return false;
     }
@@ -1421,36 +1458,55 @@ bool Terminal::fgPollDue() const noexcept
 }
 
 namespace {
-std::string lookupFgProcessName(pid_t pgid)
+struct FgProcessInfo
+{
+    std::string name;
+    // Resolved executable path (/proc/<pid>/exe / proc_pidpath). Unlike
+    // the name (comm/argv0, freely self-chosen via prctl), this is
+    // kernel-maintained — a process can't claim another binary's path
+    // without exec'ing it. Empty when unresolvable.
+    std::string exe;
+};
+
+FgProcessInfo lookupFgProcess(pid_t pgid)
 {
     if (pgid < 0) {
-        return { };
+        return {};
     }
 
+    FgProcessInfo info;
 #ifdef __APPLE__
     char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
     if (proc_pidpath(pgid, pathbuf, sizeof(pathbuf)) > 0) {
+        info.exe          = pathbuf;
         const char *slash = strrchr(pathbuf, '/');
-        return slash ? slash + 1 : pathbuf;
+        info.name         = slash ? slash + 1 : pathbuf;
     }
-    return { };
 #else
     char comm[256];
     snprintf(comm, sizeof(comm), "/proc/%d/comm", static_cast<int>(pgid));
     FILE *f = fopen(comm, "r");
-    if (!f) {
-        return { };
-    }
-    char name[256] = { };
-    if (fgets(name, sizeof(name), f)) {
-        size_t len = strlen(name);
-        if (len > 0 && name[len - 1] == '\n') {
-            name[len - 1] = '\0';
+    if (f) {
+        char name[256] = {};
+        if (fgets(name, sizeof(name), f)) {
+            size_t len = strlen(name);
+            if (len > 0 && name[len - 1] == '\n') {
+                name[len - 1] = '\0';
+            }
         }
+        fclose(f);
+        info.name = name;
     }
-    fclose(f);
-    return name;
+    char exeLink[64];
+    snprintf(exeLink, sizeof(exeLink), "/proc/%d/exe", static_cast<int>(pgid));
+    char exeBuf[PATH_MAX];
+    ssize_t n = readlink(exeLink, exeBuf, sizeof(exeBuf) - 1);
+    if (n > 0) {
+        exeBuf[n] = '\0';
+        info.exe  = exeBuf;
+    }
 #endif
+    return info;
 }
 } // namespace
 
@@ -1476,10 +1532,11 @@ Terminal::FgRefreshResult Terminal::tryRefreshForegroundProcess()
     // Pass the already-fetched pgid; the previous helper did its own
     // tcgetpgrp which raced with the one above and could return a name
     // belonging to a different pgid than the one we just stored.
-    std::string name = lookupFgProcessName(pgid);
+    FgProcessInfo fg = lookupFgProcess(pgid);
     {
         std::unique_lock lk(mFgCacheMutex);
-        mFgCache = std::move(name);
+        mFgCache    = std::move(fg.name);
+        mFgExeCache = std::move(fg.exe);
     }
     return FgRefreshResult::Changed;
 }
@@ -1563,6 +1620,12 @@ std::string Terminal::foregroundProcess() const
     return mFgCache;
 }
 
+std::string Terminal::foregroundExe() const
+{
+    std::shared_lock lk(mFgCacheMutex);
+    return mFgExeCache;
+}
+
 // ---------------------------------------------------------------------------
 // Pixel rect / resize to fit
 // ---------------------------------------------------------------------------
@@ -1585,7 +1648,7 @@ void Terminal::resizeToRect(float charW, float lineH,
 // ---------------------------------------------------------------------------
 
 Terminal *Terminal::createPopup(const std::string &id, int x, int y, int w, int h,
-                                PlatformCallbacks pcbs)
+                                PlatformCallbacks pcbs, bool pty)
 {
     if (findPopup(id)) {
         spdlog::warn("Terminal: popup '{}' already exists", id);
@@ -1603,11 +1666,17 @@ Terminal *Terminal::createPopup(const std::string &id, int x, int y, int w, int 
     auto popup = std::make_unique<Terminal>(std::move(pcbs), std::move(cbs));
     TerminalOptions opts;
     opts.scrollbackLines = 0;
-    popup->initHeadless(opts);
+    if (pty) {
+        if (!popup->initPtyOnly(opts)) {
+            return nullptr;
+        }
+    } else {
+        popup->initHeadless(opts);
+    }
     popup->resize(w, h);
     popup->setCellPosition(x, y, w, h);
 
-    spdlog::info("Terminal: created popup '{}' at ({},{}) {}x{}", id, x, y, w, h);
+    spdlog::info("Terminal: created popup '{}' at ({},{}) {}x{}{}", id, x, y, w, h, pty ? " tty " + popup->ttyName() : std::string());
     // Popups have no tree nodeId — they're identified by the popupId string
     // relative to their parent Terminal.
     popup->setPopupId(id);
@@ -1640,6 +1709,8 @@ bool Terminal::resizePopup(const std::string &id, int x, int y, int w, int h)
         return false;
     }
     p->setCellPosition(x, y, w, h);
+    // For pty-backed popups the pending TIOCSWINSZ set here is delivered
+    // by the main loop's per-tick flushPendingResize sweep over ptyPolls.
     p->resize(w, h);
     return true;
 }
